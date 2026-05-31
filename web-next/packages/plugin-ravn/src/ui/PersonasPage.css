@@ -255,46 +255,46 @@
   overflow-x: hidden;
 }
 
-.rv-personas__detail-body section.niuu-border {
+.rv-personas__detail-body section.niuu\:border {
   border-radius: 16px;
 }
 
-.rv-personas__detail-body section.niuu-border > .niuu-px-4.niuu-py-2 {
+.rv-personas__detail-body section.niuu\:border > .niuu\:px-4.niuu\:py-2 {
   padding: 12px 18px 10px;
   gap: 10px;
 }
 
-.rv-personas__detail-body section.niuu-border > .niuu-p-4 {
+.rv-personas__detail-body section.niuu\:border > .niuu\:p-4 {
   padding: 14px 18px 16px;
   gap: 12px;
 }
 
-.rv-personas__detail-body h3.niuu-text-xs {
+.rv-personas__detail-body h3.niuu\:text-xs {
   font-size: 11px;
   letter-spacing: 0.12em;
 }
 
-.rv-personas__detail-body .niuu-text-xs,
+.rv-personas__detail-body .niuu\:text-xs,
 .rv-personas__detail-body .rv-pf-field__label,
 .rv-personas__detail-body .rv-fanin-card__desc {
   font-size: 11px;
 }
 
-.rv-personas__detail-body .niuu-text-sm,
-.rv-personas__detail-body label.niuu-text-sm,
-.rv-personas__detail-body span.niuu-text-sm {
+.rv-personas__detail-body .niuu\:text-sm,
+.rv-personas__detail-body label.niuu\:text-sm,
+.rv-personas__detail-body span.niuu\:text-sm {
   font-size: 12px;
 }
 
-.rv-personas__detail-body .niuu-border-border-subtle {
+.rv-personas__detail-body .niuu\:border-border-subtle {
   border-color: rgba(150, 160, 180, 0.18);
 }
 
-.rv-personas__detail-body .niuu-bg-bg-secondary {
+.rv-personas__detail-body .niuu\:bg-bg-secondary {
   background: #212329;
 }
 
-.rv-personas__detail-body .niuu-bg-bg-primary {
+.rv-personas__detail-body .niuu\:bg-bg-primary {
   background: #17181d;
 }
 
@@ -350,33 +350,33 @@
   padding: 12px 14px 24px;
 }
 
-.rv-personas__detail-body .niuu-grid.niuu-grid-cols-\[140px_1fr\] {
+.rv-personas__detail-body .niuu\:grid.niuu\:grid-cols-\[140px_1fr\] {
   grid-template-columns: 112px minmax(0, 1fr);
   gap: 10px;
 }
 
 .rv-personas__detail-body
-  .niuu-flex.niuu-items-start.niuu-gap-2.niuu-p-3.niuu-bg-bg-secondary.niuu-rounded-md.niuu-border.niuu-border-border-subtle {
+  .niuu\:flex.niuu\:items-start.niuu\:gap-2.niuu\:p-3.niuu\:bg-bg-secondary.niuu\:rounded-md.niuu\:border.niuu\:border-border-subtle {
   padding: 10px 12px;
   gap: 10px;
 }
 
-.rv-personas__detail-body .niuu-inline-flex.niuu-items-center.niuu-gap-1.niuu-px-2.niuu-py-0,
+.rv-personas__detail-body .niuu\:inline-flex.niuu\:items-center.niuu\:gap-1.niuu\:px-2.niuu\:py-0,
 .rv-personas__detail-body
-  .niuu-inline-flex.niuu-items-center.niuu-gap-1.niuu-px-2.niuu-py-0.niuu-rounded {
+  .niuu\:inline-flex.niuu\:items-center.niuu\:gap-1.niuu\:px-2.niuu\:py-0.niuu\:rounded {
   min-height: 24px;
   font-size: 10px;
 }
 
-.rv-personas__detail-body .niuu-w-28 {
+.rv-personas__detail-body .niuu\:w-28 {
   width: 88px;
 }
 
-.rv-personas__detail-body .niuu-w-24 {
+.rv-personas__detail-body .niuu\:w-24 {
   width: 76px;
 }
 
-.rv-personas__detail-body .niuu-overflow-y-auto {
+.rv-personas__detail-body .niuu\:overflow-y-auto {
   scrollbar-gutter: stable;
 }
 

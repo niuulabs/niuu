@@ -36,7 +36,7 @@ describe('WorkflowLaunchModal', () => {
     expect(screen.getByRole('button', { name: 'Launch' })).toBeEnabled();
   });
 
-  it('keeps the modal reset branch inert while closed and resets when reopened', () => {
+  it('keeps the modal reset branch inert while closed and resets when reopened', async () => {
     const onOpenChange = vi.fn();
     const { rerender } = render(
       <WorkflowLaunchModal
@@ -84,8 +84,10 @@ describe('WorkflowLaunchModal', () => {
       />,
     );
 
-    expect(screen.getByPlaceholderText('Describe what this workflow should do.')).toHaveValue('');
-    expect(screen.getByPlaceholderText('Optional override')).toHaveValue('');
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Describe what this workflow should do.')).toHaveValue('');
+      expect(screen.getByPlaceholderText('Optional override')).toHaveValue('');
+    });
   });
 
   it('submits prompt, name, repo, and branch from the repo pickers', async () => {

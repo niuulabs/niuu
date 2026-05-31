@@ -33,7 +33,7 @@ const stageExecutionModeSchema = z.enum(['parallel', 'sequential']);
 const stageJoinModeSchema = z.enum(['all', 'any', 'merge']);
 const gateModeSchema = z.enum(['human_approval', 'human_review', 'automated_approval']);
 const gatePendingBehaviorSchema = z.enum(['silent', 'notify_only', 'help_needed']);
-const stageEventFiltersSchema = z.record(z.string()).default({});
+const stageEventFiltersSchema = z.record(z.string(), z.string()).default({});
 const stageMemberSchema = z.object({
   personaId: z.string().min(1),
   model: z.string().default(''),

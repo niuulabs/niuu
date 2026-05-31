@@ -205,7 +205,7 @@ interface RawEntityMeta {
 // Mapping helpers
 // ---------------------------------------------------------------------------
 
-function toMount(raw: RawMount): Mount {
+export function toMount(raw: RawMount): Mount {
   return {
     name: raw.name,
     role: raw.role as Mount['role'],
@@ -224,7 +224,7 @@ function toMount(raw: RawMount): Mount {
   };
 }
 
-function toRegistryMount(raw: RawRegistryMount): RegistryMount {
+export function toRegistryMount(raw: RawRegistryMount): RegistryMount {
   return {
     id: raw.id,
     name: raw.name,
@@ -243,7 +243,7 @@ function toRegistryMount(raw: RawRegistryMount): RegistryMount {
   };
 }
 
-function toPageMeta(raw: RawPageMeta): PageMeta {
+export function toPageMeta(raw: RawPageMeta): PageMeta {
   return {
     path: raw.path,
     title: raw.title,
@@ -260,7 +260,7 @@ function toPageMeta(raw: RawPageMeta): PageMeta {
   };
 }
 
-function toPage(raw: RawPage): Page {
+export function toPage(raw: RawPage): Page {
   return {
     ...toPageMeta(raw),
     related: raw.related,
@@ -268,7 +268,7 @@ function toPage(raw: RawPage): Page {
   };
 }
 
-function normalizeZones(raw: RawPage): Zone[] | undefined {
+export function normalizeZones(raw: RawPage): Zone[] | undefined {
   const explicit = raw.zones
     ?.map((zone) => toZone(zone))
     .filter((zone): zone is Zone => zone !== null);
@@ -276,7 +276,7 @@ function normalizeZones(raw: RawPage): Zone[] | undefined {
   return deriveZonesFromContent(raw.content, raw.path);
 }
 
-function toZone(raw: NonNullable<RawPage['zones']>[number]): Zone | null {
+export function toZone(raw: NonNullable<RawPage['zones']>[number]): Zone | null {
   switch (raw.kind) {
     case 'key-facts':
       return { kind: 'key-facts', items: asStringArray(raw.items) };
@@ -294,11 +294,13 @@ function toZone(raw: NonNullable<RawPage['zones']>[number]): Zone | null {
   }
 }
 
-function asStringArray(items: unknown[] | undefined): string[] {
+export function asStringArray(items: unknown[] | undefined): string[] {
   return (items ?? []).filter((item): item is string => typeof item === 'string');
 }
 
-function asRelationshipItems(items: unknown[] | undefined): Array<{ slug: string; note: string }> {
+export function asRelationshipItems(
+  items: unknown[] | undefined,
+): Array<{ slug: string; note: string }> {
   return (items ?? [])
     .map((item) => {
       if (
@@ -319,7 +321,7 @@ function asRelationshipItems(items: unknown[] | undefined): Array<{ slug: string
     .filter((item): item is { slug: string; note: string } => item !== null);
 }
 
-function asTimelineItems(
+export function asTimelineItems(
   items: unknown[] | undefined,
 ): Array<{ date: string; note: string; source: string }> {
   return (items ?? [])
@@ -344,7 +346,7 @@ function asTimelineItems(
     .filter((item): item is { date: string; note: string; source: string } => item !== null);
 }
 
-function deriveZonesFromContent(content: string, path: string): Zone[] | undefined {
+export function deriveZonesFromContent(content: string, path: string): Zone[] | undefined {
   const withoutFrontmatter = stripFrontmatter(content);
   const compiledTruth = extractSection(withoutFrontmatter, '## Compiled Truth');
   const timeline = extractSection(withoutFrontmatter, '## Timeline');
@@ -365,11 +367,11 @@ function deriveZonesFromContent(content: string, path: string): Zone[] | undefin
   return [{ kind: 'assessment', text: fallback }];
 }
 
-function stripFrontmatter(content: string): string {
+export function stripFrontmatter(content: string): string {
   return content.replace(/^---\n[\s\S]*?\n---\n?/, '');
 }
 
-function extractSection(content: string, heading: string): string | null {
+export function extractSection(content: string, heading: string): string | null {
   const match = content.match(
     new RegExp(
       `(?:^|\\r?\\n)${escapeRegExp(heading)}[^\\S\\r\\n]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##\\s|$)`,
@@ -378,7 +380,7 @@ function extractSection(content: string, heading: string): string | null {
   return match ? (match[1] ?? '') : null;
 }
 
-function parseTimelineItems(
+export function parseTimelineItems(
   timeline: string,
 ): Array<{ date: string; note: string; source: string }> {
   return timeline
@@ -402,11 +404,11 @@ function parseTimelineItems(
     .filter((item): item is { date: string; note: string; source: string } => item !== null);
 }
 
-function stripSourceFooter(content: string): string {
+export function stripSourceFooter(content: string): string {
   return content.replace(/\n?<!--\s*sources:[\s\S]*?-->\s*$/m, '').trim();
 }
 
-function stripLeadingTitle(content: string, path: string): string {
+export function stripLeadingTitle(content: string, path: string): string {
   const lines = content.split('\n');
   if (lines[0]?.startsWith('# ')) {
     return lines.slice(1).join('\n').trim();
@@ -417,17 +419,17 @@ function stripLeadingTitle(content: string, path: string): string {
   return content;
 }
 
-function inferTitleFromPath(path: string): string {
+export function inferTitleFromPath(path: string): string {
   const leaf = path.split('/').pop() ?? path;
   const stem = leaf.replace(/\.md$/i, '');
   return stem.replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase());
 }
 
-function escapeRegExp(text: string): string {
+export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function toLintIssue(raw: RawLintIssue): LintIssue {
+export function toLintIssue(raw: RawLintIssue): LintIssue {
   return {
     id: raw.id,
     rule: (raw.rule ?? raw.id) as LintRule,
@@ -440,7 +442,7 @@ function toLintIssue(raw: RawLintIssue): LintIssue {
   };
 }
 
-function toLintReport(raw: RawLintReport): LintReport {
+export function toLintReport(raw: RawLintReport): LintReport {
   const issues = raw.issues.map(toLintIssue);
   return {
     issues,
@@ -449,7 +451,7 @@ function toLintReport(raw: RawLintReport): LintReport {
   };
 }
 
-function toEmbeddingResult(raw: RawEmbeddingResult): EmbeddingSearchResult {
+export function toEmbeddingResult(raw: RawEmbeddingResult): EmbeddingSearchResult {
   return {
     path: raw.path,
     title: raw.title,
@@ -459,7 +461,7 @@ function toEmbeddingResult(raw: RawEmbeddingResult): EmbeddingSearchResult {
   };
 }
 
-function toRecentWrite(raw: RawRecentWrite): RecentWrite {
+export function toRecentWrite(raw: RawRecentWrite): RecentWrite {
   return {
     id: raw.id,
     timestamp: raw.timestamp,
@@ -471,7 +473,7 @@ function toRecentWrite(raw: RawRecentWrite): RecentWrite {
   };
 }
 
-function toSource(raw: RawSource): Source {
+export function toSource(raw: RawSource): Source {
   return {
     id: raw.id ?? raw.source_id ?? raw.title,
     title: raw.title,
@@ -485,7 +487,7 @@ function toSource(raw: RawSource): Source {
   };
 }
 
-function toDreamCycle(raw: RawDreamCycle): DreamCycle {
+export function toDreamCycle(raw: RawDreamCycle): DreamCycle {
   return {
     id: raw.id,
     timestamp: raw.timestamp,
@@ -498,7 +500,7 @@ function toDreamCycle(raw: RawDreamCycle): DreamCycle {
   };
 }
 
-function toActivityEvent(raw: RawActivityEvent): ActivityEvent {
+export function toActivityEvent(raw: RawActivityEvent): ActivityEvent {
   return {
     id: raw.id,
     timestamp: raw.timestamp,
@@ -510,7 +512,7 @@ function toActivityEvent(raw: RawActivityEvent): ActivityEvent {
   };
 }
 
-function toGraphNode(raw: RawGraphNode): GraphNode {
+export function toGraphNode(raw: RawGraphNode): GraphNode {
   return {
     id: raw.id,
     title: raw.title,
@@ -519,18 +521,18 @@ function toGraphNode(raw: RawGraphNode): GraphNode {
   };
 }
 
-function toGraphEdge(raw: RawGraphEdge): GraphEdge {
+export function toGraphEdge(raw: RawGraphEdge): GraphEdge {
   return { source: raw.source, target: raw.target };
 }
 
-function toGraph(raw: RawGraph): MimirGraph {
+export function toGraph(raw: RawGraph): MimirGraph {
   return {
     nodes: raw.nodes.map(toGraphNode),
     edges: raw.edges.map(toGraphEdge),
   };
 }
 
-function toEntityMeta(raw: RawEntityMeta): EntityMeta {
+export function toEntityMeta(raw: RawEntityMeta): EntityMeta {
   return {
     path: raw.path,
     title: raw.title,
@@ -540,7 +542,7 @@ function toEntityMeta(raw: RawEntityMeta): EntityMeta {
   };
 }
 
-function isMissingRouteError(error: unknown): error is { status: number } {
+export function isMissingRouteError(error: unknown): error is { status: number } {
   return (
     typeof error === 'object' &&
     error !== null &&
@@ -551,7 +553,7 @@ function isMissingRouteError(error: unknown): error is { status: number } {
   );
 }
 
-function inferPageType(path: string, category: string): PageMeta['type'] {
+export function inferPageType(path: string, category: string): PageMeta['type'] {
   if (path.startsWith('/entities/') || category === 'entity') return 'entity';
   if (path.includes('/decisions/') || category === 'decision') return 'decision';
   if (path.includes('/preferences/') || category === 'preference') return 'preference';
@@ -559,12 +561,12 @@ function inferPageType(path: string, category: string): PageMeta['type'] {
   return 'topic';
 }
 
-function normalizeSeverity(severity: string): IssueSeverity {
+export function normalizeSeverity(severity: string): IssueSeverity {
   if (severity === 'warning') return 'warn';
   return severity as IssueSeverity;
 }
 
-function normalizeOriginType(originType: string | undefined): OriginType {
+export function normalizeOriginType(originType: string | undefined): OriginType {
   switch (originType) {
     case 'web':
     case 'rss':
@@ -582,7 +584,7 @@ function normalizeOriginType(originType: string | undefined): OriginType {
   }
 }
 
-function inferEntityKind(path: string, title: string, summary: string): EntityKind {
+export function inferEntityKind(path: string, title: string, summary: string): EntityKind {
   const haystack = `${path} ${title} ${summary}`.toLowerCase();
   if (haystack.includes('/people/') || haystack.includes(' person ')) return 'person';
   if (
@@ -598,7 +600,7 @@ function inferEntityKind(path: string, title: string, summary: string): EntityKi
   return 'concept';
 }
 
-async function listLegacySources(client: ApiClient): Promise<Source[]> {
+export async function listLegacySources(client: ApiClient): Promise<Source[]> {
   const raw = await client.get<RawSource[]>('/sources');
   return raw.map(toSource);
 }
@@ -888,7 +890,9 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           return toSource(raw);
         } catch (error) {
           if (!isMissingRouteError(error)) throw error;
-          throw new Error('URL ingest is not supported by the current Mimir backend');
+          throw new Error('URL ingest is not supported by the current Mimir backend', {
+            cause: error,
+          });
         }
       },
 

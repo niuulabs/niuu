@@ -58,34 +58,34 @@ const DEFAULT_PERSONA_BY_ROLE: Partial<Record<PersonaRole, string>> = {
   review: 'reviewer',
 };
 
-function normalizeLabel(value: string | undefined): string {
+export function normalizeLabel(value: string | undefined): string {
   if (!value) return '—';
   return value.replace(/_/g, ' ').replace(/-/g, ' ');
 }
 
-function formatTokenCount(value: number | undefined): string {
+export function formatTokenCount(value: number | undefined): string {
   if (value == null) return '—';
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
 }
 
-function formatCurrency(value: number | undefined): string {
+export function formatCurrency(value: number | undefined): string {
   if (value == null) return '—';
   return `$${value.toFixed(2)}`;
 }
 
-function formatShortTime(iso: string): string {
+export function formatShortTime(iso: string): string {
   return iso.slice(11, 19);
 }
 
-function formatTimelineStamp(iso: string): string {
+export function formatTimelineStamp(iso: string): string {
   return `${iso.slice(11, 16)} ${iso.slice(0, 10)}`;
 }
 
-function shortSessionId(session: Session): string {
+export function shortSessionId(session: Session): string {
   return `s-${session.id.slice(-3)}`;
 }
 
-function derivePersonaKey(session: Session): string {
+export function derivePersonaKey(session: Session): string {
   const title = (session.title ?? '').toLowerCase();
   if (session.personaRole === 'review' && /(pr|review)/.test(title)) return 'review-arbiter';
   if (session.personaRole === 'qa' && /(integration|test)/.test(title)) return 'verifier';
@@ -93,7 +93,7 @@ function derivePersonaKey(session: Session): string {
   return DEFAULT_PERSONA_BY_ROLE[session.personaRole ?? 'build'] ?? 'coder';
 }
 
-function deriveTrigger(session: Session): string {
+export function deriveTrigger(session: Session): string {
   const title = (session.title ?? '').toLowerCase();
   if (session.personaRole === 'review' && /(pr|review)/.test(title)) return 'pr-review';
   if (session.personaRole === 'observe') return 'cron.hourly';
@@ -105,24 +105,24 @@ function deriveTrigger(session: Session): string {
   return 'manual';
 }
 
-function titleForSession(session: Session): string {
+export function titleForSession(session: Session): string {
   return session.title ?? `Session ${session.id.slice(0, 8)}`;
 }
 
-function buildInitLine(ravnName: string, trigger: string): string {
+export function buildInitLine(ravnName: string, trigger: string): string {
   return `session init · raven=${ravnName} · trigger=${trigger}`;
 }
 
-function taskLine(session: Session, trigger: string): string {
+export function taskLine(session: Session, trigger: string): string {
   if (trigger === 'manual') return `Manual: ${titleForSession(session)}`;
   return `Triggered by ${trigger}: ${titleForSession(session)}`;
 }
 
-function stripBraces(value: string): string {
+export function stripBraces(value: string): string {
   return value.replace(/^\{+|\}+$/g, '').trim();
 }
 
-function previewJson(value: string): string {
+export function previewJson(value: string): string {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (typeof parsed === 'string') return parsed;
@@ -147,7 +147,7 @@ function previewJson(value: string): string {
   return value;
 }
 
-function parseEmit(value: string): { eventName: string; attrs: string[] } {
+export function parseEmit(value: string): { eventName: string; attrs: string[] } {
   try {
     const parsed = JSON.parse(value) as { event?: string; payload?: Record<string, unknown> };
     const attrs =
@@ -163,7 +163,7 @@ function parseEmit(value: string): { eventName: string; attrs: string[] } {
   }
 }
 
-function synthesizeTranscript(
+export function synthesizeTranscript(
   session: Session,
   ravn: Ravn | null,
   personaName: string,
@@ -241,7 +241,7 @@ function synthesizeTranscript(
   return entries;
 }
 
-function buildTranscript(
+export function buildTranscript(
   session: Session,
   ravn: Ravn | null,
   personaName: string,
@@ -353,7 +353,10 @@ function buildTranscript(
   return entries;
 }
 
-function filterTranscript(entries: TranscriptEntry[], filter: TranscriptFilter): TranscriptEntry[] {
+export function filterTranscript(
+  entries: TranscriptEntry[],
+  filter: TranscriptFilter,
+): TranscriptEntry[] {
   switch (filter) {
     case 'chat':
       return entries.filter((entry) =>
@@ -372,7 +375,7 @@ function filterTranscript(entries: TranscriptEntry[], filter: TranscriptFilter):
   }
 }
 
-function summarizeSession(
+export function summarizeSession(
   session: Session,
   entries: TranscriptEntry[],
   personaLabel: string,
@@ -392,7 +395,7 @@ function summarizeSession(
   return `${personaLabel} wrapped ${titleForSession(session).toLowerCase()}.`;
 }
 
-function deriveTimeline(entries: TranscriptEntry[], session: Session): TimelineEntry[] {
+export function deriveTimeline(entries: TranscriptEntry[], session: Session): TimelineEntry[] {
   const started: TimelineEntry = {
     id: `${session.id}-started`,
     ts: session.createdAt,
@@ -441,7 +444,7 @@ function deriveTimeline(entries: TranscriptEntry[], session: Session): TimelineE
   return [started, ...rest].slice(0, 6);
 }
 
-function deriveRelativeAge(iso: string, anchorIso: string): string {
+export function deriveRelativeAge(iso: string, anchorIso: string): string {
   const deltaMs = new Date(anchorIso).getTime() - new Date(iso).getTime();
   const deltaMinutes = Math.max(1, Math.round(deltaMs / 60000));
   if (deltaMinutes < 60) return `${deltaMinutes}m`;
@@ -449,7 +452,7 @@ function deriveRelativeAge(iso: string, anchorIso: string): string {
   return `${deltaHours}h`;
 }
 
-function deriveAnchorTime(sessions: Session[]): string {
+export function deriveAnchorTime(sessions: Session[]): string {
   if (sessions.length === 0) return new Date().toISOString();
   const newest = [...sessions].sort((left, right) =>
     right.createdAt.localeCompare(left.createdAt),
@@ -457,7 +460,7 @@ function deriveAnchorTime(sessions: Session[]): string {
   return new Date(new Date(newest.createdAt).getTime() + 4 * 60 * 1000).toISOString();
 }
 
-function pickDefaultSession(sessions: Session[], preferredId: string | null): string | null {
+export function pickDefaultSession(sessions: Session[], preferredId: string | null): string | null {
   if (sessions.length === 0) return null;
   if (preferredId && sessions.some((session) => session.id === preferredId)) return preferredId;
   const sorted = [...sessions].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -963,15 +966,13 @@ export function SessionsView() {
     () => [...sessionList].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [sessionList],
   );
+  const resolvedSelectedId = sortedSessions.length
+    ? pickDefaultSession(sortedSessions, selectedId)
+    : null;
 
   useEffect(() => {
-    if (sortedSessions.length === 0) return;
-    const nextId = pickDefaultSession(sortedSessions, selectedId);
-    if (nextId && nextId !== selectedId) {
-      saveStorage(SESSION_STORAGE_KEY, nextId);
-      setSelectedId(nextId);
-    }
-  }, [selectedId, sortedSessions]);
+    saveStorage(SESSION_STORAGE_KEY, resolvedSelectedId);
+  }, [resolvedSelectedId]);
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
@@ -985,7 +986,9 @@ export function SessionsView() {
   }, []);
 
   const selectedSession =
-    sortedSessions.find((session) => session.id === selectedId) ?? sortedSessions[0] ?? null;
+    sortedSessions.find((session) => session.id === resolvedSelectedId) ??
+    sortedSessions[0] ??
+    null;
 
   const {
     data: rawMessages,

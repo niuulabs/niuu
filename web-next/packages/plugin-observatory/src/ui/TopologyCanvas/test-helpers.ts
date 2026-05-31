@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
 
 /** Shared canvas 2D context stub for tests. jsdom does not implement CanvasRenderingContext2D. */
-export function makeCtxMock() {
+export function makeCtxMock(): unknown {
   const gradient = { addColorStop: vi.fn() };
   return {
     clearRect: vi.fn(),

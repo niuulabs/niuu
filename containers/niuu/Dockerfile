@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c AS builder
+FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS builder
 
 ARG TARGETARCH
 
@@ -10,8 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    python3.12 \
-    python3.12-venv \
+    python3 \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
@@ -38,7 +38,7 @@ RUN uv sync --frozen --no-dev --no-editable --extra k8s
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with no build tools or pip
 # ---------------------------------------------------------------------------
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 
 LABEL org.opencontainers.image.title="niuu"
@@ -55,8 +55,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    python3.12 \
-    python3.12-venv \
+    python3 \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user

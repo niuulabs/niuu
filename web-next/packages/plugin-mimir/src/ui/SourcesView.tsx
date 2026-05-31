@@ -54,7 +54,7 @@ const SOURCES_COLUMNS: TableColumn<Source>[] = [
     width: '140px',
     render: (row) => (
       <div>
-        <div className="niuu-font-mono niuu-text-xs niuu-text-text-muted">
+        <div className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
           {row.id.slice(0, 10)}
         </div>
         <span
@@ -71,8 +71,8 @@ const SOURCES_COLUMNS: TableColumn<Source>[] = [
     header: 'Title',
     render: (row) => (
       <div>
-        <div className="niuu-text-sm niuu-text-text-primary">{row.title}</div>
-        <p className="niuu-text-xs niuu-text-text-muted niuu-m-0 niuu-pt-0.5">
+        <div className="niuu:text-sm niuu:text-text-primary">{row.title}</div>
+        <p className="niuu:text-xs niuu:text-text-muted niuu:m-0 niuu:pt-0.5">
           ingested {formatDate(row.ingestedAt)} · {row.ingestAgent}
         </p>
       </div>
@@ -85,7 +85,7 @@ const SOURCES_COLUMNS: TableColumn<Source>[] = [
       if (row.originUrl) {
         return (
           <span
-            className="niuu-font-mono niuu-text-xs niuu-text-brand-300 niuu-overflow-hidden niuu-text-ellipsis niuu-whitespace-nowrap niuu-block"
+            className="niuu:font-mono niuu:text-xs niuu:text-brand-300 niuu:overflow-hidden niuu:text-ellipsis niuu:whitespace-nowrap niuu:block"
             title={row.originUrl}
           >
             {row.originUrl}
@@ -94,10 +94,10 @@ const SOURCES_COLUMNS: TableColumn<Source>[] = [
       }
       if (row.originPath) {
         return (
-          <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">{row.originPath}</span>
+          <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">{row.originPath}</span>
         );
       }
-      return <span className="niuu-text-text-muted niuu-italic niuu-text-xs">—</span>;
+      return <span className="niuu:text-text-muted niuu:italic niuu:text-xs">—</span>;
     },
   },
   {
@@ -106,11 +106,11 @@ const SOURCES_COLUMNS: TableColumn<Source>[] = [
     render: (row) => {
       if (row.compiledInto.length === 0) {
         return (
-          <span className="niuu-text-text-muted niuu-italic niuu-text-xs">not compiled yet</span>
+          <span className="niuu:text-text-muted niuu:italic niuu:text-xs">not compiled yet</span>
         );
       }
       return (
-        <div className="niuu-flex niuu-flex-wrap niuu-gap-1">
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
           {row.compiledInto.map((path) => (
             <span key={path} className="mm-source-path-chip">
               {path}
@@ -179,27 +179,27 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
 
   return (
     <section
-      className="niuu-bg-bg-secondary niuu-border niuu-border-border-subtle niuu-rounded-lg niuu-p-4 niuu-flex niuu-flex-col niuu-gap-3"
+      className="niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3"
       aria-label="Ingest source"
     >
-      <div className="niuu-flex niuu-items-center niuu-justify-between">
-        <span className="niuu-text-xs niuu-text-text-muted niuu-uppercase niuu-tracking-widest">
+      <div className="niuu:flex niuu:items-center niuu:justify-between">
+        <span className="niuu:text-xs niuu:text-text-muted niuu:uppercase niuu:tracking-widest">
           Ingest
         </span>
 
         {/* Mode toggle */}
         <div
-          className="niuu-flex niuu-rounded-md niuu-overflow-hidden niuu-border niuu-border-border-subtle"
+          className="niuu:flex niuu:rounded-md niuu:overflow-hidden niuu:border niuu:border-border-subtle"
           role="group"
           aria-label="Ingest mode"
         >
           <button
             type="button"
             className={[
-              'niuu-px-3 niuu-py-1 niuu-text-xs niuu-font-mono niuu-border-r niuu-border-border-subtle niuu-transition-colors',
+              'niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:border-r niuu:border-border-subtle niuu:transition-colors',
               mode === 'url'
-                ? 'niuu-bg-bg-tertiary niuu-text-text-primary'
-                : 'niuu-bg-bg-secondary niuu-text-text-muted hover:niuu-text-text-secondary',
+                ? 'niuu:bg-bg-tertiary niuu:text-text-primary'
+                : 'niuu:bg-bg-secondary niuu:text-text-muted niuu:hover:text-text-secondary',
             ].join(' ')}
             aria-pressed={mode === 'url'}
             onClick={() => setMode('url')}
@@ -210,10 +210,10 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
           <button
             type="button"
             className={[
-              'niuu-px-3 niuu-py-1 niuu-text-xs niuu-font-mono niuu-transition-colors',
+              'niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:transition-colors',
               mode === 'file'
-                ? 'niuu-bg-bg-tertiary niuu-text-text-primary'
-                : 'niuu-bg-bg-secondary niuu-text-text-muted hover:niuu-text-text-secondary',
+                ? 'niuu:bg-bg-tertiary niuu:text-text-primary'
+                : 'niuu:bg-bg-secondary niuu:text-text-muted niuu:hover:text-text-secondary',
             ].join(' ')}
             aria-pressed={mode === 'file'}
             onClick={() => setMode('file')}
@@ -225,7 +225,7 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
       </div>
 
       {mode === 'url' && (
-        <form onSubmit={handleFetch} className="niuu-flex niuu-gap-2" aria-label="Fetch URL">
+        <form onSubmit={handleFetch} className="niuu:flex niuu:gap-2" aria-label="Fetch URL">
           <input
             type="url"
             value={url}
@@ -235,14 +235,14 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
             required
             aria-label="URL to fetch"
             data-testid="url-input"
-            className="niuu-flex-1 niuu-bg-bg-primary niuu-border niuu-border-border niuu-rounded-sm niuu-px-3 niuu-py-1 niuu-text-sm niuu-text-text-primary niuu-font-mono placeholder:niuu-text-text-muted focus:niuu-outline-none focus:niuu-border-brand-300"
+            className="niuu:flex-1 niuu:bg-bg-primary niuu:border niuu:border-border niuu:rounded-sm niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-primary niuu:font-mono niuu:placeholder:text-text-muted niuu:focus:outline-none niuu:focus:border-brand-300"
           />
           <button
             type="submit"
             disabled={isPending || !url.trim()}
             aria-label="Fetch"
             data-testid="fetch-button"
-            className="niuu-px-4 niuu-py-1 niuu-text-xs niuu-rounded-sm niuu-bg-brand niuu-border niuu-border-brand niuu-text-bg-primary niuu-font-mono niuu-font-medium disabled:niuu-opacity-50 hover:niuu-opacity-85 niuu-transition-opacity"
+            className="niuu:px-4 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:bg-brand niuu:border niuu:border-brand niuu:text-bg-primary niuu:font-mono niuu:font-medium niuu:disabled:opacity-50 niuu:hover:opacity-85 niuu:transition-opacity"
           >
             {isPending ? 'Fetching…' : 'Fetch'}
           </button>
@@ -251,18 +251,18 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
 
       {mode === 'file' && (
         <label
-          className="niuu-flex niuu-flex-col niuu-items-center niuu-justify-center niuu-gap-2 niuu-border niuu-border-dashed niuu-border-border niuu-rounded-md niuu-p-6 niuu-text-center niuu-cursor-pointer hover:niuu-border-brand-300 niuu-transition-colors"
+          className="niuu:flex niuu:flex-col niuu:items-center niuu:justify-center niuu:gap-2 niuu:border niuu:border-dashed niuu:border-border niuu:rounded-md niuu:p-6 niuu:text-center niuu:cursor-pointer niuu:hover:border-brand-300 niuu:transition-colors"
           aria-label="Upload file dropzone"
           data-testid="file-dropzone"
         >
-          <span className="niuu-text-text-muted niuu-text-sm">
+          <span className="niuu:text-text-muted niuu:text-sm">
             {isPending ? 'Uploading…' : 'Drop a file here or click to browse'}
           </span>
-          <span className="niuu-text-text-muted niuu-text-xs">Markdown, plain text, PDF</span>
+          <span className="niuu:text-text-muted niuu:text-xs">Markdown, plain text, PDF</span>
           <input
             ref={fileInputRef}
             type="file"
-            className="niuu-sr-only"
+            className="niuu:sr-only"
             onChange={handleFileChange}
             disabled={isPending}
             accept=".md,.txt,.pdf,.html"
@@ -272,16 +272,16 @@ function IngestForm({ onIngestSuccess, onMutationStart }: IngestFormProps) {
       )}
 
       {isPending && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
           <StateDot state="processing" pulse />
-          <span className="niuu-text-xs niuu-text-text-secondary">
+          <span className="niuu:text-xs niuu:text-text-secondary">
             {mode === 'url' ? 'Fetching source…' : 'Uploading file…'}
           </span>
         </div>
       )}
 
       {ingestError && (
-        <p className="niuu-text-xs niuu-text-critical niuu-m-0" role="alert">
+        <p className="niuu:text-xs niuu:text-critical niuu:m-0" role="alert">
           {ingestError}
         </p>
       )}
@@ -314,7 +314,7 @@ export function SourcesView() {
   }
 
   return (
-    <div className="niuu-p-6 niuu-flex niuu-flex-col niuu-gap-4">
+    <div className="niuu:p-6 niuu:flex niuu:flex-col niuu:gap-4">
       {/* ── Ingest form ────────────────────────────────────────── */}
       <IngestForm
         onIngestSuccess={handleIngestSuccess}
@@ -323,7 +323,7 @@ export function SourcesView() {
 
       {showSuccess && (
         <p
-          className="niuu-text-xs niuu-text-brand-200 niuu-m-0"
+          className="niuu:text-xs niuu:text-brand-200 niuu:m-0"
           role="status"
           data-testid="ingest-success"
         >
@@ -333,7 +333,7 @@ export function SourcesView() {
 
       {/* ── Origin filter tabs ─────────────────────────────────── */}
       <div
-        className="niuu-flex niuu-gap-2 niuu-flex-wrap"
+        className="niuu:flex niuu:gap-2 niuu:flex-wrap"
         role="tablist"
         aria-label="filter by origin"
       >
@@ -344,10 +344,10 @@ export function SourcesView() {
             role="tab"
             aria-selected={activeOrigin === id}
             className={[
-              'niuu-px-3 niuu-py-1 niuu-rounded-full niuu-text-xs niuu-font-mono niuu-border niuu-transition-colors',
+              'niuu:px-3 niuu:py-1 niuu:rounded-full niuu:text-xs niuu:font-mono niuu:border niuu:transition-colors',
               activeOrigin === id
-                ? 'niuu-border-brand-300/30 niuu-text-brand-300 mm-origin-chip--active-bg'
-                : 'niuu-border-border niuu-bg-bg-secondary niuu-text-text-secondary hover:niuu-bg-bg-tertiary hover:niuu-text-text-primary',
+                ? 'niuu:border-brand-300/30 niuu:text-brand-300 mm-origin-chip--active-bg'
+                : 'niuu:border-border niuu:bg-bg-secondary niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary',
             ].join(' ')}
             onClick={() => setActiveOrigin(id as OriginType | 'all')}
           >
@@ -358,14 +358,14 @@ export function SourcesView() {
 
       {/* ── Status ─────────────────────────────────────────────── */}
       {isLoading && (
-        <div className="niuu-flex niuu-items-center niuu-gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
           <StateDot state="processing" pulse />
-          <span className="niuu-text-sm niuu-text-text-secondary">loading sources…</span>
+          <span className="niuu:text-sm niuu:text-text-secondary">loading sources…</span>
         </div>
       )}
 
       {isError && (
-        <p className="niuu-text-sm niuu-text-critical niuu-m-0">
+        <p className="niuu:text-sm niuu:text-critical niuu:m-0">
           {error instanceof Error ? error.message : 'failed to load sources'}
         </p>
       )}
@@ -373,7 +373,7 @@ export function SourcesView() {
       {/* ── Source table ───────────────────────────────────────── */}
       {sources && (
         <>
-          <p className="niuu-text-xs niuu-text-text-muted niuu-m-0">
+          <p className="niuu:text-xs niuu:text-text-muted niuu:m-0">
             {sources.length} source{sources.length !== 1 ? 's' : ''}
             {activeOrigin !== 'all' ? ` · origin: ${activeOrigin}` : ''}
             {activeMount !== 'all' ? ` · mount: ${activeMount}` : ''}

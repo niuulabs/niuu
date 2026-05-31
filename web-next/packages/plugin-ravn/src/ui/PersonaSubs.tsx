@@ -136,7 +136,7 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
     return (
       <div
         data-testid="persona-subs-loading"
-        className="niuu-p-6 niuu-text-sm niuu-text-text-muted"
+        className="niuu:p-6 niuu:text-sm niuu:text-text-muted"
       >
         Loading subscription graph…
       </div>
@@ -145,7 +145,7 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
 
   if (isError) {
     return (
-      <div data-testid="persona-subs-error" className="niuu-p-6 niuu-text-sm niuu-text-critical">
+      <div data-testid="persona-subs-error" className="niuu:p-6 niuu:text-sm niuu:text-critical">
         {error instanceof Error ? error.message : 'Failed to load persona'}
       </div>
     );
@@ -160,7 +160,7 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
     return (
       <div
         data-testid="persona-subs-empty"
-        className="niuu-flex niuu-items-center niuu-justify-center niuu-h-full niuu-p-6 niuu-text-sm niuu-text-text-muted"
+        className="niuu:flex niuu:items-center niuu:justify-center niuu:h-full niuu:p-6 niuu:text-sm niuu:text-text-muted"
       >
         No event subscriptions — this persona neither consumes nor produces events connected to
         others.
@@ -193,15 +193,15 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
     <div
       ref={containerRef}
       data-testid="persona-subs"
-      className="niuu-overflow-auto niuu-h-full niuu-p-4 niuu-flex niuu-flex-col niuu-gap-4"
+      className="niuu:overflow-auto niuu:h-full niuu:p-4 niuu:flex niuu:flex-col niuu:gap-4"
     >
       {/* Zoom to fit button */}
-      <div className="niuu-flex niuu-justify-end">
+      <div className="niuu:flex niuu:justify-end">
         <button
           type="button"
           onClick={handleZoomToFit}
           data-testid="subs-zoom-fit"
-          className="niuu-text-xs niuu-text-text-muted niuu-bg-bg-secondary niuu-border niuu-border-border niuu-rounded niuu-px-2 niuu-py-1 niuu-cursor-pointer hover:niuu-text-text-primary hover:niuu-border-brand niuu-transition-colors"
+          className="niuu:text-xs niuu:text-text-muted niuu:bg-bg-secondary niuu:border niuu:border-border niuu:rounded niuu:px-2 niuu:py-1 niuu:cursor-pointer niuu:hover:text-text-primary niuu:hover:border-brand niuu:transition-colors"
         >
           Zoom to fit
         </button>
@@ -212,7 +212,7 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
         height={svgH}
         role="img"
         aria-label={`Event subscription graph for ${name}`}
-        className="niuu-block niuu-shrink-0"
+        className="niuu:block niuu:shrink-0"
       >
         <title>Event subscription graph for {name}</title>
 
@@ -280,7 +280,7 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
             <g
               key={node.id}
               opacity={isDimmed ? 0.25 : 1}
-              className={isClickable ? 'niuu-cursor-pointer' : undefined}
+              className={isClickable ? 'niuu:cursor-pointer' : undefined}
               onMouseEnter={() => setHoveredNodeId(node.id)}
               onMouseLeave={() => setHoveredNodeId(null)}
               onClick={() => handleNodeClick(node)}
@@ -340,25 +340,25 @@ export function PersonaSubs({ name }: PersonaSubsProps) {
       {/* Legend */}
       <div
         data-testid="subs-legend"
-        className="niuu-flex niuu-items-center niuu-gap-4 niuu-text-xs niuu-text-text-muted niuu-font-mono niuu-border-t niuu-border-border-subtle niuu-pt-3 niuu-flex-wrap"
+        className="niuu:flex niuu:items-center niuu:gap-4 niuu:text-xs niuu:text-text-muted niuu:font-mono niuu:border-t niuu:border-border-subtle niuu:pt-3 niuu:flex-wrap"
       >
-        <span className="niuu-font-sans niuu-text-text-muted">Legend:</span>
-        <span className="niuu-flex niuu-items-center niuu-gap-1">
-          <span className="niuu-inline-block niuu-w-8 niuu-h-3 niuu-rounded-sm niuu-border rv-subs-legend-focus" />
+        <span className="niuu:font-sans niuu:text-text-muted">Legend:</span>
+        <span className="niuu:flex niuu:items-center niuu:gap-1">
+          <span className="niuu:inline-block niuu:w-8 niuu:h-3 niuu:rounded-sm niuu:border rv-subs-legend-focus" />
           focus (this persona)
         </span>
-        <span className="niuu-flex niuu-items-center niuu-gap-1">
-          <span className="niuu-inline-block niuu-w-8 niuu-h-3 niuu-rounded-sm niuu-border niuu-border-border niuu-bg-bg-secondary" />
+        <span className="niuu:flex niuu:items-center niuu:gap-1">
+          <span className="niuu:inline-block niuu:w-8 niuu:h-3 niuu:rounded-sm niuu:border niuu:border-border niuu:bg-bg-secondary" />
           producer / consumer
         </span>
-        <span className="niuu-flex niuu-items-center niuu-gap-1">
-          <svg width={20} height={8} className="niuu-shrink-0">
+        <span className="niuu:flex niuu:items-center niuu:gap-1">
+          <svg width={20} height={8} className="niuu:shrink-0">
             <line x1="0" y1="4" x2="20" y2="4" stroke="var(--color-border)" strokeWidth={1.5} />
           </svg>
           event link
         </span>
         <span>
-          edge label = event name · <span className="niuu-font-mono">Nf</span> = schema field count
+          edge label = event name · <span className="niuu:font-mono">Nf</span> = schema field count
         </span>
       </div>
     </div>

@@ -410,7 +410,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeTruthy();
     expect(screen.getByText('Integration connections')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connect integration' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Connect integration' })).toBeTruthy();
     expect(await screen.findAllByText('Telegram')).toHaveLength(2);
     expect(screen.getByDisplayValue('telegram-credential')).toBeTruthy();
   });
@@ -490,7 +490,10 @@ describe('SettingsPage', () => {
     wrap(<SettingsPage />);
 
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeTruthy();
-    const reuseToggle = screen.getByRole('checkbox', { name: /Create a new credential/i });
+    await screen.findByRole('button', { name: 'Connect integration' });
+    const reuseToggle = await screen.findByRole('checkbox', {
+      name: /Create a new credential/i,
+    });
     fireEvent.click(reuseToggle);
     expect(screen.getByText('Stored credential')).toBeTruthy();
     expect(screen.getByRole('option', { name: 'shared-linear' })).toBeTruthy();

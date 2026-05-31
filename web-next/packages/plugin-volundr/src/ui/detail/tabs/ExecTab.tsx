@@ -14,34 +14,34 @@ function ExecEntryRow({ entry }: ExecEntryRowProps) {
 
   return (
     <div
-      className="niuu-flex niuu-flex-col niuu-gap-1 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-3"
+      className="niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3"
       data-testid="exec-entry"
       data-status={entry.status}
     >
       {/* Command header */}
-      <div className="niuu-flex niuu-items-center niuu-gap-2">
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
         <span
           className={
             entry.status === 'running'
-              ? 'niuu-text-brand'
+              ? 'niuu:text-brand'
               : entry.status === 'error'
-                ? 'niuu-text-critical'
-                : 'niuu-text-text-muted'
+                ? 'niuu:text-critical'
+                : 'niuu:text-text-muted'
           }
           aria-label={`status: ${entry.status}`}
         >
           {entry.status === 'running' ? '⟳' : entry.status === 'error' ? '✗' : '✓'}
         </span>
-        <span className="niuu-flex-1 niuu-font-mono niuu-text-sm niuu-text-text-primary">
+        <span className="niuu:flex-1 niuu:font-mono niuu:text-sm niuu:text-text-primary">
           $ {entry.command}
         </span>
-        <span className="niuu-font-mono niuu-text-xs niuu-text-text-muted">{elapsed}</span>
+        <span className="niuu:font-mono niuu:text-xs niuu:text-text-muted">{elapsed}</span>
       </div>
 
       {/* Output */}
       {entry.output && (
         <pre
-          className="niuu-mt-1 niuu-max-h-48 niuu-overflow-auto niuu-rounded niuu-bg-bg-primary niuu-p-2 niuu-font-mono niuu-text-xs niuu-text-text-secondary"
+          className="niuu:mt-1 niuu:max-h-48 niuu:overflow-auto niuu:rounded niuu:bg-bg-primary niuu:p-2 niuu:font-mono niuu:text-xs niuu:text-text-secondary"
           data-testid="exec-output"
         >
           {entry.output}
@@ -69,10 +69,10 @@ export function ExecTab({ exec }: ExecTabProps) {
   }
 
   return (
-    <div className="niuu-flex niuu-h-full niuu-flex-col niuu-gap-3 niuu-p-4" data-testid="exec-tab">
+    <div className="niuu:flex niuu:h-full niuu:flex-col niuu:gap-3 niuu:p-4" data-testid="exec-tab">
       {/* Command input */}
-      <form onSubmit={handleSubmit} className="niuu-flex niuu-items-center niuu-gap-2">
-        <span className="niuu-font-mono niuu-text-sm niuu-text-text-muted">$</span>
+      <form onSubmit={handleSubmit} className="niuu:flex niuu:items-center niuu:gap-2">
+        <span className="niuu:font-mono niuu:text-sm niuu:text-text-muted">$</span>
         <input
           ref={inputRef}
           type="text"
@@ -80,14 +80,14 @@ export function ExecTab({ exec }: ExecTabProps) {
           onChange={(e) => setCmd(e.target.value)}
           placeholder="run a command…"
           disabled={exec.isRunning}
-          className="niuu-flex-1 niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-secondary niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand disabled:niuu-opacity-50"
+          className="niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand niuu:disabled:opacity-50"
           data-testid="exec-input"
           aria-label="Command to run"
         />
         <button
           type="submit"
           disabled={!cmd.trim() || exec.isRunning}
-          className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs disabled:niuu-cursor-not-allowed disabled:niuu-opacity-50"
+          className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
           data-testid="exec-run-btn"
         >
           {exec.isRunning ? 'running…' : 'Run'}
@@ -95,10 +95,10 @@ export function ExecTab({ exec }: ExecTabProps) {
       </form>
 
       {/* History */}
-      <div className="niuu-flex niuu-min-h-0 niuu-flex-1 niuu-flex-col niuu-gap-2 niuu-overflow-auto">
+      <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:overflow-auto">
         {exec.history.length === 0 ? (
           <p
-            className="niuu-py-8 niuu-text-center niuu-text-sm niuu-text-text-muted"
+            className="niuu:py-8 niuu:text-center niuu:text-sm niuu:text-text-muted"
             data-testid="exec-empty"
           >
             No commands run yet.

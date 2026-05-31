@@ -727,18 +727,6 @@ function CredentialsResourceCard({
     return types.find((entry) => entry.type === selectedType) ?? types[0] ?? null;
   }, [selectedType, typesQuery.data]);
 
-  useEffect(() => {
-    if (!selectedDefinition) return;
-    setSelectedType(selectedDefinition.type);
-    setFieldValues((current) => {
-      const next: Record<string, string> = {};
-      for (const field of selectedDefinition.fields) {
-        next[field.key] = current[field.key] ?? '';
-      }
-      return next;
-    });
-  }, [selectedDefinition]);
-
   const createMutation = useMutation({
     mutationFn: async () => {
       const data =
@@ -970,7 +958,7 @@ function IntegrationsResourceCard({
   rootBase: string;
   providerId: string;
 }) {
-  const client = useMemo(() => createApiClient(rootBase), [rootBase]);
+  const client = createApiClient(rootBase);
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
   const [credentialName, setCredentialName] = useState('');
@@ -1004,16 +992,14 @@ function IntegrationsResourceCard({
     },
   });
 
-  const selectedEntry = useMemo(() => {
-    const entries = catalogQuery.data ?? [];
-    return entries.find((entry) => (entry.slug ?? entry.id) === selectedId) ?? entries[0] ?? null;
-  }, [catalogQuery.data, selectedId]);
+  const catalogEntries = catalogQuery.data ?? [];
+  const selectedCatalogId = selectedId || (catalogEntries[0]?.slug ?? catalogEntries[0]?.id ?? '');
+  const selectedEntry =
+    catalogEntries.find((entry) => (entry.slug ?? entry.id) === selectedCatalogId) ?? null;
 
-  const selectedConnection = useMemo(() => {
-    return (
-      integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedId) ?? null
-    );
-  }, [integrationsQuery.data, selectedId]);
+  const selectedConnection =
+    integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedCatalogId) ??
+    null;
 
   const credentialSchema = useMemo(
     () =>
@@ -1024,16 +1010,14 @@ function IntegrationsResourceCard({
     () => normalizeCatalogSchema(selectedEntry?.configSchema ?? selectedEntry?.config_schema),
     [selectedEntry],
   );
-
-  useEffect(() => {
-    if (!selectedEntry) return;
-    const nextId = selectedEntry.slug ?? selectedEntry.id;
-    setSelectedId(nextId);
-    setCredentialName((current) => current || `${nextId}-credential`);
-    setSelectedExistingCredential('');
-    setCredentialValues(buildInitialResourceValues(credentialSchema));
-    setConfigValues(buildInitialResourceValues(configSchema));
-  }, [selectedEntry, credentialSchema, configSchema]);
+  const effectiveCredentialName =
+    credentialName || (selectedEntry ? `${selectedCatalogId}-credential` : '');
+  const effectiveCredentialValues =
+    Object.keys(credentialValues).length > 0
+      ? credentialValues
+      : buildInitialResourceValues(credentialSchema);
+  const effectiveConfigValues =
+    Object.keys(configValues).length > 0 ? configValues : buildInitialResourceValues(configSchema);
 
   useEffect(() => {
     if (!oauthPendingSlug) return;
@@ -1060,7 +1044,7 @@ function IntegrationsResourceCard({
       }
 
       const configPayload = Object.fromEntries(
-        Object.entries(configValues)
+        Object.entries(effectiveConfigValues)
           .map(([key, value]) => {
             const property = configSchema.properties?.[key];
             if (property?.type === 'string[]') {
@@ -1085,9 +1069,11 @@ function IntegrationsResourceCard({
         ...(createInlineCredential
           ? {
               credential: {
-                name: credentialName,
+                name: effectiveCredentialName,
                 data: Object.fromEntries(
-                  Object.entries(credentialValues).filter(([, value]) => value.trim() !== ''),
+                  Object.entries(effectiveCredentialValues).filter(
+                    ([, value]) => value.trim() !== '',
+                  ),
                 ),
               },
             }
@@ -1183,11 +1169,22 @@ function IntegrationsResourceCard({
               type="button"
               className={cn(
                 'settings-resource__catalog-card',
-                key === selectedId && 'settings-resource__catalog-card--active',
+                key === selectedCatalogId && 'settings-resource__catalog-card--active',
               )}
               onClick={() => {
                 setSelectedId(key);
                 setCredentialName(`${key}-credential`);
+                setSelectedExistingCredential('');
+                setCredentialValues(
+                  buildInitialResourceValues(
+                    normalizeCatalogSchema(entry.credentialSchema ?? entry.credential_schema),
+                  ),
+                );
+                setConfigValues(
+                  buildInitialResourceValues(
+                    normalizeCatalogSchema(entry.configSchema ?? entry.config_schema),
+                  ),
+                );
               }}
             >
               <span className="settings-resource__catalog-title">{entry.name}</span>
@@ -1283,7 +1280,7 @@ function IntegrationsResourceCard({
                   <label className="settings-resource__composer-field">
                     <span className="settings-resource__composer-label">Credential name</span>
                     <input
-                      value={credentialName}
+                      value={effectiveCredentialName}
                       onChange={(event) => setCredentialName(event.target.value)}
                       className="settings-field__control"
                     />
@@ -1291,7 +1288,7 @@ function IntegrationsResourceCard({
                   <IntegrationSchemaFields
                     label="Credential"
                     schema={credentialSchema}
-                    values={credentialValues}
+                    values={effectiveCredentialValues}
                     onChange={(key, value) => {
                       setCredentialValues((current) => ({ ...current, [key]: value }));
                     }}
@@ -1323,7 +1320,7 @@ function IntegrationsResourceCard({
               <IntegrationSchemaFields
                 label="Connection config"
                 schema={configSchema}
-                values={configValues}
+                values={effectiveConfigValues}
                 onChange={(key, value) => {
                   setConfigValues((current) => ({ ...current, [key]: value }));
                 }}
@@ -1345,7 +1342,9 @@ function IntegrationsResourceCard({
                   className="settings-shell__save-button settings-shell__save-button--secondary"
                   disabled={
                     createMutation.isPending ||
-                    (createInlineCredential ? !credentialName.trim() : !selectedExistingCredential)
+                    (createInlineCredential
+                      ? !effectiveCredentialName.trim()
+                      : !selectedExistingCredential)
                   }
                 >
                   {createMutation.isPending ? 'Connecting…' : 'Connect integration'}
@@ -1426,10 +1425,7 @@ function SettingsSectionResources({
   resources: RemoteSettingsResource[];
 }) {
   const remoteProvider = isRemoteProvider(snapshot.provider) ? snapshot.provider : null;
-  const rootBase = useMemo(
-    () => (remoteProvider?.baseUrl ? resolveRootBase(remoteProvider.baseUrl) : null),
-    [remoteProvider?.baseUrl],
-  );
+  const rootBase = remoteProvider?.baseUrl ? resolveRootBase(remoteProvider.baseUrl) : null;
 
   if (!rootBase || resources.length === 0) return null;
 
@@ -1482,14 +1478,7 @@ function SettingsSectionPanel({
   const queryClient = useQueryClient();
   const remoteProvider = isRemoteProvider(snapshot.provider) ? snapshot.provider : null;
   const [draft, setDraft] = useState<Record<string, unknown>>(() => buildInitialDraft(section));
-  const client = useMemo(
-    () => (remoteProvider?.baseUrl ? createApiClient(remoteProvider.baseUrl) : null),
-    [remoteProvider?.baseUrl],
-  );
-
-  useEffect(() => {
-    setDraft(buildInitialDraft(section));
-  }, [section]);
+  const client = remoteProvider?.baseUrl ? createApiClient(remoteProvider.baseUrl) : null;
 
   const saveMutation = useMutation({
     mutationFn: async (payload: Record<string, unknown>) => {
@@ -1754,7 +1743,11 @@ export function SettingsPage() {
       <main className="settings-shell__main">
         {activeSnapshot ? (
           activeSnapshot.status === 'ready' && activeSection ? (
-            <SettingsSectionPanel snapshot={activeSnapshot} section={activeSection} />
+            <SettingsSectionPanel
+              key={activeSection ? `${activeSnapshot.provider.id}:${activeSection.id}` : 'empty'}
+              snapshot={activeSnapshot}
+              section={activeSection}
+            />
           ) : (
             <ProviderUnavailablePanel snapshot={activeSnapshot} />
           )

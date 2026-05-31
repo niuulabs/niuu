@@ -292,6 +292,25 @@ export function reviveAgentEvents(
   return next;
 }
 
+type RevivedPersistedState = {
+  messages: ChatMessage[];
+  participants: Map<string, RoomParticipant>;
+  meshEvents: MeshEvent[];
+  agentEvents: Map<string, AgentInternalEvent[]>;
+};
+
+function revivePersistedState(url: string | null): RevivedPersistedState {
+  const cached = url ? safeSessionStorageGet(url) : null;
+  return {
+    messages: reviveMessages(cached?.messages),
+    participants: new Map(
+      (cached?.participants ?? []).map((participant) => [participant.peerId, participant]),
+    ),
+    meshEvents: reviveMeshEvents(cached?.meshEvents),
+    agentEvents: reviveAgentEvents(cached?.agentEvents),
+  };
+}
+
 export function serializeMessages(messages: ChatMessage[]): PersistedChatState['messages'] {
   return messages
     .filter((message) => message.status !== 'running')
@@ -512,10 +531,15 @@ export function useSkuldChat(
   options: UseSkuldChatOptions = {},
 ): UseSkuldChatResult {
   const { historyMode = 'session' } = options;
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(new Map());
-  const [meshEvents, setMeshEvents] = useState<MeshEvent[]>([]);
-  const [agentEvents, setAgentEvents] = useState<Map<string, AgentInternalEvent[]>>(new Map());
+  const initialPersistedState = useMemo(() => revivePersistedState(url), [url]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => initialPersistedState.messages);
+  const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(
+    () => initialPersistedState.participants,
+  );
+  const [meshEvents, setMeshEvents] = useState<MeshEvent[]>(() => initialPersistedState.meshEvents);
+  const [agentEvents, setAgentEvents] = useState<Map<string, AgentInternalEvent[]>>(
+    () => initialPersistedState.agentEvents,
+  );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [capabilities, setCapabilities] = useState<SessionCapabilities>({});
   const [connected, setConnected] = useState(false);
@@ -527,6 +551,7 @@ export function useSkuldChat(
   const historyLoaded = historyLoadedForUrl === url;
   const participantsRef = useRef(participants);
   const agentEventsRef = useRef(agentEvents);
+  const hydratedCacheUrlRef = useRef(url);
   const internalStreamsRef = useRef<Map<string, InternalParticipantStream>>(new Map());
   const optimisticUserMessagesRef = useRef<Map<string, string>>(new Map());
   const toolJsonRef = useRef('');
@@ -645,35 +670,39 @@ export function useSkuldChat(
 
   useEffect(() => {
     if (!url) return;
+    if (hydratedCacheUrlRef.current === url) return;
+    hydratedCacheUrlRef.current = url;
     clearHistoryRetryTimer();
     const cached = safeSessionStorageGet(url);
     if (!cached) return;
-    if ((cached.messages?.length ?? 0) > 0) {
-      setMessages(reviveMessages(cached.messages));
-    }
-    if ((cached.meshEvents?.length ?? 0) > 0) {
-      setMeshEvents(reviveMeshEvents(cached.meshEvents));
-    }
-    if ((cached.participants?.length ?? 0) > 0) {
-      setParticipants(
-        new Map(cached.participants?.map((participant) => [participant.peerId, participant])),
-      );
-    }
-    if (cached.agentEvents) {
-      setAgentEvents(reviveAgentEvents(cached.agentEvents));
-    }
+    const cachedState = revivePersistedState(url);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setMessages(cachedState.messages);
+      setMeshEvents(cachedState.meshEvents);
+      setParticipants(cachedState.participants);
+      setAgentEvents(cachedState.agentEvents);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [clearHistoryRetryTimer, url]);
 
   useEffect(() => {
     if (!url || historyLoaded) return;
     if (historyMode === 'none') {
-      setHistoryLoadedForUrl(url);
+      queueMicrotask(() => {
+        setHistoryLoadedForUrl(url);
+      });
       return;
     }
 
     const httpBase = wsUrlToHttpBase(url);
     if (!httpBase) {
-      setHistoryLoadedForUrl(url);
+      queueMicrotask(() => {
+        setHistoryLoadedForUrl(url);
+      });
       return;
     }
 
@@ -1284,11 +1313,16 @@ export function useSkuldChat(
               return next;
             });
             const participant = participantsRef.current.get(peerId);
-            let stream = internalStreamsRef.current.get(peerId);
-            if (!stream) {
+            const existingStream = internalStreamsRef.current.get(peerId);
+            const initialStream = existingStream ?? {
+              messageId: generateId(),
+              parts: [],
+              currentToolId: '',
+            };
+            if (!existingStream) {
               const messageId = generateId();
-              stream = { messageId, parts: [], currentToolId: '' };
-              internalStreamsRef.current.set(peerId, stream);
+              const createdStream = { ...initialStream, messageId };
+              internalStreamsRef.current.set(peerId, createdStream);
               setMessages((prev) => [
                 ...prev,
                 {
@@ -1304,50 +1338,74 @@ export function useSkuldChat(
                 } as ChatMessage & { participantId?: string },
               ]);
             }
+            const readStream = () => internalStreamsRef.current.get(peerId) ?? initialStream;
+            const updateStream = (
+              updater: (current: InternalParticipantStream) => InternalParticipantStream,
+            ) => {
+              const nextStream = updater(readStream());
+              internalStreamsRef.current.set(peerId, nextStream);
+              return nextStream;
+            };
             const appendStreamingTextPart = (type: 'reasoning' | 'text', text: string) => {
-              const lastPart = stream.parts.at(-1);
+              const currentStream = readStream();
+              const lastPart = currentStream.parts.at(-1);
               if (lastPart?.type === type) {
                 const updatedLastPart = {
                   ...lastPart,
                   text: `${lastPart.text ?? ''}${text}`,
                 };
-                stream.parts = [...stream.parts.slice(0, -1), updatedLastPart];
+                updateStream((stream) => ({
+                  ...stream,
+                  parts: [...currentStream.parts.slice(0, -1), updatedLastPart],
+                }));
                 return;
               }
-              stream.parts = [...stream.parts, { type, text }];
+              updateStream((stream) => ({
+                ...stream,
+                parts: [...currentStream.parts, { type, text }],
+              }));
             };
             if (frame.type === 'thought') {
               const text =
                 typeof frame.data === 'string' ? frame.data : JSON.stringify(frame.data ?? '');
               appendStreamingTextPart('reasoning', text);
             } else if (frame.type === 'tool_start') {
+              const currentStream = readStream();
               const toolName =
                 (frame.metadata?.tool_name as string) ||
                 (typeof frame.data === 'string' ? frame.data : '');
               const toolId = `tool-${generateId()}`;
-              stream.currentToolId = toolId;
               const input =
                 typeof frame.metadata?.input === 'object' && frame.metadata.input !== null
                   ? (frame.metadata.input as Record<string, unknown>)
                   : {};
-              stream.parts = [
-                ...stream.parts,
-                { type: 'tool_use', id: toolId, name: toolName, input },
-              ];
+              updateStream((stream) => ({
+                ...stream,
+                currentToolId: toolId,
+                parts: [
+                  ...currentStream.parts,
+                  { type: 'tool_use', id: toolId, name: toolName, input },
+                ],
+              }));
             } else if (frame.type === 'tool_result') {
+              const currentStream = readStream();
               const result =
                 typeof frame.data === 'string' ? frame.data : JSON.stringify(frame.data ?? '');
-              const toolUseId = stream.currentToolId || `tool-${generateId()}`;
-              stream.parts = [
-                ...stream.parts,
-                { type: 'tool_result', tool_use_id: toolUseId, content: result },
-              ];
-              stream.currentToolId = '';
+              const toolUseId = currentStream.currentToolId || `tool-${generateId()}`;
+              updateStream((stream) => ({
+                ...stream,
+                currentToolId: '',
+                parts: [
+                  ...currentStream.parts,
+                  { type: 'tool_result', tool_use_id: toolUseId, content: result },
+                ],
+              }));
             } else if (frame.type === 'text' || frame.type === 'message') {
               const text =
                 typeof frame.data === 'string' ? frame.data : JSON.stringify(frame.data ?? '');
               appendStreamingTextPart('text', text);
             }
+            const stream = readStream();
             const streamContent = stream.parts
               .filter((part) => part.type === 'reasoning' || part.type === 'text')
               .map((part) => part.text ?? '')

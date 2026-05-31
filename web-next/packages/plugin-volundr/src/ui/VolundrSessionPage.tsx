@@ -44,37 +44,37 @@ export function VolundrSessionPage({ sessionId, readOnly = false }: VolundrSessi
 
   return (
     <div
-      className="niuu-flex niuu-h-full niuu-flex-col niuu-gap-4 niuu-p-4"
+      className="niuu:flex niuu:h-full niuu:flex-col niuu:gap-4 niuu:p-4"
       data-testid="volundr-session-page"
     >
-      <div className="niuu-flex niuu-items-center niuu-gap-2">
-        <span className="niuu-font-mono niuu-text-sm niuu-text-text-secondary">session:</span>
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <span className="niuu:font-mono niuu:text-sm niuu:text-text-secondary">session:</span>
         <span
-          className="niuu-rounded niuu-bg-bg-elevated niuu-px-2 niuu-py-0.5 niuu-font-mono niuu-text-sm niuu-text-text-primary"
+          className="niuu:rounded niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-sm niuu:text-text-primary"
           data-testid="session-id-label"
         >
           {sessionId}
         </span>
         {readOnly && (
-          <span className="niuu-rounded niuu-bg-bg-elevated niuu-px-2 niuu-py-0.5 niuu-text-xs niuu-text-text-muted">
+          <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
             archived
           </span>
         )}
       </div>
 
-      <div className="niuu-grid niuu-min-h-0 niuu-flex-1 niuu-grid-cols-[220px_1fr_1fr] niuu-gap-4">
+      <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[220px_1fr_1fr] niuu:gap-4">
         {/* File tree panel */}
-        <div className="niuu-overflow-auto niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary">
+        <div className="niuu:overflow-auto niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary">
           {tree.isLoading && (
             <p
-              className="niuu-p-3 niuu-text-xs niuu-text-text-muted"
+              className="niuu:p-3 niuu:text-xs niuu:text-text-muted"
               data-testid="filetree-loading"
             >
               loading files…
             </p>
           )}
           {tree.isError && (
-            <p className="niuu-p-3 niuu-text-xs niuu-text-critical" data-testid="filetree-error">
+            <p className="niuu:p-3 niuu:text-xs niuu:text-critical" data-testid="filetree-error">
               failed to load files
             </p>
           )}
@@ -84,7 +84,7 @@ export function VolundrSessionPage({ sessionId, readOnly = false }: VolundrSessi
         </div>
 
         {/* File viewer panel */}
-        <div className="niuu-overflow-hidden">
+        <div className="niuu:overflow-hidden">
           {activePath ? (
             <FileViewer
               path={activePath}
@@ -95,7 +95,7 @@ export function VolundrSessionPage({ sessionId, readOnly = false }: VolundrSessi
             />
           ) : (
             <div
-              className="niuu-flex niuu-h-full niuu-items-center niuu-justify-center niuu-rounded-md niuu-border niuu-border-border-subtle niuu-text-sm niuu-text-text-muted"
+              className="niuu:flex niuu:h-full niuu:items-center niuu:justify-center niuu:rounded-md niuu:border niuu:border-border-subtle niuu:text-sm niuu:text-text-muted"
               data-testid="file-viewer-placeholder"
             >
               Select a file to view its contents
@@ -104,7 +104,7 @@ export function VolundrSessionPage({ sessionId, readOnly = false }: VolundrSessi
         </div>
 
         {/* Terminal panel */}
-        <div className="niuu-overflow-hidden niuu-rounded-md niuu-min-h-[300px]">
+        <div className="niuu:overflow-hidden niuu:rounded-md niuu:min-h-[300px]">
           <Terminal sessionId={sessionId} stream={ptyStream} readOnly={readOnly} />
         </div>
       </div>

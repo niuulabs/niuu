@@ -16,7 +16,7 @@ const nodeA = {
   id: 'node-a',
   kind: 'stage' as const,
   label: 'Set up CI',
-  runId: '00000000-0000-0000-0000-000000000001',
+  runId: '00000000-0000-4000-8000-000000000001',
   position: { x: 0, y: 0 },
 };
 
@@ -60,7 +60,7 @@ const edgeBC = {
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
   return {
-    id: '00000000-0000-0000-0000-000000000001',
+    id: '00000000-0000-4000-8000-000000000101',
     name: 'Auth Rewrite Workflow',
     nodes: [nodeA, nodeB, nodeC],
     edges: [edgeAB, edgeBC],
@@ -77,7 +77,7 @@ describe('workflowNodeSchema', () => {
     const result = workflowNodeSchema.parse(nodeA);
     expect(result.kind).toBe('stage');
     if (result.kind === 'stage') {
-      expect(result.runId).toBe('00000000-0000-0000-0000-000000000001');
+      expect(result.runId).toBe('00000000-0000-4000-8000-000000000001');
     }
   });
 

@@ -145,7 +145,7 @@ function DeleteButton({
         e.stopPropagation();
         onClick();
       }}
-      className="niuu-cursor-pointer"
+      className="niuu:cursor-pointer"
     >
       <circle cx={cx} cy={cy} r={7} fill="var(--color-critical)" />
       <text
@@ -155,7 +155,7 @@ function DeleteButton({
         dominantBaseline="middle"
         fill="var(--color-bg-primary)"
         fontSize={10}
-        className="niuu-pointer-events-none"
+        className="niuu:pointer-events-none"
       >
         ×
       </text>
@@ -264,7 +264,7 @@ function StageNode({
         fontSize={11}
         fontWeight="600"
         fontFamily="var(--font-sans)"
-        className="niuu-pointer-events-none niuu-select-none"
+        className="niuu:pointer-events-none niuu:select-none"
       >
         {node.kind === 'stage' && node.label.length > 18
           ? node.label.slice(0, 16) + '…'
@@ -276,7 +276,7 @@ function StageNode({
         fill={C.textMuted}
         fontSize={8}
         fontFamily="var(--font-mono)"
-        className="niuu-pointer-events-none niuu-select-none"
+        className="niuu:pointer-events-none niuu:select-none"
       >
         ACTOR STAGE · {(node.executionMode ?? 'parallel').toUpperCase()} · {stageMembers.length}{' '}
         RAVN
@@ -299,7 +299,7 @@ function StageNode({
             fill={C.text}
             fontSize={8.5}
             fontFamily="var(--font-sans)"
-            className="niuu-pointer-events-none niuu-select-none"
+            className="niuu:pointer-events-none niuu:select-none"
           >
             {member.personaId}
           </text>
@@ -310,7 +310,7 @@ function StageNode({
             fill={C.textMuted}
             fontSize={8}
             fontFamily="var(--font-mono)"
-            className="niuu-pointer-events-none niuu-select-none"
+            className="niuu:pointer-events-none niuu:select-none"
           >
             {member.model ? member.model : `budget ${member.budget}`}
           </text>
@@ -324,7 +324,7 @@ function StageNode({
             fill={C.textMuted}
             fontSize={7}
             fontFamily="var(--font-mono)"
-            className="niuu-pointer-events-none niuu-select-none"
+            className="niuu:pointer-events-none niuu:select-none"
           >
             known inputs
           </text>
@@ -342,7 +342,7 @@ function StageNode({
                     e.stopPropagation();
                     onCompleteConnect(input);
                   }}
-                  className="niuu-cursor-pointer"
+                  className="niuu:cursor-pointer"
                 />
               )}
               <rect
@@ -361,7 +361,7 @@ function StageNode({
                 fill={C.textMuted}
                 fontSize={6.5}
                 fontFamily="var(--font-mono)"
-                className="niuu-pointer-events-none niuu-select-none"
+                className="niuu:pointer-events-none niuu:select-none"
               >
                 {input.length > 14 ? `${input.slice(0, 13)}…` : input}
               </text>
@@ -378,7 +378,7 @@ function StageNode({
             fill={C.textMuted}
             fontSize={7}
             fontFamily="var(--font-mono)"
-            className="niuu-pointer-events-none niuu-select-none"
+            className="niuu:pointer-events-none niuu:select-none"
           >
             known outputs
           </text>
@@ -406,7 +406,7 @@ function StageNode({
                   e.stopPropagation();
                   onStartConnect(output);
                 }}
-                className="niuu-cursor-pointer"
+                className="niuu:cursor-pointer"
               />
               <text
                 x={x + STAGE_WIDTH - 77}
@@ -415,7 +415,7 @@ function StageNode({
                 fill={C.text}
                 fontSize={6.5}
                 fontFamily="var(--font-mono)"
-                className="niuu-pointer-events-none niuu-select-none"
+                className="niuu:pointer-events-none niuu:select-none"
               >
                 {output.length > 14 ? `${output.slice(0, 13)}…` : output}
               </text>
@@ -431,7 +431,7 @@ function StageNode({
           fill={issueLevel === 'error' ? C.errorStroke : C.warnStroke}
           fontSize={8}
           fontFamily="var(--font-mono)"
-          className="niuu-pointer-events-none niuu-select-none"
+          className="niuu:pointer-events-none niuu:select-none"
         >
           {issueLevel === 'error' ? 'ERR' : 'WARN'}
         </text>
@@ -506,7 +506,7 @@ function GateNode({
         fill={C.text}
         fontSize={11}
         fontFamily="var(--font-sans)"
-        className="niuu-pointer-events-none niuu-select-none"
+        className="niuu:pointer-events-none niuu:select-none"
       >
         {node.label.length > 8 ? node.label.slice(0, 7) + '…' : node.label}
       </text>
@@ -574,7 +574,7 @@ function CondNode({
         fill={C.text}
         fontSize={10}
         fontFamily="var(--font-sans)"
-        className="niuu-pointer-events-none niuu-select-none"
+        className="niuu:pointer-events-none niuu:select-none"
       >
         {node.label.length > 6 ? node.label.slice(0, 5) + '…' : node.label}
       </text>
@@ -671,7 +671,7 @@ function TriggerNode({
           e.stopPropagation();
           onStartConnect(node.dispatchEvent ?? 'code.requested');
         }}
-        className="niuu-cursor-pointer"
+        className="niuu:cursor-pointer"
       />
       {selected && !isConnectingMode && (
         <DeleteButton nodeId={node.id} cx={x + TRIGGER_WIDTH / 2} cy={y - 10} onClick={onDelete} />
@@ -767,7 +767,7 @@ function EndNode({
             e.stopPropagation();
             onCompleteConnect('complete');
           }}
-          className="niuu-cursor-pointer"
+          className="niuu:cursor-pointer"
         />
       )}
       {selected && !isConnectingMode && (
@@ -902,7 +902,7 @@ function ResourceNode({
   );
 }
 
-function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
+export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const stageMembers = normalizedStageMembers(node);
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
   return {
@@ -919,13 +919,13 @@ function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   };
 }
 
-function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
+export function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const { knownInputs, knownOutputs } = stagePortLists(node, personas);
   const portRows = Math.max(knownInputs.length, knownOutputs.length, 0);
   return stageNodeHeight(node) + (portRows > 0 ? 22 + portRows * 14 : 0);
 }
 
-function splitEdgePorts(label?: string) {
+export function splitEdgePorts(label?: string) {
   if (!label) return { sourcePort: null, targetPort: null };
   const [rawSourcePort, rawTargetPort] = label.split(' -> ', 2);
   const sourcePort = rawSourcePort ?? null;
@@ -936,7 +936,30 @@ function splitEdgePorts(label?: string) {
   return { sourcePort: label, targetPort: label };
 }
 
-function edgeAnchor(
+export function buildIssueLevelMap(issues?: WorkflowIssue[] | null) {
+  const levels = new Map<string, 'error' | 'warning'>();
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    if (!issue.nodeId) continue;
+    const existing = levels.get(issue.nodeId);
+    if (issue.severity === 'error' || !existing) {
+      levels.set(issue.nodeId, issue.severity);
+    }
+  }
+  return levels;
+}
+
+export function isGraphNodeKind(nodeKind: string): nodeKind is WorkflowNode['kind'] {
+  return (
+    nodeKind === 'trigger' ||
+    nodeKind === 'stage' ||
+    nodeKind === 'resource' ||
+    nodeKind === 'gate' ||
+    nodeKind === 'cond' ||
+    nodeKind === 'end'
+  );
+}
+
+export function edgeAnchor(
   node: WorkflowNode,
   direction: 'source' | 'target',
   portLabel: string | null,
@@ -995,7 +1018,7 @@ function WorkflowEdgePath({
           e.stopPropagation();
           onSelect();
         }}
-        className="niuu-cursor-pointer"
+        className="niuu:cursor-pointer"
       />
       <path
         d={d}
@@ -1007,7 +1030,7 @@ function WorkflowEdgePath({
           e.stopPropagation();
           onSelect();
         }}
-        className="niuu-cursor-pointer"
+        className="niuu:cursor-pointer"
       />
       {edge.label &&
         (() => {
@@ -1078,24 +1101,14 @@ export function GraphView({
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
   const panRef = useRef<{ startX: number; startY: number; tx: number; ty: number } | null>(null);
 
   const nodeMap = useMemo(
     () => new Map<string, WorkflowNode>(nodes.map((n) => [n.id, n])),
     [nodes],
   );
-  const safeIssues = useMemo(() => (Array.isArray(issues) ? issues : []), [issues]);
-  const issueMap = useMemo(() => {
-    const levels = new Map<string, 'error' | 'warning'>();
-    for (const issue of safeIssues) {
-      if (!issue.nodeId) continue;
-      const existing = levels.get(issue.nodeId);
-      if (issue.severity === 'error' || !existing) {
-        levels.set(issue.nodeId, issue.severity);
-      }
-    }
-    return levels;
-  }, [safeIssues]);
+  const issueMap = useMemo(() => buildIssueLevelMap(issues), [issues]);
   const isConnectingMode = connectingFromId !== null;
 
   // Wheel zoom
@@ -1140,6 +1153,7 @@ export function GraphView({
     setSelectedEdgeId(null);
     onSelectNode(null);
     panRef.current = { startX: e.clientX, startY: e.clientY, tx: transform.x, ty: transform.y };
+    setIsPanning(true);
   }
 
   function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
@@ -1153,6 +1167,7 @@ export function GraphView({
 
   function handleSvgMouseUp() {
     panRef.current = null;
+    setIsPanning(false);
   }
 
   function eventToCanvasPosition(clientX: number, clientY: number) {
@@ -1200,14 +1215,7 @@ export function GraphView({
       return;
     }
 
-    if (
-      nodeKind === 'trigger' ||
-      nodeKind === 'stage' ||
-      nodeKind === 'resource' ||
-      nodeKind === 'gate' ||
-      nodeKind === 'cond' ||
-      nodeKind === 'end'
-    ) {
+    if (isGraphNodeKind(nodeKind)) {
       onAddNode(nodeKind, position);
     }
   }
@@ -1229,15 +1237,15 @@ export function GraphView({
   });
 
   const toolbarBtnClass =
-    'niuu-bg-bg-elevated niuu-text-text-primary niuu-border niuu-border-border niuu-rounded niuu-px-2.5 niuu-py-1 niuu-text-xs niuu-cursor-pointer niuu-font-sans';
+    'niuu:bg-bg-elevated niuu:text-text-primary niuu:border niuu:border-border niuu:rounded niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:cursor-pointer niuu:font-sans';
 
   return (
     <div
       data-testid="graph-view"
-      className="niuu-flex-1 niuu-relative niuu-overflow-hidden niuu-bg-bg-primary niuu-min-h-[400px]"
+      className="niuu:flex-1 niuu:relative niuu:overflow-hidden niuu:bg-bg-primary niuu:min-h-[400px]"
     >
       {/* Toolbar */}
-      <div className="niuu-absolute niuu-bottom-12 niuu-left-1/2 niuu--translate-x-1/2 niuu-flex niuu-gap-2 niuu-z-10 niuu-bg-bg-secondary niuu-border niuu-border-border niuu-rounded-md niuu-py-1.5 niuu-px-2.5">
+      <div className="niuu:absolute niuu:bottom-12 niuu:left-1/2 niuu:-translate-x-1/2 niuu:flex niuu:gap-2 niuu:z-10 niuu:bg-bg-secondary niuu:border niuu:border-border niuu:rounded-md niuu:py-1.5 niuu:px-2.5">
         <button
           data-testid="add-trigger"
           onClick={() => onAddNode('trigger')}
@@ -1290,7 +1298,7 @@ export function GraphView({
           <button
             data-testid="delete-selected"
             onClick={() => onDeleteNode(selectedNodeId)}
-            className={cn(toolbarBtnClass, 'niuu-text-critical')}
+            className={cn(toolbarBtnClass, 'niuu:text-critical')}
             title="Delete selected node"
           >
             Delete
@@ -1303,14 +1311,14 @@ export function GraphView({
               onDeleteEdge(selectedEdgeId);
               setSelectedEdgeId(null);
             }}
-            className={cn(toolbarBtnClass, 'niuu-text-critical')}
+            className={cn(toolbarBtnClass, 'niuu:text-critical')}
             title="Delete selected connection"
           >
             Delete connection
           </button>
         )}
         {isConnectingMode && (
-          <span className="niuu-text-text-secondary niuu-text-xs niuu-self-center">
+          <span className="niuu:text-text-secondary niuu:text-xs niuu:self-center">
             Click target input…
           </span>
         )}
@@ -1320,8 +1328,8 @@ export function GraphView({
       <svg
         ref={svgRef}
         data-testid="graph-canvas"
-        className="niuu-w-full niuu-h-full"
-        style={{ cursor: isConnectingMode ? 'crosshair' : panRef.current ? 'grabbing' : 'default' }}
+        className="niuu:w-full niuu:h-full"
+        style={{ cursor: isConnectingMode ? 'crosshair' : isPanning ? 'grabbing' : 'default' }}
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}

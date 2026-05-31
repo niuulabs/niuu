@@ -1,14 +1,134 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { TopologyCanvas } from './TopologyCanvas';
 import type { Topology } from '../../domain';
 import { makeCtxMock } from './test-helpers';
+import { computeLayout, computeLayoutBounds } from './layoutEngine';
+import { fitCameraToBounds, type Camera } from './canvasMath';
+import { CANVAS } from './config';
+import { getStructureLabelBounds } from './renderer';
+
+const CANVAS_RECT = { left: 24, top: 16, width: 480, height: 320 };
+const MINIMAP_RECT = { left: 260, top: 180, width: CANVAS.MINIMAP_W, height: CANVAS.MINIMAP_H };
+
+let viewportSize = { w: CANVAS_RECT.width, h: CANVAS_RECT.height };
+let animationFrames: FrameRequestCallback[] = [];
+let mainCtx: ReturnType<typeof makeCtxMock>;
+let minimapCtx: ReturnType<typeof makeCtxMock>;
+let resizeObserverCallback: ResizeObserverCallback | null = null;
+
+function asDomRect({
+  left,
+  top,
+  width,
+  height,
+}: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    x: left,
+    y: top,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function fittedCamera(topology: Topology): Camera {
+  const positions = computeLayout(topology);
+  const bounds = computeLayoutBounds(topology, positions);
+  return fitCameraToBounds(bounds, viewportSize.w, viewportSize.h, 86);
+}
+
+function worldToClientPoint(worldX: number, worldY: number, camera: Camera) {
+  return {
+    clientX: CANVAS_RECT.left + viewportSize.w / 2 + (worldX - camera.x) * camera.zoom,
+    clientY: CANVAS_RECT.top + viewportSize.h / 2 + (worldY - camera.y) * camera.zoom,
+  };
+}
+
+function runAnimationFrame(now = 1000) {
+  const callback = animationFrames.shift();
+  expect(callback).toBeDefined();
+  act(() => callback?.(now));
+}
+
+function triggerResize(width: number, height: number) {
+  act(() =>
+    resizeObserverCallback?.(
+      [{ contentRect: { width, height } } as ResizeObserverEntry],
+      {} as ResizeObserver,
+    ),
+  );
+}
+
+async function renderCanvas(
+  topology: Topology | null,
+  props: Partial<React.ComponentProps<typeof TopologyCanvas>> = {},
+) {
+  render(<TopologyCanvas topology={topology} {...props} />);
+  const canvas = screen.getByTestId('topology-canvas') as HTMLCanvasElement;
+  await waitFor(() => {
+    expect(canvas.style.width).toBe(`${viewportSize.w}px`);
+    expect(canvas.style.height).toBe(`${viewportSize.h}px`);
+  });
+  return canvas;
+}
 
 beforeEach(() => {
-  HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue(makeCtxMock());
-  // jsdom ResizeObserver stub is already in vitest.setup.ts
-  // Stub rAF as a no-op so the animation loop doesn't recurse infinitely.
-  vi.stubGlobal('requestAnimationFrame', vi.fn().mockReturnValue(0));
+  viewportSize = { w: CANVAS_RECT.width, h: CANVAS_RECT.height };
+  animationFrames = [];
+  mainCtx = makeCtxMock();
+  minimapCtx = makeCtxMock();
+  resizeObserverCallback = null;
+
+  Object.defineProperty(HTMLCanvasElement.prototype, 'clientWidth', {
+    configurable: true,
+    get() {
+      return this.getAttribute('aria-label') === 'Minimap — click to pan'
+        ? MINIMAP_RECT.width
+        : viewportSize.w;
+    },
+  });
+  Object.defineProperty(HTMLCanvasElement.prototype, 'clientHeight', {
+    configurable: true,
+    get() {
+      return this.getAttribute('aria-label') === 'Minimap — click to pan'
+        ? MINIMAP_RECT.height
+        : viewportSize.h;
+    },
+  });
+  HTMLCanvasElement.prototype.getBoundingClientRect = vi.fn(function getBoundingClientRect() {
+    return this.getAttribute('aria-label') === 'Minimap — click to pan'
+      ? asDomRect(MINIMAP_RECT)
+      : asDomRect(CANVAS_RECT);
+  });
+  HTMLCanvasElement.prototype.getContext = vi.fn(function getContext() {
+    return this.getAttribute('aria-label') === 'Minimap — click to pan' ? minimapCtx : mainCtx;
+  });
+  global.ResizeObserver = class ResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeObserverCallback = callback;
+    }
+    observe = vi.fn();
+    unobserve = vi.fn();
+    disconnect = vi.fn();
+  } as unknown as typeof ResizeObserver;
+
+  vi.stubGlobal(
+    'requestAnimationFrame',
+    vi.fn((callback: FrameRequestCallback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    }),
+  );
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   vi.stubGlobal('devicePixelRatio', 1);
 });
@@ -119,6 +239,7 @@ describe('TopologyCanvas', () => {
   it('zoom out button decreases zoom percentage display', () => {
     render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const zoomDisplay = screen.getByTestId('zoom-display');
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     const initialPct = parseInt(zoomDisplay.textContent ?? '0', 10);
     fireEvent.click(screen.getByRole('button', { name: /zoom out/i }));
     const newPct = parseInt(zoomDisplay.textContent ?? '0', 10);
@@ -190,5 +311,191 @@ describe('TopologyCanvas', () => {
       ],
     };
     expect(() => render(<TopologyCanvas topology={allEdges} />)).not.toThrow();
+  });
+
+  it('renders the animation frame onto both the main canvas and minimap', async () => {
+    await renderCanvas(MOCK_TOPOLOGY);
+
+    runAnimationFrame();
+
+    expect(mainCtx.setTransform).toHaveBeenCalled();
+    expect(mainCtx.fillRect).toHaveBeenCalled();
+    expect(mainCtx.save).toHaveBeenCalled();
+    expect(minimapCtx.clearRect).toHaveBeenCalledWith(0, 0, CANVAS.MINIMAP_W, CANVAS.MINIMAP_H);
+    expect(minimapCtx.strokeRect).toHaveBeenCalled();
+  });
+
+  it('keeps requesting animation frames until the canvas has a measurable viewport', () => {
+    viewportSize = { w: 0, h: 0 };
+
+    render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
+    runAnimationFrame();
+
+    expect(mainCtx.fillRect).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it('draws the background frame even when topology is null', async () => {
+    await renderCanvas(null);
+
+    runAnimationFrame();
+
+    expect(mainCtx.fillRect).toHaveBeenCalled();
+    expect(minimapCtx.clearRect).not.toHaveBeenCalled();
+  });
+
+  it('does not report node hits when topology is null', async () => {
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(null, { onNodeClick });
+
+    fireEvent.click(canvas, { clientX: CANVAS_RECT.left + 40, clientY: CANVAS_RECT.top + 40 });
+
+    expect(onNodeClick).not.toHaveBeenCalled();
+  });
+
+  it('pans only for arrow-key presses', async () => {
+    const canvas = await renderCanvas(MOCK_TOPOLOGY);
+
+    const nonPanEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    });
+    canvas.dispatchEvent(nonPanEvent);
+    expect(nonPanEvent.defaultPrevented).toBe(false);
+
+    const panEvent = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'ArrowLeft',
+    });
+    canvas.dispatchEvent(panEvent);
+    expect(panEvent.defaultPrevented).toBe(true);
+  });
+
+  it('hovers and clicks a structure label hit target', async () => {
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick });
+    const positions = computeLayout(MOCK_TOPOLOGY);
+    const camera = fittedCamera(MOCK_TOPOLOGY);
+    const realmNode = MOCK_TOPOLOGY.nodes.find((node) => node.id === 'realm-asgard')!;
+    const labelBounds = getStructureLabelBounds(realmNode, positions.get(realmNode.id)!)!;
+    const point = worldToClientPoint(
+      labelBounds.x + labelBounds.width / 2,
+      labelBounds.y + labelBounds.height / 2,
+      camera,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('zoom-display')).toHaveTextContent(
+        `${Math.round(camera.zoom * 100)}%`,
+      ),
+    );
+
+    fireEvent.mouseMove(canvas, point);
+    expect(canvas.style.cursor).toBe('pointer');
+
+    fireEvent.click(canvas, point);
+    expect(onNodeClick).toHaveBeenCalledWith('realm-asgard');
+
+    fireEvent.mouseLeave(canvas);
+    expect(canvas.style.cursor).toBe('grab');
+  });
+
+  it('keeps the grab cursor when hovering empty space', async () => {
+    const canvas = await renderCanvas(MOCK_TOPOLOGY);
+
+    fireEvent.mouseMove(canvas, {
+      clientX: CANVAS_RECT.left + 8,
+      clientY: CANVAS_RECT.top + viewportSize.h - 8,
+    });
+
+    expect(canvas.style.cursor).toBe('grab');
+  });
+
+  it('clicks host bodies via the minimap-centred camera and regular nodes via radius hit testing', async () => {
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick });
+    const positions = computeLayout(MOCK_TOPOLOGY);
+    const host = positions.get('host-mjolnir')!;
+    const minimap = screen.getByLabelText(/minimap/i);
+    const minimapPoint = {
+      clientX:
+        MINIMAP_RECT.left + ((host.x + CANVAS.WORLD_W / 2) / CANVAS.WORLD_W) * MINIMAP_RECT.width,
+      clientY:
+        MINIMAP_RECT.top + ((host.y + CANVAS.WORLD_H / 2) / CANVAS.WORLD_H) * MINIMAP_RECT.height,
+    };
+
+    fireEvent.click(minimap, minimapPoint);
+    fireEvent.click(canvas, {
+      clientX: CANVAS_RECT.left + viewportSize.w / 2,
+      clientY: CANVAS_RECT.top + viewportSize.h / 2,
+    });
+    expect(onNodeClick).toHaveBeenCalledWith('host-mjolnir');
+
+    fireEvent.click(screen.getByTestId('camera-reset'));
+    const camera = fittedCamera(MOCK_TOPOLOGY);
+    const ting = positions.get('ting-0')!;
+    fireEvent.click(canvas, worldToClientPoint(ting.x, ting.y, camera));
+    expect(onNodeClick).toHaveBeenCalledWith('ting-0');
+  });
+
+  it('falls back to a device pixel ratio of 1 when the browser reports 0', async () => {
+    vi.stubGlobal('devicePixelRatio', 0);
+    const canvas = await renderCanvas(MOCK_TOPOLOGY);
+
+    runAnimationFrame();
+
+    expect(canvas.width).toBe(viewportSize.w);
+    expect(canvas.height).toBe(viewportSize.h);
+    expect(mainCtx.setTransform).toHaveBeenCalledWith(1, 0, 0, 1, 0, 0);
+  });
+
+  it('ignores redundant resize measurements and applies real size changes', async () => {
+    const canvas = await renderCanvas(MOCK_TOPOLOGY);
+
+    triggerResize(viewportSize.w, viewportSize.h);
+    expect(canvas.style.width).toBe(`${viewportSize.w}px`);
+
+    viewportSize = { w: 520, h: 360 };
+    triggerResize(viewportSize.w, viewportSize.h);
+
+    await waitFor(() => {
+      expect(canvas.style.width).toBe('520px');
+      expect(canvas.style.height).toBe('360px');
+    });
+  });
+
+  it('skips drawing when the main canvas context is unavailable', () => {
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => null);
+
+    render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
+
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+  });
+
+  it('still renders the main frame when the minimap context is unavailable', async () => {
+    HTMLCanvasElement.prototype.getContext = vi.fn(function getContext() {
+      return this.getAttribute('aria-label') === 'Minimap — click to pan' ? null : mainCtx;
+    });
+
+    await renderCanvas(MOCK_TOPOLOGY);
+    runAnimationFrame();
+
+    expect(mainCtx.fillRect).toHaveBeenCalled();
+  });
+
+  it('stops drawing queued frames after unmount cleanup runs', async () => {
+    const { unmount } = render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
+    const canvas = screen.getByTestId('topology-canvas') as HTMLCanvasElement;
+    await waitFor(() => expect(canvas.style.width).toBe(`${viewportSize.w}px`));
+
+    const pendingFrame = animationFrames.shift();
+    expect(pendingFrame).toBeDefined();
+
+    unmount();
+    act(() => pendingFrame?.(1000));
+
+    expect(mainCtx.fillRect).not.toHaveBeenCalled();
   });
 });

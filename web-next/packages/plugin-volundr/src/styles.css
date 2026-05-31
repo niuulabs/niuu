@@ -1,5 +1,5 @@
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss' prefix(niuu);
+@config "../tailwind.config.ts";
 
 .niuu-volundr-terminal-root .xterm {
   height: 100%;

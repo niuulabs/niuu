@@ -230,6 +230,45 @@ class TestLifespan:
         assert "/api/v1/tracker/issues" in paths
         assert "/api/v1/audit/events" in paths
 
+    def test_lifespan_hosts_bifrost_catalog_routes(self) -> None:
+        """Standalone Volundr should expose the co-hosted Bifrost catalog surface."""
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                response = client.get("/api/v1/bifrost/models")
+
+        assert response.status_code == 200
+        ids = {entry["id"] for entry in response.json()}
+        assert "claude-sonnet-4-6" in ids
+        assert "gpt-5.5" in ids
+
     def test_lifespan_seeds_integrations_and_starts_audit_subscriber(self):
         """Lifespan runs the shared seeders and audit subscriber when enabled."""
         from fastapi.testclient import TestClient

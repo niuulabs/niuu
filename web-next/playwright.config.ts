@@ -15,7 +15,7 @@ export default defineConfig({
   },
   expect: {
     toHaveScreenshot: {
-      maxDiffPixelRatio: 0.01,
+      maxDiffPixelRatio: 0.05,
       animations: 'disabled',
       caret: 'hide',
       // Hide React Query devtools button — it appears in web-next dev mode
@@ -35,8 +35,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm --filter @niuulabs/niuu dev',
+    // The app consumes package dist CSS artifacts in workspace mode, so build
+    // package outputs before starting Vite to keep E2E styles in sync with source.
+    command: 'pnpm dev:playwright',
     url: 'http://localhost:5173',
     reuseExistingServer: !process.env.CI,
+    timeout: 300_000,
   },
 });

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useState } from 'react';
 import { useReducedMotion } from './useReducedMotion';
 import './ambient.css';
 
@@ -30,7 +30,7 @@ function buildStars(): Star[] {
 export function AmbientConstellation() {
   const reduced = useReducedMotion();
   // Stable star positions — same on every render
-  const stars = useMemo(buildStars, []);
+  const [stars] = useState(buildStars);
 
   return (
     <svg

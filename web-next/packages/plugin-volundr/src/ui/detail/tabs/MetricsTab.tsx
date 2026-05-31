@@ -15,12 +15,12 @@ interface MetricChartProps {
 function MetricChart({ label, values, latest, unit, 'data-testid': testId }: MetricChartProps) {
   return (
     <div
-      className="niuu-flex niuu-flex-col niuu-gap-1 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4"
+      className="niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4"
       data-testid={testId}
     >
-      <div className="niuu-flex niuu-items-center niuu-justify-between">
-        <span className="niuu-text-sm niuu-text-text-secondary">{label}</span>
-        <span className="niuu-font-mono niuu-text-sm niuu-text-text-primary">
+      <div className="niuu:flex niuu:items-center niuu:justify-between">
+        <span className="niuu:text-sm niuu:text-text-secondary">{label}</span>
+        <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary">
           {latest} {unit}
         </span>
       </div>
@@ -46,9 +46,9 @@ export function MetricsTab({ metrics }: MetricsTabProps) {
   const latestGpu = latest ? `${latest.gpu.toFixed(2)}` : '—';
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4 niuu-p-4" data-testid="metrics-tab">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4 niuu:p-4" data-testid="metrics-tab">
       {points.length === 0 && (
-        <p className="niuu-text-sm niuu-text-text-muted" data-testid="metrics-waiting">
+        <p className="niuu:text-sm niuu:text-text-muted" data-testid="metrics-waiting">
           Waiting for metrics…
         </p>
       )}

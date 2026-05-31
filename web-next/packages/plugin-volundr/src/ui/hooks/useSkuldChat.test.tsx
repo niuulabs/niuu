@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   formatOutcomeContent,
   getStorageKey,
@@ -48,6 +48,10 @@ describe('useSkuldChat', () => {
         json: async () => ({ turns: [] }),
       })),
     );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('parses participant metadata from both snake_case and camelCase fields', () => {
@@ -203,6 +207,44 @@ describe('useSkuldChat', () => {
     expect(result.current.participants.get('peer-1')?.status).toBe('thinking');
   });
 
+  it('uses fallback room_activity status fields and ignores unknown participants', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [
+            {
+              peer_id: 'peer-2',
+              persona: 'Ravn-B',
+              participant_type: 'ravn',
+            },
+          ],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_activity',
+          participant_id: 'peer-2',
+          status: 'waiting',
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_activity',
+          participantId: 'peer-missing',
+          status: 'thinking',
+        }),
+      );
+    });
+
+    expect(result.current.participants.get('peer-2')?.status).toBe('waiting');
+    expect(result.current.participants.has('peer-missing')).toBe(false);
+  });
+
   it('skips session history fetch for warden-style live consoles', async () => {
     const fetchSpy = vi.fn(async () => ({
       ok: true,
@@ -216,6 +258,88 @@ describe('useSkuldChat', () => {
 
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('marks history as loaded when the websocket url cannot be mapped to history', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useSkuldChat('not-a-valid-url'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rehydrates cached state when the session url changes', async () => {
+    const cachedUrl = 'ws://localhost:8080/s/next/session';
+    sessionStorage.setItem(
+      getStorageKey(cachedUrl),
+      JSON.stringify({
+        messages: [
+          {
+            id: 'cached-message-1',
+            role: 'assistant',
+            content: 'Cached answer.',
+            createdAt: '2026-05-04T10:00:00.000Z',
+            status: 'done',
+          },
+        ],
+        participants: [
+          {
+            peerId: 'peer-cache',
+            persona: 'reviewer',
+            displayName: 'Reviewer',
+            participantType: 'ravn',
+            status: 'idle',
+          },
+        ],
+        meshEvents: [
+          {
+            id: 'cached-mesh-1',
+            type: 'notification',
+            timestamp: '2026-05-04T10:01:00.000Z',
+            participantId: 'peer-cache',
+            participant: { color: 'brand' },
+            persona: 'reviewer',
+            notificationType: 'help_needed',
+            summary: 'Cached mesh notification',
+            urgency: 0.6,
+          },
+        ],
+        agentEvents: {
+          'peer-cache': [
+            {
+              id: 'cached-agent-1',
+              participantId: 'peer-cache',
+              frameType: 'thought',
+              data: 'Cached internal event',
+              timestamp: '2026-05-04T10:02:00.000Z',
+            },
+          ],
+        },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ url }) => useSkuldChat(url, { historyMode: 'none' }),
+      { initialProps: { url: 'ws://localhost:8080/s/test/session' } },
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    rerender({ url: cachedUrl });
+
+    await waitFor(() => expect(result.current.messages[0]?.content).toBe('Cached answer.'));
+    expect(result.current.participants.get('peer-cache')).toMatchObject({
+      persona: 'reviewer',
+      status: 'idle',
+    });
+    expect(result.current.meshEvents[0]).toMatchObject({
+      summary: 'Cached mesh notification',
+    });
+    expect(result.current.agentEvents.get('peer-cache')?.[0]).toMatchObject({
+      data: 'Cached internal event',
+    });
   });
 
   it('hydrates room_message events with participant, timestamp, and visibility metadata', async () => {
@@ -338,6 +462,47 @@ describe('useSkuldChat', () => {
     expect(result.current.messages[2]?.id).toBeTruthy();
   });
 
+  it('ignores empty user_confirmed content and preserves optimistic metadata when confirmation metadata is absent', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    await act(async () => {
+      result.current.sendMessage('Keep my optimistic metadata', []);
+    });
+
+    const requestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          request_id: requestId,
+          id: 'confirmed-user-1',
+          content: 'Keep my optimistic metadata',
+          created_at: '2026-05-05T10:00:00.000Z',
+          visibility: 'internal',
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          request_id: 'ignored-empty',
+          content: '',
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      id: 'confirmed-user-1',
+      content: 'Keep my optimistic metadata',
+      visibility: 'internal',
+      attachments: [],
+    });
+    expect(result.current.messages[0]?.createdAt).toEqual(new Date('2026-05-05T10:00:00.000Z'));
+  });
+
   it('hydrates history from websocket conversation_history events', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -394,6 +559,83 @@ describe('useSkuldChat', () => {
     expect(result.current.participants.get('skuld-primary')).toMatchObject({
       persona: 'Skuld',
     });
+  });
+
+  it('hydrates fetched history participants and mesh events from turn metadata', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          turns: [
+            {
+              id: 'turn-fetch-2',
+              role: 'assistant',
+              content: `---outcome---
+event_type: review.completed
+verdict: approved
+summary: Fetched review packet ready
+---end---`,
+              created_at: '2026-05-01T10:25:00.000000+00:00',
+              participant_meta: {
+                peer_id: 'peer-fetch',
+                persona: 'reviewer',
+                participant_type: 'ravn',
+                color: 'brand',
+              },
+            },
+          ],
+        }),
+      })),
+    );
+
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(result.current.participants.get('peer-fetch')).toMatchObject({
+      persona: 'reviewer',
+      participantType: 'ravn',
+    });
+    expect(result.current.meshEvents[0]).toMatchObject({
+      participantId: 'peer-fetch',
+      eventType: 'review.completed',
+      summary: 'Fetched review packet ready',
+    });
+  });
+
+  it('retries failed history fetches and clears the retry timer when the url changes', async () => {
+    vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({ turns: [] }),
+      })),
+    );
+
+    const { result, rerender } = renderHook(({ url }) => useSkuldChat(url), {
+      initialProps: { url: 'ws://localhost:8080/s/test/session' },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.historyLoaded).toBe(false);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    await act(async () => {
+      rerender({ url: 'not-a-valid-url-after-retry' });
+      await Promise.resolve();
+    });
+
+    expect(result.current.historyLoaded).toBe(true);
+    expect(clearTimeoutSpy).toHaveBeenCalled();
   });
 
   it('hydrates participants from conversation_history turn metadata when room_state is missing', async () => {
@@ -889,6 +1131,29 @@ page_path: council/demo/opinion-b.md
               },
             },
           ],
+        }),
+      ),
+    );
+
+    const textFile = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await act(async () => {
+      result.current.sendMessage('Ignore non-image attachments', [
+        {
+          id: 'att-3',
+          file: textFile,
+          name: 'notes.txt',
+          compressed: null,
+          previewUrl: null,
+        },
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'user',
+          request_id: expect.any(String),
+          content: 'Ignore non-image attachments',
         }),
       ),
     );
@@ -1501,6 +1766,371 @@ page_path: council/demo/opinion-b.md
     ]);
   });
 
+  it('streams assistant reasoning and text parts, token usage, capabilities, and system events', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 111 },
+            content: [],
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: { type: 'thinking' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'thinking_delta', thinking: 'First, inspect the diff. ' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: { type: 'text' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Summary ready.' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'message_delta',
+          usage: { output_tokens: 222 },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'capabilities',
+          interrupt: true,
+          set_model: true,
+          set_thinking_tokens: true,
+          rewind_files: true,
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'result',
+          result: 'Summary ready.',
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'system',
+          subtype: 'init',
+          message: { model: 'claude-sonnet-4-6' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'system',
+          content: 'Worker joined the room.',
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'system', subtype: 'heartbeat' }));
+    });
+
+    expect(result.current.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: 'Summary ready.',
+      status: 'done',
+      parts: [
+        { type: 'reasoning', text: 'First, inspect the diff. ' },
+        { type: 'text', text: 'Summary ready.' },
+      ],
+      metadata: {
+        usage: {
+          'claude-sonnet-4-6': {
+            inputTokens: 111,
+            outputTokens: 222,
+          },
+        },
+      },
+    });
+    expect(result.current.capabilities).toEqual({
+      interrupt: true,
+      set_model: true,
+      set_thinking_tokens: true,
+      rewind_files: true,
+    });
+    expect(result.current.messages.slice(1).map((message) => message.content)).toEqual([
+      'Session initialized · claude-sonnet-4-6',
+      'Worker joined the room.',
+      'System event',
+    ]);
+  });
+
+  it('builds fallback reasoning and text parts before finalizing an anonymous stream', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'thinking_delta', thinking: 'Inspecting edge cases.' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { text: 'Final answer.' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'result',
+          result: 'Final answer.',
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: 'Final answer.',
+      status: 'done',
+      parts: [
+        { type: 'reasoning', text: 'Inspecting edge cases.' },
+        { type: 'text', text: 'Final answer.' },
+      ],
+    });
+  });
+
+  it('keeps empty tool input on invalid json deltas and finalizes assistant errors', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'claude-sonnet-4-6', content: [] },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_use',
+            id: 'tool-bad-json',
+            name: 'Read',
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: '{"file_path":"/tmp/demo.ts"' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'content_block_stop' }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          error: { message: 'Tool stream failed.' },
+        }),
+      );
+    });
+
+    expect(result.current.messages.at(-1)).toMatchObject({
+      status: 'error',
+      content: 'Tool stream failed.',
+      parts: [
+        {
+          type: 'tool_use',
+          id: 'tool-bad-json',
+          name: 'Read',
+          input: {},
+        },
+      ],
+    });
+  });
+
+  it('drops stale empty assistant streams when the websocket closes', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'claude-sonnet-4-6', content: [] },
+        }),
+      );
+    });
+    expect(result.current.messages).toHaveLength(1);
+
+    act(() => {
+      wsHandlers.onClose?.();
+    });
+
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.connected).toBe(false);
+  });
+
+  it('uses file paths when broker permission requests do not include commands', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'control_request',
+          request_id: 'perm-file',
+          tool: 'Read',
+          input: { file_path: '/tmp/review.txt' },
+        }),
+      );
+    });
+
+    expect(result.current.pendingPermissions[0]).toMatchObject({
+      requestId: 'perm-file',
+      toolName: 'Read',
+      description: '/tmp/review.txt',
+      command: undefined,
+    });
+  });
+
+  it('covers control and participant guard branches without mutating state', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'control_request',
+          input: { command: 'missing-request-id' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'control_request',
+          request_id: 'perm-path',
+          input: { path: '/tmp/from-path.txt' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'permission_resolved' }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'participant_joined',
+          participant: { persona: 'missing-peer' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'participant_left' }));
+    });
+
+    expect(result.current.pendingPermissions).toEqual([
+      expect.objectContaining({
+        requestId: 'perm-path',
+        toolName: 'unknown',
+        description: '/tmp/from-path.txt',
+      }),
+    ]);
+    expect(result.current.participants.size).toBe(0);
+  });
+
+  it('covers room event fallback payloads and guard clauses', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [{ persona: 'missing-peer' }],
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'room_activity' }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_message',
+          participant_id: 'peer-user',
+          role: 'user',
+          content: 'Operator reply',
+          participant: { peer_id: 'peer-user', persona: 'operator', participant_type: 'ravn' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_message',
+          content: ['not-a-string'],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_outcome',
+          fields: {},
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_mesh_message',
+          participant: {},
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_notification',
+          participant_id: 'peer-note',
+          participant: {},
+        }),
+      );
+    });
+
+    expect(result.current.participants.size).toBe(0);
+    expect(result.current.messages[0]).toMatchObject({
+      role: 'user',
+      content: 'Operator reply',
+      participant: expect.objectContaining({ persona: 'operator' }),
+    });
+    expect(result.current.messages[1]).toMatchObject({
+      role: 'assistant',
+      content: '',
+    });
+    expect(result.current.meshEvents).toEqual([
+      expect.objectContaining({
+        type: 'outcome',
+        participantId: '',
+        persona: '',
+        eventType: '',
+      }),
+      expect.objectContaining({
+        type: 'mesh_message',
+        participantId: '',
+        fromPersona: '',
+        eventType: '',
+      }),
+      expect.objectContaining({
+        type: 'notification',
+        participantId: 'peer-note',
+        persona: '',
+        notificationType: '',
+        summary: '',
+        urgency: 0.5,
+      }),
+    ]);
+  });
+
   it('appends a tool_result part paired with its tool_use by id', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -1601,6 +2231,102 @@ page_path: council/demo/opinion-b.md
 
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0]?.status).toBe('running');
+  });
+
+  it('covers room_agent_event fallback branches for missing ids, empty data, and generated tool ids', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'room_agent_event' }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_state',
+          participants: [
+            { peer_id: 'peer-fallback', persona: 'reviewer', participant_type: 'ravn' },
+            { peer_id: 'peer-generated', persona: 'observer', participant_type: 'ravn' },
+          ],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participant_id: 'peer-fallback',
+          frame: { type: 'thought' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-fallback',
+          frame: {
+            type: 'tool_start',
+            data: { ignored: true },
+            metadata: { tool_name: 'Read', input: null },
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-fallback',
+          frame: {
+            type: 'tool_result',
+            data: 'done',
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-fallback',
+          frame: {
+            type: 'text',
+            data: 'All set.',
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'room_agent_event',
+          participantId: 'peer-generated',
+          frame: {
+            type: 'tool_result',
+            data: 'orphan result',
+          },
+        }),
+      );
+    });
+
+    expect(result.current.agentEvents.get('peer-fallback')).toHaveLength(4);
+    expect(result.current.messages[0]).toMatchObject({
+      role: 'assistant',
+      participantId: 'peer-fallback',
+      content: '""All set.',
+      parts: [
+        { type: 'reasoning', text: '""' },
+        { type: 'tool_use', id: expect.any(String), name: 'Read', input: {} },
+        { type: 'tool_result', tool_use_id: expect.any(String), content: 'done' },
+        { type: 'text', text: 'All set.' },
+      ],
+    });
+    const toolUsePart = result.current.messages[0]?.parts?.[1];
+    const toolResultPart = result.current.messages[0]?.parts?.[2];
+    expect(toolUsePart?.type).toBe('tool_use');
+    expect(toolResultPart?.type).toBe('tool_result');
+    expect(toolResultPart?.tool_use_id).toBe((toolUsePart as { id: string }).id);
+    expect(result.current.messages[1]).toMatchObject({
+      participantId: 'peer-generated',
+      content: '',
+      parts: [
+        {
+          type: 'tool_result',
+          tool_use_id: expect.stringMatching(/^tool-/),
+          content: 'orphan result',
+        },
+      ],
+    });
   });
 
   it('does not revive stale running messages from session storage', async () => {

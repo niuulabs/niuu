@@ -45,15 +45,15 @@ export function PlanQuestions({
     <form
       onSubmit={handleSubmit}
       aria-label="Clarifying questions form"
-      className="ting-plan-card niuu-flex niuu-flex-col niuu-gap-4"
+      className="ting-plan-card niuu:flex niuu:flex-col niuu:gap-4"
     >
       <div className="ting-plan-step-head">
         <div className="ting-plan-step-index">2</div>
-        <div className="niuu-flex niuu-flex-col niuu-gap-1">
-          <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:flex niuu:flex-col niuu:gap-1">
+          <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
             Clarify your plan
           </h2>
-          <p className="niuu-text-sm niuu-text-text-secondary">
+          <p className="niuu:text-sm niuu:text-text-secondary">
             Sharpen the planning run&apos;s output. Skip anything optional and the draft will
             surface assumptions.
           </p>
@@ -62,31 +62,31 @@ export function PlanQuestions({
 
       {prompt && (
         <div className="ting-plan-quote" aria-label="Your brief">
-          <p className="niuu-text-xs niuu-font-semibold niuu-text-text-muted niuu-uppercase niuu-tracking-wider niuu-font-mono niuu-mb-1">
+          <p className="niuu:text-xs niuu:font-semibold niuu:text-text-muted niuu:uppercase niuu:tracking-wider niuu:font-mono niuu:mb-1">
             Your Brief
           </p>
-          <p className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">{prompt}</p>
+          <p className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">{prompt}</p>
         </div>
       )}
 
       {questions.length === 0 && (
-        <p className="niuu-text-sm niuu-text-text-muted niuu-italic">
+        <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
           No clarifying questions — you can proceed directly.
         </p>
       )}
 
-      <ol className="niuu-flex niuu-flex-col niuu-gap-4 niuu-list-none niuu-p-0 niuu-m-0">
+      <ol className="niuu:flex niuu:flex-col niuu:gap-4 niuu:list-none niuu:p-0 niuu:m-0">
         {questions.map((q, idx) => (
-          <li key={q.id} className="niuu-flex niuu-flex-col niuu-gap-1">
+          <li key={q.id} className="niuu:flex niuu:flex-col niuu:gap-1">
             <label
               htmlFor={`q-${q.id}`}
-              className="niuu-text-sm niuu-font-medium niuu-text-text-primary"
+              className="niuu:text-sm niuu:font-medium niuu:text-text-primary"
             >
-              <span className="niuu-text-text-muted niuu-mr-2">{idx + 1}.</span>
+              <span className="niuu:text-text-muted niuu:mr-2">{idx + 1}.</span>
               {q.question}
             </label>
             {q.hint && (
-              <p className="niuu-text-xs niuu-text-text-muted" id={`q-${q.id}-hint`}>
+              <p className="niuu:text-xs niuu:text-text-muted" id={`q-${q.id}-hint`}>
                 {q.hint}
               </p>
             )}
@@ -94,7 +94,7 @@ export function PlanQuestions({
               <div
                 role="group"
                 aria-label="Workflow template picker"
-                className="niuu-grid niuu-grid-cols-3 niuu-gap-2 niuu-mt-1"
+                className="niuu:grid niuu:grid-cols-3 niuu:gap-2 niuu:mt-1"
               >
                 {workflows.map((wf) => {
                   const stageCount = wf.nodes.filter((n) => n.kind === 'stage').length;
@@ -110,17 +110,17 @@ export function PlanQuestions({
                         isSelected ? 'ting-plan-workflow-chip--selected' : '',
                       ].join(' ')}
                     >
-                      <div className="niuu-text-xs niuu-font-medium niuu-text-text-primary">
+                      <div className="niuu:text-xs niuu:font-medium niuu:text-text-primary">
                         {wf.name}
                       </div>
-                      <div className="niuu-text-xs niuu-text-text-muted niuu-font-mono niuu-mt-1">
+                      <div className="niuu:text-xs niuu:text-text-muted niuu:font-mono niuu:mt-1">
                         {stageCount} stage{stageCount !== 1 ? 's' : ''}
                       </div>
                     </button>
                   );
                 })}
                 {workflows.length === 0 && (
-                  <p className="niuu-col-span-3 niuu-text-xs niuu-text-text-muted niuu-italic">
+                  <p className="niuu:col-span-3 niuu:text-xs niuu:text-text-muted niuu:italic">
                     No workflow templates available.
                   </p>
                 )}
@@ -140,7 +140,7 @@ export function PlanQuestions({
         ))}
       </ol>
 
-      <div className="niuu-flex niuu-justify-between">
+      <div className="niuu:flex niuu:justify-between">
         <button type="button" onClick={onBack} className="ting-plan-secondary-btn">
           ← Back
         </button>

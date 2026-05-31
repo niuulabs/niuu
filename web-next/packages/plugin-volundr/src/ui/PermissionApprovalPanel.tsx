@@ -63,9 +63,6 @@ function PermissionApprovalItem({
 
   useEffect(() => {
     let active = true;
-    setChecking(true);
-    setDecision(null);
-    setRemainingMs(0);
 
     void evaluateAutoApproval(permission)
       .then((nextDecision) => {
@@ -90,7 +87,6 @@ function PermissionApprovalItem({
     if (!decision?.canAutoApprove || respondedRef.current) return undefined;
 
     const delayMs = Math.max(0, decision.delaySeconds * 1000);
-    setRemainingMs(delayMs);
     const startedAt = Date.now();
     const timer = window.setTimeout(() => {
       void evaluateAutoApproval(permission)
@@ -131,70 +127,70 @@ function PermissionApprovalItem({
   return (
     <div
       className={cn(
-        'niuu-grid niuu-gap-3 niuu-rounded-md niuu-border niuu-p-3 niuu-text-xs',
+        'niuu:grid niuu:gap-3 niuu:rounded-md niuu:border niuu:p-3 niuu:text-xs',
         decision?.reason === 'denylist'
-          ? 'niuu-border-critical/45 niuu-bg-critical/8'
-          : 'niuu-border-border-subtle niuu-bg-bg-secondary',
+          ? 'niuu:border-critical/45 niuu:bg-critical/8'
+          : 'niuu:border-border-subtle niuu:bg-bg-secondary',
       )}
     >
-      <div className="niuu-flex niuu-min-w-0 niuu-flex-wrap niuu-items-center niuu-gap-2">
-        <span className="niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
+      <div className="niuu:flex niuu:min-w-0 niuu:flex-wrap niuu:items-center niuu:gap-2">
+        <span className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
           {permission.toolName}
         </span>
         <span
           className={cn(
-            'niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded-md niuu-border niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px]',
+            'niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px]',
             canAutoApprove
-              ? 'niuu-border-brand/35 niuu-bg-brand/10 niuu-text-brand'
-              : 'niuu-border-border-subtle niuu-bg-bg-primary niuu-text-text-muted',
+              ? 'niuu:border-brand/35 niuu:bg-brand/10 niuu:text-brand'
+              : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-muted',
           )}
         >
           {canAutoApprove ? (
-            <ShieldCheck className="niuu-h-3.5 niuu-w-3.5" />
+            <ShieldCheck className="niuu:h-3.5 niuu:w-3.5" />
           ) : (
-            <ShieldAlert className="niuu-h-3.5 niuu-w-3.5" />
+            <ShieldAlert className="niuu:h-3.5 niuu:w-3.5" />
           )}
           {statusLabel(decision, checking)}
         </span>
         {canAutoApprove ? (
-          <span className="niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded-md niuu-border niuu-border-brand/35 niuu-bg-bg-primary niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[11px] niuu-text-brand">
-            <Clock3 className="niuu-h-3.5 niuu-w-3.5" />
+          <span className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:border niuu:border-brand/35 niuu:bg-bg-primary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-brand">
+            <Clock3 className="niuu:h-3.5 niuu:w-3.5" />
             auto allow in {remainingSeconds}s
           </span>
         ) : null}
       </div>
 
-      <pre className="niuu-max-h-28 niuu-overflow-auto niuu-whitespace-pre-wrap niuu-break-words niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary niuu-p-2 niuu-font-mono niuu-text-[11px] niuu-leading-5 niuu-text-text-primary">
+      <pre className="niuu:max-h-28 niuu:overflow-auto niuu:whitespace-pre-wrap niuu:break-words niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-2 niuu:font-mono niuu:text-[11px] niuu:leading-5 niuu:text-text-primary">
         {visibleCommand}
       </pre>
 
       {canAutoApprove ? (
-        <div className="niuu-h-1 niuu-overflow-hidden niuu-rounded-full niuu-bg-bg-primary">
+        <div className="niuu:h-1 niuu:overflow-hidden niuu:rounded-full niuu:bg-bg-primary">
           <div
-            className="niuu-h-full niuu-rounded-full niuu-bg-brand niuu-transition-[width] niuu-duration-200"
+            className="niuu:h-full niuu:rounded-full niuu:bg-brand niuu:transition-[width] niuu:duration-200"
             style={{ width: `${progress}%` }}
           />
         </div>
       ) : null}
 
-      <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-justify-between niuu-gap-2">
-        <span className="niuu-min-w-0 niuu-flex-1 niuu-font-mono niuu-text-[10px] niuu-text-text-faint">
+      <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <span className="niuu:min-w-0 niuu:flex-1 niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
           {decision?.matchedPattern ?? permission.requestId}
         </span>
-        <div className="niuu-flex niuu-gap-2">
+        <div className="niuu:flex niuu:gap-2">
           <button
             type="button"
-            className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary hover:niuu-border-border hover:niuu-text-text-primary"
+            className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary niuu:hover:border-border niuu:hover:text-text-primary"
             onClick={() => respond('deny')}
           >
             deny
           </button>
           <button
             type="button"
-            className="niuu-inline-flex niuu-items-center niuu-gap-1 niuu-rounded-md niuu-border niuu-border-brand niuu-bg-brand niuu-px-3 niuu-py-1.5 niuu-font-mono niuu-text-[11px] niuu-text-bg-primary hover:niuu-bg-brand/90"
+            className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:border niuu:border-brand niuu:bg-brand niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:text-bg-primary niuu:hover:bg-brand/90"
             onClick={() => respond('allow_once')}
           >
-            <Check className="niuu-h-3.5 niuu-w-3.5" />
+            <Check className="niuu:h-3.5 niuu:w-3.5" />
             allow
           </button>
         </div>
@@ -210,20 +206,20 @@ export function PermissionApprovalPanel({
 }: PermissionApprovalPanelProps) {
   return (
     <div
-      className="niuu-grid niuu-gap-2 niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-primary/95 niuu-p-3 niuu-shadow-[0_18px_40px_-30px_rgba(0,0,0,0.55)]"
+      className="niuu:grid niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary/95 niuu:p-3 niuu:shadow-[0_18px_40px_-30px_rgba(0,0,0,0.55)]"
       data-testid="permission-approval-panel"
     >
-      <div className="niuu-flex niuu-flex-wrap niuu-items-center niuu-justify-between niuu-gap-2">
-        <span className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-font-mono niuu-text-[11px] niuu-text-text-secondary">
-          <ShieldCheck className="niuu-h-3.5 niuu-w-3.5 niuu-text-brand" />
+      <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <span className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
+          <ShieldCheck className="niuu:h-3.5 niuu:w-3.5 niuu:text-brand" />
           auto approvals
         </span>
-        <span className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-2 niuu-py-1 niuu-font-mono niuu-text-[10px] niuu-text-text-muted">
+        <span className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
           Volundr policy
         </span>
       </div>
 
-      <div className="niuu-grid niuu-gap-2">
+      <div className="niuu:grid niuu:gap-2">
         {permissions.map((permission) => (
           <PermissionApprovalItem
             key={permission.requestId}

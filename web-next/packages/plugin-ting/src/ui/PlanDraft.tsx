@@ -9,19 +9,19 @@ function toLevel(value: number): ConfidenceLevel {
 }
 
 const SIZE_CLASSES: Record<'S' | 'M' | 'L', string> = {
-  S: 'niuu-bg-accent-emerald/20 niuu-text-accent-emerald niuu-border-accent-emerald/30',
-  M: 'niuu-bg-accent-amber/20 niuu-text-accent-amber niuu-border-accent-amber/30',
-  L: 'niuu-bg-accent-orange/20 niuu-text-accent-orange niuu-border-accent-orange/30',
+  S: 'niuu:bg-accent-emerald/20 niuu:text-accent-emerald niuu:border-accent-emerald/30',
+  M: 'niuu:bg-accent-amber/20 niuu:text-accent-amber niuu:border-accent-amber/30',
+  L: 'niuu:bg-accent-orange/20 niuu:text-accent-orange niuu:border-accent-orange/30',
 };
 
 const RISK_KIND_CLASSES: Record<string, string> = {
-  blast: 'niuu-bg-critical/20 niuu-text-critical niuu-border-critical/30',
-  untested: 'niuu-bg-accent-amber/20 niuu-text-accent-amber niuu-border-accent-amber/30',
+  blast: 'niuu:bg-critical/20 niuu:text-critical niuu:border-critical/30',
+  untested: 'niuu:bg-accent-amber/20 niuu:text-accent-amber niuu:border-accent-amber/30',
 };
 
 function getRiskKindClass(kind: string): string {
   return (
-    RISK_KIND_CLASSES[kind] ?? 'niuu-bg-bg-elevated niuu-text-text-secondary niuu-border-border'
+    RISK_KIND_CLASSES[kind] ?? 'niuu:bg-bg-elevated niuu:text-text-secondary niuu:border-border'
   );
 }
 
@@ -65,45 +65,45 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
 
   return (
     <div
-      className="niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4 niuu-flex niuu-flex-col niuu-gap-3"
+      className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3"
       data-testid={`phase-${phaseIndex}`}
     >
-      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-2">
+      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-2">
         {editing ? (
-          <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-flex-1">
+          <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:flex-1">
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               aria-label={`Edit phase ${phaseIndex + 1} name`}
-              className="niuu-flex-1 niuu-rounded niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-2 niuu-py-1 niuu-text-sm niuu-text-text-primary focus:niuu-outline-none focus:niuu-ring-2 focus:niuu-ring-brand-500/40"
+              className="niuu:flex-1 niuu:rounded niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-sm niuu:text-text-primary niuu:focus:outline-none niuu:focus:ring-2 niuu:focus:ring-brand-500/40"
               autoFocus
             />
             <button
               type="button"
               onClick={handleSave}
-              className="niuu-text-xs niuu-font-medium niuu-text-brand-400 hover:niuu-text-brand-300"
+              className="niuu:text-xs niuu:font-medium niuu:text-brand-400 niuu:hover:text-brand-300"
             >
               Save
             </button>
             <button
               type="button"
               onClick={handleCancel}
-              className="niuu-text-xs niuu-text-text-muted hover:niuu-text-text-secondary"
+              className="niuu:text-xs niuu:text-text-muted niuu:hover:text-text-secondary"
             >
               Cancel
             </button>
           </div>
         ) : (
           <>
-            <div className="niuu-flex niuu-flex-col niuu-gap-1 niuu-flex-1 niuu-min-w-0">
-              <h3 className="niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-truncate">
+            <div className="niuu:flex niuu:flex-col niuu:gap-1 niuu:flex-1 niuu:min-w-0">
+              <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:truncate">
                 {phase.name}
               </h3>
               {phase.runs.length > 0 && (
-                <div className="niuu-flex niuu-items-center niuu-gap-2">
+                <div className="niuu:flex niuu:items-center niuu:gap-2">
                   <ConfidenceBar level={toLevel(avgConfidence)} />
-                  <span className="niuu-text-xs niuu-text-text-muted">
+                  <span className="niuu:text-xs niuu:text-text-muted">
                     {phase.runs.length} run{phase.runs.length !== 1 ? 's' : ''}
                   </span>
                 </div>
@@ -113,7 +113,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               type="button"
               onClick={() => setEditing(true)}
               aria-label={`Edit phase ${phaseIndex + 1}`}
-              className="niuu-flex-shrink-0 niuu-text-xs niuu-font-medium niuu-text-text-muted hover:niuu-text-text-secondary niuu-border niuu-border-border niuu-rounded niuu-px-2 niuu-py-1 niuu-transition-colors"
+              className="niuu:flex-shrink-0 niuu:text-xs niuu:font-medium niuu:text-text-muted niuu:hover:text-text-secondary niuu:border niuu:border-border niuu:rounded niuu:px-2 niuu:py-1 niuu:transition-colors"
             >
               Edit
             </button>
@@ -122,18 +122,18 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
       </div>
 
       {phase.runs.length > 0 && (
-        <ul className="niuu-flex niuu-flex-col niuu-gap-2 niuu-list-none niuu-p-0 niuu-m-0">
+        <ul className="niuu:flex niuu:flex-col niuu:gap-2 niuu:list-none niuu:p-0 niuu:m-0">
           {phase.runs.map((run, ri) => (
             <li
               key={ri}
-              className="niuu-rounded niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-grid niuu-items-center niuu-gap-x-3 niuu-gap-y-0"
+              className="niuu:rounded niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:grid niuu:items-center niuu:gap-x-3 niuu:gap-y-0"
               style={{ gridTemplateColumns: 'auto 1fr auto auto auto' }}
             >
               {/* Col 1: Persona circle
                   TODO: Replace with <PersonaAvatar role={...} letter={...} size={22} /> once
                   RunSpec includes a personaRole field that maps to the PersonaRole enum. */}
               <span
-                className="niuu-w-6 niuu-h-6 niuu-rounded-full niuu-bg-bg-elevated niuu-flex niuu-items-center niuu-justify-center niuu-text-xs niuu-text-text-muted niuu-flex-shrink-0"
+                className="niuu:w-6 niuu:h-6 niuu:rounded-full niuu:bg-bg-elevated niuu:flex niuu:items-center niuu:justify-center niuu:text-xs niuu:text-text-muted niuu:flex-shrink-0"
                 title={run.persona ?? 'raven'}
                 aria-label={`persona: ${run.persona ?? 'raven'}`}
               >
@@ -141,11 +141,11 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               </span>
 
               {/* Col 2: Name + meta */}
-              <div className="niuu-flex niuu-flex-col niuu-gap-0.5 niuu-min-w-0">
-                <span className="niuu-text-xs niuu-font-medium niuu-text-text-primary niuu-truncate">
+              <div className="niuu:flex niuu:flex-col niuu:gap-0.5 niuu:min-w-0">
+                <span className="niuu:text-xs niuu:font-medium niuu:text-text-primary niuu:truncate">
                   {run.name}
                 </span>
-                <span className="niuu-text-xs niuu-text-text-muted niuu-font-mono">
+                <span className="niuu:text-xs niuu:text-text-muted niuu:font-mono">
                   {[run.phase, run.persona, run.estimateHours ? `est ${run.estimateHours}h` : null]
                     .filter(Boolean)
                     .join(' · ')}
@@ -158,7 +158,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               {/* Col 3: Size pill (always occupies grid cell) */}
               {run.size ? (
                 <span
-                  className={`niuu-text-xs niuu-font-semibold niuu-rounded niuu-border niuu-px-1.5 niuu-py-0.5 ${SIZE_CLASSES[run.size]}`}
+                  className={`niuu:text-xs niuu:font-semibold niuu:rounded niuu:border niuu:px-1.5 niuu:py-0.5 ${SIZE_CLASSES[run.size]}`}
                 >
                   {run.size}
                 </span>
@@ -171,7 +171,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
                 type="button"
                 disabled
                 aria-label={`Promote run ${ri + 1} to own saga`}
-                className="niuu-text-xs niuu-text-text-muted niuu-border niuu-border-border niuu-rounded niuu-px-1.5 niuu-py-0.5 niuu-opacity-40 niuu-cursor-not-allowed"
+                className="niuu:text-xs niuu:text-text-muted niuu:border niuu:border-border niuu:rounded niuu:px-1.5 niuu:py-0.5 niuu:opacity-40 niuu:cursor-not-allowed"
               >
                 Own saga
               </button>
@@ -182,7 +182,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
                   type="button"
                   onClick={() => onRemoveRun(ri)}
                   aria-label={`Remove run ${ri + 1}`}
-                  className="niuu-text-xs niuu-text-text-muted hover:niuu-text-critical niuu-transition-colors niuu-leading-none"
+                  className="niuu:text-xs niuu:text-text-muted niuu:hover:text-critical niuu:transition-colors niuu:leading-none"
                 >
                   ×
                 </button>
@@ -241,15 +241,15 @@ export function PlanDraft({
   }
 
   return (
-    <div className="niuu-flex niuu-flex-col niuu-gap-4">
-      <div className="ting-plan-card niuu-flex niuu-flex-col niuu-gap-4">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4">
+      <div className="ting-plan-card niuu:flex niuu:flex-col niuu:gap-4">
         <div className="ting-plan-step-head">
           <div className="ting-plan-step-index">4</div>
-          <div className="niuu-flex niuu-flex-col niuu-gap-1">
-            <h2 className="niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+          <div className="niuu:flex niuu:flex-col niuu:gap-1">
+            <h2 className="niuu:text-lg niuu:font-semibold niuu:text-text-primary">
               Review your plan
             </h2>
-            <p className="niuu-text-sm niuu-text-text-secondary">
+            <p className="niuu:text-sm niuu:text-text-secondary">
               Nothing is created yet. Tune the draft, remove work, or re-plan before materializing
               the saga.
             </p>
@@ -257,15 +257,15 @@ export function PlanDraft({
         </div>
 
         <div className="ting-plan-draft-head">
-          <div className="niuu-flex niuu-flex-col niuu-gap-1 niuu-min-w-0">
-            <span className="niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.22em] niuu-text-text-muted">
+          <div className="niuu:flex niuu:flex-col niuu:gap-1 niuu:min-w-0">
+            <span className="niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.22em] niuu:text-text-muted">
               Proposed title
             </span>
-            <span className="niuu-text-base niuu-font-semibold niuu-text-text-primary niuu-truncate">
+            <span className="niuu:text-base niuu:font-semibold niuu:text-text-primary niuu:truncate">
               {sagaName}
             </span>
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-2 niuu-justify-end niuu-text-[10px] niuu-font-mono niuu-text-text-muted">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:justify-end niuu:text-[10px] niuu:font-mono niuu:text-text-muted">
             <span>{phases.length} phases</span>
             <span>·</span>
             <span>{totalRuns} runs</span>
@@ -276,19 +276,19 @@ export function PlanDraft({
       </div>
 
       {risks.length > 0 && (
-        <div className="ting-plan-card niuu-flex niuu-flex-col niuu-gap-2">
-          <p className="niuu-text-xs niuu-font-semibold niuu-text-text-muted niuu-uppercase niuu-tracking-wider niuu-font-mono">
+        <div className="ting-plan-card niuu:flex niuu:flex-col niuu:gap-2">
+          <p className="niuu:text-xs niuu:font-semibold niuu:text-text-muted niuu:uppercase niuu:tracking-wider niuu:font-mono">
             Risks flagged by planning run
           </p>
-          <ul className="niuu-flex niuu-flex-col niuu-gap-2 niuu-list-none niuu-p-0 niuu-m-0">
+          <ul className="niuu:flex niuu:flex-col niuu:gap-2 niuu:list-none niuu:p-0 niuu:m-0">
             {risks.map((risk, i) => (
-              <li key={i} className="niuu-flex niuu-items-start niuu-gap-2 niuu-text-sm">
+              <li key={i} className="niuu:flex niuu:items-start niuu:gap-2 niuu:text-sm">
                 <span
-                  className={`niuu-flex-shrink-0 niuu-text-xs niuu-font-semibold niuu-rounded niuu-border niuu-px-1.5 niuu-py-0.5 niuu-uppercase niuu-font-mono ${getRiskKindClass(risk.kind)}`}
+                  className={`niuu:flex-shrink-0 niuu:text-xs niuu:font-semibold niuu:rounded niuu:border niuu:px-1.5 niuu:py-0.5 niuu:uppercase niuu:font-mono ${getRiskKindClass(risk.kind)}`}
                 >
                   {risk.kind}
                 </span>
-                <span className="niuu-text-xs niuu-text-text-secondary niuu-leading-relaxed">
+                <span className="niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
                   {risk.message}
                 </span>
               </li>
@@ -298,13 +298,13 @@ export function PlanDraft({
       )}
 
       {phases.length === 0 && (
-        <p className="niuu-text-sm niuu-text-text-muted niuu-italic">
+        <p className="niuu:text-sm niuu:text-text-muted niuu:italic">
           No phases extracted — the raven couldn&apos;t decompose this goal. Try going back and
           adding more context.
         </p>
       )}
 
-      <div className="niuu-flex niuu-flex-col niuu-gap-3">
+      <div className="niuu:flex niuu:flex-col niuu:gap-3">
         {phases.map((phase, idx) => (
           <PhaseEditor
             key={idx}
@@ -317,17 +317,17 @@ export function PlanDraft({
       </div>
 
       {error && (
-        <p role="alert" className="niuu-text-sm niuu-text-critical">
+        <p role="alert" className="niuu:text-sm niuu:text-critical">
           {error}
         </p>
       )}
 
-      <div className="niuu-flex niuu-items-center niuu-gap-2">
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
         <button
           type="button"
           onClick={onBack}
           disabled={loading}
-          className="ting-plan-secondary-btn disabled:niuu-opacity-40"
+          className="ting-plan-secondary-btn niuu:disabled:opacity-40"
         >
           ← Back
         </button>
@@ -336,17 +336,17 @@ export function PlanDraft({
             type="button"
             onClick={onReplan}
             disabled={loading}
-            className="ting-plan-secondary-btn disabled:niuu-opacity-40"
+            className="ting-plan-secondary-btn niuu:disabled:opacity-40"
           >
             ↻ Re-plan
           </button>
         )}
-        <span className="niuu-flex-1" />
+        <span className="niuu:flex-1" />
         {onSaveDraft && (
-          <div className="niuu-flex niuu-items-center niuu-gap-2">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
             {draftSavedFeedback && (
               <span
-                className="niuu-text-xs niuu-text-text-muted niuu-font-mono"
+                className="niuu:text-xs niuu:text-text-muted niuu:font-mono"
                 role="status"
                 aria-live="polite"
               >
@@ -357,7 +357,7 @@ export function PlanDraft({
               type="button"
               onClick={handleSaveDraft}
               disabled={loading}
-              className="ting-plan-secondary-btn disabled:niuu-opacity-40"
+              className="ting-plan-secondary-btn niuu:disabled:opacity-40"
             >
               Save as draft
             </button>
@@ -367,7 +367,7 @@ export function PlanDraft({
           type="button"
           onClick={onApprove}
           disabled={loading || phases.length === 0}
-          className="ting-plan-primary-btn disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed"
+          className="ting-plan-primary-btn niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed"
         >
           {loading ? 'Launching…' : 'Approve & launch →'}
         </button>

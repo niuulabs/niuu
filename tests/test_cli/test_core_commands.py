@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import click.exceptions
 import pytest
+import typer
 
 from cli.commands.platform import (
     _build_preflight_config,
@@ -226,7 +226,7 @@ class TestStartup:
             ),
             patch("cli.commands.platform.has_failures", return_value=True),
             patch("cli.commands.platform.format_results", return_value="FAIL"),
-            pytest.raises(click.exceptions.Exit),
+            pytest.raises(typer.Exit),
         ):
             await _startup(
                 manager,
@@ -266,7 +266,7 @@ class TestStartup:
         manager.start_all = AsyncMock(side_effect=StartupError("ting", "health check failed"))
         settings = CLISettings()
 
-        with pytest.raises(click.exceptions.Exit):
+        with pytest.raises(typer.Exit):
             await _startup(
                 manager,
                 settings,

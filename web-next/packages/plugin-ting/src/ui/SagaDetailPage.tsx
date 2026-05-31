@@ -41,36 +41,36 @@ function statusLabel(status: RunStatus | Saga['status'] | Phase['status']): stri
 
 function statusClasses(status: RunStatus | Saga['status'] | Phase['status']): string {
   const base =
-    'niuu-inline-flex niuu-items-center niuu-gap-2 niuu-min-w-[116px] niuu-justify-center niuu-rounded-full niuu-border niuu-px-3 niuu-py-1 niuu-text-[11px] niuu-font-mono niuu-tracking-[0.1em]';
+    'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:min-w-[116px] niuu:justify-center niuu:rounded-full niuu:border niuu:px-3 niuu:py-1 niuu:text-[11px] niuu:font-mono niuu:tracking-[0.1em]';
   if (status === 'failed')
-    return `${base} niuu-border-critical/50 niuu-text-critical-fg niuu-bg-critical-bg`;
+    return `${base} niuu:border-critical/50 niuu:text-critical-fg niuu:bg-critical-bg`;
   if (status === 'complete' || status === 'merged')
-    return `${base} niuu-border-border niuu-text-text-primary niuu-bg-bg-tertiary`;
+    return `${base} niuu:border-border niuu:text-text-primary niuu:bg-bg-tertiary`;
   if (status === 'active' || status === 'running' || status === 'review')
-    return `${base} niuu-border-brand/45 niuu-text-brand-200 niuu-bg-brand/10`;
+    return `${base} niuu:border-brand/45 niuu:text-brand-200 niuu:bg-brand/10`;
   if (status === 'escalated' || status === 'gated')
-    return `${base} niuu-border-accent-amber/45 niuu-text-accent-amber niuu-bg-accent-amber/10`;
-  return `${base} niuu-border-border niuu-text-text-muted niuu-bg-bg-tertiary`;
+    return `${base} niuu:border-accent-amber/45 niuu:text-accent-amber niuu:bg-accent-amber/10`;
+  return `${base} niuu:border-border niuu:text-text-muted niuu:bg-bg-tertiary`;
 }
 
 function confidenceTone(value: number): string {
-  if (value >= 85) return 'niuu-bg-brand';
-  if (value >= 65) return 'niuu-bg-brand/80';
-  if (value >= 45) return 'niuu-bg-accent-amber';
-  return 'niuu-bg-critical';
+  if (value >= 85) return 'niuu:bg-brand';
+  if (value >= 65) return 'niuu:bg-brand/80';
+  if (value >= 45) return 'niuu:bg-accent-amber';
+  return 'niuu:bg-critical';
 }
 
 function ConfidenceMeter({ value }: { value: number }) {
   const clamped = Math.max(0, Math.min(100, value));
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-justify-end">
-      <div className="niuu-w-14 niuu-h-1 niuu-rounded-full niuu-bg-bg-elevated niuu-overflow-hidden">
+    <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:justify-end">
+      <div className="niuu:w-14 niuu:h-1 niuu:rounded-full niuu:bg-bg-elevated niuu:overflow-hidden">
         <div
-          className={['niuu-h-full niuu-rounded-full', confidenceTone(clamped)].join(' ')}
+          className={['niuu:h-full niuu:rounded-full', confidenceTone(clamped)].join(' ')}
           style={{ width: `${clamped}%` }}
         />
       </div>
-      <span className="niuu-min-w-6 niuu-text-right niuu-font-mono niuu-text-[12px] niuu-text-text-muted">
+      <span className="niuu:min-w-6 niuu:text-right niuu:font-mono niuu:text-[12px] niuu:text-text-muted">
         {Math.round(clamped)}
       </span>
     </div>
@@ -104,28 +104,28 @@ function glyphForRole(role: PersonaRole): string {
 }
 
 function phaseDotClasses(status: Phase['status']): string {
-  const base = 'niuu-w-3 niuu-h-3 niuu-rounded-full niuu-shrink-0';
+  const base = 'niuu:w-3 niuu:h-3 niuu:rounded-full niuu:shrink-0';
   if (status === 'complete')
-    return `${base} niuu-bg-brand/90 niuu-shadow-[0_0_0_2px_rgba(125,211,252,0.14)]`;
+    return `${base} niuu:bg-brand/90 niuu:shadow-[0_0_0_2px_rgba(125,211,252,0.14)]`;
   if (status === 'active')
-    return `${base} niuu-bg-brand niuu-shadow-[0_0_0_4px_rgba(125,211,252,0.10)]`;
-  if (status === 'gated') return `${base} niuu-bg-accent-amber`;
-  return `${base} niuu-bg-text-muted/40`;
+    return `${base} niuu:bg-brand niuu:shadow-[0_0_0_4px_rgba(125,211,252,0.10)]`;
+  if (status === 'gated') return `${base} niuu:bg-accent-amber`;
+  return `${base} niuu:bg-text-muted/40`;
 }
 
 function runDotClasses(status: RunStatus): string {
-  const base = 'niuu-w-2.5 niuu-h-2.5 niuu-rounded-full niuu-shrink-0';
-  if (status === 'merged') return `${base} niuu-bg-brand/90`;
-  if (status === 'running' || status === 'review') return `${base} niuu-bg-brand`;
-  if (status === 'failed') return `${base} niuu-bg-critical`;
-  if (status === 'escalated') return `${base} niuu-bg-accent-amber`;
-  return `${base} niuu-bg-text-muted/35`;
+  const base = 'niuu:w-2.5 niuu:h-2.5 niuu:rounded-full niuu:shrink-0';
+  if (status === 'merged') return `${base} niuu:bg-brand/90`;
+  if (status === 'running' || status === 'review') return `${base} niuu:bg-brand`;
+  if (status === 'failed') return `${base} niuu:bg-critical`;
+  if (status === 'escalated') return `${base} niuu:bg-accent-amber`;
+  return `${base} niuu:bg-text-muted/35`;
 }
 
 function RunPersona({ run }: { run: Run }) {
   const role = roleForRun(run);
   return (
-    <div className="niuu-flex niuu-items-center niuu-justify-center">
+    <div className="niuu:flex niuu:items-center niuu:justify-center">
       <PersonaAvatar role={role} letter={glyphForRole(role)} size={22} title={run.name} />
     </div>
   );
@@ -168,16 +168,16 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
   }
 
   return (
-    <section className="niuu-rounded-xl niuu-border niuu-border-accent-amber/35 niuu-bg-accent-amber/5 niuu-p-4 niuu-space-y-3">
-      <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-3">
-        <div className="niuu-min-w-0">
-          <div className="niuu-text-[12px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-accent-amber">
+    <section className="niuu:rounded-xl niuu:border niuu:border-accent-amber/35 niuu:bg-accent-amber/5 niuu:p-4 niuu:space-y-3">
+      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
+        <div className="niuu:min-w-0">
+          <div className="niuu:text-[12px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-accent-amber">
             Needs feedback
           </div>
-          <h3 className="niuu-mt-1 niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+          <h3 className="niuu:mt-1 niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
             {request.run.trackerId} · {request.run.name}
           </h3>
-          <p className="niuu-mt-2 niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+          <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
             {help.summary}
           </p>
         </div>
@@ -187,36 +187,36 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
             onClick={() =>
               void navigate({ to: '/volundr/session/$sessionId', params: { sessionId } })
             }
-            className="niuu-shrink-0 niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-xs niuu-font-medium niuu-text-text-secondary hover:niuu-text-text-primary"
+            className="niuu:shrink-0 niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-xs niuu:font-medium niuu:text-text-secondary niuu:hover:text-text-primary"
           >
             Open session
           </button>
         ) : null}
       </div>
 
-      <dl className="niuu-grid niuu-gap-2 niuu-text-sm">
-        <div className="niuu-grid niuu-gap-1">
-          <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+      <dl className="niuu:grid niuu:gap-2 niuu:text-sm">
+        <div className="niuu:grid niuu:gap-1">
+          <dt className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
             Reason
           </dt>
-          <dd className="niuu-text-text-secondary">{help.reason}</dd>
+          <dd className="niuu:text-text-secondary">{help.reason}</dd>
         </div>
         {help.recommendation ? (
-          <div className="niuu-grid niuu-gap-1">
-            <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+          <div className="niuu:grid niuu:gap-1">
+            <dt className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
               Recommendation
             </dt>
-            <dd className="niuu-text-text-secondary">{help.recommendation}</dd>
+            <dd className="niuu:text-text-secondary">{help.recommendation}</dd>
           </div>
         ) : null}
         {help.attempted.length > 0 ? (
-          <div className="niuu-grid niuu-gap-1">
-            <dt className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+          <div className="niuu:grid niuu:gap-1">
+            <dt className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
               Already tried
             </dt>
-            <dd className="niuu-space-y-1">
+            <dd className="niuu:space-y-1">
               {help.attempted.map((item) => (
-                <div key={item} className="niuu-text-text-secondary">
+                <div key={item} className="niuu:text-text-secondary">
                   • {item}
                 </div>
               ))}
@@ -225,10 +225,10 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
         ) : null}
       </dl>
 
-      <div className="niuu-space-y-2">
+      <div className="niuu:space-y-2">
         <label
           htmlFor={`feedback-${request.run.id}`}
-          className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted"
+          className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted"
         >
           Your feedback
         </label>
@@ -238,10 +238,10 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Share context, ask for changes, or tell the chair how to proceed."
           rows={5}
-          className="niuu-w-full niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2.5 niuu-text-sm niuu-text-text-primary placeholder:niuu-text-text-muted"
+          className="niuu:w-full niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary niuu:placeholder:text-text-muted"
         />
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3">
-          <p className="niuu-text-xs niuu-text-text-muted">
+        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+          <p className="niuu:text-xs niuu:text-text-muted">
             Your reply goes directly back to the waiting chair and resumes the council.
           </p>
           <button
@@ -259,7 +259,7 @@ function FeedbackRequestCard({ request }: { request: PendingFeedbackRequest }) {
                 },
               )
             }
-            className="niuu-rounded-md niuu-bg-brand niuu-px-3 niuu-py-2 niuu-text-sm niuu-font-medium niuu-text-bg-primary disabled:niuu-opacity-50"
+            className="niuu:rounded-md niuu:bg-brand niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-medium niuu:text-bg-primary niuu:disabled:opacity-50"
           >
             {sendReply.isPending ? 'Sending…' : 'Send feedback'}
           </button>
@@ -285,24 +285,24 @@ function TargetCard({
   const [value, setValue] = useState<string>(saga.instanceId ?? '');
 
   return (
-    <section className="niuu-rounded-xl niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4 niuu-space-y-3">
-      <div className="niuu-space-y-1">
-        <div className="niuu-text-[11px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+    <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">
+      <div className="niuu:space-y-1">
+        <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
           Volundr target
         </div>
-        <h3 className="niuu-text-[16px] niuu-font-semibold niuu-text-text-primary">
+        <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
           {saga.instanceName ?? 'Dispatch by default target'}
         </h3>
-        <p className="niuu-text-sm niuu-leading-6 niuu-text-text-secondary">
+        <p className="niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
           Assign this saga to a specific Volundr so dispatch can route work there without picking a
           target every time.
         </p>
       </div>
-      <div className="niuu-space-y-3">
+      <div className="niuu:space-y-3">
         <select
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-primary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
           disabled={isLoading || isUpdating}
         >
           <option value="">No explicit target</option>
@@ -312,12 +312,12 @@ function TargetCard({
             </option>
           ))}
         </select>
-        <div className="niuu-flex niuu-gap-2">
+        <div className="niuu:flex niuu:gap-2">
           <button
             type="button"
             onClick={() => onAssign(value || null)}
             disabled={isLoading || isUpdating}
-            className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary hover:niuu-bg-bg-primary"
+            className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-primary"
           >
             Save target
           </button>
@@ -329,7 +329,7 @@ function TargetCard({
                 onAssign(null);
               }}
               disabled={isUpdating}
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-secondary hover:niuu-text-text-primary"
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
             >
               Clear
             </button>
@@ -361,24 +361,24 @@ function SagaFeedbackPanel({ runs }: { runs: Run[] }) {
   return (
     <section
       aria-label="Human feedback"
-      className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4 niuu-space-y-3"
+      className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3"
     >
       <div>
-        <div className="niuu-text-[12px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+        <div className="niuu:text-[12px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
           Operator feedback
         </div>
-        <h2 className="niuu-mt-1 niuu-text-[17px] niuu-font-semibold niuu-text-text-primary">
+        <h2 className="niuu:mt-1 niuu:text-[17px] niuu:font-semibold niuu:text-text-primary">
           Human input requests
         </h2>
       </div>
       {isLoading ? (
-        <div className="niuu-text-sm niuu-text-text-muted">Loading feedback requests…</div>
+        <div className="niuu:text-sm niuu:text-text-muted">Loading feedback requests…</div>
       ) : null}
       {hasError ? (
-        <div className="niuu-text-sm niuu-text-critical-fg">Failed to load feedback requests.</div>
+        <div className="niuu:text-sm niuu:text-critical-fg">Failed to load feedback requests.</div>
       ) : null}
       {!isLoading && !hasError && pendingRequests.length === 0 ? (
-        <div className="niuu-text-sm niuu-text-text-muted">
+        <div className="niuu:text-sm niuu:text-text-muted">
           No runs are waiting on human feedback right now.
         </div>
       ) : null}
@@ -393,35 +393,35 @@ function SagaFeedbackPanel({ runs }: { runs: Run[] }) {
 
 function PhaseCard({ phase }: { phase: Phase }) {
   return (
-    <section className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-overflow-hidden">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-gap-3 niuu-px-5 niuu-py-3.5">
-        <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-min-w-0">
+    <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:overflow-hidden">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:px-5 niuu:py-3.5">
+        <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:min-w-0">
           <span className={phaseDotClasses(phase.status)} />
-          <h3 className="niuu-m-0 niuu-text-[17px] niuu-font-semibold niuu-text-text-primary">
+          <h3 className="niuu:m-0 niuu:text-[17px] niuu:font-semibold niuu:text-text-primary">
             {`Phase ${phase.number} · ${phase.name}`}
           </h3>
         </div>
-        <div className="niuu-flex niuu-items-center niuu-gap-4 niuu-shrink-0">
+        <div className="niuu:flex niuu:items-center niuu:gap-4 niuu:shrink-0">
           <span className={statusClasses(phase.status)}>{statusLabel(phase.status)}</span>
           <ConfidenceMeter value={phase.confidence} />
         </div>
       </div>
-      <div className="niuu-px-5 niuu-pb-3">
+      <div className="niuu:px-5 niuu:pb-3">
         {phase.runs.length === 0 ? (
-          <div className="niuu-py-3 niuu-text-sm niuu-text-text-muted">No runs in this phase.</div>
+          <div className="niuu:py-3 niuu:text-sm niuu:text-text-muted">No runs in this phase.</div>
         ) : (
-          <div className="niuu-space-y-1">
+          <div className="niuu:space-y-1">
             {phase.runs.map((run) => (
               <div
                 key={run.id}
-                className="niuu-grid niuu-items-center niuu-gap-4 niuu-py-3 niuu-border-t niuu-border-border-subtle"
+                className="niuu:grid niuu:items-center niuu:gap-4 niuu:py-3 niuu:border-t niuu:border-border-subtle"
                 style={{ gridTemplateColumns: '18px 96px minmax(0,1fr) 34px 170px 78px' }}
               >
                 <span className={runDotClasses(run.status)} />
-                <span className="niuu-font-mono niuu-text-[12px] niuu-text-text-secondary">
+                <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-secondary">
                   {run.trackerId}
                 </span>
-                <span className="niuu-text-[14px] niuu-font-medium niuu-text-text-primary niuu-truncate">
+                <span className="niuu:text-[14px] niuu:font-medium niuu:text-text-primary niuu:truncate">
                   {run.name}
                 </span>
                 <RunPersona run={run} />
@@ -496,25 +496,25 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
   }
 
   return (
-    <div className="niuu-space-y-4">
+    <div className="niuu:space-y-4">
       {!hideBackButton && (
         <button
           type="button"
           onClick={() => void navigate({ to: '/ting/sagas' })}
-          className="niuu-text-sm niuu-text-text-secondary hover:niuu-text-text-primary"
+          className="niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
         >
           ← Sagas
         </button>
       )}
 
-      <div className="niuu-grid niuu-gap-5" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px' }}>
-        <div className="niuu-space-y-4">
-          <div className="niuu-flex niuu-items-end niuu-justify-between niuu-gap-4 niuu-px-1">
-            <div className="niuu-min-w-0">
-              <div className="niuu-mb-1 niuu-text-[12px] niuu-font-mono niuu-tracking-[0.08em] niuu-text-text-muted niuu-uppercase">
+      <div className="niuu:grid niuu:gap-5" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px' }}>
+        <div className="niuu:space-y-4">
+          <div className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-4 niuu:px-1">
+            <div className="niuu:min-w-0">
+              <div className="niuu:mb-1 niuu:text-[12px] niuu:font-mono niuu:tracking-[0.08em] niuu:text-text-muted niuu:uppercase">
                 {`${saga.trackerId} · ${saga.name}`}
               </div>
-              <div className="niuu-text-[13px] niuu-font-mono niuu-text-text-muted">
+              <div className="niuu:text-[13px] niuu:font-mono niuu:text-text-muted">
                 {branchLabel}
               </div>
             </div>
@@ -530,7 +530,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           )}
         </div>
 
-        <div className="niuu-space-y-4">
+        <div className="niuu:space-y-4">
           <SagaFeedbackPanel runs={activeRuns} />
           <TargetCard
             saga={saga}

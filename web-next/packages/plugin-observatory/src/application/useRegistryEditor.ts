@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Registry, EntityType } from '../domain';
 import type { EntityShape, EntityCategory } from '@niuulabs/domain';
 import { isDescendant, reparent } from '../domain/containment';
@@ -24,14 +24,6 @@ export interface RegistryEditorState {
 export function useRegistryEditor(initial: Registry): RegistryEditorState {
   const [registry, setRegistry] = useState<Registry>(initial);
   const [selectedId, setSelectedId] = useState<string | null>(initial.types[0]?.id ?? null);
-
-  useEffect(() => {
-    setRegistry(initial);
-    setSelectedId((current) => {
-      if (current && initial.types.some((item) => item.id === current)) return current;
-      return initial.types[0]?.id ?? null;
-    });
-  }, [initial]);
 
   const byId = useMemo(() => new Map(registry.types.map((t) => [t.id, t])), [registry.types]);
 

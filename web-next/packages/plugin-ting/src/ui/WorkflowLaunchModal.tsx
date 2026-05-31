@@ -21,46 +21,78 @@ export function WorkflowLaunchModal({
   launching = false,
   onLaunch,
 }: WorkflowLaunchModalProps) {
-  const [prompt, setPrompt] = useState('');
-  const [sessionName, setSessionName] = useState('');
-  const [repo, setRepo] = useState('');
-  const [branch, setBranch] = useState('');
-  const [error, setError] = useState('');
+  const workflowKey = workflow?.id ?? 'none';
+  const [draft, setDraft] = useState<{
+    workflowKey: string;
+    prompt: string;
+    sessionName: string;
+    repo: string;
+    branch: string;
+    error: string;
+  } | null>(null);
+  const current =
+    draft?.workflowKey === workflowKey
+      ? draft
+      : {
+          workflowKey,
+          prompt: '',
+          sessionName: '',
+          repo: '',
+          branch: '',
+          error: '',
+        };
 
   useEffect(() => {
-    if (!open) return;
-    setPrompt('');
-    setSessionName('');
-    setRepo('');
-    setBranch('');
-    setError('');
-  }, [open, workflow?.id]);
+    if (!open) {
+      queueMicrotask(() => {
+        setDraft(null);
+      });
+    }
+  }, [open]);
+
+  function updateDraft(patch: Partial<Omit<NonNullable<typeof draft>, 'workflowKey'>>) {
+    setDraft((prev) => ({
+      ...(prev?.workflowKey === workflowKey ? prev : current),
+      ...patch,
+      workflowKey,
+    }));
+  }
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      setDraft(null);
+    }
+    onOpenChange(nextOpen);
+  }
 
   const canLaunch = useMemo(
-    () => prompt.trim().length > 0 && workflow !== null && !launching,
-    [launching, prompt, workflow],
+    () => current.prompt.trim().length > 0 && workflow !== null && !launching,
+    [current.prompt, launching, workflow],
   );
 
   async function handleLaunch() {
     if (!workflow) return;
 
-    setError('');
+    updateDraft({ error: '' });
     try {
       await onLaunch({
-        prompt: prompt.trim(),
-        ...(sessionName.trim() ? { sessionName: sessionName.trim() } : {}),
-        ...(repo.trim() ? { repo: repo.trim() } : {}),
-        ...(branch.trim() ? { branch: branch.trim() } : {}),
+        prompt: current.prompt.trim(),
+        ...(current.sessionName.trim() ? { sessionName: current.sessionName.trim() } : {}),
+        ...(current.repo.trim() ? { repo: current.repo.trim() } : {}),
+        ...(current.branch.trim() ? { branch: current.branch.trim() } : {}),
       });
+      setDraft(null);
     } catch (launchError) {
-      setError(launchError instanceof Error ? launchError.message : 'Launch failed.');
+      updateDraft({
+        error: launchError instanceof Error ? launchError.message : 'Launch failed.',
+      });
     }
   }
 
   return (
     <Modal
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title={workflow ? `Launch ${workflow.name}` : 'Launch workflow'}
       description="Start this workflow directly in Volundr as a workflow-backed flock session."
       actions={[
@@ -74,40 +106,39 @@ export function WorkflowLaunchModal({
         },
       ]}
     >
-      <div className="niuu-mt-4 niuu-flex niuu-flex-col niuu-gap-4">
-        <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-          <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Prompt</span>
+      <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-4">
+        <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+          <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Prompt</span>
           <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            value={current.prompt}
+            onChange={(event) => updateDraft({ prompt: event.target.value })}
             rows={6}
             placeholder="Describe what this workflow should do."
-            className="niuu-min-h-[132px] niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+            className="niuu:min-h-[132px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
           />
         </label>
 
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">
               Session name
             </span>
             <input
-              value={sessionName}
-              onChange={(event) => setSessionName(event.target.value)}
+              value={current.sessionName}
+              onChange={(event) => updateDraft({ sessionName: event.target.value })}
               placeholder="Optional override"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
             />
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Repo</span>
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Repo</span>
             {repos.length > 0 ? (
               <RepoSelect
                 repos={repos}
-                value={repo}
+                value={current.repo}
                 onChange={(value) => {
                   const selectedRepo = repos.find((item) => item.cloneUrl === value);
-                  setRepo(value);
-                  setBranch(selectedRepo?.defaultBranch ?? '');
+                  updateDraft({ repo: value, branch: selectedRepo?.defaultBranch ?? '' });
                 }}
                 placeholder="Select repository"
                 valueMode="cloneUrl"
@@ -115,38 +146,38 @@ export function WorkflowLaunchModal({
               />
             ) : (
               <input
-                value={repo}
-                onChange={(event) => setRepo(event.target.value)}
+                value={current.repo}
+                onChange={(event) => updateDraft({ repo: event.target.value })}
                 placeholder="Optional repo or org/repo"
-                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
             )}
           </label>
-          <label className="niuu-flex niuu-flex-col niuu-gap-1.5">
-            <span className="niuu-text-xs niuu-font-semibold niuu-text-text-primary">Branch</span>
-            {repo && repos.length > 0 ? (
+          <label className="niuu:flex niuu:flex-col niuu:gap-1.5">
+            <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Branch</span>
+            {current.repo && repos.length > 0 ? (
               <BranchSelect
                 repos={repos}
-                selectedRepos={repo}
-                value={branch}
-                onChange={setBranch}
+                selectedRepos={current.repo}
+                value={current.branch}
+                onChange={(value) => updateDraft({ branch: value })}
                 placeholder="Select branch"
                 testId="workflow-launch-branch-select"
               />
             ) : (
               <input
-                value={branch}
-                onChange={(event) => setBranch(event.target.value)}
+                value={current.branch}
+                onChange={(event) => updateDraft({ branch: event.target.value })}
                 placeholder="Optional branch"
-                className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-elevated niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
             )}
           </label>
         </div>
 
-        {error ? (
-          <p className="niuu-m-0 niuu-text-sm niuu-text-critical" role="alert">
-            {error}
+        {current.error ? (
+          <p className="niuu:m-0 niuu:text-sm niuu:text-critical" role="alert">
+            {current.error}
           </p>
         ) : null}
       </div>

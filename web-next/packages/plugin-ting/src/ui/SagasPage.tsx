@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -95,10 +95,10 @@ function SagaRailItem({
 }) {
   const bucketColor =
     saga.status === 'failed'
-      ? 'niuu-bg-critical'
+      ? 'niuu:bg-critical'
       : saga.status === 'complete'
-        ? 'niuu-bg-emerald-400'
-        : 'niuu-bg-brand';
+        ? 'niuu:bg-emerald-400'
+        : 'niuu:bg-brand';
 
   return (
     <button
@@ -106,31 +106,31 @@ function SagaRailItem({
       onClick={onClick}
       aria-pressed={selected}
       className={[
-        'niuu-grid niuu-w-full niuu-grid-cols-[10px_minmax(0,1fr)] niuu-items-start niuu-gap-3 niuu-rounded-md niuu-border niuu-border-transparent niuu-px-3 niuu-py-3 niuu-text-left niuu-transition-colors',
+        'niuu:grid niuu:w-full niuu:grid-cols-[10px_minmax(0,1fr)] niuu:items-start niuu:gap-3 niuu:rounded-md niuu:border niuu:border-transparent niuu:px-3 niuu:py-3 niuu:text-left niuu:transition-colors',
         selected
-          ? 'niuu-border-border niuu-bg-[#202733] niuu-text-text-primary'
-          : 'hover:niuu-bg-bg-secondary/70 niuu-text-text-secondary',
+          ? 'niuu:border-border niuu:bg-[#202733] niuu:text-text-primary'
+          : 'niuu:hover:bg-bg-secondary/70 niuu:text-text-secondary',
       ].join(' ')}
     >
       <span
-        className={['niuu-mt-1 niuu-w-2.5 niuu-h-2.5 niuu-rounded-full', bucketColor].join(' ')}
+        className={['niuu:mt-1 niuu:w-2.5 niuu:h-2.5 niuu:rounded-full', bucketColor].join(' ')}
       />
-      <span className="niuu-min-w-0 niuu-flex niuu-flex-col">
-        <span className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-2">
-          <span className="niuu-min-w-0 niuu-truncate niuu-text-[13px] niuu-font-medium niuu-text-text-primary">
+      <span className="niuu:min-w-0 niuu:flex niuu:flex-col">
+        <span className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-2">
+          <span className="niuu:min-w-0 niuu:truncate niuu:text-[13px] niuu:font-medium niuu:text-text-primary">
             {saga.name}
           </span>
-          <span className="niuu-shrink-0 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.08em] niuu-text-text-muted">
+          <span className="niuu:shrink-0 niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
             {statusLabel(saga.status)}
           </span>
         </span>
-        <span className="niuu-mt-1 niuu-truncate niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
+        <span className="niuu:mt-1 niuu:truncate niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
           {saga.trackerId}
         </span>
-        <span className="niuu-mt-2 niuu-grid niuu-grid-cols-[minmax(0,1fr)_auto] niuu-gap-x-3 niuu-gap-y-1 niuu-text-[10px] niuu-font-mono niuu-uppercase niuu-tracking-[0.06em] niuu-text-text-muted">
-          <span className="niuu-truncate">{saga.repos[0] ?? 'niuulabs/volundr'}</span>
+        <span className="niuu:mt-2 niuu:grid niuu:grid-cols-[minmax(0,1fr)_auto] niuu:gap-x-3 niuu:gap-y-1 niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.06em] niuu:text-text-muted">
+          <span className="niuu:truncate">{saga.repos[0] ?? 'niuulabs/volundr'}</span>
           <span>{`${saga.phaseSummary.completed}/${saga.phaseSummary.total} runs`}</span>
-          <span className="niuu-col-span-2 niuu-truncate">{saga.featureBranch}</span>
+          <span className="niuu:col-span-2 niuu:truncate">{saga.featureBranch}</span>
         </span>
       </span>
     </button>
@@ -150,14 +150,14 @@ function SagaBucketSection({
 }) {
   if (items.length === 0) return null;
   return (
-    <section className="niuu-space-y-2">
-      <div className="niuu-flex niuu-items-center niuu-justify-between niuu-px-4">
-        <span className="niuu-text-[12px] niuu-font-mono niuu-tracking-[0.08em] niuu-text-text-muted niuu-uppercase">
+    <section className="niuu:space-y-2">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:px-4">
+        <span className="niuu:text-[12px] niuu:font-mono niuu:tracking-[0.08em] niuu:text-text-muted niuu:uppercase">
           {title}
         </span>
-        <span className="niuu-text-[12px] niuu-font-mono niuu-text-text-muted">{items.length}</span>
+        <span className="niuu:text-[12px] niuu:font-mono niuu:text-text-muted">{items.length}</span>
       </div>
-      <div className="niuu-space-y-1">
+      <div className="niuu:space-y-1">
         {items.map((saga) => (
           <SagaRailItem
             key={saga.id}
@@ -191,7 +191,9 @@ function SagasPageContent() {
   const [showNewSagaModal, setShowNewSagaModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [search, setSearch] = useState('');
-  const [selectedSagaId, setSelectedSagaId] = useState<string | null>(params.sagaId ?? null);
+  const [selectedSagaIdState, setSelectedSagaIdState] = useState<string | null>(
+    params.sagaId ?? null,
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
@@ -199,13 +201,8 @@ function SagasPageContent() {
   const [selectedInstanceId, setSelectedInstanceId] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
-  useEffect(() => {
-    if (!selectedSagaId && sagas && sagas.length > 0) {
-      setSelectedSagaId(sagas[0]!.id);
-    }
-  }, [sagas, selectedSagaId]);
-
   const allSagas = useMemo(() => sagas ?? [], [sagas]);
+  const selectedSagaId = selectedSagaIdState ?? allSagas[0]?.id ?? null;
   const importedTrackerIds = useMemo(
     () =>
       new Set(allSagas.filter((saga) => saga.status !== 'complete').map((saga) => saga.trackerId)),
@@ -251,11 +248,6 @@ function SagasPageContent() {
     (project) => !isTerminalTrackerStatus(project.status),
   );
   const availableRepos = useMemo(() => repoCatalogQuery.data ?? [], [repoCatalogQuery.data]);
-  const selectedProject =
-    trackerProjects.find((project) => project.id === selectedProjectId) ?? null;
-  const selectedProjectHasSlugConflict =
-    selectedProject !== null && existingSagaSlugs.has(trackerProjectSlug(selectedProject));
-  const selectedProjectSlug = selectedProject ? trackerProjectSlug(selectedProject) : '';
   const commonBranches = useMemo(
     () =>
       availableRepos.length > 0
@@ -263,36 +255,32 @@ function SagasPageContent() {
         : (repoBranchesQuery.data ?? []),
     [availableRepos, repoBranchesQuery.data, selectedRepos],
   );
+  const effectiveBaseBranch =
+    showImportModal && commonBranches.length > 0 && !commonBranches.includes(baseBranch)
+      ? (commonBranches[0] ?? 'main')
+      : baseBranch;
+  const effectiveSelectedProjectId =
+    showImportModal && !selectedProjectId && trackerProjects.length > 0
+      ? (
+          trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ??
+          trackerProjects[0]!
+        ).id
+      : selectedProjectId;
+  const effectiveSelectedProject =
+    trackerProjects.find((project) => project.id === effectiveSelectedProjectId) ?? null;
+  const selectedProjectHasSlugConflict =
+    effectiveSelectedProject !== null &&
+    existingSagaSlugs.has(trackerProjectSlug(effectiveSelectedProject));
+  const selectedProjectSlug = effectiveSelectedProject
+    ? trackerProjectSlug(effectiveSelectedProject)
+    : '';
   const canImportSelectedProject =
-    selectedProject !== null &&
+    effectiveSelectedProject !== null &&
     selectedRepos.length > 0 &&
-    Boolean(baseBranch.trim()) &&
-    !importedTrackerIds.has(selectedProject.id) &&
+    Boolean(effectiveBaseBranch.trim()) &&
+    !importedTrackerIds.has(effectiveSelectedProject.id) &&
     !selectedProjectHasSlugConflict &&
     !isImporting;
-
-  useEffect(() => {
-    if (!showImportModal) {
-      setSelectedProjectId(null);
-      setSelectedRepos([]);
-      setRepoCandidate('');
-      setBaseBranch('');
-      setSelectedInstanceId('');
-      return;
-    }
-    setSelectedRepos([]);
-    setRepoCandidate('');
-    setBaseBranch('');
-    setSelectedInstanceId('');
-  }, [showImportModal]);
-
-  useEffect(() => {
-    if (!showImportModal) return;
-    if (commonBranches.length === 0) return;
-    if (!commonBranches.includes(baseBranch)) {
-      setBaseBranch(commonBranches[0] ?? 'main');
-    }
-  }, [baseBranch, commonBranches, showImportModal]);
 
   function addSelectedRepo(repoRef: string) {
     const value = repoRef.trim();
@@ -304,15 +292,6 @@ function SagasPageContent() {
     }
     setRepoCandidate('');
   }
-
-  useEffect(() => {
-    if (!showImportModal) return;
-    if (selectedProjectId) return;
-    if (trackerProjects.length === 0) return;
-    const firstProject =
-      trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ?? trackerProjects[0]!;
-    setSelectedProjectId(firstProject.id);
-  }, [importedTrackerIds, selectedProjectId, showImportModal, trackerProjects]);
 
   const groups = useMemo(() => {
     return {
@@ -330,36 +309,53 @@ function SagasPageContent() {
     return <ErrorState message={error instanceof Error ? error.message : 'Failed to load sagas'} />;
 
   function handleSelectSaga(saga: Saga) {
-    setSelectedSagaId(saga.id);
+    setSelectedSagaIdState(saga.id);
     void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: saga.id } });
   }
 
+  function openImportModal() {
+    setShowImportModal(true);
+    setSelectedProjectId(null);
+    setSelectedRepos([]);
+    setRepoCandidate('');
+    setBaseBranch('');
+    setSelectedInstanceId('');
+  }
+
+  function closeImportModal() {
+    setShowImportModal(false);
+    setSelectedProjectId(null);
+    setIsImporting(false);
+    setSelectedRepos([]);
+    setRepoCandidate('');
+    setBaseBranch('');
+    setSelectedInstanceId('');
+  }
+
   function handleImportModalToggle(open: boolean) {
-    setShowImportModal(open);
-    if (!open) {
-      setSelectedProjectId(null);
-      setIsImporting(false);
-      setRepoCandidate('');
+    if (open) {
+      openImportModal();
+      return;
     }
+    closeImportModal();
   }
 
   async function handleImportProject() {
-    if (!selectedProject) return;
+    if (!effectiveSelectedProject) return;
     if (!canImportSelectedProject) return;
 
     setIsImporting(true);
     try {
       const importedSaga = await tracker.importProject(
-        selectedProject.id,
+        effectiveSelectedProject.id,
         selectedRepos,
-        baseBranch,
+        effectiveBaseBranch,
         selectedInstanceId || undefined,
       );
       await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
-      setSelectedSagaId(importedSaga.id);
-      setShowImportModal(false);
-      setSelectedProjectId(null);
-      toast({ title: `Imported ${selectedProject.name}`, tone: 'success' });
+      setSelectedSagaIdState(importedSaga.id);
+      closeImportModal();
+      toast({ title: `Imported ${effectiveSelectedProject.name}`, tone: 'success' });
       void navigate({ to: '/ting/sagas/$sagaId', params: { sagaId: importedSaga.id } });
     } catch (importError) {
       toast({
@@ -373,19 +369,19 @@ function SagasPageContent() {
   }
 
   return (
-    <div className="niuu-flex niuu-h-full niuu-overflow-hidden niuu-bg-bg-primary">
-      <aside className="niuu-flex niuu-w-[294px] niuu-shrink-0 niuu-flex-col niuu-border-r niuu-border-border-subtle niuu-bg-[#151a20]">
-        <div className="niuu-p-4 niuu-border-b niuu-border-border-subtle">
+    <div className="niuu:flex niuu:h-full niuu:overflow-hidden niuu:bg-bg-primary">
+      <aside className="niuu:flex niuu:w-[294px] niuu:shrink-0 niuu:flex-col niuu:border-r niuu:border-border-subtle niuu:bg-[#151a20]">
+        <div className="niuu:p-4 niuu:border-b niuu:border-border-subtle">
           <input
             type="search"
             placeholder="Filter sagas..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Search sagas"
-            className="niuu-w-full niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-3 niuu-text-[14px] niuu-text-text-primary niuu-placeholder-text-muted niuu-outline-none"
+            className="niuu:w-full niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3 niuu:text-[14px] niuu:text-text-primary niuu:placeholder-text-muted niuu:outline-none"
           />
         </div>
-        <div className="niuu-flex-1 niuu-overflow-y-auto niuu-py-4 niuu-space-y-4">
+        <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-4 niuu:space-y-4">
           <SagaBucketSection
             title="ACTIVE"
             items={groups.active}
@@ -411,49 +407,49 @@ function SagasPageContent() {
             onSelect={handleSelectSaga}
           />
           {filtered.length === 0 && (
-            <div className="niuu-px-4 niuu-text-sm niuu-text-text-muted">
+            <div className="niuu:px-4 niuu:text-sm niuu:text-text-muted">
               No sagas match &quot;{search}&quot;.
             </div>
           )}
         </div>
       </aside>
 
-      <main className="niuu-flex-1 niuu-overflow-y-auto niuu-p-5 niuu-space-y-5">
-        <div className="niuu-flex niuu-items-start niuu-justify-between niuu-gap-5">
-          <div className="niuu-max-w-[680px]">
-            <div className="niuu-flex niuu-items-start niuu-gap-3">
+      <main className="niuu:flex-1 niuu:overflow-y-auto niuu:p-5 niuu:space-y-5">
+        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-5">
+          <div className="niuu:max-w-[680px]">
+            <div className="niuu:flex niuu:items-start niuu:gap-3">
               <Rune glyph="ᚦ" size={26} />
               <div>
-                <h2 className="niuu-m-0 niuu-text-[22px] niuu-font-semibold niuu-text-text-primary">
+                <h2 className="niuu:m-0 niuu:text-[22px] niuu:font-semibold niuu:text-text-primary">
                   Sagas
                 </h2>
-                <p className="niuu-m-0 niuu-mt-2 niuu-text-[14px] niuu-leading-6 niuu-text-text-secondary">
+                <p className="niuu:m-0 niuu:mt-2 niuu:text-[14px] niuu:leading-6 niuu:text-text-secondary">
                   Every saga is a decomposed tracker issue driven by a workflow. Select one to
                   inspect phases, runs, and confidence movement.
                 </p>
               </div>
             </div>
           </div>
-          <div className="niuu-flex niuu-items-center niuu-gap-3">
+          <div className="niuu:flex niuu:items-center niuu:gap-3">
             <input
               type="search"
               placeholder="Filter sagas..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Filter sagas"
-              className="niuu-w-[310px] niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-text-text-primary niuu-placeholder-text-muted niuu-outline-none"
+              className="niuu:w-[310px] niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder-text-muted niuu:outline-none"
             />
             <button
               type="button"
-              className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-text-primary"
-              onClick={() => setShowImportModal(true)}
+              className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-text-primary"
+              onClick={openImportModal}
               aria-label="Import saga from tracker"
             >
               Import
             </button>
             <button
               type="button"
-              className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-text-primary"
+              className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-text-primary"
               onClick={() => {
                 const data = JSON.stringify(allSagas, null, 2);
                 downloadJson('sagas.json', data);
@@ -465,7 +461,7 @@ function SagasPageContent() {
             </button>
             <button
               type="button"
-              className="niuu-rounded-lg niuu-border niuu-border-brand/50 niuu-bg-brand niuu-px-4 niuu-py-2.5 niuu-text-[14px] niuu-font-medium niuu-text-bg-primary"
+              className="niuu:rounded-lg niuu:border niuu:border-brand/50 niuu:bg-brand niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-bg-primary"
               onClick={() => setShowNewSagaModal(true)}
               aria-label="Create new saga"
             >
@@ -477,14 +473,14 @@ function SagasPageContent() {
         {selectedSaga ? (
           <SagaDetailPage sagaId={selectedSaga.id} hideBackButton />
         ) : filtered.length === 0 ? (
-          <div className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-6">
+          <div className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6">
             <EmptyState
               title="No sagas found"
               description={search ? `No sagas match "${search}"` : 'No sagas yet.'}
             />
           </div>
         ) : (
-          <div className="niuu-rounded-xl niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-6">
+          <div className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6">
             <EmptyState
               title="Select a saga"
               description="Choose a saga to inspect phases, runs, and confidence movement."
@@ -507,7 +503,7 @@ function SagasPageContent() {
             },
           ]}
         >
-          <p className="niuu-m-0 niuu-text-sm niuu-text-text-secondary">Want to go there now?</p>
+          <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">Want to go there now?</p>
         </Modal>
 
         <Modal
@@ -515,7 +511,7 @@ function SagasPageContent() {
           onOpenChange={handleImportModalToggle}
           title="Import From Tracker"
           description="Browse tracker projects, choose a target repo, and register the project as a Ting saga."
-          className="niuu-max-w-[920px]"
+          className="niuu:max-w-[920px]"
           actions={[
             { label: 'Cancel', variant: 'secondary', closes: true },
             {
@@ -528,7 +524,7 @@ function SagasPageContent() {
           ]}
         >
           {trackerProjectsQuery.isLoading ? (
-            <div className="niuu-py-6">
+            <div className="niuu:py-6">
               <LoadingState label="Loading tracker projects…" />
             </div>
           ) : trackerProjectsQuery.isError ? (
@@ -540,8 +536,8 @@ function SagasPageContent() {
               }
             />
           ) : (
-            <div className="niuu-grid niuu-grid-cols-[minmax(0,1.3fr)_minmax(280px,0.9fr)] niuu-gap-4">
-              <div className="niuu-space-y-2 niuu-max-h-[420px] niuu-overflow-y-auto">
+            <div className="niuu:grid niuu:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.9fr)] niuu:gap-4">
+              <div className="niuu:space-y-2 niuu:max-h-[420px] niuu:overflow-y-auto">
                 {trackerProjects.length === 0 ? (
                   <EmptyState
                     title="No tracker projects found"
@@ -551,45 +547,45 @@ function SagasPageContent() {
                   trackerProjects.map((project: TrackerProject) => {
                     const imported = importedTrackerIds.has(project.id);
                     const slugConflict = existingSagaSlugs.has(trackerProjectSlug(project));
-                    const selected = selectedProjectId === project.id;
+                    const selected = effectiveSelectedProjectId === project.id;
                     return (
                       <button
                         key={project.id}
                         type="button"
                         onClick={() => setSelectedProjectId(project.id)}
                         className={[
-                          'niuu-w-full niuu-rounded-lg niuu-border niuu-p-3 niuu-text-left niuu-transition-colors',
+                          'niuu:w-full niuu:rounded-lg niuu:border niuu:p-3 niuu:text-left niuu:transition-colors',
                           selected
-                            ? 'niuu-border-brand/40 niuu-bg-[#1d232b]'
-                            : 'niuu-border-border-subtle niuu-bg-bg-secondary hover:niuu-bg-bg-tertiary',
+                            ? 'niuu:border-brand/40 niuu:bg-[#1d232b]'
+                            : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:hover:bg-bg-tertiary',
                         ].join(' ')}
                       >
-                        <div className="niuu-flex niuu-items-start niuu-gap-3">
-                          <div className="niuu-min-w-0 niuu-flex-1">
-                            <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-flex-wrap">
-                              <span className="niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+                        <div className="niuu:flex niuu:items-start niuu:gap-3">
+                          <div className="niuu:min-w-0 niuu:flex-1">
+                            <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:flex-wrap">
+                              <span className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
                                 {project.name}
                               </span>
-                              <span className="niuu-rounded niuu-bg-bg-elevated niuu-px-2 niuu-py-0.5 niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
+                              <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
                                 {project.status}
                               </span>
                               {imported && (
-                                <span className="niuu-rounded niuu-bg-brand/15 niuu-px-2 niuu-py-0.5 niuu-text-[11px] niuu-font-mono niuu-text-brand">
+                                <span className="niuu:rounded niuu:bg-brand/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-brand">
                                   imported
                                 </span>
                               )}
                               {!imported && slugConflict && (
-                                <span className="niuu-rounded niuu-bg-amber-500/15 niuu-px-2 niuu-py-0.5 niuu-text-[11px] niuu-font-mono niuu-text-amber-300">
+                                <span className="niuu:rounded niuu:bg-amber-500/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-amber-300">
                                   slug conflict
                                 </span>
                               )}
                             </div>
                             {project.description && (
-                              <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-leading-5 niuu-text-text-secondary">
+                              <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:leading-5 niuu:text-text-secondary">
                                 {project.description}
                               </p>
                             )}
-                            <div className="niuu-mt-2 niuu-flex niuu-items-center niuu-gap-3 niuu-text-[11px] niuu-font-mono niuu-text-text-muted">
+                            <div className="niuu:mt-2 niuu:flex niuu:items-center niuu:gap-3 niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
                               <span>{project.issueCount} issues</span>
                               <span>{project.milestoneCount} milestones</span>
                             </div>
@@ -601,27 +597,27 @@ function SagasPageContent() {
                 )}
               </div>
 
-              <div className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-bg-bg-secondary niuu-p-4 niuu-space-y-4">
-                {selectedProject ? (
+              <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4 niuu:space-y-4">
+                {effectiveSelectedProject ? (
                   <>
                     <div>
-                      <h3 className="niuu-m-0 niuu-text-sm niuu-font-semibold niuu-text-text-primary">
-                        {selectedProject.name}
+                      <h3 className="niuu:m-0 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                        {effectiveSelectedProject.name}
                       </h3>
-                      <p className="niuu-m-0 niuu-mt-2 niuu-text-sm niuu-leading-5 niuu-text-text-secondary">
+                      <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:leading-5 niuu:text-text-secondary">
                         Import registers this tracker project as a saga. Ting will keep the saga
                         linked to the tracker instead of copying the project into local-only state.
                       </p>
                     </div>
 
-                    <label className="niuu-block">
-                      <span className="niuu-block niuu-mb-1.5 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+                    <label className="niuu:block">
+                      <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
                         Repositories
                       </span>
                       {availableRepos.length > 0 ? (
-                        <div className="niuu-flex niuu-flex-col niuu-gap-3">
+                        <div className="niuu:flex niuu:flex-col niuu:gap-3">
                           {selectedRepos.length > 0 ? (
-                            <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+                            <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                               {selectedRepos.map((repoUrl) => {
                                 const repo = findRepoByRef(availableRepos, repoUrl);
                                 const label = repo ? `${repo.org}/${repo.name}` : repoUrl;
@@ -634,7 +630,7 @@ function SagasPageContent() {
                                         current.filter((item) => item !== repoUrl),
                                       )
                                     }
-                                    className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-1 niuu-text-xs niuu-font-mono niuu-text-text-secondary"
+                                    className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:text-text-secondary"
                                   >
                                     <span>{label}</span>
                                     <span aria-hidden="true">×</span>
@@ -656,9 +652,9 @@ function SagasPageContent() {
                           />
                         </div>
                       ) : (
-                        <div className="niuu-flex niuu-flex-col niuu-gap-3">
+                        <div className="niuu:flex niuu:flex-col niuu:gap-3">
                           {selectedRepos.length > 0 ? (
-                            <div className="niuu-flex niuu-flex-wrap niuu-gap-2">
+                            <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                               {selectedRepos.map((repoUrl) => (
                                 <button
                                   key={repoUrl}
@@ -668,7 +664,7 @@ function SagasPageContent() {
                                       current.filter((item) => item !== repoUrl),
                                     )
                                   }
-                                  className="niuu-inline-flex niuu-items-center niuu-gap-2 niuu-rounded-full niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-1 niuu-text-xs niuu-font-mono niuu-text-text-secondary"
+                                  className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:text-text-secondary"
                                 >
                                   <span>{repoUrl}</span>
                                   <span aria-hidden="true">×</span>
@@ -676,7 +672,7 @@ function SagasPageContent() {
                               ))}
                             </div>
                           ) : null}
-                          <div className="niuu-flex niuu-gap-2">
+                          <div className="niuu:flex niuu:gap-2">
                             <input
                               type="text"
                               value={repoCandidate}
@@ -689,12 +685,12 @@ function SagasPageContent() {
                               }}
                               placeholder="org/repo or https://host/org/repo.git"
                               data-testid="repo-select"
-                              className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
+                              className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
                             />
                             <button
                               type="button"
                               onClick={() => addSelectedRepo(repoCandidate)}
-                              className="niuu-rounded-md niuu-border niuu-border-border-subtle niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-xs niuu-font-mono niuu-text-text-primary"
+                              className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-text-primary"
                             >
                               add
                             </button>
@@ -703,39 +699,39 @@ function SagasPageContent() {
                       )}
                     </label>
 
-                    <label className="niuu-block">
-                      <span className="niuu-block niuu-mb-1.5 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+                    <label className="niuu:block">
+                      <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
                         Base branch
                       </span>
                       {commonBranches.length > 0 ? (
                         <BranchSelect
                           repos={availableRepos}
                           selectedRepos={selectedRepos}
-                          value={baseBranch}
+                          value={effectiveBaseBranch}
                           onChange={setBaseBranch}
                           placeholder="Select branch"
                           testId="branch-select"
-                          className="niuu-bg-bg-tertiary"
+                          className="niuu:bg-bg-tertiary"
                         />
                       ) : (
                         <input
                           type="text"
-                          value={baseBranch}
+                          value={effectiveBaseBranch}
                           onChange={(e) => setBaseBranch(e.target.value)}
                           placeholder="main"
-                          className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
+                          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
                         />
                       )}
                     </label>
 
-                    <label className="niuu-block">
-                      <span className="niuu-block niuu-mb-1.5 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+                    <label className="niuu:block">
+                      <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
                         Volundr target (optional)
                       </span>
                       <select
                         value={selectedInstanceId}
                         onChange={(event) => setSelectedInstanceId(event.target.value)}
-                        className="niuu-w-full niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-2 niuu-text-sm niuu-text-text-primary niuu-outline-none focus:niuu-border-brand"
+                        className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
                       >
                         <option value="">Use default routing</option>
                         {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
@@ -747,13 +743,13 @@ function SagasPageContent() {
                           </option>
                         ))}
                       </select>
-                      <div className="niuu-mt-1 niuu-text-[11px] niuu-text-text-faint">
+                      <div className="niuu:mt-1 niuu:text-[11px] niuu:text-text-faint">
                         If selected, the imported saga will default to this forge for dispatches.
                       </div>
                     </label>
 
-                    <div className="niuu-rounded-md niuu-bg-bg-tertiary niuu-p-3 niuu-text-xs niuu-leading-5 niuu-text-text-secondary">
-                      {importedTrackerIds.has(selectedProject.id)
+                    <div className="niuu:rounded-md niuu:bg-bg-tertiary niuu:p-3 niuu:text-xs niuu:leading-5 niuu:text-text-secondary">
+                      {importedTrackerIds.has(effectiveSelectedProject.id)
                         ? 'This tracker project is already imported into Ting.'
                         : selectedProjectHasSlugConflict
                           ? `A saga with slug "${selectedProjectSlug}" already exists in Ting.`

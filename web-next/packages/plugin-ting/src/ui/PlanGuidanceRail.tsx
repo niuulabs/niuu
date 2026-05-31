@@ -33,22 +33,22 @@ const WHAT_A_PLANNING_RUN_PRODUCES: GuidanceCard = {
 
 function GuidanceCard({ card }: { card: GuidanceCard }) {
   return (
-    <div className="niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4">
-      <h3 className="niuu-m-0 niuu-mb-3 niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+    <div className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+      <h3 className="niuu:m-0 niuu:mb-3 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
         {card.title}
       </h3>
-      <ul className="niuu-list-none niuu-p-0 niuu-m-0 niuu-flex niuu-flex-col niuu-gap-2">
+      <ul className="niuu:list-none niuu:p-0 niuu:m-0 niuu:flex niuu:flex-col niuu:gap-2">
         {card.items.map((item, i) => (
-          <li key={i} className="niuu-flex niuu-gap-2 niuu-text-xs niuu-text-text-secondary">
+          <li key={i} className="niuu:flex niuu:gap-2 niuu:text-xs niuu:text-text-secondary">
             {card.numbered ? (
               <span
-                className="niuu-inline-flex niuu-items-center niuu-justify-center niuu-w-4 niuu-h-4 niuu-rounded-full niuu-bg-brand niuu-text-bg-primary niuu-font-bold niuu-shrink-0"
+                className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:w-4 niuu:h-4 niuu:rounded-full niuu:bg-brand niuu:text-bg-primary niuu:font-bold niuu:shrink-0"
                 style={{ fontSize: 9 }}
               >
                 {i + 1}
               </span>
             ) : (
-              <span className="niuu-text-text-faint niuu-shrink-0">·</span>
+              <span className="niuu:text-text-faint niuu:shrink-0">·</span>
             )}
             <span>{item}</span>
           </li>
@@ -61,7 +61,7 @@ function GuidanceCard({ card }: { card: GuidanceCard }) {
 export function PlanGuidanceRail() {
   return (
     <aside
-      className="niuu-flex niuu-flex-col niuu-gap-4 niuu-p-5"
+      className="niuu:flex niuu:flex-col niuu:gap-4 niuu:p-5"
       style={{ width: 280, flexShrink: 0 }}
       aria-label="Plan guidance"
     >

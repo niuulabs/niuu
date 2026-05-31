@@ -68,7 +68,7 @@ const TYPE_PRIORITY: Record<string, number> = {
   model: 17,
 };
 
-function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
+export function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
   return [...nodes].sort((a, b) => {
     const aOrder = a.layoutHints?.order;
     const bOrder = b.layoutHints?.order;
@@ -159,7 +159,7 @@ function ringCapacity(radius: number, arcSpan: number, minSpacing: number): numb
   return Math.max(1, Math.floor(circumference / Math.max(minSpacing, 1)));
 }
 
-function placeArcChildren(
+export function placeArcChildren(
   children: TopologyNode[],
   anchor: NodePosition | undefined,
   options: ArcPlacementOptions,
@@ -208,7 +208,10 @@ function packGroup(id: string, order: number, children: TopologyNode[]): PackGro
   };
 }
 
-function packGroupsForNode(node: TopologyNode, children: TopologyNode[]): Array<PackGroup | null> {
+export function packGroupsForNode(
+  node: TopologyNode,
+  children: TopologyNode[],
+): Array<PackGroup | null> {
   if (node.typeId !== 'run') {
     return [packGroup(node.id, 0, children)];
   }
@@ -552,20 +555,18 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   for (const node of nestedNodes) {
     const children = childrenByParent.get(node.id) ?? [];
-    let contentExtent = 0;
-    if (node.typeId === 'run') {
-      const nestedLayout = buildNestedPackedLayout(node, children, nestedExtent);
-      nestedLayouts.set(node.id, nestedLayout);
-      contentExtent = nestedLayout.radius;
-    } else if (node.typeId === 'host') {
-      const hostLayout = buildHostPackedLayout(node, children, nestedExtent);
-      hostLayouts.set(node.id, hostLayout);
-      contentExtent = hostLayout.outerRadius;
-    } else {
-      const nestedLayout = buildNestedPackedLayout(node, children, nestedExtent);
-      nestedLayouts.set(node.id, nestedLayout);
-      contentExtent = nestedLayout.radius;
-    }
+    const contentExtent =
+      node.typeId === 'host'
+        ? (() => {
+            const hostLayout = buildHostPackedLayout(node, children, nestedExtent);
+            hostLayouts.set(node.id, hostLayout);
+            return hostLayout.outerRadius;
+          })()
+        : (() => {
+            const nestedLayout = buildNestedPackedLayout(node, children, nestedExtent);
+            nestedLayouts.set(node.id, nestedLayout);
+            return nestedLayout.radius;
+          })();
     nestedRadii.set(node.id, Math.max(nodeExtent(node), contentExtent));
   }
 

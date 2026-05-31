@@ -58,7 +58,7 @@ const VIEW_LABELS: Record<WorkflowView, string> = {
 const VIEW_OPTIONS = VIEWS.map((value) => ({ value, label: VIEW_LABELS[value] }));
 
 const ACTION_BTN =
-  'niuu-bg-transparent niuu-border niuu-border-solid niuu-border-border-subtle niuu-rounded-md niuu-text-text-secondary niuu-font-sans niuu-text-xs niuu-py-1.5 niuu-px-3 niuu-cursor-pointer niuu-whitespace-nowrap hover:niuu-border-border hover:niuu-text-text-primary niuu-transition-colors';
+  'niuu:bg-transparent niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-md niuu:text-text-secondary niuu:font-sans niuu:text-xs niuu:py-1.5 niuu:px-3 niuu:cursor-pointer niuu:whitespace-nowrap niuu:hover:border-border niuu:hover:text-text-primary niuu:transition-colors';
 
 export function WorkflowBuilder({
   initialWorkflow,
@@ -132,7 +132,7 @@ export function WorkflowBuilder({
   return (
     <div
       data-testid="workflow-builder"
-      className="niuu-flex niuu-h-full niuu-min-h-[600px] niuu-font-sans"
+      className="niuu:flex niuu:h-full niuu:min-h-[600px] niuu:font-sans"
     >
       {/* Library panel — left of canvas */}
       {view === 'graph' && (
@@ -140,24 +140,24 @@ export function WorkflowBuilder({
       )}
 
       {/* Center: header + action bar + canvas + bottom bar */}
-      <div className="niuu-flex-1 niuu-flex niuu-flex-col niuu-min-w-0">
+      <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:min-w-0">
         {/* Header bar */}
-        <div className="niuu-flex niuu-items-center niuu-py-3 niuu-px-6 niuu-border-b niuu-border-border niuu-bg-bg-secondary niuu-shrink-0 niuu-gap-6">
-          <div className="niuu-flex niuu-flex-col niuu-gap-0.5 niuu-min-w-0">
+        <div className="niuu:flex niuu:items-center niuu:py-3 niuu:px-6 niuu:border-b niuu:border-border niuu:bg-bg-secondary niuu:shrink-0 niuu:gap-6">
+          <div className="niuu:flex niuu:flex-col niuu:gap-0.5 niuu:min-w-0">
             <h3
-              className="niuu-m-0 niuu-text-sm niuu-font-semibold niuu-text-text-primary niuu-whitespace-nowrap"
+              className="niuu:m-0 niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:whitespace-nowrap"
               data-testid="builder-title"
             >
               {workflow.name}
             </h3>
-            <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-faint niuu-max-w-[320px] niuu-truncate">
+            <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint niuu:max-w-[320px] niuu:truncate">
               {workflow.description || 'Release automation workflow'}
             </span>
           </div>
 
           {workflow.version && (
             <span
-              className="niuu-text-[10px] niuu-font-mono niuu-text-text-muted niuu-bg-bg-elevated niuu-border niuu-border-border niuu-rounded niuu-px-1.5 niuu-py-0.5"
+              className="niuu:text-[10px] niuu:font-mono niuu:text-text-muted niuu:bg-bg-elevated niuu:border niuu:border-border niuu:rounded niuu:px-1.5 niuu:py-0.5"
               data-testid="builder-version"
             >
               v{workflow.version}
@@ -170,14 +170,14 @@ export function WorkflowBuilder({
             value={view}
             onChange={setView}
             aria-label="Workflow view"
-            className="niuu-self-center niuu-rounded-xl niuu-border niuu-border-border-subtle"
+            className="niuu:self-center niuu:rounded-xl niuu:border niuu:border-border-subtle"
           />
 
           {/* Spacer + toolbar buttons */}
-          <div className="niuu-flex niuu-items-center niuu-gap-4 niuu-ml-auto niuu-self-center">
+          <div className="niuu:flex niuu:items-center niuu:gap-4 niuu:ml-auto niuu:self-center">
             <button
               type="button"
-              className="niuu-bg-transparent niuu-border-none niuu-text-text-muted niuu-cursor-pointer niuu-text-sm niuu-p-0 hover:niuu-text-text-secondary"
+              className="niuu:bg-transparent niuu:border-none niuu:text-text-muted niuu:cursor-pointer niuu:text-sm niuu:p-0 niuu:hover:text-text-secondary"
               title="Undo"
               aria-label="Undo"
             >
@@ -185,13 +185,13 @@ export function WorkflowBuilder({
             </button>
             <button
               type="button"
-              className="niuu-bg-transparent niuu-border-none niuu-text-text-muted niuu-cursor-pointer niuu-text-sm niuu-p-0 hover:niuu-text-text-secondary"
+              className="niuu:bg-transparent niuu:border-none niuu:text-text-muted niuu:cursor-pointer niuu:text-sm niuu:p-0 niuu:hover:text-text-secondary"
               title="Redo"
               aria-label="Redo"
             >
               ↻
             </button>
-            <div className="niuu-h-7 niuu-w-px niuu-bg-border" />
+            <div className="niuu:h-7 niuu:w-px niuu:bg-border" />
             <button type="button" className={ACTION_BTN} data-testid="btn-diff">
               Diff
             </button>
@@ -203,7 +203,7 @@ export function WorkflowBuilder({
 
         {/* Action bar */}
         <div
-          className="niuu-flex niuu-items-center niuu-gap-2 niuu-py-3 niuu-px-6 niuu-border-b niuu-border-border niuu-bg-bg-secondary niuu-shrink-0"
+          className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-3 niuu:px-6 niuu:border-b niuu:border-border niuu:bg-bg-secondary niuu:shrink-0"
           data-testid="action-bar"
         >
           {onSave && (
@@ -229,7 +229,7 @@ export function WorkflowBuilder({
           )}
           <button
             type="button"
-            className="niuu-bg-transparent niuu-border niuu-border-solid niuu-border-brand niuu-rounded-md niuu-text-brand niuu-font-sans niuu-text-xs niuu-py-1.5 niuu-px-3 niuu-cursor-pointer niuu-whitespace-nowrap hover:niuu-bg-brand/10 niuu-transition-colors"
+            className="niuu:bg-transparent niuu:border niuu:border-solid niuu:border-brand niuu:rounded-md niuu:text-brand niuu:font-sans niuu:text-xs niuu:py-1.5 niuu:px-3 niuu:cursor-pointer niuu:whitespace-nowrap niuu:hover:bg-brand/10 niuu:transition-colors"
             data-testid="btn-test"
           >
             Test
@@ -240,7 +240,7 @@ export function WorkflowBuilder({
         </div>
 
         {/* Canvas content */}
-        <div className="niuu-flex-1 niuu-flex niuu-flex-col niuu-relative niuu-min-h-0">
+        <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:relative niuu:min-h-0">
           {view === 'graph' && (
             <GraphView
               nodes={workflow.nodes}

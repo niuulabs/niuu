@@ -9,6 +9,7 @@ from importlib.metadata import metadata
 
 from fastapi import FastAPI
 
+from bifrost.app import create_app as create_bifrost_app
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.cors import apply_cors_middleware
@@ -496,6 +497,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.admin_settings = {
         "storage": {"home_enabled": True},
     }
+
+    # Standalone Volundr deployments co-host the canonical Bifrost API surface
+    # so local chart/runtime consumers can resolve the shared model catalog.
+    app.mount("/api/v1/bifrost", create_bifrost_app(settings.bifrost))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:

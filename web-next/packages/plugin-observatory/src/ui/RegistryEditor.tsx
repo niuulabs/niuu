@@ -54,7 +54,7 @@ const ALL_CATEGORIES: EntityCategory[] = [
 ];
 
 const INPUT_CLS =
-  'niuu-w-full niuu-px-3 niuu-py-2 niuu-bg-bg-tertiary niuu-border niuu-border-border niuu-rounded-sm niuu-text-text-primary niuu-text-sm niuu-font-sans niuu-box-border';
+  'niuu:w-full niuu:px-3 niuu:py-2 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu-box-border';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,38 +83,38 @@ function TypePreviewDrawer({
   return (
     <div
       data-testid="type-preview-drawer"
-      className="niuu-border-l niuu-border-border-subtle niuu-bg-bg-secondary niuu-flex niuu-flex-col niuu-overflow-hidden"
+      className="niuu:border-l niuu:border-border-subtle niuu:bg-bg-secondary niuu:flex niuu:flex-col niuu:overflow-hidden"
     >
       {/* Header: shape icon + type info */}
-      <div className="niuu-p-4 niuu-border-b niuu-border-border-subtle niuu-flex niuu-items-start niuu-gap-3">
-        <div className="niuu-w-12 niuu-h-12 niuu-flex niuu-items-center niuu-justify-center niuu-bg-bg-tertiary niuu-rounded-md niuu-border niuu-border-border-subtle niuu-shrink-0">
+      <div className="niuu:p-4 niuu:border-b niuu:border-border-subtle niuu:flex niuu:items-start niuu:gap-3">
+        <div className="niuu:w-12 niuu:h-12 niuu:flex niuu:items-center niuu:justify-center niuu:bg-bg-tertiary niuu:rounded-md niuu:border niuu:border-border-subtle niuu:shrink-0">
           <ShapeSvg shape={type.shape} color={type.color as ShapeColor} size={28} />
         </div>
-        <div className="niuu-flex-1 niuu-min-w-0">
-          <div className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted niuu-uppercase niuu-tracking-[0.07em] niuu-mb-[2px]">
+        <div className="niuu:flex-1 niuu:min-w-0">
+          <div className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:uppercase niuu:tracking-[0.07em] niuu:mb-[2px]">
             type · {type.category}
           </div>
-          <div className="niuu-text-lg niuu-font-semibold niuu-tracking-[-0.015em] niuu-flex niuu-items-center niuu-gap-2">
+          <div className="niuu:text-lg niuu:font-semibold niuu:tracking-[-0.015em] niuu:flex niuu:items-center niuu:gap-2">
             {type.label}
-            <span className="niuu-font-mono niuu-text-brand niuu-text-base niuu-font-bold">
+            <span className="niuu:font-mono niuu:text-brand niuu:text-base niuu:font-bold">
               {type.rune}
             </span>
           </div>
-          <div className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted niuu-mt-[2px]">
+          <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:mt-[2px]">
             {type.id}
           </div>
         </div>
         <button
           aria-label="Close preview"
           onClick={onClose}
-          className="niuu-bg-transparent niuu-border-0 niuu-cursor-pointer niuu-text-text-muted niuu-p-1 niuu-leading-none niuu-text-base"
+          className="niuu:bg-transparent niuu:border-0 niuu:cursor-pointer niuu:text-text-muted niuu:p-1 niuu:leading-none niuu:text-base"
         >
           ✕
         </button>
       </div>
 
       {/* Editable form */}
-      <div className="niuu-p-4 niuu-overflow-y-auto niuu-flex-1 niuu-flex niuu-flex-col niuu-gap-4">
+      <div className="niuu:p-4 niuu:overflow-y-auto niuu:flex-1 niuu:flex niuu:flex-col niuu:gap-4">
         {/* ID */}
         <div>
           <div className="registry-section-head">ID</div>
@@ -158,7 +158,7 @@ function TypePreviewDrawer({
         <div>
           <div className="registry-section-head">Description</div>
           <textarea
-            className={`${INPUT_CLS} niuu-min-h-[72px] niuu-resize-y`}
+            className={`${INPUT_CLS} niuu:min-h-[72px] niuu:resize-y`}
             value={type.description}
             onChange={(e) => onUpdate(type.id, { description: e.target.value })}
             data-testid="edit-description"
@@ -168,10 +168,10 @@ function TypePreviewDrawer({
         {/* Visual — Shape picker */}
         <div>
           <div className="registry-section-head">Visual</div>
-          <div className="niuu-text-[10px] niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted niuu-mb-1">
+          <div className="niuu:text-[10px] niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:mb-1">
             Shape
           </div>
-          <div className="niuu-grid niuu-grid-cols-7 niuu-gap-1" data-testid="shape-picker">
+          <div className="niuu:grid niuu:grid-cols-7 niuu:gap-1" data-testid="shape-picker">
             {ALL_SHAPES.map((s) => (
               <button
                 key={s}
@@ -179,10 +179,10 @@ function TypePreviewDrawer({
                 onClick={() => onUpdate(type.id, { shape: s })}
                 aria-label={s}
                 aria-pressed={type.shape === s}
-                className={`niuu-w-9 niuu-h-9 niuu-flex niuu-items-center niuu-justify-center niuu-rounded-sm niuu-border niuu-cursor-pointer ${
+                className={`niuu:w-9 niuu:h-9 niuu:flex niuu:items-center niuu:justify-center niuu:rounded-sm niuu:border niuu:cursor-pointer ${
                   type.shape === s
-                    ? 'niuu-border-brand niuu-bg-bg-elevated'
-                    : 'niuu-border-border-subtle niuu-bg-bg-tertiary hover:niuu-border-border'
+                    ? 'niuu:border-brand niuu:bg-bg-elevated'
+                    : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:hover:border-border'
                 }`}
               >
                 <ShapeSvg shape={s} color={type.color as ShapeColor} size={16} />
@@ -193,10 +193,10 @@ function TypePreviewDrawer({
 
         {/* Color picker */}
         <div>
-          <div className="niuu-text-[10px] niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted niuu-mb-1">
+          <div className="niuu:text-[10px] niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:mb-1">
             Color
           </div>
-          <div className="niuu-grid niuu-grid-cols-7 niuu-gap-1" data-testid="color-picker">
+          <div className="niuu:grid niuu:grid-cols-7 niuu:gap-1" data-testid="color-picker">
             {ALL_COLORS.map((c) => (
               <button
                 key={c}
@@ -204,10 +204,10 @@ function TypePreviewDrawer({
                 onClick={() => onUpdate(type.id, { color: c })}
                 aria-label={c}
                 aria-pressed={type.color === c}
-                className={`niuu-w-9 niuu-h-9 niuu-rounded-sm niuu-border niuu-cursor-pointer ${
+                className={`niuu:w-9 niuu:h-9 niuu:rounded-sm niuu:border niuu:cursor-pointer ${
                   type.color === c
-                    ? 'niuu-border-brand'
-                    : 'niuu-border-border-subtle hover:niuu-border-border'
+                    ? 'niuu:border-brand'
+                    : 'niuu:border-border-subtle niuu:hover:border-border'
                 }`}
               >
                 <ShapeSvg shape="square" color={c} size={24} />
@@ -217,11 +217,11 @@ function TypePreviewDrawer({
         </div>
 
         {/* Rune + Size side by side */}
-        <div className="niuu-grid niuu-grid-cols-2 niuu-gap-3">
+        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
           <div>
             <div className="registry-section-head">Rune</div>
             <input
-              className={`${INPUT_CLS} niuu-font-mono niuu-text-center niuu-text-lg`}
+              className={`${INPUT_CLS} niuu:font-mono niuu:text-center niuu:text-lg`}
               value={type.rune}
               maxLength={2}
               onChange={(e) => onUpdate(type.id, { rune: e.target.value.slice(0, 2) })}
@@ -244,10 +244,10 @@ function TypePreviewDrawer({
         <div className="registry-section-head">Containment</div>
 
         <div>
-          <div className="niuu-text-[10px] niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted niuu-mb-1">
+          <div className="niuu:text-[10px] niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:mb-1">
             Can contain
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-1" data-testid="edit-can-contain">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-1" data-testid="edit-can-contain">
             {allTypeIds.map((id) => {
               const active = type.canContain.includes(id);
               return (
@@ -261,10 +261,10 @@ function TypePreviewDrawer({
                         : [...type.canContain, id],
                     })
                   }
-                  className={`niuu-px-2 niuu-py-[2px] niuu-rounded-sm niuu-border niuu-text-xs niuu-font-mono niuu-cursor-pointer ${
+                  className={`niuu:px-2 niuu:py-[2px] niuu:rounded-sm niuu:border niuu:text-xs niuu:font-mono niuu:cursor-pointer ${
                     active
-                      ? 'niuu-border-brand niuu-bg-bg-elevated niuu-text-brand'
-                      : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-border-border'
+                      ? 'niuu:border-brand niuu:bg-bg-elevated niuu:text-brand'
+                      : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:border-border'
                   }`}
                 >
                   {id}
@@ -275,10 +275,10 @@ function TypePreviewDrawer({
         </div>
 
         <div>
-          <div className="niuu-text-[10px] niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted niuu-mb-1">
+          <div className="niuu:text-[10px] niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:mb-1">
             Can live inside
           </div>
-          <div className="niuu-flex niuu-flex-wrap niuu-gap-1" data-testid="edit-parent-types">
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-1" data-testid="edit-parent-types">
             {allTypeIds.map((id) => {
               const active = type.parentTypes.includes(id);
               return (
@@ -292,10 +292,10 @@ function TypePreviewDrawer({
                         : [...type.parentTypes, id],
                     })
                   }
-                  className={`niuu-px-2 niuu-py-[2px] niuu-rounded-sm niuu-border niuu-text-xs niuu-font-mono niuu-cursor-pointer ${
+                  className={`niuu:px-2 niuu:py-[2px] niuu:rounded-sm niuu:border niuu:text-xs niuu:font-mono niuu:cursor-pointer ${
                     active
-                      ? 'niuu-border-brand niuu-bg-bg-elevated niuu-text-brand'
-                      : 'niuu-border-border-subtle niuu-bg-bg-tertiary niuu-text-text-muted hover:niuu-border-border'
+                      ? 'niuu:border-brand niuu:bg-bg-elevated niuu:text-brand'
+                      : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:border-border'
                   }`}
                 >
                   {id}
@@ -309,16 +309,16 @@ function TypePreviewDrawer({
         <div className="registry-section-head">Fields</div>
 
         {type.fields.length === 0 && (
-          <div className="niuu-text-xs niuu-text-text-muted niuu-font-mono">— no fields —</div>
+          <div className="niuu:text-xs niuu:text-text-muted niuu:font-mono">— no fields —</div>
         )}
         {type.fields.map((f, i) => (
           <div
             key={i}
-            className="niuu-grid niuu-gap-[6px] niuu-items-center niuu-mb-[6px]"
+            className="niuu:grid niuu:gap-[6px] niuu:items-center niuu:mb-[6px]"
             style={{ gridTemplateColumns: '1fr 80px 30px' }}
           >
             <input
-              className={`${INPUT_CLS} niuu-h-7 niuu-text-[11px] niuu-py-1 niuu-px-2`}
+              className={`${INPUT_CLS} niuu:h-7 niuu:text-[11px] niuu:py-1 niuu:px-2`}
               value={f.label}
               onChange={(e) => {
                 const fields = [...type.fields];
@@ -331,7 +331,7 @@ function TypePreviewDrawer({
               }}
             />
             <select
-              className={`${INPUT_CLS} niuu-h-7 niuu-text-[11px] niuu-py-1 niuu-px-2`}
+              className={`${INPUT_CLS} niuu:h-7 niuu:text-[11px] niuu:py-1 niuu:px-2`}
               value={f.type}
               onChange={(e) => {
                 const fields = [...type.fields];
@@ -350,7 +350,7 @@ function TypePreviewDrawer({
             </select>
             <button
               type="button"
-              className="niuu-bg-transparent niuu-border niuu-border-border-subtle niuu-rounded-sm niuu-cursor-pointer niuu-text-text-muted niuu-text-xs niuu-h-7 hover:niuu-text-critical"
+              className="niuu:bg-transparent niuu:border niuu:border-border-subtle niuu:rounded-sm niuu:cursor-pointer niuu:text-text-muted niuu:text-xs niuu:h-7 niuu:hover:text-critical"
               onClick={() => {
                 const fields = [...type.fields];
                 fields.splice(i, 1);
@@ -363,7 +363,7 @@ function TypePreviewDrawer({
         ))}
         <button
           type="button"
-          className="niuu-py-1 niuu-px-3 niuu-bg-bg-secondary niuu-text-text-secondary niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs niuu-mt-1"
+          className="niuu:py-1 niuu:px-3 niuu:bg-bg-secondary niuu:text-text-secondary niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:mt-1"
           onClick={() =>
             onUpdate(type.id, {
               fields: [...type.fields, { key: 'new_field', label: 'New field', type: 'string' }],
@@ -374,11 +374,11 @@ function TypePreviewDrawer({
           + add field
         </button>
 
-        <div className="niuu-pt-4 niuu-mt-2 niuu-border-t niuu-border-border-subtle">
+        <div className="niuu:pt-4 niuu:mt-2 niuu:border-t niuu:border-border-subtle">
           <button
             type="button"
             onClick={() => onDelete(type.id)}
-            className="niuu-py-2 niuu-px-3 niuu-bg-bg-secondary niuu-text-critical niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs"
+            className="niuu:py-2 niuu:px-3 niuu:bg-bg-secondary niuu:text-critical niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs"
           >
             Delete type
           </button>
@@ -421,14 +421,14 @@ function TypesTab({ registry, selectedId, onSelect, search }: TypesTabProps) {
   return (
     <div>
       {filtered.length === 0 && (
-        <p className="niuu-text-text-muted niuu-text-sm">No types match your search.</p>
+        <p className="niuu:text-text-muted niuu:text-sm">No types match your search.</p>
       )}
 
       {[...byCategory.entries()].map(([cat, types]) => (
-        <div key={cat} className="niuu-mb-5">
-          <div className="niuu-font-mono niuu-text-[11px] niuu-uppercase niuu-tracking-[0.07em] niuu-text-text-muted niuu-mb-2 niuu-flex niuu-items-center niuu-gap-2">
+        <div key={cat} className="niuu:mb-5">
+          <div className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:mb-2 niuu:flex niuu:items-center niuu:gap-2">
             {cat}
-            <span className="niuu-font-normal niuu-text-text-muted">· {types.length}</span>
+            <span className="niuu:font-normal niuu:text-text-muted">· {types.length}</span>
           </div>
           <div className="type-grid">
             {types.map((t) => (
@@ -444,7 +444,7 @@ function TypesTab({ registry, selectedId, onSelect, search }: TypesTabProps) {
                 </div>
                 <div className="type-name">
                   {t.label}
-                  <span className="niuu-font-mono niuu-text-brand niuu-text-[12px] niuu-font-bold">
+                  <span className="niuu:font-mono niuu:text-brand niuu:text-[12px] niuu:font-bold">
                     {t.rune}
                   </span>
                 </div>
@@ -460,7 +460,7 @@ function TypesTab({ registry, selectedId, onSelect, search }: TypesTabProps) {
                   </div>
                   <div>
                     shape ·{' '}
-                    <strong className="niuu-text-text-secondary niuu-font-medium">{t.shape}</strong>
+                    <strong className="niuu:text-text-secondary niuu:font-medium">{t.shape}</strong>
                   </div>
                 </div>
                 <div className="type-desc">{t.description.split('.')[0]}.</div>
@@ -595,18 +595,18 @@ function ContainmentTab({ registry, selectedId, onSelect, tryReparent }: Contain
         >
           <span
             aria-hidden
-            className="niuu-text-text-muted niuu-font-mono niuu-text-[11px] niuu-select-none"
+            className="niuu:text-text-muted niuu:font-mono niuu:text-[11px] niuu:select-none"
           >
             ⋮⋮
           </span>
-          <span className="niuu-w-4 niuu-inline-flex niuu-justify-center niuu-shrink-0">
+          <span className="niuu:w-4 niuu:inline-flex niuu:justify-center niuu:shrink-0">
             <ShapeSvg shape={t.shape} color={t.color as ShapeColor} size={14} />
           </span>
-          <span className="niuu-font-mono niuu-text-brand niuu-text-[13px] niuu-font-bold niuu-shrink-0">
+          <span className="niuu:font-mono niuu:text-brand niuu:text-[13px] niuu:font-bold niuu:shrink-0">
             {t.rune}
           </span>
-          <span className="niuu-font-medium niuu-text-sm">{t.label}</span>
-          <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted niuu-ml-auto">
+          <span className="niuu:font-medium niuu:text-sm">{t.label}</span>
+          <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:ml-auto">
             {t.id}
           </span>
         </div>
@@ -629,9 +629,9 @@ function ContainmentTab({ registry, selectedId, onSelect, tryReparent }: Contain
       {orphans.length > 0 && (
         <div
           data-testid="orphans-section"
-          className="niuu-mt-4 niuu-pt-3 niuu-border-t niuu-border-dashed niuu-border-border-subtle"
+          className="niuu:mt-4 niuu:pt-3 niuu:border-t niuu:border-dashed niuu:border-border-subtle"
         >
-          <div className="niuu-font-mono niuu-text-[10px] niuu-text-text-muted niuu-uppercase niuu-tracking-[0.08em] niuu-mb-1">
+          <div className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:uppercase niuu:tracking-[0.08em] niuu:mb-1">
             orphans — parent missing
           </div>
           {orphans.map((o) => renderNode(o))}
@@ -664,20 +664,20 @@ function JsonTab({ registry }: JsonTabProps) {
   };
 
   return (
-    <div className="niuu-relative">
+    <div className="niuu:relative">
       <button
         aria-label="Copy JSON"
         data-testid="copy-json-btn"
         onClick={handleCopy}
-        className={`niuu-absolute niuu-top-2 niuu-right-2 niuu-bg-bg-elevated niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-text-xs niuu-font-mono niuu-px-[10px] niuu-py-1 niuu-z-[1] ${
-          copied ? 'niuu-text-brand' : 'niuu-text-text-secondary'
+        className={`niuu:absolute niuu:top-2 niuu:right-2 niuu:bg-bg-elevated niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:text-xs niuu:font-mono niuu:px-[10px] niuu:py-1 niuu:z-[1] ${
+          copied ? 'niuu:text-brand' : 'niuu:text-text-secondary'
         }`}
       >
         {copied ? 'copied!' : 'copy'}
       </button>
       <pre
         data-testid="json-output"
-        className="niuu-m-0 niuu-p-4 niuu-bg-bg-primary niuu-border niuu-border-border-subtle niuu-rounded-md niuu-font-mono niuu-text-[11px] niuu-text-text-secondary niuu-overflow-x-auto niuu-leading-[1.55] niuu-min-h-[480px] niuu-max-h-[calc(100vh-240px)] niuu-overflow-y-auto"
+        className="niuu:m-0 niuu:p-4 niuu:bg-bg-primary niuu:border niuu:border-border-subtle niuu:rounded-md niuu:font-mono niuu:text-[11px] niuu:text-text-secondary niuu:overflow-x-auto niuu:leading-[1.55] niuu:min-h-[480px] niuu:max-h-[calc(100vh-240px)] niuu:overflow-y-auto"
       >
         {json}
       </pre>
@@ -700,6 +700,28 @@ export function RegistryEditor({
   isSaving = false,
   saveError = null,
 }: RegistryEditorProps) {
+  return (
+    <RegistryEditorInner
+      key={`${initialRegistry.version}:${initialRegistry.updatedAt}:${initialRegistry.types.length}`}
+      initialRegistry={initialRegistry}
+      onSave={onSave}
+      isSaving={isSaving}
+      saveError={saveError}
+    />
+  );
+}
+
+function RegistryEditorInner({
+  initialRegistry,
+  onSave,
+  isSaving,
+  saveError,
+}: {
+  initialRegistry: Registry;
+  onSave: RegistryEditorProps['onSave'];
+  isSaving: boolean;
+  saveError: string | null;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>('types');
   const [search, setSearch] = useState('');
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -720,18 +742,18 @@ export function RegistryEditor({
 
   return (
     <div
-      className="niuu-grid niuu-h-full niuu-overflow-hidden niuu-bg-bg-primary"
+      className="niuu:grid niuu:h-full niuu:overflow-hidden niuu:bg-bg-primary"
       style={{ gridTemplateColumns: showDrawer ? '1fr 380px' : '1fr' }}
     >
       {/* Main column */}
-      <div className="niuu-flex niuu-flex-col niuu-overflow-hidden">
+      <div className="niuu:flex niuu:flex-col niuu:overflow-hidden">
         {/* Header */}
-        <div className="niuu-py-4 niuu-px-6 niuu-border-b niuu-border-border-subtle niuu-shrink-0">
-          <div className="niuu-flex niuu-items-baseline niuu-justify-between niuu-mb-1">
-            <h2 className="niuu-m-0 niuu-text-xl niuu-font-bold">Entity type registry</h2>
-            <div className="niuu-flex niuu-items-center niuu-gap-3">
-              <span className="niuu-font-mono niuu-text-[11px] niuu-text-text-muted">
-                rev <strong className="niuu-text-text-secondary">{registry.version}</strong>
+        <div className="niuu:py-4 niuu:px-6 niuu:border-b niuu:border-border-subtle niuu:shrink-0">
+          <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-1">
+            <h2 className="niuu:m-0 niuu:text-xl niuu:font-bold">Entity type registry</h2>
+            <div className="niuu:flex niuu:items-center niuu:gap-3">
+              <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
+                rev <strong className="niuu:text-text-secondary">{registry.version}</strong>
                 {' · '}
                 {registry.types.length} types
                 {' · '}
@@ -741,19 +763,19 @@ export function RegistryEditor({
                 type="button"
                 onClick={handleSave}
                 disabled={!isDirty || isSaving}
-                className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs niuu-whitespace-nowrap disabled:niuu-opacity-50 disabled:niuu-cursor-default"
+                className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:whitespace-nowrap niuu:disabled:opacity-50 niuu:disabled:cursor-default"
               >
                 {isSaving ? 'saving…' : 'save'}
               </button>
             </div>
           </div>
-          <p className="niuu-m-0 niuu-text-text-secondary niuu-text-sm niuu-max-w-[64ch]">
+          <p className="niuu:m-0 niuu:text-text-secondary niuu:text-sm niuu:max-w-[64ch]">
             Every node that appears in the Observatory canvas is an instance of one of these types.
             Edit a type here and the canvas re-renders.
           </p>
-          <div className="niuu-mt-2 niuu-text-xs niuu-font-mono niuu-text-text-muted">
+          <div className="niuu:mt-2 niuu:text-xs niuu:font-mono niuu:text-text-muted">
             {saveError ? (
-              <span className="niuu-text-critical">{saveError}</span>
+              <span className="niuu:text-critical">{saveError}</span>
             ) : isSaving ? (
               <span>saving registry…</span>
             ) : isDirty ? (
@@ -767,7 +789,7 @@ export function RegistryEditor({
         {/* Tabs */}
         <div
           role="tablist"
-          className="niuu-flex niuu-items-center niuu-border-b niuu-border-border-subtle niuu-px-6 niuu-shrink-0"
+          className="niuu:flex niuu:items-center niuu:border-b niuu:border-border-subtle niuu:px-6 niuu:shrink-0"
         >
           {(['types', 'containment', 'json'] as TabId[]).map((tab) => (
             <button
@@ -781,22 +803,22 @@ export function RegistryEditor({
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
-          <div className="niuu-flex-1" />
+          <div className="niuu:flex-1" />
           {activeTab === 'types' && (
-            <div className="niuu-flex niuu-items-center niuu-gap-2">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
               <input
                 aria-label="Filter types"
                 placeholder="filter types…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="niuu-h-8 niuu-px-3 niuu-bg-bg-tertiary niuu-border niuu-border-border niuu-rounded-sm niuu-text-text-primary niuu-text-sm niuu-font-sans niuu-box-border"
+                className="niuu:h-8 niuu:px-3 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu-box-border"
                 style={{ width: 220 }}
               />
               <button
                 type="button"
                 onClick={createType}
                 data-testid="create-type-btn"
-                className="niuu-py-1 niuu-px-3 niuu-bg-brand niuu-text-bg-primary niuu-border niuu-border-brand niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs niuu-whitespace-nowrap"
+                className="niuu:py-1 niuu:px-3 niuu:bg-brand niuu:text-bg-primary niuu:border niuu:border-brand niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs niuu:whitespace-nowrap"
               >
                 + New type
               </button>
@@ -805,7 +827,7 @@ export function RegistryEditor({
         </div>
 
         {/* Tab content */}
-        <div role="tabpanel" className="niuu-flex-1 niuu-overflow-y-auto niuu-py-5 niuu-px-6">
+        <div role="tabpanel" className="niuu:flex-1 niuu:overflow-y-auto niuu:py-5 niuu:px-6">
           {activeTab === 'types' && (
             <TypesTab
               registry={registry}

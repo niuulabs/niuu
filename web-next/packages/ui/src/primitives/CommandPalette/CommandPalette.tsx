@@ -69,7 +69,12 @@ export function CommandPaletteProvider({
   return (
     <CommandPaletteContext.Provider value={{ open, setOpen, register, unregister }}>
       {children}
-      <CommandPaletteDialog open={open} onOpenChange={setOpen} commands={[...commands.values()]} />
+      <CommandPaletteDialog
+        key={open ? 'open' : 'closed'}
+        open={open}
+        onOpenChange={setOpen}
+        commands={[...commands.values()]}
+      />
     </CommandPaletteContext.Provider>
   );
 }
@@ -124,24 +129,13 @@ interface CommandPaletteDialogProps {
 
 function CommandPaletteDialog({ open, onOpenChange, commands }: CommandPaletteDialogProps) {
   const [query, setQuery] = useState('');
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeIndexState, setActiveIndexState] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const listId = useId();
 
   const filtered = commands.filter((c) => fuzzyMatch(query, c));
-
-  // Reset query + selection each time the palette opens
-  useEffect(() => {
-    if (!open) return;
-    setQuery('');
-    setActiveIndex(0);
-  }, [open]);
-
-  // Clamp active index when the filtered list shrinks
-  useEffect(() => {
-    setActiveIndex((i) => (filtered.length === 0 ? 0 : Math.min(i, filtered.length - 1)));
-  }, [filtered.length]);
+  const activeIndex = filtered.length === 0 ? 0 : Math.min(activeIndexState, filtered.length - 1);
 
   // Keep the active item visible during keyboard navigation
   // scrollIntoView is not available in jsdom so guard the call
@@ -153,12 +147,12 @@ function CommandPaletteDialog({ open, onOpenChange, commands }: CommandPaletteDi
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActiveIndex((i) => Math.min(i + 1, filtered.length - 1));
+      setActiveIndexState((i) => Math.min(i + 1, filtered.length - 1));
       return;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setActiveIndex((i) => Math.max(i - 1, 0));
+      setActiveIndexState((i) => Math.max(i - 1, 0));
       return;
     }
     if (e.key === 'Enter') {
@@ -211,7 +205,7 @@ function CommandPaletteDialog({ open, onOpenChange, commands }: CommandPaletteDi
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setActiveIndex(0);
+                setActiveIndexState(0);
               }}
               onKeyDown={handleInputKeyDown}
             />
@@ -241,7 +235,7 @@ function CommandPaletteDialog({ open, onOpenChange, commands }: CommandPaletteDi
                     e.preventDefault();
                     handleSelect(cmd);
                   }}
-                  onMouseEnter={() => setActiveIndex(i)}
+                  onMouseEnter={() => setActiveIndexState(i)}
                 >
                   <span className="niuu-cp-item-title">{cmd.title}</span>
                   {cmd.subtitle != null && (

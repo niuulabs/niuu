@@ -123,10 +123,10 @@ describe('DispatchView', () => {
     const pageLayout = screen.getByTestId('dispatch-page-layout');
     const queueGroups = screen.getByTestId('dispatch-queue-groups');
 
-    expect(pageLayout.className).not.toContain('niuu-overflow-y-auto');
-    expect(pageLayout.className).toContain('niuu-min-h-full');
-    expect(queueGroups.className).not.toContain('niuu-overflow-y-auto');
-    expect(queueGroups.className).not.toContain('niuu-flex-1');
+    expect(pageLayout.className).not.toContain('niuu:overflow-y-auto');
+    expect(pageLayout.className).toContain('niuu:min-h-full');
+    expect(queueGroups.className).not.toContain('niuu:overflow-y-auto');
+    expect(queueGroups.className).not.toContain('niuu:flex-1');
   });
 
   it('shows error state when dispatcher service fails', async () => {

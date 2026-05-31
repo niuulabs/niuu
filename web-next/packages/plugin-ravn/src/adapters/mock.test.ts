@@ -5,6 +5,7 @@ import {
   createMockSessionStream,
   createMockTriggerStore,
   createMockBudgetStream,
+  createMockWardenStore,
 } from './mock';
 
 // ---------------------------------------------------------------------------
@@ -291,5 +292,132 @@ describe('createMockBudgetStream', () => {
     expect(fleet.spentUsd).toBeGreaterThan(0);
     expect(fleet.capUsd).toBeGreaterThan(0);
     expect(fleet.warnAt).toBe(0.7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IWardenStore mock
+// ---------------------------------------------------------------------------
+
+describe('createMockWardenStore', () => {
+  it('lists and fetches seeded wardens', async () => {
+    const store = createMockWardenStore();
+    const wardens = await store.listWardens();
+    expect(wardens.length).toBeGreaterThan(0);
+
+    const detail = await store.getWarden(wardens[0]!.id);
+    expect(detail.id).toBe(wardens[0]!.id);
+
+    await expect(store.getWarden('missing')).rejects.toThrow(/Warden not found/i);
+  });
+
+  it('creates a unique warden id and emits subscription updates', async () => {
+    const store = createMockWardenStore();
+    const first = await store.createWarden({
+      name: 'Mimir Keeper',
+      deployment: 'launchd',
+      mountNames: ['local'],
+    });
+    const second = await store.createWarden({
+      name: 'Mimir Keeper',
+      deployment: 'k8s-cronjob',
+      mountNames: ['shared'],
+      features: { autoDream: false },
+      schedules: { dream: '0 0 * * 0' },
+      console: { shell: 'zsh' },
+      autostart: true,
+      createdBy: 'operator-2',
+    });
+
+    expect(first.id).toBe('mimir-keeper');
+    expect(second.id).toBe('mimir-keeper-2');
+    expect(second.features.autoDream).toBe(false);
+    expect(second.schedules.dream).toBe('0 0 * * 0');
+    expect(second.console.shell).toBe('zsh');
+    expect(second.autostart).toBe(true);
+    expect(second.createdBy).toBe('operator-2');
+
+    const seen: string[] = [];
+    const unsubscribe = store.subscribeWarden(second.id, (warden) => {
+      seen.push(warden.runtime?.state ?? 'unknown');
+    });
+
+    await store.observeWarden(second.id);
+    await store.installWarden(second.id);
+    await store.startWarden(second.id);
+    await store.stopWarden(second.id);
+    await store.uninstallWarden(second.id);
+    unsubscribe();
+
+    expect(seen).toEqual(['offline', 'idle', 'active', 'idle', 'offline']);
+  });
+
+  it('observes deployment sources and handles install/start/stop/uninstall transitions', async () => {
+    const store = createMockWardenStore();
+    const created = await store.createWarden({
+      name: 'K8s keeper',
+      deployment: 'k8s-deployment',
+      mountNames: ['shared'],
+    });
+
+    const observed = await store.observeWarden(created.id);
+    expect(observed.supervisor?.observation?.status).toBe('missing');
+    expect(observed.supervisor?.observation?.source).toBe('mock-kubernetes');
+
+    const installed = await store.installWarden(created.id);
+    expect(installed.supervisor?.installed).toBe(true);
+    expect(installed.runtime?.state).toBe('idle');
+
+    const started = await store.startWarden(created.id);
+    expect(started.runtime?.state).toBe('active');
+    expect(started.runtime?.lastStartedAt).toBeDefined();
+
+    const observedActive = await store.observeWarden(created.id);
+    expect(observedActive.supervisor?.observation?.status).toBe('running');
+
+    const stopped = await store.stopWarden(created.id);
+    expect(stopped.runtime?.state).toBe('idle');
+
+    const uninstalled = await store.uninstallWarden(created.id);
+    expect(uninstalled.runtime?.state).toBe('offline');
+    expect(uninstalled.supervisor?.installed).toBe(false);
+  });
+
+  it('rejects start and stop when a warden has not been installed', async () => {
+    const store = createMockWardenStore();
+    const created = await store.createWarden({ name: 'Cold keeper' });
+
+    await expect(store.startWarden(created.id)).rejects.toThrow(/must be installed/i);
+    await expect(store.stopWarden(created.id)).rejects.toThrow(/must be installed/i);
+  });
+
+  it('returns logs and activity shaped by the runtime state', async () => {
+    const store = createMockWardenStore();
+    const created = await store.createWarden({ name: 'Logger keeper' });
+    await store.installWarden(created.id);
+    await store.startWarden(created.id);
+
+    const logs = await store.getWardenLogs(created.id, { stream: 'stderr' });
+    expect(logs[0]).toMatchObject({
+      id: `${created.id}-stderr-1`,
+      source: 'stderr',
+      logger: 'ravn.daemon',
+    });
+
+    const activeActivity = await store.getWardenActivity(created.id);
+    expect(activeActivity[0]).toMatchObject({
+      level: 'INFO',
+      message: expect.stringContaining('dream cycle scheduled'),
+    });
+
+    await store.stopWarden(created.id);
+    const idleActivity = await store.getWardenActivity(created.id);
+    expect(idleActivity[0]).toMatchObject({
+      level: 'WARN',
+      message: 'warden is installed but idle',
+    });
+
+    await expect(store.getWardenLogs('missing')).rejects.toThrow(/Warden not found/i);
+    await expect(store.getWardenActivity('missing')).rejects.toThrow(/Warden not found/i);
   });
 });

@@ -5,38 +5,38 @@ import { useRouting } from '../application/useRouting';
 import type { WriteRoutingRule } from '../domain/routing';
 
 const INPUT_BASE =
-  'niuu-flex-1 niuu-py-2 niuu-px-3 niuu-bg-bg-primary niuu-border niuu-border-solid niuu-border-border ' +
-  'niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-sm niuu-outline-none niuu-box-border ' +
-  'focus:niuu-border-brand';
+  'niuu:flex-1 niuu:py-2 niuu:px-3 niuu:bg-bg-primary niuu:border niuu:border-solid niuu:border-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:focus:border-brand';
 
 const BTN_BASE =
-  'niuu-py-2 niuu-px-4 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border ' +
-  'niuu-rounded-md niuu-text-text-primary niuu-font-sans niuu-text-sm niuu-cursor-pointer ' +
-  'disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed';
+  'niuu:py-2 niuu:px-4 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:cursor-pointer ' +
+  'niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 
-const BTN_PRIMARY = `${BTN_BASE} niuu-bg-brand niuu-border-brand niuu-text-bg-primary niuu-font-medium`;
+const BTN_PRIMARY = `${BTN_BASE} niuu:bg-brand niuu:border-brand niuu:text-bg-primary niuu:font-medium`;
 
 const ACTION_BTN_BASE =
-  'niuu-bg-transparent niuu-border niuu-border-solid niuu-border-border-subtle niuu-rounded-sm ' +
-  'niuu-text-text-secondary niuu-font-sans niuu-text-xs niuu-py-[2px] niuu-px-2 niuu-cursor-pointer ' +
-  'hover:niuu-border-border hover:niuu-text-text-primary';
+  'niuu:bg-transparent niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-sm ' +
+  'niuu:text-text-secondary niuu:font-sans niuu:text-xs niuu:py-[2px] niuu:px-2 niuu:cursor-pointer ' +
+  'niuu:hover:border-border niuu:hover:text-text-primary';
 
 const ACTION_BTN_DANGER =
-  `${ACTION_BTN_BASE} niuu-text-critical niuu-border-[color-mix(in_srgb,var(--color-critical)_30%,transparent)] ` +
-  'disabled:niuu-opacity-50 disabled:niuu-cursor-not-allowed';
+  `${ACTION_BTN_BASE} niuu:text-critical niuu:border-[color-mix(in_srgb,var(--color-critical)_30%,transparent)] ` +
+  'niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 
 const TH_CLS =
-  'niuu-text-left niuu-py-2 niuu-px-3 niuu-text-text-muted niuu-font-medium niuu-text-xs ' +
-  'niuu-border-0 niuu-border-b niuu-border-solid niuu-border-border';
+  'niuu:text-left niuu:py-2 niuu:px-3 niuu:text-text-muted niuu:font-medium niuu:text-xs ' +
+  'niuu:border-0 niuu:border-b niuu:border-solid niuu:border-border';
 
-const TD_BASE = 'niuu-py-2 niuu-px-3 niuu-align-middle';
+const TD_BASE = 'niuu:py-2 niuu:px-3 niuu-align-middle';
 
-const LABEL_CLS = 'niuu-text-xs niuu-text-text-muted niuu-min-w-[5rem] niuu-shrink-0';
+const LABEL_CLS = 'niuu:text-xs niuu:text-text-muted niuu:min-w-[5rem] niuu:shrink-0';
 
-const STATUS_CLS = 'niuu-flex niuu-items-center niuu-gap-2 niuu-text-sm niuu-text-text-secondary';
+const STATUS_CLS = 'niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary';
 
 const EDITOR_CLS =
-  'niuu-p-4 niuu-bg-bg-secondary niuu-border niuu-border-solid niuu-border-border niuu-rounded-md niuu-mb-4';
+  'niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border niuu:rounded-md niuu:mb-4';
 
 function newRule(): WriteRoutingRule {
   return {
@@ -70,11 +70,11 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
 
   return (
     <form
-      className="niuu-flex niuu-flex-col niuu-gap-3"
+      className="niuu:flex niuu:flex-col niuu:gap-3"
       onSubmit={handleSubmit}
       aria-label="Routing rule editor"
     >
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <label className={LABEL_CLS} htmlFor="rule-prefix">
           Prefix
         </label>
@@ -90,7 +90,7 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
         />
       </div>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <label className={LABEL_CLS} htmlFor="rule-mount">
           Mount
         </label>
@@ -106,13 +106,13 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
         />
       </div>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <label className={LABEL_CLS} htmlFor="rule-priority">
           Priority
         </label>
         <input
           id="rule-priority"
-          className={`${INPUT_BASE} niuu-flex-none niuu-w-24`}
+          className={`${INPUT_BASE} niuu:flex-none niuu:w-24`}
           type="number"
           min={0}
           value={draft.priority}
@@ -122,7 +122,7 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
         />
       </div>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <label className={LABEL_CLS} htmlFor="rule-desc">
           Description
         </label>
@@ -137,7 +137,7 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
         />
       </div>
 
-      <div className="niuu-flex niuu-items-center niuu-gap-3">
+      <div className="niuu:flex niuu:items-center niuu:gap-3">
         <label className={LABEL_CLS} htmlFor="rule-active">
           Active
         </label>
@@ -150,7 +150,7 @@ function RuleForm({ rule, onSave, onCancel, isSaving }: RuleFormProps) {
         />
       </div>
 
-      <div className="niuu-flex niuu-gap-2 niuu-mt-2">
+      <div className="niuu:flex niuu:gap-2 niuu:mt-2">
         <button type="submit" className={BTN_PRIMARY} disabled={isSaving} aria-label="Save rule">
           {isSaving ? 'saving…' : 'Save rule'}
         </button>
@@ -202,14 +202,14 @@ export function RoutingPage() {
   }
 
   return (
-    <div className="niuu-p-6 niuu-max-w-[960px]">
-      <h2 className="niuu-text-xl niuu-font-semibold niuu-m-0 niuu-mb-2">Write Routing</h2>
-      <p className="niuu-text-sm niuu-text-text-secondary niuu-m-0 niuu-mb-1">
+    <div className="niuu:p-6 niuu:max-w-[960px]">
+      <h2 className="niuu:text-xl niuu:font-semibold niuu:m-0 niuu:mb-2">Write Routing</h2>
+      <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0 niuu:mb-1">
         Prefix-based routing rules — first match wins (lowest priority number).
       </p>
-      <p className="niuu-text-xs niuu-text-text-muted niuu-m-0 niuu-mb-5">
+      <p className="niuu:text-xs niuu:text-text-muted niuu:m-0 niuu:mb-5">
         To ingest content (URL fetch or file upload), go to the{' '}
-        <Link to="/mimir" className="niuu-text-brand hover:niuu-underline">
+        <Link to="/mimir" className="niuu:text-brand niuu:hover:underline">
           Sources
         </Link>{' '}
         page.
@@ -231,7 +231,7 @@ export function RoutingPage() {
 
       {!isLoading && !isError && (
         <>
-          <div className="niuu-mb-4">
+          <div className="niuu:mb-4">
             <button
               className={BTN_PRIMARY}
               onClick={startAdd}
@@ -244,7 +244,7 @@ export function RoutingPage() {
 
           {isAdding && (
             <div className={EDITOR_CLS} data-testid="rule-editor">
-              <h3 className="niuu-text-sm niuu-font-semibold niuu-m-0 niuu-mb-4">New rule</h3>
+              <h3 className="niuu:text-sm niuu:font-semibold niuu:m-0 niuu:mb-4">New rule</h3>
               <RuleForm
                 rule={newRule()}
                 onSave={handleSave}
@@ -255,14 +255,14 @@ export function RoutingPage() {
           )}
 
           {rules.length === 0 && !isAdding && (
-            <p className="niuu-text-sm niuu-text-text-muted niuu-mb-6">
+            <p className="niuu:text-sm niuu:text-text-muted niuu:mb-6">
               No routing rules configured. All writes go to the default mount.
             </p>
           )}
 
           {rules.length > 0 && (
             <table
-              className="niuu-w-full niuu-border-collapse niuu-mb-8 niuu-text-sm"
+              className="niuu:w-full niuu:border-collapse niuu:mb-8 niuu:text-sm"
               aria-label="Routing rules"
             >
               <thead>
@@ -279,16 +279,16 @@ export function RoutingPage() {
                 {rules.map((rule) => (
                   <Fragment key={rule.id}>
                     <tr
-                      className="niuu-border-0 niuu-border-b niuu-border-solid niuu-border-border-subtle hover:niuu-bg-bg-secondary"
+                      className="niuu:border-0 niuu:border-b niuu:border-solid niuu:border-border-subtle niuu:hover:bg-bg-secondary"
                       data-testid="routing-rule-row"
                     >
                       <td
-                        className={`${TD_BASE} niuu-font-mono niuu-text-xs niuu-text-text-muted niuu-w-16`}
+                        className={`${TD_BASE} niuu:font-mono niuu:text-xs niuu:text-text-muted niuu:w-16`}
                       >
                         {rule.priority}
                       </td>
                       <td className={TD_BASE}>
-                        <code className="niuu-font-mono niuu-text-xs niuu-bg-bg-tertiary niuu-py-[2px] niuu-px-2 niuu-rounded-sm">
+                        <code className="niuu:font-mono niuu:text-xs niuu:bg-bg-tertiary niuu:py-[2px] niuu:px-2 niuu:rounded-sm">
                           {rule.prefix}
                         </code>
                       </td>
@@ -297,15 +297,15 @@ export function RoutingPage() {
                       </td>
                       <td className={TD_BASE}>
                         <span
-                          className={`niuu-font-mono niuu-text-xs ${rule.active ? 'niuu-text-brand-200' : 'niuu-text-text-muted'}`}
+                          className={`niuu:font-mono niuu:text-xs ${rule.active ? 'niuu:text-brand-200' : 'niuu:text-text-muted'}`}
                         >
                           {rule.active ? 'yes' : 'no'}
                         </span>
                       </td>
-                      <td className={`${TD_BASE} niuu-text-text-secondary niuu-max-w-[20rem]`}>
+                      <td className={`${TD_BASE} niuu:text-text-secondary niuu:max-w-[20rem]`}>
                         {rule.desc ?? '—'}
                       </td>
-                      <td className={`${TD_BASE} niuu-flex niuu-gap-2 niuu-items-center`}>
+                      <td className={`${TD_BASE} niuu:flex niuu:gap-2 niuu:items-center`}>
                         <button
                           className={ACTION_BTN_BASE}
                           onClick={() => startEdit(rule)}
@@ -325,9 +325,9 @@ export function RoutingPage() {
                     </tr>
                     {editingRule?.id === rule.id && (
                       <tr key={`${rule.id}-edit`}>
-                        <td colSpan={6} className="niuu-p-0">
+                        <td colSpan={6} className="niuu:p-0">
                           <div className={EDITOR_CLS} data-testid="rule-editor">
-                            <h3 className="niuu-text-sm niuu-font-semibold niuu-m-0 niuu-mb-4">
+                            <h3 className="niuu:text-sm niuu:font-semibold niuu:m-0 niuu:mb-4">
                               Edit rule
                             </h3>
                             <RuleForm
@@ -348,16 +348,16 @@ export function RoutingPage() {
 
           {/* Test pane */}
           <section
-            className="niuu-border-t niuu-border-solid niuu-border-border niuu-pt-6"
+            className="niuu:border-t niuu:border-solid niuu:border-border niuu:pt-6"
             aria-label="Route test pane"
           >
-            <h3 className="niuu-text-base niuu-font-semibold niuu-m-0 niuu-mb-2">Test a path</h3>
-            <p className="niuu-text-sm niuu-text-text-secondary niuu-m-0 niuu-mb-3">
+            <h3 className="niuu:text-base niuu:font-semibold niuu:m-0 niuu:mb-2">Test a path</h3>
+            <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0 niuu:mb-3">
               Enter a page path to see which rule and mount it would be routed to.
             </p>
-            <div className="niuu-mb-3">
+            <div className="niuu:mb-3">
               <input
-                className={`${INPUT_BASE} niuu-flex-none niuu-w-full`}
+                className={`${INPUT_BASE} niuu:flex-none niuu:w-full`}
                 type="text"
                 placeholder="/infra/k8s"
                 value={testPath}
@@ -369,22 +369,22 @@ export function RoutingPage() {
             {testResult && (
               <div
                 className={[
-                  'niuu-flex niuu-items-center niuu-gap-2 niuu-p-3 niuu-rounded-md niuu-text-sm niuu-border niuu-border-solid',
+                  'niuu:flex niuu:items-center niuu:gap-2 niuu:p-3 niuu:rounded-md niuu:text-sm niuu:border niuu:border-solid',
                   testResult.mountName
-                    ? 'niuu-bg-[color-mix(in_srgb,var(--brand-500)_10%,transparent)] niuu-border-[color-mix(in_srgb,var(--brand-500)_25%,transparent)]'
-                    : 'niuu-bg-bg-secondary niuu-border-border-subtle',
+                    ? 'niuu:bg-[color-mix(in_srgb,var(--brand-500)_10%,transparent)] niuu:border-[color-mix(in_srgb,var(--brand-500)_25%,transparent)]'
+                    : 'niuu:bg-bg-secondary niuu:border-border-subtle',
                 ].join(' ')}
                 data-testid="test-result"
               >
                 {testResult.mountName ? (
                   <>
                     <Chip tone="brand">{testResult.mountName}</Chip>
-                    <span className="niuu-text-text-secondary niuu-font-mono niuu-text-xs">
+                    <span className="niuu:text-text-secondary niuu:font-mono niuu:text-xs">
                       {testResult.reason}
                     </span>
                   </>
                 ) : (
-                  <span className="niuu-text-text-muted niuu-font-mono niuu-text-xs">
+                  <span className="niuu:text-text-muted niuu:font-mono niuu:text-xs">
                     {testResult.reason}
                   </span>
                 )}

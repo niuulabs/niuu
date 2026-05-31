@@ -4,7 +4,7 @@
  * that are just utility-soup. Build: tsup → postcss → dist/styles.css.
  */
 
-@import './Shell.css';
+@import 'tailwindcss' prefix(niuu);
+@config "../tailwind.config.ts";
 
-@tailwind components;
-@tailwind utilities;
+@import './Shell.css';

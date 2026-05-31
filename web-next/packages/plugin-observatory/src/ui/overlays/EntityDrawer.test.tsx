@@ -121,6 +121,56 @@ const RUN_NODE: TopologyNode = {
   flockId: 'workflow-refactor',
 };
 
+const MIMIR_NODE: TopologyNode = {
+  id: 'mimir-archive',
+  typeId: 'mimir',
+  label: 'mimir-archive',
+  parentId: 'host-mjolnir',
+  status: 'healthy',
+  pages: 12,
+  writes: 4,
+  mountCount: 2,
+  mounts: ['/memory', '/archive'],
+};
+
+const VALKYRIE_NODE: TopologyNode = {
+  id: 'valkyrie-ops',
+  typeId: 'valkyrie',
+  label: 'valkyrie-ops',
+  parentId: 'cluster-valaskjalf',
+  status: 'healthy',
+  specialty: 'incident response',
+  autonomy: 'high',
+};
+
+const PRINTER_NODE: TopologyNode = {
+  id: 'printer-brokk',
+  typeId: 'printer',
+  label: 'brokk',
+  parentId: 'realm-asgard',
+  status: 'healthy',
+  model: 'Ultimaker S7',
+};
+
+const VAETTIR_NODE: TopologyNode = {
+  id: 'vaettir-watch',
+  typeId: 'vaettir',
+  label: 'watch',
+  parentId: 'realm-asgard',
+  status: 'healthy',
+  sensors: 'temp, humidity',
+};
+
+const MODEL_NODE: TopologyNode = {
+  id: 'model-sonnet',
+  typeId: 'model',
+  label: 'claude-sonnet',
+  parentId: 'bifrost-0',
+  status: 'healthy',
+  provider: 'Anthropic',
+  location: 'us-east',
+};
+
 function renderDrawer(
   node: TopologyNode | null,
   overrides?: {
@@ -281,11 +331,47 @@ describe('EntityDrawer', () => {
     expect(screen.getByText('5 / 20')).toBeInTheDocument();
   });
 
+  it('shows bifrost fallback values when optional metrics are missing', () => {
+    renderDrawer({
+      ...BIFROST_NODE,
+      id: 'bifrost-fallback',
+      providers: undefined,
+      reqPerMin: undefined,
+      cacheHitRate: undefined,
+    });
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getByText('0')).toBeInTheDocument();
+  });
+
   it('shows ravn_long Properties with persona and tokens', () => {
     renderDrawer(RAVN_NODE);
     expect(screen.getByText('Properties')).toBeInTheDocument();
     expect(screen.getByText('thought')).toBeInTheDocument();
     expect(screen.getByText('42,800')).toBeInTheDocument();
+  });
+
+  it('shows mimir Properties including mounts and surface', () => {
+    renderDrawer(MIMIR_NODE);
+    expect(screen.getByText('pages')).toBeInTheDocument();
+    expect(screen.getByText('/memory, /archive')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('shows valkyrie, printer, vaettir, and model properties', () => {
+    const nodes = [VALKYRIE_NODE, PRINTER_NODE, VAETTIR_NODE, MODEL_NODE];
+
+    for (const node of nodes) {
+      const { unmount } = render(
+        <EntityDrawer node={node} topology={TOPOLOGY} registry={REGISTRY} onClose={vi.fn()} />,
+      );
+
+      expect(screen.getByText('Properties')).toBeInTheDocument();
+      unmount();
+    }
+
+    renderDrawer(VALKYRIE_NODE);
+    expect(screen.getByText('incident response')).toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
   });
 
   it('shows Identity section for entity nodes', () => {
@@ -322,10 +408,49 @@ describe('EntityDrawer', () => {
     expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'ting-0' }));
   });
 
+  it('calls onNodeSelect when the host link is clicked', () => {
+    const onNodeSelect = vi.fn();
+    renderDrawer(RAVN_NODE, { onNodeSelect });
+    fireEvent.click(screen.getByRole('button', { name: 'host-mjolnir' }));
+    expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-mjolnir' }));
+  });
+
+  it('does not call onNodeSelect when the host link target is missing', () => {
+    const onNodeSelect = vi.fn();
+    renderDrawer(
+      { ...RAVN_NODE, id: 'ravn-detached', hostId: 'host-missing' },
+      {
+        topology: { ...TOPOLOGY, nodes: TOPOLOGY.nodes.filter((n) => n.id !== 'host-missing') },
+        onNodeSelect,
+      },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'host-missing' }));
+    expect(onNodeSelect).not.toHaveBeenCalled();
+  });
+
   it('does not show Residents when realm has no children', () => {
     const emptyTopology: Topology = { nodes: [REALM_NODE], edges: [], timestamp: '' };
     renderDrawer(REALM_NODE, { topology: emptyTopology });
     expect(screen.queryByText('Residents')).toBeNull();
+  });
+
+  it('shows overflow text when a realm has more than twenty residents', () => {
+    const residents = Array.from({ length: 21 }, (_, index) => ({
+      id: `resident-${index}`,
+      typeId: 'service',
+      label: `resident-${index}`,
+      parentId: REALM_NODE.id,
+      status: 'healthy' as const,
+    }));
+    const crowdedTopology: Topology = {
+      nodes: [REALM_NODE, ...residents],
+      edges: [],
+      timestamp: '2026-05-24T16:00:00Z',
+    };
+
+    renderDrawer(REALM_NODE, { topology: crowdedTopology });
+    expect(screen.getByText('+1 more')).toBeInTheDocument();
+    expect(screen.queryByTestId('resident-resident-20')).toBeNull();
   });
 
   it('calls onClose when drawer close button is clicked', () => {
@@ -342,6 +467,32 @@ describe('EntityDrawer', () => {
   it('handles null registry gracefully (no rune, fallback label)', () => {
     renderDrawer(TING_NODE, { registry: null });
     expect(screen.getByText('ting')).toBeInTheDocument();
+  });
+
+  it('uses cluster parentId as the realm chip fallback when zone is missing', () => {
+    renderDrawer({ ...CLUSTER_NODE, id: 'cluster-fallback', zone: undefined });
+    expect(screen.getByText('realm · realm-asgard')).toBeInTheDocument();
+  });
+
+  it('shows placeholder activity timestamp when topology is missing', () => {
+    renderDrawer(TING_NODE, { topology: null });
+    expect(screen.getByText(/last tick · --:--/i)).toBeInTheDocument();
+  });
+
+  it('shows cluster and coordinator sections for container coordinators', () => {
+    renderDrawer({
+      ...RUN_NODE,
+      id: 'run-coord',
+      cluster: 'cluster-valaskjalf',
+      role: 'coord',
+      confidence: 0.87,
+      flockId: 'long',
+    });
+    expect(screen.getByText('cluster')).toBeInTheDocument();
+    expect(screen.getByText('cluster-valaskjalf')).toBeInTheDocument();
+    expect(screen.getByText('Coordinator')).toBeInTheDocument();
+    expect(screen.getByText('87%')).toBeInTheDocument();
+    expect(screen.getByText('long')).toBeInTheDocument();
   });
 
   it('shows all NodeStatus variants without error', () => {
@@ -375,6 +526,12 @@ describe('EntityDrawer', () => {
     const { onClose } = renderDrawer(TING_NODE);
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('ignores non-Escape key presses', () => {
+    const { onClose } = renderDrawer(TING_NODE);
+    fireEvent.keyDown(document, { key: 'Enter' });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('does not add Escape listener when drawer is closed (node is null)', () => {

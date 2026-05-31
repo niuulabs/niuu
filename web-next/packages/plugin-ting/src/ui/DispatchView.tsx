@@ -128,18 +128,18 @@ function BatchDispatchBar({
 
   return (
     <div
-      className="niuu-flex niuu-items-center niuu-gap-3 niuu-px-4 niuu-py-2 niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary"
+      className="niuu:flex niuu:items-center niuu:gap-3 niuu:px-4 niuu:py-2 niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary"
       role="status"
       aria-live="polite"
     >
-      <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">{selectedCount}</span>
-      <span className="niuu-text-sm niuu-text-text-secondary">selected</span>
-      <span className="niuu-flex-1" />
+      <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{selectedCount}</span>
+      <span className="niuu:text-sm niuu:text-text-secondary">selected</span>
+      <span className="niuu:flex-1" />
       {onApplyWorkflow && (
         <button
           type="button"
           onClick={onApplyWorkflow}
-          className="niuu-py-1 niuu-px-3 niuu-bg-bg-secondary niuu-text-text-secondary niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs"
+          className="niuu:py-1 niuu:px-3 niuu:bg-bg-secondary niuu:text-text-secondary niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs"
         >
           Apply workflow…
         </button>
@@ -148,7 +148,7 @@ function BatchDispatchBar({
         <button
           type="button"
           onClick={onOverrideThreshold}
-          className="niuu-py-1 niuu-px-3 niuu-bg-bg-secondary niuu-text-text-secondary niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs"
+          className="niuu:py-1 niuu:px-3 niuu:bg-bg-secondary niuu:text-text-secondary niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs"
         >
           Override threshold
         </button>
@@ -161,10 +161,10 @@ function BatchDispatchBar({
             onDispatch();
           }}
           className={cn(
-            'niuu-py-1 niuu-px-3 niuu-rounded-sm niuu-font-mono niuu-text-xs niuu-border niuu-cursor-pointer',
+            'niuu:py-1 niuu:px-3 niuu:rounded-sm niuu:font-mono niuu:text-xs niuu:border niuu:cursor-pointer',
             canDispatch && !isDispatching
-              ? 'niuu-bg-brand niuu-text-bg-primary niuu-border-brand'
-              : 'niuu-cursor-not-allowed niuu-opacity-50 niuu-bg-bg-tertiary niuu-text-text-muted niuu-border-border-subtle',
+              ? 'niuu:bg-brand niuu:text-bg-primary niuu:border-brand'
+              : 'niuu:cursor-not-allowed niuu:opacity-50 niuu:bg-bg-tertiary niuu:text-text-muted niuu:border-border-subtle',
           )}
           aria-disabled={!canDispatch || isDispatching}
         >
@@ -186,35 +186,35 @@ function PendingDispatchBar({
 
   return (
     <div
-      className="niuu-border-b niuu-border-brand/20 niuu-bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu-px-4 niuu-py-3"
+      className="niuu:border-b niuu:border-brand/20 niuu:bg-[linear-gradient(180deg,rgba(56,189,248,0.08),rgba(21,26,32,0.96))] niuu:px-4 niuu:py-3"
       role="status"
       aria-live="polite"
     >
-      <div className="niuu-flex niuu-items-start niuu-gap-3">
-        <span className="niuu-mt-1 niuu-inline-flex niuu-h-2.5 niuu-w-2.5 niuu-shrink-0 niuu-rounded-full niuu-bg-brand niuu-animate-pulse" />
-        <div className="niuu-min-w-0 niuu-flex-1">
-          <div className="niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+      <div className="niuu:flex niuu:items-start niuu:gap-3">
+        <span className="niuu:mt-1 niuu:inline-flex niuu:h-2.5 niuu:w-2.5 niuu:shrink-0 niuu:rounded-full niuu:bg-brand niuu:animate-pulse" />
+        <div className="niuu:min-w-0 niuu:flex-1">
+          <div className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
             Dispatching {entries.length} run{entries.length === 1 ? '' : 's'}
           </div>
-          <div className="niuu-mt-1 niuu-text-xs niuu-text-text-secondary">
+          <div className="niuu:mt-1 niuu:text-xs niuu:text-text-secondary">
             Keeping this batch visible while Ting submits it.
           </div>
-          <div className="niuu-mt-2 niuu-text-[11px] niuu-uppercase niuu-tracking-wide niuu-text-brand">
+          <div className="niuu:mt-2 niuu:text-[11px] niuu:uppercase niuu:tracking-wide niuu:text-brand">
             Target: {targetLabel}
           </div>
-          <div className="niuu-mt-3 niuu-flex niuu-flex-col niuu-gap-2">
+          <div className="niuu:mt-3 niuu:flex niuu:flex-col niuu:gap-2">
             {entries.map((entry) => (
               <div
                 key={entry.run.id}
-                className="niuu-flex niuu-items-center niuu-gap-2 niuu-rounded-md niuu-border niuu-border-brand/20 niuu-bg-[#1e232a] niuu-px-3 niuu-py-2"
+                className="niuu:flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-brand/20 niuu:bg-[#1e232a] niuu:px-3 niuu:py-2"
               >
-                <span className="niuu-rounded niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-text-text-secondary">
+                <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
                   {entry.run.trackerId}
                 </span>
-                <span className="niuu-min-w-0 niuu-flex-1 niuu-truncate niuu-text-sm niuu-text-text-primary">
+                <span className="niuu:min-w-0 niuu:flex-1 niuu:truncate niuu:text-sm niuu:text-text-primary">
                   {entry.run.name}
                 </span>
-                <span className="niuu-rounded-sm niuu-border niuu-border-brand/30 niuu-bg-brand/10 niuu-px-2 niuu-py-0.5 niuu-font-mono niuu-text-[10px] niuu-uppercase niuu-text-brand">
+                <span className="niuu:rounded-sm niuu:border niuu:border-brand/30 niuu:bg-brand/10 niuu:px-2 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:text-brand">
                   submitting
                 </span>
               </div>
@@ -238,14 +238,14 @@ function DispatchTargetSelect({
   isLoading: boolean;
 }) {
   return (
-    <label className="niuu-flex niuu-items-center niuu-gap-2 niuu-text-xs niuu-text-text-secondary">
-      <span className="niuu-whitespace-nowrap">Dispatch target</span>
+    <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-secondary">
+      <span className="niuu:whitespace-nowrap">Dispatch target</span>
       <select
         value={selectedClusterId}
         onChange={(e) => onChange(e.target.value)}
         aria-label="Dispatch target"
         disabled={isLoading}
-        className="niuu-min-w-[180px] niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-1.5 niuu-text-xs niuu-text-text-primary niuu-outline-none focus:niuu-border-brand disabled:niuu-opacity-60"
+        className="niuu:min-w-[180px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none niuu:focus:border-brand niuu:disabled:opacity-60"
       >
         <option value="">{isLoading ? 'Loading targets…' : 'Auto (primary/default)'}</option>
         {clusters.map((cluster) => (
@@ -278,28 +278,28 @@ function SagaGroupHeader({
   targetName?: string;
 }) {
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-px-4 niuu-py-2 niuu-bg-bg-tertiary niuu-border-b niuu-border-border-subtle niuu-sticky niuu-top-0 niuu-z-10">
-      <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-rounded">
+    <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:px-4 niuu:py-2 niuu:bg-bg-tertiary niuu:border-b niuu:border-border-subtle niuu:sticky niuu:top-0 niuu:z-10">
+      <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:rounded">
         {trackerId}
       </span>
-      <span className="niuu-text-sm niuu-font-medium niuu-text-text-primary">{sagaName}</span>
-      <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted niuu-ml-auto niuu-flex niuu-items-center niuu-gap-2">
+      <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{sagaName}</span>
+      <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted niuu:ml-auto niuu:flex niuu:items-center niuu:gap-2">
         <span>
           {runCount} queued · {featureBranch}
         </span>
         {targetName && (
           <>
-            <span className="niuu-w-px niuu-h-[10px] niuu-bg-border" />
+            <span className="niuu:w-px niuu:h-[10px] niuu:bg-border" />
             <span>
-              forge <span className="niuu-text-text-secondary">{targetName}</span>
+              forge <span className="niuu:text-text-secondary">{targetName}</span>
             </span>
           </>
         )}
         {workflowName && (
           <>
-            <span className="niuu-w-px niuu-h-[10px] niuu-bg-border" />
+            <span className="niuu:w-px niuu:h-[10px] niuu:bg-border" />
             <span>
-              workflow <span className="niuu-text-text-secondary">{workflowName}</span>
+              workflow <span className="niuu:text-text-secondary">{workflowName}</span>
             </span>
           </>
         )}
@@ -325,29 +325,30 @@ function RunRow({
   workflowName?: string;
   isPendingDispatch?: boolean;
 }) {
-  const waitMin = Math.round((Date.now() - new Date(entry.run.updatedAt).getTime()) / 60_000);
+  const [renderedAt] = useState(() => Date.now());
+  const waitMin = Math.round((renderedAt - new Date(entry.run.updatedAt).getTime()) / 60_000);
   const waitLabel = waitMin <= 1 ? 'now' : `${waitMin}m wait`;
 
   return (
     <div
       className={cn(
-        'niuu-flex niuu-items-center niuu-gap-3 niuu-px-4 niuu-py-2.5 niuu-border niuu-rounded-md niuu-cursor-pointer niuu-transition-colors',
+        'niuu:flex niuu:items-center niuu:gap-3 niuu:px-4 niuu:py-2.5 niuu:border niuu:rounded-md niuu:cursor-pointer niuu:transition-colors',
         isPendingDispatch
-          ? 'niuu-bg-[#252c36] niuu-border-brand/30'
+          ? 'niuu:bg-[#252c36] niuu:border-brand/30'
           : isSelected
-            ? 'niuu-bg-[#1d232b] niuu-border-brand/20'
-            : 'niuu-bg-[#171b22] niuu-border-border-subtle hover:niuu-bg-[#1d232b]',
+            ? 'niuu:bg-[#1d232b] niuu:border-brand/20'
+            : 'niuu:bg-[#171b22] niuu:border-border-subtle niuu:hover:bg-[#1d232b]',
       )}
       onClick={onToggle}
     >
       <label
         className={cn(
-          'niuu-w-5 niuu-h-5 niuu-rounded-sm niuu-border niuu-flex niuu-items-center niuu-justify-center niuu-shrink-0 niuu-text-[10px] niuu-cursor-pointer',
+          'niuu:w-5 niuu:h-5 niuu:rounded-sm niuu:border niuu:flex niuu:items-center niuu:justify-center niuu:shrink-0 niuu:text-[10px] niuu:cursor-pointer',
           isPendingDispatch
-            ? 'niuu-bg-brand/15 niuu-border-brand/40 niuu-text-brand'
+            ? 'niuu:bg-brand/15 niuu:border-brand/40 niuu:text-brand'
             : isSelected
-              ? 'niuu-bg-brand niuu-border-brand niuu-text-bg-primary'
-              : 'niuu-bg-bg-tertiary niuu-border-border',
+              ? 'niuu:bg-brand niuu:border-brand niuu:text-bg-primary'
+              : 'niuu:bg-bg-tertiary niuu:border-border',
         )}
         onClick={(e) => e.stopPropagation()}
       >
@@ -355,17 +356,17 @@ function RunRow({
           type="checkbox"
           checked={isSelected || isPendingDispatch}
           onChange={onToggle}
-          className="niuu-sr-only"
+          className="niuu:sr-only"
           aria-label="Select row"
           disabled={isPendingDispatch}
         />
         {(isSelected || isPendingDispatch) && '✓'}
       </label>
-      <div className="niuu-flex-1 niuu-min-w-0">
-        <div className="niuu-text-sm niuu-font-medium niuu-text-text-primary niuu-truncate">
+      <div className="niuu:flex-1 niuu:min-w-0">
+        <div className="niuu:text-sm niuu:font-medium niuu:text-text-primary niuu:truncate">
           {entry.run.name}
         </div>
-        <div className="niuu-text-[10px] niuu-font-mono niuu-text-text-muted niuu-mt-0.5">
+        <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-muted niuu:mt-0.5">
           {entry.run.trackerId}
           {entry.run.estimateHours != null && ` · est ${entry.run.estimateHours}h`}
           {entry.run.retryCount != null &&
@@ -373,30 +374,30 @@ function RunRow({
             ` · retry ${entry.run.retryCount}`}
         </div>
       </div>
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-shrink-0">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:shrink-0">
         {workflowName && (
           <span
-            className="niuu-rounded-sm niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-xs niuu-text-brand niuu-border niuu-border-brand/30"
+            className="niuu:rounded-sm niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-xs niuu:text-brand niuu:border niuu:border-brand/30"
             aria-label={`workflow override: ${workflowName}`}
           >
             {workflowName}
           </span>
         )}
         {isPendingDispatch && (
-          <span className="niuu-inline-flex niuu-items-center niuu-rounded-sm niuu-border niuu-border-brand/30 niuu-bg-brand/10 niuu-px-2 niuu-py-0.5 niuu-text-xs niuu-font-mono niuu-uppercase niuu-text-brand">
+          <span className="niuu:inline-flex niuu:items-center niuu:rounded-sm niuu:border niuu:border-brand/30 niuu:bg-brand/10 niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:font-mono niuu:uppercase niuu:text-brand">
             submitting
           </span>
         )}
         {entry.feasibility.feasible ? (
           <span
-            className="niuu-inline-flex niuu-items-center niuu-rounded-sm niuu-px-2 niuu-py-0.5 niuu-text-xs niuu-font-mono niuu-uppercase"
+            className="niuu:inline-flex niuu:items-center niuu:rounded-sm niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:font-mono niuu:uppercase"
             style={{ border: '1px solid rgba(16,185,129,0.5)', color: 'rgb(52,211,153)' }}
           >
             ready
           </span>
         ) : (
           <span
-            className="niuu-inline-flex niuu-items-center niuu-rounded-sm niuu-px-2 niuu-py-0.5 niuu-text-xs niuu-font-mono niuu-uppercase"
+            className="niuu:inline-flex niuu:items-center niuu:rounded-sm niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:font-mono niuu:uppercase"
             style={{ border: '1px solid rgba(168,85,247,0.5)', color: 'rgb(192,132,252)' }}
           >
             blocked
@@ -413,10 +414,10 @@ function RunRow({
           }
           hideLabel
         />
-        <span className="niuu-text-xs niuu-font-mono niuu-text-text-muted niuu-w-6 niuu-text-right">
+        <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted niuu:w-6 niuu:text-right">
           {entry.run.confidence}
         </span>
-        <span className="niuu-text-[10px] niuu-font-mono niuu-text-text-muted niuu-w-[60px] niuu-text-right">
+        <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-muted niuu:w-[60px] niuu:text-right">
           {waitLabel}
         </span>
       </div>
@@ -450,29 +451,29 @@ function DispatchRulesPanel({
   ];
 
   return (
-    <div className="niuu-p-4 niuu-flex niuu-flex-col niuu-gap-4">
+    <div className="niuu:p-4 niuu:flex niuu:flex-col niuu:gap-4">
       {/* Dispatch rules card */}
       <div
-        className="niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4"
+        className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4"
         aria-label="Dispatch rules"
       >
-        <div className="niuu-flex niuu-items-center niuu-justify-between niuu-mb-3">
-          <h3 className="niuu-m-0 niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:mb-3">
+          <h3 className="niuu:m-0 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
             Dispatch rules
           </h3>
           <button
             type="button"
             onClick={onEdit}
-            className="niuu-py-1 niuu-px-3 niuu-bg-bg-secondary niuu-text-text-secondary niuu-border niuu-border-border niuu-rounded-sm niuu-cursor-pointer niuu-font-mono niuu-text-xs"
+            className="niuu:py-1 niuu:px-3 niuu:bg-bg-secondary niuu:text-text-secondary niuu:border niuu:border-border niuu:rounded-sm niuu:cursor-pointer niuu:font-mono niuu:text-xs"
           >
             Edit
           </button>
         </div>
-        <dl className="niuu-flex niuu-flex-col niuu-gap-2 niuu-text-xs niuu-m-0">
+        <dl className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs niuu:m-0">
           {rules.map((r) => (
-            <div key={r.label} className="niuu-flex niuu-justify-between niuu-items-baseline">
-              <dt className="niuu-text-text-muted">{r.label}</dt>
-              <dd className="niuu-m-0 niuu-font-mono niuu-text-text-primary niuu-font-semibold">
+            <div key={r.label} className="niuu:flex niuu:justify-between niuu:items-baseline">
+              <dt className="niuu:text-text-muted">{r.label}</dt>
+              <dd className="niuu:m-0 niuu:font-mono niuu:text-text-primary niuu:font-semibold">
                 {r.value}
               </dd>
             </div>
@@ -481,8 +482,8 @@ function DispatchRulesPanel({
       </div>
 
       {/* Recent dispatches card */}
-      <div className="niuu-rounded-lg niuu-border niuu-border-border niuu-bg-bg-secondary niuu-p-4">
-        <h3 className="niuu-m-0 niuu-mb-3 niuu-text-sm niuu-font-semibold niuu-text-text-primary">
+      <div className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+        <h3 className="niuu:m-0 niuu:mb-3 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
           Recent dispatches
         </h3>
         <div>
@@ -490,15 +491,15 @@ function DispatchRulesPanel({
             <div
               key={d.id}
               className={cn(
-                'niuu-grid niuu-grid-cols-[auto_1fr_auto] niuu-gap-2 niuu-py-1.5 niuu-text-xs',
-                i > 0 && 'niuu-border-t niuu-border-border-subtle',
+                'niuu:grid niuu:grid-cols-[auto_1fr_auto] niuu:gap-2 niuu:py-1.5 niuu:text-xs',
+                i > 0 && 'niuu:border-t niuu:border-border-subtle',
               )}
             >
-              <span className="niuu-rounded niuu-bg-bg-elevated niuu-px-1.5 niuu-py-0.5 niuu-font-mono niuu-text-text-secondary">
+              <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-text-secondary">
                 {d.id}
               </span>
-              <span className="niuu-font-mono niuu-text-text-muted">wf: {d.workflow}</span>
-              <span className="niuu-font-mono niuu-text-text-muted">{d.time}</span>
+              <span className="niuu:font-mono niuu:text-text-muted">wf: {d.workflow}</span>
+              <span className="niuu:font-mono niuu:text-text-muted">{d.time}</span>
             </div>
           ))}
         </div>
@@ -779,18 +780,18 @@ function DispatchViewContent() {
 
   if (isLoading) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-6" role="status">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-6" role="status">
         <StateDot state="processing" pulse />
-        <span className="niuu-text-sm niuu-text-text-secondary">loading dispatch queue…</span>
+        <span className="niuu:text-sm niuu:text-text-secondary">loading dispatch queue…</span>
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="niuu-flex niuu-items-center niuu-gap-2 niuu-p-6" role="alert">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:p-6" role="alert">
         <StateDot state="failed" />
-        <span className="niuu-text-sm niuu-text-text-secondary">failed to load dispatch queue</span>
+        <span className="niuu:text-sm niuu:text-text-secondary">failed to load dispatch queue</span>
       </div>
     );
   }
@@ -799,26 +800,26 @@ function DispatchViewContent() {
     <TooltipProvider>
       <div
         data-testid="dispatch-page-layout"
-        className="niuu-flex niuu-min-h-full niuu-items-start niuu-overflow-x-hidden"
+        className="niuu:flex niuu:min-h-full niuu:items-start niuu:overflow-x-hidden"
       >
         {/* ── Left: queue ─────────────────────────────── */}
-        <div className="niuu-flex niuu-min-w-0 niuu-flex-col niuu-flex-1">
+        <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:flex-1">
           {/* Header */}
-          <div className="niuu-px-4 niuu-py-3 niuu-border-b niuu-border-border-subtle niuu-bg-bg-secondary">
-            <div className="niuu-text-xs niuu-uppercase niuu-tracking-wide niuu-text-text-muted niuu-mb-1">
+          <div className="niuu:px-4 niuu:py-3 niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary">
+            <div className="niuu:text-xs niuu:uppercase niuu:tracking-wide niuu:text-text-muted niuu:mb-1">
               Dispatch queue
             </div>
-            <div className="niuu-flex niuu-items-baseline niuu-justify-between">
-              <h2 className="niuu-m-0 niuu-text-lg niuu-font-semibold niuu-text-text-primary">
+            <div className="niuu:flex niuu:items-baseline niuu:justify-between">
+              <h2 className="niuu:m-0 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
                 {counts.all} runs · {counts.ready} ready
               </h2>
-              <div className="niuu-flex niuu-items-center niuu-gap-2">
+              <div className="niuu:flex niuu:items-center niuu:gap-2">
                 {dispatcherState && (
                   <>
-                    <span className="niuu-text-xs niuu-font-mono niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-rounded niuu-text-text-secondary">
-                      threshold <strong className="niuu-text-brand">{effectiveThreshold}%</strong>
+                    <span className="niuu:text-xs niuu:font-mono niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:rounded niuu:text-text-secondary">
+                      threshold <strong className="niuu:text-brand">{effectiveThreshold}%</strong>
                     </span>
-                    <span className="niuu-text-xs niuu-font-mono niuu-bg-bg-elevated niuu-px-2 niuu-py-1 niuu-rounded niuu-text-text-secondary">
+                    <span className="niuu:text-xs niuu:font-mono niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:rounded niuu:text-text-secondary">
                       concurrent <strong>{effectiveMaxConcurrent}</strong>
                     </span>
                     <button
@@ -826,11 +827,11 @@ function DispatchViewContent() {
                       onClick={handlePauseToggle}
                       disabled={isPausing}
                       className={cn(
-                        'niuu-text-xs niuu-border niuu-border-border niuu-rounded-md niuu-px-2 niuu-py-1 niuu-transition-colors',
+                        'niuu:text-xs niuu:border niuu:border-border niuu:rounded-md niuu:px-2 niuu:py-1 niuu:transition-colors',
                         dispatcherState.running
-                          ? 'niuu-text-text-secondary hover:niuu-text-text-primary niuu-bg-transparent'
-                          : 'niuu-text-brand niuu-bg-bg-elevated',
-                        isPausing && 'niuu-opacity-50 niuu-cursor-not-allowed',
+                          ? 'niuu:text-text-secondary niuu:hover:text-text-primary niuu:bg-transparent'
+                          : 'niuu:text-brand niuu:bg-bg-elevated',
+                        isPausing && 'niuu:opacity-50 niuu:cursor-not-allowed',
                       )}
                       aria-label={
                         dispatcherState.running ? 'Pause dispatcher' : 'Resume dispatcher'
@@ -849,7 +850,7 @@ function DispatchViewContent() {
           </div>
 
           {/* Controls */}
-          <div className="niuu-flex niuu-items-center niuu-gap-3 niuu-px-4 niuu-py-2 niuu-border-b niuu-border-border-subtle niuu-flex-wrap">
+          <div className="niuu:flex niuu:items-center niuu:gap-3 niuu:px-4 niuu:py-2 niuu:border-b niuu:border-border-subtle niuu:flex-wrap">
             <SegmentedFilter
               options={buildFilterOptions(counts)}
               value={statusFilter}
@@ -871,7 +872,7 @@ function DispatchViewContent() {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search runs…"
               aria-label="Search runs"
-              className="niuu-rounded-md niuu-border niuu-border-border niuu-bg-bg-tertiary niuu-px-3 niuu-py-1.5 niuu-text-xs niuu-text-text-primary niuu-outline-none focus:niuu-border-brand niuu-ml-auto"
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none niuu:focus:border-brand niuu:ml-auto"
             />
           </div>
 
@@ -889,13 +890,13 @@ function DispatchViewContent() {
 
           {/* Grouped queue */}
           <div
-            className="niuu-p-2 niuu-flex niuu-flex-col niuu-gap-3"
+            className="niuu:p-2 niuu:flex niuu:flex-col niuu:gap-3"
             role="list"
             aria-label="Dispatch queue"
             data-testid="dispatch-queue-groups"
           >
             {groupedBySaga.length === 0 ? (
-              <div className="niuu-py-12 niuu-text-center niuu-text-sm niuu-text-text-muted">
+              <div className="niuu:py-12 niuu:text-center niuu:text-sm niuu:text-text-muted">
                 No runs match the current filter.
               </div>
             ) : (
@@ -903,7 +904,7 @@ function DispatchViewContent() {
                 <div
                   key={sagaId}
                   role="listitem"
-                  className="niuu-rounded-lg niuu-border niuu-border-border-subtle niuu-overflow-hidden niuu-bg-bg-secondary"
+                  className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:overflow-hidden niuu:bg-bg-secondary"
                 >
                   <SagaGroupHeader
                     sagaName={group.sagaName}
@@ -913,7 +914,7 @@ function DispatchViewContent() {
                     workflowName={group.workflowName}
                     targetName={group.targetName}
                   />
-                  <div className="niuu-p-2 niuu-flex niuu-flex-col niuu-gap-2">
+                  <div className="niuu:p-2 niuu:flex niuu:flex-col niuu:gap-2">
                     {group.entries.map((entry) => (
                       <RunRow
                         key={entry.run.id}
@@ -933,7 +934,7 @@ function DispatchViewContent() {
 
         {/* ── Right: rules panel ──────────────────────── */}
         <div
-          className="niuu-border-l niuu-border-border-subtle niuu-bg-bg-primary niuu-w-[280px] niuu-shrink-0"
+          className="niuu:border-l niuu:border-border-subtle niuu:bg-bg-primary niuu:w-[280px] niuu:shrink-0"
           aria-label="Dispatch rules panel"
         >
           {dispatcherState ? (

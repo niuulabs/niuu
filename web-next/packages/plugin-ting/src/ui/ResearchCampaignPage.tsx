@@ -85,11 +85,11 @@ interface CitationPopoverState extends CitationTarget {
   y: number;
 }
 
-function cx(...parts: Array<string | false | null | undefined>): string {
+export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
-function readDrawerState(): DrawerState {
+export function readDrawerState(): DrawerState {
   if (typeof window === 'undefined') {
     return { open: false, tab: 'files' };
   }
@@ -111,7 +111,7 @@ function readDrawerState(): DrawerState {
   };
 }
 
-function writeDrawerState(next: DrawerState) {
+export function writeDrawerState(next: DrawerState) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   url.searchParams.delete('drawer');
@@ -129,7 +129,7 @@ function writeDrawerState(next: DrawerState) {
   window.history.replaceState({}, '', url.toString());
 }
 
-function formatClock(iso?: string | null): string {
+export function formatClock(iso?: string | null): string {
   if (!iso) return 'unknown';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -142,7 +142,7 @@ function formatClock(iso?: string | null): string {
   });
 }
 
-function formatElapsed(from?: string | null, to?: string | null): string {
+export function formatElapsed(from?: string | null, to?: string | null): string {
   if (!from) return '—';
   const start = new Date(from).getTime();
   const end = new Date(to ?? Date.now()).getTime();
@@ -156,16 +156,16 @@ function formatElapsed(from?: string | null, to?: string | null): string {
   return `${mins}m`;
 }
 
-function countWords(text: string): number {
+export function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function formatKiloWords(text: string): string {
+export function formatKiloWords(text: string): string {
   const words = countWords(text);
   return words >= 1000 ? `${(words / 1000).toFixed(1)}k` : `${words}`;
 }
 
-function parseYamlScalar(raw: string): unknown {
+export function parseYamlScalar(raw: string): unknown {
   const value = raw.trim();
   if (!value) return '';
   if (value === 'true') return true;
@@ -182,7 +182,10 @@ function parseYamlScalar(raw: string): unknown {
   return value.replace(/^['"]|['"]$/g, '');
 }
 
-function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+export function parseFrontmatter(content: string): {
+  frontmatter: Record<string, unknown>;
+  body: string;
+} {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!match) return { frontmatter: {}, body: content };
   const yaml = match[1] ?? '';
@@ -200,11 +203,11 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
   return { frontmatter, body };
 }
 
-function stripHeading(text: string): string {
+export function stripHeading(text: string): string {
   return text.replace(/^# .+\n?/m, '').trim();
 }
 
-function firstParagraph(text: string): string {
+export function firstParagraph(text: string): string {
   const paragraphs = stripHeading(text)
     .split(/\n\s*\n/)
     .map((part) => part.trim())
@@ -212,12 +215,12 @@ function firstParagraph(text: string): string {
   return paragraphs[0] ?? '';
 }
 
-function sentenceCase(value: string): string {
+export function sentenceCase(value: string): string {
   if (!value) return '';
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function normalizeStageLabel(stage: CampaignStageState | undefined): string {
+export function normalizeStageLabel(stage: CampaignStageState | undefined): string {
   if (!stage) return 'Research';
   const label = stage.label.toLowerCase();
   if (label.includes('frame')) return 'Frame';
@@ -230,7 +233,7 @@ function normalizeStageLabel(stage: CampaignStageState | undefined): string {
   return stage.label;
 }
 
-function deriveCampaignState(
+export function deriveCampaignState(
   campaign: ResearchCampaignDetail,
   artifacts: ParsedArtifact[],
 ): DerivedCampaignState {
@@ -255,7 +258,7 @@ function deriveCampaignState(
   return 'running';
 }
 
-function findActiveStage(stageState: CampaignStageState[]): CampaignStageState | undefined {
+export function findActiveStage(stageState: CampaignStageState[]): CampaignStageState | undefined {
   return (
     stageState.find(
       (stage) =>
@@ -264,7 +267,7 @@ function findActiveStage(stageState: CampaignStageState[]): CampaignStageState |
   );
 }
 
-function confidenceFromArtifacts(
+export function confidenceFromArtifacts(
   state: DerivedCampaignState,
   finalArtifact: ParsedArtifact | null,
   sourceCount: number,
@@ -286,11 +289,11 @@ function confidenceFromArtifacts(
   };
 }
 
-function artifactDisplayTitle(artifact: CampaignArtifactDetail): string {
+export function artifactDisplayTitle(artifact: CampaignArtifactDetail): string {
   return artifact.title || artifact.path.split('/').slice(-1)[0] || artifact.path;
 }
 
-function deriveWorkingThesis(artifacts: ParsedArtifact[]): string {
+export function deriveWorkingThesis(artifacts: ParsedArtifact[]): string {
   const candidates = [
     artifacts.find((artifact) => artifact.kind === 'analysis'),
     artifacts.find((artifact) => artifact.kind === 'final'),
@@ -304,7 +307,7 @@ function deriveWorkingThesis(artifacts: ParsedArtifact[]): string {
   return 'Ting is still building the first useful answer for this campaign.';
 }
 
-function inferDomain(source: MimirSource): string {
+export function inferDomain(source: MimirSource): string {
   if (source.originUrl) {
     try {
       return new URL(source.originUrl).hostname.replace(/^www\./, '');
@@ -316,7 +319,7 @@ function inferDomain(source: MimirSource): string {
   return source.originType;
 }
 
-function inferSourceKind(source: MimirSource): string {
+export function inferSourceKind(source: MimirSource): string {
   if (source.originType === 'arxiv') return 'paper';
   if (source.originType === 'file') return 'file';
   if (source.originType === 'chat') return 'chat';
@@ -324,7 +327,7 @@ function inferSourceKind(source: MimirSource): string {
   return 'web';
 }
 
-function qualityForSource(source: MimirSource): number {
+export function qualityForSource(source: MimirSource): number {
   if (source.originType === 'arxiv') return 5;
   if (source.originType === 'file') return 5;
   if (source.originType === 'rss') return 4;
@@ -332,13 +335,13 @@ function qualityForSource(source: MimirSource): number {
   return 3;
 }
 
-function takeExcerpt(content: string): string {
+export function takeExcerpt(content: string): string {
   const cleaned = content.replace(/\s+/g, ' ').trim();
   if (!cleaned) return 'No excerpt is available for this source yet.';
   return cleaned.slice(0, 220) + (cleaned.length > 220 ? '…' : '');
 }
 
-function parseCritiques(content: string, linkedArtifacts: string[]): CritiqueVm[] {
+export function parseCritiques(content: string, linkedArtifacts: string[]): CritiqueVm[] {
   const body = stripHeading(content);
   const sections = body
     .split(/\n(?=## )/)
@@ -394,7 +397,7 @@ function parseCritiques(content: string, linkedArtifacts: string[]): CritiqueVm[
   }));
 }
 
-function parseListCards(content: string): Array<{ title: string; body: string }> {
+export function parseListCards(content: string): Array<{ title: string; body: string }> {
   const body = stripHeading(content);
   const items = body
     .split(/\n(?=- |\* |## )/)
@@ -414,18 +417,18 @@ function parseListCards(content: string): Array<{ title: string; body: string }>
   });
 }
 
-function citationToken(label: string): string {
+export function citationToken(label: string): string {
   return `[${label}]`;
 }
 
-function statusDotClass(state: DerivedCampaignState): string {
+export function statusDotClass(state: DerivedCampaignState): string {
   if (state === 'published' || state === 'review' || state === 'running') return 'is-brand';
   if (state === 'blocked') return 'is-amber';
   if (state === 'failed') return 'is-rose';
   return 'is-muted';
 }
 
-function stageTickClass(status: string): string {
+export function stageTickClass(status: string): string {
   if (status === 'complete') return 'is-complete';
   if (status === 'active') return 'is-active';
   if (status === 'blocked') return 'is-blocked';
@@ -433,7 +436,7 @@ function stageTickClass(status: string): string {
   return 'is-pending';
 }
 
-function drawerSectionCountLabel(count: number, singular: string, plural: string): string {
+export function drawerSectionCountLabel(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
@@ -677,7 +680,7 @@ function ResearchMarkdown({
   return <div className="ting-research-detail__markdown">{elements}</div>;
 }
 
-function splitTableRow(row: string): string[] {
+export function splitTableRow(row: string): string[] {
   const trimmed = row.trim().replace(/^\|/, '').replace(/\|$/, '');
   return trimmed.split('|').map((cell) => cell.trim());
 }
@@ -813,10 +816,10 @@ export function ResearchCampaignPage() {
   const [drawer, setDrawer] = useState<DrawerState>(() => readDrawerState());
   const [viewMode, setViewMode] = useState<ViewMode>('clean');
   const [popoverCitation, setPopoverCitation] = useState<CitationPopoverState | null>(null);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [skepticOpen, setSkepticOpen] = useState(true);
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [learningsOpen, setLearningsOpen] = useState(false);
+  const [evidenceOpenOverride, setEvidenceOpenOverride] = useState<boolean | null>(null);
+  const [skepticOpenOverride, setSkepticOpenOverride] = useState<boolean | null>(null);
+  const [memoryOpenOverride, setMemoryOpenOverride] = useState<boolean | null>(null);
+  const [learningsOpenOverride, setLearningsOpenOverride] = useState<boolean | null>(null);
 
   const activityLog = useQuery({
     queryKey: ['ting', 'research', 'campaign', slug, 'activity'],
@@ -833,15 +836,6 @@ export function ResearchCampaignPage() {
   useEffect(() => {
     writeDrawerState(drawer);
   }, [drawer]);
-
-  useEffect(() => {
-    if (!campaign) return;
-    const derived = deriveCampaignState(campaign, []);
-    setEvidenceOpen(derived === 'published');
-    setSkepticOpen(derived === 'running' || derived === 'review' || derived === 'blocked');
-    setMemoryOpen(derived === 'published');
-    setLearningsOpen(derived === 'published' || derived === 'review');
-  }, [campaign]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1018,30 +1012,36 @@ export function ResearchCampaignPage() {
   const selectedFileArtifact = selectedFilePath
     ? (artifactByPath.get(selectedFilePath) ?? null)
     : null;
-  const selectedSource =
-    sourceList.find((source) => source.id === drawer.sourceId) ??
-    (popoverCitation?.kind === 'source'
-      ? (sourceByCitation.get(popoverCitation.key) ?? null)
-      : null) ??
-    sourceList[0] ??
-    null;
-  const selectedCritique =
-    critiques.find((critique) => critique.id === drawer.critiqueId) ??
-    (popoverCitation?.kind === 'critique'
-      ? (critiqueByCitation.get(popoverCitation.key) ?? null)
-      : null) ??
-    critiques[0] ??
-    null;
+  const selectedSource = useMemo(() => {
+    const sourceFromDrawer = drawer.sourceId
+      ? (sourceList.find((source) => source.id === drawer.sourceId) ?? null)
+      : null;
+    if (sourceFromDrawer) return sourceFromDrawer;
 
-  const filteredActivity = useMemo(() => {
-    const events = activityLog.data ?? [];
-    return events.filter((event) => {
-      const eventSlug = typeof event.data.slug === 'string' ? event.data.slug : undefined;
-      const sessionId =
-        typeof event.data.session_id === 'string' ? event.data.session_id : undefined;
-      return eventSlug === slug || (campaign?.sessionId && sessionId === campaign.sessionId);
-    });
-  }, [activityLog.data, campaign?.sessionId, slug]);
+    const sourceFromCitation =
+      popoverCitation?.kind === 'source'
+        ? (sourceByCitation.get(popoverCitation.key) ?? null)
+        : null;
+    return sourceFromCitation ?? sourceList[0] ?? null;
+  }, [drawer.sourceId, popoverCitation, sourceByCitation, sourceList]);
+  const selectedCritique = useMemo(() => {
+    const critiqueFromDrawer = drawer.critiqueId
+      ? (critiques.find((critique) => critique.id === drawer.critiqueId) ?? null)
+      : null;
+    if (critiqueFromDrawer) return critiqueFromDrawer;
+
+    const critiqueFromCitation =
+      popoverCitation?.kind === 'critique'
+        ? (critiqueByCitation.get(popoverCitation.key) ?? null)
+        : null;
+    return critiqueFromCitation ?? critiques[0] ?? null;
+  }, [critiqueByCitation, critiques, drawer.critiqueId, popoverCitation]);
+
+  const filteredActivity = (activityLog.data ?? []).filter((event) => {
+    const eventSlug = typeof event.data.slug === 'string' ? event.data.slug : undefined;
+    const sessionId = typeof event.data.session_id === 'string' ? event.data.session_id : undefined;
+    return eventSlug === slug || (campaign?.sessionId && sessionId === campaign.sessionId);
+  });
 
   const latestActivity = filteredActivity[0];
   const sessionsCount = Math.max(
@@ -1070,6 +1070,17 @@ export function ResearchCampaignPage() {
     const notebook = parsedArtifacts.filter((artifact) => artifact.publishState === 'unknown');
     return { published, reviewReady, notebook };
   }, [parsedArtifacts]);
+  const campaignPanelState = campaign ? deriveCampaignState(campaign, []) : 'draft';
+  const evidenceOpen = evidenceOpenOverride ?? campaignPanelState === 'published';
+  const skepticOpen =
+    skepticOpenOverride ??
+    (campaignPanelState === 'running' ||
+      campaignPanelState === 'review' ||
+      campaignPanelState === 'blocked');
+  const memoryOpen = memoryOpenOverride ?? campaignPanelState === 'published';
+  const learningsOpen =
+    learningsOpenOverride ??
+    (campaignPanelState === 'published' || campaignPanelState === 'review');
 
   const visibleCitationSourceLabels = sourceList.slice(0, 3).map((source) => source.citation);
   const popoverSource =
@@ -1665,7 +1676,7 @@ export function ResearchCampaignPage() {
             title="Evidence"
             meta={drawerSectionCountLabel(sourceList.length, 'source cited', 'sources cited')}
             open={evidenceOpen}
-            onToggle={() => setEvidenceOpen((value) => !value)}
+            onToggle={() => setEvidenceOpenOverride((value) => !(value ?? evidenceOpen))}
             actionLabel="Open all in side panel →"
             onAction={() => openDrawer({ tab: 'sources', sourceId: selectedSource?.id })}
           >
@@ -1702,7 +1713,7 @@ export function ResearchCampaignPage() {
             title="Skeptic's pass"
             meta={`${critiques.length} ${critiques.length === 1 ? 'challenge' : 'challenges'}`}
             open={skepticOpen}
-            onToggle={() => setSkepticOpen((value) => !value)}
+            onToggle={() => setSkepticOpenOverride((value) => !(value ?? skepticOpen))}
             actionLabel="Open all in side panel →"
             onAction={() => openDrawer({ tab: 'critiques', critiqueId: selectedCritique?.id })}
           >
@@ -1742,7 +1753,7 @@ export function ResearchCampaignPage() {
               title="Learnings & follow-ups"
               meta={`${learnings.length} durable · ${followups.length} open`}
               open={learningsOpen}
-              onToggle={() => setLearningsOpen((value) => !value)}
+              onToggle={() => setLearningsOpenOverride((value) => !(value ?? learningsOpen))}
             >
               <div className="ting-research-detail__lf-grid">
                 <div className="ting-research-detail__lf-column">
@@ -1789,7 +1800,7 @@ export function ResearchCampaignPage() {
             title="Durable memory"
             meta={`${memoryGroups.published.length} published · ${memoryGroups.reviewReady.length} review-ready · ${memoryGroups.notebook.length} notebook`}
             open={memoryOpen}
-            onToggle={() => setMemoryOpen((value) => !value)}
+            onToggle={() => setMemoryOpenOverride((value) => !(value ?? memoryOpen))}
           >
             <div className="ting-research-detail__memory-group">
               <div className="ting-research-detail__memory-heading">Published</div>

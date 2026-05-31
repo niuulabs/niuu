@@ -16,7 +16,7 @@ export function RavnFooter() {
   const openSessions = (sessions ?? []).filter((s) => s.status === 'running').length;
 
   return (
-    <div className="niuu-flex niuu-items-center niuu-gap-1" data-testid="ravn-footer">
+    <div className="niuu:flex niuu:items-center niuu:gap-1" data-testid="ravn-footer">
       <FooterChip
         name="ravens"
         state={activeRavens > 0 ? 'ok' : 'warn'}

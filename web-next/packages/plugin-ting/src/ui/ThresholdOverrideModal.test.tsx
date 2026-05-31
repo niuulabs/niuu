@@ -77,6 +77,35 @@ describe('ThresholdOverrideModal', () => {
     expect(screen.getByText('0.90')).toBeInTheDocument();
   });
 
+  it('falls back to the new current threshold when a stale draft key no longer matches', () => {
+    const onOpenChange = vi.fn();
+    const onApply = vi.fn();
+    const { rerender } = render(
+      <ThresholdOverrideModal
+        open={true}
+        onOpenChange={onOpenChange}
+        currentThreshold={0.6}
+        onApply={onApply}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('slider', { name: /threshold value/i }), {
+      target: { value: '0.9' },
+    });
+    expect(screen.getByText('0.90')).toBeInTheDocument();
+
+    rerender(
+      <ThresholdOverrideModal
+        open={true}
+        onOpenChange={onOpenChange}
+        currentThreshold={0.8}
+        onApply={onApply}
+      />,
+    );
+
+    expect(screen.getByText('0.80')).toBeInTheDocument();
+  });
+
   it('calls onApply with current value on Apply click', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();
