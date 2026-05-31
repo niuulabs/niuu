@@ -109,7 +109,7 @@ async def test_ting_sse_receives_saga_event(
             collect_sse(base_url, SSE_URL, n=1),
             timeout=SSE_TIMEOUT,
         )
-        await emit_task
+        _ = await emit_task
 
         assert len(events) >= 1
         saga_events = [e for e in events if e["event"] == "saga.created"]

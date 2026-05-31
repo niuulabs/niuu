@@ -1,6 +1,7 @@
 """Filesystem-backed persistence for Ravn wardens."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import os
 import re
@@ -81,10 +82,8 @@ class WardenStore:
         if not path.exists():
             return False
         path.unlink()
-        try:
+        with suppress(OSError):
             self.warden_dir(warden_id).rmdir()
-        except OSError:
-            pass
         return True
 
     def create(self, spec: WardenSpec) -> WardenSpec:

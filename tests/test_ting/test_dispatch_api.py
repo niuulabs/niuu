@@ -1145,7 +1145,7 @@ class TestDispatchAliases:
         app.include_router(create_dispatch_router())
         app.dependency_overrides[resolve_trackers] = lambda: [tracker]
         app.dependency_overrides[resolve_dispatch_service] = lambda: service
-        app.dependency_overrides[resolve_dispatcher_repo] = lambda: MockDispatcherRepo()
+        app.dependency_overrides[resolve_dispatcher_repo] = MockDispatcherRepo
         app.state.settings = _make_settings()
         return TestClient(app)
 

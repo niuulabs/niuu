@@ -9,6 +9,7 @@ deltas, plus ``question.asked`` for permission requests and ``session.idle``
 for turn completion.
 """
 
+from contextlib import suppress
 import asyncio
 import json
 import logging
@@ -148,15 +149,13 @@ class OpenCodeHttpTransport(CLITransport):
         for attempt in range(1, max_attempts + 1):
             if self._process and self._process.returncode is not None:
                 raise RuntimeError(f"OpenCode server exited with code {self._process.returncode}")
-            try:
+            with suppress(httpx.ConnectError):
                 resp = await self._client.get("/global/health")
                 if resp.status_code == 200:
                     logger.info("OpenCode server ready (attempt %d)", attempt)
                     self._alive = True
                     self._sse_task = asyncio.create_task(self._sse_loop())
                     return
-            except httpx.ConnectError:
-                pass
             await asyncio.sleep(0.5)
 
         raise RuntimeError(
@@ -214,7 +213,7 @@ class OpenCodeHttpTransport(CLITransport):
                                     msg_count += 1
                                     await self._handle_sse_event(event)
         except asyncio.CancelledError:
-            pass
+            return
         except Exception as exc:
             logger.warning("OpenCode SSE loop error: %r", exc, exc_info=True)
         finally:

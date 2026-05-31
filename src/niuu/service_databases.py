@@ -269,6 +269,7 @@ def bootstrap_sql_for_service(service_name: str) -> tuple[str, ...]:
             return OBSERVATORY_BOOTSTRAP_SQL
         case _:
             return ()
+    raise AssertionError("Unreachable bootstrap_sql_for_service fallthrough")
 
 
 def validate_database_name(name: str) -> str:

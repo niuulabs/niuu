@@ -1,6 +1,7 @@
 """Modal widget — generic centered dialog with title and content."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from textual.app import ComposeResult
 from textual.containers import Center, Vertical
@@ -82,16 +83,12 @@ class NiuuModal(Widget):
     def show(self, title: str | None = None, content: str | None = None) -> None:
         if title is not None:
             self._title = title
-            try:
+            with suppress(Exception):
                 self.query_one("#modal-title", Static).update(title)
-            except Exception:
-                pass
         if content is not None:
             self._content = content
-            try:
+            with suppress(Exception):
                 self.query_one("#modal-body", Static).update(content)
-            except Exception:
-                pass
         self.is_visible = True
 
     def hide(self) -> None:

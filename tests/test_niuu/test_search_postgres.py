@@ -6,6 +6,7 @@ the module boundary and verify the adapter's interface contract.
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -236,8 +237,6 @@ class TestPostgresSearchAdapterPoolSharing:
     @pytest.mark.asyncio
     async def test_initialize_skips_pool_creation_when_pool_injected(self) -> None:
         """initialize() must not create a new pool when one was injected."""
-        import niuu.adapters.search.postgres as _mod
-
         adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
 
         mock_conn = AsyncMock()
@@ -251,7 +250,7 @@ class TestPostgresSearchAdapterPoolSharing:
 
         adapter.set_pool(fake_pool)
 
-        with patch.object(_mod, "asyncpg") as mock_asyncpg:
+        with patch.object(sys.modules["niuu.adapters.search.postgres"], "asyncpg") as mock_asyncpg:
             mock_asyncpg.create_pool = AsyncMock()
             await adapter.initialize()
 

@@ -21,41 +21,6 @@ from bifrost.ports.usage_store import (
 
 logger = logging.getLogger(__name__)
 
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS usage_records (
-    id                 BIGSERIAL PRIMARY KEY,
-    request_id         TEXT      NOT NULL DEFAULT '',
-    agent_id           TEXT      NOT NULL,
-    tenant_id          TEXT      NOT NULL,
-    session_id         TEXT      NOT NULL DEFAULT '',
-    saga_id            TEXT      NOT NULL DEFAULT '',
-    model              TEXT      NOT NULL,
-    provider           TEXT      NOT NULL DEFAULT '',
-    input_tokens       INTEGER   NOT NULL DEFAULT 0,
-    output_tokens      INTEGER   NOT NULL DEFAULT 0,
-    cache_read_tokens  INTEGER   NOT NULL DEFAULT 0,
-    cache_write_tokens INTEGER   NOT NULL DEFAULT 0,
-    reasoning_tokens   INTEGER   NOT NULL DEFAULT 0,
-    cost_usd           NUMERIC   NOT NULL DEFAULT 0,
-    latency_ms         REAL      NOT NULL DEFAULT 0,
-    streaming          BOOLEAN   NOT NULL DEFAULT FALSE,
-    cache_hit          BOOLEAN   NOT NULL DEFAULT FALSE,
-    timestamp          TIMESTAMPTZ NOT NULL
-);
-"""
-
-_CREATE_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_usage_tenant_ts  ON usage_records(tenant_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_usage_agent_ts   ON usage_records(agent_id,  timestamp);
-CREATE INDEX IF NOT EXISTS idx_usage_model      ON usage_records(model);
-CREATE INDEX IF NOT EXISTS idx_usage_provider   ON usage_records(provider);
-"""
-
-# Additive migrations for databases created before NIU-486.
-_MIGRATE_COLUMNS = [
-    "ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN NOT NULL DEFAULT FALSE",
-]
-
 _INSERT = """
 INSERT INTO usage_records
     (request_id, agent_id, tenant_id, session_id, saga_id,

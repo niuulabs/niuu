@@ -23,6 +23,7 @@ Limitations:
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -138,10 +139,8 @@ class PersistentSubprocessTransport(CLITransport):
             logger.debug("Error stopping Claude subprocess", exc_info=True)
         if self._reader_task is not None:
             self._reader_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await self._reader_task
-            except (asyncio.CancelledError, Exception):
-                pass
         self._process = None
         self._reader_task = None
         # Wake any waiter so it doesn't hang.

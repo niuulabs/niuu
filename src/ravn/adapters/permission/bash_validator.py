@@ -238,6 +238,8 @@ _PATH_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 # Same patterns without labels — for use in BashValidator (Deny, not Warn).
 _PATH_TRAVERSAL_PATTERNS: list[re.Pattern[str]] = [pat for pat, _ in _PATH_WARN_PATTERNS]
 
+__all__ = ["_PATH_TRAVERSAL_PATTERNS"]
+
 # Network-access commands.
 _NETWORK_COMMANDS: frozenset[str] = frozenset(
     {

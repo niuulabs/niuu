@@ -35,7 +35,7 @@ class IdentityPlugin(ServicePlugin):
         return ServiceDefinition(
             name="identity",
             description="Identity, tenancy, and token service",
-            factory=lambda: _IdentityStub(),
+            factory=_IdentityStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8083,

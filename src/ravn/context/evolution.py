@@ -32,6 +32,7 @@ Usage::
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import json
 import logging
@@ -225,10 +226,8 @@ class EvolutionState:
         last_run_at: datetime | None = None
         raw_ts = data.get("last_run_at")
         if raw_ts:
-            try:
+            with suppress(ValueError, TypeError):
                 last_run_at = datetime.fromisoformat(raw_ts)
-            except (ValueError, TypeError):
-                pass
         return cls(
             last_run_at=last_run_at,
             outcome_count_at_last_run=int(data.get("outcome_count_at_last_run", 0)),

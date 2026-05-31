@@ -45,9 +45,9 @@ class TriggerPort(ABC):
     @abstractmethod
     def name(self) -> str:
         """Human-readable trigger name, e.g. ``cron:morning_check``."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
         """Run forever.  Call ``enqueue`` whenever a task should fire."""
-        ...
+        raise NotImplementedError

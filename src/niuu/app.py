@@ -1,6 +1,7 @@
 """Niuu composition root for shared HTTP hosting and mount selection."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import inspect
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 def _configured_cors_origins() -> list[str]:
     """Return explicitly configured CORS origins for the unified niuu host."""
+
     raw = os.environ.get("NIUU_CORS_ORIGINS", "").strip()
     if not raw:
         return []
@@ -667,18 +669,14 @@ def build_root_app(
                 ) as skuld_ws:
 
                     async def browser_to_skuld() -> None:
-                        try:
+                        with suppress(Exception):
                             async for msg in websocket.iter_text():
                                 await skuld_ws.send(msg)
-                        except Exception:
-                            pass
 
                     async def skuld_to_browser() -> None:
-                        try:
+                        with suppress(Exception):
                             async for msg in skuld_ws:
                                 await websocket.send_text(str(msg))
-                        except Exception:
-                            pass
 
                     done, pending = await asyncio.wait(
                         [
@@ -694,10 +692,8 @@ def build_root_app(
             except Exception:
                 logger.debug("Skuld WS proxy ended for session %s", _sanitize_log(session_id))
             finally:
-                try:
+                with suppress(Exception):
                     await websocket.close()
-                except Exception:
-                    pass
 
         @root.api_route(
             "/s/{session_id}/api/{path:path}",

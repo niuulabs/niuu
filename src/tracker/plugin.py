@@ -35,7 +35,7 @@ class TrackerPlugin(ServicePlugin):
         return ServiceDefinition(
             name="tracker",
             description="Tracker issue, status, and repo mapping service",
-            factory=lambda: _TrackerStub(),
+            factory=_TrackerStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8087,

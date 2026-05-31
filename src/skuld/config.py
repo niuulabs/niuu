@@ -14,6 +14,7 @@ Environment variable override format:
   SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
+from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -130,11 +131,9 @@ class WorkflowRuntimeConfig(BaseModel):
             return value
         graph = value.get("graph")
         if isinstance(graph, str) and graph.strip():
-            try:
+            with suppress(Exception):
                 value = dict(value)
                 value["graph"] = json.loads(graph)
-            except Exception:
-                pass
         return value
 
 

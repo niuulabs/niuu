@@ -13,7 +13,6 @@ _OUTCOME_START = re.compile(r"---outcome---", re.IGNORECASE)
 # Accept ---end--- or just --- on its own line as end marker
 _OUTCOME_END = re.compile(r"---end---|(?:^|\n)---(?:\s*$|\n)", re.IGNORECASE)
 _CODE_FENCE = re.compile(r"^```[a-z]*\s*\n?(.*?)```\s*$", re.DOTALL)
-_SIMPLE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _KEY_VALUE_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$")
 _WRAPPED_OUTCOME_START = re.compile(
     r"---\s*o\s*u\s*t\s*c\s*o\s*m\s*e\s*---",

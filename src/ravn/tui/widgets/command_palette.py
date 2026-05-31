@@ -6,8 +6,10 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Container
-from textual.screen import ModalScreen
+import textual.screen as textual_screen
 from textual.widgets import Input, RichLog, Static
+
+ModalScreen = textual_screen.ModalScreen
 
 # (label, command_text)
 # command_text = ":cmd" to execute/pre-fill; "" for keybinding reference

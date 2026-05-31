@@ -27,8 +27,10 @@ def latest_version(worktree: Path) -> str:
         [
             "bash",
             "-lc",
-            "git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname "
-            "| grep -v -- '-' | head -1 | sed 's/^v//' || true",
+            (
+                "git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname "
+                "| grep -v -- '-' | head -1 | sed 's/^v//' || true"
+            ),
         ],
         cwd=worktree,
     )

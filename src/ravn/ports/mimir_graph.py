@@ -33,7 +33,7 @@ class MimirGraphPort(ABC):
         ``list_pages()`` metadata.  Returns a ``MimirGraph`` with nodes (page
         paths) and edges (page pairs that share at least one source_id).
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def related_pages(self, path: str, limit: int = 5) -> list[str]:
@@ -42,4 +42,4 @@ class MimirGraphPort(ABC):
         Relatedness is defined by the adapter's edge model (e.g. shared
         source_ids, semantic similarity, typed relations).
         """
-        ...
+        raise NotImplementedError

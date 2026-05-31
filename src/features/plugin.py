@@ -35,7 +35,7 @@ class FeaturesPlugin(ServicePlugin):
         return ServiceDefinition(
             name="features",
             description="Feature catalog and preference service",
-            factory=lambda: _FeaturesStub(),
+            factory=_FeaturesStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8084,

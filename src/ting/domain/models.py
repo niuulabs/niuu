@@ -372,3 +372,5 @@ class SagaStructure:
 # ---------------------------------------------------------------------------
 
 from niuu.domain.models import PersonalAccessToken  # noqa: F401, E402
+
+__all__ = ["PersonalAccessToken"]

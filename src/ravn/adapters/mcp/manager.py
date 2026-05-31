@@ -53,6 +53,7 @@ def _build_transport(cfg: MCPServerConfig) -> MCPTransport:
             )
         case _:
             raise ValueError(f"Unknown MCP transport type: {cfg.transport!r}")
+    raise AssertionError("Unreachable _build_transport fallthrough")
 
 
 def _build_input_schema(tool_def: dict[str, Any]) -> dict[str, Any]:
@@ -228,3 +229,4 @@ class MCPManager:
                     auth.auth_type,
                 )
                 return {}
+        raise AssertionError("Unreachable _resolve_auth_headers fallthrough")

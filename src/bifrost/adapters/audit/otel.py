@@ -41,6 +41,7 @@ def _severity(outcome: str) -> tuple[int, str]:
             return (_SEVERITY_WARN, "WARN")
         case _:
             return (_SEVERITY_INFO, "INFO")
+    raise AssertionError("Unreachable _severity fallthrough")
 
 
 class OtelAuditAdapter(AuditPort):

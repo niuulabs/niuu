@@ -609,7 +609,7 @@ class TestRunLoop:
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
-            await task
+            _ = await task
 
     @pytest.mark.asyncio
     async def test_name_property(self) -> None:

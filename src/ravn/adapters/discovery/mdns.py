@@ -30,6 +30,7 @@ Peers are evicted when ``last_heartbeat`` is older than ``peer_ttl_s`` (default 
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import dataclasses
@@ -53,13 +54,11 @@ if TYPE_CHECKING:
     from ravn.config import DiscoveryConfig
 
 try:
-    from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
+    from zeroconf import ServiceInfo
     from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 except ImportError:  # pragma: no cover
-    Zeroconf = None  # type: ignore[assignment,misc]
     AsyncZeroconf = None  # type: ignore[assignment]
     ServiceInfo = None  # type: ignore[assignment,misc]
-    ServiceBrowser = None  # type: ignore[assignment,misc]
     AsyncServiceBrowser = None  # type: ignore[assignment,misc]
 
 try:
@@ -187,24 +186,18 @@ class MdnsDiscoveryAdapter:
         for task in (self._heartbeat_task, self._handshake_listener_task):
             if task is not None:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                with suppress(asyncio.CancelledError):
+                    _ = await task
 
         self._heartbeat_task = None
         self._handshake_listener_task = None
 
         if self._zc is not None:
             if self._service_info is not None:
-                try:
+                with suppress(Exception):
                     await self._zc.async_unregister_service(self._service_info)
-                except Exception:
-                    pass
-            try:
+            with suppress(Exception):
                 await self._zc.async_close()
-            except Exception:
-                pass
             self._zc = None
 
         logger.info("mdns_discovery: stopped peer=%s", self._identity.peer_id)
@@ -410,10 +403,8 @@ class MdnsDiscoveryAdapter:
         peer = self._peers.pop(peer_id, None)
         if peer is not None:
             for cb in self._on_leave:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
 
     # ------------------------------------------------------------------
     # Internal — handshake initiator (side A)
@@ -544,7 +535,7 @@ class MdnsDiscoveryAdapter:
                     logger.debug("mdns_discovery: handshake_listener error: %s", exc)
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
-            pass
+            return
         finally:
             sock.close()
 
@@ -614,10 +605,8 @@ class MdnsDiscoveryAdapter:
         self._peers[peer.peer_id] = peer
         if is_new:
             for cb in self._on_join:
-                try:
+                with suppress(Exception):
                     cb(peer)
-                except Exception:
-                    pass
 
     def _peer_from_identity_dict(
         self,
@@ -672,10 +661,8 @@ class MdnsDiscoveryAdapter:
             if peer is not None:
                 logger.debug("mdns_discovery: evicted stale peer %s", peer_id)
                 for cb in self._on_leave:
-                    try:
+                    with suppress(Exception):
                         cb(peer)
-                    except Exception:
-                        pass
 
     def update_peer_heartbeat(
         self,

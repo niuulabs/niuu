@@ -53,12 +53,12 @@ class SpawnPort(Protocol):
         Returns peer_ids once they appear in the DiscoveryPort peer table.
         Blocks until all instances are registered or raises ``TimeoutError``.
         """
-        ...
+        raise NotImplementedError
 
     async def terminate(self, peer_id: str) -> None:
         """Gracefully terminate a single spawned instance."""
-        ...
+        raise NotImplementedError
 
     async def terminate_all(self) -> None:
         """Terminate all instances this spawner created."""
-        ...
+        raise NotImplementedError

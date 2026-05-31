@@ -119,8 +119,6 @@ class TestSpawnSession:
         await adapter.spawn_session(req)
 
         sent = route.calls[0].request
-        import json
-
         body = json.loads(sent.content)
         assert body["name"] == "n"
         assert body["model"] == "claude-opus-4-6"
@@ -503,8 +501,6 @@ class TestSendMessage:
         await adapter.send_message("ses-1", "Fix the test")
 
         sent = route.calls[0].request
-        import json
-
         body = json.loads(sent.content)
         assert body["content"] == "Fix the test"
 

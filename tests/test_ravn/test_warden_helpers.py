@@ -255,7 +255,8 @@ def test_store_helpers_cover_error_paths_and_role_inference(tmp_path: Path) -> N
     assert store.stop("missing") is None
     assert store.uninstall("missing") is None
     assert store.observe("missing") is None
-    assert store.delete("missing") is False
+    missing_deleted = store.delete("missing")
+    assert missing_deleted is False
 
     broken_yaml = tmp_path / "broken.yaml"
     broken_yaml.write_text(":\n", encoding="utf-8")
@@ -272,7 +273,8 @@ def test_store_helpers_cover_error_paths_and_role_inference(tmp_path: Path) -> N
     non_empty = store.create(WardenSpec(id="", name="Research Warden"))
     extra_file = store.warden_dir(non_empty.id) / "leftover.txt"
     extra_file.write_text("keep", encoding="utf-8")
-    assert store.delete(non_empty.id) is True
+    deleted = store.delete(non_empty.id)
+    assert deleted is True
     assert extra_file.exists()
 
     enriched = store.save(

@@ -35,7 +35,7 @@ class AuditPlugin(ServicePlugin):
         return ServiceDefinition(
             name="audit",
             description="Audit log query service",
-            factory=lambda: _AuditStub(),
+            factory=_AuditStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8082,

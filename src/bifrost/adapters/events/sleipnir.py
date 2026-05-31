@@ -13,6 +13,7 @@ when the broker is unreachable.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import json
 import logging
@@ -54,10 +55,8 @@ class SleipnirEventEmitter(CostEventEmitter):
             return True
         # Close stale connection before reconnecting to avoid resource leaks.
         if self._connection is not None:
-            try:
+            with suppress(Exception):
                 await self._connection.close()
-            except Exception:
-                pass
             self._connection = None
             self._channel = None
             self._exchange = None

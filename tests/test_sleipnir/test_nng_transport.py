@@ -11,12 +11,12 @@ to ensure isolation even when tests run in parallel.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import sys
 import textwrap
 import time
-from contextlib import suppress
 from unittest.mock import patch
 
 import pytest

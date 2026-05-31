@@ -1,6 +1,7 @@
 """Tests for run review REST API endpoints."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -70,12 +71,10 @@ class StatefulMockTracker(MockTracker):
 
     async def get_run(self, tracker_id: str) -> Run:
         # Look up by UUID string (run_id) first, then by tracker_id
-        try:
+        with suppress(ValueError):
             uid = UUID(tracker_id)
             if uid in self.runs:
                 return self.runs[uid]
-        except ValueError:
-            pass
         for run in self.runs.values():
             if run.tracker_id == tracker_id:
                 return run

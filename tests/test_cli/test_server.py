@@ -1589,7 +1589,7 @@ class TestRootServerStartStop:
 
         loop = asyncio.get_event_loop()
         mock_task = loop.create_task(_noop())
-        await mock_task  # let it complete
+        _ = await mock_task  # let it complete
 
         server._server = mock_uvicorn_server
         server._task = mock_task

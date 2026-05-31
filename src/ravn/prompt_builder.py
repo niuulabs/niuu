@@ -19,6 +19,7 @@ Two-layer cache
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import hashlib
 import json
@@ -320,11 +321,9 @@ def _build_manifest(files: list[Path]) -> dict[str, tuple[float, int]]:
     """Return {path_str: (mtime, size)} for each file that exists."""
     result: dict[str, tuple[float, int]] = {}
     for p in files:
-        try:
+        with suppress(OSError):
             stat = p.stat()
             result[str(p)] = (stat.st_mtime, stat.st_size)
-        except OSError:
-            pass
     return result
 
 

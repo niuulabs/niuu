@@ -12,6 +12,7 @@ approval flows back under Forge.
 from __future__ import annotations
 
 import asyncio
+from inspect import isawaitable
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -33,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+async def _resolve_git_for_request(request: Request) -> GitPort:
+    """Resolve the git dependency while honoring test overrides safely."""
+
+    provider = request.app.dependency_overrides.get(resolve_git, resolve_git)
+    result = provider()
+    if isawaitable(result):
+        result = await result
+    return result
 
 
 class SessionInfoResponse(BaseModel):
@@ -230,7 +241,7 @@ def create_sessions_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         trackers: list[TrackerPort] = Depends(resolve_trackers),
         volundr: VolundrPort = Depends(resolve_volundr),
-        git: GitPort = Depends(resolve_git),
+        git: GitPort = Depends(_resolve_git_for_request),
     ) -> Response:
         tracker, run, saga = await _resolve_session_context(session_id, trackers=trackers)
         if tracker is None or run is None:

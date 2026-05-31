@@ -1,6 +1,7 @@
 """Chronicles page — timeline events with filter tabs and search."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from dataclasses import dataclass
 from typing import Any
@@ -49,6 +50,7 @@ DEFAULT_EVENT_STYLE = ("○", TEXT_MUTED)
 
 def _format_elapsed(seconds: int) -> str:
     """Format seconds into human-friendly string (e.g. 5s, 2m30s, 1h05m)."""
+
     if seconds < 60:
         return f"{seconds}s"
     m, s = divmod(seconds, 60)
@@ -246,10 +248,8 @@ class ChroniclesPage(Widget):
             return
         if value:
             box.add_class("visible")
-            try:
+            with suppress(Exception):
                 self.query_one("#chron-search-input", Input).focus()
-            except Exception:
-                pass
         else:
             box.remove_class("visible")
 

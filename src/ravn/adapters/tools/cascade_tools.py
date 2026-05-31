@@ -11,6 +11,7 @@ All routing logic (local vs mesh vs spawn) lives in ``task_create``.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -723,7 +724,7 @@ class TaskCollectTool(ToolPort):
         while True:
             await asyncio.sleep(self._poll_interval_s)
             if peer_id is not None and self._mesh is not None:
-                try:
+                with suppress(Exception):
                     reply = await self._mesh.send(
                         target_peer_id=peer_id,
                         message={"type": "task_status", "task_id": task_id},
@@ -733,8 +734,6 @@ class TaskCollectTool(ToolPort):
                     if status not in ("running", "queued"):
                         return
                     continue
-                except Exception:
-                    pass
 
             status = self._drive_loop.task_status(task_id)
             if status not in ("running", "queued"):

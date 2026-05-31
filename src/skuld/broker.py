@@ -755,6 +755,7 @@ def _workflow_join_satisfied(join_mode: str, outcomes: list[dict[str, Any]]) -> 
             return all(passed)
         case _:
             return all(passed)
+    raise AssertionError("Unreachable _workflow_join_satisfied fallthrough")
 
 
 def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[str, Any]:

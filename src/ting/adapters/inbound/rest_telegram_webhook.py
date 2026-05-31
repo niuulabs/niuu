@@ -668,3 +668,4 @@ async def _dispatch_command(
             return HELP_TEXT
         case _:
             return f"Unknown command: /{cmd.name}\n\n{HELP_TEXT}"
+    raise AssertionError("Unreachable _dispatch_command fallthrough")

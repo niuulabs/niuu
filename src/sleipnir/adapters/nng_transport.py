@@ -46,10 +46,10 @@ dials every live publisher socket it finds.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
-from contextlib import suppress
 
 try:
     import pynng

@@ -243,7 +243,7 @@ def _client(
     app.include_router(create_sessions_router())
     app.dependency_overrides[resolve_trackers] = lambda: [resolved_tracker]
     app.dependency_overrides[resolve_volundr] = lambda: resolved_volundrs[0]
-    app.dependency_overrides[resolve_git] = lambda: AsyncMock()
+    app.dependency_overrides[resolve_git] = AsyncMock
     app.state.settings = Settings(
         auth=AuthConfig(allow_anonymous_dev=True),
         review=ReviewConfig(),

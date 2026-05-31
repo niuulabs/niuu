@@ -1,6 +1,7 @@
 """Background projector that keeps workflow campaigns in sync with Volundr."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -47,10 +48,8 @@ class WorkflowCampaignProjector:
         self._stop_event.set()
         if self._task is not None:
             self._task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         logger.info("Workflow campaign projector stopped")
 

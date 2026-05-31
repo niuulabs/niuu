@@ -35,7 +35,7 @@ class CredentialsPlugin(ServicePlugin):
         return ServiceDefinition(
             name="credentials",
             description="Credential, secret, and MCP metadata service",
-            factory=lambda: _CredentialsStub(),
+            factory=_CredentialsStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8085,

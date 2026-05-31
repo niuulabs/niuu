@@ -28,6 +28,7 @@ registers/unregisters entries as agents start and stop.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -97,13 +98,11 @@ class SleipnirCheckpointListener:
                     exc,
                     self._reconnect_delay,
                 )
-                try:
+                with suppress(TimeoutError):
                     await asyncio.wait_for(
                         self._stop_event.wait(),
                         timeout=self._reconnect_delay,
                     )
-                except TimeoutError:
-                    pass
 
     async def _run_consumer(self) -> None:
         """Connect to RabbitMQ and consume checkpoint request events."""

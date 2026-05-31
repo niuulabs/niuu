@@ -6,6 +6,7 @@ automatically — no code changes needed here.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import inspect
@@ -282,10 +283,8 @@ def _build_up_callback(
             )
 
             # Wait forever until cancelled by KeyboardInterrupt
-            try:
+            with suppress(asyncio.CancelledError):
                 await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                pass
 
             await _shutdown(manager)
 

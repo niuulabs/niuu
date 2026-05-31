@@ -80,6 +80,7 @@ def _build_usage_store(config: BifrostConfig) -> UsageStore:
             from bifrost.adapters.memory_store import MemoryUsageStore
 
             return MemoryUsageStore()
+    raise AssertionError("Unreachable _build_usage_store fallthrough")
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,7 @@ def _build_event_emitter(config: BifrostConfig) -> CostEventEmitter:
             from bifrost.adapters.events.null import NullEventEmitter
 
             return NullEventEmitter()
+    raise AssertionError("Unreachable _build_event_emitter fallthrough")
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +157,7 @@ def _build_audit(config: BifrostConfig) -> AuditPort:
             from bifrost.adapters.audit.null import NullAuditAdapter
 
             return NullAuditAdapter()
+    raise AssertionError("Unreachable _build_audit fallthrough")
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +180,7 @@ def _build_cache(config: BifrostConfig) -> CachePort:
             from bifrost.adapters.cache.disabled import DisabledCache
 
             return DisabledCache()
+    raise AssertionError("Unreachable _build_cache fallthrough")
 
 
 # ---------------------------------------------------------------------------

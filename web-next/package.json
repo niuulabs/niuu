@@ -11,6 +11,8 @@
   },
   "pnpm": {
     "overrides": {
+      "brace-expansion@5": "5.0.6",
+      "ws@8": "8.20.1",
       "uuid": "14.0.0"
     }
   },

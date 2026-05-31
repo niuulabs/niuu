@@ -31,7 +31,7 @@ class MemoryPort(ABC):
     @abstractmethod
     async def record_episode(self, episode: Episode) -> None:
         """Persist a completed episode to the memory store."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def query_episodes(
@@ -46,7 +46,7 @@ class MemoryPort(ABC):
         Returns at most *limit* results with relevance >= *min_relevance*,
         ordered by descending combined score (relevance × recency × outcome).
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def prefetch(self, context: str) -> str:
@@ -57,7 +57,7 @@ class MemoryPort(ABC):
         formats the results as a Markdown block ready for injection.
         Returns an empty string if no relevant episodes are found.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def search_sessions(
@@ -71,17 +71,17 @@ class MemoryPort(ABC):
         Two-stage search: FTS5 keyword search across all episodes, then
         grouping and summarisation per session.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def inject_shared_context(self, context: SharedContext) -> None:
         """Store a shared blackboard context for this adapter instance."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def get_shared_context(self) -> SharedContext | None:
         """Return the most recently injected shared context, or None."""
-        ...
+        raise NotImplementedError
 
     def extra_tools(self, session_id: str) -> list[ToolPort]:
         """Return any additional agent tools this memory adapter provides.

@@ -34,10 +34,12 @@ class MeshConfigLike(Protocol):
     """Minimal mesh config interface shared by Ravn and Skuld settings."""
 
     @property
-    def adapters(self) -> list[dict[str, Any]]: ...
+    def adapters(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
     @property
-    def rpc_timeout_s(self) -> float: ...
+    def rpc_timeout_s(self) -> float:
+        raise NotImplementedError
 
 
 def build_mesh_from_adapters_list(

@@ -157,6 +157,7 @@ class ModelRouter:
 
             case _:
                 raise ValueError(f"Unknown routing strategy: {strategy}")
+        raise AssertionError("Unreachable _build_candidates fallthrough")
 
     def _cost_optimised_candidates(self, providers: list[str], model: str) -> list[tuple[str, str]]:
         """Sort providers cheapest-first by their configured cost_per_token."""

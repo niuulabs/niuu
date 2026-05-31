@@ -60,13 +60,13 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
     )
     monkeypatch.setattr(niuu_main, "PostgresMappingRepository", lambda pool: ("mappings", pool))
     monkeypatch.setattr(niuu_main, "ConfigMCPServerProvider", lambda _servers: object())
-    monkeypatch.setattr(niuu_main, "InMemorySecretManager", lambda: object())
+    monkeypatch.setattr(niuu_main, "InMemorySecretManager", object)
     monkeypatch.setattr(
         niuu_main,
         "CredentialService",
         lambda **_kwargs: object(),
     )
-    monkeypatch.setattr(niuu_main, "SecretMountStrategyRegistry", lambda: object())
+    monkeypatch.setattr(niuu_main, "SecretMountStrategyRegistry", object)
     monkeypatch.setattr(
         niuu_main,
         "IntegrationRegistry",

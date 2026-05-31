@@ -150,7 +150,7 @@ async def bus(
             await transport.stop()
 
     elif transport_name == "rabbitmq":
-        aio_pika = pytest.importorskip("aio_pika", reason="aio-pika not installed")  # noqa: F841
+        pytest.importorskip("aio_pika", reason="aio-pika not installed")
 
         from sleipnir.adapters.rabbitmq import RabbitMQSubscriber, _encode_event
 
@@ -163,7 +163,7 @@ async def bus(
             # Loopback shim: encode → JSON bytes → _on_message, simulating
             # the full AMQP round-trip (encode on publish, decode on consume).
             class _RabbitMQLoopback:
-                async def publish(self_, event: SleipnirEvent) -> None:  # noqa: N805
+                async def publish(self, event: SleipnirEvent) -> None:
                     body = _encode_event(event)
                     mock_msg = MagicMock()
                     mock_msg.body = body
@@ -171,14 +171,14 @@ async def bus(
                     mock_msg.nack = AsyncMock()
                     await sub._on_message(mock_msg)
 
-                async def publish_batch(self_, events: list[SleipnirEvent]) -> None:  # noqa: N805
+                async def publish_batch(self, events: list[SleipnirEvent]) -> None:
                     for evt in events:
-                        await self_.publish(evt)
+                        await self.publish(evt)
 
-                async def subscribe(self_, event_types, handler) -> Subscription:  # noqa: N805
+                async def subscribe(self, event_types, handler) -> Subscription:
                     return await sub.subscribe(event_types, handler)
 
-                async def flush(self_) -> None:  # noqa: N805
+                async def flush(self) -> None:
                     await sub.flush()
 
             yield _RabbitMQLoopback()

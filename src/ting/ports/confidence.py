@@ -11,10 +11,13 @@ class ConfidencePort(ABC):
     """Abstract interface for confidence score management."""
 
     @abstractmethod
-    async def score_initial(self, run: Run) -> float: ...
+    async def score_initial(self, run: Run) -> float:
+        raise NotImplementedError
 
     @abstractmethod
-    async def update_score(self, run_id: str, event: ConfidenceEvent) -> float: ...
+    async def update_score(self, run_id: str, event: ConfidenceEvent) -> float:
+        raise NotImplementedError
 
     @abstractmethod
-    async def get_score(self, run_id: str) -> float: ...
+    async def get_score(self, run_id: str) -> float:
+        raise NotImplementedError

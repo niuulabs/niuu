@@ -17,6 +17,7 @@ running.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import fcntl
@@ -305,10 +306,8 @@ class CronJobStore:
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, self._path)
         except Exception:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
 
 

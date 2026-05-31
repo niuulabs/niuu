@@ -22,9 +22,6 @@ from bifrost.ports.key_vault import KeyVaultPort
 
 logger = logging.getLogger(__name__)
 
-# Sentinel used in log messages in place of actual key values.
-_REDACTED = "***"
-
 
 class EnvKeyVault(KeyVaultPort):
     """Load provider API keys from environment variables at startup.

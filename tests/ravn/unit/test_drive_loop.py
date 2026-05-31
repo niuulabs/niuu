@@ -1,6 +1,7 @@
 """Tests for DriveLoop, SilentChannel, triggers, and initiative prompt."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import json
@@ -380,10 +381,8 @@ async def test_cron_trigger_fires_on_schedule(tmp_path: Path) -> None:
         enqueued.append(task)
 
     # Run for a short time then cancel
-    try:
+    with suppress(TimeoutError):
         await asyncio.wait_for(trigger.run(collect), timeout=0.5)
-    except TimeoutError:
-        pass
 
     assert len(enqueued) >= 1
     assert enqueued[0].triggered_by == "cron:test_job"
@@ -414,10 +413,8 @@ async def test_cron_trigger_fires_once_for_one_shot(tmp_path: Path) -> None:
     async def collect(task: AgentTask) -> None:
         enqueued.append(task)
 
-    try:
+    with suppress(TimeoutError):
         await asyncio.wait_for(trigger.run(collect), timeout=0.5)
-    except TimeoutError:
-        pass
 
     # Should fire exactly once
     assert len(enqueued) == 1
@@ -457,10 +454,8 @@ async def test_condition_poll_trigger_fires_on_trigger_verdict(tmp_path: Path) -
         async def collect(task: AgentTask) -> None:
             enqueued.append(task)
 
-        try:
+        with suppress(TimeoutError):
             await asyncio.wait_for(trigger.run(collect), timeout=0.3)
-        except TimeoutError:
-            pass
 
     assert len(enqueued) >= 1
     assert enqueued[0].triggered_by == "condition:disk_check"
@@ -493,10 +488,8 @@ async def test_condition_poll_trigger_does_not_fire_on_clear(tmp_path: Path) -> 
         async def collect(task: AgentTask) -> None:
             enqueued.append(task)
 
-        try:
+        with suppress(TimeoutError):
             await asyncio.wait_for(trigger.run(collect), timeout=0.3)
-        except TimeoutError:
-            pass
 
     assert len(enqueued) == 0
 
@@ -754,10 +747,8 @@ async def test_condition_poll_cooldown_prevents_second_fire() -> None:
             enqueued.append(task)
 
         # Run long enough for two poll cycles
-        try:
+        with suppress(TimeoutError):
             await asyncio.wait_for(trigger.run(collect), timeout=0.5)
-        except TimeoutError:
-            pass
 
     # Should fire once then be in cooldown
     assert len(enqueued) == 1
@@ -798,6 +789,7 @@ def test_condition_poll_name_property() -> None:
 @pytest.mark.asyncio
 async def test_condition_poll_run_sensor_exception_returns_clear() -> None:
     """_run_sensor() returns CLEAR when agent.run_turn() raises."""
+
     mock_agent = AsyncMock()
     mock_agent.run_turn.side_effect = RuntimeError("sensor boom")
 
@@ -870,10 +862,8 @@ async def test_condition_poll_run_sensor_exception_continues_loop() -> None:
     async def collect(task) -> None:
         enqueued.append(task)
 
-    try:
+    with suppress(TimeoutError):
         await asyncio.wait_for(trigger.run(collect), timeout=0.2)
-    except TimeoutError:
-        pass
 
     # loop continued after exception — no tasks (CLEAR verdict)
     assert len(enqueued) == 0
@@ -983,10 +973,8 @@ async def test_sleipnir_run_with_mocked_aio_pika() -> None:
     mock_pika.connect_robust = AsyncMock(side_effect=ConnectionError("no broker"))
 
     with patch.dict("sys.modules", {"aio_pika": mock_pika}):
-        try:
+        with suppress(TimeoutError):
             await asyncio.wait_for(trigger.run(collect), timeout=0.2)
-        except TimeoutError:
-            pass
 
     # No tasks enqueued since connection failed
     assert len(enqueued) == 0
@@ -1184,9 +1172,9 @@ async def test_drive_loop_runs_agent_turn_from_cron(tmp_path: Path) -> None:
     try:
         await asyncio.wait_for(drive_loop.run(), timeout=1.0)
     except TimeoutError:
-        pass
+        pass  # Expected: the drive loop is long-lived.
     except asyncio.CancelledError:
-        pass
+        pass  # Expected when the timeout cancels the loop task.
 
     assert len(turn_inputs) >= 1
     assert "INITIATIVE TASK" in turn_inputs[0]

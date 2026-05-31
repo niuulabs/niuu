@@ -113,15 +113,15 @@ class MCPTokenStore(Protocol):
 
     async def load(self, server_name: str) -> MCPToken | None:
         """Return the stored token for *server_name*, or None if absent."""
-        ...
+        raise NotImplementedError
 
     async def save(self, server_name: str, token: MCPToken) -> None:
         """Persist *token* for *server_name*."""
-        ...
+        raise NotImplementedError
 
     async def delete(self, server_name: str) -> None:
         """Remove the stored token for *server_name* if it exists."""
-        ...
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------

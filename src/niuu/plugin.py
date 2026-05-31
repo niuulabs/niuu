@@ -35,7 +35,7 @@ class NiuuPlugin(ServicePlugin):
         return ServiceDefinition(
             name="niuu",
             description="Shared platform services",
-            factory=lambda: _NiuuStub(),
+            factory=_NiuuStub,
             default_enabled=True,
             depends_on=["postgres"],
         )

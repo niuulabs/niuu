@@ -124,6 +124,7 @@ class TodoWriteTool(ToolPort):
                     content=f"Unknown operation: '{operation}'. Use create, update, or delete.",
                     is_error=True,
                 )
+        raise AssertionError("Unreachable execute fallthrough")
 
     # ------------------------------------------------------------------
     # Private helpers

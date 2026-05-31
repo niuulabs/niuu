@@ -7,8 +7,10 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Container
-from textual.screen import ModalScreen
+import textual.screen as textual_screen
 from textual.widgets import Input, RichLog, Static
+
+ModalScreen = textual_screen.ModalScreen
 
 
 class BroadcastOverlay(ModalScreen[None]):

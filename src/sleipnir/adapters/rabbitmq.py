@@ -50,10 +50,10 @@ Configuration example
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
-from contextlib import suppress
 
 try:
     import aio_pika

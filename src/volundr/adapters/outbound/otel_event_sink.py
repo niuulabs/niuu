@@ -265,3 +265,4 @@ class OtelEventSink(EventSink):
                 return event.data.get("tool", "unknown_tool")
             case _:
                 return "unknown"
+        raise AssertionError("Unreachable _extract_tool_name fallthrough")

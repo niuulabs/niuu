@@ -25,6 +25,7 @@ Rule evaluation order
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import fnmatch
 import logging
@@ -398,12 +399,10 @@ class PermissionEnforcer(PermissionEnforcerPort, PermissionPort):
         # Binary detection for existing files
         p = Path(resolved)
         if p.exists() and p.is_file():
-            try:
+            with suppress(OSError):
                 sample = p.read_bytes()[: self._config_binary_check_bytes()]
                 if is_binary(sample):
                     return Deny(f"refusing to write binary file: {resolved}")
-            except OSError:
-                pass
 
         return Allow()
 

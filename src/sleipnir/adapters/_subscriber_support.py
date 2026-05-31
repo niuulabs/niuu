@@ -6,6 +6,7 @@ and event dispatch logic without duplicating code.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -51,7 +52,7 @@ async def enqueue_with_overflow(
     event's id and type.
     """
     if queue.full():
-        try:
+        with suppress(asyncio.QueueEmpty):
             dropped = queue.get_nowait()
             queue.task_done()
             log.warning(
@@ -60,8 +61,6 @@ async def enqueue_with_overflow(
                 dropped.event_id,
                 dropped.event_type,
             )
-        except asyncio.QueueEmpty:
-            pass
     await queue.put(event)
 
 
@@ -100,10 +99,8 @@ class _BaseSubscription(Subscription):
         self._active = False
         self._remove_fn()
         self._task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await self._task
-        except asyncio.CancelledError:
-            pass
         # Drain remaining items so join() is never blocked.
         while not self._queue.empty():
             try:

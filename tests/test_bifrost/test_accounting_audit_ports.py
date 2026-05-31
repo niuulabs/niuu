@@ -122,7 +122,8 @@ class TestAccountingPortIsAbstract:
 
     def test_subclass_must_implement_all_methods(self):
         class Partial(AccountingPort):
-            async def record(self, record): ...
+            async def record(self, record):
+                pass
 
         with pytest.raises(TypeError):
             Partial()  # type: ignore[abstract]
@@ -135,7 +136,8 @@ class TestAuditPortIsAbstract:
 
     def test_subclass_must_implement_all_methods(self):
         class Partial(AuditPort):
-            async def log(self, event): ...
+            async def log(self, event):
+                pass
 
         with pytest.raises(TypeError):
             Partial()  # type: ignore[abstract]

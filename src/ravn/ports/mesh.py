@@ -39,7 +39,7 @@ class MeshPort(Protocol):
 
     async def publish(self, event: RavnEvent, topic: str) -> None:
         """Broadcast an event to all subscribers of the given topic."""
-        ...
+        raise NotImplementedError
 
     async def subscribe(
         self,
@@ -47,11 +47,11 @@ class MeshPort(Protocol):
         handler: Callable[[RavnEvent], Awaitable[None]],
     ) -> None:
         """Register an async handler for events on a topic."""
-        ...
+        raise NotImplementedError
 
     async def unsubscribe(self, topic: str) -> None:
         """Deregister handler for a topic."""
-        ...
+        raise NotImplementedError
 
     async def send(
         self,
@@ -73,12 +73,12 @@ class MeshPort(Protocol):
         PeerNotFoundError
             If ``target_peer_id`` is not in the verified peer table.
         """
-        ...
+        raise NotImplementedError
 
     async def start(self) -> None:
         """Start the transport (open sockets, connect to broker)."""
-        ...
+        raise NotImplementedError
 
     async def stop(self) -> None:
         """Graceful shutdown."""
-        ...
+        raise NotImplementedError

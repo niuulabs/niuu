@@ -24,6 +24,9 @@ __all__ = [
     "reciprocal_rank_fusion",
     "build_prefetch_context",
     "build_session_summaries",
+    "_CHARS_PER_TOKEN",
+    "_AVG_EPISODE_CHARS",
+    "_OUTCOME_WEIGHTS",
 ]
 
 # Approximate chars per token for budget estimation.

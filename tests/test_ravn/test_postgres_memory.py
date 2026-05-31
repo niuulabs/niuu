@@ -6,6 +6,7 @@ All asyncpg I/O is mocked — no real PostgreSQL instance required.
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import ravn.adapters.memory.postgres as _postgres_memory_module
 from niuu.ports.search import SearchPort, SearchResult
 from ravn.adapters.memory.postgres import (
     PostgresMemoryAdapter,
@@ -134,7 +134,7 @@ def _patch_asyncpg(pool: MagicMock) -> Any:
     """Return a patch.object context manager that replaces asyncpg in postgres_memory."""
     mock = MagicMock()
     mock.create_pool = AsyncMock(return_value=pool)
-    return patch.object(_postgres_memory_module, "asyncpg", mock)
+    return patch.object(sys.modules["ravn.adapters.memory.postgres"], "asyncpg", mock)
 
 
 class _MockSearchPort(SearchPort):

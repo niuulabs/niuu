@@ -1,6 +1,7 @@
 """Terminal page — PTY over WebSocket with multi-tab, scrollback, Insert/Normal modes."""
 
 from __future__ import annotations
+from contextlib import suppress
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,10 +61,8 @@ class TerminalTabBar(Widget):
     def update_tabs(self, tabs: list[TerminalTab], active: int) -> None:
         self._tabs = tabs
         self._active = active
-        try:
+        with suppress(Exception):
             self.query_one("#term-tab-bar-text", Static).update(self._render_bar())
-        except Exception:
-            pass
 
     def _render_bar(self) -> str:
         parts: list[str] = []
@@ -84,6 +83,7 @@ def _conn_dot(state: str) -> str:
             return f"[{ACCENT_AMBER}]◐[/]"
         case _:
             return f"[{TEXT_MUTED}]○[/]"
+    raise AssertionError("Unreachable _conn_dot fallthrough")
 
 
 class TerminalView(Widget):
@@ -329,7 +329,5 @@ class TerminalPage(Widget):
         )
 
     def _update_mode_bar(self) -> None:
-        try:
+        with suppress(Exception):
             self.query_one("#term-mode-bar", Static).update(self._mode_text())
-        except Exception:
-            pass

@@ -8,6 +8,7 @@ has elapsed.
 """
 
 from __future__ import annotations
+from contextlib import suppress
 
 import asyncio
 import logging
@@ -94,10 +95,8 @@ class AuditSubscriber:
             self._subscription = None
         if self._ttl_task is not None:
             self._ttl_task.cancel()
-            try:
-                await self._ttl_task
-            except asyncio.CancelledError:
-                pass
+            with suppress(asyncio.CancelledError):
+                _ = await self._ttl_task
             self._ttl_task = None
         logger.info("Audit subscriber stopped")
 

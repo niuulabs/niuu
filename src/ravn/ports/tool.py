@@ -14,25 +14,25 @@ class ToolPort(ABC):
     @abstractmethod
     def name(self) -> str:
         """Unique tool name used by the LLM."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def description(self) -> str:
         """Human-readable description of what the tool does."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def input_schema(self) -> dict:
         """JSON Schema for the tool's input parameters."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def required_permission(self) -> str:
         """Permission string that must be granted before this tool executes."""
-        ...
+        raise NotImplementedError
 
     @property
     def parallelisable(self) -> bool:
@@ -46,7 +46,7 @@ class ToolPort(ABC):
     @abstractmethod
     async def execute(self, input: dict) -> ToolResult:
         """Execute the tool with the given input and return a result."""
-        ...
+        raise NotImplementedError
 
     def diff_preview(self, input: dict) -> str | None:
         """Return a unified diff preview of the change, or None if not applicable.

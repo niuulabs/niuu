@@ -71,7 +71,6 @@ _ALL_COMMANDS = {**_EVIL_CMD_TO_ACTION, **_EMACS_CMD_TO_ACTION}
 
 # Both 'x and (quote x) are valid elisp; handle both
 _QUOTE = r"(?:'|(?:\(quote\s+))"
-_QUOTE_END = r"(?:\))?"  # closing paren for (quote ...) form, optional
 
 # (global-set-key (kbd "...") 'command)  or  (global-set-key (kbd "...") (quote command))
 _GLOBAL_SET_RE = re.compile(
