@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-volundr",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Session-forge plugin — provisions and manages remote dev pods",
   "license": "Apache-2.0",
   "type": "module",

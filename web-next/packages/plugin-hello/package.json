@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-hello",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Smoke-test plugin proving the end-to-end composability loop",
   "license": "Apache-2.0",
   "type": "module",

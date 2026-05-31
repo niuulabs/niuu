@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-mimir",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Mímir plugin — knowledge-base management for the Niuu platform",
   "license": "Apache-2.0",
   "type": "module",
