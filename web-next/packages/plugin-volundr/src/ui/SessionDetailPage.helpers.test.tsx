@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Session } from '../domain/session';
 import { formatTimestamp, formatTokens, tabCount, tabIcon, truncate } from './SessionDetailPage';
 
@@ -46,10 +46,12 @@ describe('SessionDetailPage helpers', () => {
   });
 
   it('formats timestamps, token counts, and tab counts', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-05-31T12:00:00Z'));
+    const timestamp = Date.parse('2026-05-31T09:07:00-04:00');
+    const expected = new Date(timestamp);
 
-    expect(formatTimestamp(Date.parse('2026-05-31T09:07:00-04:00'))).toBe('09:07');
+    expect(formatTimestamp(timestamp)).toBe(
+      `${String(expected.getHours()).padStart(2, '0')}:${String(expected.getMinutes()).padStart(2, '0')}`,
+    );
     expect(formatTokens(999)).toBe('999');
     expect(formatTokens(1_200)).toBe('1.2k');
     expect(formatTokens(1_250_000)).toBe('1.3M');
@@ -58,7 +60,5 @@ describe('SessionDetailPage helpers', () => {
     expect(tabCount('diffs', sessionFixture)).toBe(6);
     expect(tabCount('chronicle', sessionFixture)).toBe(2);
     expect(tabCount('terminal', sessionFixture)).toBeUndefined();
-
-    vi.useRealTimers();
   });
 });
