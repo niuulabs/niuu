@@ -41,7 +41,7 @@ const STATE_PILL: Record<RavnBinding['state'], string> = {
 
 const INPUT_BASE =
   'niuu:flex-1 niuu:py-2 niuu:px-3 niuu:bg-bg-primary niuu:border niuu:border-solid niuu:border-border ' +
-  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu:box-border ' +
   'niuu:focus:border-brand';
 
 const BTN_BASE =
@@ -954,7 +954,7 @@ function RavnCard({ ravn, onClick }: RavnCardProps) {
       </div>
 
       <p
-        className="niuu:text-xs niuu:text-text-secondary niuu:m-0 niuu-line-clamp-2"
+        className="niuu:text-xs niuu:text-text-secondary niuu:m-0 niuu:line-clamp-2"
         data-testid="ravn-bio"
       >
         {ravn.bio}

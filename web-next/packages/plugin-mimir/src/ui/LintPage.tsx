@@ -91,7 +91,7 @@ export function LintPage() {
   }
 
   return (
-    <div className="niuu:p-6 niuu:flex niuu:flex-col niuu:gap-4 niuu:h-full niuu-box-border">
+    <div className="niuu:p-6 niuu:flex niuu:flex-col niuu:gap-4 niuu:h-full niuu:box-border">
       {/* ── KPI strip — full-width 4-column grid ────────────────── */}
       <div className="niuu:grid niuu:grid-cols-4 niuu:border niuu:border-border-subtle niuu:rounded-md niuu:overflow-hidden">
         <div className="niuu:flex niuu:flex-col niuu:gap-[2px] niuu:py-3 niuu:px-4 niuu:bg-bg-secondary niuu:border-r niuu:border-border-subtle">

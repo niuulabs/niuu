@@ -504,7 +504,7 @@ function InstanceCard({
       type="button"
       onClick={onClick}
       className={cn(
-        'niuu-group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
+        'niuu:group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
         selected
           ? 'niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgba(83,194,255,0.12)]'
           : 'niuu:border-border-subtle niuu:hover:border-white/16',

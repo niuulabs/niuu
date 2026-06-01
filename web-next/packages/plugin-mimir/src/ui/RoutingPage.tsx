@@ -6,7 +6,7 @@ import type { WriteRoutingRule } from '../domain/routing';
 
 const INPUT_BASE =
   'niuu:flex-1 niuu:py-2 niuu:px-3 niuu:bg-bg-primary niuu:border niuu:border-solid niuu:border-border ' +
-  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu:box-border ' +
   'niuu:focus:border-brand';
 
 const BTN_BASE =
@@ -29,7 +29,7 @@ const TH_CLS =
   'niuu:text-left niuu:py-2 niuu:px-3 niuu:text-text-muted niuu:font-medium niuu:text-xs ' +
   'niuu:border-0 niuu:border-b niuu:border-solid niuu:border-border';
 
-const TD_BASE = 'niuu:py-2 niuu:px-3 niuu-align-middle';
+const TD_BASE = 'niuu:py-2 niuu:px-3 niuu:align-middle';
 
 const LABEL_CLS = 'niuu:text-xs niuu:text-text-muted niuu:min-w-[5rem] niuu:shrink-0';
 

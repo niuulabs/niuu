@@ -157,7 +157,7 @@ export function LibraryPanel({ personas, registryMounts = [] }: LibraryPanelProp
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           data-testid="library-search"
-          className="niuu:w-full niuu:py-2.5 niuu:px-3.5 niuu:bg-bg-tertiary niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-lg niuu:text-text-secondary niuu:font-sans niuu:text-[11px] niuu:outline-none niuu-box-border"
+          className="niuu:w-full niuu:py-2.5 niuu:px-3.5 niuu:bg-bg-tertiary niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-lg niuu:text-text-secondary niuu:font-sans niuu:text-[11px] niuu:outline-none niuu:box-border"
         />
       </div>
 

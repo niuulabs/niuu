@@ -5,7 +5,7 @@ import { useMimirSources } from './useMimirSources';
 
 const INPUT_CLS =
   'niuu:w-full niuu:py-2 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
-  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu-box-border ' +
+  'niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-sm niuu:outline-none niuu:box-border ' +
   'niuu:focus:border-brand';
 
 const TEXTAREA_CLS = `${INPUT_CLS} niuu:resize-y niuu:min-h-[8rem] niuu:font-sans`;

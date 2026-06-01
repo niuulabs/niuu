@@ -224,7 +224,7 @@ function WizardSelect({
       onChange={(event) => onChange(event.target.value)}
       data-testid={testId}
       aria-label={placeholder}
-      className="niuu-form-control niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary outline-none niuu:focus:border-brand"
+      className="niuu-form-control niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
     >
       {options.map((option) => (
         <option key={option.value} value={option.value}>
