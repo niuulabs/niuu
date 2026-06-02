@@ -63,6 +63,18 @@ def _render_niuu_chart(*extra_args: str) -> str:
     if not helm:
         pytest.skip("helm is not installed")
 
+    dependency_result = subprocess.run(
+        [helm, "dependency", "build", str(CHART_DIR)],
+        capture_output=True,
+        text=True,
+    )
+    if dependency_result.returncode != 0:
+        pytest.fail(
+            "helm dependency build failed\n"
+            f"stdout:\n{dependency_result.stdout}\n"
+            f"stderr:\n{dependency_result.stderr}"
+        )
+
     result = subprocess.run(
         [
             helm,
@@ -81,11 +93,7 @@ def _render_niuu_chart(*extra_args: str) -> str:
         text=True,
     )
     if result.returncode != 0:
-        pytest.fail(
-            "helm template failed\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
+        pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     return result.stdout
 
 
