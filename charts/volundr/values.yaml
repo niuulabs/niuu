@@ -54,9 +54,16 @@ image:
 
 # -- Override container command. Defaults to the unified niuu image running the Volundr API.
 command:
-  - volundr
+  - uvicorn
 # -- Additional container args.
-args: []
+args:
+  - volundr.main:app
+  - --host
+  - "$(HOST)"
+  - --port
+  - "$(PORT)"
+  - --workers
+  - "$(WORKERS)"
 
 # Service Account
 serviceAccount:

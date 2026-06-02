@@ -10,7 +10,9 @@ image:
   pullPolicy: IfNotPresent
 
 command:
-  - guild
+  - python
+  - -m
+  - guild.main
 args: []
 
 nameOverride: ""

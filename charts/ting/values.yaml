@@ -12,6 +12,8 @@ image:
 
 # -- Override container command. Defaults to the unified niuu image running the Ting API.
 command:
+  - python
+  - -m
   - ting
 # -- Additional container args.
 args: []

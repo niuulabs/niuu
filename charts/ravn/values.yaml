@@ -13,7 +13,9 @@ image:
   pullPolicy: IfNotPresent
 
 command:
-  - ravn-api
+  - python
+  - -m
+  - ravn.main
 args: []
 
 nameOverride: ""

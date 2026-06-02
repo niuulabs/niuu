@@ -19,6 +19,8 @@ image:
 
 # -- Override container command. Defaults to the unified niuu image running the Bifröst API.
 command:
+  - python
+  - -m
   - bifrost
 
 # -- Image pull secrets for private registries.
