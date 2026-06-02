@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -35,10 +36,12 @@ from ting.domain.services.dispatch_service import (
     DispatchConfig,
     DispatchItem,
     DispatchService,
+    TargetSelectionError,
     _format_persona_label,
     build_prompt,
     is_ready,
     resolve_target_adapter,
+    select_adapter_by_tags,
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
 from ting.ports.workflow_repository import WorkflowRepository
@@ -266,6 +269,27 @@ class TestResolveTargetAdapter:
     def test_unknown_returns_fallback(self):
         fallback = MockVolundr()
         assert resolve_target_adapter("b", {"a": MockVolundr()}, fallback) is fallback
+
+
+class TestSelectAdapterByTags:
+    @staticmethod
+    def _adapter(name: str, tags: list[str]):
+        return SimpleNamespace(name=name, target_id=name, tags=tags)
+
+    def test_match_all_requires_every_tag(self):
+        gpu = self._adapter("gpu", ["gpu", "us-west"])
+        cpu = self._adapter("cpu", ["us-west"])
+        assert select_adapter_by_tags([cpu, gpu], ["gpu", "us-west"]) is gpu
+
+    def test_match_any_requires_one_tag(self):
+        east = self._adapter("east", ["us-east"])
+        west = self._adapter("west", ["us-west"])
+        assert select_adapter_by_tags([east, west], ["us-west"], match="any") is west
+
+    def test_no_match_fails_loud(self):
+        cpu = self._adapter("cpu", ["us-west"])
+        with pytest.raises(TargetSelectionError):
+            select_adapter_by_tags([cpu], ["gpu"])
 
 
 # -------------------------------------------------------------------

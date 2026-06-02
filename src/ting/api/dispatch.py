@@ -91,6 +91,14 @@ class DispatchRequest(BaseModel):
         default=None,
         description="Target a specific Volundr cluster by connection ID",
     )
+    target_tags: list[str] = Field(
+        default_factory=list,
+        description="Target a Volundr backend by instance tags (label-based routing)",
+    )
+    target_match: str = Field(
+        default="all",
+        description="Tag match mode: 'all' (every tag) or 'any' (at least one)",
+    )
     session_definition: str | None = Field(
         default=None,
         description="Optional Volundr session definition key (e.g. 'skuldCodex')",
@@ -118,6 +126,14 @@ class DispatchItemRequest(BaseModel):
     workflow_id: str | None = Field(
         default=None,
         description="Optional workflow override for this dispatch item",
+    )
+    target_tags: list[str] = Field(
+        default_factory=list,
+        description="Target a Volundr backend by instance tags (overrides request-level)",
+    )
+    target_match: str = Field(
+        default="all",
+        description="Tag match mode: 'all' or 'any'",
     )
     session_definition: str | None = Field(
         default=None,
@@ -356,6 +372,9 @@ def create_dispatch_router() -> APIRouter:
                 connection_id=item.connection_id,
                 workflow_id=item.workflow_id,
                 session_definition=item.session_definition,
+                # Per-item tags override request-level tags.
+                target_tags=tuple(item.target_tags or body.target_tags),
+                target_match=item.target_match or body.target_match,
             )
             for item in body.items
         ]

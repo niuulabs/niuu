@@ -41,6 +41,7 @@
     "ravn.triggers": { "mode": "http", "baseUrl": "/api/v1/ravn/triggers" },
     "ravn.budget": { "mode": "http", "baseUrl": "/api/v1/ravn/budget" },
     "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
+    "volundr": { "mode": "http", "baseUrl": "/api/v1/volundr" },
     "forge.pty": { "mode": "ws", "wsUrl": "/s/{sessionId}/session" },
     "forge.metrics": { "mode": "http", "baseUrl": "/api/v1/forge/metrics" },
     "ting": { "mode": "http", "baseUrl": "/api/v1/ting" },

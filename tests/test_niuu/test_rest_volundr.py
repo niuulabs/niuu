@@ -22,6 +22,8 @@ def _instance(
     tenant_id: str = "tenant-a",
     enabled: bool = True,
     is_default: bool = False,
+    tags: list[str] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
     return RegisteredInstance(
@@ -35,9 +37,10 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config={},
+        config=config or {},
         created_at=now,
         updated_at=now,
+        tags=tags or [],
     )
 
 
@@ -51,13 +54,23 @@ class StubInstanceService:
         *,
         kind: InstanceKind | None = None,
         enabled_only: bool = False,
+        tags: list[str] | None = None,
+        match: str = "all",
     ) -> list[RegisteredInstance]:
+        def _matches(instance: RegisteredInstance) -> bool:
+            if not tags:
+                return True
+            have = set(instance.tags)
+            want = set(tags)
+            return bool(have & want) if match == "any" else want <= have
+
         return [
             instance
             for instance in self.instances
             if (kind is None or instance.kind == kind)
             and (instance.enabled or not enabled_only)
             and instance.tenant_id == principal.tenant_id
+            and _matches(instance)
         ]
 
     async def get_visible(
@@ -71,9 +84,18 @@ class StubInstanceService:
         return None
 
 
-def _client(instances: list[RegisteredInstance]) -> TestClient:
+def _client(
+    instances: list[RegisteredInstance],
+    *,
+    embedded_forge_app: FastAPI | None = None,
+) -> TestClient:
     app = FastAPI()
-    app.include_router(create_volundr_router(StubInstanceService(instances)))  # type: ignore[arg-type]
+    app.include_router(  # type: ignore[arg-type]
+        create_volundr_router(
+            StubInstanceService(instances),
+            embedded_forge_app=embedded_forge_app,
+        )
+    )
     return TestClient(app)
 
 
@@ -83,6 +105,61 @@ def _headers() -> dict[str, str]:
         "x-auth-user-id": "user-a",
         "x-auth-tenant": "tenant-a",
     }
+
+
+def test_list_sessions_can_dispatch_to_embedded_local_target() -> None:
+    embedded = FastAPI()
+
+    @embedded.get("/api/v1/forge/sessions")
+    async def list_local_sessions() -> list[dict[str, Any]]:
+        return [{"id": "local-s1", "name": "Local", "status": "running"}]
+
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                is_default=True,
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    response = client.get("/api/v1/forge/sessions", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "local-s1",
+            "name": "Local",
+            "status": "running",
+            "instance_id": "local",
+            "instance_name": "Instance local",
+            "instance_slug": "local",
+        }
+    ]
+
+
+def test_embedded_target_fails_loud_without_local_app() -> None:
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                config={"transport": "embedded"},
+            )
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"workspace": "repo-a"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Embedded Forge target is not available in this process"
 
 
 @respx.mock
@@ -100,7 +177,7 @@ def test_list_sessions_merges_visible_instances_and_forwards_auth() -> None:
         )
     )
 
-    response = client.get("/api/v1/niuu/volundr/sessions", headers=_headers())
+    response = client.get("/api/v1/forge/sessions", headers=_headers())
 
     assert response.status_code == 200
     assert response.json() == [
@@ -131,7 +208,7 @@ def test_get_session_searches_visible_instances() -> None:
         return_value=Response(200, json={"id": "s2", "name": "Session 2", "status": "running"})
     )
 
-    response = client.get("/api/v1/niuu/volundr/sessions/s2", headers=_headers())
+    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
 
     assert response.status_code == 200
     payload: dict[str, Any] = response.json()
@@ -167,7 +244,7 @@ def test_list_sessions_ignores_errors_and_sorts_last_active_descending() -> None
     respx.get("http://gamma/api/v1/forge/sessions?status=running").mock(return_value=Response(503))
 
     response = client.get(
-        "/api/v1/niuu/volundr/sessions?status=running",
+        "/api/v1/forge/sessions?status=running",
         headers=_headers(),
     )
 
@@ -186,7 +263,7 @@ def test_get_session_returns_404_when_no_visible_instance_owns_it() -> None:
     respx.get("http://alpha/api/v1/forge/sessions/missing").mock(return_value=Response(404))
     respx.get("http://beta/api/v1/forge/sessions/missing").mock(return_value=Response(403))
 
-    response = client.get("/api/v1/niuu/volundr/sessions/missing", headers=_headers())
+    response = client.get("/api/v1/forge/sessions/missing", headers=_headers())
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Session not found: missing"
@@ -195,7 +272,7 @@ def test_get_session_returns_404_when_no_visible_instance_owns_it() -> None:
 def test_get_session_rejects_invalid_remote_base_urls() -> None:
     client = _client([_instance("alpha", base_url="ftp://alpha")])
 
-    response = client.get("/api/v1/niuu/volundr/sessions/s2", headers=_headers())
+    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
 
     assert response.status_code == 502
     assert "http or https" in response.json()["detail"]
@@ -214,7 +291,7 @@ def test_create_session_uses_requested_instance_and_strips_instance_hints() -> N
     )
 
     response = client.post(
-        "/api/v1/niuu/volundr/sessions",
+        "/api/v1/forge/sessions",
         headers=_headers(),
         json={
             "instance_id": "target",
@@ -230,6 +307,43 @@ def test_create_session_uses_requested_instance_and_strips_instance_hints() -> N
 
 
 @respx.mock
+def test_create_session_targets_instance_by_tags() -> None:
+    client = _client(
+        [
+            _instance("cpu", base_url="http://cpu", is_default=True, tags=["us-west"]),
+            _instance("gpu", base_url="http://gpu", tags=["gpu", "us-west"]),
+        ]
+    )
+    route = respx.post("http://gpu/api/v1/forge/sessions").mock(
+        return_value=Response(200, json={"id": "s9", "name": "Created"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu"], "workspace": "repo-a"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["instance_id"] == "gpu"
+    # The targeting hints are stripped before forwarding to the backend.
+    assert route.calls.last.request.read() == b'{"workspace":"repo-a"}'
+
+
+def test_create_session_fails_loud_when_no_instance_matches_tags() -> None:
+    client = _client([_instance("cpu", base_url="http://cpu", is_default=True, tags=["us-west"])])
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"target_tags": ["gpu"], "workspace": "repo-a"},
+    )
+
+    assert response.status_code == 503
+    assert "gpu" in response.json()["detail"]
+
+
+@respx.mock
 def test_create_session_uses_default_instance_and_handles_missing_registry_or_bad_payload() -> None:
     client = _client([_instance("default", base_url="http://default", is_default=True)])
     respx.post("http://default/api/v1/forge/sessions").mock(
@@ -237,14 +351,14 @@ def test_create_session_uses_default_instance_and_handles_missing_registry_or_ba
     )
 
     invalid_payload = client.post(
-        "/api/v1/niuu/volundr/sessions",
+        "/api/v1/forge/sessions",
         headers=_headers(),
         json={"workspace": "repo-a"},
     )
     assert invalid_payload.status_code == 502
 
     missing_target = client.post(
-        "/api/v1/niuu/volundr/sessions",
+        "/api/v1/forge/sessions",
         headers=_headers(),
         json={"instanceId": "missing"},
     )
@@ -252,7 +366,7 @@ def test_create_session_uses_default_instance_and_handles_missing_registry_or_ba
 
     empty_registry = _client([])
     unavailable = empty_registry.post(
-        "/api/v1/niuu/volundr/sessions",
+        "/api/v1/forge/sessions",
         headers=_headers(),
         json={"workspace": "repo-a"},
     )
@@ -296,7 +410,7 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
         )
     )
 
-    response = client.get("/api/v1/niuu/volundr/stats", headers=_headers())
+    response = client.get("/api/v1/forge/stats", headers=_headers())
 
     assert response.status_code == 200
     assert response.json() == {
@@ -315,7 +429,7 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
     [
         ("post", "/sessions/s2/stop", "/sessions/s2/stop", {"ok": True}, 200, {"ok": True}),
         (
-            "post",
+            "patch",
             "/sessions/s2/archive",
             "/sessions/s2/archive",
             {"archived": True},
@@ -323,7 +437,7 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
             {"archived": True},
         ),
         (
-            "post",
+            "patch",
             "/sessions/s2/restore",
             "/sessions/s2/restore",
             {"restored": True},
@@ -405,7 +519,7 @@ def test_proxy_routes_forward_to_session_owner(
         request_kwargs["json"] = {"text": "hello"}
 
     response = getattr(client, method)(
-        f"/api/v1/niuu/volundr{path}",
+        f"/api/v1/forge{path}",
         **request_kwargs,
     )
 
@@ -445,18 +559,18 @@ def test_proxy_routes_fall_back_to_empty_payloads_when_remote_returns_non_dict_c
     )
 
     assert (
-        client.get("/api/v1/niuu/volundr/sessions/s2/conversation", headers=_headers()).json()
+        client.get("/api/v1/forge/sessions/s2/conversation", headers=_headers()).json()
         == {"turns": []}
     )
-    assert client.get("/api/v1/niuu/volundr/sessions/s2/logs", headers=_headers()).json() == {
+    assert client.get("/api/v1/forge/sessions/s2/logs", headers=_headers()).json() == {
         "lines": []
     }
     assert client.get(
-        "/api/v1/niuu/volundr/sessions/s2/logs/aggregate",
+        "/api/v1/forge/sessions/s2/logs/aggregate",
         headers=_headers(),
     ).json() == {"lines": []}
     assert client.post(
-        "/api/v1/niuu/volundr/sessions/s2/messages",
+        "/api/v1/forge/sessions/s2/messages",
         headers=_headers(),
         json={"text": "hello"},
     ).json() == {}

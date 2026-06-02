@@ -36,6 +36,7 @@ def _row(
     *,
     kind: str = "volundr",
     config: dict | str | None = None,
+    tags: list[str] | str | None = None,
 ) -> dict:
     now = datetime.now(UTC)
     return {
@@ -50,6 +51,7 @@ def _row(
         "enabled": True,
         "is_default": False,
         "config": {} if config is None else config,
+        "tags": [] if tags is None else tags,
         "created_at": now,
         "updated_at": now,
     }
@@ -71,6 +73,7 @@ def _instance(instance_id: str) -> RegisteredInstance:
         config={"region": "ca-central-1"},
         created_at=now,
         updated_at=now,
+        tags=["gpu", "prod"],
     )
 
 

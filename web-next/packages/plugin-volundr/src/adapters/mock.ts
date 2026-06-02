@@ -19,7 +19,7 @@ import type {
   IntegrationConnection,
   ClusterResourceInfo,
   McpServerConfig,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrRepo,
   TrackerIssue,
   VolundrWorkspace,
@@ -308,12 +308,14 @@ const SEED_MCP_SERVERS: McpServerConfig[] = [
   },
 ];
 
-const SEED_PRESETS: VolundrPreset[] = [
+const SEED_LAUNCH_SPECS: VolundrLaunchSpec[] = [
   {
-    id: 'preset-fast-review',
+    id: 'spec-fast-review',
+    scope: 'user',
     name: 'fast-review',
     description: 'Quick review setup for the main repo',
     isDefault: true,
+    sessionDefinition: null,
     createdAt: '2026-04-01T12:00:00Z',
     updatedAt: '2026-04-20T12:00:00Z',
     cliTool: 'claude',
@@ -329,7 +331,9 @@ const SEED_PRESETS: VolundrPreset[] = [
     envSecretRefs: ['github-niuu'],
     source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
     integrationIds: ['github-primary'],
+    repos: [],
     setupScripts: ['pnpm install'],
+    workspaceLayout: {},
     workloadConfig: {},
   },
 ];
@@ -1263,10 +1267,43 @@ const SEED_SESSION_DEFINITIONS: SessionDefinition[] = [
 // IVolundrService mock
 // ---------------------------------------------------------------------------
 
+/** System-scope launch specs derived from the seed pod templates. */
+const SYSTEM_LAUNCH_SPECS: VolundrLaunchSpec[] = SEED_TEMPLATES.map((t) => ({
+  name: t.name,
+  scope: 'system',
+  id: null,
+  description: '',
+  isDefault: t.id === 'tpl-default',
+  sessionDefinition: null,
+  workloadType: 'skuld-claude',
+  model: null,
+  systemPrompt: null,
+  resourceConfig: {
+    cpu: t.spec.resources.cpuRequest,
+    memory: String(t.spec.resources.memRequestMi),
+    gpu: String(t.spec.resources.gpuCount),
+  },
+  mcpServers: [],
+  envVars: t.spec.env,
+  envSecretRefs: t.spec.envSecretRefs,
+  workloadConfig: {},
+  repos: [],
+  source: null,
+  setupScripts: [],
+  workspaceLayout: {},
+  cliTool: 'claude',
+  terminalSidecar: { enabled: false, allowedCommands: [] },
+  skills: [],
+  rules: [],
+  integrationIds: [],
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+}));
+
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
-  const presets = [...SEED_PRESETS];
+  const launchSpecs = [...SEED_LAUNCH_SPECS];
   const workflowGates = new Map<string, VolundrWorkflowGate[]>();
 
   return {
@@ -1307,75 +1344,32 @@ export function createMockVolundrService(): IVolundrService {
 
     subscribeStats: (_callback) => () => {},
 
-    getTemplates: async () =>
-      SEED_TEMPLATES.map((t) => ({
-        name: t.name,
-        description: '',
-        isDefault: t.id === 'tpl-default',
-        repos: [],
-        setupScripts: [],
-        workspaceLayout: {},
-        cliTool: 'claude',
-        workloadType: 'skuld-claude',
-        model: null,
-        systemPrompt: null,
-        resourceConfig: {
-          cpu: t.spec.resources.cpuRequest,
-          memory: String(t.spec.resources.memRequestMi),
-          gpu: String(t.spec.resources.gpuCount),
-        },
-        mcpServers: [],
-        envVars: t.spec.env,
-        envSecretRefs: t.spec.envSecretRefs,
-        workloadConfig: {},
-        terminalSidecar: { enabled: false, allowedCommands: [] },
-        skills: [],
-        rules: [],
-      })),
-    getTemplate: async (name) => {
-      const t = SEED_TEMPLATES.find((tpl) => tpl.name === name);
-      if (!t) return null;
-      return {
-        name: t.name,
-        description: '',
-        isDefault: t.id === 'tpl-default',
-        repos: [],
-        setupScripts: [],
-        workspaceLayout: {},
-        cliTool: 'claude',
-        workloadType: 'skuld-claude',
-        model: null,
-        systemPrompt: null,
-        resourceConfig: { cpu: t.spec.resources.cpuRequest },
-        mcpServers: [],
-        envVars: t.spec.env,
-        envSecretRefs: t.spec.envSecretRefs,
-        workloadConfig: {},
-        terminalSidecar: { enabled: false, allowedCommands: [] },
-        skills: [],
-        rules: [],
-      };
+    getLaunchSpecs: async (scope) => {
+      if (scope === 'system') return [...SYSTEM_LAUNCH_SPECS];
+      if (scope === 'user') return [...launchSpecs];
+      return [...SYSTEM_LAUNCH_SPECS, ...launchSpecs];
     },
-    saveTemplate: async (t) => t,
-
-    getPresets: async () => [...presets],
-    getPreset: async (id) => presets.find((preset) => preset.id === id) ?? null,
-    savePreset: async (p) => {
-      const saved = {
-        ...p,
-        id: p.id ?? `preset-${Date.now()}`,
+    getLaunchSpec: async (ref) =>
+      launchSpecs.find((spec) => spec.id === ref) ??
+      SYSTEM_LAUNCH_SPECS.find((spec) => spec.name === ref) ??
+      null,
+    saveLaunchSpec: async (spec) => {
+      const saved: VolundrLaunchSpec = {
+        ...spec,
+        scope: 'user',
+        id: spec.id ?? `spec-${Date.now()}`,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      const existingIndex = presets.findIndex((preset) => preset.id === saved.id);
+      const existingIndex = launchSpecs.findIndex((s) => s.id === saved.id);
       if (existingIndex >= 0) {
-        presets[existingIndex] = saved;
+        launchSpecs[existingIndex] = saved;
       } else {
-        presets.push(saved);
+        launchSpecs.push(saved);
       }
       return saved;
     },
-    deletePreset: async () => {},
+    deleteLaunchSpec: async () => {},
 
     getAvailableMcpServers: async () => [...SEED_MCP_SERVERS],
     getAvailableSecrets: async () => [],

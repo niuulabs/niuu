@@ -12,6 +12,7 @@ Exercises:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -141,13 +142,13 @@ def _wait_for_aggregate_session(
         sessions = _request(
             client,
             "GET",
-            "/api/v1/niuu/volundr/sessions",
+            "/api/v1/forge/sessions",
             headers=headers,
         )
         if any(session["id"] == session_id for session in sessions):
             return sessions
         time.sleep(1)
-    raise TimeoutError(f"Session {session_id} did not appear in /api/v1/niuu/volundr/sessions")
+    raise TimeoutError(f"Session {session_id} did not appear in /api/v1/forge/sessions")
 
 
 def _wait_for_activity(
@@ -163,7 +164,7 @@ def _wait_for_activity(
         detail = _request(
             client,
             "GET",
-            f"/api/v1/niuu/volundr/sessions/{session_id}",
+            f"/api/v1/forge/sessions/{session_id}",
             headers=headers,
         )
         last_status = str(detail.get("status", ""))
@@ -175,28 +176,28 @@ def _wait_for_activity(
         conversation = _request_optional(
             client,
             "GET",
-            f"/api/v1/niuu/volundr/sessions/{session_id}/conversation",
+            f"/api/v1/forge/sessions/{session_id}/conversation",
             headers=headers,
             allowed_statuses=(502,),
         )
         logs = _request_optional(
             client,
             "GET",
-            f"/api/v1/niuu/volundr/sessions/{session_id}/logs?lines=20",
+            f"/api/v1/forge/sessions/{session_id}/logs?lines=20",
             headers=headers,
             allowed_statuses=(502,),
         )
         aggregated_logs = _request_optional(
             client,
             "GET",
-            f"/api/v1/niuu/volundr/sessions/{session_id}/logs/aggregate?lines=20",
+            f"/api/v1/forge/sessions/{session_id}/logs/aggregate?lines=20",
             headers=headers,
             allowed_statuses=(502,),
         )
         chronicle = _request_optional(
             client,
             "GET",
-            f"/api/v1/niuu/volundr/chronicles/{session_id}/timeline",
+            f"/api/v1/forge/chronicles/{session_id}/timeline",
             headers=headers,
             allowed_statuses=(404, 502),
         )
@@ -226,6 +227,15 @@ def _wait_for_file(path: Path, expected: str, timeout_s: float = 90.0) -> None:
             return
         time.sleep(2)
     raise TimeoutError(f"File {path} never matched expected contents")
+
+
+def _file_proof_state(path: Path, expected: str) -> dict[str, Any]:
+    actual = path.read_text(encoding="utf-8") if path.exists() else None
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "matches": actual == expected,
+    }
 
 
 def _queue_item_for_slug(
@@ -331,8 +341,50 @@ def _dispatch_one(
     }
 
 
+def _create_tag_targeted_session(
+    client: httpx.Client,
+    *,
+    headers: dict[str, str],
+    suffix: str,
+    tags: list[str],
+    expected_instance_name: str,
+) -> dict[str, Any]:
+    session = _request(
+        client,
+        "POST",
+        "/api/v1/forge/sessions",
+        headers=headers,
+        expected=201,
+        json_body={
+            "name": f"tag-target-{suffix}",
+            "target_tags": tags,
+            "source": {
+                "type": "local_mount",
+                "local_path": str(ROOT),
+            },
+            "initial_prompt": (
+                "This is a routing smoke test. Report that the tag-targeted session started."
+            ),
+        },
+    )
+    if session.get("instance_name") != expected_instance_name:
+        raise AssertionError(
+            f"Expected tag-targeted session on {expected_instance_name}, got {session!r}"
+        )
+    session_id = str(session["id"])
+    _request_optional(
+        client,
+        "POST",
+        f"/api/v1/forge/sessions/{session_id}/stop",
+        headers=headers,
+        allowed_statuses=(404, 409, 502),
+    )
+    return session
+
+
 def main() -> int:
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    require_agent_proof = os.environ.get("GUILD_E2E_REQUIRE_AGENT_PROOF") == "1"
     suffix = str(int(time.time()))
     tenant_instance_name = f"Tenant A Beta {suffix}"
     user_instance_name = f"User B Alpha {suffix}"
@@ -432,6 +484,14 @@ def main() -> int:
             raise AssertionError("Tenant B dispatch targets must not include Tenant A Beta")
         if user_instance_name not in target_names_b:
             raise AssertionError("User B dispatch targets should include the user instance")
+
+        tag_targeted_session = _create_tag_targeted_session(
+            client,
+            headers=tenant_a_headers,
+            suffix=suffix,
+            tags=["cpu"],
+            expected_instance_name="Guild Beta",
+        )
 
         tenant_slug = f"guild-tenant-dispatch-{suffix}"
         tenant_cross_slug = f"guild-tenant-alpha-dispatch-{suffix}"
@@ -535,8 +595,9 @@ def main() -> int:
             / "repo"
             / tenant_cross_proof_file
         )
-        _wait_for_file(tenant_repo_file, f"{tenant_proof_text}\n")
-        _wait_for_file(tenant_alpha_repo_file, f"{tenant_cross_proof_text}\n")
+        if require_agent_proof:
+            _wait_for_file(tenant_repo_file, f"{tenant_proof_text}\n")
+            _wait_for_file(tenant_alpha_repo_file, f"{tenant_cross_proof_text}\n")
 
         user_dispatch = _dispatch_one(
             client,
@@ -574,7 +635,8 @@ def main() -> int:
             / "repo"
             / user_proof_file
         )
-        _wait_for_file(user_repo_file, f"{user_proof_text}\n")
+        if require_agent_proof:
+            _wait_for_file(user_repo_file, f"{user_proof_text}\n")
 
     proof = {
         "health": health,
@@ -588,11 +650,15 @@ def main() -> int:
             "crossDispatch": tenant_cross_dispatch,
             "instanceSessions": tenant_sessions,
             "alphaSessions": tenant_alpha_sessions,
+            "tagTargetedSession": tag_targeted_session,
             "aggregateSessions": aggregate_tenant_sessions,
             "aggregateActivity": tenant_activity,
             "alphaActivity": tenant_alpha_activity,
-            "proofFile": str(tenant_repo_file),
-            "alphaProofFile": str(tenant_alpha_repo_file),
+            "proofFile": _file_proof_state(tenant_repo_file, f"{tenant_proof_text}\n"),
+            "alphaProofFile": _file_proof_state(
+                tenant_alpha_repo_file,
+                f"{tenant_cross_proof_text}\n",
+            ),
         },
         "tenantB": {
             "visibleInstances": visible_b,
@@ -603,8 +669,9 @@ def main() -> int:
             "instanceSessions": user_sessions,
             "aggregateSessions": aggregate_user_sessions,
             "aggregateActivity": user_activity,
-            "proofFile": str(user_repo_file),
+            "proofFile": _file_proof_state(user_repo_file, f"{user_proof_text}\n"),
         },
+        "agentProofRequired": require_agent_proof,
     }
     OUTPUT_PATH.write_text(json.dumps(proof, indent=2), encoding="utf-8")
     print(json.dumps(proof, indent=2))

@@ -21,8 +21,8 @@ import type {
   CIStatusValue,
   McpServer,
   McpServerConfig,
-  VolundrPreset,
-  VolundrTemplate,
+  VolundrLaunchSpec,
+  LaunchScope,
   TrackerIssue,
   ProjectRepoMapping,
   VolundrIdentity,
@@ -123,18 +123,13 @@ export interface IVolundrService {
   /** Subscribe to live stats updates via SSE. Returns an unsubscribe function. */
   subscribeStats(callback: (stats: VolundrStats) => void): () => void;
 
-  // Templates
-  getTemplates(): Promise<VolundrTemplate[]>;
-  getTemplate(name: string): Promise<VolundrTemplate | null>;
-  saveTemplate(template: VolundrTemplate): Promise<VolundrTemplate>;
-
-  // Presets
-  getPresets(): Promise<VolundrPreset[]>;
-  getPreset(id: string): Promise<VolundrPreset | null>;
-  savePreset(
-    preset: Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
-  ): Promise<VolundrPreset>;
-  deletePreset(id: string): Promise<void>;
+  // Launch specs (unified templates + presets; scope = system | user)
+  getLaunchSpecs(scope?: LaunchScope): Promise<VolundrLaunchSpec[]>;
+  getLaunchSpec(ref: string): Promise<VolundrLaunchSpec | null>;
+  saveLaunchSpec(
+    spec: Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> & { id?: string },
+  ): Promise<VolundrLaunchSpec>;
+  deleteLaunchSpec(id: string): Promise<void>;
 
   // Cluster resources
   getAvailableMcpServers(): Promise<McpServerConfig[]>;
@@ -150,8 +145,8 @@ export interface IVolundrService {
     name: string;
     source: SessionSource;
     model: string;
-    templateName?: string;
-    presetId?: string;
+    launchSpec?: string;
+    launchSpecId?: string;
     definition?: string;
     taskType?: string;
     trackerIssue?: TrackerIssue;

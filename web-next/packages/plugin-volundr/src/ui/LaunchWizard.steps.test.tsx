@@ -6,7 +6,7 @@ import type {
   SessionDefinition,
   StoredCredential,
   VolundrModel,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
@@ -74,11 +74,15 @@ const WORKSPACES: VolundrWorkspace[] = [
   },
 ];
 
-const PRESET: VolundrPreset = {
+const PRESET: VolundrLaunchSpec = {
   id: 'preset-1',
+  scope: 'user',
   name: 'Saved preset',
   description: 'preset description',
   isDefault: false,
+  sessionDefinition: null,
+  repos: [],
+  workspaceLayout: {},
   cliTool: 'claude',
   workloadType: 'skuld-claude',
   model: 'sonnet-primary',

@@ -28,13 +28,12 @@ import yaml
 from niuu.domain.llm_merge import _SECURITY_KEYS, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
-from volundr.domain.models import ForgeProfile, PodSpecAdditions, Session, WorkspaceTemplate
+from volundr.domain.models import LaunchSpec, PodSpecAdditions, Session
 from volundr.domain.ports import (
-    ProfileProvider,
+    LaunchSpecProvider,
     SessionContext,
     SessionContribution,
     SessionContributor,
-    TemplateProvider,
 )
 
 logger = logging.getLogger(__name__)
@@ -549,7 +548,7 @@ def _default_flock_trigger_config(
 class RavnFlockContributor(SessionContributor):
     """Contributes flock pod spec when workload_type == 'ravn_flock'.
 
-    Resolves the profile or template from the session context, reads
+    Resolves the launch spec from the session context, reads
     workload_config.personas + mesh/mimir/sleipnir settings, then:
       - Emits skuld mesh env vars (MESH_ENABLED, MESH_PEER_ID, nng addresses)
       - Emits one ravn sidecar container per persona with RAVN_CONFIG env
@@ -563,8 +562,7 @@ class RavnFlockContributor(SessionContributor):
     def __init__(
         self,
         *,
-        template_provider: TemplateProvider | None = None,
-        profile_provider: ProfileProvider | None = None,
+        launch_spec_provider: LaunchSpecProvider | None = None,
         ravn_image: str = _RAVN_IMAGE_DEFAULT,
         base_port: int = _DEFAULT_BASE_PORT,
         mesh_host: str = "0.0.0.0",
@@ -575,8 +573,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_http_base_url: str = "",
         **_extra: object,
     ) -> None:
-        self._template_provider = template_provider
-        self._profile_provider = profile_provider
+        self._launch_spec_provider = launch_spec_provider
         self._ravn_image = ravn_image
         self._base_port = base_port
         self._mesh_host = mesh_host
@@ -662,22 +659,16 @@ class RavnFlockContributor(SessionContributor):
 
         return SessionContribution(values=values, pod_spec=pod_spec)
 
-    def _resolve_source(self, context: SessionContext) -> WorkspaceTemplate | ForgeProfile | None:
-        if context.template_name and self._template_provider is not None:
-            template = self._template_provider.get(context.template_name)
-            if template is not None:
-                return template
+    def _resolve_source(self, context: SessionContext) -> LaunchSpec | None:
+        if self._launch_spec_provider is None:
+            return None
 
-        if self._profile_provider is not None:
-            if context.profile_name:
-                profile = self._profile_provider.get(context.profile_name)
-                if profile is not None:
-                    return profile
-            default = self._profile_provider.get_default("ravn_flock")
-            if default is not None:
-                return default
+        if context.launch_spec:
+            spec = self._launch_spec_provider.get(context.launch_spec)
+            if spec is not None:
+                return spec
 
-        return None
+        return self._launch_spec_provider.get_default("ravn_flock")
 
     def _build_flock_spec(
         self,

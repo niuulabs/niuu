@@ -100,6 +100,11 @@ class VolundrPort(ABC):
         """Stable identifier used for explicit target selection."""
         return self.name
 
+    @property
+    def tags(self) -> list[str]:
+        """Tags of the registered instance (for label-based targeting)."""
+        return []
+
     @abstractmethod
     async def spawn_session(
         self,

@@ -25,9 +25,7 @@ from volundr.domain.models import (
     GitProviderType,
     GitSource,
     LocalMountSource,
-    Model,
     ModelProvider,
-    ModelTier,
     Principal,
     Session,
     SessionActivityState,
@@ -234,19 +232,14 @@ class SessionCreate(BaseModel):
         max_length=100,
         description="Session definition key (e.g. 'skuldClaude', 'skuldCodex')",
     )
-    template_name: str | None = Field(
+    launch_spec: str | None = Field(
         default=None,
         max_length=255,
-        description="Workspace template name to apply",
+        description="Launch spec name (system) to apply",
     )
-    profile_name: str | None = Field(
+    launch_spec_id: UUID | None = Field(
         default=None,
-        max_length=255,
-        description="Forge profile name for resource allocation",
-    )
-    preset_id: UUID | None = Field(
-        default=None,
-        description="Preset ID for runtime configuration",
+        description="User launch spec id for runtime configuration",
     )
     workspace_id: UUID | None = Field(
         default=None,
@@ -323,7 +316,7 @@ class SessionCreate(BaseModel):
                     "repo": "github.com/acme/backend",
                     "branch": "main",
                 },
-                "profile_name": "default",
+                "launch_spec": "default",
             },
         },
     }
@@ -399,16 +392,16 @@ class SessionUpdate(BaseModel):
 class SessionStart(BaseModel):
     """Request model for (re)starting a session."""
 
-    profile_name: str | None = Field(
+    launch_spec: str | None = Field(
         default=None,
         max_length=255,
-        description="Forge profile name to use when starting",
+        description="Launch spec name to use when starting",
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "profile_name": "default",
+                "launch_spec": "default",
             },
         },
     }
@@ -463,9 +456,9 @@ class SessionResponse(BaseModel):
         default=None,
         description="Web URL for the linked issue in the tracker",
     )
-    preset_id: UUID | None = Field(
+    launch_spec_id: UUID | None = Field(
         default=None,
-        description="Preset used to configure this session",
+        description="User launch spec used to configure this session",
     )
     archived_at: str | None = Field(
         default=None,
@@ -541,7 +534,7 @@ class SessionResponse(BaseModel):
             error=session.error,
             tracker_issue_id=session.tracker_issue_id,
             issue_tracker_url=session.issue_tracker_url,
-            preset_id=session.preset_id,
+            launch_spec_id=session.launch_spec_id,
             archived_at=(session.archived_at.isoformat() if session.archived_at else None),
             owner_id=session.owner_id,
             tenant_id=session.tenant_id,
@@ -556,46 +549,6 @@ class SessionEndpoints(BaseModel):
 
     chat_endpoint: str = Field(description="Skuld chat proxy URL")
     code_endpoint: str = Field(description="Editor IDE URL")
-
-
-class ModelInfo(BaseModel):
-    """Response model for available models."""
-
-    id: str = Field(description="Model identifier")
-    name: str = Field(description="Human-readable model name")
-    description: str = Field(description="Model capabilities description")
-    provider: ModelProvider = Field(description="Provider type: cloud or local")
-    vendor: str = Field(description="Model vendor/runtime family (e.g. anthropic, openai)")
-    tier: ModelTier = Field(description="Model tier classification")
-    color: str = Field(description="UI color code for the model badge")
-    cost_per_million_tokens: float | None = Field(
-        default=None,
-        description="Cost per million tokens in USD",
-    )
-    vram_required: str | None = Field(
-        default=None,
-        description="VRAM required for local models (e.g. 24GB)",
-    )
-    session_definition: str | None = Field(
-        default=None,
-        description="Resolved model-specific runtime override, when configured.",
-    )
-
-    @classmethod
-    def from_model(cls, model: Model) -> "ModelInfo":
-        """Create response from domain model."""
-        return cls(
-            id=model.id,
-            name=model.name,
-            description=model.description,
-            provider=model.provider,
-            vendor=model.vendor,
-            tier=model.tier,
-            color=model.color,
-            cost_per_million_tokens=model.cost_per_million_tokens,
-            vram_required=model.vram_required,
-            session_definition=model.session_definition,
-        )
 
 
 class ProviderResponse(BaseModel):
@@ -1048,7 +1001,6 @@ def create_router(
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
-    compat_router = APIRouter(prefix="/api/v1/volundr") if prefix == "/api/v1/forge" else None
     forge = ForgeService(
         session_service,
         stats_service=stats_service,
@@ -1259,9 +1211,8 @@ def create_router(
         """Create and start a new session.
 
         Creates the session record then immediately starts its pods.
-        If template_name is set, the template provides defaults for
-        repo/branch/model. The profile (explicit or from template) is
-        passed to the pod manager to build task_args.
+        If launch_spec is set, the launch spec provides defaults for
+        repo/branch/model and is passed to the pod manager to build task_args.
         """
         principal = await _optional_principal(request)
         try:
@@ -1434,14 +1385,14 @@ def create_router(
         """Restart a session's pods.
 
         Used to relaunch a stopped or failed session. An optional
-        profile_name in the body overrides the default profile.
+        launch_spec in the body overrides the default launch spec.
         """
-        profile_name = data.profile_name if data else None
+        launch_spec = data.launch_spec if data else None
         principal = await _optional_principal(request)
         try:
             session = await forge.start_session(
                 session_id,
-                profile_name=profile_name,
+                launch_spec=launch_spec,
                 principal=principal,
             )
             return SessionResponse.from_session(session)
@@ -1624,18 +1575,6 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
-
-    @router.get("/models", response_model=list[ModelInfo], tags=["Models & Stats"])
-    async def list_models() -> list[ModelInfo]:
-        """List available models."""
-        try:
-            models = forge.list_models()
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            )
-        return [ModelInfo.from_model(m) for m in models]
 
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
     async def get_stats(request: Request) -> StatsResponse:
@@ -2864,41 +2803,4 @@ def create_router(
                 failed.append({"session_id": sid, "error": "Internal error"})
         return {"deleted": deleted, "failed": failed}
 
-    if compat_router is None:
-        return router
-
-    compat_router.add_api_route(
-        "/sessions/{session_id}/logs/aggregate",
-        get_session_logs_aggregate,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/messages",
-        send_session_message,
-        methods=["POST"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/conversation",
-        get_conversation,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/transcript",
-        get_session_transcript,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/transcript/download",
-        download_session_transcript,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-
-    combined_router = APIRouter()
-    combined_router.include_router(router)
-    combined_router.include_router(compat_router)
-    return combined_router
+    return router

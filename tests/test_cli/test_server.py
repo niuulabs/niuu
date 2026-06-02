@@ -224,9 +224,7 @@ class TestRouteDomainSelection:
             "credentials-api",
             "features-api",
             "forge-api",
-            "git-api",
             "guild-instances-api",
-            "guild-volundr-api",
             "identity-api",
             "integrations-api",
             "llm-api",
@@ -257,7 +255,6 @@ class TestRouteDomainSelection:
             "tokens-api",
             "ting-channel-api",
             "workflow-api",
-            "workspace-api",
             "ting-api",
             "skuld-proxy",
             "runtime-config",
@@ -265,8 +262,7 @@ class TestRouteDomainSelection:
         }
 
     def test_host_profiles_cover_full_and_api(self) -> None:
-        assert "full" in HOST_PROFILES
-        assert "api" in HOST_PROFILES
+        assert set(HOST_PROFILES) == {"full", "api"}
         assert "web-ui" in HOST_PROFILES["full"]
         assert "web-ui" not in HOST_PROFILES["api"]
         assert "forge-api" in HOST_PROFILES["full"]
@@ -532,6 +528,7 @@ class TestRootServerBuildApp:
         (dist / "index.html").write_text("<html>SPA</html>")
         (dist / "config.live.json").write_text(
             '{"services":{"forge":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/forge"},'
+            '"volundr":{"mode":"http","baseUrl":"http://localhost:8080/api/v1/volundr"},'
             '"forge.pty":{"mode":"ws","wsUrl":"ws://localhost:8080/s/{sessionId}/session"}}}'
         )
         favicon = dist / "favicon.svg"
@@ -566,6 +563,10 @@ class TestRootServerBuildApp:
             config_resp.json()["services"]["forge"]["baseUrl"] == "http://testserver/api/v1/forge"
         )
         assert (
+            config_resp.json()["services"]["volundr"]["baseUrl"]
+            == "http://testserver/api/v1/volundr"
+        )
+        assert (
             config_resp.json()["services"]["forge.pty"]["wsUrl"]
             == "ws://testserver/s/{sessionId}/session"
         )
@@ -577,6 +578,10 @@ class TestRootServerBuildApp:
         assert (
             default_config_resp.json()["services"]["forge"]["baseUrl"]
             == "http://testserver/api/v1/forge"
+        )
+        assert (
+            default_config_resp.json()["services"]["volundr"]["baseUrl"]
+            == "http://testserver/api/v1/volundr"
         )
         assert (
             default_config_resp.json()["services"]["forge.pty"]["wsUrl"]
@@ -698,6 +703,60 @@ class TestRootServerBuildApp:
 
         assert started == 1
         assert stopped == 1
+
+    def test_build_root_app_passes_embedded_volundr_app_to_guild(self) -> None:
+        volundr_app = FastAPI()
+        guild_app = FastAPI()
+        captured: dict[str, object | None] = {}
+
+        @volundr_app.get("/api/v1/volundr/ping")
+        async def volundr_ping():
+            return {"pong": "volundr"}
+
+        @guild_app.get("/api/v1/forge/ping")
+        async def guild_ping():
+            return {"pong": "guild"}
+
+        class VolundrPlugin(FakePlugin):
+            def create_api_app(self):
+                return volundr_app
+
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="catalog-api",
+                        prefixes=("/api/v1/volundr",),
+                    ),
+                )
+
+        class GuildPlugin(FakePlugin):
+            def create_api_app(self, *, embedded_forge_app=None):
+                captured["embedded_forge_app"] = embedded_forge_app
+                return guild_app
+
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="forge-api",
+                        prefixes=("/api/v1/forge",),
+                    ),
+                )
+
+        registry = PluginRegistry()
+        registry.register(GuildPlugin(name="guild"))
+        registry.register(VolundrPlugin(name="volundr"))
+
+        app = build_root_app(
+            registry=registry,
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"catalog-api", "forge-api"},
+        )
+
+        assert captured["embedded_forge_app"] is volundr_app
+        client = TestClient(app)
+        assert client.get("/api/v1/forge/ping").json() == {"pong": "guild"}
+        assert client.get("/api/v1/volundr/ping").json() == {"pong": "volundr"}
 
     def test_build_root_app_with_explicit_mounts_only_exposes_selected_routes(self) -> None:
         niuu_app = FastAPI()
@@ -1022,20 +1081,20 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/events/ping").status_code == 200
         assert client.get("/api/v1/forge/workspaces/ping").status_code == 404
 
-    def test_build_root_app_can_mount_forge_slice_with_canonical_aliases(self) -> None:
+    def test_build_root_app_can_mount_forge_runtime_slice(self) -> None:
         volundr_app = FastAPI()
 
-        @volundr_app.get("/api/v1/forge/templates/ping")
-        async def template_ping():
-            return {"pong": "template"}
+        @volundr_app.get("/api/v1/forge/sessions/ping")
+        async def session_ping():
+            return {"pong": "session"}
 
         @volundr_app.get("/api/v1/forge/stats")
         async def stats():
             return {"sessions": 3}
 
-        @volundr_app.get("/api/v1/forge/models")
-        async def models():
-            return {"claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"}}
+        @volundr_app.get("/api/v1/forge/cluster/resources")
+        async def cluster_resources():
+            return {"nodes": []}
 
         class VolundrPlugin(FakePlugin):
             def create_api_app(self):
@@ -1046,9 +1105,9 @@ class TestRootServerBuildApp:
                     APIRouteDomain(
                         name="forge-api",
                         prefixes=(
-                            "/api/v1/forge/templates",
+                            "/api/v1/forge/sessions",
                             "/api/v1/forge/stats",
-                            "/api/v1/forge/models",
+                            "/api/v1/forge/cluster",
                         ),
                     ),
                 )
@@ -1064,10 +1123,10 @@ class TestRootServerBuildApp:
         )
 
         client = TestClient(app)
-        assert client.get("/api/v1/forge/templates/ping").status_code == 200
+        assert client.get("/api/v1/forge/sessions/ping").status_code == 200
         assert client.get("/api/v1/forge/stats").json() == {"sessions": 3}
-        assert client.get("/api/v1/forge/models").status_code == 200
-        assert client.get("/api/v1/forge/sessions/ping").status_code == 404
+        assert client.get("/api/v1/forge/cluster/resources").status_code == 200
+        assert client.get("/api/v1/volundr/launch-specs").status_code == 404
 
     def test_build_root_app_can_mount_saga_slice_without_dispatch_slice(self) -> None:
         ting_app = FastAPI()

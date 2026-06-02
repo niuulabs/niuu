@@ -43,12 +43,14 @@ class VolundrHTTPAdapter(VolundrPort):
         timeout: float = 30.0,
         name: str = "",
         target_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._name = name
         self._target_id = target_id or name
+        self._tags = list(tags or [])
 
     @property
     def name(self) -> str:
@@ -57,6 +59,10 @@ class VolundrHTTPAdapter(VolundrPort):
     @property
     def target_id(self) -> str:
         return self._target_id
+
+    @property
+    def tags(self) -> list[str]:
+        return self._tags
 
     def _headers(
         self,
@@ -123,7 +129,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "definition": request.definition,
                     "workload_type": request.workload_type,
                     "workload_config": request.workload_config,
-                    "profile_name": request.profile,
+                    "launch_spec": request.profile,
                     "integration_ids": request.integration_ids,
                 },
             )

@@ -94,26 +94,41 @@ class TestVolundrPlugin:
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
             "admin-api",
-            "forge-api",
-            "session-api",
-            "workspace-api",
             "catalog-api",
-            "git-api",
         ]
         domains = {route_domain.name: route_domain.prefixes for route_domain in route_domains}
         assert domains["admin-api"] == ("/api/v1/forge/admin", "/api/v1/forge/settings")
-        assert domains["forge-api"][:3] == (
-            "/api/v1/forge/sessions",
-            "/api/v1/forge/chronicles",
-            "/api/v1/forge/events",
+        assert domains["catalog-api"] == (
+            "/api/v1/volundr/launch-specs",
+            "/api/v1/volundr/session-definitions",
+            "/api/v1/volundr/resources",
+            "/api/v1/volundr/prompts",
         )
-        assert domains["session-api"] == (
-            "/api/v1/forge/sessions",
-            "/api/v1/forge/chronicles",
-            "/api/v1/forge/events",
-            "/api/v1/forge/spans",
+
+    def test_api_route_domains_are_stable_when_workers_configured(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            """
+niuu:
+  instances:
+    - kind: volundr
+      slug: alpha
+      name: Alpha
+      base_url: http://127.0.0.1:8181
+      enabled: true
+""".lstrip(),
+            encoding="utf-8",
         )
-        assert domains["workspace-api"] == ("/api/v1/forge/workspaces",)
+        monkeypatch.setenv("NIUU_CONFIG", str(config_path))
+
+        route_domains = VolundrPlugin().api_route_domains()
+
+        assert [route_domain.name for route_domain in route_domains] == [
+            "admin-api",
+            "catalog-api",
+        ]
 
     def test_registers_sessions_group(self) -> None:
         plugin = VolundrPlugin()

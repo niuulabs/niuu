@@ -241,14 +241,7 @@ if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
-# Old UI uses the legacy /api/v1/volundr/* routes (e.g. /api/v1/volundr/models),
-# which only get mounted under the full-compat host profile. New UI uses the
-# split canonical routes that ship in the default 'full' profile.
-if [[ "${UI_VARIANT}" == "old" ]]; then
-  HOST_PROFILE="full-compat"
-else
-  HOST_PROFILE="full"
-fi
+HOST_PROFILE="full"
 export ROOT_DIR PLATFORM_LOG PLATFORM_PID_FILE UI_VARIANT HOST_PROFILE
 
 echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."

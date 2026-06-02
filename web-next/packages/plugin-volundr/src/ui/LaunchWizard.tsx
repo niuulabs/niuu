@@ -26,7 +26,7 @@ import type {
   VolundrTarget,
   StoredCredential,
   TrackerIssue,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
@@ -468,12 +468,13 @@ export function normalizeEnvVars(
 export function buildPresetRuntimePayload(
   form: WizardForm,
   presetName?: string,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return {
     name: (presetName ?? form.presetId) || 'launch-preset',
     description: '',
     isDefault: false,
-    cliTool: deriveCliTool(form.definition) as VolundrPreset['cliTool'],
+    sessionDefinition: form.definition || null,
+    cliTool: deriveCliTool(form.definition) as VolundrLaunchSpec['cliTool'],
     workloadType: definitionToTaskType(form.definition),
     model: form.model || null,
     systemPrompt: form.systemPrompt || null,
@@ -500,7 +501,9 @@ export function buildPresetRuntimePayload(
             }
           : null,
     integrationIds: form.selectedIntegrations,
+    repos: [],
     setupScripts: form.setupScripts.filter((script) => script.trim()),
+    workspaceLayout: {},
     workloadConfig: {},
   };
 }
@@ -508,17 +511,18 @@ export function buildPresetRuntimePayload(
 export function buildPresetPayload(
   form: WizardForm,
   presetName: string,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return buildPresetRuntimePayload(form, presetName);
 }
 
 export function buildPresetComparisonPayload(
-  preset: VolundrPreset,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+  preset: VolundrLaunchSpec,
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return {
     name: preset.name,
     description: preset.description,
     isDefault: preset.isDefault,
+    sessionDefinition: preset.sessionDefinition,
     cliTool: preset.cliTool,
     workloadType: preset.workloadType,
     model: preset.model,
@@ -532,7 +536,9 @@ export function buildPresetComparisonPayload(
     envSecretRefs: preset.envSecretRefs,
     source: preset.source,
     integrationIds: preset.integrationIds,
+    repos: preset.repos,
     setupScripts: preset.setupScripts,
+    workspaceLayout: preset.workspaceLayout,
     workloadConfig: preset.workloadConfig,
   };
 }
@@ -895,8 +901,8 @@ export function RuntimeStep({
   credentials: StoredCredential[];
   integrations: IntegrationConnection[];
   clusterResources: ClusterResourceInfo | null;
-  presets: VolundrPreset[];
-  selectedPreset: VolundrPreset | null;
+  presets: VolundrLaunchSpec[];
+  selectedPreset: VolundrLaunchSpec | null;
   availableMcpServers: McpServerConfig[];
   sessionDefinitions: SessionDefinition[];
   onApplyPreset: (presetId: string) => void;
@@ -1049,7 +1055,7 @@ export function RuntimeStep({
                 options={[
                   { value: NO_PRESET_VALUE, label: 'Custom (no preset)' },
                   ...presets.map((preset) => ({
-                    value: preset.id,
+                    value: preset.id ?? '',
                     label: `${preset.name}${preset.isDefault ? ' (default)' : ''}`,
                   })),
                 ]}
@@ -1942,7 +1948,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
-  const [presets, setPresets] = useState<VolundrPreset[]>([]);
+  const [presets, setPresets] = useState<VolundrLaunchSpec[]>([]);
   const [targets, setTargets] = useState<VolundrTarget[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
@@ -1999,7 +2005,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       volundr.getCredentials().catch(() => []),
       volundr.getIntegrations().catch(() => []),
       volundr.getClusterResources().catch(() => null),
-      volundr.getPresets().catch(() => []),
+      volundr.getLaunchSpecs('user').catch(() => []),
       volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
@@ -2193,12 +2199,12 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
 
   const handleSavePreset = useCallback(
     async (name: string) => {
-      const saved = await volundr.savePreset(buildPresetPayload(form, name));
+      const saved = await volundr.saveLaunchSpec(buildPresetPayload(form, name));
       setPresets((current) => {
         const next = current.filter((preset) => preset.id !== saved.id);
         return [...next, saved];
       });
-      setForm((current) => ({ ...current, presetId: saved.id }));
+      setForm((current) => ({ ...current, presetId: saved.id ?? '' }));
     },
     [form, volundr],
   );
@@ -2293,21 +2299,21 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           JSON.stringify(buildPresetComparisonPayload(selectedPreset)) !==
             JSON.stringify(currentPresetPayload))
       ) {
-        const savedPreset = await volundr.savePreset(currentPresetPayload);
-        presetId = savedPreset.id;
+        const savedPreset = await volundr.saveLaunchSpec(currentPresetPayload);
+        presetId = savedPreset.id ?? undefined;
         setPresets((current) => {
           const next = current.filter((preset) => preset.id !== savedPreset.id);
           return [...next, savedPreset];
         });
-        setForm((current) => ({ ...current, presetId: savedPreset.id }));
+        setForm((current) => ({ ...current, presetId: savedPreset.id ?? '' }));
       }
 
       const session = await volundr.startSession({
         name: effectiveSessionName,
         source: buildSessionSource(form),
         model: form.model.trim(),
-        templateName: selectedTemplate?.name,
-        presetId,
+        launchSpec: selectedTemplate?.name,
+        launchSpecId: presetId,
         definition: form.definition,
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,

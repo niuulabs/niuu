@@ -39,7 +39,7 @@ ingress:
           pathType: Prefix
         - path: /api/v1/niuu/targets
           pathType: Prefix
-        - path: /api/v1/niuu/volundr
+        - path: /api/v1/forge
           pathType: Prefix
         - path: /api/v1/niuu/observatory
           pathType: Prefix

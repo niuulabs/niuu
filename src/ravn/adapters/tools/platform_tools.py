@@ -755,9 +755,9 @@ class TingWorkflowTool(ToolPort):
                     "type": "string",
                     "description": "Optional Volundr session definition override.",
                 },
-                "profile_name": {
+                "launch_spec": {
                     "type": "string",
-                    "description": "Optional profile name override for the launched session.",
+                    "description": "Optional launch spec name override for the launched session.",
                 },
                 "integration_ids": {
                     "type": "array",
@@ -832,7 +832,7 @@ class TingWorkflowTool(ToolPort):
             "base_branch",
             "model",
             "definition",
-            "profile_name",
+            "launch_spec",
             "connection_id",
             "mimir_path",
         )

@@ -689,7 +689,7 @@ sessionContributors:
       base_domain: "skuld.valhalla.asgard.niuu.world"
       ingress_enabled: true
     secretKwargs: []
-  - adapter: "volundr.adapters.outbound.contributors.template.TemplateContributor"
+  - adapter: "volundr.adapters.outbound.contributors.launch_spec.LaunchSpecContributor"
     kwargs: {}
     secretKwargs: []
   - adapter: "volundr.adapters.outbound.contributors.prompt.PromptContributor"

@@ -33,6 +33,7 @@ from niuu.domain.model_runtime import (
     validate_session_definition_for_models,
 )
 from niuu.domain.models import Principal
+from niuu.domain.tags import matches_tags
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -342,6 +343,8 @@ class DispatchItem:
     workflow_id: str | None = None
     session_definition: str | None = None
     issue: TrackerIssue | None = None
+    target_tags: tuple[str, ...] = ()
+    target_match: str = "all"
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +490,29 @@ def resolve_target_adapter(
     if adapter is not None:
         return adapter
     return fallback
+
+
+class TargetSelectionError(Exception):
+    """Raised when a tag selector matches no available Volundr backend."""
+
+
+def select_adapter_by_tags(
+    adapters: list[VolundrPort],
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> VolundrPort:
+    """Select a Volundr adapter whose registered instance carries the given tags.
+
+    ``match="all"`` (default) requires every tag; ``match="any"`` requires one.
+    Fails loud — raises ``TargetSelectionError`` if nothing matches rather than
+    silently dispatching to an unintended backend.
+    """
+    for adapter in adapters:
+        if matches_tags(getattr(adapter, "tags", []) or [], tags, match):
+            return adapter
+    raise TargetSelectionError(
+        f"No Volundr backend matches tags {sorted(set(tags))} (match={match})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -778,12 +804,31 @@ class DispatchService:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
 
-            target_connection = item.connection_id or connection_id or saga.instance_id
-            target_volundr = resolve_target_adapter(
-                target_connection,
-                adapter_by_target,
-                volundr,
-            )
+            if item.target_tags:
+                # Label-based targeting: pick a backend whose tags match. Fail loud —
+                # never silently fall back to an unintended backend.
+                try:
+                    target_volundr = select_adapter_by_tags(
+                        all_volundr, item.target_tags, item.target_match
+                    )
+                except TargetSelectionError as exc:
+                    logger.warning("Tag targeting failed for issue %s: %s", item.issue_id, exc)
+                    results.append(
+                        DispatchResult(
+                            issue_id=item.issue_id,
+                            session_id="",
+                            session_name="",
+                            status="failed",
+                        )
+                    )
+                    continue
+            else:
+                target_connection = item.connection_id or connection_id or saga.instance_id
+                target_volundr = resolve_target_adapter(
+                    target_connection,
+                    adapter_by_target,
+                    volundr,
+                )
             workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)
             if workflow_error:
                 logger.warning(

@@ -1137,4 +1137,46 @@ data:
     DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
     DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
     DROP TABLE IF EXISTS niuu_instances;
+
+  000043_niuu_instance_tags.up.sql: |
+    -- Add freeform tags to registered instances for label-based targeting.
+
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_tags
+        ON niuu_instances USING GIN(tags);
+
+  000043_niuu_instance_tags.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_tags;
+
+    ALTER TABLE niuu_instances
+        DROP COLUMN IF EXISTS tags;
+
+  000044_launch_specs.up.sql: |
+    -- Consolidate profiles + templates + presets into unified launch specs.
+    ALTER TABLE volundr_presets RENAME TO volundr_launch_specs;
+
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS repos JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS workspace_layout JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+    ALTER INDEX IF EXISTS idx_volundr_presets_name RENAME TO idx_volundr_launch_specs_name;
+    ALTER INDEX IF EXISTS idx_volundr_presets_cli_tool RENAME TO idx_volundr_launch_specs_cli_tool;
+    ALTER INDEX IF EXISTS idx_volundr_presets_is_default RENAME TO idx_volundr_launch_specs_is_default;
+
+    ALTER TABLE sessions RENAME COLUMN preset_id TO launch_spec_id;
+
+  000044_launch_specs.down.sql: |
+    ALTER TABLE sessions RENAME COLUMN launch_spec_id TO preset_id;
+
+    ALTER INDEX IF EXISTS idx_volundr_launch_specs_is_default RENAME TO idx_volundr_presets_is_default;
+    ALTER INDEX IF EXISTS idx_volundr_launch_specs_cli_tool RENAME TO idx_volundr_presets_cli_tool;
+    ALTER INDEX IF EXISTS idx_volundr_launch_specs_name RENAME TO idx_volundr_presets_name;
+
+    ALTER TABLE volundr_launch_specs DROP COLUMN IF EXISTS workspace_layout;
+    ALTER TABLE volundr_launch_specs DROP COLUMN IF EXISTS repos;
+    ALTER TABLE volundr_launch_specs DROP COLUMN IF EXISTS session_definition;
+
+    ALTER TABLE volundr_launch_specs RENAME TO volundr_presets;
 {{- end }}

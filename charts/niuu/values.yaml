@@ -22,8 +22,8 @@ ingress:
         service: guild
       - path: /api/v1/niuu/targets
         service: guild
-      - path: /api/v1/niuu/volundr
-        service: guild
+      - path: /api/v1/forge
+        service: forge-api
       - path: /api/v1/niuu/observatory
         service: guild
       - path: /api/v1/tokens
@@ -44,7 +44,7 @@ ingress:
         service: bifrost
       - path: /api/v1/ravn
         service: ravn
-      - path: /api/v1/forge
+      - path: /api/v1/volundr
         service: volundr
       - path: /api/v1/users
         service: volundr

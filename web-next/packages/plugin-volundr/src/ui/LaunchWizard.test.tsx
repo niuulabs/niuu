@@ -223,7 +223,7 @@ describe('LaunchWizard', () => {
           name: 'main',
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
           model: 'claude-sonnet-4-6',
-          templateName: 'niuu-platform',
+          launchSpec: 'niuu-platform',
           definition: 'skuldClaude',
           taskType: 'skuld-claude',
           terminalRestricted: false,
@@ -237,7 +237,7 @@ describe('LaunchWizard', () => {
 
   it('serializes advanced runtime settings into a preset before launch when needed', async () => {
     const service = createMockVolundrService();
-    const savePreset = vi.spyOn(service, 'savePreset');
+    const saveLaunchSpec = vi.spyOn(service, 'saveLaunchSpec');
     const startSession = vi.spyOn(service, 'startSession');
     wrap(true, vi.fn(), service);
 
@@ -255,10 +255,10 @@ describe('LaunchWizard', () => {
     await screen.findByTestId('step-confirm-content');
     fireEvent.click(screen.getByTestId('wizard-next'));
 
-    await waitFor(() => expect(savePreset).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveLaunchSpec).toHaveBeenCalledTimes(1));
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        presetId: expect.stringMatching(/^preset-/),
+        launchSpecId: expect.stringMatching(/^spec-/),
       }),
     );
   });
@@ -358,7 +358,7 @@ source:
 
     const presetField = screen.getByText('Load preset').closest('.niuu-field');
     const presetSelect = presetField?.querySelector('select') as HTMLSelectElement;
-    fireEvent.change(presetSelect, { target: { value: 'preset-fast-review' } });
+    fireEvent.change(presetSelect, { target: { value: 'spec-fast-review' } });
 
     fireEvent.click(screen.getByText('show advanced'));
     await waitFor(() => {
@@ -376,7 +376,7 @@ source:
 
   it('saves a preset from runtime settings and clears the save field', async () => {
     const service = createMockVolundrService();
-    const savePreset = vi.spyOn(service, 'savePreset');
+    const saveLaunchSpec = vi.spyOn(service, 'saveLaunchSpec');
     wrap(true, vi.fn(), service);
 
     await advanceToRuntime();
@@ -386,7 +386,7 @@ source:
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() => {
-      expect(savePreset).toHaveBeenCalledWith(
+      expect(saveLaunchSpec).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'pairing-preset',
         }),

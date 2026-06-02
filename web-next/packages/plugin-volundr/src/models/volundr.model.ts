@@ -453,49 +453,40 @@ export interface TerminalSidecarConfig {
 
 export type CliTool = 'claude' | 'codex' | 'gemini' | 'aider';
 
-export interface VolundrTemplate {
+/** Ownership scope of a launch spec. */
+export type LaunchScope = 'system' | 'user';
+
+/**
+ * Unified launch spec — the single blueprint that replaced the former
+ * template / profile / preset trio. ``system`` specs are config-seeded and
+ * read-only; ``user`` specs are DB-stored and CRUD-managed.
+ */
+export interface VolundrLaunchSpec {
   name: string;
+  scope: LaunchScope;
+  id: string | null;
   description: string;
   isDefault: boolean;
+  sessionDefinition: string | null;
+  workloadType: string;
+  model: string | null;
+  systemPrompt: string | null;
+  resourceConfig: ResourceConfig;
+  mcpServers: McpServerConfig[];
+  envVars: Record<string, string>;
+  envSecretRefs: string[];
+  workloadConfig: WorkloadConfig;
   repos: TemplateRepo[];
+  source: SessionSource | null;
   setupScripts: string[];
   workspaceLayout: Record<string, unknown>;
   cliTool: CliTool;
-  workloadType: string;
-  model: string | null;
-  systemPrompt: string | null;
-  resourceConfig: ResourceConfig;
-  mcpServers: McpServerConfig[];
-  envVars: Record<string, string>;
-  envSecretRefs: string[];
-  workloadConfig: WorkloadConfig;
   terminalSidecar: TerminalSidecarConfig;
   skills: SkillConfig[];
   rules: RuleConfig[];
-}
-
-export interface VolundrPreset {
-  id: string;
-  name: string;
-  description: string;
-  isDefault: boolean;
+  integrationIds: string[];
   createdAt: string;
   updatedAt: string;
-  cliTool: CliTool;
-  workloadType: string;
-  model: string | null;
-  systemPrompt: string | null;
-  resourceConfig: ResourceConfig;
-  mcpServers: McpServerConfig[];
-  terminalSidecar: TerminalSidecarConfig;
-  skills: SkillConfig[];
-  rules: RuleConfig[];
-  envVars: Record<string, string>;
-  envSecretRefs: string[];
-  source: SessionSource | null;
-  integrationIds: string[];
-  setupScripts: string[];
-  workloadConfig: WorkloadConfig;
 }
 
 // ---------------------------------------------------------------------------

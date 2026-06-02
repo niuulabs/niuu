@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
-from volundr.domain.models import GitSource, Session, WorkspaceTemplate
+from volundr.domain.models import GitSource, LaunchSpec, Session
 from volundr.domain.ports import SessionContext
 
 
@@ -85,7 +85,7 @@ class TestSessionMCPContributor:
         }
 
     async def test_resolves_template_workload_when_context_is_empty(self, session):
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="flock-template",
             workload_type="ravn_flock",
             workload_config={
@@ -98,11 +98,11 @@ class TestSessionMCPContributor:
         )
         template_provider = MagicMock()
         template_provider.get.return_value = template
-        contributor = SessionMCPContributor(template_provider=template_provider)
+        contributor = SessionMCPContributor(launch_spec_provider=template_provider)
 
         result = await contributor.contribute(
             session,
-            SessionContext(template_name="flock-template"),
+            SessionContext(launch_spec="flock-template"),
         )
 
         assert len(result.values["mcpServers"]) == 1

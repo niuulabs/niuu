@@ -45,6 +45,7 @@ type InstanceRecord = {
   enabled: boolean;
   isDefault: boolean;
   config: Record<string, unknown>;
+  tags: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -76,7 +77,18 @@ type WizardState = {
   credentialScope: CredentialScope;
   credentialName: string;
   visibility: VisibilityScope;
+  tags: string;
 };
+
+/** Parse a comma/space-separated tag input into a clean, deduped list. */
+function parseTags(value: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of value.split(/[,\s]+/)) {
+    const tag = raw.trim();
+    if (tag) seen.add(tag);
+  }
+  return Array.from(seen);
+}
 
 const FILTER_KIND_OPTIONS: Array<{
   value: Exclude<InstanceKind, 'generic'>;
@@ -274,6 +286,7 @@ function inferAuth(instance: InstanceRecord): string {
 
 function inferCapabilities(instance: InstanceRecord): string[] {
   const configured = [
+    ...(Array.isArray(instance.tags) ? instance.tags : []),
     ...(Array.isArray(instance.config.capabilities) ? instance.config.capabilities : []),
     ...(Array.isArray(instance.config.tags) ? instance.config.tags : []),
   ]
@@ -938,6 +951,23 @@ function RegisterWizard({
                 </div>
               </div>
 
+              <div className="niuu:space-y-1.5">
+                <label className="niuu:block niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
+                  tags
+                </label>
+                <input
+                  value={wizard.tags}
+                  onChange={(event) =>
+                    setWizard((current) => ({ ...current, tags: event.target.value }))
+                  }
+                  placeholder="gpu, us-west, prod"
+                  className="niuu:w-full niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:text-[14px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
+                />
+                <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
+                  Labels for routing — flocks and workflows can target this backend by tag.
+                </div>
+              </div>
+
               <div className="niuu:space-y-2">
                 <div className="niuu:text-[13px] niuu:font-medium niuu:text-text-secondary">
                   auth method
@@ -1226,6 +1256,7 @@ export function GuildPage() {
       credentialScope: 'none',
       credentialName: '',
       visibility: canCreateTenantScope ? 'tenant' : 'user',
+      tags: '',
     }),
     [canCreateTenantScope],
   );
@@ -1294,6 +1325,7 @@ export function GuildPage() {
         baseUrl: wizard.baseUrl.trim(),
         visibility: effectiveWizard.visibility,
         tenantId: effectiveWizard.visibility === 'tenant' ? currentIdentity?.tenantId : undefined,
+        tags: parseTags(wizard.tags),
         config: {
           source: 'guild',
           authMethod: authMeta(wizard.authMethod).label,

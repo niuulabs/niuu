@@ -72,8 +72,8 @@ const volundrMocks = vi.hoisted(() => ({
     getSessions: vi.fn().mockResolvedValue([]),
     getSession: vi.fn().mockResolvedValue(null),
     getClusterResources: vi.fn().mockResolvedValue({ resourceTypes: [], nodes: [] }),
-    getTemplates: vi.fn().mockResolvedValue([]),
-    getTemplate: vi.fn().mockResolvedValue(null),
+    getLaunchSpecs: vi.fn().mockResolvedValue([]),
+    getLaunchSpec: vi.fn().mockResolvedValue(null),
     listArchivedSessions: vi.fn().mockResolvedValue([]),
     archiveStoppedSessions: vi.fn().mockResolvedValue([]),
     deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -161,7 +161,7 @@ describe('resolveSharedApiBase', () => {
       resolveSharedApiBase({
         services: {
           ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
@@ -177,11 +177,11 @@ describe('resolveSharedApiBase', () => {
     ).toBe('http://localhost:8080/api/v1');
   });
 
-  it('falls back to the Volundr shared base when Ting is not live', () => {
+  it('falls back to the Volundr catalog shared base when Ting is not live', () => {
     expect(
       resolveSharedApiBase({
         services: {
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
@@ -219,7 +219,7 @@ describe('resolveCanonicalServiceBase', () => {
       resolveCanonicalServiceBase(
         {
           services: {
-            volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+            volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
           },
         } as any,
         'identity',
@@ -368,28 +368,28 @@ describe('resolveSettingsServiceBase', () => {
 });
 
 describe('resolveForgeServiceBase', () => {
-  it('prefers an explicit forge domain base over the legacy volundr key', () => {
+  it('uses the explicit forge domain base', () => {
     expect(
       resolveForgeServiceBase({
         services: {
           forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
         },
       } as any),
     ).toBe('http://localhost:8080/api/v1/forge');
   });
 
-  it('falls back to the legacy volundr base when no explicit forge base exists', () => {
+  it('does not treat the volundr catalog base as forge runtime', () => {
     expect(
       resolveForgeServiceBase({
         services: {
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
         },
       } as any),
-    ).toBe('http://localhost:8080/api/v1/forge');
+    ).toBeNull();
   });
 
-  it('returns null when neither forge nor volundr is live', () => {
+  it('returns null when forge is not live', () => {
     expect(
       resolveForgeServiceBase({
         services: {
@@ -406,17 +406,26 @@ describe('buildServices live base selection', () => {
     vi.clearAllMocks();
   });
 
-  it('prefers an explicit volundr base for the full volundr adapter', () => {
+  it('builds separate forge runtime and volundr catalog adapters', () => {
     buildServices({
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
       },
     } as any);
 
     expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
         basePath: 'http://localhost:8080/api/v1/forge',
+      }),
+      undefined,
+      expect.objectContaining({
+        niuuBasePath: 'http://localhost:8080/api/v1/niuu',
+      }),
+    );
+    expect(volundrMocks.buildVolundrHttpAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        basePath: 'http://localhost:8080/api/v1/volundr',
       }),
       undefined,
       expect.objectContaining({
@@ -819,12 +828,12 @@ describe('buildServices', () => {
     });
   });
 
-  it('falls back to the Volundr host when Ting is not live', () => {
+  it('falls back to the Volundr catalog host when Ting is not live', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
       },
     } as any);
 
@@ -875,7 +884,7 @@ describe('buildServices', () => {
     expect(services['niuu.repos']).toBeDefined();
   });
 
-  it('merges direct Forge sessions with aggregate sessions for Volundr reads', async () => {
+  it('routes runtime reads through the Forge facade', async () => {
     const services = buildServices({
       theme: 'ice',
       plugins: {},
@@ -885,38 +894,22 @@ describe('buildServices', () => {
       },
     } as any);
 
-    const primaryVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
-    const aggregateVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[1]?.value;
-    const directSession = {
-      id: 'session-direct',
-      name: 'direct workflow launch',
-      status: 'running',
-    };
-    const aggregateSession = {
-      id: 'session-aggregate',
-      name: 'aggregate tracked launch',
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const facadeSession = {
+      id: 'session-facade',
+      name: 'facade tracked launch',
       status: 'running',
     };
 
-    primaryVolundr.getSessions.mockResolvedValue([directSession]);
-    aggregateVolundr.getSessions.mockResolvedValue([aggregateSession]);
-    primaryVolundr.getActiveSessions = vi.fn().mockResolvedValue([directSession]);
-    aggregateVolundr.getActiveSessions = vi.fn().mockResolvedValue([aggregateSession]);
-    primaryVolundr.getSession.mockResolvedValue(directSession);
-    aggregateVolundr.getSession.mockResolvedValue(null);
-    primaryVolundr.listArchivedSessions.mockResolvedValue([]);
-    aggregateVolundr.listArchivedSessions.mockResolvedValue([]);
+    forgeVolundr.getSessions.mockResolvedValue([facadeSession]);
+    forgeVolundr.getActiveSessions = vi.fn().mockResolvedValue([facadeSession]);
+    forgeVolundr.getSession.mockResolvedValue(facadeSession);
+    forgeVolundr.listArchivedSessions.mockResolvedValue([]);
 
-    await expect((services.volundr as any).getSessions()).resolves.toEqual([
-      directSession,
-      aggregateSession,
-    ]);
-    await expect((services.volundr as any).getActiveSessions()).resolves.toEqual([
-      directSession,
-      aggregateSession,
-    ]);
-    await expect((services.volundr as any).getSession('session-direct')).resolves.toEqual(
-      directSession,
+    await expect((services.volundr as any).getSessions()).resolves.toEqual([facadeSession]);
+    await expect((services.volundr as any).getActiveSessions()).resolves.toEqual([facadeSession]);
+    await expect((services.volundr as any).getSession('session-facade')).resolves.toEqual(
+      facadeSession,
     );
   });
 
@@ -1049,7 +1042,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1151,8 +1144,8 @@ describe('buildServices', () => {
       kind: 'volundr',
       getSessions: vi.fn().mockResolvedValue([]),
       getSession: vi.fn().mockResolvedValue(null),
-      getTemplates: vi.fn().mockResolvedValue([liveTemplate]),
-      getTemplate: vi.fn().mockResolvedValue(liveTemplate),
+      getLaunchSpecs: vi.fn().mockResolvedValue([liveTemplate]),
+      getLaunchSpec: vi.fn().mockResolvedValue(liveTemplate),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
       deleteSession: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => () => {}),
@@ -1163,7 +1156,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
       },
     } as any);
 
@@ -1279,8 +1272,8 @@ describe('buildServices', () => {
           },
         ],
       }),
-      getTemplates: vi.fn().mockResolvedValue([]),
-      getTemplate: vi.fn().mockResolvedValue(null),
+      getLaunchSpecs: vi.fn().mockResolvedValue([]),
+      getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
       deleteSession: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => () => {}),
@@ -1291,7 +1284,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1336,8 +1329,8 @@ describe('buildServices', () => {
       getSessions: vi.fn().mockResolvedValue([]),
       getSession: vi.fn().mockResolvedValue(null),
       getClusterResources: vi.fn().mockResolvedValue({ resourceTypes: [], nodes: [] }),
-      getTemplates: vi.fn().mockResolvedValue([]),
-      getTemplate: vi.fn().mockResolvedValue(null),
+      getLaunchSpecs: vi.fn().mockResolvedValue([]),
+      getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
       deleteSession: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => () => {}),
@@ -1348,7 +1341,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1392,8 +1385,8 @@ describe('buildServices', () => {
       kind: 'volundr',
       getSessions: vi.fn().mockResolvedValue([]),
       getSession: vi.fn().mockResolvedValue(null),
-      getTemplates: vi.fn().mockResolvedValue([sparseTemplate, remoteTemplate]),
-      getTemplate: vi.fn().mockResolvedValue(null),
+      getLaunchSpecs: vi.fn().mockResolvedValue([sparseTemplate, remoteTemplate]),
+      getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
       deleteSession: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => () => {}),
@@ -1404,7 +1397,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
         mimir: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/mimir' },
       },
     } as any);
@@ -1521,8 +1514,8 @@ describe('buildServices', () => {
           ],
         })
         .mockRejectedValueOnce(new Error('cluster resources unavailable')),
-      getTemplates: vi.fn().mockResolvedValue([]),
-      getTemplate: vi.fn().mockResolvedValue(null),
+      getLaunchSpecs: vi.fn().mockResolvedValue([]),
+      getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
       deleteSession: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => () => {}),
@@ -1533,7 +1526,7 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
 
@@ -1652,25 +1645,13 @@ describe('buildServices', () => {
         return () => {};
       }),
     };
-    const aggregateVolundr = {
-      ...liveVolundr,
-      getSessions: vi.fn().mockResolvedValue([]),
-      getSession: vi.fn().mockResolvedValue(null),
-      listArchivedSessions: vi.fn().mockResolvedValue([]),
-      subscribe: vi.fn((callback: (sessions: typeof liveSessions) => void) => {
-        callback([]);
-        return () => {};
-      }),
-    };
-    volundrMocks.buildVolundrHttpAdapter
-      .mockReturnValueOnce(liveVolundr as any)
-      .mockReturnValueOnce(aggregateVolundr as any);
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValueOnce(liveVolundr as any);
 
     const services = buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
       },
     } as any);
     const sessionStore = services.sessionStore as any;
@@ -1726,8 +1707,8 @@ describe('buildServices', () => {
       theme: 'ice',
       plugins: {},
       services: {
-        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
-        'volundr.metrics': {
+        'forge.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
+        'forge.metrics': {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
         },
@@ -1777,32 +1758,6 @@ describe('buildServices', () => {
 
     expect(volundrMocks.buildVolundrPtyWsAdapter).toHaveBeenCalledWith({
       urlTemplate: 'ws://localhost:8080/s/{sessionId}/session',
-    });
-  });
-
-  it('prefers canonical Forge stream configs over the legacy Volundr stream keys', () => {
-    buildServices({
-      theme: 'ice',
-      plugins: {},
-      services: {
-        'forge.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
-        'forge.metrics': {
-          mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
-        },
-        'volundr.pty': { mode: 'ws', wsUrl: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}' },
-        'volundr.metrics': {
-          mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/forge/metrics',
-        },
-      },
-    } as any);
-
-    expect(volundrMocks.buildVolundrPtyWsAdapter).toHaveBeenCalledWith({
-      urlTemplate: 'ws://localhost:8080/api/v1/forge/pty/{sessionId}',
-    });
-    expect(volundrMocks.buildVolundrMetricsSseAdapter).toHaveBeenCalledWith({
-      urlTemplate: 'http://localhost:8080/api/v1/forge/metrics',
     });
   });
 

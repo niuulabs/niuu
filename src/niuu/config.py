@@ -156,6 +156,7 @@ class InstanceSeedConfig(BaseModel):
     enabled: bool = Field(default=True)
     is_default: bool = Field(default=False)
     config: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
 
 
 class InstanceCatalogEntryConfig(BaseModel):
@@ -222,6 +223,20 @@ class InstanceRegistryConfig(BaseModel):
 
     instances: list[InstanceSeedConfig] = Field(default_factory=list)
     catalog: list[InstanceCatalogEntryConfig] = Field(default_factory=_default_instance_catalog)
+
+
+def has_enabled_instance_kind(settings: Any, kind: InstanceKind) -> bool:
+    """Return whether settings configure an enabled runtime instance kind."""
+
+    registry = getattr(settings, "niuu", None)
+    for instance in getattr(registry, "instances", ()):
+        try:
+            instance_kind = InstanceKind(getattr(instance, "kind", ""))
+        except ValueError:
+            continue
+        if instance_kind == kind and getattr(instance, "enabled", True):
+            return True
+    return False
 
 
 def _env_csv_list(name: str, default: list[str]) -> list[str]:

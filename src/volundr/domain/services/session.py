@@ -37,6 +37,7 @@ from volundr.domain.ports import (
     CommunicationRouteRepository,
     EventBroadcaster,
     IntegrationRepository,
+    LaunchSpecProvider,
     PodManager,
     Resource,
     SessionCommunicationPort,
@@ -45,7 +46,6 @@ from volundr.domain.ports import (
     SessionContributor,
     SessionRepository,
     StoragePort,
-    TemplateProvider,
 )
 
 if TYPE_CHECKING:
@@ -117,7 +117,7 @@ class SessionService:
         git_registry: GitProviderRegistry | None = None,
         validate_repos: bool = True,
         broadcaster: EventBroadcaster | None = None,
-        template_provider: TemplateProvider | None = None,
+        launch_spec_provider: LaunchSpecProvider | None = None,
         authorization: AuthorizationPort | None = None,
         contributors: list[SessionContributor] | None = None,
         provisioning_timeout: float = 300.0,
@@ -134,7 +134,7 @@ class SessionService:
         self._git_registry = git_registry
         self._validate_repos = validate_repos
         self._broadcaster = broadcaster
-        self._template_provider = template_provider
+        self._launch_spec_provider = launch_spec_provider
         self._authorization = authorization
         self._contributors = contributors or []
         self._provisioning_timeout = provisioning_timeout
@@ -153,8 +153,8 @@ class SessionService:
         name: str,
         model: str,
         source: SessionSource | None = None,
-        template_name: str | None = None,
-        preset_id: UUID | None = None,
+        launch_spec: str | None = None,
+        launch_spec_id: UUID | None = None,
         principal: Principal | None = None,
         workspace_id: UUID | None = None,
         tracker_issue_id: str | None = None,
@@ -166,10 +166,10 @@ class SessionService:
             name: Session name.
             model: Model identifier.
             source: Workspace source (git or local_mount). Defaults to empty GitSource.
-            template_name: Optional workspace template name. When provided,
-                the template's repos/profile are used to fill in defaults
-                for source and model if not explicitly provided.
-            preset_id: Optional preset ID to associate with the session.
+            launch_spec: Optional system launch spec name. When provided, its
+                repos/model fill in defaults for source and model if not
+                explicitly provided.
+            launch_spec_id: Optional user launch spec id to associate with the session.
             principal: Authenticated identity. When provided, sets owner_id
                 and tenant_id on the session.
 
@@ -182,21 +182,21 @@ class SessionService:
         if source is None:
             source = GitSource()
 
-        # Resolve template defaults when a template is specified
-        if template_name and self._template_provider:
-            template = self._template_provider.get(template_name)
-            if template is not None:
-                logger.info("Applying workspace template: %s", _sanitize_log(template_name))
-                # Use first repo from template if caller didn't provide one
-                if isinstance(source, GitSource) and not source.repo and template.repos:
-                    first_repo = template.repos[0]
+        # Resolve launch-spec defaults when a launch spec is specified
+        if launch_spec and self._launch_spec_provider:
+            spec = self._launch_spec_provider.get(launch_spec)
+            if spec is not None:
+                logger.info("Applying launch spec: %s", _sanitize_log(launch_spec))
+                # Use first repo from the spec if caller didn't provide one
+                if isinstance(source, GitSource) and not source.repo and spec.repos:
+                    first_repo = spec.repos[0]
                     source = GitSource(
                         repo=first_repo.get("url", ""),
                         branch=first_repo.get("branch", source.branch or "main"),
                     )
-                # Use model from template directly (unified template)
-                if not model and template.model:
-                    model = template.model
+                # Use model from the spec directly
+                if not model and spec.model:
+                    model = spec.model
 
         repo = source.repo if isinstance(source, GitSource) else ""
 
@@ -225,7 +225,7 @@ class SessionService:
             name=name,
             model=model,
             source=source,
-            preset_id=preset_id,
+            launch_spec_id=launch_spec_id,
             owner_id=principal.user_id if principal else None,
             tenant_id=principal.tenant_id if principal else None,
             workspace_id=workspace_id,
@@ -603,8 +603,7 @@ class SessionService:
         self,
         session_id: UUID,
         definition: str | None = None,
-        profile_name: str | None = None,
-        template_name: str | None = None,
+        launch_spec: str | None = None,
         principal: Principal | None = None,
         terminal_restricted: bool = False,
         credential_names: list[str] | None = None,
@@ -655,8 +654,7 @@ class SessionService:
                 starting,
                 principal=principal,
                 definition=definition,
-                template_name=template_name,
-                profile_name=profile_name,
+                launch_spec=launch_spec,
                 terminal_restricted=terminal_restricted,
                 credential_names=credential_names,
                 integration_ids=integration_ids,
@@ -678,8 +676,7 @@ class SessionService:
         session: Session,
         principal: Principal | None = None,
         definition: str | None = None,
-        template_name: str | None = None,
-        profile_name: str | None = None,
+        launch_spec: str | None = None,
         terminal_restricted: bool = False,
         credential_names: list[str] | None = None,
         integration_ids: list[str] | None = None,
@@ -695,8 +692,7 @@ class SessionService:
                 session,
                 principal,
                 definition,
-                template_name,
-                profile_name,
+                launch_spec,
                 terminal_restricted,
                 credential_names=credential_names,
                 integration_ids=integration_ids,
@@ -738,8 +734,7 @@ class SessionService:
         session: Session,
         principal: Principal | None,
         definition: str | None,
-        template_name: str | None,
-        profile_name: str | None,
+        launch_spec: str | None,
         terminal_restricted: bool,
         credential_names: list[str] | None = None,
         integration_ids: list[str] | None = None,
@@ -769,8 +764,7 @@ class SessionService:
         context = SessionContext(
             principal=principal,
             definition=definition,
-            template_name=template_name,
-            profile_name=profile_name,
+            launch_spec=launch_spec,
             terminal_restricted=terminal_restricted,
             credential_names=tuple(credential_names or ()),
             integration_ids=tuple(c.id for c in resolved_connections),

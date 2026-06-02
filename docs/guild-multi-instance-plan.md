@@ -27,6 +27,14 @@ This keeps the import direction aligned with the project rules:
 - `ting -> niuu`
 - `ting !-> volundr`
 
+### Route ownership modes
+
+Guild owns the public Forge API facade whenever the system is running in an aggregate mode. That includes the `start-guild` proof environment and the normal `./start-dev` local platform host. In those modes, `/api/v1/forge` is a Guild route, and Guild is responsible for fan-out, target selection, visibility, and merged views across registered Volundr instances.
+
+`./start-dev` uses local embedded Forge mode. The Niuu composition root builds the Volundr ASGI app first, passes it into Guild, and Guild seeds a system `Local Forge` instance with `baseUrl: embedded://local-forge`, `config.transport: embedded`, and the `local` tag. Calls from the Guild facade to that target use `httpx.ASGITransport`, so they are in-process ASGI calls rather than network calls to `localhost`.
+
+Standalone Forge means Volundr runs without Guild as the front-door aggregator. In that mode, Volundr owns `/api/v1/forge` directly. This is the standalone `charts/volundr` shape, and the umbrella `charts/niuu` shape when `guild.enabled=false`; the umbrella ingress resolves its logical `forge-api` backend to Guild when Guild is enabled and to Volundr otherwise.
+
 ## Implemented Slice
 
 ### Instance registry

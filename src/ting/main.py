@@ -20,6 +20,7 @@ from niuu.domain.models import Principal
 from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.ports.integrations import IntegrationRepository
+from niuu.service_databases import apply_service_database_settings
 from niuu.service_instances import seed_configured_instances
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -377,7 +378,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application lifecycle."""
         settings = app.state.settings
-        async with database_pool(settings.database) as pool:
+        instance_settings = apply_service_database_settings(settings, "guild")
+        async with (
+            database_pool(settings.database) as pool,
+            database_pool(instance_settings.database) as instance_pool,
+        ):
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
@@ -393,9 +398,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 integration_repo = PostgresIntegrationRepository(pool)
                 logger.info("Integration repository: local postgres")
-            instance_repo = PostgresInstanceRepository(pool)
+            instance_repo = PostgresInstanceRepository(instance_pool)
             await instance_repo.ensure_schema()
             instance_service = InstanceService(instance_repo)
+            logger.info(
+                "Instance registry: guild postgres (%s)",
+                instance_settings.database.name,
+            )
 
             cs_cfg = settings.credential_store
             cs_cls = import_class(cs_cfg.adapter)

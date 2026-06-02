@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
+from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import build_remote_url
@@ -37,6 +38,7 @@ class InstanceResponse(BaseModel):
     enabled: bool
     is_default: bool = Field(serialization_alias="isDefault")
     config: dict[str, Any]
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(serialization_alias="createdAt")
     updated_at: datetime = Field(serialization_alias="updatedAt")
 
@@ -64,6 +66,7 @@ class InstanceCreateRequest(BaseModel):
         validation_alias="tenantId",
     )
     config: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
 
 
 class InstanceUpdateRequest(BaseModel):
@@ -92,6 +95,7 @@ class InstanceUpdateRequest(BaseModel):
         validation_alias="tenantId",
     )
     config: dict[str, Any] | None = None
+    tags: list[str] | None = None
 
 
 class InstanceTestResponse(BaseModel):
@@ -133,12 +137,44 @@ def _to_response(instance: RegisteredInstance) -> InstanceResponse:
         enabled=instance.enabled,
         is_default=instance.is_default,
         config=instance.config,
+        tags=instance.tags,
         created_at=instance.created_at,
         updated_at=instance.updated_at,
     )
 
 
-async def _probe_instance(instance: RegisteredInstance) -> InstanceTestResponse:
+def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
+    return str(instance.config.get("transport", "")).strip().lower() == "embedded"
+
+
+async def _probe_instance(
+    instance: RegisteredInstance,
+    *,
+    embedded_app: ASGIApp | None = None,
+) -> InstanceTestResponse:
+    if _uses_embedded_transport(instance):
+        if embedded_app is None:
+            return InstanceTestResponse(
+                ok=False,
+                status_code=502,
+                message="Embedded Forge target is not available in this process",
+            )
+        transport = httpx.ASGITransport(app=embedded_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://embedded.local",
+        ) as client:
+            response = await client.get("/health")
+        return InstanceTestResponse(
+            ok=response.status_code < 400,
+            status_code=response.status_code,
+            message=(
+                f"{instance.name} is reachable"
+                if response.status_code < 400
+                else f"Health probe failed for {instance.name}"
+            ),
+        )
+
     url = f"{instance.base_url}/health"
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -1315,7 +1351,29 @@ async def _load_remote_sessions(
     request: Request,
     *,
     status_filter: str | None = None,
+    embedded_app: ASGIApp | None = None,
 ) -> list[dict[str, Any]]:
+    if _uses_embedded_transport(instance):
+        if embedded_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Embedded Forge target is not available in this process",
+            )
+        params = {"status": status_filter} if status_filter else None
+        transport = httpx.ASGITransport(app=embedded_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://embedded.local",
+        ) as client:
+            response = await client.get(
+                "/api/v1/forge/sessions",
+                headers=_forward_headers(request),
+                params=params,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return payload if isinstance(payload, list) else []
+
     try:
         remote_url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions")
     except ValueError as exc:
@@ -1333,7 +1391,11 @@ async def _load_remote_sessions(
     return payload if isinstance(payload, list) else []
 
 
-def create_instances_router(service: InstanceService) -> APIRouter:
+def create_instances_router(
+    service: InstanceService,
+    *,
+    embedded_forge_app: ASGIApp | None = None,
+) -> APIRouter:
     """Create the shared instance registry router."""
     router = APIRouter(prefix="/api/v1/niuu", tags=["Shared"])
 
@@ -1385,6 +1447,7 @@ def create_instances_router(service: InstanceService) -> APIRouter:
                 config=body.config,
                 owner_id=body.owner_id,
                 tenant_id=body.tenant_id,
+                tags=body.tags,
             )
         except (InstanceAccessError, InstanceValidationError) as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -1409,6 +1472,7 @@ def create_instances_router(service: InstanceService) -> APIRouter:
                 config=body.config,
                 owner_id=body.owner_id,
                 tenant_id=body.tenant_id,
+                tags=body.tags,
             )
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -1434,7 +1498,7 @@ def create_instances_router(service: InstanceService) -> APIRouter:
         instance = await service.get_visible(principal, instance_id)
         if instance is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=instance_id)
-        return await _probe_instance(instance)
+        return await _probe_instance(instance, embedded_app=embedded_forge_app)
 
     @router.get("/instances/{instance_id}/sessions", response_model=list[InstanceSessionResponse])
     async def list_instance_sessions(
@@ -1451,6 +1515,7 @@ def create_instances_router(service: InstanceService) -> APIRouter:
                 instance,
                 request,
                 status_filter=session_status,
+                embedded_app=embedded_forge_app,
             )
         except Exception as exc:
             raise HTTPException(

@@ -1015,23 +1015,29 @@ class TestRepoService:
 # ---------------------------------------------------------------------------
 
 
-class InMemoryTemplateProvider:
-    """Simple in-memory TemplateProvider for testing."""
+class InMemoryLaunchSpecProvider:
+    """Simple in-memory LaunchSpecProvider for testing."""
 
-    def __init__(self, templates: list | None = None):
-        from volundr.domain.models import WorkspaceTemplate
+    def __init__(self, specs: list | None = None):
+        from volundr.domain.models import LaunchSpec
 
-        self._templates: dict[str, WorkspaceTemplate] = {}
-        for t in templates or []:
-            self._templates[t.name] = t
+        self._specs: dict[str, LaunchSpec] = {}
+        for s in specs or []:
+            self._specs[s.name] = s
 
     def get(self, name: str):
-        return self._templates.get(name)
+        return self._specs.get(name)
 
     def list(self, workload_type: str | None = None):
         if workload_type is None:
-            return list(self._templates.values())
-        return [t for t in self._templates.values() if t.workload_type == workload_type]
+            return list(self._specs.values())
+        return [s for s in self._specs.values() if s.workload_type == workload_type]
+
+    def get_default(self, workload_type: str):
+        for s in self._specs.values():
+            if s.workload_type == workload_type and s.is_default:
+                return s
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1046,20 +1052,20 @@ class TestSessionServiceCreateWithTemplate:
         self, repository: Repo, pod_manager: Pods
     ):
         """create_session with template_name resolves repo, branch, and model defaults."""
-        from volundr.domain.models import WorkspaceTemplate
+        from volundr.domain.models import LaunchSpec
 
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="fullstack",
             model="claude-opus-4-20250514",
             repos=[
                 {"url": "https://github.com/org/fullstack-app", "branch": "develop"},
             ],
         )
-        template_provider = InMemoryTemplateProvider([template])
+        launch_spec_provider = InMemoryLaunchSpecProvider([template])
         service = SessionService(
             repository,
             pod_manager,
-            template_provider=template_provider,
+            launch_spec_provider=launch_spec_provider,
         )
 
         # Pass empty strings for repo/model to simulate "no explicit value"
@@ -1067,7 +1073,7 @@ class TestSessionServiceCreateWithTemplate:
             name="my-session",
             model="",
             source=GitSource(repo="", branch="main"),
-            template_name="fullstack",
+            launch_spec="fullstack",
         )
 
         assert session.repo == "https://github.com/org/fullstack-app"
@@ -1078,20 +1084,20 @@ class TestSessionServiceCreateWithTemplate:
         self, repository: Repo, pod_manager: Pods
     ):
         """create_session with template_name but explicit values override template defaults."""
-        from volundr.domain.models import WorkspaceTemplate
+        from volundr.domain.models import LaunchSpec
 
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="fullstack",
             model="claude-opus-4-20250514",
             repos=[
                 {"url": "https://github.com/org/fullstack-app", "branch": "develop"},
             ],
         )
-        template_provider = InMemoryTemplateProvider([template])
+        launch_spec_provider = InMemoryLaunchSpecProvider([template])
         service = SessionService(
             repository,
             pod_manager,
-            template_provider=template_provider,
+            launch_spec_provider=launch_spec_provider,
         )
 
         # Caller provides explicit repo, branch, and model — they should win.
@@ -1099,7 +1105,7 @@ class TestSessionServiceCreateWithTemplate:
             name="my-session",
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/other/repo", branch="main"),
-            template_name="fullstack",
+            launch_spec="fullstack",
         )
 
         assert session.repo == "https://github.com/other/repo"

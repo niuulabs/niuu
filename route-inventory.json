@@ -37,12 +37,10 @@
   {
     "name": "catalog-api",
     "prefixes": [
-      "/api/v1/forge/templates",
-      "/api/v1/forge/presets",
-      "/api/v1/forge/profiles",
-      "/api/v1/forge/session-definitions",
-      "/api/v1/forge/resources",
-      "/api/v1/forge/prompts"
+      "/api/v1/volundr/launch-specs",
+      "/api/v1/volundr/session-definitions",
+      "/api/v1/volundr/resources",
+      "/api/v1/volundr/prompts"
     ],
     "source": "plugin",
     "plugin": "volundr"
@@ -85,31 +83,11 @@
     "prefixes": [
       "/api/v1/forge/sessions",
       "/api/v1/forge/chronicles",
-      "/api/v1/forge/events",
-      "/api/v1/forge/templates",
-      "/api/v1/forge/presets",
-      "/api/v1/forge/profiles",
-      "/api/v1/forge/session-definitions",
-      "/api/v1/forge/workspaces",
-      "/api/v1/forge/resources",
-      "/api/v1/forge/models",
       "/api/v1/forge/stats",
-      "/api/v1/forge/prompts",
-      "/api/v1/forge/cluster",
-      "/api/v1/forge/git"
+      "/api/v1/forge/cluster"
     ],
     "source": "plugin",
-    "plugin": "volundr"
-  },
-  {
-    "name": "git-api",
-    "prefixes": [
-      "/api/v1/forge/repos/branches",
-      "/api/v1/forge/repos/prs",
-      "/api/v1/forge/git"
-    ],
-    "source": "plugin",
-    "plugin": "volundr"
+    "plugin": "guild"
   },
   {
     "name": "identity-api",
@@ -274,11 +252,10 @@
     "name": "session-api",
     "prefixes": [
       "/api/v1/forge/sessions",
-      "/api/v1/forge/chronicles",
-      "/api/v1/forge/events"
+      "/api/v1/forge/chronicles"
     ],
     "source": "plugin",
-    "plugin": "volundr"
+    "plugin": "guild"
   },
   {
     "name": "settings-api",
@@ -371,13 +348,5 @@
     ],
     "source": "plugin",
     "plugin": "ting"
-  },
-  {
-    "name": "workspace-api",
-    "prefixes": [
-      "/api/v1/forge/workspaces"
-    ],
-    "source": "plugin",
-    "plugin": "volundr"
   }
 ]

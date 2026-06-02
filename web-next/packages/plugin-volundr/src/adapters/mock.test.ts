@@ -173,9 +173,9 @@ describe('createMockVolundrService', () => {
     expect(pr.status).toBe('open');
   });
 
-  it('savePreset generates an id when not provided', async () => {
+  it('saveLaunchSpec generates an id when not provided', async () => {
     const svc = createMockVolundrService();
-    const preset = await svc.savePreset({
+    const preset = await svc.saveLaunchSpec({
       name: 'fast',
       description: 'fast preset',
       isDefault: false,
@@ -619,14 +619,14 @@ describe('createMockVolundrService — full method sweep', () => {
     } as const;
 
     await svc.getRepos();
-    await svc.getTemplates();
-    await svc.getTemplate('t1');
-    await svc.saveTemplate(templateArg);
-    await svc.getPresets();
-    await svc.getPreset('p1');
-    // savePreset with id (different code path from existing test)
-    await svc.savePreset({ ...presetBase, id: 'existing-id' });
-    await svc.deletePreset('p1');
+    await svc.getLaunchSpecs();
+    await svc.getLaunchSpec('t1');
+    await svc.saveLaunchSpec(templateArg);
+    await svc.getLaunchSpecs('user');
+    await svc.getLaunchSpec('p1');
+    // saveLaunchSpec with id (different code path from existing test)
+    await svc.saveLaunchSpec({ ...presetBase, id: 'existing-id' });
+    await svc.deleteLaunchSpec('p1');
     await svc.getAvailableMcpServers();
     await svc.getAvailableSecrets();
     await svc.createSecret('sweep-secret', { key: 'val' });

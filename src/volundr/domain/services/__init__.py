@@ -10,12 +10,10 @@ from .chronicle import ChronicleNotFoundError, ChronicleService
 from .feature import FeatureModule, FeatureService, UserFeaturePreference
 from .forge import ForgeService
 from .git_workflow import ConfidenceScorer, GitWorkflowService
-from .preset import PresetDuplicateNameError, PresetNotFoundError, PresetService
-from .profile import (
-    ForgeProfileService,
-    ProfileNotFoundError,
-    ProfileReadOnlyError,
-    ProfileValidationError,
+from .launch_spec import (
+    LaunchSpecDuplicateNameError,
+    LaunchSpecNotFoundError,
+    LaunchSpecService,
 )
 from .prompt import PromptNotFoundError, PromptService
 from .repo import ProviderInfo, RepoService
@@ -36,11 +34,8 @@ from .workspace import WorkspaceService
 __all__ = [
     # Exceptions
     "ChronicleNotFoundError",
-    "PresetDuplicateNameError",
-    "PresetNotFoundError",
-    "ProfileNotFoundError",
-    "ProfileReadOnlyError",
-    "ProfileValidationError",
+    "LaunchSpecDuplicateNameError",
+    "LaunchSpecNotFoundError",
     "PromptNotFoundError",
     "RepoValidationError",
     "SessionAccessDeniedError",
@@ -56,8 +51,7 @@ __all__ = [
     "ForgeService",
     "ChronicleService",
     "ConfidenceScorer",
-    "ForgeProfileService",
-    "PresetService",
+    "LaunchSpecService",
     "GitWorkflowService",
     "PromptService",
     "RepoService",

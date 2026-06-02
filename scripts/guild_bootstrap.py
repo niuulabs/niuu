@@ -80,6 +80,35 @@ def _integration_payload(api_key: str, team_id: str) -> dict[str, Any]:
     }
 
 
+def _ensure_linear_credential(
+    client: httpx.Client,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    api_key: str,
+) -> None:
+    existing_response = client.get(
+        f"{base_url}/api/v1/credentials/user/linear-config",
+        headers=headers,
+    )
+    if existing_response.status_code == 200:
+        return
+    if existing_response.status_code != 404:
+        existing_response.raise_for_status()
+
+    create_response = client.post(
+        f"{base_url}/api/v1/credentials/user",
+        headers=headers,
+        json={
+            "name": "linear-config",
+            "secret_type": "api_key",
+            "data": {"api_key": api_key},
+            "metadata": {"source": "guild-bootstrap", "integration": "linear"},
+        },
+    )
+    create_response.raise_for_status()
+
+
 def seed_dev_integrations(
     *,
     base_url: str,
@@ -99,8 +128,14 @@ def seed_dev_integrations(
     with httpx.Client(timeout=20.0) as client:
         for user_id, tenant_id in users:
             headers = _headers(user_id, tenant_id)
+            _ensure_linear_credential(
+                client,
+                base_url=base_url,
+                headers=headers,
+                api_key=api_key,
+            )
             list_response = client.get(
-                f"{base_url}/api/v1/ting/integrations",
+                f"{base_url}/api/v1/integrations",
                 headers=headers,
             )
             list_response.raise_for_status()
@@ -112,7 +147,7 @@ def seed_dev_integrations(
             ):
                 continue
             create_response = client.post(
-                f"{base_url}/api/v1/ting/integrations",
+                f"{base_url}/api/v1/integrations",
                 headers=headers,
                 json=payload,
             )

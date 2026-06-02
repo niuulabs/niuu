@@ -19,12 +19,11 @@ from volundr.adapters.outbound.contributors.ravn_flock import (
     _string_list,
 )
 from volundr.domain.models import (
-    ForgeProfile,
     GitSource,
+    LaunchSpec,
     Session,
     SessionSpec,
     WorkloadPersonaOverride,
-    WorkspaceTemplate,
 )
 from volundr.domain.ports import SessionContext
 
@@ -63,7 +62,7 @@ def session():
 
 @pytest.fixture
 def flock_template():
-    return WorkspaceTemplate(
+    return LaunchSpec(
         name="ravn-flock",
         workload_type="ravn_flock",
         workload_config={
@@ -82,7 +81,7 @@ def flock_template():
 
 @pytest.fixture
 def flock_profile():
-    return ForgeProfile(
+    return LaunchSpec(
         name="ravn-flock",
         workload_type="ravn_flock",
         workload_config={
@@ -96,7 +95,7 @@ def flock_profile():
 
 @pytest.fixture
 def session_template():
-    return WorkspaceTemplate(
+    return LaunchSpec(
         name="default",
         workload_type="session",
         workload_config={},
@@ -172,8 +171,8 @@ class TestWorkloadTypeRouting:
     async def test_session_workload_type_returns_empty(self, session, session_template):
         provider = MagicMock()
         provider.get.return_value = session_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="default")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="default")
         result = await c.contribute(session, ctx)
         assert result.values == {}
         assert result.pod_spec is None
@@ -181,8 +180,8 @@ class TestWorkloadTypeRouting:
     async def test_ravn_flock_workload_type_contributes(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
         assert result.values != {} or result.pod_spec is not None
 
@@ -193,15 +192,15 @@ class TestWorkloadTypeRouting:
         assert result.pod_spec is None
 
     async def test_no_personas_returns_empty(self, session):
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="no-personas",
             workload_type="ravn_flock",
             workload_config={"personas": []},
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="no-personas")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="no-personas")
         result = await c.contribute(session, ctx)
         assert result.values == {}
         assert result.pod_spec is None
@@ -216,8 +215,8 @@ class TestContributorOutput:
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         assert result.pod_spec is not None
@@ -226,8 +225,8 @@ class TestContributorOutput:
     async def test_ravn_container_names(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         names = [ctr["name"] for ctr in result.pod_spec.extra_containers]
@@ -237,8 +236,8 @@ class TestContributorOutput:
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
@@ -248,7 +247,7 @@ class TestContributorOutput:
         assert "MESH_REP_ADDRESS" in env_names
 
     async def test_skuld_workflow_trigger_env_present_when_graph_has_trigger(self, session):
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="workflow-flock",
             workload_type="ravn_flock",
             workload_config={
@@ -275,8 +274,8 @@ class TestContributorOutput:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(template_provider=provider)
-        result = await c.contribute(session, SessionContext(template_name="workflow-flock"))
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="workflow-flock"))
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
@@ -290,7 +289,7 @@ class TestContributorOutput:
     async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(
         self, session
     ):
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="plain-flock",
             workload_type="ravn_flock",
             workload_config={
@@ -300,8 +299,8 @@ class TestContributorOutput:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(template_provider=provider)
-        result = await c.contribute(session, SessionContext(template_name="plain-flock"))
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="plain-flock"))
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
@@ -312,8 +311,8 @@ class TestContributorOutput:
     async def test_mimir_volume_not_added_without_explicit_local(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         volume_names = [v["name"] for v in result.pod_spec.volumes]
@@ -324,8 +323,8 @@ class TestContributorOutput:
     ):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         ravn_ctr = result.pod_spec.extra_containers[0]
@@ -335,8 +334,8 @@ class TestContributorOutput:
     async def test_ravn_container_has_workspace_mount(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         ravn_ctr = result.pod_spec.extra_containers[0]
@@ -346,8 +345,8 @@ class TestContributorOutput:
     async def test_ravn_container_workspace_readonly(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         ravn_ctr = result.pod_spec.extra_containers[0]
@@ -357,8 +356,8 @@ class TestContributorOutput:
     async def test_sleipnir_publish_urls_in_skuld_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
@@ -368,8 +367,8 @@ class TestContributorOutput:
     async def test_sleipnir_publish_urls_in_ravn_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -379,8 +378,8 @@ class TestContributorOutput:
     async def test_mimir_hosted_url_in_values(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         assert (
@@ -389,7 +388,7 @@ class TestContributorOutput:
 
     async def test_richer_mimir_workload_is_preserved_in_values(self, session):
         provider = MagicMock()
-        provider.get.return_value = WorkspaceTemplate(
+        provider.get.return_value = LaunchSpec(
             name="registry-values",
             workload_type="ravn_flock",
             workload_config={
@@ -401,8 +400,8 @@ class TestContributorOutput:
                 },
             },
         )
-        c = RavnFlockContributor(template_provider=provider)
-        result = await c.contribute(session, SessionContext(template_name="registry-values"))
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="registry-values"))
 
         assert result.values["mimir"]["registryRefs"] == [
             {"registry_entry_id": "shared", "mount_name": "shared"}
@@ -415,8 +414,8 @@ class TestContributorOutput:
     async def test_mesh_values_present(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         assert result.values.get("mesh", {}).get("enabled") is True
@@ -425,7 +424,7 @@ class TestContributorOutput:
     async def test_flock_values_preserve_llm_and_persona_overrides(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
+        c = RavnFlockContributor(launch_spec_provider=provider)
         ctx = SessionContext(
             workload_type="ravn_flock",
             workload_config={
@@ -462,8 +461,8 @@ class TestMountedConfig:
         """RAVN_CONFIG_INLINE must not appear in any container env."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -474,8 +473,8 @@ class TestMountedConfig:
         """Each sidecar has RAVN_CONFIG=/etc/ravn/config.yaml."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -486,8 +485,8 @@ class TestMountedConfig:
         """Each persona gets its own config emptyDir volume."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         vol_names = [v["name"] for v in result.pod_spec.volumes]
@@ -498,8 +497,8 @@ class TestMountedConfig:
         """Each persona gets an init container that writes its config."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         ic_names = [ic["name"] for ic in result.pod_spec.init_containers]
@@ -510,8 +509,8 @@ class TestMountedConfig:
         """Init container mounts the matching config volume."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ic in result.pod_spec.init_containers:
@@ -524,8 +523,8 @@ class TestMountedConfig:
         """Sidecar mounts the config volume read-only at /etc/ravn."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -544,8 +543,8 @@ class TestConfigGeneration:
     async def test_mounted_config_has_persona(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -560,8 +559,8 @@ class TestConfigGeneration:
     async def test_mounted_config_has_mesh_section(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -572,8 +571,8 @@ class TestConfigGeneration:
     async def test_mounted_config_has_mimir_instances(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -585,8 +584,8 @@ class TestConfigGeneration:
     async def test_mounted_config_has_write_routing(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -597,8 +596,8 @@ class TestConfigGeneration:
     async def test_mounted_config_hosted_url_in_instances(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -611,8 +610,8 @@ class TestConfigGeneration:
         """When no Mimir resources are configured, no runtime instances are injected."""
         provider = MagicMock()
         provider.get.return_value = flock_profile
-        c = RavnFlockContributor(profile_provider=provider)
-        ctx = SessionContext(profile_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -622,7 +621,7 @@ class TestConfigGeneration:
             assert "entity/" not in cfg
 
     async def test_mounted_config_resolves_registry_refs_and_ephemeral_locals(self, session):
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="registry-flock",
             workload_type="ravn_flock",
             workload_config={
@@ -660,8 +659,8 @@ class TestConfigGeneration:
         )
         provider = MagicMock()
         provider.get.return_value = template
-        c = RavnFlockContributor(template_provider=provider)
-        result = await c.contribute(session, SessionContext(template_name="registry-flock"))
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="registry-flock"))
 
         cfg = _extract_mounted_config(result.pod_spec, "coordinator")
         assert "shared-team-mimir" in cfg
@@ -678,8 +677,8 @@ class TestConfigGeneration:
     async def test_mounted_config_sleipnir_webhook(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -697,8 +696,8 @@ class TestNngPortAllocation:
     async def test_ravn_containers_have_nng_ports(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
@@ -709,8 +708,8 @@ class TestNngPortAllocation:
     async def test_skuld_and_ravn_ports_do_not_collide(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         all_ports: list[int] = []
@@ -740,9 +739,9 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = flock_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(template_provider=template_provider)
+        flock = RavnFlockContributor(launch_spec_provider=template_provider)
 
-        ctx = SessionContext(template_name="ravn-flock")
+        ctx = SessionContext(launch_spec="ravn-flock")
         contributions = [
             await core.contribute(session, ctx),
             await flock.contribute(session, ctx),
@@ -773,9 +772,9 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = flock_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(template_provider=template_provider)
+        flock = RavnFlockContributor(launch_spec_provider=template_provider)
 
-        ctx = SessionContext(template_name="ravn-flock")
+        ctx = SessionContext(launch_spec="ravn-flock")
         contributions = [
             await core.contribute(session, ctx),
             await flock.contribute(session, ctx),
@@ -791,9 +790,9 @@ class TestContributorPipelineMerge:
         template_provider.get.return_value = session_template
 
         core = CoreSessionContributor(base_domain="example.com")
-        flock = RavnFlockContributor(template_provider=template_provider)
+        flock = RavnFlockContributor(launch_spec_provider=template_provider)
 
-        ctx = SessionContext(template_name="default")
+        ctx = SessionContext(launch_spec="default")
         contributions = [
             await core.contribute(session, ctx),
             await flock.contribute(session, ctx),
@@ -812,8 +811,8 @@ class TestProfileProviderPath:
     async def test_profile_provider_resolves_flock(self, session, flock_profile):
         profile_provider = MagicMock()
         profile_provider.get.return_value = flock_profile
-        c = RavnFlockContributor(profile_provider=profile_provider)
-        ctx = SessionContext(profile_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=profile_provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         assert result.pod_spec is not None
@@ -823,8 +822,8 @@ class TestProfileProviderPath:
         profile_provider = MagicMock()
         profile_provider.get.return_value = None
         profile_provider.get_default.return_value = flock_profile
-        c = RavnFlockContributor(profile_provider=profile_provider)
-        ctx = SessionContext(profile_name="nonexistent")
+        c = RavnFlockContributor(launch_spec_provider=profile_provider)
+        ctx = SessionContext(launch_spec="nonexistent")
         result = await c.contribute(session, ctx)
 
         assert result.pod_spec is not None
@@ -838,11 +837,8 @@ class TestProfileProviderPath:
         profile_provider = MagicMock()
         profile_provider.get.return_value = MagicMock(workload_type="ravn_flock")
 
-        c = RavnFlockContributor(
-            template_provider=template_provider,
-            profile_provider=profile_provider,
-        )
-        ctx = SessionContext(template_name="default", profile_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=template_provider)
+        ctx = SessionContext(launch_spec="default")
         result = await c.contribute(session, ctx)
 
         # Template has workload_type='session' — should no-op
@@ -858,8 +854,7 @@ class TestProfileProviderPath:
 class TestExtraKwargs:
     def test_extra_kwargs_ignored(self):
         c = RavnFlockContributor(
-            template_provider=None,
-            profile_provider=None,
+            launch_spec_provider=None,
             storage=None,
             gateway=None,
             unknown_kwarg="ignored",
@@ -887,7 +882,7 @@ _LLM_CONFIG = {
 
 @pytest.fixture
 def flock_template_with_llm():
-    return WorkspaceTemplate(
+    return LaunchSpec(
         name="ravn-flock-llm",
         workload_type="ravn_flock",
         workload_config={
@@ -904,8 +899,8 @@ class TestLLMConfigPassthrough:
     async def test_llm_block_in_ravn_config_when_provided(self, session, flock_template_with_llm):
         provider = MagicMock()
         provider.get.return_value = flock_template_with_llm
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock-llm")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock-llm")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):
@@ -918,8 +913,8 @@ class TestLLMConfigPassthrough:
         """flock_template has no llm_config — no llm: block emitted."""
         provider = MagicMock()
         provider.get.return_value = flock_template
-        c = RavnFlockContributor(template_provider=provider)
-        ctx = SessionContext(template_name="ravn-flock")
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
         for persona in ("coordinator", "reviewer"):

@@ -34,6 +34,7 @@ async def seed_configured_instances(
             enabled=getattr(item, "enabled", True),
             is_default=getattr(item, "is_default", False),
             config=getattr(item, "config", {}) or {},
+            tags=getattr(item, "tags", []) or [],
         )
         seeded += 1
     return seeded

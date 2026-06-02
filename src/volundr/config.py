@@ -372,12 +372,18 @@ def merge_session_definitions(
     return merged
 
 
-class ProfileConfig(BaseModel):
-    """Configuration for a single forge profile."""
+class LaunchSpecConfig(BaseModel):
+    """Configuration for a single system-scope launch spec.
+
+    The unified blueprint replacing ProfileConfig + TemplateConfig.
+    """
 
     name: str
     description: str = ""
+    is_default: bool = False
+    session_definition: str | None = None
     workload_type: str = "session"
+    # Runtime config
     model: str | None = None
     system_prompt: str | None = None
     resource_config: dict[str, Any] = Field(default_factory=dict)
@@ -385,32 +391,11 @@ class ProfileConfig(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     env_secret_refs: list[str] = Field(default_factory=list)
     workload_config: dict[str, Any] = Field(default_factory=dict)
-    is_default: bool = False
-    session_definition: str | None = None
-
-
-class TemplateConfig(BaseModel):
-    """Configuration for a single workspace template (unified blueprint)."""
-
-    name: str
-    description: str = ""
-    # Workspace config
+    # Workspace
     repos: list[dict[str, Any]] = Field(default_factory=list)
     setup_scripts: list[str] = Field(default_factory=list)
     workspace_layout: dict[str, Any] = Field(default_factory=dict)
-    is_default: bool = False
-    # Runtime config (merged from ProfileConfig)
-    workload_type: str = "session"
-    model: str | None = None
-    system_prompt: str | None = None
-    resource_config: dict[str, Any] = Field(default_factory=dict)
-    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
-    env_vars: dict[str, str] = Field(default_factory=dict)
-    env_secret_refs: list[str] = Field(default_factory=list)
-    workload_config: dict[str, Any] = Field(default_factory=dict)
-    session_definition: str | None = None
-    # Deprecated: kept for backward compatibility during migration
-    profile_name: str | None = None
+    cli_tool: str = ""
 
 
 class ChronicleConfig(BaseModel):
@@ -725,7 +710,7 @@ class SessionContributorConfig(BaseModel):
         session_contributors:
           - adapter: "volundr.adapters.outbound.contributors.CoreSessionContributor"
             base_domain: "volundr.local"
-          - adapter: "volundr.adapters.outbound.contributors.TemplateContributor"
+          - adapter: "volundr.adapters.outbound.contributors.LaunchSpecContributor"
     """
 
     adapter: str
@@ -1416,8 +1401,10 @@ class Settings(BaseSettings):
         default="skuldClaude",
         description="Fallback definition key when no explicit definition is specified.",
     )
-    profiles: list[ProfileConfig] = Field(default_factory=list)
-    templates: list[TemplateConfig] = Field(default_factory=list)
+    launch_specs: list[LaunchSpecConfig] = Field(
+        default_factory=list,
+        description="System-scope launch specs (unified profiles + templates).",
+    )
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
     features: list[FeatureModuleConfig] = Field(
         default_factory=_default_feature_modules,

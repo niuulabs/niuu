@@ -89,7 +89,6 @@ dev = [
 [project.scripts]
 niuu = "niuu.__main__:main"
 guild = "guild.main:main"
-volundr = "volundr.main:main"
 audit = "audit.main:main"
 identity = "identity.main:main"
 features = "features.main:main"

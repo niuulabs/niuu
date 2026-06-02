@@ -25,11 +25,11 @@ async def client(app):
 
 
 class TestResourceDiscoveryEndpoint:
-    """Tests for GET /api/v1/forge/resources."""
+    """Tests for GET /api/v1/volundr/resources."""
 
     @pytest.mark.asyncio
     async def test_returns_resource_types(self, client):
-        response = await client.get("/api/v1/forge/resources")
+        response = await client.get("/api/v1/volundr/resources")
         assert response.status_code == 200
         data = response.json()
         assert "resource_types" in data
@@ -43,7 +43,7 @@ class TestResourceDiscoveryEndpoint:
 
     @pytest.mark.asyncio
     async def test_resource_type_structure(self, client):
-        response = await client.get("/api/v1/forge/resources")
+        response = await client.get("/api/v1/volundr/resources")
         data = response.json()
         cpu_type = next(t for t in data["resource_types"] if t["name"] == "cpu")
         assert cpu_type["resource_key"] == "cpu"
@@ -53,6 +53,6 @@ class TestResourceDiscoveryEndpoint:
 
     @pytest.mark.asyncio
     async def test_static_provider_returns_no_nodes(self, client):
-        response = await client.get("/api/v1/forge/resources")
+        response = await client.get("/api/v1/volundr/resources")
         data = response.json()
         assert data["nodes"] == []

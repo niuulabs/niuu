@@ -165,6 +165,14 @@ The local Niuu stack serves at `http://localhost:8080`. Interactive API docs are
 
 If you want to run pieces manually instead of the dev stack, you can still start the individual services directly from their config files, but `./start-dev` and `./stop-dev` are the normal way to bring the platform up locally.
 
+### Local and Deployment Modes
+
+`./start-dev` runs the full local platform host in one process. In this local embedded Forge mode, Guild owns the public `/api/v1/forge` route and registers a system `Local Forge` instance backed by the in-process Volundr app. Guild dispatches to that local target through `httpx.ASGITransport`, so requests keep normal HTTP semantics but do not cross the network or call `localhost`.
+
+Standalone Forge means the Volundr service is running without Guild as the front-door aggregator. In that shape, the Volundr app itself serves `/api/v1/forge`; this is what the standalone `charts/volundr` deployment does. In the umbrella `charts/niuu` deployment, the logical `forge-api` ingress backend resolves to Guild when `guild.enabled=true`, and to Volundr when `guild.enabled=false`.
+
+The route ownership rule is: Guild owns `/api/v1/forge` in aggregate or local embedded mode; Volundr owns `/api/v1/forge` only when it is the standalone Forge service.
+
 ## Configuration
 
 Each service loads config from YAML with environment variable overrides using `__` for nesting:

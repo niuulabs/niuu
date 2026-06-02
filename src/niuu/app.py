@@ -120,6 +120,12 @@ def _plugin_api_base_url(host: str, port: int) -> str:
 
 def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
     """Create a plugin API app, passing root context to opt-in plugins only."""
+    context: dict[str, Any] = {"base_url": base_url}
+    return _create_plugin_api_app_with_context(plugin, **context)
+
+
+def _create_plugin_api_app_with_context(plugin: Service, **context: Any) -> Any:
+    """Create a plugin API app, passing only context keys its factory accepts."""
     factory = plugin.create_api_app
     try:
         signature = inspect.signature(factory)
@@ -130,13 +136,16 @@ def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in signature.parameters.values()
     )
-    if accepts_kwargs or "base_url" in signature.parameters:
-        return factory(base_url=base_url)
-    return factory()
+    if accepts_kwargs:
+        return factory(**context)
+    accepted_context = {
+        key: value for key, value in context.items() if key in signature.parameters
+    }
+    return factory(**accepted_context)
 
 
 _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
-    "volundr": ["/api/v1/forge"],
+    "volundr": ["/api/v1/volundr"],
     "audit": ["/api/v1/audit"],
     "identity": ["/api/v1/identity"],
     "features": ["/api/v1/features"],
@@ -154,10 +163,8 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "bifrost-observability-api": "bifrost",
     "credentials-api": "credentials",
     "features-api": "features",
-    "forge-api": "volundr",
+    "forge-api": "guild",
     "guild-instances-api": "guild",
-    "guild-volundr-api": "guild",
-    "git-api": "volundr",
     "identity-api": "identity",
     "integrations-api": "integrations",
     "mimir-api": "mimir",
@@ -179,7 +186,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "dispatch-api": "ting",
     "event-api": "ting",
     "review-api": "ting",
-    "session-api": "volundr",
+    "session-api": "guild",
     "saga-api": "ting",
     "settings-api": "ting",
     "tenancy-api": "identity",
@@ -188,7 +195,6 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "tokens-api": "identity",
     "ting-channel-api": "ting",
     "workflow-api": "ting",
-    "workspace-api": "volundr",
     "ting-api": "ting",
 }
 _LEGACY_PLUGIN_DOMAIN_NAMES: dict[str, str] = {
@@ -376,6 +382,8 @@ def collect_route_inventory(
                 )
             )
             continue
+        if domain_name in _PLUGIN_ROUTE_DOMAINS:
+            continue
         inventory.append(
             MountedRouteDomain(
                 name=domain_name,
@@ -525,7 +533,14 @@ def build_root_app(
 
     sub_apps: list[tuple[str, FastAPI]] = []
     shared_api_apps: dict[str, FastAPI] = {}
-    for name, plugin in sorted(registry.plugins.items()):
+    embedded_forge_app: ASGIApp | None = None
+    plugin_order = sorted(
+        registry.plugins.items(),
+        # Build Volundr before Guild so Guild can use it as an embedded local
+        # target in single-process/local mode.
+        key=lambda item: (item[0] == "guild", item[0]),
+    )
+    for name, plugin in plugin_order:
         if name not in requested_plugins:
             continue
         try:
@@ -533,11 +548,17 @@ def build_root_app(
             if shared_key and shared_key in shared_api_apps:
                 sub_app = shared_api_apps[shared_key]
             else:
-                sub_app = _create_plugin_api_app(plugin, base_url=plugin_api_base_url)
+                sub_app = _create_plugin_api_app_with_context(
+                    plugin,
+                    base_url=plugin_api_base_url,
+                    embedded_forge_app=embedded_forge_app,
+                )
                 if shared_key and sub_app is not None:
                     shared_api_apps[shared_key] = sub_app
             if sub_app is None:
                 continue
+            if name == "volundr":
+                embedded_forge_app = sub_app
             sub_apps.append((name, sub_app))
         except Exception:
             logger.exception("Failed to create API app for plugin: %s", name)

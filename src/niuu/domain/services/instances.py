@@ -12,6 +12,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.tags import matches_tags
 from niuu.ports.instances import InstanceRepository
 
 
@@ -39,12 +40,16 @@ class InstanceService:
         *,
         kind: InstanceKind | None = None,
         enabled_only: bool = False,
+        tags: list[str] | None = None,
+        match: str = "all",
     ) -> list[RegisteredInstance]:
         instances = await self._repository.list_instances(kind)
         visible = [
             instance
             for instance in instances
-            if self._is_visible_to(instance, principal) and (instance.enabled or not enabled_only)
+            if self._is_visible_to(instance, principal)
+            and (instance.enabled or not enabled_only)
+            and matches_tags(instance.tags, tags, match)
         ]
         return sorted(
             visible,
@@ -79,6 +84,7 @@ class InstanceService:
         config: dict | None = None,
         owner_id: str | None = None,
         tenant_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> RegisteredInstance:
         owner_id, tenant_id = self._normalize_scope(
             principal,
@@ -102,6 +108,7 @@ class InstanceService:
                 config=dict(config or {}),
                 created_at=now,
                 updated_at=now,
+                tags=list(tags or []),
             )
         )
 
@@ -119,6 +126,7 @@ class InstanceService:
         config: dict | None = None,
         owner_id: str | None = None,
         tenant_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> RegisteredInstance:
         existing = await self._repository.get_instance(instance_id)
         if existing is None:
@@ -142,6 +150,7 @@ class InstanceService:
             enabled=enabled if enabled is not None else existing.enabled,
             is_default=is_default if is_default is not None else existing.is_default,
             config=dict(config) if config is not None else existing.config,
+            tags=list(tags) if tags is not None else existing.tags,
             updated_at=datetime.now(UTC),
         )
         return await self._repository.save_instance(updated)
@@ -166,6 +175,7 @@ class InstanceService:
         owner_id: str | None = None,
         tenant_id: str | None = None,
         config: dict | None = None,
+        tags: list[str] | None = None,
         instance_id: str | None = None,
     ) -> RegisteredInstance:
         slug = slug.strip()
@@ -179,6 +189,7 @@ class InstanceService:
                 enabled=enabled,
                 is_default=is_default,
                 config=dict(config or {}),
+                tags=list(tags) if tags is not None else existing.tags,
                 updated_at=datetime.now(UTC),
             )
             return await self._repository.save_instance(seeded)
@@ -199,6 +210,7 @@ class InstanceService:
                 config=dict(config or {}),
                 created_at=now,
                 updated_at=now,
+                tags=list(tags or []),
             )
         )
 

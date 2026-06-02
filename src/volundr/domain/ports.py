@@ -27,13 +27,12 @@ from volundr.domain.models import (
     ClusterResourceInfo,
     CommunicationRoute,
     CredentialMapping,
-    ForgeProfile,
     IntegrationConnection,
+    LaunchSpec,
     MCPServerConfig,
     Model,
     ModelProvider,
     PodSpecAdditions,
-    Preset,
     Principal,
     ProjectMapping,
     PromptScope,
@@ -63,7 +62,6 @@ from volundr.domain.models import (
     User,
     Workspace,
     WorkspaceStatus,
-    WorkspaceTemplate,
 )
 
 __all__ = [
@@ -362,56 +360,56 @@ class EventBroadcaster(ABC):
         """
 
 
-class ProfileProvider(ABC):
-    """Port for reading forge profiles from configuration.
-
-    Profiles are configuration-driven (YAML, CRDs) rather than
-    stored in a database. This port is read-only.
-    """
+class LaunchSpecProvider(ABC):
+    """Read port for system-scope launch specs (config-seeded, read-only)."""
 
     @abstractmethod
-    def get(self, name: str) -> ForgeProfile | None:
-        """Retrieve a profile by name. Returns None if not found."""
+    def get(self, name: str) -> LaunchSpec | None:
+        """Retrieve a system launch spec by name. Returns None if not found."""
 
     @abstractmethod
-    def list(self, workload_type: str | None = None) -> list[ForgeProfile]:
-        """Retrieve profiles, optionally filtered by workload type."""
+    def list(self, workload_type: str | None = None) -> list[LaunchSpec]:
+        """Retrieve system launch specs, optionally filtered by workload type."""
 
     @abstractmethod
-    def get_default(self, workload_type: str) -> ForgeProfile | None:
-        """Retrieve the default profile for a workload type."""
+    def get_default(self, workload_type: str) -> LaunchSpec | None:
+        """Retrieve the default system launch spec for a workload type."""
 
 
-class MutableProfileProvider(ProfileProvider):
-    """Extended profile provider that supports write operations."""
-
-    @abstractmethod
-    async def create(self, profile: ForgeProfile) -> ForgeProfile:
-        """Create a new profile. Raises ValueError if name already exists."""
+class LaunchSpecRepository(ABC):
+    """Persistence port for user-scope launch specs (DB-stored, CRUD)."""
 
     @abstractmethod
-    async def update(self, name: str, profile: ForgeProfile) -> ForgeProfile:
-        """Update an existing profile. Raises ValueError if not found."""
+    async def create(self, spec: LaunchSpec) -> LaunchSpec:
+        """Persist a new user launch spec."""
 
     @abstractmethod
-    async def delete(self, name: str) -> bool:
-        """Delete a profile by name. Returns True if deleted."""
-
-
-class TemplateProvider(ABC):
-    """Port for reading workspace templates from configuration.
-
-    Templates are configuration-driven (YAML, CRDs) rather than
-    stored in a database. This port is read-only.
-    """
+    async def get(self, spec_id: UUID) -> LaunchSpec | None:
+        """Retrieve a user launch spec by id. Returns None if not found."""
 
     @abstractmethod
-    def get(self, name: str) -> WorkspaceTemplate | None:
-        """Retrieve a template by name. Returns None if not found."""
+    async def get_by_name(self, name: str) -> LaunchSpec | None:
+        """Retrieve a user launch spec by name. Returns None if not found."""
 
     @abstractmethod
-    def list(self, workload_type: str | None = None) -> list[WorkspaceTemplate]:
-        """Retrieve templates, optionally filtered by workload type."""
+    async def list(
+        self,
+        cli_tool: str | None = None,
+        is_default: bool | None = None,
+    ) -> list[LaunchSpec]:
+        """List user launch specs with optional filters."""
+
+    @abstractmethod
+    async def update(self, spec: LaunchSpec) -> LaunchSpec:
+        """Update an existing user launch spec."""
+
+    @abstractmethod
+    async def delete(self, spec_id: UUID) -> bool:
+        """Delete a user launch spec. Returns True if deleted."""
+
+    @abstractmethod
+    async def clear_default(self, cli_tool: str) -> None:
+        """Clear is_default for all user launch specs with the given cli_tool."""
 
 
 class EventSink(ABC):
@@ -541,42 +539,6 @@ class SavedPromptRepository(ABC):
     @abstractmethod
     async def search(self, query: str) -> list[SavedPrompt]:
         """Search prompts by name and content (case-insensitive)."""
-
-
-class PresetRepository(ABC):
-    """Port for preset persistence operations."""
-
-    @abstractmethod
-    async def create(self, preset: Preset) -> Preset:
-        """Persist a new preset."""
-
-    @abstractmethod
-    async def get(self, preset_id: UUID) -> Preset | None:
-        """Retrieve a preset by ID. Returns None if not found."""
-
-    @abstractmethod
-    async def get_by_name(self, name: str) -> Preset | None:
-        """Retrieve a preset by name. Returns None if not found."""
-
-    @abstractmethod
-    async def list(
-        self,
-        cli_tool: str | None = None,
-        is_default: bool | None = None,
-    ) -> list[Preset]:
-        """List presets with optional filters."""
-
-    @abstractmethod
-    async def update(self, preset: Preset) -> Preset:
-        """Update an existing preset."""
-
-    @abstractmethod
-    async def delete(self, preset_id: UUID) -> bool:
-        """Delete a preset. Returns True if deleted."""
-
-    @abstractmethod
-    async def clear_default(self, cli_tool: str) -> None:
-        """Clear the is_default flag for all presets with the given cli_tool."""
 
 
 class MCPServerProvider(ABC):
@@ -1247,8 +1209,7 @@ class SessionContext:
 
     principal: Principal | None = None
     definition: str | None = None
-    template_name: str | None = None
-    profile_name: str | None = None
+    launch_spec: str | None = None
     terminal_restricted: bool = False
     credential_names: tuple[str, ...] = ()
     integration_ids: tuple[str, ...] = ()

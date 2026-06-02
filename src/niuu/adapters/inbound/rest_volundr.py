@@ -1,4 +1,4 @@
-"""Registry-backed Volundr aggregation endpoints for the shared Niuu shell."""
+"""Registry-backed Forge runtime facade for the shared Niuu shell."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
+from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import build_remote_url
@@ -45,10 +46,17 @@ def _strip_instance_hints(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
     sanitized = dict(payload)
-    sanitized.pop("instance_id", None)
-    sanitized.pop("instanceId", None)
-    sanitized.pop("instance_name", None)
-    sanitized.pop("instanceName", None)
+    for key in (
+        "instance_id",
+        "instanceId",
+        "instance_name",
+        "instanceName",
+        "target_tags",
+        "targetTags",
+        "target_match",
+        "targetMatch",
+    ):
+        sanitized.pop(key, None)
     return sanitized
 
 
@@ -95,11 +103,42 @@ def _merge_sparklines(items: list[dict[str, Any]]) -> dict[str, list[float]]:
     return merged
 
 
+def _merge_cluster_resources(
+    items: list[dict[str, Any]],
+    instances: list[RegisteredInstance],
+) -> dict[str, Any]:
+    resource_types: dict[str, dict[str, Any]] = {}
+    nodes: list[dict[str, Any]] = []
+    for instance, item in zip(instances, items, strict=False):
+        for raw_type in item.get("resource_types") or item.get("resourceTypes") or []:
+            if isinstance(raw_type, dict):
+                key = str(raw_type.get("name") or raw_type.get("resource_key") or raw_type)
+                resource_types.setdefault(key, raw_type)
+        for raw_node in item.get("nodes") or []:
+            if not isinstance(raw_node, dict):
+                continue
+            node = dict(raw_node)
+            node["instance_id"] = instance.id
+            node["instance_name"] = instance.name
+            node["instance_slug"] = instance.slug
+            if node.get("name"):
+                node["name"] = f"{instance.slug}/{node['name']}"
+            nodes.append(node)
+    return {
+        "resource_types": list(resource_types.values()),
+        "nodes": nodes,
+    }
+
+
 def _ensure_remote_success(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
     detail = response.text.strip() or response.reason_phrase
     raise HTTPException(status_code=response.status_code, detail=detail[:1000])
+
+
+def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
+    return str(instance.config.get("transport", "")).strip().lower() == "embedded"
 
 
 async def _request_remote(
@@ -110,7 +149,28 @@ async def _request_remote(
     path: str,
     json_body: Any | None = None,
     params: list[tuple[str, str]] | None = None,
+    embedded_app: ASGIApp | None = None,
 ) -> httpx.Response:
+    if _uses_embedded_transport(instance):
+        if embedded_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Embedded Forge target is not available in this process",
+            )
+        remote_url = build_remote_url("http://embedded.local", "/api/v1/forge", path)
+        transport = httpx.ASGITransport(app=embedded_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://embedded.local",
+        ) as client:
+            return await client.request(
+                method,
+                remote_url,
+                headers=_forward_headers(request),
+                params=params,
+                json=json_body,
+            )
+
     try:
         remote_url = build_remote_url(instance.base_url, "/api/v1/forge", path)
     except ValueError as exc:
@@ -132,6 +192,8 @@ async def _find_session_owner(
     principal: Principal,
     request: Request,
     session_id: str,
+    *,
+    embedded_app: ASGIApp | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     for instance in await _visible_instances(service, principal):
         response = await _request_remote(
@@ -139,6 +201,7 @@ async def _find_session_owner(
             request,
             method="GET",
             path=f"/sessions/{session_id}",
+            embedded_app=embedded_app,
         )
         if response.status_code == status.HTTP_404_NOT_FOUND:
             continue
@@ -164,6 +227,9 @@ async def _resolve_target_instance(
     service: InstanceService,
     principal: Principal,
     instance_id: str | None,
+    *,
+    tags: list[str] | None = None,
+    match: str = "all",
 ) -> RegisteredInstance:
     if instance_id:
         instance = await service.get_visible(principal, instance_id)
@@ -174,8 +240,23 @@ async def _resolve_target_instance(
             )
         return instance
 
-    instances = await _visible_instances(service, principal)
+    instances = await service.list_visible(
+        principal,
+        kind=InstanceKind.VOLUNDR,
+        enabled_only=True,
+        tags=tags,
+        match=match,
+    )
     if not instances:
+        # Fail loud: never silently fall back to an untagged backend when a tag
+        # selector was requested.
+        if tags:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"No enabled Volundr instance matches tags {sorted(tags)} (match={match})"
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No enabled Volundr instances are registered for this user",
@@ -184,9 +265,13 @@ async def _resolve_target_instance(
     return default_instance or instances[0]
 
 
-def create_volundr_router(service: InstanceService) -> APIRouter:
-    """Create a registry-aware Volundr aggregate router."""
-    router = APIRouter(prefix="/api/v1/niuu/volundr", tags=["Shared", "Volundr"])
+def create_volundr_router(
+    service: InstanceService,
+    *,
+    embedded_forge_app: ASGIApp | None = None,
+) -> APIRouter:
+    """Create a registry-aware Forge runtime router."""
+    router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
 
     @router.get("/sessions")
     async def list_sessions(
@@ -197,7 +282,14 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         params = _query_params(request)
         results = await asyncio.gather(
             *[
-                _request_remote(instance, request, method="GET", path="/sessions", params=params)
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/sessions",
+                    params=params,
+                    embedded_app=embedded_forge_app,
+                )
                 for instance in instances
             ],
             return_exceptions=True,
@@ -232,7 +324,13 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        _, payload = await _find_session_owner(service, principal, request, session_id)
+        _, payload = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         return payload
 
     @router.post("/sessions", status_code=status.HTTP_201_CREATED)
@@ -242,10 +340,14 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         requested_instance_id = body.get("instance_id") or body.get("instanceId")
+        target_tags = body.get("target_tags") or body.get("targetTags")
+        target_match = body.get("target_match") or body.get("targetMatch") or "all"
         instance = await _resolve_target_instance(
             service,
             principal,
             str(requested_instance_id) if requested_instance_id else None,
+            tags=list(target_tags) if target_tags else None,
+            match=str(target_match),
         )
         response = await _request_remote(
             instance,
@@ -253,6 +355,7 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
             method="POST",
             path="/sessions",
             json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -271,7 +374,13 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         instances = await _visible_instances(service, principal)
         results = await asyncio.gather(
             *[
-                _request_remote(instance, request, method="GET", path="/stats")
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/stats",
+                    embedded_app=embedded_forge_app,
+                )
                 for instance in instances
             ],
             return_exceptions=True,
@@ -301,52 +410,131 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
             "sparklines": _merge_sparklines(payloads),
         }
 
+    @router.get("/cluster/resources")
+    async def get_cluster_resources(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/cluster/resources",
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+        payload_instances: list[RegisteredInstance] = []
+        payloads: list[dict[str, Any]] = []
+        for instance, result in zip(instances, results, strict=False):
+            if isinstance(result, Exception) or result.status_code >= 400:
+                continue
+            payload = result.json()
+            if isinstance(payload, dict):
+                payload_instances.append(instance)
+                payloads.append(payload)
+        return _merge_cluster_resources(payloads, payload_instances)
+
+    @router.post("/sessions/archive-stopped")
+    async def archive_stopped_sessions(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[str]:
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="POST",
+                    path="/sessions/archive-stopped",
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+        archived: list[str] = []
+        for result in results:
+            if isinstance(result, Exception) or result.status_code >= 400:
+                continue
+            payload = result.json()
+            if isinstance(payload, list):
+                archived.extend(str(item) for item in payload)
+        return archived
+
     @router.post("/sessions/{session_id}/stop")
     async def stop_session(
         request: Request,
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="POST",
             path=f"/sessions/{session_id}/stop",
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
-    @router.post("/sessions/{session_id}/archive")
+    @router.patch("/sessions/{session_id}/archive")
     async def archive_session(
         request: Request,
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
-            method="POST",
+            method="PATCH",
             path=f"/sessions/{session_id}/archive",
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
-    @router.post("/sessions/{session_id}/restore")
+    @router.patch("/sessions/{session_id}/restore")
     async def restore_session(
         request: Request,
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
-            method="POST",
+            method="PATCH",
             path=f"/sessions/{session_id}/restore",
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -358,13 +546,20 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="DELETE",
             path=f"/sessions/{session_id}",
             params=_query_params(request),
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -375,12 +570,19 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="GET",
             path=f"/sessions/{session_id}/conversation",
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -393,13 +595,20 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         body: dict[str, Any] = Body(default_factory=dict),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="POST",
             path=f"/sessions/{session_id}/messages",
             json_body=body,
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -411,13 +620,20 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="GET",
             path=f"/sessions/{session_id}/logs",
             params=_query_params(request),
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -429,13 +645,20 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         response = await _request_remote(
             instance,
             request,
             method="GET",
             path=f"/sessions/{session_id}/logs/aggregate",
             params=_query_params(request),
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -448,7 +671,13 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
         principal: Principal = Depends(extract_principal),
         limit: int | None = Query(default=None),
     ) -> Any:
-        instance, _ = await _find_session_owner(service, principal, request, session_id)
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
         params: list[tuple[str, str]] = []
         if limit is not None:
             params.append(("limit", str(limit)))
@@ -458,6 +687,7 @@ def create_volundr_router(service: InstanceService) -> APIRouter:
             method="GET",
             path=f"/chronicles/{session_id}/timeline",
             params=params,
+            embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         return response.json()

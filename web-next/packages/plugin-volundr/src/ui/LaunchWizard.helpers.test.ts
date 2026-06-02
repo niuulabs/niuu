@@ -3,7 +3,7 @@ import type {
   ClusterResourceInfo,
   IntegrationConnection,
   VolundrModel,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import type { Template } from '../domain/template';
@@ -352,11 +352,15 @@ describe('LaunchWizard helpers', () => {
   });
 
   it('copies existing preset state into comparison payloads', () => {
-    const preset: VolundrPreset = {
+    const preset: VolundrLaunchSpec = {
       id: 'preset-1',
+      scope: 'user',
       name: 'Saved preset',
       description: 'desc',
       isDefault: false,
+      sessionDefinition: null,
+      repos: [],
+      workspaceLayout: {},
       cliTool: 'claude',
       workloadType: 'skuld-claude',
       model: 'sonnet-primary',

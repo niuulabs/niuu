@@ -62,7 +62,7 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         assert "/api/v1/niuu/instances/catalog" in paths
         assert "/api/v1/niuu/targets/volundr" in paths
         assert "/api/v1/niuu/observatory/snapshot" in paths
-        assert "/api/v1/niuu/volundr/sessions" in paths
+        assert "/api/v1/forge/sessions" in paths
         assert "/api/v1/tokens" not in paths
         assert "/api/v1/features" not in paths
         assert "/api/v1/identity/auth/config" not in paths
@@ -94,4 +94,30 @@ def test_create_app_uses_loaded_settings_and_skips_empty_seed(monkeypatch) -> No
         assert app.state.pat_validator.__class__ is _DummyPATValidator
 
     seed_instances.assert_not_awaited()
+    instance_repo.ensure_schema.assert_awaited_once()
+
+
+def test_create_app_seeds_embedded_forge_when_no_workers_configured(monkeypatch) -> None:
+    loaded_settings = Settings()
+    seed_instances = AsyncMock(return_value=0)
+    seed_embedded = AsyncMock()
+    instance_repo = _DummyInstanceRepository()
+
+    monkeypatch.setattr(guild_app, "_load_settings", lambda: loaded_settings)
+    monkeypatch.setattr(guild_app, "database_pool", _fake_database_pool)
+    monkeypatch.setattr(guild_app, "PostgresInstanceRepository", lambda _pool: instance_repo)
+    monkeypatch.setattr(guild_app, "PostgresPATRepository", lambda _pool: object())
+    monkeypatch.setattr(guild_app, "create_pat_validator", lambda *_args: _DummyPATValidator())
+    monkeypatch.setattr(guild_app, "seed_configured_instances", seed_instances)
+    monkeypatch.setattr(guild_app, "_seed_embedded_forge_instance", seed_embedded)
+
+    embedded = guild_app.FastAPI()
+    app = guild_app.create_app(embedded_forge_app=embedded)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+        assert response.status_code == 200
+
+    seed_instances.assert_not_awaited()
+    seed_embedded.assert_awaited_once()
     instance_repo.ensure_schema.assert_awaited_once()

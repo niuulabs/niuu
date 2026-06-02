@@ -182,6 +182,7 @@ class VolundrAdapterFactory:
                         api_key=token,
                         name=instance.name,
                         target_id=instance.id,
+                        tags=instance.tags,
                     )
                 )
             except Exception:

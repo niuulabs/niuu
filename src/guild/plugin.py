@@ -44,13 +44,13 @@ class GuildPlugin(ServicePlugin):
     def create_service(self) -> Service:
         return self.register_service().factory()
 
-    def create_api_app(self) -> Any:
+    def create_api_app(self, *, embedded_forge_app: Any | None = None) -> Any:
         from guild.app import create_app
 
-        return create_app()
+        return create_app(embedded_forge_app=embedded_forge_app)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
-        return (
+        route_domains = [
             APIRouteDomain(
                 name="guild-instances-api",
                 prefixes=(
@@ -60,12 +60,25 @@ class GuildPlugin(ServicePlugin):
                 ),
                 description="Guild registry, target selection, and discovery routes.",
             ),
-            APIRouteDomain(
-                name="guild-volundr-api",
-                prefixes=("/api/v1/niuu/volundr",),
-                description="Guild-backed aggregate Volundr routes.",
-            ),
+        ]
+        route_domains.extend(
+            [
+                APIRouteDomain(
+                    name="forge-api",
+                    prefixes=("/api/v1/forge",),
+                    description="Guild-backed aggregate Forge runtime routes.",
+                ),
+                APIRouteDomain(
+                    name="session-api",
+                    prefixes=(
+                        "/api/v1/forge/sessions",
+                        "/api/v1/forge/chronicles",
+                    ),
+                    description="Guild-backed session, logs, messages, and chronicle routes.",
+                ),
+            ]
         )
+        return tuple(route_domains)
 
     def create_api_client(self) -> Any:
         from niuu.cli_api_client import CLIAPIClient
