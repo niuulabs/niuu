@@ -424,6 +424,121 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
     }
 
 
+@respx.mock
+def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/cluster/resources").mock(
+        return_value=Response(
+            200,
+            json={
+                "resource_types": [
+                    {
+                        "name": "gpu",
+                        "resource_key": "nvidia.com/gpu",
+                        "display_name": "GPU",
+                        "unit": "count",
+                    }
+                ],
+                "nodes": [
+                    {
+                        "name": "node-a",
+                        "labels": {},
+                        "allocatable": {"nvidia.com/gpu": "1"},
+                        "allocated": {},
+                        "available": {"nvidia.com/gpu": "1"},
+                    }
+                ],
+            },
+        )
+    )
+
+    response = client.get("/api/v1/forge/cluster/resources", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resource_types"] == payload["resourceTypes"]
+    assert payload["resourceTypes"][0]["resource_key"] == "nvidia.com/gpu"
+    assert payload["resourceTypes"][0]["resourceKey"] == "nvidia.com/gpu"
+    assert payload["resourceTypes"][0]["display_name"] == "GPU"
+    assert payload["resourceTypes"][0]["displayName"] == "GPU"
+    assert payload["nodes"][0]["name"] == "alpha/node-a"
+
+
+@respx.mock
+def test_list_mcp_servers_proxies_to_default_instance_credentials_surface() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("gpu", base_url="http://gpu", tags=["gpu"]),
+        ]
+    )
+    route = respx.get("http://default/api/v1/credentials/mcp-servers").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "name": "linear",
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@linear/mcp-server"],
+                    "description": "Linear",
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/forge/mcp-servers", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["name"] == "linear"
+    assert route.called
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_list_mcp_servers_can_target_instance_by_tags() -> None:
+    client = _client(
+        [
+            _instance("cpu", base_url="http://cpu", is_default=True, tags=["cpu"]),
+            _instance("gpu", base_url="http://gpu", tags=["gpu"]),
+        ]
+    )
+    route = respx.get("http://gpu/api/v1/credentials/mcp-servers").mock(
+        return_value=Response(200, json=[{"name": "mimir", "type": "sse"}])
+    )
+
+    response = client.get(
+        "/api/v1/forge/mcp-servers?target_tags=gpu",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [{"name": "mimir", "type": "sse"}]
+    assert route.called
+
+
+@respx.mock
+def test_get_mcp_server_proxies_to_credentials_surface() -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+    route = respx.get("http://default/api/v1/credentials/mcp-servers/linear").mock(
+        return_value=Response(
+            200,
+            json={
+                "name": "linear",
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@linear/mcp-server"],
+            },
+        )
+    )
+
+    response = client.get("/api/v1/forge/mcp-servers/linear", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "linear"
+    assert route.called
+
+
 @pytest.mark.parametrize(
     ("method", "path", "remote_path", "remote_response", "expected_status", "expected_body"),
     [
@@ -558,19 +673,19 @@ def test_proxy_routes_fall_back_to_empty_payloads_when_remote_returns_non_dict_c
         return_value=Response(200, json=["bad"])
     )
 
-    assert (
-        client.get("/api/v1/forge/sessions/s2/conversation", headers=_headers()).json()
-        == {"turns": []}
-    )
-    assert client.get("/api/v1/forge/sessions/s2/logs", headers=_headers()).json() == {
-        "lines": []
+    assert client.get("/api/v1/forge/sessions/s2/conversation", headers=_headers()).json() == {
+        "turns": []
     }
+    assert client.get("/api/v1/forge/sessions/s2/logs", headers=_headers()).json() == {"lines": []}
     assert client.get(
         "/api/v1/forge/sessions/s2/logs/aggregate",
         headers=_headers(),
     ).json() == {"lines": []}
-    assert client.post(
-        "/api/v1/forge/sessions/s2/messages",
-        headers=_headers(),
-        json={"text": "hello"},
-    ).json() == {}
+    assert (
+        client.post(
+            "/api/v1/forge/sessions/s2/messages",
+            headers=_headers(),
+            json={"text": "hello"},
+        ).json()
+        == {}
+    )

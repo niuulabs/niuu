@@ -124,10 +124,25 @@ def _merge_cluster_resources(
             if node.get("name"):
                 node["name"] = f"{instance.slug}/{node['name']}"
             nodes.append(node)
+    resource_type_items = [_with_resource_type_aliases(item) for item in resource_types.values()]
     return {
-        "resource_types": list(resource_types.values()),
+        "resource_types": resource_type_items,
+        "resourceTypes": resource_type_items,
         "nodes": nodes,
     }
+
+
+def _with_resource_type_aliases(item: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(item)
+    for snake_key, camel_key in (
+        ("resource_key", "resourceKey"),
+        ("display_name", "displayName"),
+    ):
+        if snake_key in enriched and camel_key not in enriched:
+            enriched[camel_key] = enriched[snake_key]
+        if camel_key in enriched and snake_key not in enriched:
+            enriched[snake_key] = enriched[camel_key]
+    return enriched
 
 
 def _ensure_remote_success(response: httpx.Response) -> None:
@@ -147,6 +162,7 @@ async def _request_remote(
     *,
     method: str,
     path: str,
+    remote_prefix: str = "/api/v1/forge",
     json_body: Any | None = None,
     params: list[tuple[str, str]] | None = None,
     embedded_app: ASGIApp | None = None,
@@ -157,7 +173,7 @@ async def _request_remote(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Embedded Forge target is not available in this process",
             )
-        remote_url = build_remote_url("http://embedded.local", "/api/v1/forge", path)
+        remote_url = build_remote_url("http://embedded.local", remote_prefix, path)
         transport = httpx.ASGITransport(app=embedded_app)
         async with httpx.AsyncClient(
             transport=transport,
@@ -172,7 +188,7 @@ async def _request_remote(
             )
 
     try:
-        remote_url = build_remote_url(instance.base_url, "/api/v1/forge", path)
+        remote_url = build_remote_url(instance.base_url, remote_prefix, path)
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -253,9 +269,7 @@ async def _resolve_target_instance(
         if tags:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    f"No enabled Volundr instance matches tags {sorted(tags)} (match={match})"
-                ),
+                detail=(f"No enabled Volundr instance matches tags {sorted(tags)} (match={match})"),
             )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -439,6 +453,71 @@ def create_volundr_router(
                 payload_instances.append(instance)
                 payloads.append(payload)
         return _merge_cluster_resources(payloads, payload_instances)
+
+    @router.get("/mcp-servers")
+    async def list_mcp_servers(
+        request: Request,
+        instance_id: str | None = Query(default=None),
+        target_tags: list[str] | None = Query(default=None),
+        target_match: str = Query(default="all"),
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            instance_id,
+            tags=target_tags,
+            match=target_match,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            remote_prefix="/api/v1/credentials",
+            path="/mcp-servers",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected MCP server response from target Volundr instance",
+            )
+        return [item for item in payload if isinstance(item, dict)]
+
+    @router.get("/mcp-servers/{server_name}")
+    async def get_mcp_server(
+        request: Request,
+        server_name: str = Path(description="MCP server name to retrieve"),
+        instance_id: str | None = Query(default=None),
+        target_tags: list[str] | None = Query(default=None),
+        target_match: str = Query(default="all"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            instance_id,
+            tags=target_tags,
+            match=target_match,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            remote_prefix="/api/v1/credentials",
+            path=f"/mcp-servers/{server_name}",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected MCP server response from target Volundr instance",
+            )
+        return payload
 
     @router.post("/sessions/archive-stopped")
     async def archive_stopped_sessions(
