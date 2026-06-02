@@ -9,7 +9,7 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-API = "/api/v1/forge"
+API = "/api/v1/volundr"
 
 
 async def test_create_and_list_prompts(volundr_client, auth_headers):

@@ -1133,6 +1133,20 @@ describe('buildVolundrHttpAdapter', () => {
     );
   });
 
+  it('uses the provided client directly when no canonical api base can be derived', async () => {
+    const client = { ...makeClient(), basePath: undefined };
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getFeatures();
+    await service.getRepos();
+    await service.getTargets();
+
+    expect(queryMocks.createApiClient).not.toHaveBeenCalled();
+    expect(client.get).toHaveBeenCalledWith('/features');
+    expect(client.get).toHaveBeenCalledWith('/repos');
+    expect(client.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+  });
+
   it('getSessionDefinitions calls GET /session-definitions and normalizes snake_case', async () => {
     const client = makeClient();
     client.get.mockResolvedValueOnce([

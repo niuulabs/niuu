@@ -77,10 +77,15 @@ def _render_niuu_chart(*extra_args: str) -> str:
             "ingress.hosts[0].routeSets[0]=api",
             *extra_args,
         ],
-        check=True,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        pytest.fail(
+            "helm template failed\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
     return result.stdout
 
 
