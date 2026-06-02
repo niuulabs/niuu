@@ -264,9 +264,7 @@ describe('__testables', () => {
     expect(deriveCanonicalVolundrBasePath('http://host/api/v1/volundr/')).toBe(
       'http://host/api/v1/volundr',
     );
-    expect(deriveCanonicalVolundrBasePath('http://host/api/v1')).toBe(
-      'http://host/api/v1/volundr',
-    );
+    expect(deriveCanonicalVolundrBasePath('http://host/api/v1')).toBe('http://host/api/v1/volundr');
     expect(deriveCanonicalVolundrBasePath('http://host/api/v1/forge')).toBeNull();
 
     expect(deriveNiuuBasePath()).toBeNull();
@@ -1082,9 +1080,7 @@ describe('buildVolundrHttpAdapter', () => {
     await service.getCredentials();
 
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/volundr',
-    );
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/volundr');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/credentials',
     );

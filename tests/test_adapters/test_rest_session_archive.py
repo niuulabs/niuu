@@ -74,7 +74,7 @@ async def test_get_conversation_falls_back_to_workspace(
     session = await _seed_workspace(storage, repository)
     client = TestClient(build_app(session_service, archive_service))
 
-    response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
     assert response.status_code == 200
     assert response.json()["turns"][0]["content"] == "hello from archive"
 
@@ -89,7 +89,7 @@ async def test_get_logs_aggregate_falls_back_to_workspace(
     session = await _seed_workspace(storage, repository)
     client = TestClient(build_app(session_service, archive_service))
 
-    response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/logs/aggregate")
     assert response.status_code == 200
     payload = response.json()
     assert payload["returned"] == 1
@@ -106,7 +106,7 @@ async def test_download_transcript_builds_archive_and_returns_markdown(
     session = await _seed_workspace(storage, repository)
     client = TestClient(build_app(session_service, archive_service))
 
-    response = client.get(f"/api/v1/volundr/sessions/{session.id}/transcript/download?format=md")
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/transcript/download?format=md")
     assert response.status_code == 200
     assert response.text.startswith("# Session Transcript")
     assert "hello from archive" in response.text
@@ -145,7 +145,7 @@ async def test_get_conversation_falls_back_to_local_mount_source_without_storage
     )
     client = TestClient(build_app(session_service, archive_service))
 
-    response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
 
     assert response.status_code == 200
     assert response.json()["turns"][0]["content"] == "rest mount"
@@ -182,7 +182,7 @@ async def test_get_session_transcript_reads_config_archive_without_workspace_loo
     )
     client = TestClient(build_app(session_service, replay_archive))
 
-    response = client.get(f"/api/v1/volundr/sessions/{session.id}/transcript")
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/transcript")
 
     assert response.status_code == 200
     assert response.json()["turns"][0]["content"] == "hello from archive"

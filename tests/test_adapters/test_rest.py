@@ -574,7 +574,7 @@ class TestStopSession:
 
 
 class TestSessionMessages:
-    """Tests for POST /api/v1/volundr/sessions/{id}/messages."""
+    """Tests for POST /api/v1/forge/sessions/{id}/messages."""
 
     def test_send_message_uses_plain_ws_without_ssl(
         self,
@@ -637,7 +637,7 @@ class TestSessionMessages:
             ),
         ):
             response = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/messages",
+                f"/api/v1/forge/sessions/{session.id}/messages",
                 json={"content": "hello from rest"},
             )
 
@@ -808,7 +808,7 @@ class TestSessionLogAggregationProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
 
         assert response.status_code == 200
         assert response.json()["turns"][0]["content"] == "from workspace"
@@ -844,7 +844,7 @@ class TestSessionLogAggregationProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/logs/aggregate")
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
@@ -951,7 +951,7 @@ class TestWorkflowGateProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
