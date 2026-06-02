@@ -57,7 +57,8 @@ command:
   - uvicorn
 # -- Additional container args.
 args:
-  - volundr.main:app
+  - volundr.main:create_app
+  - --factory
   - --host
   - "$(HOST)"
   - --port

@@ -39,7 +39,8 @@ def test_volundr_chart_uses_uvicorn_import_path() -> None:
     assert values["image"]["repository"] == "niuulabs/niuu"
     assert values["command"] == ["uvicorn"]
     assert values["args"] == [
-        "volundr.main:app",
+        "volundr.main:create_app",
+        "--factory",
         "--host",
         "$(HOST)",
         "--port",
