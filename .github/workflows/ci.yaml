@@ -526,7 +526,7 @@ jobs:
               --set auth.postgresPassword=test \
               --set auth.database=volundr \
               --set primary.persistence.enabled=false \
-              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
+              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting; CREATE DATABASE guild;" \
               --wait --timeout 120s; then
               exit 0
             fi
