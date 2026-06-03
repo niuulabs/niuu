@@ -35,6 +35,26 @@ describe('SegmentedFilter', () => {
     expect(onChange).toHaveBeenCalledWith('done');
   });
 
+  it('does not call onChange when a disabled button is clicked', async () => {
+    const user = setup();
+    const onChange = vi.fn();
+    render(
+      <SegmentedFilter
+        options={[
+          { value: 'all', label: 'All' },
+          { value: 'archived', label: 'Archived', disabled: true },
+        ]}
+        value="all"
+        onChange={onChange}
+      />,
+    );
+
+    const disabledButton = screen.getByRole('button', { name: 'Archived' });
+    expect(disabledButton).toBeDisabled();
+    await user.click(disabledButton);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('renders counts when provided', () => {
     render(<SegmentedFilter options={OPTIONS} value="all" onChange={() => {}} />);
     expect(screen.getByText('10')).toBeInTheDocument();

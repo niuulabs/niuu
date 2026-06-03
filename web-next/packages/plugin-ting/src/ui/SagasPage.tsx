@@ -10,6 +10,7 @@ import {
   EmptyState,
   RepoSelect,
   Rune,
+  SegmentedFilter,
   ToastProvider,
   useToast,
   Modal,
@@ -750,29 +751,16 @@ function SagasPageContent() {
                       <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
                         Volundr target
                       </span>
-                      <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-                        {(
-                          [
-                            ['default', 'Default'],
-                            ['instance', 'Instance'],
-                            ['tags', 'Tags'],
-                          ] as const
-                        ).map(([mode, label]) => (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => setTargetMode(mode)}
-                            className={[
-                              'niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-mono niuu:uppercase niuu:tracking-[0.08em]',
-                              targetMode === mode
-                                ? 'niuu:border-brand/50 niuu:bg-brand/15 niuu:text-brand'
-                                : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted',
-                            ].join(' ')}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
+                      <SegmentedFilter<ImportTargetMode>
+                        aria-label="Saga target routing mode"
+                        value={targetMode}
+                        onChange={setTargetMode}
+                        options={[
+                          { value: 'default', label: 'Default' },
+                          { value: 'instance', label: 'Instance' },
+                          { value: 'tags', label: 'Tags' },
+                        ]}
+                      />
                       {targetMode === 'instance' ? (
                         <select
                           value={selectedInstanceId}

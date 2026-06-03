@@ -10,6 +10,7 @@ import {
   Field,
   Input,
   RepoSelect,
+  SegmentedFilter,
   type RepoRecord,
   Textarea,
 } from '@niuulabs/ui';
@@ -1259,31 +1260,20 @@ export function RuntimeStep({
           {targets.length > 0 ? (
             <Field label="Forge">
               <div className="niuu:space-y-3">
-                <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-                  <button
-                    type="button"
-                    className={`niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs ${
-                      form.targetMode === 'instance'
-                        ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
-                        : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-faint niuu:hover:border-brand'
-                    }`}
-                    onClick={() => update({ targetMode: 'instance' })}
-                  >
-                    Specific Forge
-                  </button>
-                  <button
-                    type="button"
-                    className={`niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs ${
-                      form.targetMode === 'tags'
-                        ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
-                        : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-faint niuu:hover:border-brand'
-                    }`}
-                    onClick={() => update({ targetMode: 'tags' })}
-                    disabled={targetTagOptions.length === 0}
-                  >
-                    Match tags
-                  </button>
-                </div>
+                <SegmentedFilter<WizardForm['targetMode']>
+                  aria-label="Forge routing mode"
+                  value={form.targetMode}
+                  onChange={(targetMode) => update({ targetMode })}
+                  options={[
+                    { value: 'instance', label: 'Specific Forge' },
+                    {
+                      value: 'tags',
+                      label: 'Match tags',
+                      count: targetTagOptions.length,
+                      disabled: targetTagOptions.length === 0,
+                    },
+                  ]}
+                />
                 {form.targetMode === 'tags' ? (
                   <div className="niuu:space-y-3 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
                     <div className="niuu:flex niuu:flex-wrap niuu:gap-2">

@@ -4,6 +4,7 @@ export interface SegmentedFilterOption<T extends string = string> {
   value: T;
   label: string;
   count?: number;
+  disabled?: boolean;
 }
 
 export interface SegmentedFilterProps<T extends string = string> {
@@ -39,13 +40,17 @@ export function SegmentedFilter<T extends string = string>({
         <button
           key={opt.value}
           type="button"
-          onClick={() => onChange(opt.value)}
+          onClick={() => {
+            if (!opt.disabled) onChange(opt.value);
+          }}
           aria-pressed={value === opt.value}
+          disabled={opt.disabled}
           className={cn(
             'niuu:rounded niuu:font-medium niuu:transition-colors niuu:px-3.5 niuu:py-1.5 niuu:text-xs',
             value === opt.value
               ? 'niuu:bg-bg-elevated niuu:text-text-primary'
               : 'niuu:text-text-muted niuu:hover:text-text-secondary',
+            opt.disabled && 'niuu:cursor-not-allowed niuu:opacity-45 niuu:hover:text-text-muted',
           )}
         >
           {opt.label}

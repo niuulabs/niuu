@@ -3,7 +3,7 @@ import { useService } from '@niuulabs/plugin-sdk';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import type { PersonaRole } from '@niuulabs/domain';
-import { EmptyState, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
+import { EmptyState, ErrorState, LoadingState, PersonaAvatar, SegmentedFilter } from '@niuulabs/ui';
 import type { RunStatus, Saga, Phase, Run } from '../domain/saga';
 import type {
   DispatchCluster,
@@ -288,8 +288,13 @@ function TargetCard({
   isUpdating: boolean;
   onAssign: (target: SagaTargetSelection) => void;
 }) {
-  const initialMode = saga.targetTags?.length ? 'tags' : saga.instanceId ? 'instance' : 'default';
-  const [mode, setMode] = useState<'default' | 'instance' | 'tags'>(initialMode);
+  type TargetMode = 'default' | 'instance' | 'tags';
+  const initialMode: TargetMode = saga.targetTags?.length
+    ? 'tags'
+    : saga.instanceId
+      ? 'instance'
+      : 'default';
+  const [mode, setMode] = useState<TargetMode>(initialMode);
   const [value, setValue] = useState<string>(saga.instanceId ?? '');
   const [tags, setTags] = useState<string>((saga.targetTags ?? []).join(', '));
   const [match, setMatch] = useState<'all' | 'any'>(saga.targetMatch ?? 'all');
@@ -317,30 +322,16 @@ function TargetCard({
         </p>
       </div>
       <div className="niuu:space-y-3">
-        <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-          {(
-            [
-              ['default', 'Default'],
-              ['instance', 'Instance'],
-              ['tags', 'Tags'],
-            ] as const
-          ).map(([candidate, label]) => (
-            <button
-              key={candidate}
-              type="button"
-              onClick={() => setMode(candidate)}
-              disabled={isUpdating}
-              className={[
-                'niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-mono niuu:uppercase niuu:tracking-[0.08em]',
-                mode === candidate
-                  ? 'niuu:border-brand/50 niuu:bg-brand/15 niuu:text-brand'
-                  : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-muted',
-              ].join(' ')}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <SegmentedFilter<TargetMode>
+          aria-label="Volundr target mode"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'default', label: 'Default', disabled: isUpdating },
+            { value: 'instance', label: 'Instance', disabled: isUpdating },
+            { value: 'tags', label: 'Tags', disabled: isUpdating },
+          ]}
+        />
         {mode === 'instance' ? (
           <select
             value={value}
