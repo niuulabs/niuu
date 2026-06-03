@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi import WebSocketDisconnect
 
+from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
     _log_buffer,
@@ -32,6 +33,7 @@ from skuld.transports import (
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
+from sleipnir.domain.catalog import feedback_recorded
 from sleipnir.testing import EventCapture
 
 
@@ -3905,6 +3907,164 @@ class TestBrokerRoomBridge:
     def test_room_bridge_none_when_disabled(self, no_room_settings):
         b = Broker(settings=no_room_settings)
         assert b._room_bridge is None
+
+    @pytest.mark.asyncio
+    async def test_join_heartbeat_leave_human_environment(self, room_settings):
+        bus = InProcessBus()
+        captured = EventCapture(bus, ["participant.*"])
+        await captured.start()
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+
+        joined = await b.join_human_environment(
+            participant_id="human:jozef",
+            display_name="Jozef",
+            environment_id="cluster-a",
+            role="owner",
+            room_id="huddle-1",
+        )
+        heartbeat = await b.heartbeat_human_environment(
+            participant_id="human:jozef",
+            status="busy",
+            wakefulness="wakeful",
+            attention_state="reviewing",
+        )
+        await b.leave_human_environment(participant_id="human:jozef", reason="done")
+        await bus.flush()
+
+        assert joined["participant_type"] == "human"
+        assert joined["authority_role"] == "owner"
+        assert "change_autonomy" in joined["capabilities"]
+        assert heartbeat["status"] == "busy"
+        assert "human:jozef" not in b._room_bridge.participants
+        assert [event.event_type for event in captured.events] == [
+            event_registry.PARTICIPANT_JOINED,
+            event_registry.PARTICIPANT_HEARTBEAT,
+            event_registry.PARTICIPANT_LEFT,
+        ]
+        await captured.stop()
+
+    @pytest.mark.asyncio
+    async def test_human_room_message_preserves_participant_thread_metadata(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        broadcast = AsyncMock()
+        b._channels.broadcast = broadcast
+        await b.join_human_environment(
+            participant_id="human:teacher",
+            display_name="Teacher",
+            environment_id="cluster-a",
+            role="teacher",
+        )
+
+        msg_id = await b.handle_human_room_message(
+            "This was the wrong tier.",
+            source="browser",
+            participant_id="human:teacher",
+            metadata={"thread_id": "thread-1", "root_correlation_id": "root-1"},
+            deliver_to_transport=False,
+        )
+
+        assert b._conversation_turns[-1].id == msg_id
+        assert b._conversation_turns[-1].participant_id == "human:teacher"
+        assert b._conversation_turns[-1].thread_id == "thread-1"
+        assert b._conversation_turns[-1].metadata["root_correlation_id"] == "root-1"
+        event = broadcast.await_args.args[0]
+        assert event["participantId"] == "human:teacher"
+        assert event["threadId"] == "thread-1"
+        assert event["metadata"]["root_correlation_id"] == "root-1"
+
+    @pytest.mark.asyncio
+    async def test_directed_room_message_preserves_metadata_to_target(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        await b.join_human_environment(
+            participant_id="human:approver",
+            display_name="Approver",
+            environment_id="cluster-a",
+            role="approver",
+        )
+        ws = MagicMock()
+        ws.send_text = AsyncMock()
+        await b._room_bridge.register("valkyrie:k8s-a", "K8s Valkyrie", ws)
+
+        await b.handle_directed_room_message(
+            "valkyrie:k8s-a",
+            "Approved, continue.",
+            source="browser",
+            metadata={
+                "participant_id": "human:approver",
+                "thread_id": "thread-approve",
+                "root_correlation_id": "root-approve",
+            },
+        )
+
+        payload = json.loads(ws.send_text.await_args.args[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "Approved, continue."
+        assert payload["metadata"]["thread_id"] == "thread-approve"
+        assert payload["metadata"]["root_correlation_id"] == "root-approve"
+        assert payload["metadata"]["participant_id"] == "human:approver"
+        assert b._conversation_turns[-1].participant_id == "human:approver"
+        assert b._conversation_turns[-1].thread_id == "thread-approve"
+
+    @pytest.mark.asyncio
+    async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
+        b = Broker(settings=room_settings)
+        await b.join_human_environment(
+            participant_id="human:observer",
+            display_name="Observer",
+            environment_id="cluster-a",
+            role="observer",
+        )
+
+        with pytest.raises(PermissionError):
+            b.require_room_capability("human:observer", "authorize_action")
+
+    @pytest.mark.asyncio
+    async def test_joined_human_feedback_links_to_valkyrie_decision(self, room_settings):
+        class _Memory:
+            def __init__(self) -> None:
+                self.episodes = []
+
+            async def record_episode(self, episode):
+                self.episodes.append(episode)
+
+        bus = InProcessBus()
+        memory = _Memory()
+        recorder = EnvironmentFeedbackRecorder(subscriber=bus, publisher=bus, memory=memory)
+        await recorder.start()
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+        await b.join_human_environment(
+            participant_id="human:owner",
+            display_name="Owner",
+            environment_id="cluster-a",
+            role="owner",
+        )
+
+        await bus.publish(
+            feedback_recorded(
+                environment_id="cluster-a",
+                target_event_id="attention-decision-1",
+                feedback_type="useful",
+                rating="correct",
+                notes="Good escalation.",
+                judgment_refs=["judgment-1"],
+                court_decision_id="attention-decision-1",
+                user_id="human:owner",
+                responsible_valkyrie_id="valkyrie:k8s-a",
+                source="human:owner",
+                correlation_id="root-feedback",
+            )
+        )
+        await bus.flush()
+
+        assert len(memory.episodes) == 1
+        structured = memory.episodes[0].structured_outcome
+        assert structured["user_id"] == "human:owner"
+        assert structured["judgment_refs"] == ["judgment-1"]
+        assert structured["court_decision_id"] == "attention-decision-1"
+
+        await recorder.stop()
 
     # -----------------------------------------------------------------------
     # directed_message dispatch

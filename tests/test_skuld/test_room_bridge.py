@@ -291,6 +291,84 @@ class TestParticipantRegistration:
         published.assert_awaited_once()
         assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_JOINED
 
+    @pytest.mark.asyncio
+    async def test_human_join_adds_environment_role_capabilities_and_presence(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(
+            publish_presence_event=published,
+            environment_id="cluster-a",
+            clock=lambda: 123.0,
+        )
+
+        meta = await bridge.join_human_environment(
+            "human:jozef",
+            display_name="Jozef",
+            environment_id="cluster-a",
+            role="approver",
+            room_id="huddle-1",
+        )
+
+        assert meta.participant_type == "human"
+        assert meta.participant_kind == "human"
+        assert meta.authority_role == "approver"
+        assert meta.capabilities == ("view", "reply", "approve", "authorize_action")
+        assert meta.room_ids == ("huddle-1",)
+        assert meta.last_heartbeat_at == 123.0
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_joined"
+        assert event["participant"]["peer_id"] == "human:jozef"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_JOINED
+
+    @pytest.mark.asyncio
+    async def test_human_join_rejects_role_capability_escalation(self):
+        bridge, _ = _make_bridge()
+
+        with pytest.raises(PermissionError):
+            await bridge.join_human_environment(
+                "human:observer",
+                display_name="Observer",
+                environment_id="cluster-a",
+                role="observer",
+                capabilities=["approve"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_human_capability_check_is_predictable(self):
+        bridge, _ = _make_bridge()
+        await bridge.join_human_environment(
+            "human:teacher",
+            display_name="Teacher",
+            environment_id="cluster-a",
+            role="teacher",
+        )
+
+        bridge.require_participant_capability("human:teacher", "teach")
+        with pytest.raises(PermissionError):
+            bridge.require_participant_capability("human:teacher", "authorize_action")
+
+    @pytest.mark.asyncio
+    async def test_human_leave_publishes_participant_left(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(publish_presence_event=published)
+        await bridge.join_human_environment(
+            "human:debugger",
+            display_name="Debugger",
+            environment_id="cluster-a",
+            role="debugger",
+        )
+        registry.broadcast.reset_mock()
+        published.reset_mock()
+
+        await bridge.leave_human_environment("human:debugger", reason="done")
+
+        assert "human:debugger" not in bridge.participants
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_left"
+        assert event["participantId"] == "human:debugger"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_LEFT
+
 
 # ---------------------------------------------------------------------------
 # Room state

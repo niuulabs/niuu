@@ -53,6 +53,27 @@ _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "decision": "thinking",
 }
 
+HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
+    {"observer", "teacher", "approver", "debugger", "owner"}
+)
+
+HUMAN_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "observer": ("view", "reply"),
+    "teacher": ("view", "reply", "teach", "correct"),
+    "approver": ("view", "reply", "approve", "authorize_action"),
+    "debugger": ("view", "reply", "debug", "teach", "correct"),
+    "owner": (
+        "view",
+        "reply",
+        "approve",
+        "teach",
+        "correct",
+        "debug",
+        "change_autonomy",
+        "authorize_action",
+    ),
+}
+
 
 class RoomBridge:
     """Bridges Ravn WebSocket connections into the multi-agent room.
@@ -239,6 +260,101 @@ class RoomBridge:
         await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
         await self._publish_participant_joined(meta)
         return meta
+
+    async def join_human_environment(
+        self,
+        participant_id: str,
+        *,
+        display_name: str,
+        environment_id: str,
+        role: str = "observer",
+        room_id: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        heartbeat_ttl_s: float = 300.0,
+    ) -> ParticipantMeta:
+        """Register or update a human participant inside a live Environment."""
+        participant_id = participant_id.strip()
+        if not participant_id:
+            raise ValueError("participant_id is required")
+        if not environment_id.strip():
+            raise ValueError("environment_id is required")
+        role = role.strip() or "observer"
+        if role not in HUMAN_ENVIRONMENT_ROLES:
+            raise PermissionError(f"Unknown Environment role: {role}")
+
+        role_capabilities = HUMAN_ROLE_CAPABILITIES[role]
+        requested_capabilities = tuple(capabilities or role_capabilities)
+        disallowed = sorted(set(requested_capabilities) - set(role_capabilities))
+        if disallowed:
+            raise PermissionError(
+                f"Role {role} cannot claim capabilities: {', '.join(disallowed)}"
+            )
+
+        room_membership = tuple(room_id for room_id in [room_id] if room_id)
+        if participant_id in self._participants:
+            old = self._participants[participant_id]
+            color = old.color
+            existing_rooms = tuple(
+                dict.fromkeys([*old.room_ids, *room_membership])
+            )
+        else:
+            color = next(self._color_cycle)
+            existing_rooms = room_membership
+
+        meta = ParticipantMeta(
+            peer_id=participant_id,
+            persona=display_name or participant_id,
+            color=color,
+            participant_type="human",
+            display_name=display_name or participant_id,
+            subscribes_to=("room.message", "room.direct", "participant.*"),
+            emits=("room.message", "room.direct", "feedback.recorded"),
+            tools=(),
+            status="idle",
+            environment_id=environment_id,
+            participant_kind="human",
+            capabilities=requested_capabilities,
+            surfaces=tuple(surfaces or ("skuld.room",)),
+            wakefulness="wakeful",
+            attention_state="available",
+            heartbeat_ttl_s=heartbeat_ttl_s,
+            last_heartbeat_at=self._clock(),
+            authority_role=role,
+            room_ids=existing_rooms,
+        )
+        self._participants[participant_id] = meta
+        await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
+        return meta
+
+    async def leave_human_environment(
+        self,
+        participant_id: str,
+        *,
+        reason: str = "left",
+    ) -> None:
+        """Remove a human participant from an Environment huddle."""
+        meta = self._participants.get(participant_id)
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        if meta.participant_type != "human":
+            raise PermissionError(f"Participant is not human: {participant_id}")
+        self._participants.pop(participant_id, None)
+        await self._channels.broadcast(
+            {"type": "participant_left", "participantId": participant_id}
+        )
+        await self._publish_participant_left(meta, reason=reason)
+
+    def require_participant_capability(self, participant_id: str, capability: str) -> None:
+        """Raise if a participant is missing a control capability."""
+        meta = self._participants.get(participant_id)
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        if capability not in meta.capabilities:
+            raise PermissionError(
+                f"Participant {participant_id} lacks capability: {capability}"
+            )
 
     async def unregister(self, peer_id: str) -> None:
         """Remove a participant and broadcast ``participant_left``."""

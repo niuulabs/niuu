@@ -130,6 +130,11 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _non_empty_str(value: object) -> str:
+    """Return a stripped string or an empty string for absent/non-string values."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
     """Return a short human-readable description for a browser content block."""
     block_type = str(block.get("type") or "").strip()
@@ -3385,18 +3390,33 @@ class Broker:
         *,
         source: str = "external",
         metadata: dict[str, Any] | None = None,
+        participant_id: str | None = None,
         deliver_to_transport: bool = True,
     ) -> str:
         """Record and broadcast a human-originated room message."""
         if not content.strip():
             raise ValueError("content is required")
+        participant_meta = None
+        if participant_id:
+            if self._room_bridge is None:
+                raise RuntimeError("Room mode is not enabled")
+            participant = self._room_bridge.participants.get(participant_id)
+            if participant is None:
+                raise LookupError(f"Unknown room participant: {participant_id}")
+            participant_meta = asdict(participant)
 
         msg_id = str(uuid.uuid4())
+        metadata_payload = metadata or {}
         self._append_turn(
             ConversationTurn(
                 id=msg_id,
                 role="user",
                 content=content,
+                participant_id=participant_id,
+                participant_meta=participant_meta,
+                thread_id=_non_empty_str(metadata_payload.get("thread_id")),
+                visibility=_non_empty_str(metadata_payload.get("visibility")) or "public",
+                metadata=metadata_payload,
             )
         )
         now = datetime.now(UTC)
@@ -3407,19 +3427,24 @@ class Broker:
             actor_type="user",
             actor_id=source,
             actor_label=source,
-            attributes={"source": source, "metadata": metadata or {}},
+            attributes={"source": source, "metadata": metadata_payload},
             started_at=now,
             ended_at=now,
         )
-        await self._channels.broadcast(
-            {
-                "type": "user_confirmed",
-                "id": msg_id,
-                "content": content,
-                "source": source,
-                "metadata": metadata or {},
-            }
-        )
+        event = {
+            "type": "user_confirmed",
+            "id": msg_id,
+            "content": content,
+            "source": source,
+            "metadata": metadata_payload,
+        }
+        if participant_id:
+            event["participantId"] = participant_id
+            event["participant"] = participant_meta
+        thread_id = _non_empty_str(metadata_payload.get("thread_id"))
+        if thread_id:
+            event["threadId"] = thread_id
+        await self._channels.broadcast(event)
         if deliver_to_transport:
             await self._send_explicit_human_message_to_transport(content)
         return msg_id
@@ -3447,6 +3472,7 @@ class Broker:
             rendered_content,
             source=source,
             metadata=metadata,
+            participant_id=_non_empty_str(metadata.get("participant_id")) if metadata else None,
             deliver_to_transport=False,
         )
 
@@ -3458,6 +3484,69 @@ class Broker:
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
+
+    async def join_human_environment(
+        self,
+        *,
+        participant_id: str,
+        display_name: str,
+        environment_id: str,
+        role: str = "observer",
+        room_id: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Join a human participant to the live Environment room state."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        meta = await self._room_bridge.join_human_environment(
+            participant_id,
+            display_name=display_name,
+            environment_id=environment_id,
+            role=role,
+            room_id=room_id,
+            capabilities=capabilities,
+            surfaces=surfaces,
+        )
+        return asdict(meta)
+
+    async def heartbeat_human_environment(
+        self,
+        *,
+        participant_id: str,
+        status: str | None = None,
+        wakefulness: str | None = None,
+        attention_state: str | None = None,
+    ) -> dict[str, Any]:
+        """Record heartbeat/state for a human Environment participant."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        meta = await self._room_bridge.heartbeat(
+            participant_id,
+            status=status,
+            wakefulness=wakefulness,
+            attention_state=attention_state,
+        )
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        return asdict(meta)
+
+    async def leave_human_environment(
+        self,
+        *,
+        participant_id: str,
+        reason: str = "left",
+    ) -> None:
+        """Leave a human participant from the live Environment room state."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        await self._room_bridge.leave_human_environment(participant_id, reason=reason)
+
+    def require_room_capability(self, participant_id: str, capability: str) -> None:
+        """Raise when a room participant cannot perform a control action."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        self._room_bridge.require_participant_capability(participant_id, capability)
 
     async def _send_explicit_human_message_to_transport(self, content: str) -> None:
         """Deliver an explicit human room message to Skuld's own transport."""
@@ -5434,6 +5523,7 @@ class _RoomMessageRequest(BaseModel):
 
     content: str
     source: str = "external"
+    participant_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -5443,7 +5533,36 @@ class _DirectedRoomMessageRequest(BaseModel):
     target_peer_id: str
     content: str
     source: str = "external"
+    participant_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class _RoomJoinRequest(BaseModel):
+    """Request body for joining a live Environment room."""
+
+    participant_id: str
+    display_name: str = ""
+    environment_id: str
+    role: str = "observer"
+    room_id: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
+
+
+class _RoomHeartbeatRequest(BaseModel):
+    """Request body for human Environment heartbeat/state updates."""
+
+    participant_id: str
+    status: str | None = None
+    wakefulness: str | None = None
+    attention_state: str | None = None
+
+
+class _RoomLeaveRequest(BaseModel):
+    """Request body for leaving a live Environment room."""
+
+    participant_id: str
+    reason: str = "left"
 
 
 class _WorkflowGateResolveRequest(BaseModel):
@@ -5484,10 +5603,15 @@ async def send_room_message(body: _RoomMessageRequest) -> dict:
         message_id = await broker.handle_human_room_message(
             body.content,
             source=body.source,
+            participant_id=body.participant_id,
             metadata=body.metadata,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
 
@@ -5500,7 +5624,9 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
             body.target_peer_id,
             body.content,
             source=body.source,
-            metadata=body.metadata,
+            metadata={**body.metadata, "participant_id": body.participant_id}
+            if body.participant_id
+            else body.metadata,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -5510,6 +5636,65 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
         raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/join")
+async def join_room(body: _RoomJoinRequest) -> dict:
+    """Join a human participant to a live Valkyrie Environment."""
+    try:
+        participant = await broker.join_human_environment(
+            participant_id=body.participant_id,
+            display_name=body.display_name,
+            environment_id=body.environment_id,
+            role=body.role,
+            room_id=body.room_id,
+            capabilities=body.capabilities or None,
+            surfaces=body.surfaces or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+    return {"status": "joined", "participant": participant}
+
+
+@app.post("/api/room/heartbeat")
+async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
+    """Update human participant presence in a live Valkyrie Environment."""
+    try:
+        participant = await broker.heartbeat_human_environment(
+            participant_id=body.participant_id,
+            status=body.status,
+            wakefulness=body.wakefulness,
+            attention_state=body.attention_state,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    return {"status": "ok", "participant": participant}
+
+
+@app.post("/api/room/leave")
+async def leave_room(body: _RoomLeaveRequest) -> dict:
+    """Leave a human participant from a live Valkyrie Environment."""
+    try:
+        await broker.leave_human_environment(
+            participant_id=body.participant_id,
+            reason=body.reason,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+    return {"status": "left", "participant_id": body.participant_id}
 
 
 @app.get("/api/room/participants")
