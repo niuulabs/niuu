@@ -19,6 +19,7 @@
     "features": { "mode": "http", "baseUrl": "/api/v1" },
     "tracker": { "mode": "http", "baseUrl": "/api/v1" },
     "audit": { "mode": "http", "baseUrl": "/api/v1" },
+    "niuu": { "mode": "http", "baseUrl": "/api/v1/niuu" },
     "bifrost": { "mode": "http", "baseUrl": "/api/v1/bifrost" },
     "mimir": { "mode": "http", "baseUrl": "/api/v1/mimir" },
     "observatory": { "mode": "http", "baseUrl": "/api/v1/observatory" },
