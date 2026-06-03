@@ -491,5 +491,11 @@ ROOM_OPENED: str = "room.opened"
 #: A room message was recorded.
 ROOM_MESSAGE_RECORDED: str = "room.message.recorded"
 
+#: A room context snapshot was recorded for replay/late join.
+ROOM_CONTEXT_SNAPSHOT_RECORDED: str = "room.context_snapshot.recorded"
+
+#: A room transcript was recorded for audit/learning.
+ROOM_TRANSCRIPT_RECORDED: str = "room.transcript.recorded"
+
 #: A room was closed.
 ROOM_CLOSED: str = "room.closed"

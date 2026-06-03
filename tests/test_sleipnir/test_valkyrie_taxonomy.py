@@ -18,7 +18,11 @@ from sleipnir.domain.catalog import (
     learning_promoted,
     odin_court_decided,
     participant_joined,
+    room_closed,
+    room_context_snapshot_recorded,
+    room_message_recorded,
     room_opened,
+    room_transcript_recorded,
     signal_received,
     valkyrie_action_completed,
     valkyrie_action_executed,
@@ -72,6 +76,10 @@ TAXONOMY_CONSTANTS = [
     registry.LEARNING_PROMOTED,
     registry.PARTICIPANT_JOINED,
     registry.ROOM_OPENED,
+    registry.ROOM_MESSAGE_RECORDED,
+    registry.ROOM_CONTEXT_SNAPSHOT_RECORDED,
+    registry.ROOM_TRANSCRIPT_RECORDED,
+    registry.ROOM_CLOSED,
 ]
 
 
@@ -324,6 +332,53 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         correlation_id="corr-1",
         causation_id=participant.event_id,
     )
+    room_message = room_message_recorded(
+        environment_id="cluster-a",
+        room_id="room-1",
+        message_id="msg-1",
+        participant_id="human:operator",
+        role="user",
+        content="Approved for autonomous inspection.",
+        visibility="public",
+        thread_id="thread-1",
+        metadata={"root_correlation_id": "corr-1"},
+        source="skuld:room",
+        correlation_id="corr-1",
+        causation_id=room.event_id,
+    )
+    room_context = room_context_snapshot_recorded(
+        environment_id="cluster-a",
+        room_id="room-1",
+        root_correlation_id="corr-1",
+        active_state={"state": "investigating"},
+        signal_refs=[signal.event_id],
+        judgment_refs=[proposed_judgment.event_id],
+        action_refs=[action_proposed.event_id],
+        participant_ids=["human:operator", "valkyrie:k8s"],
+        transcript_targets=["mimir"],
+        source="skuld:room",
+        correlation_id="corr-1",
+        causation_id=room_message.event_id,
+    )
+    room_transcript = room_transcript_recorded(
+        environment_id="cluster-a",
+        room_id="room-1",
+        transcript_ref="huddles/cluster-a/room-1.md",
+        message_refs=[room_message.event_id],
+        summary="Operator approved inspection.",
+        source="skuld:room",
+        correlation_id="corr-1",
+        causation_id=room_context.event_id,
+    )
+    room_closed_event = room_closed(
+        environment_id="cluster-a",
+        room_id="room-1",
+        reason="resolved",
+        transcript_ref="huddles/cluster-a/room-1.md",
+        source="skuld:room",
+        correlation_id="corr-1",
+        causation_id=room_transcript.event_id,
+    )
 
     events = [
         signal,
@@ -345,6 +400,10 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         learning,
         participant,
         room,
+        room_message,
+        room_context,
+        room_transcript,
+        room_closed_event,
     ]
     assert all(isinstance(event, SleipnirEvent) for event in events)
     assert [event.correlation_id for event in events] == ["corr-1"] * len(events)
@@ -362,6 +421,10 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
     assert feedback.payload["signal_refs"] == [signal.event_id]
     assert preference.event_type == registry.FEEDBACK_PREFERENCE_UPDATED
     assert room.payload["participants"] == ["human:operator", "valkyrie:k8s"]
+    assert room_message.event_type == registry.ROOM_MESSAGE_RECORDED
+    assert room_context.event_type == registry.ROOM_CONTEXT_SNAPSHOT_RECORDED
+    assert room_transcript.event_type == registry.ROOM_TRANSCRIPT_RECORDED
+    assert room_closed_event.event_type == registry.ROOM_CLOSED
 
 
 def test_resident_feedback_type_vocabulary_covers_reframed_workflows() -> None:

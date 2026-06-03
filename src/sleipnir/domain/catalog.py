@@ -400,6 +400,49 @@ class RoomOpenedPayload:
     participants: list[str]
 
 
+@dataclass(frozen=True)
+class RoomMessageRecordedPayload:
+    environment_id: str
+    room_id: str
+    message_id: str
+    participant_id: str
+    role: str
+    content: str
+    visibility: str
+    thread_id: str
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class RoomContextSnapshotRecordedPayload:
+    environment_id: str
+    room_id: str
+    root_correlation_id: str
+    active_state: dict
+    signal_refs: list[str]
+    judgment_refs: list[str]
+    action_refs: list[str]
+    participant_ids: list[str]
+    transcript_targets: list[str]
+
+
+@dataclass(frozen=True)
+class RoomTranscriptRecordedPayload:
+    environment_id: str
+    room_id: str
+    transcript_ref: str
+    message_refs: list[str]
+    summary: str
+
+
+@dataclass(frozen=True)
+class RoomClosedPayload:
+    environment_id: str
+    room_id: str
+    reason: str
+    transcript_ref: str
+
+
 # ---------------------------------------------------------------------------
 # Factory functions
 # ---------------------------------------------------------------------------
@@ -1749,6 +1792,164 @@ def room_opened(
         payload=payload,
         summary=f"Room {room_id} opened in {environment_id}: {purpose[:80]}",
         urgency=0.5,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or room_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def room_message_recorded(
+    *,
+    environment_id: str,
+    room_id: str,
+    message_id: str,
+    participant_id: str,
+    role: str,
+    content: str,
+    source: str,
+    visibility: str = "public",
+    thread_id: str = "",
+    metadata: dict | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a huddle/room message is appended to the replay timeline."""
+    payload = dataclasses.asdict(
+        RoomMessageRecordedPayload(
+            environment_id=environment_id,
+            room_id=room_id,
+            message_id=message_id,
+            participant_id=participant_id,
+            role=role,
+            content=content,
+            visibility=visibility,
+            thread_id=thread_id,
+            metadata=metadata or {},
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ROOM_MESSAGE_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Room {room_id} message from {participant_id}: {content[:80]}",
+        urgency=0.3,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or room_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def room_context_snapshot_recorded(
+    *,
+    environment_id: str,
+    room_id: str,
+    root_correlation_id: str,
+    active_state: dict,
+    signal_refs: list[str],
+    judgment_refs: list[str],
+    action_refs: list[str],
+    participant_ids: list[str],
+    transcript_targets: list[str],
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit a replayable snapshot for late huddle joiners."""
+    payload = dataclasses.asdict(
+        RoomContextSnapshotRecordedPayload(
+            environment_id=environment_id,
+            room_id=room_id,
+            root_correlation_id=root_correlation_id,
+            active_state=active_state,
+            signal_refs=signal_refs,
+            judgment_refs=judgment_refs,
+            action_refs=action_refs,
+            participant_ids=participant_ids,
+            transcript_targets=transcript_targets,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ROOM_CONTEXT_SNAPSHOT_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Room {room_id} context snapshot in {environment_id}",
+        urgency=0.25,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or root_correlation_id or room_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def room_transcript_recorded(
+    *,
+    environment_id: str,
+    room_id: str,
+    transcript_ref: str,
+    message_refs: list[str],
+    summary: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a huddle transcript has been written for audit/learning."""
+    payload = dataclasses.asdict(
+        RoomTranscriptRecordedPayload(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_ref,
+            message_refs=message_refs,
+            summary=summary,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ROOM_TRANSCRIPT_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Room {room_id} transcript recorded: {summary[:80]}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or room_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def room_closed(
+    *,
+    environment_id: str,
+    room_id: str,
+    reason: str,
+    transcript_ref: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a replayable Environment huddle is closed."""
+    payload = dataclasses.asdict(
+        RoomClosedPayload(
+            environment_id=environment_id,
+            room_id=room_id,
+            reason=reason,
+            transcript_ref=transcript_ref,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ROOM_CLOSED,
+        source=source,
+        payload=payload,
+        summary=f"Room {room_id} closed: {reason[:80]}",
+        urgency=0.2,
         domain="infrastructure",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or room_id,

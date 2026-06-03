@@ -3397,6 +3397,7 @@ class Broker:
         if not content.strip():
             raise ValueError("content is required")
         participant_meta = None
+        participant = None
         if participant_id:
             if self._room_bridge is None:
                 raise RuntimeError("Room mode is not enabled")
@@ -3445,6 +3446,19 @@ class Broker:
         if thread_id:
             event["threadId"] = thread_id
         await self._channels.broadcast(event)
+        if self._room_bridge is not None and participant is not None:
+            for room_id in participant.room_ids:
+                await self._room_bridge.record_huddle_message(
+                    room_id=room_id,
+                    environment_id=participant.environment_id,
+                    message_id=msg_id,
+                    participant_id=participant.peer_id,
+                    role="user",
+                    content=content,
+                    visibility=event.get("visibility", "public"),
+                    thread_id=thread_id,
+                    metadata=metadata_payload,
+                )
         if deliver_to_transport:
             await self._send_explicit_human_message_to_transport(content)
         return msg_id

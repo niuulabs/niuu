@@ -27,6 +27,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
@@ -109,6 +110,9 @@ class RoomBridge:
         self._participants: dict[str, ParticipantMeta] = {}
         self._websockets: dict[str, WebSocket] = {}
         self._pending_help_context: dict[str, dict[str, Any]] = {}
+        self._room_event_log: dict[str, list[dict[str, Any]]] = {}
+        self._room_context_snapshots: dict[str, dict[str, Any]] = {}
+        self._room_sequence = 0
         self._color_cycle = itertools.cycle(list(config.participant_colors))
         self._timeline_started_at = time.monotonic()
         self._known_files: set[str] = set()
@@ -356,6 +360,212 @@ class RoomBridge:
                 f"Participant {participant_id} lacks capability: {capability}"
             )
 
+    # ------------------------------------------------------------------
+    # Environment huddles and replay
+    # ------------------------------------------------------------------
+
+    async def open_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        purpose: str,
+        environment_id: str | None = None,
+        root_correlation_id: str = "",
+        active_state: dict[str, Any] | None = None,
+        signal_refs: list[str] | None = None,
+        judgment_refs: list[str] | None = None,
+        action_refs: list[str] | None = None,
+        transcript_targets: list[str] | None = None,
+        participants: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Open a replayable huddle scoped to an Environment."""
+        environment = environment_id or self._environment_id
+        participant_ids = participants or [
+            meta.peer_id
+            for meta in self._participants.values()
+            if (meta.environment_id or self._environment_id) == environment
+        ]
+        opened = {
+            "type": "room_opened",
+            "roomId": room_id,
+            "environmentId": environment,
+            "purpose": purpose,
+            "participants": participant_ids,
+        }
+        await self._channels.broadcast(opened)
+        await self._publish_room_opened(environment, room_id, purpose, participant_ids)
+        self._append_huddle_event(room_id, opened)
+        await self.record_huddle_context_snapshot(
+            room_id=room_id,
+            environment_id=environment,
+            root_correlation_id=root_correlation_id or room_id,
+            active_state=active_state or {},
+            signal_refs=signal_refs or [],
+            judgment_refs=judgment_refs or [],
+            action_refs=action_refs or [],
+            transcript_targets=transcript_targets or ["mimir"],
+            participant_ids=participant_ids,
+        )
+        return opened
+
+    async def record_huddle_context_snapshot(
+        self,
+        *,
+        room_id: str,
+        environment_id: str,
+        root_correlation_id: str,
+        active_state: dict[str, Any],
+        signal_refs: list[str],
+        judgment_refs: list[str],
+        action_refs: list[str],
+        participant_ids: list[str],
+        transcript_targets: list[str],
+    ) -> dict[str, Any]:
+        """Record current huddle context for late-join replay."""
+        snapshot = {
+            "type": "room_context_snapshot",
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "rootCorrelationId": root_correlation_id,
+            "activeState": dict(active_state),
+            "signalRefs": list(signal_refs),
+            "judgmentRefs": list(judgment_refs),
+            "actionRefs": list(action_refs),
+            "participantIds": list(participant_ids),
+            "transcriptTargets": list(transcript_targets),
+        }
+        self._room_context_snapshots[room_id] = snapshot
+        self._append_huddle_event(room_id, snapshot)
+        await self._publish_room_context_snapshot(snapshot)
+        return snapshot
+
+    async def record_huddle_message(
+        self,
+        *,
+        room_id: str,
+        environment_id: str,
+        message_id: str,
+        participant_id: str,
+        role: str,
+        content: str,
+        visibility: str = "public",
+        thread_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append a room message to replay state and publish the canonical event."""
+        message = {
+            "type": "room_message",
+            "id": message_id,
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "participantId": participant_id,
+            "role": role,
+            "content": content,
+            "visibility": visibility,
+            "threadId": thread_id,
+            "metadata": metadata or {},
+        }
+        self._append_huddle_event(room_id, message)
+        await self._publish_room_message_recorded(message)
+        return message
+
+    def replay_huddle(self, room_id: str, *, from_sequence: int = 0) -> list[dict[str, Any]]:
+        """Return ordered huddle events after *from_sequence* for late joiners."""
+        return [
+            dict(event)
+            for event in self._room_event_log.get(room_id, [])
+            if int(event.get("sequence", 0)) > from_sequence
+        ]
+
+    def _append_huddle_event(self, room_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        self._room_sequence += 1
+        stored = {
+            "sequence": self._room_sequence,
+            "recordedAt": datetime.now(UTC).isoformat(),
+            **event,
+        }
+        self._room_event_log.setdefault(room_id, []).append(stored)
+        return stored
+
+    def build_huddle_transcript(self, room_id: str) -> str:
+        """Render a Markdown transcript from recorded huddle messages."""
+        lines = [f"# Huddle Transcript: {room_id}", ""]
+        snapshot = self._room_context_snapshots.get(room_id)
+        if snapshot:
+            lines.extend(
+                [
+                    f"- Environment: {snapshot.get('environmentId', '')}",
+                    f"- Root correlation: {snapshot.get('rootCorrelationId', '')}",
+                    "",
+                ]
+            )
+        for event in self._room_event_log.get(room_id, []):
+            if event.get("type") != "room_message":
+                continue
+            participant = event.get("participantId", "")
+            content = str(event.get("content", "")).strip()
+            if not content:
+                continue
+            lines.append(f"## {participant}")
+            lines.append(content)
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
+
+    async def write_huddle_transcript(
+        self,
+        *,
+        mimir: Any,
+        room_id: str,
+        path: str | None = None,
+        summary: str = "",
+    ) -> str:
+        """Write the huddle transcript to Mimir and emit a transcript event."""
+        snapshot = self._room_context_snapshots.get(room_id, {})
+        environment_id = str(snapshot.get("environmentId") or self._environment_id)
+        transcript_path = path or f"huddles/{environment_id}/{room_id}.md"
+        content = self.build_huddle_transcript(room_id)
+        await mimir.upsert_page(transcript_path, content)
+        message_refs = [
+            str(event.get("id"))
+            for event in self._room_event_log.get(room_id, [])
+            if event.get("type") == "room_message" and event.get("id")
+        ]
+        await self._publish_room_transcript_recorded(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_path,
+            message_refs=message_refs,
+            summary=summary or f"{len(message_refs)} huddle messages recorded",
+        )
+        return transcript_path
+
+    async def close_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        reason: str = "closed",
+        transcript_ref: str = "",
+    ) -> dict[str, Any]:
+        """Close a replayable huddle and publish its terminal event."""
+        snapshot = self._room_context_snapshots.get(room_id, {})
+        environment_id = str(snapshot.get("environmentId") or self._environment_id)
+        closed = {
+            "type": "room_closed",
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "reason": reason,
+            "transcriptRef": transcript_ref,
+        }
+        self._append_huddle_event(room_id, closed)
+        await self._channels.broadcast(closed)
+        await self._publish_room_closed(
+            environment_id=environment_id,
+            room_id=room_id,
+            reason=reason,
+            transcript_ref=transcript_ref,
+        )
+        return closed
+
     async def unregister(self, peer_id: str) -> None:
         """Remove a participant and broadcast ``participant_left``."""
         meta = self._participants.pop(peer_id, None)
@@ -514,6 +724,110 @@ class RoomBridge:
             )
         )
 
+    async def _publish_room_opened(
+        self,
+        environment_id: str,
+        room_id: str,
+        purpose: str,
+        participants: list[str],
+    ) -> None:
+        from sleipnir.domain.catalog import room_opened
+
+        await self._publish_presence(
+            room_opened(
+                environment_id=environment_id,
+                room_id=room_id,
+                purpose=purpose,
+                participants=participants,
+                source="skuld:room_bridge",
+                correlation_id=room_id,
+            )
+        )
+
+    async def _publish_room_context_snapshot(self, snapshot: dict[str, Any]) -> None:
+        from sleipnir.domain.catalog import room_context_snapshot_recorded
+
+        await self._publish_presence(
+            room_context_snapshot_recorded(
+                environment_id=str(snapshot.get("environmentId") or self._environment_id),
+                room_id=str(snapshot.get("roomId") or ""),
+                root_correlation_id=str(snapshot.get("rootCorrelationId") or ""),
+                active_state=dict(snapshot.get("activeState") or {}),
+                signal_refs=list(snapshot.get("signalRefs") or []),
+                judgment_refs=list(snapshot.get("judgmentRefs") or []),
+                action_refs=list(snapshot.get("actionRefs") or []),
+                participant_ids=list(snapshot.get("participantIds") or []),
+                transcript_targets=list(snapshot.get("transcriptTargets") or []),
+                source="skuld:room_bridge",
+                correlation_id=str(
+                    snapshot.get("rootCorrelationId") or snapshot.get("roomId") or ""
+                ),
+            )
+        )
+
+    async def _publish_room_message_recorded(self, message: dict[str, Any]) -> None:
+        from sleipnir.domain.catalog import room_message_recorded
+
+        await self._publish_presence(
+            room_message_recorded(
+                environment_id=str(message.get("environmentId") or self._environment_id),
+                room_id=str(message.get("roomId") or ""),
+                message_id=str(message.get("id") or ""),
+                participant_id=str(message.get("participantId") or ""),
+                role=str(message.get("role") or ""),
+                content=str(message.get("content") or ""),
+                visibility=str(message.get("visibility") or "public"),
+                thread_id=str(message.get("threadId") or ""),
+                metadata=dict(message.get("metadata") or {}),
+                source="skuld:room_bridge",
+                correlation_id=str(message.get("roomId") or ""),
+            )
+        )
+
+    async def _publish_room_transcript_recorded(
+        self,
+        *,
+        environment_id: str,
+        room_id: str,
+        transcript_ref: str,
+        message_refs: list[str],
+        summary: str,
+    ) -> None:
+        from sleipnir.domain.catalog import room_transcript_recorded
+
+        await self._publish_presence(
+            room_transcript_recorded(
+                environment_id=environment_id,
+                room_id=room_id,
+                transcript_ref=transcript_ref,
+                message_refs=message_refs,
+                summary=summary,
+                source="skuld:room_bridge",
+                correlation_id=room_id,
+            )
+        )
+
+    async def _publish_room_closed(
+        self,
+        *,
+        environment_id: str,
+        room_id: str,
+        reason: str,
+        transcript_ref: str,
+    ) -> None:
+        from sleipnir.domain.catalog import room_closed
+
+        await self._publish_presence(
+            room_closed(
+                environment_id=environment_id,
+                room_id=room_id,
+                reason=reason,
+                transcript_ref=transcript_ref,
+                source="skuld:room_bridge",
+                correlation_id=room_id,
+            )
+        )
+
     async def _publish_presence(self, event: Any) -> None:
         if self._publish_presence_event is None:
             return
@@ -654,6 +968,19 @@ class RoomBridge:
                 visibility="public",
             )
             self._append_turn(turn)
+
+        for room_id in meta.room_ids:
+            await self.record_huddle_message(
+                room_id=room_id,
+                environment_id=meta.environment_id or self._environment_id,
+                message_id=msg_id,
+                participant_id=meta.peer_id,
+                role="assistant",
+                content=content,
+                visibility=room_event["visibility"],
+                thread_id=thread_id or "",
+                metadata=frame.get("metadata", {}),
+            )
 
     async def _handle_activity_frame(
         self,
