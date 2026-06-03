@@ -27,6 +27,7 @@ function wrapWithServices(
     getRepos: () => Promise<unknown>;
     getBranches: (repoUrl: string) => Promise<string[]>;
   },
+  initialLaunchSpecRef?: string,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -38,7 +39,11 @@ function wrapWithServices(
           'niuu.repos': repoService,
         }}
       >
-        <LaunchWizard open={open} onOpenChange={onOpenChange} />
+        <LaunchWizard
+          open={open}
+          onOpenChange={onOpenChange}
+          initialLaunchSpecRef={initialLaunchSpecRef}
+        />
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -390,6 +395,35 @@ source:
     await waitFor(() => {
       expect(screen.getByText(/No launch spec loaded/i)).toBeInTheDocument();
     });
+  });
+
+  it('applies an initial launch spec ref after loading presets', async () => {
+    const service = createMockVolundrService();
+    wrapWithServices(
+      true,
+      vi.fn(),
+      service,
+      {
+        getRepos: service.getRepos.bind(service),
+        getBranches: async () => [],
+      },
+      'spec-fast-review',
+    );
+
+    await advanceToRuntime();
+
+    const presetField = screen.getByText('Load launch spec').closest('.niuu-field');
+    const presetSelect = presetField?.querySelector('select') as HTMLSelectElement;
+    expect(presetSelect.value).toBe('spec-fast-review');
+    expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe(
+      'claude-sonnet-4-6',
+    );
+
+    fireEvent.click(screen.getByTestId('wizard-back'));
+    await screen.findByTestId('step-source-content');
+    expect((screen.getByTestId('repo-select') as HTMLSelectElement).value).toBe(
+      'github.com/niuulabs/volundr',
+    );
   });
 
   it('launches a catalog launch spec by name instead of treating it as a saved spec id', async () => {

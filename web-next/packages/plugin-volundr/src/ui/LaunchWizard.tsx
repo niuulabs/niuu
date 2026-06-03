@@ -2383,7 +2383,9 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
   useEffect(() => {
     if (!open || !initialLaunchSpecRef || presets.length === 0) return;
     if (presets.some((preset) => launchSpecRef(preset) === initialLaunchSpecRef)) {
-      handleApplyPreset(initialLaunchSpecRef);
+      queueMicrotask(() => {
+        handleApplyPreset(initialLaunchSpecRef);
+      });
     }
   }, [handleApplyPreset, initialLaunchSpecRef, open, presets]);
 
