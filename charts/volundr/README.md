@@ -237,55 +237,33 @@ Selects how Volundr deploys session pods. Uses the [dynamic adapter pattern](#ar
 | `chronicle.summaryMaxTokens` | int | `2000` | Max tokens for summary generation |
 | `chronicle.retentionDays` | int | `0` | Retention period in days (`0` = keep forever) |
 
-### Profiles
+### Launch Specs
 
-Profiles define preset workload configurations (model, resources, MCP servers) for session creation.
+Launch specs define preloaded catalog entries for session creation, including runtime, model, resources, repositories, setup scripts, MCP servers, and workspace layout.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `profiles` | list | `[]` | List of forge profiles. Each profile has `name`, `description`, `workloadType`, `sessionDefinition`, `model`, `resourceConfig`, `mcpServers`, `envVars`, `envSecretRefs`, `workloadConfig`, `isDefault` |
+| `launchSpecs` | list | `standard-claude`, `standard-codex` | System-scope launch specs exposed through Volundr's launch catalog |
 
 <details>
-<summary>Profile example</summary>
+<summary>Launch spec example</summary>
 
 ```yaml
-profiles:
-  - name: standard
-    description: "Standard Claude Code session"
+launchSpecs:
+  - name: standard-claude
+    description: "Default Claude Code session"
     workloadType: session
-    sessionDefinition: skuld-claude
-    model: "claude-sonnet-4-20250514"
+    sessionDefinition: skuldClaude
+    model: "claude-sonnet-4-6"
+    cliTool: claude
     resourceConfig:
-      cpu: "500m"
-      memory: "1Gi"
-    mcpServers: []
-    envVars: {}
-    envSecretRefs: []
-    workloadConfig: {}
-    isDefault: true
-```
-
-</details>
-
-### Templates
-
-Templates combine a profile with repositories and setup scripts for workspace initialization.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `templates` | list | `[]` | List of workspace templates. Each template has `name`, `description`, `profileName`, `repos`, `setupScripts`, `workspaceLayout`, `isDefault` |
-
-<details>
-<summary>Template example</summary>
-
-```yaml
-templates:
-  - name: default-session
-    description: "Default coding session"
-    profileName: standard
+      cpu: "1"
+      memory: "2Gi"
+      gpu: "0"
     repos:
       - url: "https://github.com/org/repo"
         branch: main
+        path: "/workspace/repo"
     setupScripts:
       - "pip install -r requirements.txt"
     workspaceLayout:

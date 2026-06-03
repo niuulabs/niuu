@@ -4,7 +4,6 @@
 import type { IVolundrService, ResolveWorkflowGateRequest } from '../ports/IVolundrService';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
 import type { ISessionStore } from '../ports/ISessionStore';
-import type { ITemplateStore } from '../ports/ITemplateStore';
 import type { IPtyStream } from '../ports/IPtyStream';
 import type { IMetricsStream } from '../ports/IMetricsStream';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
@@ -27,7 +26,6 @@ import type {
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
-import type { Template } from '../domain/template';
 
 // ---------------------------------------------------------------------------
 // Seed data
@@ -118,7 +116,7 @@ const SEED_CREDENTIALS: StoredCredential[] = [
     name: 'aws-mimir',
     secretType: 'api_key',
     keys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
-    scope: 'template:mimir-embeddings',
+    scope: 'launch-spec:standard-codex',
     used: 6,
     metadata: {},
     createdAt: '2026-01-02T12:00:00Z',
@@ -162,7 +160,7 @@ const SEED_CREDENTIALS: StoredCredential[] = [
     name: 'ssh-deploy',
     secretType: 'ssh_key',
     keys: ['id_ed25519', 'id_ed25519.pub'],
-    scope: 'template:niuu-platform',
+    scope: 'launch-spec:standard-claude',
     used: 2,
     metadata: {},
     createdAt: '2025-11-15T12:00:00Z',
@@ -981,261 +979,6 @@ const SEED_DOMAIN_SESSIONS: Session[] = [
   },
 ];
 
-const SEED_TEMPLATES: Template[] = [
-  // ── Forge-overview showcase templates (displayed first) ──────────────
-  {
-    id: 'tpl-platform',
-    name: 'niuu-platform',
-    description: 'Full niuu monorepo · all modules',
-    version: 1,
-    usageCount: 142,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '4',
-        cpuLimit: '8',
-        memRequestMi: 16_384,
-        memLimitMi: 32_768,
-        gpuCount: 0,
-      },
-      ttlSec: 3_600,
-      idleTimeoutSec: 600,
-    },
-    createdAt: '2025-12-01T00:00:00Z',
-    updatedAt: '2025-12-01T00:00:00Z',
-  },
-  {
-    id: 'tpl-web',
-    name: 'volundr-web',
-    description: 'Only the web/ sub-tree · fast setup',
-    version: 1,
-    usageCount: 87,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '2',
-        cpuLimit: '4',
-        memRequestMi: 8_192,
-        memLimitMi: 16_384,
-        gpuCount: 0,
-      },
-      ttlSec: 7_200,
-      idleTimeoutSec: 900,
-    },
-    createdAt: '2025-12-15T00:00:00Z',
-    updatedAt: '2025-12-15T00:00:00Z',
-  },
-  {
-    id: 'tpl-bifrost',
-    name: 'bifrost-gateway',
-    description: 'LLM gateway · provider adapters',
-    version: 1,
-    usageCount: 23,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'codex-primary',
-      mounts: [
-        {
-          name: 'niuu/bifrost',
-          mountPath: '/workspace',
-          source: { kind: 'git', repo: 'niuu/bifrost', branch: 'main' },
-          readOnly: false,
-        },
-      ],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [
-        {
-          name: 'filesystem',
-          transport: 'stdio',
-          connectionString: 'uvx mcp-filesystem',
-          tools: [],
-        },
-        {
-          name: 'git',
-          transport: 'stdio',
-          connectionString: 'uvx mcp-git',
-          tools: [],
-        },
-      ],
-      resources: {
-        cpuRequest: '2',
-        cpuLimit: '2',
-        memRequestMi: 4096,
-        memLimitMi: 4096,
-        gpuCount: 0,
-      },
-      ttlSec: 3600,
-      idleTimeoutSec: 600,
-    },
-    createdAt: '2025-12-18T00:00:00Z',
-    updatedAt: '2025-12-18T00:00:00Z',
-  },
-  {
-    id: 'tpl-mimir',
-    name: 'mimir-embeddings',
-    description: 'Indexer · needs GPU for local embeds',
-    version: 1,
-    usageCount: 14,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '4',
-        cpuLimit: '4',
-        memRequestMi: 32_768,
-        memLimitMi: 32_768,
-        gpuCount: 1,
-      },
-      ttlSec: 5400,
-      idleTimeoutSec: 900,
-    },
-    createdAt: '2025-12-20T00:00:00Z',
-    updatedAt: '2025-12-20T00:00:00Z',
-  },
-  {
-    id: 'tpl-scratch',
-    name: 'scratch',
-    description: 'Blank workspace · ad hoc shell',
-    version: 1,
-    usageCount: 12,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '1',
-        cpuLimit: '2',
-        memRequestMi: 1024,
-        memLimitMi: 2048,
-        gpuCount: 0,
-      },
-      ttlSec: 3600,
-      idleTimeoutSec: 600,
-    },
-    createdAt: '2025-12-22T00:00:00Z',
-    updatedAt: '2025-12-22T00:00:00Z',
-  },
-  {
-    id: 'tpl-local',
-    name: 'local-laptop',
-    description: 'Laptop bridge · local runtime shell',
-    version: 1,
-    usageCount: 9,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '1',
-        cpuLimit: '2',
-        memRequestMi: 2048,
-        memLimitMi: 4096,
-        gpuCount: 0,
-      },
-      ttlSec: 3600,
-      idleTimeoutSec: 600,
-    },
-    createdAt: '2025-12-23T00:00:00Z',
-    updatedAt: '2025-12-23T00:00:00Z',
-  },
-  // ── Original templates (other tests depend on these) ─────────────────
-  {
-    id: 'tpl-default',
-    name: 'default',
-    description: 'Minimal forge template — standard skuld image with no extra tooling.',
-    version: 1,
-    usageCount: 42,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'latest',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      mcpServers: [],
-      resources: {
-        cpuRequest: '1',
-        cpuLimit: '2',
-        memRequestMi: 512,
-        memLimitMi: 1_024,
-        gpuCount: 0,
-      },
-      ttlSec: 3_600,
-      idleTimeoutSec: 600,
-    },
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
-  },
-  {
-    id: 'tpl-gpu',
-    name: 'gpu-workload',
-    description: 'GPU-accelerated research template with Python and Jupyter via CUDA 12.',
-    version: 2,
-    usageCount: 7,
-    spec: {
-      image: 'ghcr.io/niuulabs/skuld',
-      tag: 'cuda-12',
-      mounts: [],
-      env: { MODEL_PATH: '/models' },
-      envSecretRefs: ['HF_TOKEN'],
-      tools: ['python', 'jupyter'],
-      mcpServers: [
-        {
-          name: 'python',
-          transport: 'stdio',
-          connectionString: 'uvx mcp-python',
-          tools: ['run_script', 'install_package', 'read_file'],
-        },
-        {
-          name: 'jupyter',
-          transport: 'stdio',
-          connectionString: 'uvx mcp-jupyter',
-          tools: ['execute_cell', 'list_kernels', 'create_notebook'],
-        },
-      ],
-      resources: {
-        cpuRequest: '2',
-        cpuLimit: '4',
-        memRequestMi: 4_096,
-        memLimitMi: 8_192,
-        gpuCount: 1,
-      },
-      ttlSec: 7_200,
-      idleTimeoutSec: 900,
-      clusterAffinity: ['cl-eitri'],
-    },
-    createdAt: '2026-02-01T00:00:00Z',
-    updatedAt: '2026-03-15T00:00:00Z',
-  },
-];
-
 const SEED_SESSION_DEFINITIONS: SessionDefinition[] = [
   {
     key: 'skuldClaude',
@@ -1267,38 +1010,62 @@ const SEED_SESSION_DEFINITIONS: SessionDefinition[] = [
 // IVolundrService mock
 // ---------------------------------------------------------------------------
 
-/** System-scope launch specs derived from the seed pod templates. */
-const SYSTEM_LAUNCH_SPECS: VolundrLaunchSpec[] = SEED_TEMPLATES.map((t) => ({
-  name: t.name,
-  scope: 'system',
-  id: null,
-  description: '',
-  isDefault: t.id === 'tpl-default',
-  sessionDefinition: null,
-  workloadType: 'skuld-claude',
-  model: null,
-  systemPrompt: null,
-  resourceConfig: {
-    cpu: t.spec.resources.cpuRequest,
-    memory: String(t.spec.resources.memRequestMi),
-    gpu: String(t.spec.resources.gpuCount),
+const SYSTEM_LAUNCH_SPECS: VolundrLaunchSpec[] = [
+  {
+    name: 'standard-claude',
+    scope: 'system',
+    id: null,
+    description: 'Default Claude Code session launched through Forge.',
+    isDefault: true,
+    sessionDefinition: 'skuldClaude',
+    workloadType: 'skuld-claude',
+    model: 'claude-sonnet-4-6',
+    systemPrompt: null,
+    resourceConfig: { cpu: '1', memory: '2Gi', gpu: '0' },
+    mcpServers: [],
+    envVars: {},
+    envSecretRefs: [],
+    workloadConfig: {},
+    repos: [],
+    source: null,
+    setupScripts: [],
+    workspaceLayout: {},
+    cliTool: 'claude',
+    terminalSidecar: { enabled: false, allowedCommands: [] },
+    skills: [],
+    rules: [],
+    integrationIds: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
   },
-  mcpServers: [],
-  envVars: t.spec.env,
-  envSecretRefs: t.spec.envSecretRefs,
-  workloadConfig: {},
-  repos: [],
-  source: null,
-  setupScripts: [],
-  workspaceLayout: {},
-  cliTool: 'claude',
-  terminalSidecar: { enabled: false, allowedCommands: [] },
-  skills: [],
-  rules: [],
-  integrationIds: [],
-  createdAt: '2026-01-01T00:00:00Z',
-  updatedAt: '2026-01-01T00:00:00Z',
-}));
+  {
+    name: 'standard-codex',
+    scope: 'system',
+    id: null,
+    description: 'Default Codex session launched through Forge.',
+    isDefault: false,
+    sessionDefinition: 'skuldCodex',
+    workloadType: 'skuld-codex',
+    model: 'gpt-5.4',
+    systemPrompt: null,
+    resourceConfig: { cpu: '1', memory: '2Gi', gpu: '0' },
+    mcpServers: [],
+    envVars: {},
+    envSecretRefs: [],
+    workloadConfig: {},
+    repos: [],
+    source: null,
+    setupScripts: [],
+    workspaceLayout: {},
+    cliTool: 'codex',
+    terminalSidecar: { enabled: false, allowedCommands: [] },
+    skills: [],
+    rules: [],
+    integrationIds: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  },
+];
 
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
@@ -1703,45 +1470,6 @@ export function createMockSessionStore(): ISessionStore {
         const i = listeners.indexOf(callback);
         if (i !== -1) listeners.splice(i, 1);
       };
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// ITemplateStore mock
-// ---------------------------------------------------------------------------
-
-export function createMockTemplateStore(): ITemplateStore {
-  let templates = [...SEED_TEMPLATES];
-  return {
-    getTemplate: async (id) => templates.find((t) => t.id === id) ?? null,
-    listTemplates: async () => templates,
-    createTemplate: async (name, spec) => {
-      const t: Template = {
-        id: `tpl-${Date.now()}`,
-        name,
-        version: 1,
-        spec,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      templates = [...templates, t];
-      return t;
-    },
-    updateTemplate: async (id, spec) => {
-      const existing = templates.find((t) => t.id === id);
-      if (!existing) throw new Error(`Template not found: ${id}`);
-      const updated = {
-        ...existing,
-        spec,
-        version: existing.version + 1,
-        updatedAt: new Date().toISOString(),
-      };
-      templates = templates.map((t) => (t.id === id ? updated : t));
-      return updated;
-    },
-    deleteTemplate: async (id) => {
-      templates = templates.filter((t) => t.id !== id);
     },
   };
 }

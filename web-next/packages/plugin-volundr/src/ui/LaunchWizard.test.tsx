@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { LaunchWizard } from './LaunchWizard';
-import { createMockTemplateStore, createMockVolundrService } from '../adapters/mock';
+import { createMockVolundrService } from '../adapters/mock';
 
 const navigate = vi.fn();
 
@@ -29,14 +29,12 @@ function wrapWithServices(
   },
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const templateStore = createMockTemplateStore();
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
           volundr: service,
-          'volundr.templates': templateStore,
           'niuu.repos': repoService,
         }}
       >
@@ -46,15 +44,12 @@ function wrapWithServices(
   );
 }
 
-async function selectTemplateAndContinue() {
-  await screen.findByTestId('step-template-content');
-  fireEvent.click(screen.getAllByTestId('wizard-template-card')[0]!);
-  fireEvent.click(screen.getByTestId('wizard-next'));
+async function waitForSourceStep() {
   await screen.findByTestId('step-source-content');
 }
 
 async function advanceToRuntime() {
-  await selectTemplateAndContinue();
+  await waitForSourceStep();
   fireEvent.click(screen.getByTestId('wizard-next'));
   await screen.findByTestId('step-runtime-content');
 }
@@ -71,36 +66,37 @@ describe('LaunchWizard', () => {
     await waitFor(() => expect(screen.getByText('Launch pod')).toBeInTheDocument());
   });
 
-  it('shows step indicator with 4 steps', async () => {
+  it('shows step indicator with 3 steps', async () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('step-indicator')).toBeInTheDocument());
-    expect(screen.getByText('Template')).toBeInTheDocument();
     expect(screen.getByText('Source')).toBeInTheDocument();
     expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Confirm')).toBeInTheDocument();
   });
 
-  it('shows template step content initially', async () => {
+  it('shows source step content initially', async () => {
     wrap();
-    await waitFor(() => expect(screen.getByTestId('step-template-content')).toBeInTheDocument());
-    expect(screen.getByText('Choose a template')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('step-source-content')).toBeInTheDocument());
+    expect(screen.getByText('Workspace source')).toBeInTheDocument();
   });
 
-  it('navigates to source step on continue', async () => {
+  it('navigates to runtime step on continue', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    expect(await screen.findByTestId('step-runtime-content')).toBeInTheDocument();
   });
 
-  it('navigates back from source to template', async () => {
+  it('navigates back from runtime to source', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await advanceToRuntime();
     fireEvent.click(screen.getByTestId('wizard-back'));
-    expect(await screen.findByTestId('step-template-content')).toBeInTheDocument();
+    expect(await screen.findByTestId('step-source-content')).toBeInTheDocument();
   });
 
   it('shows source type tabs', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
     expect(screen.getByTestId('source-tab-git')).toBeInTheDocument();
     expect(screen.getByTestId('source-tab-local_mount')).toBeInTheDocument();
     expect(screen.getByTestId('source-tab-blank')).toBeInTheDocument();
@@ -122,7 +118,7 @@ describe('LaunchWizard', () => {
 
   it('shows tracker search results from the service', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
 
     fireEvent.change(screen.getByLabelText('Tracker issue (optional)'), {
       target: { value: 'NIU' },
@@ -134,7 +130,7 @@ describe('LaunchWizard', () => {
 
   it('clears tracker results again when the query becomes too short', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
 
     fireEvent.change(screen.getByLabelText('Tracker issue (optional)'), {
       target: { value: 'NIU' },
@@ -152,9 +148,9 @@ describe('LaunchWizard', () => {
 
   it('uses embedded branch lists, links tracker issues, clears them, and supports blank sources', async () => {
     wrap();
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
 
-    const branchSelect = screen.getByTestId('branch-select') as HTMLSelectElement;
+    const branchSelect = (await screen.findByTestId('branch-select')) as HTMLSelectElement;
     expect(Array.from(branchSelect.options).map((option) => option.value)).toContain('main');
     expect(Array.from(branchSelect.options).map((option) => option.value)).toContain('develop');
     expect(Array.from(branchSelect.options).map((option) => option.value)).toContain(
@@ -202,7 +198,7 @@ describe('LaunchWizard', () => {
     };
 
     wrapWithServices(true, vi.fn(), service, repoService);
-    await selectTemplateAndContinue();
+    await waitForSourceStep();
 
     await waitFor(() => {
       expect(repoService.getBranches).toHaveBeenCalledWith('github.com/niuulabs/custom');
@@ -223,7 +219,6 @@ describe('LaunchWizard', () => {
           name: 'main',
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
           model: 'claude-sonnet-4-6',
-          launchSpec: 'niuu-platform',
           definition: 'skuldClaude',
           taskType: 'skuld-claude',
           terminalRestricted: false,
@@ -272,7 +267,7 @@ describe('LaunchWizard', () => {
     fireEvent.click(screen.getByText('edit as yaml'));
 
     await waitFor(() => {
-      const yamlEditor = screen.getByPlaceholderText('Preset YAML') as HTMLTextAreaElement;
+      const yamlEditor = screen.getByPlaceholderText('Launch spec YAML') as HTMLTextAreaElement;
       expect(yamlEditor.value).toContain('cli_tool: claude');
     });
   });
@@ -285,18 +280,18 @@ describe('LaunchWizard', () => {
     fireEvent.click(screen.getByText('show advanced'));
     fireEvent.click(screen.getByText('edit as yaml'));
 
-    const yamlEditor = screen.getByPlaceholderText('Preset YAML') as HTMLTextAreaElement;
+    const yamlEditor = screen.getByPlaceholderText('Launch spec YAML') as HTMLTextAreaElement;
     fireEvent.change(yamlEditor, {
       target: { value: 'cli_tool: [broken' },
     });
     fireEvent.click(screen.getByText('form view'));
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText('Preset YAML')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Launch spec YAML')).toBeInTheDocument();
     });
     expect(screen.getByText(/unexpected end of the stream/i)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText('Preset YAML'), {
+    fireEvent.change(screen.getByPlaceholderText('Launch spec YAML'), {
       target: {
         value: `cli_tool: codex
 model: gpt-5.5
@@ -330,7 +325,7 @@ source:
     fireEvent.click(screen.getByText('form view'));
 
     await waitFor(() => {
-      expect(screen.queryByPlaceholderText('Preset YAML')).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText('Launch spec YAML')).not.toBeInTheDocument();
     });
 
     expect(screen.getByDisplayValue('3')).toBeInTheDocument();
@@ -356,7 +351,7 @@ source:
 
     await advanceToRuntime();
 
-    const presetField = screen.getByText('Load preset').closest('.niuu-field');
+    const presetField = screen.getByText('Load launch spec').closest('.niuu-field');
     const presetSelect = presetField?.querySelector('select') as HTMLSelectElement;
     fireEvent.change(presetSelect, { target: { value: 'spec-fast-review' } });
 
@@ -370,8 +365,33 @@ source:
 
     fireEvent.change(presetSelect, { target: { value: presetSelect.options[0]!.value } });
     await waitFor(() => {
-      expect(screen.getByText(/No preset loaded/i)).toBeInTheDocument();
+      expect(screen.getByText(/No launch spec loaded/i)).toBeInTheDocument();
     });
+  });
+
+  it('launches a catalog launch spec by name instead of treating it as a saved spec id', async () => {
+    const service = createMockVolundrService();
+    const startSession = vi.spyOn(service, 'startSession');
+    wrap(true, vi.fn(), service);
+
+    await advanceToRuntime();
+
+    const presetField = screen.getByText('Load launch spec').closest('.niuu-field');
+    const presetSelect = presetField?.querySelector('select') as HTMLSelectElement;
+    fireEvent.change(presetSelect, { target: { value: 'standard-claude' } });
+
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('step-confirm-content');
+    fireEvent.click(screen.getByTestId('wizard-next'));
+
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launchSpec: 'standard-claude',
+          launchSpecId: undefined,
+        }),
+      ),
+    );
   });
 
   it('saves a preset from runtime settings and clears the save field', async () => {
@@ -381,7 +401,7 @@ source:
 
     await advanceToRuntime();
 
-    const presetName = screen.getByPlaceholderText('save as preset') as HTMLInputElement;
+    const presetName = screen.getByPlaceholderText('save as launch spec') as HTMLInputElement;
     fireEvent.change(presetName, { target: { value: 'pairing-preset' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
 
@@ -520,7 +540,7 @@ source:
     expect(screen.getByText('Launch exploded')).toBeInTheDocument();
   });
 
-  it('resets back to the template step when reopened', async () => {
+  it('resets back to the source step when reopened', async () => {
     const onOpenChange = vi.fn();
     const service = createMockVolundrService();
     const view = wrapWithServices(true, onOpenChange, service, {
@@ -536,13 +556,12 @@ source:
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <ServicesProvider
-          services={{
-            bifrost: createMockBifrostService(),
-            volundr: service,
-            'volundr.templates': createMockTemplateStore(),
-            'niuu.repos': {
-              getRepos: service.getRepos.bind(service),
-              getBranches: async () => [],
+        services={{
+          bifrost: createMockBifrostService(),
+          volundr: service,
+          'niuu.repos': {
+            getRepos: service.getRepos.bind(service),
+            getBranches: async () => [],
             },
           }}
         >
@@ -556,13 +575,12 @@ source:
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <ServicesProvider
-          services={{
-            bifrost: createMockBifrostService(),
-            volundr: service,
-            'volundr.templates': createMockTemplateStore(),
-            'niuu.repos': {
-              getRepos: service.getRepos.bind(service),
-              getBranches: async () => [],
+        services={{
+          bifrost: createMockBifrostService(),
+          volundr: service,
+          'niuu.repos': {
+            getRepos: service.getRepos.bind(service),
+            getBranches: async () => [],
             },
           }}
         >
@@ -571,7 +589,7 @@ source:
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByTestId('step-template-content')).toBeInTheDocument();
+    expect(await screen.findByTestId('step-source-content')).toBeInTheDocument();
   });
 
   it('does not render when closed', () => {

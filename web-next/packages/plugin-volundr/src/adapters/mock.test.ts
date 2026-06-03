@@ -3,7 +3,6 @@ import {
   createMockVolundrService,
   createMockClusterAdapter,
   createMockSessionStore,
-  createMockTemplateStore,
   createMockPtyStream,
   createMockMetricsStream,
   createMockFileSystemPort,
@@ -337,74 +336,6 @@ describe('createMockSessionStore', () => {
     unsub();
     await store.deleteSession('ds-1');
     expect(cb).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ITemplateStore
-// ---------------------------------------------------------------------------
-
-describe('createMockTemplateStore', () => {
-  it('listTemplates returns seeded templates', async () => {
-    const store = createMockTemplateStore();
-    const templates = await store.listTemplates();
-    expect(templates.length).toBeGreaterThan(0);
-    expect(templates[0]).toHaveProperty('spec');
-  });
-
-  it('getTemplate returns a template by id', async () => {
-    const store = createMockTemplateStore();
-    const tpl = await store.getTemplate('tpl-default');
-    expect(tpl?.name).toBe('default');
-  });
-
-  it('getTemplate returns null for unknown id', async () => {
-    const store = createMockTemplateStore();
-    expect(await store.getTemplate('nope')).toBeNull();
-  });
-
-  it('createTemplate returns a new template with a generated id', async () => {
-    const store = createMockTemplateStore();
-    const spec = {
-      image: 'ubuntu',
-      tag: '22.04',
-      mounts: [],
-      env: {},
-      envSecretRefs: [],
-      tools: [],
-      resources: {
-        cpuRequest: '0.5',
-        cpuLimit: '1',
-        memRequestMi: 256,
-        memLimitMi: 512,
-        gpuCount: 0,
-      },
-      ttlSec: 1_800,
-      idleTimeoutSec: 300,
-    } as const;
-    const tpl = await store.createTemplate('my-template', spec);
-    expect(tpl.id).toBeTruthy();
-    expect(tpl.name).toBe('my-template');
-    expect(tpl.version).toBe(1);
-  });
-
-  it('updateTemplate increments the version', async () => {
-    const store = createMockTemplateStore();
-    const existing = (await store.listTemplates())[0]!;
-    const spec = { ...existing.spec, tag: 'v2' };
-    const updated = await store.updateTemplate(existing.id, spec);
-    expect(updated.version).toBe(existing.version + 1);
-    expect(updated.spec.tag).toBe('v2');
-  });
-
-  it('updateTemplate throws for unknown id', async () => {
-    const store = createMockTemplateStore();
-    await expect(store.updateTemplate('nope', {} as never)).rejects.toThrow('Template not found');
-  });
-
-  it('deleteTemplate resolves without throwing', async () => {
-    const store = createMockTemplateStore();
-    await expect(store.deleteTemplate('tpl-default')).resolves.toBeUndefined();
   });
 });
 

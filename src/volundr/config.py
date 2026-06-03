@@ -398,6 +398,31 @@ class LaunchSpecConfig(BaseModel):
     cli_tool: str = ""
 
 
+def _default_launch_specs() -> list[LaunchSpecConfig]:
+    """Built-in launch catalog used when no config preloads specs."""
+    return [
+        LaunchSpecConfig(
+            name="standard-claude",
+            description="Default Claude Code session with modest resources.",
+            is_default=True,
+            session_definition="skuldClaude",
+            workload_type="session",
+            model="claude-sonnet-4-6",
+            resource_config={"cpu": "1", "memory": "2Gi"},
+            cli_tool="claude",
+        ),
+        LaunchSpecConfig(
+            name="standard-codex",
+            description="Default Codex session for OpenAI-backed coding work.",
+            session_definition="skuldCodex",
+            workload_type="session",
+            model="gpt-5.4",
+            resource_config={"cpu": "1", "memory": "2Gi"},
+            cli_tool="codex",
+        ),
+    ]
+
+
 class ChronicleConfig(BaseModel):
     """Chronicle feature configuration."""
 
@@ -1402,8 +1427,8 @@ class Settings(BaseSettings):
         description="Fallback definition key when no explicit definition is specified.",
     )
     launch_specs: list[LaunchSpecConfig] = Field(
-        default_factory=list,
-        description="System-scope launch specs (unified profiles + templates).",
+        default_factory=_default_launch_specs,
+        description="System-scope launch specs preloaded into the launch catalog.",
     )
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
     features: list[FeatureModuleConfig] = Field(

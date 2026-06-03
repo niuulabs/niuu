@@ -414,7 +414,7 @@ export interface SessionDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Templates and presets
+// Launch specs
 // ---------------------------------------------------------------------------
 
 export interface ResourceConfig {
@@ -456,11 +456,7 @@ export type CliTool = 'claude' | 'codex' | 'gemini' | 'aider';
 /** Ownership scope of a launch spec. */
 export type LaunchScope = 'system' | 'user';
 
-/**
- * Unified launch spec — the single blueprint that replaced the former
- * template / profile / preset trio. ``system`` specs are config-seeded and
- * read-only; ``user`` specs are DB-stored and CRUD-managed.
- */
+/** Launch specs are the catalog blueprint used to start Forge sessions. */
 export interface VolundrLaunchSpec {
   name: string;
   scope: LaunchScope;

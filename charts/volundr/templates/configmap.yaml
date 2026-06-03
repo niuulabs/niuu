@@ -87,12 +87,18 @@ data:
       {{- end }}
     {{- end }}
 
-    {{- if .Values.profiles }}
-    profiles:
-      {{- range .Values.profiles }}
+    {{- if .Values.launchSpecs }}
+    launch_specs:
+      {{- range .Values.launchSpecs }}
       - name: {{ .name | quote }}
         {{- if .description }}
         description: {{ .description | quote }}
+        {{- end }}
+        {{- if .isDefault }}
+        is_default: {{ .isDefault }}
+        {{- end }}
+        {{- if .sessionDefinition }}
+        session_definition: {{ .sessionDefinition | quote }}
         {{- end }}
         {{- if .workloadType }}
         workload_type: {{ .workloadType | quote }}
@@ -118,22 +124,6 @@ data:
         {{- if .workloadConfig }}
         workload_config: {{ .workloadConfig | toJson }}
         {{- end }}
-        {{- if .isDefault }}
-        is_default: {{ .isDefault }}
-        {{- end }}
-      {{- end }}
-    {{- end }}
-
-    {{- if .Values.templates }}
-    templates:
-      {{- range .Values.templates }}
-      - name: {{ .name | quote }}
-        {{- if .description }}
-        description: {{ .description | quote }}
-        {{- end }}
-        {{- if .profileName }}
-        profile_name: {{ .profileName | quote }}
-        {{- end }}
         {{- if .repos }}
         repos: {{ .repos | toJson }}
         {{- end }}
@@ -143,8 +133,8 @@ data:
         {{- if .workspaceLayout }}
         workspace_layout: {{ .workspaceLayout | toJson }}
         {{- end }}
-        {{- if .isDefault }}
-        is_default: {{ .isDefault }}
+        {{- if .cliTool }}
+        cli_tool: {{ .cliTool | quote }}
         {{- end }}
       {{- end }}
     {{- end }}

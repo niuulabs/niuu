@@ -14,8 +14,6 @@ import {
   Textarea,
 } from '@niuulabs/ui';
 import './LaunchWizard.css';
-import { useTemplates } from './useTemplates';
-import type { Template } from '../domain/template';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type {
   ClusterResourceInfo,
@@ -35,7 +33,7 @@ import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
 // Types
 // ---------------------------------------------------------------------------
 
-type WizardStep = 'template' | 'source' | 'runtime' | 'confirm' | 'booting';
+type WizardStep = 'source' | 'runtime' | 'confirm' | 'booting';
 
 type RuntimeModelDescriptor = Pick<
   BifrostModel,
@@ -45,7 +43,6 @@ type RuntimeModelDescriptor = Pick<
 };
 
 export interface WizardForm {
-  templateId: string;
   presetId: string;
   sourcetype: 'git' | 'local_mount' | 'blank';
   repo: string;
@@ -73,10 +70,9 @@ export interface WizardForm {
   yamlContent: string;
 }
 
-const STEPS: WizardStep[] = ['template', 'source', 'runtime', 'confirm'];
+const STEPS: WizardStep[] = ['source', 'runtime', 'confirm'];
 
 const STEP_LABELS: Record<string, string> = {
-  template: 'Template',
   source: 'Source',
   runtime: 'Runtime',
   confirm: 'Confirm',
@@ -238,7 +234,7 @@ function WizardSelect({
 export interface LaunchWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  initialTemplateId?: string;
+  initialLaunchSpecRef?: string;
 }
 
 export function workspaceLabel(workspace: VolundrWorkspace): string {
@@ -260,6 +256,15 @@ export function normalizeRepoUrl(url: string): string {
 export function pickDefaultModel(models: Record<string, RuntimeModelDescriptor>): string {
   if ('sonnet-primary' in models) return 'sonnet-primary';
   return Object.keys(models)[0] ?? '';
+}
+
+export function launchSpecRef(spec: VolundrLaunchSpec): string {
+  return spec.id ?? spec.name;
+}
+
+export function launchSpecLabel(spec: VolundrLaunchSpec): string {
+  const scope = spec.scope === 'system' ? 'catalog' : 'saved';
+  return `${spec.name} · ${scope}${spec.isDefault ? ' · default' : ''}`;
 }
 
 export function formatModelOption(id: string, model?: RuntimeModelDescriptor): string {
@@ -401,7 +406,7 @@ export function validateSessionName(name: string): string | null {
   return null;
 }
 
-export function deriveSessionName(form: WizardForm, template?: Template): string {
+export function deriveSessionName(form: WizardForm): string {
   const explicit = slugifySessionName(form.sessionName);
   if (explicit) return explicit;
 
@@ -416,8 +421,7 @@ export function deriveSessionName(form: WizardForm, template?: Template): string
     if (mountName) return mountName;
   }
 
-  const templateName = slugifySessionName(template?.name ?? '');
-  return templateName || 'forge-session';
+  return 'forge-session';
 }
 
 export function buildSessionSource(form: WizardForm): SessionSource {
@@ -619,48 +623,6 @@ export function StepIndicator({ current, steps }: { current: WizardStep; steps: 
           )}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step: Template
-// ---------------------------------------------------------------------------
-
-export function TemplateStep({
-  templates,
-  selectedId,
-  onSelect,
-}: {
-  templates: Template[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="step-template-content">
-      <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">Choose a template</h3>
-      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            className={`niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-lg niuu:border niuu:p-3 niuu:text-left ${
-              selectedId === t.id
-                ? 'niuu:border-brand niuu:bg-bg-tertiary'
-                : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:hover:border-brand'
-            }`}
-            onClick={() => onSelect(t.id)}
-            data-testid="wizard-template-card"
-          >
-            <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary">{t.name}</span>
-            <span className="niuu:text-xs niuu:text-text-muted">
-              {t.spec.image}:{t.spec.tag}
-            </span>
-            <span className="niuu:font-mono niuu:text-xs niuu:text-text-faint">
-              {t.spec.resources.cpuRequest}c · {t.spec.resources.memRequestMi}Mi
-            </span>
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -905,7 +867,7 @@ export function RuntimeStep({
   selectedPreset: VolundrLaunchSpec | null;
   availableMcpServers: McpServerConfig[];
   sessionDefinitions: SessionDefinition[];
-  onApplyPreset: (presetId: string) => void;
+  onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
 }) {
   const modelOptions = Object.entries(models).map(([id, model]) => ({
@@ -1048,15 +1010,18 @@ export function RuntimeStep({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-runtime-content">
       {presets.length > 0 ? (
-        <SectionCard title="Preset" description="Load and save reusable forge configurations.">
+        <SectionCard
+          title="Launch spec"
+          description="Load catalog specs or save reusable forge configurations."
+        >
           <div className="niuu:grid niuu:grid-cols-[2fr_1fr] niuu:gap-4">
-            <Field label="Load preset">
+            <Field label="Load launch spec">
               <WizardSelect
                 options={[
-                  { value: NO_PRESET_VALUE, label: 'Custom (no preset)' },
+                  { value: NO_PRESET_VALUE, label: 'Custom launch' },
                   ...presets.map((preset) => ({
-                    value: preset.id ?? '',
-                    label: `${preset.name}${preset.isDefault ? ' (default)' : ''}`,
+                    value: launchSpecRef(preset),
+                    label: launchSpecLabel(preset),
                   })),
                 ]}
                 value={form.presetId || NO_PRESET_VALUE}
@@ -1067,7 +1032,7 @@ export function RuntimeStep({
               <Input
                 value={presetName}
                 onChange={(e) => setPresetName(e.target.value)}
-                placeholder="save as preset"
+                placeholder="save as launch spec"
               />
               <button
                 type="button"
@@ -1085,12 +1050,13 @@ export function RuntimeStep({
             <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
               loaded{' '}
               <span className="niuu:font-mono niuu:text-text-primary">{selectedPreset.name}</span>
+              <span> · {selectedPreset.scope === 'system' ? 'catalog' : 'saved'}</span>
               {selectedPreset.description ? ` · ${selectedPreset.description}` : ''}
             </div>
           ) : (
             <div className="niuu:rounded-lg niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
-              No preset loaded. Advanced runtime values will be materialized into a preset at launch
-              if needed.
+              No launch spec loaded. Advanced runtime values will be materialized into a saved
+              launch spec at launch if needed.
             </div>
           )}
         </SectionCard>
@@ -1352,7 +1318,7 @@ export function RuntimeStep({
               onChange={(e) => update({ yamlContent: e.target.value })}
               rows={20}
               spellCheck={false}
-              placeholder="Preset YAML"
+              placeholder="Launch spec YAML"
             />
             {yamlError ? <div className="niuu:text-xs niuu:text-danger">{yamlError}</div> : null}
           </div>
@@ -1373,7 +1339,7 @@ export function RuntimeStep({
 
             <RuntimePanel
               title="MCP servers"
-              description="Attach preset-backed tools and custom MCP definitions."
+              description="Attach launch-spec tools and custom MCP definitions."
             >
               <div className="niuu:flex niuu:flex-col niuu:gap-2">
                 {form.mcpServers.length > 0 ? (
@@ -1685,20 +1651,17 @@ export function RuntimeStep({
 
 export function ConfirmStep({
   form,
-  templates,
   models,
   integrations,
   sessionDefinitions,
   targets,
 }: {
   form: WizardForm;
-  templates: Template[];
   models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
   targets: VolundrTarget[];
 }) {
-  const tpl = templates.find((t) => t.id === form.templateId);
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
     sessionDefinitions.find((d) => d.key === form.definition)?.displayName ?? form.definition;
@@ -1715,8 +1678,7 @@ export function ConfirmStep({
         description="Final review before Forge provisions the session."
       >
         <div className="niuu:flex niuu:flex-col niuu:divide-y niuu:divide-border-subtle">
-          <ConfirmRow label="session" value={deriveSessionName(form, tpl)} />
-          <ConfirmRow label="template" value={tpl?.name ?? form.templateId} />
+          <ConfirmRow label="session" value={deriveSessionName(form)} />
           <ConfirmRow label="forge" value={targetLabel} />
           <ConfirmRow label="definition" value={definitionLabel} />
           <ConfirmRow label="model" value={modelLabel} />
@@ -1933,14 +1895,12 @@ export function BootingStep({ bootStep, progress }: { bootStep: number; progress
 // ---------------------------------------------------------------------------
 
 /** 4-step modal wizard for launching new Volundr sessions. */
-export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWizardProps) {
+export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: LaunchWizardProps) {
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const templates = useTemplates();
-  const allTemplates = useMemo(() => templates.data ?? [], [templates.data]);
   const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [manualBranches, setManualBranches] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, RuntimeModelDescriptor>>({});
@@ -1955,10 +1915,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
 
-  const [step, setStep] = useState<WizardStep>('template');
+  const [step, setStep] = useState<WizardStep>('source');
   const [form, setForm] = useState<WizardForm>(() => ({
-    templateId: initialTemplateId ?? allTemplates[0]?.id ?? '',
-    presetId: '',
+    presetId: initialLaunchSpecRef ?? '',
     sourcetype: 'git',
     repo: '',
     branch: '',
@@ -2005,7 +1964,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       volundr.getCredentials().catch(() => []),
       volundr.getIntegrations().catch(() => []),
       volundr.getClusterResources().catch(() => null),
-      volundr.getLaunchSpecs('user').catch(() => []),
+      volundr.getLaunchSpecs().catch(() => []),
       volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
@@ -2042,15 +2001,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       cancelled = true;
     };
   }, [bifrost, open, repoCatalog, volundr]);
-
-  // Update template ID when templates load
-  useEffect(() => {
-    if (allTemplates.length > 0 && !form.templateId) {
-      queueMicrotask(() => {
-        setForm((f) => ({ ...f, templateId: allTemplates[0]!.id }));
-      });
-    }
-  }, [allTemplates, form.templateId]);
 
   useEffect(() => {
     if (!open || form.sourcetype !== 'git' || !form.repo.trim()) {
@@ -2155,18 +2105,18 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   }, [form.trackerQuery, form.trackerIssue, open, volundr]);
 
   const handleApplyPreset = useCallback(
-    (presetId: string) => {
-      if (!presetId) {
+    (ref: string) => {
+      if (!ref) {
         setForm((current) => ({ ...current, presetId: '' }));
         return;
       }
 
-      const preset = presets.find((item) => item.id === presetId);
+      const preset = presets.find((item) => launchSpecRef(item) === ref);
       if (!preset) return;
 
       setForm((current) => ({
         ...current,
-        presetId,
+        presetId: ref,
         definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
@@ -2197,6 +2147,13 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     [presets],
   );
 
+  useEffect(() => {
+    if (!open || !initialLaunchSpecRef || presets.length === 0) return;
+    if (presets.some((preset) => launchSpecRef(preset) === initialLaunchSpecRef)) {
+      handleApplyPreset(initialLaunchSpecRef);
+    }
+  }, [handleApplyPreset, initialLaunchSpecRef, open, presets]);
+
   const handleSavePreset = useCallback(
     async (name: string) => {
       const saved = await volundr.saveLaunchSpec(buildPresetPayload(form, name));
@@ -2204,7 +2161,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
         const next = current.filter((preset) => preset.id !== saved.id);
         return [...next, saved];
       });
-      setForm((current) => ({ ...current, presetId: saved.id ?? '' }));
+      setForm((current) => ({ ...current, presetId: launchSpecRef(saved) }));
     },
     [form, volundr],
   );
@@ -2254,8 +2211,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const stepIdx = STEPS.indexOf(step as (typeof STEPS)[number]);
   const canGoBack = stepIdx > 0 && step !== 'booting';
   const isLastStep = step === 'confirm';
-  const selectedTemplate = allTemplates.find((template) => template.id === form.templateId);
-  const effectiveSessionName = deriveSessionName(form, selectedTemplate);
+  const effectiveSessionName = deriveSessionName(form);
   const sessionNameError = validateSessionName(effectiveSessionName);
   const resourceErrors = getResourceErrors(form, clusterResources);
   const sourceReady =
@@ -2286,8 +2242,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     setLaunching(true);
 
     try {
-      let presetId = form.presetId || undefined;
-      const selectedPreset = presets.find((preset) => preset.id === form.presetId);
+      let launchSpec: string | undefined;
+      let launchSpecId: string | undefined;
+      const selectedPreset = presets.find((preset) => launchSpecRef(preset) === form.presetId);
       const currentPresetPayload = buildPresetRuntimePayload(
         form,
         selectedPreset?.name ?? `${effectiveSessionName}-runtime`,
@@ -2300,20 +2257,25 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
             JSON.stringify(currentPresetPayload))
       ) {
         const savedPreset = await volundr.saveLaunchSpec(currentPresetPayload);
-        presetId = savedPreset.id ?? undefined;
+        launchSpecId = savedPreset.id ?? undefined;
+        launchSpec = undefined;
         setPresets((current) => {
           const next = current.filter((preset) => preset.id !== savedPreset.id);
           return [...next, savedPreset];
         });
-        setForm((current) => ({ ...current, presetId: savedPreset.id ?? '' }));
+        setForm((current) => ({ ...current, presetId: launchSpecRef(savedPreset) }));
+      } else if (selectedPreset?.scope === 'system') {
+        launchSpec = selectedPreset.name;
+      } else if (selectedPreset?.id) {
+        launchSpecId = selectedPreset.id;
       }
 
       const session = await volundr.startSession({
         name: effectiveSessionName,
         source: buildSessionSource(form),
         model: form.model.trim(),
-        launchSpec: selectedTemplate?.name,
-        launchSpecId: presetId,
+        launchSpec,
+        launchSpecId,
         definition: form.definition,
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
@@ -2362,7 +2324,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   useEffect(() => {
     if (open) {
       queueMicrotask(() => {
-        setStep('template');
+        setStep('source');
         setBootStep(0);
         setBootProgress(0);
         setLaunchError(null);
@@ -2384,13 +2346,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           {step !== 'booting' && <StepIndicator current={step} steps={STEPS} />}
 
           {/* Step content */}
-          {step === 'template' && (
-            <TemplateStep
-              templates={allTemplates}
-              selectedId={form.templateId}
-              onSelect={(id) => update({ templateId: id })}
-            />
-          )}
           {step === 'source' && (
             <SourceStep
               form={form}
@@ -2416,7 +2371,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               integrations={integrations}
               clusterResources={clusterResources}
               presets={presets}
-              selectedPreset={presets.find((preset) => preset.id === form.presetId) ?? null}
+              selectedPreset={
+                presets.find((preset) => launchSpecRef(preset) === form.presetId) ?? null
+              }
               availableMcpServers={availableMcpServers}
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
@@ -2428,7 +2385,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           {step === 'confirm' && (
             <ConfirmStep
               form={form}
-              templates={allTemplates}
               models={models}
               integrations={integrations}
               sessionDefinitions={

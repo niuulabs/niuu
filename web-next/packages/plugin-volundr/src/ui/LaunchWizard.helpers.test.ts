@@ -6,7 +6,6 @@ import type {
   VolundrLaunchSpec,
   VolundrWorkspace,
 } from '../models/volundr.model';
-import type { Template } from '../domain/template';
 import {
   aggregateResourceCapacity,
   buildPresetComparisonPayload,
@@ -38,7 +37,6 @@ import {
 
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
   return {
-    templateId: 'tpl-default',
     presetId: '',
     sourcetype: 'git',
     repo: 'github.com/niuulabs/volundr',
@@ -212,37 +210,20 @@ describe('LaunchWizard helpers', () => {
     expect(validateSessionName('good-name')).toBeNull();
   });
 
-  it('derives session names from explicit, git, local mount, and template sources', () => {
-    const template: Template = {
-      id: 'tpl-default',
-      name: 'Release Train',
-      description: '',
-      source: { kind: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
-      resources: { cpu: '2', memory: '8Gi' },
-      prompts: { system: '', initial: '' },
-      metadata: {},
-    };
-
-    expect(deriveSessionName(makeForm({ sessionName: 'My Session' }), template)).toBe('my-session');
-    expect(deriveSessionName(makeForm({ sessionName: '', branch: 'feat/add-nav' }), template)).toBe(
+  it('derives session names from explicit, git, and local mount sources', () => {
+    expect(deriveSessionName(makeForm({ sessionName: 'My Session' }))).toBe('my-session');
+    expect(deriveSessionName(makeForm({ sessionName: '', branch: 'feat/add-nav' }))).toBe(
       'add-nav',
     );
     expect(
       deriveSessionName(
         makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~/code/niuu/app' }),
-        template,
       ),
     ).toBe('app');
     expect(
-      deriveSessionName(
-        makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~' }),
-        template,
-      ),
+      deriveSessionName(makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~' })),
     ).toBe('home');
-    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }), template)).toBe(
-      'release-train',
-    );
-    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }), undefined)).toBe(
+    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }))).toBe(
       'forge-session',
     );
   });

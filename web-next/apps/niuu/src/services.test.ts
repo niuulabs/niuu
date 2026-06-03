@@ -64,7 +64,6 @@ const observatoryMocks = vi.hoisted(() => ({
 const volundrMocks = vi.hoisted(() => ({
   createMockVolundrService: vi.fn(() => ({ kind: 'mock-volundr' })),
   createMockClusterAdapter: vi.fn(() => ({ kind: 'mock-clusters' })),
-  createMockTemplateStore: vi.fn(() => ({ kind: 'mock-templates' })),
   createMockSessionStore: vi.fn(() => ({ kind: 'mock-session-store' })),
   buildVolundrHttpAdapter: vi.fn((client) => ({
     kind: 'volundr',
@@ -1116,96 +1115,6 @@ describe('buildServices', () => {
     );
   });
 
-  it('builds a live template store from the live Volundr service', async () => {
-    const liveTemplate = {
-      name: 'niuu-platform',
-      description: 'Full niuu monorepo',
-      repos: [
-        { url: 'https://github.com/niuulabs/volundr', branch: 'main', path: '/workspace/volundr' },
-      ],
-      env_vars: { OPENAI_API_KEY: 'secret-ref' },
-      env_secret_refs: ['OPENAI_API_KEY'],
-      resource_config: { cpu: '4', memory: '8Gi', gpu: 1 },
-      mcp_servers: [
-        { name: 'filesystem', transport: 'stdio', command: 'uvx mcp-filesystem', tools: ['read'] },
-      ],
-      workload_config: {
-        image: 'ghcr.io/niuulabs/skuld:cuda-12',
-        tools: ['python', 'git'],
-        ttlSec: 7200,
-        idleTimeoutSec: 900,
-        clusterAffinity: ['gpu'],
-        tolerations: ['nvidia.com/gpu'],
-      },
-      createdAt: '2026-04-24T12:00:00Z',
-      updatedAt: '2026-04-24T12:30:00Z',
-    };
-    const liveVolundr = {
-      kind: 'volundr',
-      getSessions: vi.fn().mockResolvedValue([]),
-      getSession: vi.fn().mockResolvedValue(null),
-      getLaunchSpecs: vi.fn().mockResolvedValue([liveTemplate]),
-      getLaunchSpec: vi.fn().mockResolvedValue(liveTemplate),
-      listArchivedSessions: vi.fn().mockResolvedValue([]),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-      subscribe: vi.fn(() => () => {}),
-    };
-    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
-
-    const services = buildServices({
-      theme: 'ice',
-      plugins: {},
-      services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
-      },
-    } as any);
-
-    const templateStore = services['volundr.templates'] as any;
-    await expect(templateStore.listTemplates()).resolves.toEqual([
-      expect.objectContaining({
-        id: 'niuu-platform',
-        name: 'niuu-platform',
-        description: 'Full niuu monorepo',
-        createdAt: '2026-04-24T12:00:00Z',
-        updatedAt: '2026-04-24T12:30:00Z',
-        spec: expect.objectContaining({
-          image: 'ghcr.io/niuulabs/skuld',
-          tag: 'cuda-12',
-          env: { OPENAI_API_KEY: 'secret-ref' },
-          envSecretRefs: ['OPENAI_API_KEY'],
-          tools: ['python', 'git'],
-          clusterAffinity: ['gpu'],
-          tolerations: ['nvidia.com/gpu'],
-          resources: {
-            cpuRequest: '4',
-            cpuLimit: '4',
-            memRequestMi: 8192,
-            memLimitMi: 8192,
-            gpuCount: 1,
-          },
-          mounts: [
-            {
-              name: 'repo-1',
-              mountPath: '/workspace/volundr',
-              source: {
-                kind: 'git',
-                repo: 'https://github.com/niuulabs/volundr',
-                branch: 'main',
-              },
-              readOnly: false,
-            },
-          ],
-        }),
-      }),
-    ]);
-    await expect(templateStore.getTemplate('niuu-platform')).resolves.toEqual(
-      expect.objectContaining({ id: 'niuu-platform' }),
-    );
-    await expect(templateStore.createTemplate('new-template', {})).rejects.toThrow(
-      'Template creation is not yet supported through the live forge template adapter.',
-    );
-  });
-
   it('builds a live cluster adapter from Volundr resources and sessions', async () => {
     const liveVolundr = {
       kind: 'volundr',
@@ -1350,125 +1259,6 @@ describe('buildServices', () => {
     await expect(clusterAdapter.getCluster('shared')).resolves.toBeNull();
   });
 
-  it('normalizes sparse live templates and rejects unsupported live template mutations', async () => {
-    const sparseTemplate = {
-      name: 'edge-template',
-      description: '',
-      repos: [
-        { url: 'https://github.com/niuulabs/platform', repo: 'platform tools' },
-        { branch: 'dev' },
-      ],
-      envVars: { FEATURE_FLAG: 'on', retries: 3 },
-      envSecretRefs: 'not-an-array',
-      resourceConfig: {
-        cpuRequest: '2',
-        memory_request: '512Ki',
-        memory_limit: '1Ti',
-      },
-      workloadConfig: {
-        image: 'ghcr.io/niuulabs/skuld',
-        cluster_affinity: ['edge'],
-        ttlSec: Number.NaN,
-        idleTimeoutSec: Number.NaN,
-      },
-    };
-    const remoteTemplate = {
-      name: 'remote-template',
-      description: 'remote',
-      repos: [],
-      mcpServers: [
-        { name: 'remote', transport: 'sse', url: 'https://example.com/sse', tools: ['sync', 1] },
-        { command: 'uvx mcp-shell' },
-      ],
-    };
-    const liveVolundr = {
-      kind: 'volundr',
-      getSessions: vi.fn().mockResolvedValue([]),
-      getSession: vi.fn().mockResolvedValue(null),
-      getLaunchSpecs: vi.fn().mockResolvedValue([sparseTemplate, remoteTemplate]),
-      getLaunchSpec: vi.fn().mockResolvedValue(null),
-      listArchivedSessions: vi.fn().mockResolvedValue([]),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-      subscribe: vi.fn(() => () => {}),
-    };
-    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
-
-    const services = buildServices({
-      theme: 'ice',
-      plugins: {},
-      services: {
-        volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
-        mimir: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/mimir' },
-      },
-    } as any);
-
-    const templateStore = services['volundr.templates'] as any;
-    await expect(templateStore.listTemplates()).resolves.toEqual([
-      expect.objectContaining({
-        id: 'edge-template',
-        description: undefined,
-        createdAt: '1970-01-01T00:00:00.000Z',
-        updatedAt: '1970-01-01T00:00:00.000Z',
-        spec: expect.objectContaining({
-          image: 'ghcr.io/niuulabs/skuld',
-          tag: 'latest',
-          env: { FEATURE_FLAG: 'on' },
-          envSecretRefs: [],
-          mcpServers: [],
-          clusterAffinity: ['edge'],
-          ttlSec: 3600,
-          idleTimeoutSec: 600,
-          resources: {
-            cpuRequest: '2',
-            cpuLimit: '2',
-            memRequestMi: 1,
-            memLimitMi: 1048576,
-            gpuCount: 0,
-          },
-          mounts: [
-            {
-              name: 'platform tools',
-              mountPath: '/workspace/platform-tools',
-              source: {
-                kind: 'git',
-                repo: 'https://github.com/niuulabs/platform',
-                branch: 'main',
-              },
-              readOnly: false,
-            },
-          ],
-        }),
-      }),
-      expect.objectContaining({
-        id: 'remote-template',
-        spec: expect.objectContaining({
-          mcpServers: [
-            {
-              name: 'remote',
-              transport: 'sse',
-              connectionString: 'https://example.com/sse',
-              tools: ['sync'],
-            },
-            {
-              name: 'server-2',
-              transport: 'stdio',
-              connectionString: 'uvx mcp-shell',
-              tools: [],
-            },
-          ],
-        }),
-      }),
-    ]);
-    await expect(templateStore.getTemplate('missing-template')).resolves.toBeNull();
-    await expect(templateStore.updateTemplate('edge-template', {})).rejects.toThrow(
-      'Template updates are not yet supported through the live forge template adapter.',
-    );
-    await expect(templateStore.deleteTemplate('edge-template')).rejects.toThrow(
-      'Template deletion is not yet supported through the live forge template adapter.',
-    );
-    expect(services.mimir).toEqual({});
-  });
-
   it('falls back to beta/shared cluster regions and maps failed or finished sessions', async () => {
     const liveVolundr = {
       kind: 'volundr',
@@ -1558,7 +1348,7 @@ describe('buildServices', () => {
 
     expect(volundrMocks.createMockSessionStore).toHaveBeenCalledTimes(1);
     expect(volundrMocks.createMockClusterAdapter).toHaveBeenCalledTimes(1);
-    expect((services['volundr.templates'] as any).kind).toBe('mock-templates');
+    expect(services).not.toHaveProperty('volundr.templates');
     expect((services.features as any).kind).toBe('mock-feature-catalog');
     expect((services.identity as any).kind).toBe('mock-identity');
     expect((services['volundr.sessions'] as any).kind).toBe('mock-session-store');

@@ -10,7 +10,6 @@ import type {
   VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
-import type { Template } from '../domain/template';
 import type { RepoRecord } from '@niuulabs/ui';
 import {
   BootingStep,
@@ -18,25 +17,8 @@ import {
   RuntimeStep,
   SourceStep,
   StepIndicator,
-  TemplateStep,
   type WizardForm,
 } from './LaunchWizard';
-
-const TEMPLATE: Template = {
-  id: 'tpl-platform',
-  name: 'Platform Forge',
-  description: 'Launch the platform workspace',
-  source: { kind: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
-  resources: { cpu: '2', memory: '8Gi' },
-  prompts: { system: '', initial: '' },
-  metadata: {},
-  spec: {
-    image: 'ghcr.io/niuulabs/volundr',
-    tag: 'latest',
-    resources: { cpuRequest: 2, memRequestMi: 8192, gpuCount: 0 },
-  },
-  usageCount: 7,
-};
 
 const MODELS: Record<string, VolundrModel> = {
   'sonnet-primary': { name: 'Sonnet', provider: 'anthropic', tier: 'smart' },
@@ -147,7 +129,6 @@ const TARGETS: VolundrTarget[] = [
 
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
   return {
-    templateId: TEMPLATE.id,
     presetId: '',
     sourcetype: 'git',
     repo: 'github.com/niuulabs/volundr',
@@ -178,12 +159,10 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
 }
 
 describe('LaunchWizard step components', () => {
-  it('renders indicator, template cards, confirm summary, and boot progress', () => {
-    const onSelect = vi.fn();
+  it('renders indicator, confirm summary, and boot progress', () => {
     render(
       <div>
-        <StepIndicator current="runtime" steps={['template', 'source', 'runtime', 'confirm']} />
-        <TemplateStep templates={[TEMPLATE]} selectedId="" onSelect={onSelect} />
+        <StepIndicator current="runtime" steps={['source', 'runtime', 'confirm']} />
         <ConfirmStep
           form={makeForm({
             selectedCredentials: ['GITHUB_TOKEN'],
@@ -192,7 +171,6 @@ describe('LaunchWizard step components', () => {
             setupScripts: ['pnpm install'],
             initialPrompt: 'Ship it',
           })}
-          templates={[TEMPLATE]}
           models={MODELS}
           integrations={INTEGRATIONS}
           sessionDefinitions={DEFINITIONS}
@@ -202,9 +180,8 @@ describe('LaunchWizard step components', () => {
       </div>,
     );
 
-    fireEvent.click(screen.getByTestId('wizard-template-card'));
-    expect(onSelect).toHaveBeenCalledWith(TEMPLATE.id);
-    expect(screen.getAllByText('Platform Forge').length).toBeGreaterThan(0);
+    expect(screen.getByText('Source')).toBeInTheDocument();
+    expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Launch summary')).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
     expect(screen.getAllByTestId('boot-step')).toHaveLength(8);
@@ -379,13 +356,13 @@ describe('LaunchWizard step components', () => {
       />,
     );
 
-    fireEvent.change(screen.getByPlaceholderText('save as preset'), {
+    fireEvent.change(screen.getByPlaceholderText('save as launch spec'), {
       target: { value: 'coverage-preset' },
     });
     fireEvent.click(screen.getByText('save'));
     await waitFor(() => expect(onSavePreset).toHaveBeenCalledWith('coverage-preset'));
 
-    fireEvent.change(screen.getByDisplayValue('Custom (no preset)'), {
+    fireEvent.change(screen.getByDisplayValue('Custom launch'), {
       target: { value: PRESET.id },
     });
     expect(onApplyPreset).toHaveBeenCalledWith(PRESET.id);
@@ -575,7 +552,6 @@ describe('LaunchWizard step components', () => {
           trackerIssue: null,
           selectedIntegrations: ['missing-integration'],
         })}
-        templates={[]}
         models={{}}
         integrations={[]}
         sessionDefinitions={[]}
@@ -670,7 +646,7 @@ describe('LaunchWizard step components', () => {
       />,
     );
 
-    expect(screen.queryByText('Preset')).not.toBeInTheDocument();
+    expect(screen.queryByText('Launch spec')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('sonnet-primary')).toBeInTheDocument();
     expect(screen.queryByTestId('workspace-select')).not.toBeInTheDocument();
     expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();

@@ -123,7 +123,7 @@ export interface IVolundrService {
   /** Subscribe to live stats updates via SSE. Returns an unsubscribe function. */
   subscribeStats(callback: (stats: VolundrStats) => void): () => void;
 
-  // Launch specs (unified templates + presets; scope = system | user)
+  // Launch specs (scope = system | user)
   getLaunchSpecs(scope?: LaunchScope): Promise<VolundrLaunchSpec[]>;
   getLaunchSpec(ref: string): Promise<VolundrLaunchSpec | null>;
   saveLaunchSpec(

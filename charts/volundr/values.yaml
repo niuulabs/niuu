@@ -297,75 +297,27 @@ chronicle:
   # -- Retention period in days (0 = keep forever)
   retentionDays: 0
 
-# Forge profiles (argument templates for workload instantiation)
-# Profiles define base values that Volundr assembles into session specs.
-profiles: []
-  # - name: standard
-  #   description: "Standard Claude Code session"
-  #   workloadType: session
-  #   sessionDefinition: skuld-claude   # which session definition to use
-  #   model: "claude-sonnet-4-6"
-  #   resourceConfig:
-  #     cpu: "500m"
-  #     memory: "1Gi"
-  #   mcpServers: []
-  #   envVars: {}
-  #   envSecretRefs: []
-  #   workloadConfig: {}
-  #   isDefault: true
-  #
-  # - name: codex-standard
-  #   description: "Standard OpenAI Codex session"
-  #   workloadType: session
-  #   sessionDefinition: skuld-codex   # routes to the Codex session definition
-  #   model: "o4-mini"
-  #   resourceConfig:
-  #     cpu: "500m"
-  #     memory: "1Gi"
-  #   isDefault: false
-  #
-  # - name: gpu-heavy
-  #   description: "GPU-accelerated data science"
-  #   workloadType: session
-  #   sessionDefinition: skuld-claude
-  #   model: "claude-sonnet-4-6"
-  #   resourceConfig:
-  #     cpu: "2"
-  #     memory: "8Gi"
-  #     gpu: "1"
-  #   isDefault: false
-  #
-  # - name: reviewer
-  #   description: "Automated PR reviewer session (LLM-powered)"
-  #   workloadType: reviewer
-  #   sessionDefinition: skuld-planner   # lightweight — no IDE, no terminal
-  #   model: "claude-opus-4-6"
-  #   resourceConfig:
-  #     cpu: "250m"
-  #     memory: "1Gi"
-  #   isDefault: false
-
-# Workspace templates (combine a profile with repos and setup)
-templates: []
-  # - name: default-session
-  #   description: "Default coding session"
-  #   profileName: standard
-  #   repos:
-  #     - url: "https://github.com/org/repo"
-  #       branch: main
-  #   setupScripts:
-  #     - "pip install -r requirements.txt"
-  #   workspaceLayout:
-  #     editor: vscode
-  #   isDefault: true
-  #
-  # - name: data-science
-  #   description: "Data science workspace"
-  #   profileName: gpu-heavy
-  #   repos: []
-  #   setupScripts:
-  #     - "conda install numpy pandas"
-  #   isDefault: false
+# System launch catalog preloaded by config.
+launchSpecs:
+  - name: standard-claude
+    description: "Default Claude Code session with modest resources."
+    isDefault: true
+    sessionDefinition: skuldClaude
+    workloadType: session
+    model: "claude-sonnet-4-6"
+    cliTool: claude
+    resourceConfig:
+      cpu: "1"
+      memory: "2Gi"
+  - name: standard-codex
+    description: "Default Codex session for OpenAI-backed coding work."
+    sessionDefinition: skuldCodex
+    workloadType: session
+    model: "gpt-5.4"
+    cliTool: codex
+    resourceConfig:
+      cpu: "1"
+      memory: "2Gi"
 
 # Git provider configuration
 git:

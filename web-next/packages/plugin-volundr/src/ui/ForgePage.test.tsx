@@ -8,7 +8,6 @@ import {
   createMockVolundrService,
   createMockClusterAdapter,
   createMockSessionStore,
-  createMockTemplateStore,
 } from '../adapters/mock';
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { Session } from '../domain/session';
@@ -21,7 +20,6 @@ function wrap(
   service = createMockVolundrService(),
   clusterAdapter = createMockClusterAdapter(),
   sessionStore = createMockSessionStore(),
-  templateStore = createMockTemplateStore(),
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const repoCatalog = {
@@ -47,7 +45,6 @@ function wrap(
           volundr: service,
           clusterAdapter,
           sessionStore,
-          'volundr.templates': templateStore,
         }}
       >
         <ForgePage />
@@ -245,11 +242,12 @@ describe('ForgePage', () => {
     expect(svgs.length).toBeGreaterThan(0);
   });
 
-  it('renders usage count on quick-launch cards', async () => {
+  it('renders catalog launch specs on quick-launch cards', async () => {
     wrap();
-    await waitFor(() => expect(screen.getAllByTestId('usage-count').length).toBeGreaterThan(0));
-    const counts = screen.getAllByTestId('usage-count');
-    expect(counts[0]?.textContent).toMatch(/\d+×/);
+    await waitFor(() => expect(screen.getAllByTestId('quick-launch-card').length).toBeGreaterThan(0));
+    expect(screen.getByText('standard-claude')).toBeInTheDocument();
+    expect(screen.getByText('standard-codex')).toBeInTheDocument();
+    expect(screen.getByText(/from catalog/i)).toBeInTheDocument();
   });
 
   it('renders preview text on inflight rows', async () => {

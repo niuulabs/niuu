@@ -1,61 +1,23 @@
 import { test, expect } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
-// /volundr/templates — Templates page
+// /volundr/catalog — Launch catalog
 // ---------------------------------------------------------------------------
 
-test('/volundr/templates renders the templates page', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByRole('heading', { name: /templates/i })).toBeVisible();
+test('/volundr/catalog renders the launch catalog page', async ({ page }) => {
+  await page.goto('/volundr/catalog');
+  await expect(page.getByRole('heading', { name: /launch catalog/i })).toBeVisible();
 });
 
-test('/volundr/templates shows template cards after load', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByTestId('template-card').first()).toBeVisible({ timeout: 5_000 });
+test('/volundr/catalog shows preloaded system launch specs', async ({ page }) => {
+  await page.goto('/volundr/catalog');
+  await expect(page.getByText('standard-claude')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('standard-codex')).toBeVisible({ timeout: 5_000 });
 });
 
-test('/volundr/templates shows the default template', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByText('niuu-platform')).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates shows the showcase rail count', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByRole('list', { name: 'Pod templates' })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByTestId('template-card')).toHaveCount(6);
-});
-
-test('/volundr/templates shows the selected template detail workspace', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByText(/workspace \+ runtime bundles/i)).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByTestId('detail-card')).toHaveCount(4);
-});
-
-test('/volundr/templates can switch the selected template from the rail', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await expect(page.getByTestId('template-card').first()).toBeVisible({ timeout: 5_000 });
-  await page.getByText('volundr-web', { exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'volundr-web' })).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates exposes template detail tabs', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await page.getByRole('tab', { name: 'runtime' }).click();
-  await expect(page.getByTestId('tab-runtime')).toBeVisible({ timeout: 5_000 });
-  await page.getByRole('tab', { name: 'workspace' }).click();
-  await expect(page.getByTestId('tab-workspace')).toBeVisible({ timeout: 5_000 });
-  await page.getByRole('tab', { name: 'rules' }).click();
-  await expect(page.getByTestId('tab-rules')).toBeVisible({ timeout: 5_000 });
-});
-
-test('/volundr/templates — bifrost-gateway surfaces its MCP server detail', async ({ page }) => {
-  await page.goto('/volundr/templates');
-  await page.getByRole('button', { name: 'bifrost-gateway', exact: true }).click();
-  await page.getByRole('tab', { name: 'mcp' }).click();
-  await expect(page.getByTestId('tab-mcp')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByTestId('mcp-server-card')).toHaveCount(2);
-  await expect(page.getByText('filesystem', { exact: true })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('uvx mcp-filesystem')).toBeVisible({ timeout: 5_000 });
+test('/volundr/catalog identifies system-scope specs', async ({ page }) => {
+  await page.goto('/volundr/catalog');
+  await expect(page.getByText('system').first()).toBeVisible({ timeout: 5_000 });
 });
 
 // ---------------------------------------------------------------------------

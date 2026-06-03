@@ -6,7 +6,6 @@ import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { SessionsPage } from './SessionsPage';
 import {
   createMockSessionStore,
-  createMockTemplateStore,
   createMockVolundrService,
   createMockPtyStream,
   createMockFileSystemPort,
@@ -60,14 +59,12 @@ function wrap(
   volundr: IVolundrService = createMockVolundrService(),
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const templateStore = createMockTemplateStore();
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
           volundr,
-          'volundr.templates': templateStore,
           'niuu.repos': { getRepos: volundr.getRepos.bind(volundr) },
           sessionStore,
           ptyStream: createMockPtyStream(),
