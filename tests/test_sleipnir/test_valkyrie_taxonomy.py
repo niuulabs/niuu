@@ -9,9 +9,11 @@ import pytest
 from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
+    RESIDENT_FEEDBACK_TYPES,
     attention_decided,
     attention_decision_made,
     environment_state_changed,
+    feedback_preference_updated,
     feedback_recorded,
     learning_promoted,
     odin_court_decided,
@@ -66,6 +68,7 @@ TAXONOMY_CONSTANTS = [
     registry.ATTENTION_DECISION_MADE,
     registry.ATTENTION_ESCALATED,
     registry.FEEDBACK_RECORDED,
+    registry.FEEDBACK_PREFERENCE_UPDATED,
     registry.LEARNING_PROMOTED,
     registry.PARTICIPANT_JOINED,
     registry.ROOM_OPENED,
@@ -261,9 +264,35 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         feedback_type="attention",
         rating="correct",
         notes="Good suppression.",
+        signal_refs=[signal.event_id],
+        judgment_refs=[proposed_judgment.event_id],
+        court_decision_id=decision.event_id,
+        action_id=action_proposed.payload["action_id"],
+        surface_id="surface:ops",
+        user_id="human:operator",
+        correction={"tier": "ambient"},
+        responsible_valkyrie_id="k8s-valkyrie",
+        environment_type="k8s",
+        signal_source="kubernetes.events",
+        domain_scope="infrastructure",
+        root_correlation_id="corr-1",
         source="human:operator",
         correlation_id="corr-1",
         causation_id=decision.event_id,
+    )
+    preference = feedback_preference_updated(
+        environment_id="cluster-a",
+        target_event_id=decision.event_id,
+        feedback_type="snooze",
+        delivery_state="snoozed",
+        surface_id="surface:ops",
+        user_id="human:operator",
+        effective_until="2026-06-04T00:00:00Z",
+        reason="Quiet until morning",
+        source_feedback_id=feedback.event_id,
+        source="ravn:feedback",
+        correlation_id="corr-1",
+        causation_id=feedback.event_id,
     )
     learning = learning_promoted(
         environment_id="cluster-a",
@@ -274,7 +303,7 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         confidence=0.8,
         source="valkyrie:k8s",
         correlation_id="corr-1",
-        causation_id=feedback.event_id,
+        causation_id=preference.event_id,
     )
     participant = participant_joined(
         environment_id="cluster-a",
@@ -312,6 +341,7 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         attention,
         decision,
         feedback,
+        preference,
         learning,
         participant,
         room,
@@ -329,7 +359,27 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
     assert action.payload["authority_boundary"] == "autonomous"
     assert decision.event_type == registry.ATTENTION_DECISION_MADE
     assert decision.payload["decision"] == "record_only"
+    assert feedback.payload["signal_refs"] == [signal.event_id]
+    assert preference.event_type == registry.FEEDBACK_PREFERENCE_UPDATED
     assert room.payload["participants"] == ["human:operator", "valkyrie:k8s"]
+
+
+def test_resident_feedback_type_vocabulary_covers_reframed_workflows() -> None:
+    assert {
+        "useful",
+        "dismissed",
+        "wrong_tier",
+        "should_have_shown",
+        "too_late",
+        "snooze",
+        "escalate",
+        "wrong_state",
+        "bad_action",
+        "good_action",
+        "draft_accepted",
+        "draft_edited",
+        "draft_rejected",
+    } <= RESIDENT_FEEDBACK_TYPES
 
 
 @pytest.mark.parametrize(

@@ -57,6 +57,7 @@ _BROAD_EPISODE_QUERIES: tuple[str, ...] = (
     "error failed",
     "test deploy",
     "research analysis",
+    "valkyrie feedback signal quality",
 )
 
 # Error-related keywords used to cluster failure patterns.

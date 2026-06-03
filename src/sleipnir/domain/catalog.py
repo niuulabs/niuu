@@ -23,11 +23,29 @@ Usage::
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
+
+RESIDENT_FEEDBACK_TYPES: frozenset[str] = frozenset(
+    {
+        "useful",
+        "dismissed",
+        "wrong_tier",
+        "should_have_shown",
+        "too_late",
+        "snooze",
+        "escalate",
+        "wrong_state",
+        "bad_action",
+        "good_action",
+        "draft_accepted",
+        "draft_edited",
+        "draft_rejected",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Payload dataclasses
@@ -294,6 +312,33 @@ class FeedbackRecordedPayload:
     feedback_type: str
     rating: str
     notes: str
+    signal_refs: list[str] = field(default_factory=list)
+    judgment_refs: list[str] = field(default_factory=list)
+    court_decision_id: str = ""
+    action_id: str = ""
+    surface_id: str = ""
+    user_id: str = ""
+    occurred_at: str = ""
+    correction: dict = field(default_factory=dict)
+    delivery_effect: dict = field(default_factory=dict)
+    responsible_valkyrie_id: str = ""
+    environment_type: str = ""
+    signal_source: str = ""
+    domain_scope: str = ""
+    root_correlation_id: str = ""
+
+
+@dataclass(frozen=True)
+class FeedbackPreferenceUpdatedPayload:
+    environment_id: str
+    target_event_id: str
+    feedback_type: str
+    delivery_state: str
+    surface_id: str
+    user_id: str
+    effective_until: str
+    reason: str
+    source_feedback_id: str
 
 
 @dataclass(frozen=True)
@@ -1386,6 +1431,20 @@ def feedback_recorded(
     rating: str,
     notes: str,
     source: str,
+    signal_refs: list[str] | None = None,
+    judgment_refs: list[str] | None = None,
+    court_decision_id: str = "",
+    action_id: str = "",
+    surface_id: str = "",
+    user_id: str = "",
+    occurred_at: str = "",
+    correction: dict | None = None,
+    delivery_effect: dict | None = None,
+    responsible_valkyrie_id: str = "",
+    environment_type: str = "",
+    signal_source: str = "",
+    domain_scope: str = "",
+    root_correlation_id: str = "",
     correlation_id: str | None = None,
     causation_id: str | None = None,
     tenant_id: str | None = None,
@@ -1398,6 +1457,20 @@ def feedback_recorded(
             feedback_type=feedback_type,
             rating=rating,
             notes=notes,
+            signal_refs=signal_refs or [],
+            judgment_refs=judgment_refs or [],
+            court_decision_id=court_decision_id,
+            action_id=action_id,
+            surface_id=surface_id,
+            user_id=user_id,
+            occurred_at=occurred_at,
+            correction=correction or {},
+            delivery_effect=delivery_effect or {},
+            responsible_valkyrie_id=responsible_valkyrie_id,
+            environment_type=environment_type,
+            signal_source=signal_source,
+            domain_scope=domain_scope,
+            root_correlation_id=root_correlation_id,
         )
     )
     return SleipnirEvent(
@@ -1410,6 +1483,50 @@ def feedback_recorded(
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or target_event_id,
         causation_id=causation_id or target_event_id,
+        tenant_id=tenant_id,
+    )
+
+
+def feedback_preference_updated(
+    *,
+    environment_id: str,
+    target_event_id: str,
+    feedback_type: str,
+    delivery_state: str,
+    surface_id: str,
+    user_id: str,
+    effective_until: str,
+    reason: str,
+    source_feedback_id: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when feedback changes future delivery without rewriting history."""
+    payload = dataclasses.asdict(
+        FeedbackPreferenceUpdatedPayload(
+            environment_id=environment_id,
+            target_event_id=target_event_id,
+            feedback_type=feedback_type,
+            delivery_state=delivery_state,
+            surface_id=surface_id,
+            user_id=user_id,
+            effective_until=effective_until,
+            reason=reason,
+            source_feedback_id=source_feedback_id,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.FEEDBACK_PREFERENCE_UPDATED,
+        source=source,
+        payload=payload,
+        summary=f"Feedback delivery {delivery_state} for {target_event_id}",
+        urgency=0.4 if feedback_type == "escalate" else 0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or target_event_id,
+        causation_id=causation_id or source_feedback_id,
         tenant_id=tenant_id,
     )
 
