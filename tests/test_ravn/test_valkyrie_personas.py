@@ -18,7 +18,7 @@ from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     signal_received,
-    valkyrie_action_requested,
+    valkyrie_action_proposed,
     valkyrie_judgment_proposed,
     valkyrie_state_updated,
 )
@@ -102,11 +102,21 @@ def _outcome_text(persona: PersonaConfig, decision: str, fields: dict[str, Any])
         "valkyrie_id": persona.name,
         "operational_state": RESIDENT_VALKYRIES[persona.name]["state"],
         "wakefulness": "wakeful",
-        "attention_tier": "watch",
-        "authority_boundary": "autonomous",
+        "tier": "ambient",
+        "action_authority": "autonomous",
         "action_capability": RESIDENT_VALKYRIES[persona.name]["action"],
         "recommended_action": "Inspect the signal before changing external state.",
         "confidence": 0.82,
+        "signal_refs": ["evt-fixture"],
+        "rationale": "fixture signal supports the judgment",
+        "evidence": [{"event_id": "evt-fixture", "kind": "fixture"}],
+        "target_surfaces": ["surface:operator"],
+        "expires_at": "none",
+        "dissent_refs": [],
+        "correlation_ids": {
+            "root": f"corr-{persona.name}",
+            "task": f"task-{persona.name}",
+        },
         "evidence_summary": "fixture signal supports the judgment",
         "state_summary": "resident state updated from fixture signal",
         "learned_pattern": "none",
@@ -131,9 +141,17 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert persona.stop_on_outcome is True
     assert persona.iteration_budget > 0
     assert persona.produces.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED
-    assert persona.produces.event_type_map["propose_action"] == registry.VALKYRIE_ACTION_REQUESTED
+    assert persona.produces.event_type_map["propose_action"] == registry.VALKYRIE_ACTION_PROPOSED
     assert spec["signal"] in persona.consumes.event_types
     assert registry.VALKYRIE_STATE_UPDATED in persona.consumes.event_types
+    assert persona.produces.schema["tier"].enum_values == [
+        "silent",
+        "ambient",
+        "present",
+        "urgent",
+    ]
+    assert persona.produces.schema["evidence"].type == "array"
+    assert persona.produces.schema["correlation_ids"].type == "object"
     assert "---outcome---" in persona.system_prompt_template
     assert "Environment binding" in persona.system_prompt_template
     assert "ODIN/court" in persona.system_prompt_template
@@ -173,22 +191,30 @@ def test_fixture_signal_to_state_judgment_and_action_events(name: str) -> None:
     judgment = valkyrie_judgment_proposed(
         environment_id=f"env-{name}",
         valkyrie_id=name,
-        attention_tier="watch",
+        attention_tier="ambient",
         recommended_action="Inspect the signal before changing external state.",
         authority_boundary="autonomous",
         confidence=0.82,
+        operational_state=spec["state"],
+        rationale="fixture signal required a judgment",
+        signal_refs=[signal.event_id],
         evidence=[{"event_id": signal.event_id}, {"event_id": state.event_id}],
+        target_surfaces=["surface:operator"],
+        expires_at="",
+        dissent_refs=[],
+        correlation_ids={"root": signal.correlation_id},
         source=f"valkyrie:{name}",
         correlation_id=signal.correlation_id,
         causation_id=state.event_id,
     )
-    action = valkyrie_action_requested(
+    action = valkyrie_action_proposed(
         environment_id=f"env-{name}",
         valkyrie_id=name,
         action_id=f"action-{name}",
         capability=spec["action"],
-        authority_boundary="autonomous",
+        action_authority="autonomous",
         target={"fixture": name},
+        rationale="fixture action proposal",
         dry_run=True,
         source=f"valkyrie:{name}",
         correlation_id=signal.correlation_id,
@@ -213,6 +239,9 @@ def test_fixture_outcomes_match_persona_schema(name: str) -> None:
     assert parsed.valid is True
     assert parsed.fields["environment_type"] == RESIDENT_VALKYRIES[name]["environment_type"]
     assert parsed.fields["action_capability"] == RESIDENT_VALKYRIES[name]["action"]
+    assert parsed.fields["tier"] == "ambient"
+    assert parsed.fields["signal_refs"] == ["evt-fixture"]
+    assert parsed.fields["correlation_ids"]["task"] == f"task-{name}"
 
 
 @pytest.mark.filterwarnings("ignore:Using `httpx` with `starlette.testclient` is deprecated")
@@ -253,7 +282,7 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
         own_peer_id="action-router",
     )
     await court_mesh.subscribe(registry.VALKYRIE_JUDGMENT_PROPOSED, received_judgments.append)
-    await action_mesh.subscribe(registry.VALKYRIE_ACTION_REQUESTED, received_actions.append)
+    await action_mesh.subscribe(registry.VALKYRIE_ACTION_PROPOSED, received_actions.append)
 
     for name, decision in [
         ("k8s-valkyrie", "propose_action"),

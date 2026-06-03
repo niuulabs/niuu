@@ -39,6 +39,11 @@ from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_JUDGMENT_REJECTED,
+    is_valkyrie_outcome_event,
+    validate_valkyrie_outcome,
+)
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
@@ -1579,7 +1584,9 @@ class DriveLoop:
             allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
 
         page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
-        verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        verdict = str(
+            outcome_fields.get("verdict", "") or outcome_fields.get("decision", "") or ""
+        ).strip()
         valid = bool(parsed.valid) if parsed is not None else False
         synthesized_from_tool_write = False
         if not verdict and page_write_fields:
@@ -1602,6 +1609,7 @@ class DriveLoop:
             outcome_fields.setdefault("verdict", verdict)
             synthesized_pass = True
         elif verdict:
+            outcome_fields.setdefault("verdict", verdict)
             normalized_verdict = _normalize_outcome_verdict(verdict, self._persona_config.produces)
             if normalized_verdict != verdict:
                 verdict = normalized_verdict
@@ -1610,6 +1618,69 @@ class DriveLoop:
         files_changed = outcome_fields.get("files_changed")
         if (synthesized_pass or synthesized_from_tool_write) and not valid:
             valid = True
+
+        if is_valkyrie_outcome_event(canonical_event_type):
+            validation_errors: list[str] = []
+            if parsed is None:
+                validation_errors.append("resident Valkyrie outcome block is missing")
+            elif not parsed.valid:
+                validation_errors.extend(parsed.errors)
+            validation_errors.extend(
+                validate_valkyrie_outcome(canonical_event_type, outcome_fields)
+            )
+            if validation_errors:
+                reject_payload: dict[str, object] = {
+                    "persona": self._persona_config.name,
+                    "success": False,
+                    "event_type": VALKYRIE_JUDGMENT_REJECTED,
+                    "canonical_event_type": canonical_event_type,
+                    "outcome": outcome_fields,
+                    "fields": outcome_fields,
+                    "valid": False,
+                    "errors": validation_errors,
+                    "task_id": task.task_id,
+                    "workflow_node_id": task.workflow_node_id,
+                    "bubble_up": True,
+                    "room_bridge_skip": self._skuld_channel is not None,
+                }
+                if task.workflow_parent_event_id:
+                    reject_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+                reject_event = RavnEvent(
+                    type=RavnEventType.OUTCOME,
+                    source=self._source_id,
+                    payload=reject_payload,
+                    timestamp=datetime.now(UTC),
+                    urgency=0.8,
+                    correlation_id=task.task_id,
+                    session_id=task.session_id or "",
+                    task_id=task.task_id,
+                    root_correlation_id=root_corr,
+                )
+                logger.warning(
+                    "drive_loop: rejecting invalid resident Valkyrie outcome "
+                    "event_type=%s task_id=%s errors=%s",
+                    canonical_event_type,
+                    task.task_id,
+                    validation_errors,
+                )
+                if self._mesh is not None:
+                    try:
+                        await self._mesh.publish(reject_event, topic=VALKYRIE_JUDGMENT_REJECTED)
+                    except Exception:
+                        logger.warning(
+                            "Failed to publish resident Valkyrie rejected outcome; continuing.",
+                            exc_info=True,
+                        )
+                if self._skuld_channel is not None:
+                    try:
+                        await self._skuld_channel.emit(reject_event)
+                    except Exception:
+                        logger.warning(
+                            "Failed to emit resident Valkyrie rejected outcome to skuld; "
+                            "continuing.",
+                            exc_info=True,
+                        )
+                return
 
         await self._maybe_publish_workflow_artifacts(task, outcome_fields)
 

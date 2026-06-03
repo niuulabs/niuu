@@ -72,6 +72,8 @@ def _make_drive_loop(tmp_path: Path) -> tuple[DriveLoop, MagicMock]:
 def test_output_mode_values() -> None:
     assert OutputMode.SILENT == "silent"
     assert OutputMode.AMBIENT == "ambient"
+    assert OutputMode.PRESENT == "present"
+    assert OutputMode.URGENT == "urgent"
     assert OutputMode.SURFACE == "surface"
 
 

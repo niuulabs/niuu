@@ -22,6 +22,75 @@ from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
 
 
+def _valkyrie_judgment_produces() -> SimpleNamespace:
+    return SimpleNamespace(
+        event_type=registry.VALKYRIE_JUDGMENT_PROPOSED,
+        event_type_map={"propose_action": registry.VALKYRIE_ACTION_PROPOSED},
+        schema={
+            "decision": OutcomeField(
+                type="enum",
+                description="decision",
+                enum_values=["watch", "propose_action", "blocked"],
+            ),
+            "environment_id": OutcomeField(type="string", description="environment id"),
+            "valkyrie_id": OutcomeField(type="string", description="valkyrie id"),
+            "signal_refs": OutcomeField(type="array", description="signal refs"),
+            "tier": OutcomeField(
+                type="enum",
+                description="attention tier",
+                enum_values=["silent", "ambient", "present", "urgent"],
+            ),
+            "confidence": OutcomeField(type="number", description="confidence"),
+            "operational_state": OutcomeField(type="string", description="operational state"),
+            "rationale": OutcomeField(type="string", description="rationale"),
+            "evidence": OutcomeField(type="array", description="evidence"),
+            "recommended_action": OutcomeField(type="string", description="recommended action"),
+            "action_authority": OutcomeField(
+                type="enum",
+                description="authority",
+                enum_values=[
+                    "autonomous",
+                    "yolo_allowed",
+                    "court_required",
+                    "human_review_required",
+                ],
+            ),
+            "target_surfaces": OutcomeField(type="array", description="target surfaces"),
+            "expires_at": OutcomeField(type="string", description="expiry"),
+            "dissent_refs": OutcomeField(type="array", description="dissent refs"),
+            "correlation_ids": OutcomeField(type="object", description="correlation ids"),
+        },
+    )
+
+
+def _valid_valkyrie_judgment_text(*, tier: str = "ambient") -> str:
+    return f"""\
+---outcome---
+decision: propose_action
+environment_id: cluster-a
+valkyrie_id: k8s-valkyrie
+signal_refs:
+  - evt-k8s-1
+tier: {tier}
+confidence: 0.84
+operational_state: investigating
+rationale: pod restart signal needs inspection
+evidence:
+  - event_id: evt-k8s-1
+    kind: kubernetes
+recommended_action: inspect pod before changing cluster state
+action_authority: autonomous
+target_surfaces:
+  - surface:ops
+expires_at: ""
+dissent_refs: []
+correlation_ids:
+  root: corr-k8s-1
+  task: task-k8s-1
+---end---
+"""
+
+
 class TestDriveLoopOutcomeContract:
     def test_default_success_verdict_prefers_event_map_then_schema(self) -> None:
         assert (
@@ -226,6 +295,80 @@ files_changed: 2
         assert alias_event.payload["event_type"] == "code.changed"
         assert alias_event.payload["canonical_event_type"] == "code.completed"
         assert alias_event.payload["routing_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_valid_resident_valkyrie_judgment_preserves_structured_metadata(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+
+        task = _make_agent_task(task_id="task-k8s-1")
+        task.session_id = "sess-k8s-1"
+
+        await dl._emit_mesh_outcome_event(
+            task,
+            _valid_valkyrie_judgment_text(),
+            success=True,
+        )
+
+        assert mesh.publish.await_count == 2
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        canonical_topic = mesh.publish.await_args_list[0].kwargs["topic"]
+        assert canonical_topic == registry.VALKYRIE_JUDGMENT_PROPOSED
+        assert canonical_event.payload["valid"] is True
+        assert canonical_event.payload["outcome"]["tier"] == "ambient"
+        assert canonical_event.payload["outcome"]["signal_refs"] == ["evt-k8s-1"]
+        assert canonical_event.payload["outcome"]["evidence"] == [
+            {"event_id": "evt-k8s-1", "kind": "kubernetes"}
+        ]
+        assert canonical_event.payload["outcome"]["target_surfaces"] == ["surface:ops"]
+        assert canonical_event.payload["outcome"]["correlation_ids"]["root"] == "corr-k8s-1"
+
+        alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
+        alias_event = mesh.publish.await_args_list[1].args[0]
+        assert alias_topic == registry.VALKYRIE_ACTION_PROPOSED
+        assert alias_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
+        assert alias_event.payload["routing_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_invalid_resident_valkyrie_judgment_is_rejected_before_publication(
+        self,
+    ) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+
+        task = _make_agent_task(task_id="task-k8s-invalid")
+        task.session_id = "sess-k8s-invalid"
+
+        await dl._emit_mesh_outcome_event(
+            task,
+            _valid_valkyrie_judgment_text(tier="watch"),
+            success=True,
+        )
+
+        mesh.publish.assert_awaited_once()
+        rejected_event = mesh.publish.await_args.args[0]
+        rejected_topic = mesh.publish.await_args.kwargs["topic"]
+        assert rejected_topic == registry.VALKYRIE_JUDGMENT_REJECTED
+        assert rejected_event.payload["event_type"] == registry.VALKYRIE_JUDGMENT_REJECTED
+        assert rejected_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
+        assert rejected_event.payload["valid"] is False
+        assert any("tier" in error for error in rejected_event.payload["errors"])
+        skuld_channel.emit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_success_without_verdict_still_routes_pass_alias(self) -> None:

@@ -395,11 +395,20 @@ VALKYRIE_JUDGMENT_RECORDED: str = "valkyrie.judgment.recorded"
 #: A Valkyrie proposed an operational judgment for downstream policy/court handling.
 VALKYRIE_JUDGMENT_PROPOSED: str = "valkyrie.judgment.proposed"
 
+#: A resident Valkyrie judgment was rejected before publication.
+VALKYRIE_JUDGMENT_REJECTED: str = "valkyrie.judgment.rejected"
+
+#: A Valkyrie proposed a scoped action for policy/court handling.
+VALKYRIE_ACTION_PROPOSED: str = "valkyrie.action.proposed"
+
 #: A Valkyrie requested a scoped action.
 VALKYRIE_ACTION_REQUESTED: str = "valkyrie.action.requested"
 
 #: A scoped Valkyrie action completed.
 VALKYRIE_ACTION_COMPLETED: str = "valkyrie.action.completed"
+
+#: A scoped Valkyrie action was executed.
+VALKYRIE_ACTION_EXECUTED: str = "valkyrie.action.executed"
 
 #: A scoped Valkyrie action failed.
 VALKYRIE_ACTION_FAILED: str = "valkyrie.action.failed"

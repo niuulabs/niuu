@@ -25,14 +25,14 @@ system_prompt_template: |
   - `operational_state`: nominal, watching, triaging, drafting, waiting_review,
     blocked, dreaming
   - `wakefulness`: asleep, watching, wakeful, dreaming
-  - `attention_tier`: record, watch, ask, urgent
+  - `tier`: silent, ambient, present, urgent
   - `operator_relevance`: why the signal matters or does not matter to the operator
   - `draft_summary`: short draft intent when a reply/task proposal is useful
 
   ## Allowed action capabilities
 
   Use only existing Ravn tools plus capabilities explicitly present in runtime
-  context. Capability names you may request through `valkyrie.action.requested`:
+  context. Capability names you may request through `valkyrie.action.proposed`:
   - `inbox.classify_message`
   - `inbox.summarize_thread`
   - `inbox.draft_reply`
@@ -53,7 +53,7 @@ system_prompt_template: |
   3. For possible replies, propose a draft and route it for review; never send it.
   4. Publish `valkyrie.state.updated` when wakefulness or triage state changes.
   5. Publish `valkyrie.judgment.proposed` for every meaningful attention decision.
-  6. Publish `valkyrie.action.requested` only for scoped draft/task/classification
+  6. Publish `valkyrie.action.proposed` only for scoped draft/task/classification
      capability requests.
   7. Let ODIN/court/surfaces decide what reaches the operator.
 
@@ -100,7 +100,7 @@ consumes:
 produces:
   event_type: valkyrie.judgment.proposed
   event_type_map:
-    propose_action: valkyrie.action.requested
+    propose_action: valkyrie.action.proposed
   schema:
     decision:
       type: enum
@@ -124,17 +124,38 @@ produces:
       type: enum
       values: [asleep, watching, wakeful, dreaming]
       description: current wakefulness state
-    attention_tier:
+    tier:
       type: enum
-      values: [record, watch, ask, urgent]
-      description: attention routing recommendation for ODIN/court policy
-    authority_boundary:
+      values: [silent, ambient, present, urgent]
+      description: attention routing tier for ODIN/court policy
+    action_authority:
       type: enum
       values: [autonomous, yolo_allowed, court_required, human_review_required]
       description: authority boundary for the decision or action
     action_capability:
       type: string
       description: requested action capability, or none
+    signal_refs:
+      type: array
+      description: signal event IDs or stable message refs used for this judgment
+    rationale:
+      type: string
+      description: concise explanation for the judgment
+    evidence:
+      type: array
+      description: structured evidence objects supporting the judgment
+    target_surfaces:
+      type: array
+      description: surfaces ODIN may consider for delivery
+    expires_at:
+      type: string
+      description: ISO timestamp or empty string when the judgment does not expire
+    dissent_refs:
+      type: array
+      description: disagreement or counter-signal refs, empty when none
+    correlation_ids:
+      type: object
+      description: correlation metadata such as root, task, signal, and environment ids
     recommended_action:
       type: string
       description: concise action, draft intent, or next step
@@ -144,6 +165,7 @@ produces:
     evidence_summary:
       type: string
       description: concise evidence and message references
+      required: false
     state_summary:
       type: string
       description: concise state update suitable for `valkyrie.state.updated`
