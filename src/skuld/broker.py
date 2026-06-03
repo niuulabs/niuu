@@ -1038,6 +1038,7 @@ class Broker:
                 append_turn=self._append_turn,
                 report_timeline_event=self._report_timeline_event,
                 observe_peer_event=self._observe_room_peer_event,
+                publish_presence_event=self._publish_room_presence_event,
             )
             if self._settings.room.enabled
             else None
@@ -3508,11 +3509,15 @@ class Broker:
         )
         return "\n".join(lines)
 
-    def get_room_participants(self) -> list[dict[str, Any]]:
+    async def _publish_room_presence_event(self, event: SleipnirEvent) -> None:
+        """Publish canonical room presence events through the existing Sleipnir bus."""
+        await self._sleipnir_publisher.publish(event)
+
+    def get_room_participants(self, environment_id: str | None = None) -> list[dict[str, Any]]:
         """Return the current room participants as plain dictionaries."""
         if self._room_bridge is None:
             return []
-        return [asdict(participant) for participant in self._room_bridge.participants.values()]
+        return self._room_bridge.environment_roster(environment_id=environment_id)
 
     def get_communication_routes(self) -> list[dict[str, Any]]:
         """Return active external communication routes exposed by this broker."""
@@ -5508,9 +5513,9 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
 
 
 @app.get("/api/room/participants")
-async def get_room_participants() -> dict:
+async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
     """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants()}
+    return {"participants": broker.get_room_participants(environment_id=environment_id)}
 
 
 @app.get("/api/workflow/gates")

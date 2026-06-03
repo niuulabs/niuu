@@ -38,6 +38,49 @@ class TestParticipantMeta:
         assert p.participant_type == "ravn"
         assert p.gateway_url == "wss://gateway.example.com/ravn"
 
+    def test_environment_presence_fields_default_to_legacy_safe_values(self):
+        p = ParticipantMeta(
+            peer_id="agent-456",
+            persona="Ravn",
+            color="p2",
+            participant_type="ravn",
+        )
+
+        assert p.environment_id == ""
+        assert p.participant_kind == ""
+        assert p.capabilities == ()
+        assert p.surfaces == ()
+        assert p.wakefulness == "unknown"
+        assert p.attention_state == "available"
+        assert p.heartbeat_ttl_s == 90.0
+        assert p.last_heartbeat_at is None
+        assert p.authority_role == ""
+        assert p.room_ids == ()
+
+    def test_environment_presence_fields_can_be_set(self):
+        p = ParticipantMeta(
+            peer_id="valkyrie-1",
+            persona="K8s Valkyrie",
+            color="p2",
+            participant_type="ravn",
+            environment_id="cluster-a",
+            participant_kind="valkyrie",
+            capabilities=("k8s.inspect_pod",),
+            surfaces=("skuld.room",),
+            wakefulness="watching",
+            attention_state="available",
+            heartbeat_ttl_s=30.0,
+            last_heartbeat_at=123.0,
+            authority_role="autonomous",
+            room_ids=("room-1",),
+        )
+
+        assert p.environment_id == "cluster-a"
+        assert p.participant_kind == "valkyrie"
+        assert p.capabilities == ("k8s.inspect_pod",)
+        assert p.surfaces == ("skuld.room",)
+        assert p.room_ids == ("room-1",)
+
     def test_frozen_immutability(self):
         p = ParticipantMeta(
             peer_id="user-1",

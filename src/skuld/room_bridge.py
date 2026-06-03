@@ -21,11 +21,12 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
@@ -72,12 +73,18 @@ class RoomBridge:
         append_turn: Callable[[Any], None] | None = None,
         report_timeline_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         observe_peer_event: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None,
+        publish_presence_event: Callable[[Any], Awaitable[None]] | None = None,
+        environment_id: str | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._config = config
         self._channels = channels
         self._append_turn = append_turn
         self._report_timeline_event = report_timeline_event
         self._observe_peer_event = observe_peer_event
+        self._publish_presence_event = publish_presence_event
+        self._environment_id = environment_id or os.environ.get("RAVN_ENVIRONMENT_ID", "local")
+        self._clock = clock or time.time
         self._participants: dict[str, ParticipantMeta] = {}
         self._websockets: dict[str, WebSocket] = {}
         self._pending_help_context: dict[str, dict[str, Any]] = {}
@@ -99,6 +106,15 @@ class RoomBridge:
         subscribes_to: list[str] | None = None,
         emits: list[str] | None = None,
         tools: list[str] | None = None,
+        environment_id: str | None = None,
+        participant_kind: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        wakefulness: str = "unknown",
+        attention_state: str = "available",
+        heartbeat_ttl_s: float = 90.0,
+        authority_role: str = "",
+        room_ids: list[str] | None = None,
     ) -> ParticipantMeta:
         """Register a new Ravn participant and broadcast ``participant_joined``.
 
@@ -108,6 +124,11 @@ class RoomBridge:
         subs = tuple(subscribes_to or ())
         emit_types = tuple(emits or ())
         tool_names = tuple(tools or ())
+        capability_names = tuple(capabilities or tools or ())
+        surface_names = tuple(surfaces or ())
+        room_membership = tuple(room_ids or ())
+        effective_environment_id = environment_id or self._environment_id
+        effective_kind = participant_kind or "ravn"
 
         if peer_id not in self._participants:
             color = next(self._color_cycle)
@@ -121,20 +142,37 @@ class RoomBridge:
                 emits=emit_types,
                 tools=tool_names,
                 status="idle",
+                environment_id=effective_environment_id,
+                participant_kind=effective_kind,
+                capabilities=capability_names,
+                surfaces=surface_names,
+                wakefulness=wakefulness,
+                attention_state=attention_state,
+                heartbeat_ttl_s=heartbeat_ttl_s,
+                last_heartbeat_at=self._clock(),
+                authority_role=authority_role,
+                room_ids=room_membership,
             )
             self._participants[peer_id] = meta
         else:
             old = self._participants[peer_id]
-            meta = ParticipantMeta(
-                peer_id=peer_id,
+            meta = replace(
+                old,
                 persona=persona,
-                color=old.color,
-                participant_type=old.participant_type,
                 display_name=display_name or old.display_name,
                 subscribes_to=subs or old.subscribes_to,
                 emits=emit_types or old.emits,
                 tools=tool_names or old.tools,
-                status=old.status,
+                environment_id=effective_environment_id or old.environment_id,
+                participant_kind=participant_kind or old.participant_kind,
+                capabilities=capability_names or old.capabilities,
+                surfaces=surface_names or old.surfaces,
+                wakefulness=wakefulness if wakefulness != "unknown" else old.wakefulness,
+                attention_state=attention_state or old.attention_state,
+                heartbeat_ttl_s=heartbeat_ttl_s or old.heartbeat_ttl_s,
+                last_heartbeat_at=self._clock(),
+                authority_role=authority_role or old.authority_role,
+                room_ids=room_membership or old.room_ids,
             )
             self._participants[peer_id] = meta
 
@@ -142,6 +180,7 @@ class RoomBridge:
         logger.info("RoomBridge: participant registered peer_id=%s persona=%s", peer_id, persona)
 
         await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
         return meta
 
     async def register_mesh_peer(
@@ -154,6 +193,15 @@ class RoomBridge:
         emits: list[str] | None = None,
         tools: list[str] | None = None,
         participant_type: str = "ravn",
+        environment_id: str | None = None,
+        participant_kind: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        wakefulness: str = "watching",
+        attention_state: str = "available",
+        heartbeat_ttl_s: float = 90.0,
+        authority_role: str = "",
+        room_ids: list[str] | None = None,
     ) -> ParticipantMeta:
         """Register a mesh-discovered peer (no WebSocket connection).
 
@@ -174,21 +222,193 @@ class RoomBridge:
             emits=tuple(emits or ()),
             tools=tuple(tools or ()),
             status="idle",
+            environment_id=environment_id or self._environment_id,
+            participant_kind=participant_kind or participant_type,
+            capabilities=tuple(capabilities or tools or ()),
+            surfaces=tuple(surfaces or ()),
+            wakefulness=wakefulness,
+            attention_state=attention_state,
+            heartbeat_ttl_s=heartbeat_ttl_s,
+            last_heartbeat_at=self._clock(),
+            authority_role=authority_role,
+            room_ids=tuple(room_ids or ()),
         )
         self._participants[peer_id] = meta
         logger.info("RoomBridge: mesh peer registered peer_id=%s persona=%s", peer_id, persona)
 
         await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
         return meta
 
     async def unregister(self, peer_id: str) -> None:
         """Remove a participant and broadcast ``participant_left``."""
-        self._participants.pop(peer_id, None)
+        meta = self._participants.pop(peer_id, None)
         self._websockets.pop(peer_id, None)
         self._pending_help_context.pop(peer_id, None)
         logger.info("RoomBridge: participant unregistered peer_id=%s", peer_id)
 
         await self._channels.broadcast({"type": "participant_left", "participantId": peer_id})
+        if meta is not None:
+            await self._publish_participant_left(meta, reason="left")
+
+    async def heartbeat(
+        self,
+        peer_id: str,
+        *,
+        status: str | None = None,
+        wakefulness: str | None = None,
+        attention_state: str | None = None,
+    ) -> ParticipantMeta | None:
+        """Record a participant heartbeat and publish canonical presence."""
+        meta = self._participants.get(peer_id)
+        if meta is None:
+            return None
+        updated = replace(
+            meta,
+            status=status or meta.status,
+            wakefulness=wakefulness or meta.wakefulness,
+            attention_state=attention_state or meta.attention_state,
+            last_heartbeat_at=self._clock(),
+        )
+        self._participants[peer_id] = updated
+        await self._channels.broadcast(
+            {
+                "type": "participant_heartbeat",
+                "participantId": peer_id,
+                "participant": asdict(updated),
+            }
+        )
+        await self._publish_participant_heartbeat(updated)
+        return updated
+
+    async def update_participant_capabilities(
+        self,
+        peer_id: str,
+        *,
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        tools: list[str] | None = None,
+    ) -> ParticipantMeta | None:
+        """Update capabilities/tools/surfaces on the existing participant model."""
+        meta = self._participants.get(peer_id)
+        if meta is None:
+            return None
+        updated = replace(
+            meta,
+            capabilities=tuple(capabilities) if capabilities is not None else meta.capabilities,
+            surfaces=tuple(surfaces) if surfaces is not None else meta.surfaces,
+            tools=tuple(tools) if tools is not None else meta.tools,
+            last_heartbeat_at=self._clock(),
+        )
+        self._participants[peer_id] = updated
+        await self._channels.broadcast(
+            {
+                "type": "participant_capabilities_changed",
+                "participantId": peer_id,
+                "participant": asdict(updated),
+            }
+        )
+        await self._publish_participant_capabilities_changed(updated)
+        return updated
+
+    async def expire_heartbeats(self, *, now: float | None = None) -> list[ParticipantMeta]:
+        """Mark participants whose heartbeat TTL has elapsed as expired."""
+        now_ts = self._clock() if now is None else now
+        expired: list[ParticipantMeta] = []
+        for peer_id, meta in list(self._participants.items()):
+            if meta.last_heartbeat_at is None or meta.status == "expired":
+                continue
+            if now_ts - meta.last_heartbeat_at <= meta.heartbeat_ttl_s:
+                continue
+            updated = replace(meta, status="expired", attention_state="offline")
+            self._participants[peer_id] = updated
+            expired.append(updated)
+            await self._channels.broadcast(
+                {
+                    "type": "participant_heartbeat_expired",
+                    "participantId": peer_id,
+                    "participant": asdict(updated),
+                }
+            )
+            await self._publish_participant_heartbeat(updated)
+        return expired
+
+    async def _publish_participant_joined(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_joined
+
+        await self._publish_presence(
+            participant_joined(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                capabilities=list(meta.capabilities or meta.tools),
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_left(self, meta: ParticipantMeta, *, reason: str) -> None:
+        from sleipnir.domain.catalog import participant_left
+
+        await self._publish_presence(
+            participant_left(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                reason=reason,
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_heartbeat(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_heartbeat
+
+        await self._publish_presence(
+            participant_heartbeat(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                status=meta.status,
+                wakefulness=meta.wakefulness,
+                attention_state=meta.attention_state,
+                heartbeat_ttl_s=meta.heartbeat_ttl_s,
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_capabilities_changed(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_capabilities_changed
+
+        await self._publish_presence(
+            participant_capabilities_changed(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                capabilities=list(meta.capabilities),
+                surfaces=list(meta.surfaces),
+                tools=list(meta.tools),
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_presence(self, event: Any) -> None:
+        if self._publish_presence_event is None:
+            return
+        try:
+            await self._publish_presence_event(event)
+        except Exception:
+            logger.warning(
+                "RoomBridge: failed to publish presence event type=%s",
+                getattr(event, "event_type", "-"),
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Event translation
@@ -326,17 +546,10 @@ class RoomBridge:
         detail: Any,
     ) -> None:
         """Translate a thought/tool frame into a room_activity event."""
-        self._participants[meta.peer_id] = ParticipantMeta(
-            peer_id=meta.peer_id,
-            persona=meta.persona,
-            color=meta.color,
-            participant_type=meta.participant_type,
-            display_name=meta.display_name,
-            gateway_url=meta.gateway_url,
-            subscribes_to=meta.subscribes_to,
-            emits=meta.emits,
-            tools=meta.tools,
+        self._participants[meta.peer_id] = replace(
+            meta,
             status=activity_type,
+            last_heartbeat_at=self._clock(),
         )
         event: dict = {
             "type": "room_activity",
@@ -580,12 +793,23 @@ class RoomBridge:
     # Room state
     # ------------------------------------------------------------------
 
-    def get_room_state_event(self) -> dict:
+    def get_room_state_event(self, *, environment_id: str | None = None) -> dict:
         """Return a ``room_state`` event with the current participant list."""
         return {
             "type": "room_state",
-            "participants": [asdict(p) for p in self._participants.values()],
+            "participants": self.environment_roster(environment_id=environment_id),
         }
+
+    def environment_roster(self, *, environment_id: str | None = None) -> list[dict[str, Any]]:
+        """Return current participants, optionally filtered to one Environment."""
+        participants = self._participants.values()
+        if environment_id is not None:
+            participants = [
+                meta
+                for meta in participants
+                if (meta.environment_id or self._environment_id) == environment_id
+            ]
+        return [asdict(p) for p in participants]
 
     @property
     def participant_count(self) -> int:

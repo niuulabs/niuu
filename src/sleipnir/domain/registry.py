@@ -460,6 +460,9 @@ PARTICIPANT_LEFT: str = "participant.left"
 #: A participant heartbeat/presence update was observed.
 PARTICIPANT_HEARTBEAT: str = "participant.heartbeat"
 
+#: A participant's capabilities, tools, or surfaces changed.
+PARTICIPANT_CAPABILITIES_CHANGED: str = "participant.capabilities_changed"
+
 # ---------------------------------------------------------------------------
 # room — replayable huddle and transcript events
 # ---------------------------------------------------------------------------

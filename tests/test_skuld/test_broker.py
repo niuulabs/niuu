@@ -12,7 +12,6 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from fastapi import WebSocketDisconnect
-from fastapi.testclient import TestClient
 
 from skuld.broker import (
     Broker,
@@ -32,6 +31,7 @@ from skuld.transports import (
     TransportCapabilities,
 )
 from sleipnir.adapters.in_process import InProcessBus
+from sleipnir.domain import registry as event_registry
 from sleipnir.testing import EventCapture
 
 
@@ -1822,6 +1822,8 @@ class TestFastAPIEndpoints:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -1940,6 +1942,8 @@ class TestCORSMiddleware:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -3116,6 +3120,8 @@ class TestServiceAPIEndpoints:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -4086,6 +4092,66 @@ class TestBrokerRoomBridge:
         assert participants
         assert participants[0]["peer_id"] == "peer-1"
         assert participants[0]["persona"] == "coder"
+
+    @pytest.mark.asyncio
+    async def test_get_room_participants_filters_environment(self, room_settings):
+        b = Broker(settings=room_settings)
+        assert b._room_bridge is not None
+        await b._room_bridge.register(
+            "cluster-peer",
+            "k8s",
+            AsyncMock(),
+            environment_id="cluster-a",
+        )
+        await b._room_bridge.register(
+            "host-peer",
+            "inbox",
+            AsyncMock(),
+            environment_id="host-mail",
+        )
+
+        participants = b.get_room_participants(environment_id="cluster-a")
+
+        assert [participant["peer_id"] for participant in participants] == ["cluster-peer"]
+
+    @pytest.mark.asyncio
+    async def test_room_presence_events_publish_to_existing_sleipnir_bus(self, room_settings):
+        bus = InProcessBus()
+        captured = []
+
+        async def handler(event):
+            captured.append(event)
+
+        await bus.subscribe(["participant.*"], handler)
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+        assert b._room_bridge is not None
+
+        await b._room_bridge.register(
+            "valkyrie-1",
+            "K8s Valkyrie",
+            AsyncMock(),
+            environment_id="cluster-a",
+            participant_kind="valkyrie",
+            capabilities=["k8s.inspect_pod"],
+        )
+        await bus.flush()
+
+        assert [event.event_type for event in captured] == [event_registry.PARTICIPANT_JOINED]
+        assert captured[0].payload["environment_id"] == "cluster-a"
+        assert captured[0].payload["participant_type"] == "valkyrie"
+
+    @pytest.mark.asyncio
+    async def test_room_participants_api_handler_passes_environment_filter(self, monkeypatch):
+        import skuld.broker as broker_module
+
+        fake_broker = MagicMock()
+        fake_broker.get_room_participants.return_value = [{"peer_id": "cluster-peer"}]
+        monkeypatch.setattr(broker_module, "broker", fake_broker)
+
+        response = await broker_module.get_room_participants(environment_id="cluster-a")
+
+        assert response == {"participants": [{"peer_id": "cluster-peer"}]}
+        fake_broker.get_room_participants.assert_called_once_with(environment_id="cluster-a")
 
     def test_get_communication_routes_returns_channel_routes(self, room_settings):
         b = Broker(settings=room_settings)

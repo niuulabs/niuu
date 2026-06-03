@@ -258,6 +258,38 @@ class ParticipantJoinedPayload:
 
 
 @dataclass(frozen=True)
+class ParticipantLeftPayload:
+    environment_id: str
+    participant_id: str
+    participant_type: str
+    display_name: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ParticipantHeartbeatPayload:
+    environment_id: str
+    participant_id: str
+    participant_type: str
+    display_name: str
+    status: str
+    wakefulness: str
+    attention_state: str
+    heartbeat_ttl_s: float
+
+
+@dataclass(frozen=True)
+class ParticipantCapabilitiesChangedPayload:
+    environment_id: str
+    participant_id: str
+    participant_type: str
+    display_name: str
+    capabilities: list[str]
+    surfaces: list[str]
+    tools: list[str]
+
+
+@dataclass(frozen=True)
 class RoomOpenedPayload:
     environment_id: str
     room_id: str
@@ -1126,6 +1158,124 @@ def participant_joined(
         source=source,
         payload=payload,
         summary=f"{participant_type} participant joined {environment_id}: {display_name}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def participant_left(
+    *,
+    environment_id: str,
+    participant_id: str,
+    participant_type: str,
+    display_name: str,
+    reason: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a participant leaves an Environment or room."""
+    payload = dataclasses.asdict(
+        ParticipantLeftPayload(
+            environment_id=environment_id,
+            participant_id=participant_id,
+            participant_type=participant_type,
+            display_name=display_name,
+            reason=reason,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.PARTICIPANT_LEFT,
+        source=source,
+        payload=payload,
+        summary=f"{participant_type} participant left {environment_id}: {display_name}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def participant_heartbeat(
+    *,
+    environment_id: str,
+    participant_id: str,
+    participant_type: str,
+    display_name: str,
+    status: str,
+    wakefulness: str,
+    attention_state: str,
+    heartbeat_ttl_s: float,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit a participant heartbeat/presence update."""
+    payload = dataclasses.asdict(
+        ParticipantHeartbeatPayload(
+            environment_id=environment_id,
+            participant_id=participant_id,
+            participant_type=participant_type,
+            display_name=display_name,
+            status=status,
+            wakefulness=wakefulness,
+            attention_state=attention_state,
+            heartbeat_ttl_s=heartbeat_ttl_s,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.PARTICIPANT_HEARTBEAT,
+        source=source,
+        payload=payload,
+        summary=f"{participant_type} participant heartbeat {environment_id}: {display_name}",
+        urgency=0.1 if status != "expired" else 0.5,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def participant_capabilities_changed(
+    *,
+    environment_id: str,
+    participant_id: str,
+    participant_type: str,
+    display_name: str,
+    capabilities: list[str],
+    surfaces: list[str],
+    tools: list[str],
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a participant's tools/capabilities/surfaces change."""
+    payload = dataclasses.asdict(
+        ParticipantCapabilitiesChangedPayload(
+            environment_id=environment_id,
+            participant_id=participant_id,
+            participant_type=participant_type,
+            display_name=display_name,
+            capabilities=capabilities,
+            surfaces=surfaces,
+            tools=tools,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.PARTICIPANT_CAPABILITIES_CHANGED,
+        source=source,
+        payload=payload,
+        summary=f"{participant_type} participant capabilities changed: {display_name}",
         urgency=0.2,
         domain="infrastructure",
         timestamp=datetime.now(UTC),
