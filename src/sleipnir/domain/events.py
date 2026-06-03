@@ -33,6 +33,7 @@ EVENT_NAMESPACES: dict[str, str] = {
     "attention": "Attention-routing, escalation, and notification decisions",
     "feedback": "Human or system feedback on signals, judgments, actions, and attention",
     "learning": "Private, Environment, Flock, domain, and shared learning events",
+    "flock": "Flock membership, learning exchange, canary, and adoption events",
     "participant": "Human, agent, tool, and surface presence events",
     "room": "Replayable huddle/room lifecycle and transcript events",
 }
