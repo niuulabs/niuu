@@ -169,6 +169,8 @@ class SagaListItem(BaseModel):
     slug: str
     name: str
     repos: list[str]
+    repo_branches: dict[str, str] = Field(default_factory=dict)
+    repo_refs: list[dict[str, str]] = Field(default_factory=list)
     feature_branch: str
     status: str
     progress: float = 0.0
@@ -184,6 +186,8 @@ class SagaListItem(BaseModel):
     workflow_version: str | None = None
     instance_id: str | None = None
     instance_name: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
 
 
 class SagaDetailResponse(BaseModel):
@@ -194,6 +198,8 @@ class SagaDetailResponse(BaseModel):
     name: str
     description: str = ""
     repos: list[str]
+    repo_branches: dict[str, str] = Field(default_factory=dict)
+    repo_refs: list[dict[str, str]] = Field(default_factory=list)
     feature_branch: str
     status: str
     progress: float = 0.0
@@ -208,6 +214,8 @@ class SagaDetailResponse(BaseModel):
     workflow_version: str | None = None
     instance_id: str | None = None
     instance_name: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
 
 
 class DecomposeRequest(BaseModel):
@@ -226,6 +234,8 @@ class SagaWorkflowAssignmentRequest(BaseModel):
 
 class SagaTargetAssignmentRequest(BaseModel):
     instance_id: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
 
 
 class RunSpecResponse(BaseModel):
@@ -457,6 +467,13 @@ def _display_progress(
     return phase_summary.completed / phase_summary.total
 
 
+def _repo_refs(saga: Saga) -> list[dict[str, str]]:
+    return [
+        {"repo": repo, "branch": saga.repo_branches.get(repo, saga.base_branch)}
+        for repo in saga.repos
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -498,6 +515,8 @@ def create_sagas_router() -> APIRouter:
                     slug=saga.slug,
                     name=project.name if project else saga.name,
                     repos=saga.repos,
+                    repo_branches=saga.repo_branches,
+                    repo_refs=_repo_refs(saga),
                     feature_branch=saga.feature_branch,
                     status=saga.status.value.lower(),
                     progress=_display_progress(saga, project, phase_summary),
@@ -513,6 +532,8 @@ def create_sagas_router() -> APIRouter:
                     workflow_version=saga.workflow_version,
                     instance_id=saga.instance_id,
                     instance_name=instance_name,
+                    target_tags=saga.target_tags,
+                    target_match=saga.target_match,
                 )
             )
         return items
@@ -615,6 +636,8 @@ def create_sagas_router() -> APIRouter:
             name=project.name if project else saga.name,
             description=project.description if project else "",
             repos=saga.repos,
+            repo_branches=saga.repo_branches,
+            repo_refs=_repo_refs(saga),
             feature_branch=saga.feature_branch,
             status=saga.status.value.lower(),
             progress=_display_progress(saga, project, phase_summary),
@@ -629,6 +652,8 @@ def create_sagas_router() -> APIRouter:
             workflow_version=saga.workflow_version,
             instance_id=saga.instance_id,
             instance_name=instance_name,
+            target_tags=saga.target_tags,
+            target_match=saga.target_match,
         )
 
     @router.post("/decompose", response_model=SagaStructureResponse)
@@ -787,6 +812,7 @@ def create_sagas_router() -> APIRouter:
     async def update_saga(
         saga_id: str,
         body: UpdateSagaRequest,
+        request: Request,
         principal: Principal = Depends(extract_principal),
         repo: SagaRepository = Depends(resolve_saga_repo),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
@@ -818,6 +844,8 @@ def create_sagas_router() -> APIRouter:
             slug=saga.slug,
             name=project.name if project else saga.name,
             repos=saga.repos,
+            repo_branches=saga.repo_branches,
+            repo_refs=_repo_refs(saga),
             feature_branch=saga.feature_branch,
             status=new_status.value.lower(),
             progress=_display_progress(
@@ -831,6 +859,10 @@ def create_sagas_router() -> APIRouter:
             workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
             workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
             workflow_version=saga.workflow_version,
+            instance_id=saga.instance_id,
+            instance_name=await _resolve_instance_name(request, principal, saga.instance_id),
+            target_tags=saga.target_tags,
+            target_match=saga.target_match,
         )
 
     @router.put("/{saga_id}/workflow", response_model=SagaListItem)
@@ -884,6 +916,8 @@ def create_sagas_router() -> APIRouter:
             slug=updated.slug,
             name=project.name if project else updated.name,
             repos=updated.repos,
+            repo_branches=updated.repo_branches,
+            repo_refs=_repo_refs(updated),
             feature_branch=updated.feature_branch,
             status=updated.status.value.lower(),
             progress=_display_progress(updated, project, phase_summary),
@@ -899,6 +933,8 @@ def create_sagas_router() -> APIRouter:
             workflow_version=updated.workflow_version,
             instance_id=updated.instance_id,
             instance_name=instance_name,
+            target_tags=updated.target_tags,
+            target_match=updated.target_match,
         )
 
     @router.put("/{saga_id}/target", response_model=SagaListItem)
@@ -925,25 +961,31 @@ def create_sagas_router() -> APIRouter:
                 detail=f"Saga not found: {saga_id}",
             )
 
+        target_tags = [tag.strip() for tag in body.target_tags if tag.strip()]
+        target_match = body.target_match if body.target_match in {"all", "any"} else "all"
+        instance_id = None if target_tags else body.instance_id
+
         instance_name: str | None = None
-        if body.instance_id:
+        if instance_id:
             instance_service = getattr(request.app.state, "instance_service", None)
             if instance_service is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Instance registry not configured",
                 )
-            instance = await instance_service.get_visible(principal, body.instance_id)
+            instance = await instance_service.get_visible(principal, instance_id)
             if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Target not found: {body.instance_id}",
+                    detail=f"Target not found: {instance_id}",
                 )
             instance_name = instance.name
 
         await repo.update_saga_target(
             parsed_id,
-            instance_id=body.instance_id,
+            instance_id=instance_id,
+            target_tags=target_tags,
+            target_match=target_match,
             owner_id=principal.user_id,
         )
         updated = await repo.get_saga(parsed_id, owner_id=principal.user_id)
@@ -958,6 +1000,8 @@ def create_sagas_router() -> APIRouter:
             slug=updated.slug,
             name=project.name if project else updated.name,
             repos=updated.repos,
+            repo_branches=updated.repo_branches,
+            repo_refs=_repo_refs(updated),
             feature_branch=updated.feature_branch,
             status=updated.status.value.lower(),
             progress=_display_progress(updated, project, phase_summary),
@@ -973,6 +1017,8 @@ def create_sagas_router() -> APIRouter:
             workflow_version=updated.workflow_version,
             instance_id=updated.instance_id,
             instance_name=instance_name,
+            target_tags=updated.target_tags,
+            target_match=updated.target_match,
         )
 
     @router.delete("/{saga_id}", status_code=204)

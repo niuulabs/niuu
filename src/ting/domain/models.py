@@ -113,11 +113,14 @@ class Saga:
     confidence: float
     created_at: datetime
     base_branch: str
+    repo_branches: dict[str, str] = field(default_factory=dict)
     owner_id: str = ""
     workflow_id: UUID | None = None
     workflow_version: str | None = None
     workflow_snapshot: dict[str, Any] | None = None
     instance_id: str | None = None
+    target_tags: list[str] = field(default_factory=list)
+    target_match: str = "all"
 
 
 @dataclass(frozen=True)

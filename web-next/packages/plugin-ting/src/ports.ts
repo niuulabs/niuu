@@ -28,7 +28,7 @@ import type {
 import type { ClarifyingQuestion } from './domain/plan';
 
 // Re-export domain types so consumers can import from a single location.
-export type { Saga, Phase } from './domain/saga';
+export type { Saga, Phase, SagaRepoRef } from './domain/saga';
 export type { DispatcherState, DispatchRule } from './domain/dispatcher';
 export type { SessionInfo, TingSessionStatus } from './domain/session';
 export type { TrackerProject, TrackerMilestone, TrackerIssue, RepoInfo } from './domain/tracker';
@@ -157,7 +157,7 @@ export interface ITingService {
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
-  assignTarget(sagaId: string, instanceId: string | null): Promise<Saga>;
+  assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +220,19 @@ export interface ITrackerBrowserService {
     repos: string[],
     baseBranch?: string,
     instanceId?: string | null,
+    options?: ImportProjectOptions,
   ): Promise<Saga>;
 }
+
+export interface ImportProjectOptions {
+  repoRefs?: { repo: string; branch: string }[];
+  target?: SagaTargetSelection;
+}
+
+export type SagaTargetSelection =
+  | { mode: 'default' }
+  | { mode: 'instance'; instanceId: string }
+  | { mode: 'tags'; tags: string[]; match?: 'all' | 'any' };
 
 // ---------------------------------------------------------------------------
 // IWorkflowService — workflow DAG CRUD
@@ -316,6 +327,8 @@ export interface DispatchQueueItem {
   workflow?: string;
   workflowVersion?: string;
   instanceId?: string;
+  targetTags?: string[];
+  targetMatch?: 'all' | 'any';
 }
 
 export interface DispatchApprovalItem {
@@ -352,6 +365,7 @@ export interface DispatchCluster {
   name: string;
   url: string;
   enabled: boolean;
+  tags?: string[];
 }
 
 /**

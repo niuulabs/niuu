@@ -61,6 +61,8 @@ class QueueItemResponse(BaseModel):
     workflow: str | None = None
     workflow_version: str | None = None
     instance_id: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
 
 
 class ModelOption(BaseModel):
@@ -177,6 +179,7 @@ class ClusterInfo(BaseModel):
     name: str
     url: str
     enabled: bool
+    tags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +208,18 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
         workflow=item.workflow,
         workflow_version=item.workflow_version,
         instance_id=item.instance_id,
+        target_tags=list(item.target_tags),
+        target_match=item.target_match,
     )
+
+
+def _config_tags(config: dict[str, object]) -> list[str]:
+    tags = config.get("tags") or []
+    if isinstance(tags, str):
+        return [tags]
+    if isinstance(tags, list):
+        return [str(tag) for tag in tags]
+    return []
 
 
 def _result_to_response(result: ServiceDispatchResult) -> DispatchResultResponse:
@@ -414,6 +428,7 @@ def create_dispatch_router() -> APIRouter:
                         name=instance.name,
                         url=instance.base_url,
                         enabled=instance.enabled,
+                        tags=instance.tags,
                     )
                     for instance in instances
                 ]
@@ -437,6 +452,7 @@ def create_dispatch_router() -> APIRouter:
                     name=name,
                     url=url,
                     enabled=conn.enabled,
+                    tags=_config_tags(conn.config),
                 )
             )
         return clusters

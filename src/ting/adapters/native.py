@@ -63,9 +63,11 @@ class NativeTrackerAdapter(TrackerPort):
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at,
-                 owner_id, workflow_id, workflow_version, workflow_snapshot, instance_id)
+                 owner_id, workflow_id, workflow_version, workflow_snapshot, instance_id,
+                 repo_branches, target_tags, target_match)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
+                 $17::jsonb, $18, $19)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -80,7 +82,10 @@ class NativeTrackerAdapter(TrackerPort):
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
                 workflow_snapshot = EXCLUDED.workflow_snapshot,
-                instance_id = EXCLUDED.instance_id
+                instance_id = EXCLUDED.instance_id,
+                repo_branches = EXCLUDED.repo_branches,
+                target_tags = EXCLUDED.target_tags,
+                target_match = EXCLUDED.target_match
             """,
             saga.id,
             tracker_id,
@@ -98,6 +103,9 @@ class NativeTrackerAdapter(TrackerPort):
             saga.workflow_version,
             json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
             saga.instance_id,
+            json.dumps(saga.repo_branches),
+            saga.target_tags,
+            saga.target_match,
         )
         return tracker_id
 
@@ -515,6 +523,13 @@ class NativeTrackerAdapter(TrackerPort):
     @staticmethod
     def _row_to_saga(row: asyncpg.Record) -> Saga:
         slug = row["slug"]
+        repo_branches_raw = row.get("repo_branches")
+        if isinstance(repo_branches_raw, str):
+            repo_branches = json.loads(repo_branches_raw)
+        elif repo_branches_raw:
+            repo_branches = dict(repo_branches_raw)
+        else:
+            repo_branches = {}
         return Saga(
             id=row["id"],
             tracker_id=row["tracker_id"],
@@ -522,6 +537,7 @@ class NativeTrackerAdapter(TrackerPort):
             slug=slug,
             name=row["name"],
             repos=list(row["repos"]),
+            repo_branches={str(k): str(v) for k, v in repo_branches.items()},
             feature_branch=row.get("feature_branch") or f"feat/{slug}",
             status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
             confidence=row["confidence"] or 0.0,
@@ -534,6 +550,8 @@ class NativeTrackerAdapter(TrackerPort):
             if isinstance(row.get("workflow_snapshot"), str)
             else (dict(row["workflow_snapshot"]) if row.get("workflow_snapshot") else None),
             instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
+            target_tags=list(row.get("target_tags") or []),
+            target_match=str(row.get("target_match") or "all"),
         )
 
     @staticmethod

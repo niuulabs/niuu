@@ -76,6 +76,8 @@ class SagaRepository(ABC):
         saga_id: UUID,
         *,
         instance_id: str | None,
+        target_tags: list[str] | None = None,
+        target_match: str = "all",
         owner_id: str | None = None,
     ) -> None:
         """Update the assigned Volundr target for a saga."""

@@ -34,6 +34,7 @@ import type {
   ResearchCampaign,
   ResearchCampaignDetail,
   CampaignArtifactDetail,
+  ImportProjectOptions,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
@@ -1268,7 +1269,7 @@ export function createMockTingService(): ITingService {
       return updated;
     },
 
-    async assignTarget(sagaId: string, instanceId: string | null) {
+    async assignTarget(sagaId: string, target) {
       const saga = sagas.get(sagaId);
       if (!saga) {
         throw new Error(`Saga not found: ${sagaId}`);
@@ -1276,8 +1277,10 @@ export function createMockTingService(): ITingService {
 
       const updated: Saga = {
         ...saga,
-        instanceId: instanceId ?? undefined,
-        instanceName: instanceId ? 'Assigned target' : undefined,
+        instanceId: target.mode === 'instance' ? target.instanceId : undefined,
+        instanceName: target.mode === 'instance' ? 'Assigned target' : undefined,
+        targetTags: target.mode === 'tags' ? target.tags : undefined,
+        targetMatch: target.mode === 'tags' ? (target.match ?? 'all') : undefined,
       };
       sagas.set(sagaId, updated);
       return updated;
@@ -1425,23 +1428,30 @@ export function createMockTrackerService(): ITrackerBrowserService {
       repos: string[],
       _baseBranch?: string,
       instanceId?: string | null,
+      options?: ImportProjectOptions,
     ) {
       const project = projectMap.get(projectId);
       const name = project?.name ?? projectId;
+      const repoRefs =
+        options?.repoRefs ?? repos.map((repo) => ({ repo, branch: _baseBranch ?? 'main' }));
+      const target = options?.target;
       const saga: Saga = {
         id: `mock-import-${Date.now()}`,
         trackerId: projectId,
         trackerType: 'mock',
         slug: name.toLowerCase().replace(/\s+/g, '-'),
         name,
-        repos,
+        repos: repoRefs.map((ref) => ref.repo),
+        repoRefs,
         featureBranch: `feat/${name.toLowerCase().replace(/\s+/g, '-')}`,
-        baseBranch: _baseBranch ?? 'main',
+        baseBranch: repoRefs[0]?.branch ?? _baseBranch ?? 'main',
         status: 'active',
         confidence: 50,
         createdAt: new Date().toISOString(),
         phaseSummary: { total: 0, completed: 0 },
-        instanceId: instanceId ?? undefined,
+        instanceId: target?.mode === 'instance' ? target.instanceId : (instanceId ?? undefined),
+        targetTags: target?.mode === 'tags' ? target.tags : undefined,
+        targetMatch: target?.mode === 'tags' ? (target.match ?? 'all') : undefined,
       };
       return saga;
     },

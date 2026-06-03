@@ -5,7 +5,13 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import type { PersonaRole } from '@niuulabs/domain';
 import { EmptyState, ErrorState, LoadingState, PersonaAvatar } from '@niuulabs/ui';
 import type { RunStatus, Saga, Phase, Run } from '../domain/saga';
-import type { DispatchCluster, IDispatchBus, ITingService, RunSessionMessage } from '../ports';
+import type {
+  DispatchCluster,
+  IDispatchBus,
+  ITingService,
+  RunSessionMessage,
+  SagaTargetSelection,
+} from '../ports';
 import { useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
 import { usePhases } from './usePhases';
 import { useSendRunMessage } from './useRunMessages';
@@ -280,9 +286,21 @@ function TargetCard({
   targets: DispatchCluster[];
   isLoading: boolean;
   isUpdating: boolean;
-  onAssign: (instanceId: string | null) => void;
+  onAssign: (target: SagaTargetSelection) => void;
 }) {
+  const initialMode = saga.targetTags?.length ? 'tags' : saga.instanceId ? 'instance' : 'default';
+  const [mode, setMode] = useState<'default' | 'instance' | 'tags'>(initialMode);
   const [value, setValue] = useState<string>(saga.instanceId ?? '');
+  const [tags, setTags] = useState<string>((saga.targetTags ?? []).join(', '));
+  const [match, setMatch] = useState<'all' | 'any'>(saga.targetMatch ?? 'all');
+  const targetTags = tags
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  const targetLabel =
+    mode === 'tags' && targetTags.length
+      ? `Tags: ${targetTags.join(', ')}`
+      : (saga.instanceName ?? 'Dispatch by default target');
 
   return (
     <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">
@@ -291,42 +309,104 @@ function TargetCard({
           Volundr target
         </div>
         <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
-          {saga.instanceName ?? 'Dispatch by default target'}
+          {targetLabel}
         </h3>
         <p className="niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
-          Assign this saga to a specific Volundr so dispatch can route work there without picking a
-          target every time.
+          Assign this saga to default routing, one specific Volundr instance, or a label selector
+          that resolves at dispatch time.
         </p>
       </div>
       <div className="niuu:space-y-3">
-        <select
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
-          disabled={isLoading || isUpdating}
-        >
-          <option value="">No explicit target</option>
-          {targets.map((target) => (
-            <option key={target.connectionId} value={target.connectionId}>
-              {target.name}
-            </option>
+        <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+          {(
+            [
+              ['default', 'Default'],
+              ['instance', 'Instance'],
+              ['tags', 'Tags'],
+            ] as const
+          ).map(([candidate, label]) => (
+            <button
+              key={candidate}
+              type="button"
+              onClick={() => setMode(candidate)}
+              disabled={isUpdating}
+              className={[
+                'niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-mono niuu:uppercase niuu:tracking-[0.08em]',
+                mode === candidate
+                  ? 'niuu:border-brand/50 niuu:bg-brand/15 niuu:text-brand'
+                  : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-muted',
+              ].join(' ')}
+            >
+              {label}
+            </button>
           ))}
-        </select>
+        </div>
+        {mode === 'instance' ? (
+          <select
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+            disabled={isLoading || isUpdating}
+          >
+            <option value="">Select Volundr instance</option>
+            {targets.map((target) => (
+              <option key={target.connectionId} value={target.connectionId}>
+                {target.name}
+                {target.tags?.length ? ` · ${target.tags.join(', ')}` : ''}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {mode === 'tags' ? (
+          <div className="niuu:flex niuu:gap-2">
+            <input
+              type="text"
+              value={tags}
+              onChange={(event) => setTags(event.target.value)}
+              placeholder="gpu, valhalla"
+              className="niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+            />
+            <select
+              value={match}
+              onChange={(event) => setMatch(event.target.value as 'all' | 'any')}
+              className="niuu:w-[96px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-2 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+              aria-label="Target tag match mode"
+            >
+              <option value="all">all</option>
+              <option value="any">any</option>
+            </select>
+          </div>
+        ) : null}
         <div className="niuu:flex niuu:gap-2">
           <button
             type="button"
-            onClick={() => onAssign(value || null)}
-            disabled={isLoading || isUpdating}
+            onClick={() =>
+              onAssign(
+                mode === 'tags'
+                  ? { mode: 'tags', tags: targetTags, match }
+                  : mode === 'instance'
+                    ? { mode: 'instance', instanceId: value }
+                    : { mode: 'default' },
+              )
+            }
+            disabled={
+              isLoading ||
+              isUpdating ||
+              (mode === 'instance' && !value) ||
+              (mode === 'tags' && targetTags.length === 0)
+            }
             className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-primary"
           >
             Save target
           </button>
-          {saga.instanceId ? (
+          {saga.instanceId || saga.targetTags?.length ? (
             <button
               type="button"
               onClick={() => {
+                setMode('default');
                 setValue('');
-                onAssign(null);
+                setTags('');
+                onAssign({ mode: 'default' });
               }}
               disabled={isUpdating}
               className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
@@ -491,8 +571,8 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     });
   }
 
-  function handleAssignTarget(instanceId: string | null) {
-    assignTarget.mutate(instanceId);
+  function handleAssignTarget(target: SagaTargetSelection) {
+    assignTarget.mutate(target);
   }
 
   return (

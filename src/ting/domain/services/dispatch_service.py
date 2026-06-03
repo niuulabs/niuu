@@ -319,6 +319,8 @@ class QueueItem:
     workflow: str | None = None
     workflow_version: str | None = None
     instance_id: str | None = None
+    target_tags: tuple[str, ...] = ()
+    target_match: str = "all"
 
 
 @dataclass(frozen=True)
@@ -513,6 +515,11 @@ def select_adapter_by_tags(
     raise TargetSelectionError(
         f"No Volundr backend matches tags {sorted(set(tags))} (match={match})"
     )
+
+
+def base_branch_for_repo(saga: Saga, repo: str) -> str:
+    """Return the saga base branch configured for *repo*."""
+    return saga.repo_branches.get(repo, saga.base_branch)
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +951,8 @@ class DispatchService:
                         url=q.url,
                         milestone_id=q.milestone_id,
                     ),
+                    target_tags=q.target_tags,
+                    target_match=q.target_match,
                 )
                 for q in ready[:available_slots]
             ]
@@ -1179,7 +1188,7 @@ class DispatchService:
                 name=session_name,
                 repo=repo,
                 branch=saga.feature_branch,
-                base_branch=saga.base_branch,
+                base_branch=base_branch_for_repo(saga, repo),
                 model=self._config.default_model,
                 tracker_issue_id=run.tracker_id,
                 tracker_issue_url="",
@@ -1304,6 +1313,8 @@ class DispatchService:
                                 else None
                             ),
                             instance_id=saga.instance_id,
+                            target_tags=tuple(saga.target_tags),
+                            target_match=saga.target_match,
                         )
                     )
                 return items, False
@@ -1403,7 +1414,7 @@ class DispatchService:
                 name=session_name,
                 repo=item.repo,
                 branch=saga.feature_branch,
-                base_branch=saga.base_branch,
+                base_branch=base_branch_for_repo(saga, item.repo),
                 model=resolved_effective_model,
                 tracker_issue_id=issue.identifier,
                 tracker_issue_url=issue.url,
@@ -1540,7 +1551,7 @@ class DispatchService:
             name=session_name,
             repo=item.repo,
             branch=saga.feature_branch,
-            base_branch=saga.base_branch,
+            base_branch=base_branch_for_repo(saga, item.repo),
             model=resolved_effective_model,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,

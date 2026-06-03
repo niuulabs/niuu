@@ -1086,6 +1086,29 @@ class TestAssignTarget:
         assert response.json()["instance_id"] == "volundr-1"
         assert response.json()["instance_name"] == "Volundr One"
 
+    def test_assigns_tag_target_without_instance_registry(
+        self,
+        mock_tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+        saga_id = str(saga_repo.sagas[0].id)
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/target",
+            json={"target_tags": ["gpu", " valhalla ", ""], "target_match": "any"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["instance_id"] is None
+        assert response.json()["target_tags"] == ["gpu", "valhalla"]
+        assert response.json()["target_match"] == "any"
+
     def test_assign_target_requires_registry_and_valid_instance(
         self,
         mock_tracker: MockTracker,

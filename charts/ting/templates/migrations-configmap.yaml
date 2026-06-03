@@ -1415,4 +1415,18 @@ data:
     CREATE INDEX IF NOT EXISTS idx_workflow_campaigns_session_id
         ON workflow_campaigns(session_id);
 
+  000030_saga_repo_refs_and_tag_targets.down.sql: |
+    DROP INDEX IF EXISTS idx_sagas_target_tags;
+
+    ALTER TABLE sagas DROP COLUMN IF EXISTS target_match;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS target_tags;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS repo_branches;
+
+  000030_saga_repo_refs_and_tag_targets.up.sql: |
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS repo_branches JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS target_tags TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE sagas ADD COLUMN IF NOT EXISTS target_match TEXT NOT NULL DEFAULT 'all';
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_target_tags ON sagas USING GIN (target_tags);
+
 {{- end }}

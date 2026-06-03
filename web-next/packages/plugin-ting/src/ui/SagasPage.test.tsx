@@ -269,6 +269,10 @@ describe('SagasPage', () => {
         ['niuulabs/volundr'],
         'main',
         undefined,
+        {
+          repoRefs: [{ repo: 'niuulabs/volundr', branch: 'main' }],
+          target: { mode: 'default' },
+        },
       ),
     );
   });

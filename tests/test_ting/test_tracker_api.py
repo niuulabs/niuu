@@ -391,11 +391,14 @@ class MockSagaRepo(SagaRepository):
                     confidence=saga.confidence,
                     created_at=saga.created_at,
                     base_branch=saga.base_branch,
+                    repo_branches=saga.repo_branches,
                     owner_id=saga.owner_id,
                     workflow_id=workflow_id,
                     workflow_version=workflow_version,
                     workflow_snapshot=workflow_snapshot,
                     instance_id=saga.instance_id,
+                    target_tags=saga.target_tags,
+                    target_match=saga.target_match,
                 )
             )
         self.sagas = updated
@@ -405,6 +408,8 @@ class MockSagaRepo(SagaRepository):
         saga_id: UUID,
         *,
         instance_id: str | None,
+        target_tags: list[str] | None = None,
+        target_match: str = "all",
         owner_id: str | None = None,
     ) -> None:
         updated: list[Saga] = []
@@ -428,11 +433,14 @@ class MockSagaRepo(SagaRepository):
                     confidence=saga.confidence,
                     created_at=saga.created_at,
                     base_branch=saga.base_branch,
+                    repo_branches=saga.repo_branches,
                     owner_id=saga.owner_id,
                     workflow_id=saga.workflow_id,
                     workflow_version=saga.workflow_version,
                     workflow_snapshot=saga.workflow_snapshot,
                     instance_id=instance_id,
+                    target_tags=target_tags or [],
+                    target_match=target_match,
                 )
             )
         self.sagas = updated
@@ -735,6 +743,49 @@ class TestImportProject:
         assert saved.repos == ["org/new-repo"]
         assert saved.base_branch == "dev"
         assert saved.confidence == 0.42
+
+    def test_import_persists_repo_refs_and_tag_target(self, client: TestClient):
+        response = client.post(
+            "/api/v1/ting/tracker/import",
+            json={
+                "project_id": "proj-1",
+                "repos": ["org/fallback"],
+                "base_branch": "main",
+                "repo_refs": [
+                    {"repo": "org/api", "branch": "release/2026.06"},
+                    {"repo": "org/ui", "branch": "feature/catalog"},
+                ],
+                "instance_id": "volundr-ignored-when-tags-are-set",
+                "target_tags": ["gpu", " valhalla ", ""],
+                "target_match": "any",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repos"] == ["org/api", "org/ui"]
+        assert body["base_branch"] == "release/2026.06"
+        assert body["repo_branches"] == {
+            "org/api": "release/2026.06",
+            "org/ui": "feature/catalog",
+        }
+        assert body["repo_refs"] == [
+            {"repo": "org/api", "branch": "release/2026.06"},
+            {"repo": "org/ui", "branch": "feature/catalog"},
+        ]
+        assert body["instance_id"] is None
+        assert body["target_tags"] == ["gpu", "valhalla"]
+        assert body["target_match"] == "any"
+
+        saved = client.app.state.saga_repo.sagas[-1]
+        assert saved.repos == ["org/api", "org/ui"]
+        assert saved.repo_branches == {
+            "org/api": "release/2026.06",
+            "org/ui": "feature/catalog",
+        }
+        assert saved.instance_id is None
+        assert saved.target_tags == ["gpu", "valhalla"]
+        assert saved.target_match == "any"
 
     def test_canonical_import_matches_legacy_shape(self, mock_tracker: MockTracker):
         legacy_client = _build_test_client(mock_tracker)
