@@ -7,9 +7,13 @@ Set ``TEST_NATS_URL`` to override the default ``nats://localhost:4222``.
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import UTC, datetime
 
 import pytest
 
+from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.adapters.nats_transport import NatsTransport
 from sleipnir.domain.events import SleipnirEvent
 
@@ -223,3 +227,90 @@ async def test_replay_from_sequence(nats_transport: NatsTransport):
     assert len(received) >= 3
     summaries = [e.summary for e in received[:3]]
     assert summaries == ["event-0", "event-1", "event-2"]
+
+
+async def test_two_sleipnir_mesh_peers_over_nats_publish_and_replay():
+    """Two SleipnirMeshAdapter peers exchange and replay environment events over NATS."""
+    stream_name = f"ravn_environment_test_{uuid.uuid4().hex[:8]}"
+    subject_prefix = stream_name
+    peer_a_transport = NatsTransport(
+        servers=[NATS_URL],
+        stream_name=stream_name,
+        subject_prefix=subject_prefix,
+        max_reconnect_attempts=3,
+        connect_timeout_s=5.0,
+    )
+    peer_b_transport = NatsTransport(
+        servers=[NATS_URL],
+        stream_name=stream_name,
+        subject_prefix=subject_prefix,
+        max_reconnect_attempts=3,
+        connect_timeout_s=5.0,
+    )
+
+    peer_a = SleipnirMeshAdapter(
+        publisher=peer_a_transport,
+        subscriber=peer_a_transport,
+        own_peer_id="valkyrie-a",
+    )
+    peer_b = SleipnirMeshAdapter(
+        publisher=peer_b_transport,
+        subscriber=peer_b_transport,
+        own_peer_id="valkyrie-b",
+    )
+    received: list[RavnEvent] = []
+
+    async def handler(event: RavnEvent) -> None:
+        received.append(event)
+
+    await peer_a.start()
+    await peer_b.start()
+    try:
+        await peer_b.subscribe("signal.kubernetes.pod", handler)
+        event = RavnEvent(
+            type=RavnEventType.DECISION,
+            source="valkyrie-a",
+            payload={"signal": "pod/restarted", "environment": "local-dev"},
+            timestamp=datetime.now(UTC),
+            urgency=0.8,
+            correlation_id="env-signal-1",
+            session_id="environment-nats",
+        )
+
+        await peer_a.publish(event, "signal.kubernetes.pod")
+        await collect_events(1, received)
+
+        assert len(received) == 1
+        assert received[0].payload == event.payload
+        assert received[0].correlation_id == "env-signal-1"
+
+        replay_transport = NatsTransport(
+            servers=[NATS_URL],
+            stream_name=stream_name,
+            subject_prefix=subject_prefix,
+            replay_from_sequence=1,
+            max_reconnect_attempts=3,
+            connect_timeout_s=5.0,
+        )
+        replay_peer = SleipnirMeshAdapter(
+            publisher=replay_transport,
+            subscriber=replay_transport,
+            own_peer_id="valkyrie-replay",
+        )
+        replayed: list[RavnEvent] = []
+
+        async def replay_handler(event: RavnEvent) -> None:
+            replayed.append(event)
+
+        await replay_peer.start()
+        try:
+            await replay_peer.subscribe("signal.kubernetes.pod", replay_handler)
+            await collect_events(1, replayed)
+        finally:
+            await replay_peer.stop()
+
+        assert replayed
+        assert any(item.correlation_id == "env-signal-1" for item in replayed)
+    finally:
+        await peer_b.stop()
+        await peer_a.stop()

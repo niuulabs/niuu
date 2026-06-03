@@ -3736,8 +3736,25 @@ def _resolve_transport_kwargs(
         return {"amqp_url": amqp_url}
 
     if adapter == "nats":
-        nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
-        return {"servers": [nats_url]}
+        nats_cfg = settings.mesh.nats
+        servers_raw = os.environ.get(nats_cfg.servers_env, "nats://localhost:4222")
+        servers = [server.strip() for server in servers_raw.split(",") if server.strip()]
+        kwargs: dict[str, Any] = {
+            "servers": servers or ["nats://localhost:4222"],
+            "stream_name": nats_cfg.stream_name,
+            "subject_prefix": nats_cfg.subject_prefix,
+            "retention": nats_cfg.retention,
+            "max_age_seconds": nats_cfg.max_age_seconds,
+            "max_bytes": nats_cfg.max_bytes,
+            "ring_buffer_depth": nats_cfg.ring_buffer_depth,
+            "connect_timeout_s": nats_cfg.connect_timeout_s,
+            "max_reconnect_attempts": nats_cfg.max_reconnect_attempts,
+        }
+        if nats_cfg.consumer_group:
+            kwargs["consumer_group"] = nats_cfg.consumer_group
+        if nats_cfg.replay_from_sequence is not None:
+            kwargs["replay_from_sequence"] = nats_cfg.replay_from_sequence
+        return kwargs
 
     if adapter == "redis":
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")

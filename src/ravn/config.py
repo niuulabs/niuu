@@ -1556,6 +1556,55 @@ class MeshSleipnirConfig(BaseModel):
     )
 
 
+class MeshNatsConfig(BaseModel):
+    """NATS JetStream mesh settings for environment-resident Valkyries."""
+
+    servers_env: str = Field(
+        default="NATS_URL",
+        description="Env var containing one or more comma-separated NATS server URLs.",
+    )
+    stream_name: str = Field(
+        default="ravn_environment",
+        description="JetStream stream used for Ravn environment/flock events.",
+    )
+    subject_prefix: str = Field(
+        default="ravn.environment",
+        description="NATS subject prefix for Ravn environment signals and mesh traffic.",
+    )
+    consumer_group: str = Field(
+        default="",
+        description="Optional durable consumer group for load-sharing resident agents.",
+    )
+    replay_from_sequence: int | None = Field(
+        default=None,
+        description="Optional JetStream sequence to replay from on startup.",
+    )
+    retention: str = Field(
+        default="limits",
+        description="JetStream retention policy: limits, interest, or workqueue.",
+    )
+    max_age_seconds: int = Field(
+        default=7 * 24 * 3600,
+        description="Maximum age of retained environment events.",
+    )
+    max_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        description="Maximum bytes retained by the environment stream.",
+    )
+    ring_buffer_depth: int = Field(
+        default=1000,
+        description="Per-subscriber in-process event buffer depth.",
+    )
+    connect_timeout_s: float = Field(
+        default=10.0,
+        description="NATS connection timeout in seconds.",
+    )
+    max_reconnect_attempts: int = Field(
+        default=60,
+        description="Maximum reconnect attempts before the NATS client gives up.",
+    )
+
+
 class DiscoveryMdnsConfig(BaseModel):
     """mDNS-specific discovery settings (Pi mode)."""
 
@@ -1711,6 +1760,7 @@ class MeshConfig(BaseModel):
     )
     nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
     sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
+    nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
 
 
 class BuriConfig(BaseModel):
@@ -2460,6 +2510,31 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class EnvironmentConfig(BaseModel):
+    """Runtime environment identity for long-running resident Valkyries."""
+
+    id: str = Field(
+        default="local",
+        description="Stable environment id, for example a k8s cluster or host id.",
+    )
+    name: str = Field(
+        default="Local",
+        description="Human-readable environment name.",
+    )
+    type: str = Field(
+        default="local",
+        description="Environment type, for example k8s, host, printer, or local.",
+    )
+    flocks: list[str] = Field(
+        default_factory=list,
+        description="Existing flock names this Valkyrie participates in.",
+    )
+    signal_subjects: list[str] = Field(
+        default_factory=list,
+        description="NATS signal subjects this Valkyrie should consider for attention.",
+    )
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -2578,6 +2653,10 @@ class Settings(BaseSettings):
     workflow: WorkflowRuntimeConfig = Field(
         default_factory=WorkflowRuntimeConfig,
         description="Workflow graph payload injected for flock-backed sessions.",
+    )
+    environment: EnvironmentConfig = Field(
+        default_factory=EnvironmentConfig,
+        description="Environment identity and signal subscriptions for resident Valkyries.",
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
