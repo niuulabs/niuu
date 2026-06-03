@@ -1,0 +1,171 @@
+"""Tests for Environment-aware skill management and telemetry."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from ravn.adapters.skill.sqlite import SqliteSkillAdapter
+from ravn.adapters.tools.skill_tools import SkillListTool, SkillManageTool, SkillRunTool
+from ravn.domain.models import Episode, Outcome
+from ravn.skills.management import SkillManagementRegistry
+
+
+async def _adapter(tmp_path: Path, *, threshold: int = 3) -> SqliteSkillAdapter:
+    adapter = SqliteSkillAdapter(
+        path=str(tmp_path / "skills.db"),
+        suggestion_threshold=threshold,
+    )
+    await adapter.initialize()
+    return adapter
+
+
+def _episode(index: int, *, tool: str = "kubectl") -> Episode:
+    return Episode(
+        episode_id=f"ep-{index}",
+        session_id="sess-1",
+        timestamp=datetime.now(UTC),
+        summary="Cluster probe succeeded",
+        task_description="Investigate pod restarts",
+        tools_used=[tool],
+        outcome=Outcome.SUCCESS,
+        tags=["environment:cluster-a", "domain:k8s"],
+        structured_outcome={
+            "environment_id": "cluster-a",
+            "domain_scope": "k8s",
+        },
+        outcome_valid=True,
+    )
+
+
+async def test_create_environment_skill_is_immediately_discoverable(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+
+    skill = await manager.create(
+        name="k8s restart probe",
+        content="Use `kubectl` to inspect restart counts before taking action.",
+        scope="environment",
+        environment_id="cluster-a",
+        domain="k8s",
+        action_safety_class="read_only",
+    )
+
+    listed = await manager.list_skills()
+    runnable = await manager.get_runnable_skill("k8s restart probe")
+    assert skill.name == "k8s restart probe"
+    assert runnable is not None
+    assert runnable.name == "k8s restart probe"
+    assert listed[0]["metadata"]["scope"] == "environment"
+    assert listed[0]["metadata"]["environment_id"] == "cluster-a"
+
+
+async def test_duplicate_active_skill_is_rejected(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="triage inbox", content="Draft with `mailgrep`.")
+
+    with pytest.raises(ValueError):
+        await manager.create(name="triage inbox", content="Different body.")
+
+
+async def test_lifecycle_archive_restore_pin_promote_and_usage(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="printer resin check", content="Check `printerctl` resin state.")
+
+    await manager.archive("printer resin check")
+    assert await manager.get_runnable_skill("printer resin check") is None
+    archived = await manager.list_skills(include_archived=True)
+    assert archived[0]["metadata"]["status"] == "archived"
+
+    await manager.restore("printer resin check")
+    await manager.pin("printer resin check", pinned=True)
+    promoted = await manager.promote(
+        "printer resin check",
+        scope="flock",
+        environment_id="printer-cell-a",
+        domain="printer",
+    )
+    telemetry = await manager.record_usage(
+        "printer resin check",
+        success=False,
+        environment_id="printer-cell-a",
+        domain="printer",
+        action_safety_class="diagnostic",
+    )
+
+    assert promoted.scope == "flock"
+    assert telemetry.run_count == 1
+    assert telemetry.failure_count == 1
+    assert telemetry.pinned is True
+    assert telemetry.action_safety_class == "diagnostic"
+
+
+async def test_successful_environment_episodes_feed_skill_extraction(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path, threshold=2)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+
+    assert await manager.record_episode(_episode(1)) is None
+    skill = await manager.record_episode(_episode(2))
+
+    assert skill is not None
+    shown = await manager.show(skill.name)
+    assert shown["metadata"]["source"] == "episode"
+    assert shown["metadata"]["scope"] == "environment"
+    assert shown["metadata"]["environment_id"] == "cluster-a"
+    assert shown["metadata"]["domain"] == "k8s"
+
+
+async def test_skill_manage_tool_permissions_and_actions(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    tool = SkillManageTool(skill_port, manager=manager)
+
+    assert SkillListTool(skill_port).required_permission == "skill:read"
+    assert SkillRunTool(skill_port).required_permission == "skill:read"
+    assert tool.required_permission == "skill:manage"
+
+    created = await tool.execute(
+        {
+            "action": "create",
+            "name": "k8s event classifier",
+            "content": "Classify pod warnings with `kubectl` and record evidence.",
+            "scope": "environment",
+            "environment_id": "cluster-a",
+        }
+    )
+    assert not created.is_error
+    assert json.loads(created.content)["status"] == "created"
+
+    telemetry = await tool.execute(
+        {
+            "action": "telemetry",
+            "name": "k8s event classifier",
+            "success": True,
+            "environment_id": "cluster-a",
+            "domain": "k8s",
+        }
+    )
+    assert json.loads(telemetry.content)["metadata"]["run_count"] == 1
+
+    archived = await tool.execute({"action": "archive", "name": "k8s event classifier"})
+    assert json.loads(archived.content)["metadata"]["status"] == "archived"
+    restored = await tool.execute({"action": "restore", "name": "k8s event classifier"})
+    assert json.loads(restored.content)["metadata"]["status"] == "active"
+
+
+async def test_validate_action_rejects_empty_content(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    tool = SkillManageTool(
+        skill_port,
+        manager=SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json"),
+    )
+
+    result = await tool.execute({"action": "validate", "name": "empty", "content": ""})
+
+    assert result.is_error
+    assert "content is required" in result.content

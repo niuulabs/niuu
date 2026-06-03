@@ -293,6 +293,13 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         required_context=frozenset({"skill_port"}),
         kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
     ),
+    "skill_manage": BuiltinToolDef(
+        adapter="ravn.adapters.tools.skill_tools.SkillManageTool",
+        groups=frozenset({"skill"}),
+        condition=lambda s: s.skill.enabled,
+        required_context=frozenset({"skill_port"}),
+        kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
+    ),
     # =========================================================================
     # platform — Niuu platform integration (conditional on gateway.platform.enabled)
     # =========================================================================

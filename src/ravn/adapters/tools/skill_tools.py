@@ -22,10 +22,12 @@ import logging
 from ravn.domain.models import ToolResult
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 
 logger = logging.getLogger(__name__)
 
 _SKILL_PERMISSION = "skill:read"
+_SKILL_MANAGE_PERMISSION = "skill:manage"
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +214,168 @@ class SkillRunTool(ToolPort):
 
         header = f"## Skill: {skill.name}\n\n"
         return ToolResult(tool_call_id="", content=header + content)
+
+
+class SkillManageTool(ToolPort):
+    """Create, update, archive, promote, pin, validate, and inspect managed skills."""
+
+    def __init__(
+        self,
+        skill_port: SkillPort,
+        *,
+        manager: SkillManagementRegistry | None = None,
+    ) -> None:
+        self._manager = manager or SkillManagementRegistry(skill_port)
+
+    @property
+    def name(self) -> str:
+        return "skill_manage"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Write-capable skill management for resident Valkyries. Supports "
+            "create, update, archive, restore, pin, unpin, promote, show, list, "
+            "validate, and telemetry actions with Environment/Flock scope metadata."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "create",
+                        "update",
+                        "patch",
+                        "archive",
+                        "delete",
+                        "restore",
+                        "pin",
+                        "unpin",
+                        "promote",
+                        "show",
+                        "list",
+                        "validate",
+                        "telemetry",
+                    ],
+                },
+                "name": {"type": "string"},
+                "content": {"type": "string"},
+                "description": {"type": "string"},
+                "scope": {"type": "string"},
+                "environment_id": {"type": "string"},
+                "domain": {"type": "string"},
+                "source": {"type": "string"},
+                "action_safety_class": {"type": "string"},
+                "success": {"type": "boolean"},
+                "include_archived": {"type": "boolean"},
+                "query": {"type": "string"},
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _SKILL_MANAGE_PERMISSION
+
+    @property
+    def parallelisable(self) -> bool:
+        return False
+
+    async def execute(self, input: dict) -> ToolResult:  # noqa: A002
+        action = (input.get("action") or "").strip()
+        try:
+            match action:
+                case "create":
+                    skill = await self._manager.create(
+                        name=(input.get("name") or "").strip(),
+                        content=input.get("content") or "",
+                        description=input.get("description") or "",
+                        scope=input.get("scope") or "private",
+                        environment_id=input.get("environment_id") or "",
+                        domain=input.get("domain") or "",
+                        source=input.get("source") or "manual",
+                        action_safety_class=input.get("action_safety_class") or "read_only",
+                    )
+                    return _json_result({"status": "created", "skill": skill.name})
+                case "update" | "patch":
+                    skill = await self._manager.update(
+                        name=(input.get("name") or "").strip(),
+                        content=input.get("content"),
+                        description=input.get("description"),
+                    )
+                    return _json_result({"status": "updated", "skill": skill.name})
+                case "archive" | "delete":
+                    meta = await self._manager.archive((input.get("name") or "").strip())
+                    return _json_result({"status": "archived", "metadata": meta})
+                case "restore":
+                    meta = await self._manager.restore((input.get("name") or "").strip())
+                    return _json_result({"status": "restored", "metadata": meta})
+                case "pin" | "unpin":
+                    meta = await self._manager.pin(
+                        (input.get("name") or "").strip(),
+                        pinned=action == "pin",
+                    )
+                    return _json_result({"status": action, "metadata": meta})
+                case "promote":
+                    meta = await self._manager.promote(
+                        (input.get("name") or "").strip(),
+                        scope=input.get("scope") or "environment",
+                        environment_id=input.get("environment_id") or "",
+                        domain=input.get("domain") or "",
+                    )
+                    return _json_result({"status": "promoted", "metadata": meta})
+                case "show":
+                    data = await self._manager.show(
+                        (input.get("name") or "").strip(),
+                        include_archived=bool(input.get("include_archived")),
+                    )
+                    return _json_result(data)
+                case "list":
+                    rows = await self._manager.list_skills(
+                        input.get("query") or None,
+                        include_archived=bool(input.get("include_archived")),
+                    )
+                    return _json_result({"skills": rows})
+                case "validate":
+                    SkillManagementRegistry._validate_name_content(
+                        input.get("name") or "",
+                        input.get("content") or "",
+                    )
+                    return _json_result({"status": "valid"})
+                case "telemetry":
+                    meta = await self._manager.record_usage(
+                        (input.get("name") or "").strip(),
+                        success=bool(input.get("success", True)),
+                        environment_id=input.get("environment_id") or "",
+                        domain=input.get("domain") or "",
+                        action_safety_class=input.get("action_safety_class") or "",
+                    )
+                    return _json_result({"status": "recorded", "metadata": meta})
+                case _:
+                    return ToolResult(
+                        tool_call_id="",
+                        content=f"Error: unsupported skill_manage action {action!r}.",
+                        is_error=True,
+                    )
+        except Exception as exc:
+            logger.warning("skill_manage action %r failed: %s", action, exc)
+            return ToolResult(tool_call_id="", content=f"Error: {exc}", is_error=True)
+
+
+def _json_result(payload: dict) -> ToolResult:
+    import dataclasses
+    import json
+
+    def _default(value):
+        if dataclasses.is_dataclass(value):
+            return dataclasses.asdict(value)
+        return str(value)
+
+    return ToolResult(
+        tool_call_id="",
+        content=json.dumps(payload, default=_default, indent=2, sort_keys=True),
+    )

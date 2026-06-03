@@ -909,7 +909,7 @@ _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
     "mimir": ["mimir_read", "mimir_write", "mimir_search", "mimir_list", "mimir_ingest"],
     "cascade": ["cascade_delegate", "cascade_broadcast"],
     "volundr": ["volundr_session", "volundr_git"],
-    "ravn": ["persona_validate", "persona_save", "skill_list", "skill_run"],
+    "ravn": ["persona_validate", "persona_save", "skill_list", "skill_run", "skill_manage"],
 }
 
 
