@@ -127,12 +127,14 @@ class SleipnirMeshAdapter:
         own_peer_id: str,
         discovery: object | None = None,
         rpc_timeout_s: float = 10.0,
+        environment_id: str = "",
     ) -> None:
         self._publisher = publisher
         self._subscriber = subscriber
         self._own_peer_id = own_peer_id
         self._discovery = discovery
         self._rpc_timeout_s = rpc_timeout_s
+        self._environment_id = environment_id or "-"
 
         self._subscriptions: dict[str, Subscription] = {}
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
@@ -151,7 +153,17 @@ class SleipnirMeshAdapter:
         try:
             await self._publisher.publish(sleipnir_event)
         except Exception as exc:
-            logger.debug("sleipnir_mesh: publish failed: %s", exc)
+            logger.warning(
+                "sleipnir_mesh: publish failed peer=%s environment=%s topic=%s "
+                "event_type=%s correlation_id=%s root_correlation_id=%s error=%s",
+                self._own_peer_id,
+                self._environment_id,
+                topic,
+                sleipnir_event.event_type,
+                event.correlation_id,
+                event.root_correlation_id,
+                exc,
+            )
 
     async def subscribe(
         self,
@@ -166,7 +178,17 @@ class SleipnirMeshAdapter:
                 ravn_event = _sleipnir_to_ravn(sleipnir_event)
                 await handler(ravn_event)
             except Exception as exc:
-                logger.warning("sleipnir_mesh: handler for %r raised: %s", topic, exc)
+                logger.warning(
+                    "sleipnir_mesh: handler failed peer=%s environment=%s topic=%s "
+                    "event_type=%s correlation_id=%s root_correlation_id=%s error=%s",
+                    self._own_peer_id,
+                    self._environment_id,
+                    topic,
+                    getattr(sleipnir_event, "event_type", "-"),
+                    getattr(sleipnir_event, "correlation_id", "-"),
+                    getattr(sleipnir_event, "payload", {}).get("ravn_root_correlation_id", ""),
+                    exc,
+                )
 
         subscription = await self._subscriber.subscribe([event_type_pattern], _wrapped_handler)
         self._subscriptions[topic] = subscription
@@ -232,12 +254,35 @@ class SleipnirMeshAdapter:
                 timestamp=datetime.now(UTC),
                 correlation_id=correlation_id,
             )
-            await self._publisher.publish(request_event)
+            try:
+                await self._publisher.publish(request_event)
+            except Exception as exc:
+                logger.warning(
+                    "sleipnir_mesh: rpc publish failed peer=%s environment=%s "
+                    "target_peer=%s reply_topic=%s correlation_id=%s error=%s",
+                    self._own_peer_id,
+                    self._environment_id,
+                    target_peer_id,
+                    reply_topic,
+                    correlation_id,
+                    exc,
+                )
+                raise
 
             # Wait for response
             try:
                 return await asyncio.wait_for(response_future, timeout=timeout)
             except TimeoutError as exc:
+                logger.warning(
+                    "sleipnir_mesh: rpc timeout peer=%s environment=%s target_peer=%s "
+                    "reply_topic=%s correlation_id=%s timeout_s=%s",
+                    self._own_peer_id,
+                    self._environment_id,
+                    target_peer_id,
+                    reply_topic,
+                    correlation_id,
+                    timeout,
+                )
                 raise TimeoutError(
                     f"No reply from peer {target_peer_id!r} within {timeout}s"
                 ) from exc
@@ -261,7 +306,12 @@ class SleipnirMeshAdapter:
         self._rpc_subscription = await self._subscriber.subscribe(
             [rpc_pattern], self._handle_rpc_request
         )
-        logger.info("sleipnir_mesh: started peer=%s", self._own_peer_id)
+        logger.info(
+            "sleipnir_mesh: started peer=%s environment=%s rpc_pattern=%s",
+            self._own_peer_id,
+            self._environment_id,
+            rpc_pattern,
+        )
 
     async def stop(self) -> None:
         """Graceful shutdown."""
@@ -285,7 +335,11 @@ class SleipnirMeshAdapter:
         if self._subscriber is not self._publisher and hasattr(self._subscriber, "stop"):
             await self._subscriber.stop()
 
-        logger.info("sleipnir_mesh: stopped peer=%s", self._own_peer_id)
+        logger.info(
+            "sleipnir_mesh: stopped peer=%s environment=%s",
+            self._own_peer_id,
+            self._environment_id,
+        )
 
     @property
     def subscriber(self) -> SleipnirSubscriber:
@@ -319,7 +373,14 @@ class SleipnirMeshAdapter:
         correlation_id = sleipnir_event.correlation_id
 
         if not reply_topic:
-            logger.warning("sleipnir_mesh: RPC request missing reply_topic")
+            logger.warning(
+                "sleipnir_mesh: RPC request missing reply_topic peer=%s environment=%s "
+                "source=%s correlation_id=%s",
+                self._own_peer_id,
+                self._environment_id,
+                getattr(sleipnir_event, "source", "-"),
+                correlation_id,
+            )
             return
 
         # Process request
@@ -327,6 +388,15 @@ class SleipnirMeshAdapter:
             try:
                 response = await self._rpc_handler(request)
             except Exception as exc:
+                logger.warning(
+                    "sleipnir_mesh: RPC handler failed peer=%s environment=%s "
+                    "source=%s correlation_id=%s error=%s",
+                    self._own_peer_id,
+                    self._environment_id,
+                    getattr(sleipnir_event, "source", "-"),
+                    correlation_id,
+                    exc,
+                )
                 response = {"error": str(exc)}
         else:
             response = {"error": "no rpc handler registered"}
@@ -347,4 +417,12 @@ class SleipnirMeshAdapter:
         try:
             await self._publisher.publish(reply_event)
         except Exception as exc:
-            logger.debug("sleipnir_mesh: failed to send RPC reply: %s", exc)
+            logger.warning(
+                "sleipnir_mesh: failed to send RPC reply peer=%s environment=%s "
+                "reply_topic=%s correlation_id=%s error=%s",
+                self._own_peer_id,
+                self._environment_id,
+                reply_topic,
+                correlation_id,
+                exc,
+            )
