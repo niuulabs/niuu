@@ -148,6 +148,123 @@ class GitHubIssueOpenedPayload:
     author: str
 
 
+@dataclass(frozen=True)
+class EnvironmentStateChangedPayload:
+    environment_id: str
+    environment_type: str
+    previous_state: str
+    new_state: str
+    severity: str
+    confidence: float
+    evidence: list[dict]
+
+
+@dataclass(frozen=True)
+class SignalReceivedPayload:
+    environment_id: str
+    environment_type: str
+    signal_source: str
+    signal_kind: str
+    severity: str
+    confidence: float
+    data: dict
+
+
+@dataclass(frozen=True)
+class ValkyrieStateChangedPayload:
+    environment_id: str
+    valkyrie_id: str
+    previous_state: str
+    new_state: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ValkyrieJudgmentRecordedPayload:
+    environment_id: str
+    valkyrie_id: str
+    attention_tier: str
+    recommended_action: str
+    authority_boundary: str
+    confidence: float
+    evidence: list[dict]
+
+
+@dataclass(frozen=True)
+class ValkyrieActionRequestedPayload:
+    environment_id: str
+    valkyrie_id: str
+    action_id: str
+    capability: str
+    authority_boundary: str
+    target: dict
+    dry_run: bool
+
+
+@dataclass(frozen=True)
+class ValkyrieActionCompletedPayload:
+    environment_id: str
+    valkyrie_id: str
+    action_id: str
+    capability: str
+    outcome: str
+    evidence: list[dict]
+
+
+@dataclass(frozen=True)
+class OdinCourtDecidedPayload:
+    environment_id: str
+    court_id: str
+    decision: str
+    authority_boundary: str
+    dissent: list[dict]
+
+
+@dataclass(frozen=True)
+class AttentionDecidedPayload:
+    environment_id: str
+    target_event_id: str
+    attention_tier: str
+    route: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class FeedbackRecordedPayload:
+    environment_id: str
+    target_event_id: str
+    feedback_type: str
+    rating: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class LearningPromotedPayload:
+    environment_id: str
+    learning_id: str
+    from_scope: str
+    to_scope: str
+    summary: str
+    confidence: float
+
+
+@dataclass(frozen=True)
+class ParticipantJoinedPayload:
+    environment_id: str
+    participant_id: str
+    participant_type: str
+    display_name: str
+    capabilities: list[str]
+
+
+@dataclass(frozen=True)
+class RoomOpenedPayload:
+    environment_id: str
+    room_id: str
+    purpose: str
+    participants: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Factory functions
 # ---------------------------------------------------------------------------
@@ -583,3 +700,500 @@ def github_issue_opened(
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id,
     )
+
+
+def environment_state_changed(
+    *,
+    environment_id: str,
+    environment_type: str,
+    previous_state: str,
+    new_state: str,
+    severity: str,
+    source: str,
+    confidence: float = 1.0,
+    evidence: list[dict] | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when an Environment's operational state changes."""
+    payload = dataclasses.asdict(
+        EnvironmentStateChangedPayload(
+            environment_id=environment_id,
+            environment_type=environment_type,
+            previous_state=previous_state,
+            new_state=new_state,
+            severity=severity,
+            confidence=confidence,
+            evidence=evidence or [],
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ENVIRONMENT_STATE_CHANGED,
+        source=source,
+        payload=payload,
+        summary=f"Environment {environment_id} state {previous_state} -> {new_state}",
+        urgency=_severity_urgency(severity),
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def signal_received(
+    *,
+    environment_id: str,
+    environment_type: str,
+    signal_source: str,
+    signal_kind: str,
+    severity: str,
+    data: dict,
+    source: str,
+    confidence: float = 1.0,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a normalized Environment signal is received."""
+    event_type_by_kind = {
+        "kubernetes": registry.SIGNAL_KUBERNETES_EVENT,
+        "inbox": registry.SIGNAL_INBOX_MESSAGE,
+        "host": registry.SIGNAL_HOST_EVENT,
+        "printer": registry.SIGNAL_PRINTER_EVENT,
+    }
+    event_type = event_type_by_kind.get(signal_kind, registry.SIGNAL_RECEIVED)
+    payload = dataclasses.asdict(
+        SignalReceivedPayload(
+            environment_id=environment_id,
+            environment_type=environment_type,
+            signal_source=signal_source,
+            signal_kind=signal_kind,
+            severity=severity,
+            confidence=confidence,
+            data=data,
+        )
+    )
+    return SleipnirEvent(
+        event_type=event_type,
+        source=source,
+        payload=payload,
+        summary=f"{signal_kind} signal in {environment_id}: {severity}",
+        urgency=_severity_urgency(severity),
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or f"{environment_id}:{signal_source}",
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def valkyrie_state_changed(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    previous_state: str,
+    new_state: str,
+    reason: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a resident Valkyrie's wake/sleep/dream/health state changes."""
+    payload = dataclasses.asdict(
+        ValkyrieStateChangedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            previous_state=previous_state,
+            new_state=new_state,
+            reason=reason,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.VALKYRIE_STATE_CHANGED,
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie {valkyrie_id} state {previous_state} -> {new_state}",
+        urgency=0.3,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def valkyrie_judgment_recorded(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    attention_tier: str,
+    recommended_action: str,
+    authority_boundary: str,
+    confidence: float,
+    source: str,
+    evidence: list[dict] | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a Valkyrie records a judgment about Environment state."""
+    payload = dataclasses.asdict(
+        ValkyrieJudgmentRecordedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            attention_tier=attention_tier,
+            recommended_action=recommended_action,
+            authority_boundary=authority_boundary,
+            confidence=confidence,
+            evidence=evidence or [],
+        )
+    )
+    urgency = max(0.2, min(1.0, confidence if attention_tier == "urgent" else confidence * 0.8))
+    return SleipnirEvent(
+        event_type=registry.VALKYRIE_JUDGMENT_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie {valkyrie_id} judgment: {attention_tier}/{recommended_action}",
+        urgency=urgency,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def valkyrie_action_requested(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    action_id: str,
+    capability: str,
+    authority_boundary: str,
+    target: dict,
+    source: str,
+    dry_run: bool = True,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a Valkyrie requests or proposes a scoped action."""
+    payload = dataclasses.asdict(
+        ValkyrieActionRequestedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            action_id=action_id,
+            capability=capability,
+            authority_boundary=authority_boundary,
+            target=target,
+            dry_run=dry_run,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.VALKYRIE_ACTION_REQUESTED,
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie {valkyrie_id} requested {capability} action {action_id}",
+        urgency=0.6 if authority_boundary == "autonomous" else 0.4,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or action_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def valkyrie_action_completed(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    action_id: str,
+    capability: str,
+    outcome: str,
+    source: str,
+    evidence: list[dict] | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a scoped Valkyrie action completes or fails."""
+    payload = dataclasses.asdict(
+        ValkyrieActionCompletedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            action_id=action_id,
+            capability=capability,
+            outcome=outcome,
+            evidence=evidence or [],
+        )
+    )
+    return SleipnirEvent(
+        event_type=(
+            registry.VALKYRIE_ACTION_COMPLETED
+            if outcome in {"success", "completed", "accepted"}
+            else registry.VALKYRIE_ACTION_FAILED
+        ),
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie action {action_id} {outcome}",
+        urgency=0.4 if outcome in {"success", "completed", "accepted"} else 0.8,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or action_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def odin_court_decided(
+    *,
+    environment_id: str,
+    court_id: str,
+    decision: str,
+    authority_boundary: str,
+    source: str,
+    dissent: list[dict] | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when ODIN court resolves a judgment/action/escalation."""
+    payload = dataclasses.asdict(
+        OdinCourtDecidedPayload(
+            environment_id=environment_id,
+            court_id=court_id,
+            decision=decision,
+            authority_boundary=authority_boundary,
+            dissent=dissent or [],
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ODIN_COURT_DECIDED,
+        source=source,
+        payload=payload,
+        summary=f"ODIN court {court_id} decided: {decision}",
+        urgency=0.6,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or court_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def attention_decided(
+    *,
+    environment_id: str,
+    target_event_id: str,
+    attention_tier: str,
+    route: str,
+    reason: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when attention routing/escalation is decided."""
+    payload = dataclasses.asdict(
+        AttentionDecidedPayload(
+            environment_id=environment_id,
+            target_event_id=target_event_id,
+            attention_tier=attention_tier,
+            route=route,
+            reason=reason,
+        )
+    )
+    event_type = registry.ATTENTION_DECIDED
+    if attention_tier == "suppress":
+        event_type = registry.ATTENTION_SUPPRESSED
+    if attention_tier in {"urgent", "review"}:
+        event_type = registry.ATTENTION_ESCALATED
+    return SleipnirEvent(
+        event_type=event_type,
+        source=source,
+        payload=payload,
+        summary=f"Attention {attention_tier} via {route}: {reason[:80]}",
+        urgency=_attention_urgency(attention_tier),
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or target_event_id,
+        causation_id=causation_id or target_event_id,
+        tenant_id=tenant_id,
+    )
+
+
+def feedback_recorded(
+    *,
+    environment_id: str,
+    target_event_id: str,
+    feedback_type: str,
+    rating: str,
+    notes: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when feedback is recorded for future resident learning."""
+    payload = dataclasses.asdict(
+        FeedbackRecordedPayload(
+            environment_id=environment_id,
+            target_event_id=target_event_id,
+            feedback_type=feedback_type,
+            rating=rating,
+            notes=notes,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.FEEDBACK_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Feedback {rating} on {target_event_id}: {feedback_type}",
+        urgency=0.3,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or target_event_id,
+        causation_id=causation_id or target_event_id,
+        tenant_id=tenant_id,
+    )
+
+
+def learning_promoted(
+    *,
+    environment_id: str,
+    learning_id: str,
+    from_scope: str,
+    to_scope: str,
+    summary: str,
+    source: str,
+    confidence: float,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a learning moves between private, Environment, Flock, or shared scopes."""
+    payload = dataclasses.asdict(
+        LearningPromotedPayload(
+            environment_id=environment_id,
+            learning_id=learning_id,
+            from_scope=from_scope,
+            to_scope=to_scope,
+            summary=summary,
+            confidence=confidence,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.LEARNING_PROMOTED,
+        source=source,
+        payload=payload,
+        summary=f"Learning {learning_id} promoted {from_scope} -> {to_scope}: {summary[:80]}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or learning_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def participant_joined(
+    *,
+    environment_id: str,
+    participant_id: str,
+    participant_type: str,
+    display_name: str,
+    capabilities: list[str],
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a human, agent, tool, or surface joins an Environment."""
+    payload = dataclasses.asdict(
+        ParticipantJoinedPayload(
+            environment_id=environment_id,
+            participant_id=participant_id,
+            participant_type=participant_type,
+            display_name=display_name,
+            capabilities=capabilities,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.PARTICIPANT_JOINED,
+        source=source,
+        payload=payload,
+        summary=f"{participant_type} participant joined {environment_id}: {display_name}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def room_opened(
+    *,
+    environment_id: str,
+    room_id: str,
+    purpose: str,
+    participants: list[str],
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a replayable Environment huddle/room is opened."""
+    payload = dataclasses.asdict(
+        RoomOpenedPayload(
+            environment_id=environment_id,
+            room_id=room_id,
+            purpose=purpose,
+            participants=participants,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ROOM_OPENED,
+        source=source,
+        payload=payload,
+        summary=f"Room {room_id} opened in {environment_id}: {purpose[:80]}",
+        urgency=0.5,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or room_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def _severity_urgency(severity: str) -> float:
+    match severity:
+        case "critical":
+            return 0.95
+        case "error":
+            return 0.8
+        case "warning":
+            return 0.6
+        case "info":
+            return 0.3
+        case _:
+            return 0.4
+
+
+def _attention_urgency(attention_tier: str) -> float:
+    match attention_tier:
+        case "urgent":
+            return 0.95
+        case "review":
+            return 0.75
+        case "watch":
+            return 0.5
+        case "record":
+            return 0.25
+        case "suppress":
+            return 0.1
+        case _:
+            return 0.4
