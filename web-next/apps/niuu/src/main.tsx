@@ -12,6 +12,8 @@ import '@niuulabs/plugin-ravn/styles.css';
 import '@niuulabs/plugin-ravn/index.css';
 import '@niuulabs/plugin-ting/styles.css';
 import '@niuulabs/plugin-ting/index.css';
+import '@niuulabs/plugin-valkyrie/styles.css';
+import '@niuulabs/plugin-valkyrie/index.css';
 import '@niuulabs/plugin-volundr/styles.css';
 import '@niuulabs/plugin-volundr/index.css';
 import './styles.css';

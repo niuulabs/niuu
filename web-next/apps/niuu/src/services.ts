@@ -62,6 +62,12 @@ import {
   type SessionFilters,
   type VolundrSession,
 } from '@niuulabs/plugin-volundr';
+import {
+  buildValkyrieHttpAdapter,
+  buildValkyrieSignalSseStream,
+  createMockValkyrieService,
+  createMockValkyrieSignalStream,
+} from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
 import {
   buildFeatureCatalogAdapter,
@@ -339,6 +345,22 @@ function resolveObservatoryServiceBase(
   return `${groupedBase}/events`;
 }
 
+function resolveValkyrieServiceBase(
+  config: Pick<NiuuConfig, 'services'>,
+  serviceKey: 'valkyrie' | 'valkyrie.signals',
+): string | null {
+  const explicitBase = resolveDirectServiceBase(config, serviceKey);
+  if (explicitBase) {
+    return serviceKey === 'valkyrie.signals'
+      ? explicitBase.replace(/\/signals\/?$/, '')
+      : explicitBase;
+  }
+
+  const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
+  if (!groupedBase) return null;
+  return serviceKey === 'valkyrie.signals' ? `${groupedBase}/signals` : groupedBase;
+}
+
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
   providerId:
@@ -539,6 +561,8 @@ export function buildServiceBackendStatus(
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
+    valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
+    'valkyrie.signals': resolveDirectServiceStatus(config, 'http', 'valkyrie.signals', 'valkyrie'),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
@@ -1068,6 +1092,15 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
     : createMockEventStream();
+  // ── Valkyrie ──
+  const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
+  const valkyrieSignalsBase = resolveValkyrieServiceBase(config, 'valkyrie.signals');
+  const valkyrie = valkyrieBase
+    ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
+    : createMockValkyrieService();
+  const valkyrieSignals = valkyrieSignalsBase
+    ? buildValkyrieSignalSseStream(valkyrieSignalsBase)
+    : createMockValkyrieSignalStream();
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1150,5 +1183,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.registry': observatoryRegistry,
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
+    valkyrie,
+    'valkyrie.signals': valkyrieSignals,
   };
 }

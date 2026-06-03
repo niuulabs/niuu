@@ -37,6 +37,9 @@ importers:
       '@niuulabs/plugin-ting':
         specifier: workspace:*
         version: link:packages/plugin-ting
+      '@niuulabs/plugin-valkyrie':
+        specifier: workspace:*
+        version: link:packages/plugin-valkyrie
       '@niuulabs/plugin-volundr':
         specifier: workspace:*
         version: link:packages/plugin-volundr
@@ -209,6 +212,9 @@ importers:
       '@niuulabs/plugin-ting':
         specifier: workspace:*
         version: link:../../packages/plugin-ting
+      '@niuulabs/plugin-valkyrie':
+        specifier: workspace:*
+        version: link:../../packages/plugin-valkyrie
       '@niuulabs/plugin-volundr':
         specifier: workspace:*
         version: link:../../packages/plugin-volundr
@@ -694,6 +700,67 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+
+  packages/plugin-valkyrie:
+    dependencies:
+      '@niuulabs/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@niuulabs/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@niuulabs/query':
+        specifier: workspace:*
+        version: link:../query
+      '@niuulabs/ui':
+        specifier: workspace:*
+        version: link:../ui
+      lucide-react:
+        specifier: ^1.17.0
+        version: 1.17.0(react@19.2.6)
+    devDependencies:
+      '@niuulabs/design-tokens':
+        specifier: workspace:*
+        version: link:../design-tokens
+      '@tanstack/react-query':
+        specifier: ^5.100.14
+        version: 5.100.14(react@19.2.6)
+      '@tanstack/react-router':
+        specifier: ^1.170.10
+        version: 1.170.10(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@testing-library/react':
+        specifier: ^16.1.0
+        version: 16.3.2(@testing-library/dom@10.4.0)(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@testing-library/user-event':
+        specifier: ^14.5.2
+        version: 14.6.1(@testing-library/dom@10.4.0)
+      '@types/react':
+        specifier: ^19.2.15
+        version: 19.2.15
+      autoprefixer:
+        specifier: ^10.4.20
+        version: 10.5.0(postcss@8.5.15)
+      postcss:
+        specifier: ^8.5.15
+        version: 8.5.15
+      postcss-import:
+        specifier: ^16.1.0
+        version: 16.1.1(postcss@8.5.15)
+      react:
+        specifier: ^19.2.6
+        version: 19.2.6
+      tailwindcss:
+        specifier: ^4.3.0
+        version: 4.3.0
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(typescript@6.0.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.7
+        version: 4.1.7(@types/node@25.9.1)(@vitest/coverage-istanbul@4.1.7)(@vitest/coverage-v8@4.1.7)(jsdom@29.1.1)(vite@8.0.14(@types/node@25.9.1)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.8.3))
 
   packages/plugin-volundr:
     dependencies:

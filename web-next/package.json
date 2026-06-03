@@ -44,6 +44,7 @@
     "@niuulabs/plugin-observatory": "workspace:*",
     "@niuulabs/plugin-ravn": "workspace:*",
     "@niuulabs/plugin-ting": "workspace:*",
+    "@niuulabs/plugin-valkyrie": "workspace:*",
     "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*"

@@ -61,6 +61,13 @@ const observatoryMocks = vi.hoisted(() => ({
   buildObservatoryEventsSseStream: vi.fn(() => ({})),
 }));
 
+const valkyrieMocks = vi.hoisted(() => ({
+  createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
+  createMockValkyrieSignalStream: vi.fn(() => ({ kind: 'mock-valkyrie-signals' })),
+  buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
+  buildValkyrieSignalSseStream: vi.fn((url) => ({ kind: 'valkyrie-signals', url })),
+}));
+
 const volundrMocks = vi.hoisted(() => ({
   createMockVolundrService: vi.fn(() => ({ kind: 'mock-volundr' })),
   createMockClusterAdapter: vi.fn(() => ({ kind: 'mock-clusters' })),
@@ -99,6 +106,7 @@ vi.mock('@niuulabs/plugin-mimir', () => ({
   buildMimirHttpAdapter: vi.fn(() => ({})),
 }));
 vi.mock('@niuulabs/plugin-observatory', () => observatoryMocks);
+vi.mock('@niuulabs/plugin-valkyrie', () => valkyrieMocks);
 vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);
 
 import {
@@ -1609,6 +1617,55 @@ describe('buildServices', () => {
 
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory',
+    );
+  });
+
+  it('registers Valkyrie mock services by default', () => {
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {},
+    } as any);
+
+    expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
+    expect(services['valkyrie.signals']).toEqual({ kind: 'mock-valkyrie-signals' });
+  });
+
+  it('lets a grouped Valkyrie base drive dashboard and signal adapters', () => {
+    buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/valkyrie' },
+      },
+    } as any);
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/valkyrie',
+    );
+    expect(valkyrieMocks.buildValkyrieHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/valkyrie',
+    });
+    expect(valkyrieMocks.buildValkyrieSignalSseStream).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/valkyrie/signals',
+    );
+  });
+
+  it('prefers explicit Valkyrie signal stream overrides over the grouped base', () => {
+    buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/valkyrie' },
+        'valkyrie.signals': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/valkyrie/events',
+        },
+      },
+    } as any);
+
+    expect(valkyrieMocks.buildValkyrieSignalSseStream).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/valkyrie/events',
     );
   });
 });

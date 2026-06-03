@@ -1,0 +1,57 @@
+{
+  "name": "@niuulabs/plugin-valkyrie",
+  "version": "0.0.1",
+  "description": "Valkyrie plugin — environment and flock console for resident agents",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./index.css": "./dist/index.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsup --watch"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.100.14",
+    "@tanstack/react-router": "^1.170.10",
+    "react": "^19.2.6"
+  },
+  "dependencies": {
+    "@niuulabs/domain": "workspace:*",
+    "@niuulabs/plugin-sdk": "workspace:*",
+    "@niuulabs/query": "workspace:*",
+    "@niuulabs/ui": "workspace:*",
+    "lucide-react": "^1.17.0"
+  },
+  "devDependencies": {
+    "@niuulabs/design-tokens": "workspace:*",
+    "@tanstack/react-query": "^5.100.14",
+    "@tanstack/react-router": "^1.170.10",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^19.2.15",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.15",
+    "postcss-import": "^16.1.0",
+    "react": "^19.2.6",
+    "tailwindcss": "^4.3.0",
+    "tsup": "^8.3.5",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  }
+}
