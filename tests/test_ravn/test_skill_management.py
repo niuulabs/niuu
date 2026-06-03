@@ -169,3 +169,88 @@ async def test_validate_action_rejects_empty_content(tmp_path: Path) -> None:
 
     assert result.is_error
     assert "content is required" in result.content
+
+
+async def test_skill_manage_guarded_mode_defers_skill_changes(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    tool = SkillManageTool(skill_port, manager=manager)
+
+    result = await tool.execute(
+        {
+            "action": "create",
+            "name": "guarded k8s probe",
+            "content": "Use `kubectl` to inspect events.",
+            "scope": "environment",
+            "environment_id": "cluster-a",
+            "autonomy_mode": "guarded",
+            "proposal_store_path": str(tmp_path / "proposals.json"),
+        }
+    )
+
+    payload = json.loads(result.content)
+    assert payload["status"] == "needs_review"
+    assert payload["proposal"]["policy_decision"] == "needs_approval"
+    assert await manager.get_runnable_skill("guarded k8s probe") is None
+
+
+async def test_skill_manage_yolo_applies_environment_skill_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    tool = SkillManageTool(skill_port, manager=manager)
+    proposal_store_path = tmp_path / "proposals.json"
+
+    result = await tool.execute(
+        {
+            "action": "create",
+            "name": "yolo k8s probe",
+            "content": "Use `kubectl` to inspect warnings before paging a human.",
+            "scope": "environment",
+            "environment_id": "cluster-a",
+            "autonomy_mode": "yolo",
+            "proposal_store_path": str(proposal_store_path),
+        }
+    )
+    payload = json.loads(result.content)
+    proposal_id = payload["proposal"]["proposal_id"]
+
+    assert payload["status"] == "applied"
+    assert payload["proposal"]["status"] == "applied"
+    assert await manager.get_runnable_skill("yolo k8s probe") is not None
+
+    rolled_back = await tool.execute(
+        {
+            "action": "rollback",
+            "proposal_id": proposal_id,
+            "proposal_store_path": str(proposal_store_path),
+        }
+    )
+    rollback_payload = json.loads(rolled_back.content)
+
+    assert rollback_payload["status"] == "rolled_back"
+    assert await manager.get_runnable_skill("yolo k8s probe") is None
+
+
+async def test_skill_manage_yolo_gates_external_sends(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    tool = SkillManageTool(skill_port, manager=manager)
+
+    result = await tool.execute(
+        {
+            "action": "create",
+            "name": "send invoice mail",
+            "content": "Automatically send external email replies.",
+            "scope": "environment",
+            "environment_id": "inbox-host",
+            "autonomy_mode": "yolo",
+            "risk_boundaries": ["external_send"],
+            "proposal_store_path": str(tmp_path / "proposals.json"),
+        }
+    )
+
+    payload = json.loads(result.content)
+    assert payload["status"] == "needs_review"
+    assert "external_send" in payload["proposal"]["policy_reason"]

@@ -2194,6 +2194,22 @@ class DreamCycleTriggerConfig(BaseModel):
         default="~/.ravn/daemon",
         description="Directory where dream cycle state (last_run timestamp) is persisted.",
     )
+    autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
+        default="guarded",
+        description=(
+            "Autonomy mode for self-improvement proposals emitted by dream cycles. "
+            "guarded records proposals, autonomous applies low-risk private/Environment "
+            "changes, and yolo applies delegated private/Environment/domain changes."
+        ),
+    )
+    environment_id: str = Field(
+        default="",
+        description="Optional Environment ID attached to dream-cycle improvement proposals.",
+    )
+    proposal_store_path: str = Field(
+        default="~/.ravn/autonomy_proposals.json",
+        description="JSON proposal store used for dream-cycle self-improvement audit trails.",
+    )
 
 
 # ---------------------------------------------------------------------------
