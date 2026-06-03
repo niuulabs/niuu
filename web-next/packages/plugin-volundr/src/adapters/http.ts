@@ -353,6 +353,7 @@ type InstanceTargetPayload = {
   isDefault?: boolean;
   is_default?: boolean;
   visibility?: string;
+  tags?: string[];
 };
 
 type SessionDefinitionPayload = {
@@ -413,6 +414,8 @@ function buildStartSessionBody(
     launch_spec_id: config.launchSpecId,
     terminal_restricted: Boolean(config.terminalRestricted),
     instance_id: config.instanceId ?? null,
+    target_tags: config.targetTags?.length ? config.targetTags : undefined,
+    target_match: config.targetMatch ?? undefined,
     workspace_id: config.workspaceId,
     credential_names: config.credentialNames,
     integration_ids: config.integrationIds,
@@ -495,6 +498,7 @@ function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
     enabled: payload.enabled,
     isDefault: payload.isDefault ?? payload.is_default ?? false,
     visibility: payload.visibility,
+    tags: payload.tags ?? [],
   };
 }
 

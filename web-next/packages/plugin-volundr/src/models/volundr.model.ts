@@ -216,6 +216,7 @@ export interface VolundrTarget {
   enabled: boolean;
   isDefault: boolean;
   visibility?: string;
+  tags: string[];
 }
 
 // ---------------------------------------------------------------------------

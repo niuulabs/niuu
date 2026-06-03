@@ -152,6 +152,8 @@ export interface IVolundrService {
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
     instanceId?: string | null;
+    targetTags?: string[];
+    targetMatch?: 'all' | 'any';
     workspaceId?: string;
     credentialNames?: string[];
     integrationIds?: string[];

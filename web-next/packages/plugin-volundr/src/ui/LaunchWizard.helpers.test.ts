@@ -4,6 +4,7 @@ import type {
   IntegrationConnection,
   VolundrModel,
   VolundrLaunchSpec,
+  VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import {
@@ -17,19 +18,25 @@ import {
   definitionToTaskType,
   deriveCliTool,
   deriveSessionName,
+  filterModelsForDefinition,
   formatIntegrationLabel,
   formatIntegrationMeta,
   formatModelOption,
   formatResourceValue,
   getDefinitionRune,
   getResourceErrors,
+  getTargetTagOptions,
   hasPresetBackedRuntime,
+  isModelCompatibleWithDefinition,
+  getMatchingTargets,
   normalizeDefinitionKey,
   normalizeEnvVars,
   normalizeRepoUrl,
   parseResourceValue,
   pickDefaultModel,
+  pickDefaultModelForDefinition,
   slugifySessionName,
+  targetMatchesTags,
   validateSessionName,
   workspaceLabel,
   type WizardForm,
@@ -60,6 +67,9 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     gpu: '0',
     cluster: '',
     instanceId: '',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
     ...overrides,
@@ -142,6 +152,110 @@ describe('LaunchWizard helpers', () => {
         adapter: null,
       }),
     ).toBeNull();
+  });
+
+  it('filters Bifrost models by selected session runtime', () => {
+    const models: Record<string, VolundrModel> = {
+      'claude-sonnet': {
+        name: 'Claude Sonnet',
+        vendor: 'anthropic',
+        provider: 'cloud',
+        tier: 'balanced',
+        sessionDefinition: 'skuldClaude',
+      } as VolundrModel,
+      'gpt-5.5': {
+        name: 'GPT-5.5',
+        vendor: 'openai',
+        provider: 'cloud',
+        tier: 'frontier',
+        sessionDefinition: 'skuldCodex',
+      } as VolundrModel,
+      'llama3.2:latest': {
+        name: 'Llama 3.2',
+        vendor: 'local',
+        provider: 'local',
+        tier: 'balanced',
+        sessionDefinition: 'skuldOpenCode',
+      } as VolundrModel,
+    };
+    const definitions = [
+      {
+        key: 'skuldClaude',
+        displayName: 'Claude Code',
+        description: '',
+        labels: [],
+        defaultModel: 'claude-sonnet',
+        compatibleProviders: ['anthropic'],
+      },
+      {
+        key: 'skuldCodex',
+        displayName: 'Codex',
+        description: '',
+        labels: [],
+        defaultModel: '',
+        compatibleProviders: ['openai'],
+      },
+      {
+        key: 'skuldOpenCode',
+        displayName: 'OpenCode',
+        description: '',
+        labels: [],
+        defaultModel: '',
+        compatibleProviders: [],
+      },
+    ];
+
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldClaude', definitions))).toEqual([
+      'claude-sonnet',
+    ]);
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldCodex', definitions))).toEqual([
+      'gpt-5.5',
+    ]);
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldOpenCode', definitions))).toEqual([
+      'claude-sonnet',
+      'gpt-5.5',
+      'llama3.2:latest',
+    ]);
+    expect(isModelCompatibleWithDefinition(models['gpt-5.5']!, 'skuldClaude', definitions)).toBe(
+      false,
+    );
+    expect(pickDefaultModelForDefinition(models, 'skuldClaude', definitions)).toBe(
+      'claude-sonnet',
+    );
+    expect(pickDefaultModelForDefinition(models, 'skuldCodex', definitions)).toBe('gpt-5.5');
+  });
+
+  it('matches forge targets by tags', () => {
+    const targets: VolundrTarget[] = [
+      {
+        id: 'forge-alpha',
+        slug: 'forge-alpha',
+        name: 'Forge Alpha',
+        baseUrl: 'https://alpha.example.test',
+        enabled: true,
+        isDefault: true,
+        visibility: 'system',
+        tags: ['gpu', 'prod'],
+      },
+      {
+        id: 'forge-beta',
+        slug: 'forge-beta',
+        name: 'Forge Beta',
+        baseUrl: 'https://beta.example.test',
+        enabled: true,
+        isDefault: false,
+        visibility: 'system',
+        tags: ['batch'],
+      },
+    ];
+
+    expect(getTargetTagOptions(targets)).toEqual(['batch', 'gpu', 'prod']);
+    expect(targetMatchesTags(targets[0]!, ['gpu', 'prod'], 'all')).toBe(true);
+    expect(targetMatchesTags(targets[1]!, ['gpu', 'prod'], 'all')).toBe(false);
+    expect(getMatchingTargets(targets, ['gpu', 'batch'], 'any').map((target) => target.id)).toEqual(
+      ['forge-alpha', 'forge-beta'],
+    );
+    expect(getMatchingTargets(targets, ['gpu', 'batch'], 'all')).toEqual([]);
   });
 
   it('parses, formats, and validates resource values', () => {

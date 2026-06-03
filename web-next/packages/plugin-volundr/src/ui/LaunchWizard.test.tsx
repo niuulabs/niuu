@@ -230,6 +230,29 @@ describe('LaunchWizard', () => {
     expect(screen.getAllByTestId('boot-step').length).toBe(8);
   });
 
+  it('launches through a Forge tag selector', async () => {
+    const service = createMockVolundrService();
+    const startSession = vi.spyOn(service, 'startSession');
+    wrap(true, vi.fn(), service);
+
+    await advanceToRuntime();
+    fireEvent.click(screen.getByText('Match tags'));
+    fireEvent.click(screen.getByText('gpu'));
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('step-confirm-content');
+    expect(screen.getByText('tags(all): gpu')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await waitFor(() => expect(startSession).toHaveBeenCalled());
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instanceId: undefined,
+        targetTags: ['gpu'],
+        targetMatch: 'all',
+      }),
+    );
+  });
+
   it('serializes advanced runtime settings into a preset before launch when needed', async () => {
     const service = createMockVolundrService();
     const saveLaunchSpec = vi.spyOn(service, 'saveLaunchSpec');

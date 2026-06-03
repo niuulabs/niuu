@@ -37,9 +37,16 @@ type WizardStep = 'source' | 'runtime' | 'confirm' | 'booting';
 
 type RuntimeModelDescriptor = Pick<
   BifrostModel,
-  'name' | 'provider' | 'vendor' | 'tier' | 'color' | 'vram' | 'sessionDefinition'
+  | 'name'
+  | 'provider'
+  | 'vendor'
+  | 'tier'
+  | 'color'
+  | 'vram'
+  | 'sessionDefinition'
 > & {
   cost?: string | number;
+  providerKeys?: string[];
 };
 
 export interface WizardForm {
@@ -66,6 +73,9 @@ export interface WizardForm {
   gpu: string;
   cluster: string;
   instanceId: string;
+  targetMode: 'instance' | 'tags';
+  targetTags: string[];
+  targetMatch: 'all' | 'any';
   yamlMode: boolean;
   yamlContent: string;
 }
@@ -256,6 +266,117 @@ export function normalizeRepoUrl(url: string): string {
 export function pickDefaultModel(models: Record<string, RuntimeModelDescriptor>): string {
   if ('sonnet-primary' in models) return 'sonnet-primary';
   return Object.keys(models)[0] ?? '';
+}
+
+function normalizeModelProvider(value: string | undefined | null): string {
+  const provider = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  const aliases: Record<string, string> = {
+    anthropic: 'anthropic',
+    claude: 'anthropic',
+    openai: 'openai',
+    codex: 'openai',
+    google: 'google',
+    gemini: 'google',
+    ollama: 'local',
+    local: 'local',
+  };
+  return aliases[provider] ?? provider;
+}
+
+function findSessionDefinition(
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): SessionDefinition | null {
+  const normalized = normalizeDefinitionKey(definitionKey);
+  return (
+    sessionDefinitions.find((definition) => normalizeDefinitionKey(definition.key) === normalized) ??
+    null
+  );
+}
+
+function modelProviderTokens(model: RuntimeModelDescriptor): Set<string> {
+  return new Set(
+    [model.vendor, model.provider, ...(model.providerKeys ?? [])]
+      .map(normalizeModelProvider)
+      .filter(Boolean),
+  );
+}
+
+export function isModelCompatibleWithDefinition(
+  model: RuntimeModelDescriptor,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): boolean {
+  const normalizedDefinition = normalizeDefinitionKey(definitionKey);
+  if (
+    model.sessionDefinition &&
+    normalizeDefinitionKey(model.sessionDefinition) === normalizedDefinition
+  ) {
+    return true;
+  }
+
+  const definition = findSessionDefinition(definitionKey, sessionDefinitions);
+  if (!definition) return true;
+
+  const compatibleProviders = (definition.compatibleProviders ?? [])
+    .map(normalizeModelProvider)
+    .filter(Boolean);
+  if (compatibleProviders.length === 0) return true;
+
+  const tokens = modelProviderTokens(model);
+  return compatibleProviders.some((provider) => tokens.has(provider));
+}
+
+export function filterModelsForDefinition(
+  models: Record<string, RuntimeModelDescriptor>,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): Record<string, RuntimeModelDescriptor> {
+  return Object.fromEntries(
+    Object.entries(models).filter(([, model]) =>
+      isModelCompatibleWithDefinition(model, definitionKey, sessionDefinitions),
+    ),
+  );
+}
+
+export function pickDefaultModelForDefinition(
+  models: Record<string, RuntimeModelDescriptor>,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): string {
+  const definition = findSessionDefinition(definitionKey, sessionDefinitions);
+  const compatibleModels = filterModelsForDefinition(models, definitionKey, sessionDefinitions);
+  if (definition?.defaultModel && compatibleModels[definition.defaultModel]) {
+    return definition.defaultModel;
+  }
+  return pickDefaultModel(compatibleModels);
+}
+
+export function getTargetTagOptions(targets: VolundrTarget[]): string[] {
+  return Array.from(new Set(targets.flatMap((target) => target.tags ?? []))).sort((a, b) =>
+    a.localeCompare(b),
+  );
+}
+
+export function targetMatchesTags(
+  target: VolundrTarget,
+  tags: string[],
+  match: 'all' | 'any',
+): boolean {
+  if (tags.length === 0) return true;
+  const have = new Set(target.tags ?? []);
+  if (match === 'any') return tags.some((tag) => have.has(tag));
+  return tags.every((tag) => have.has(tag));
+}
+
+export function getMatchingTargets(
+  targets: VolundrTarget[],
+  tags: string[],
+  match: 'all' | 'any',
+): VolundrTarget[] {
+  return targets.filter((target) => target.enabled && targetMatchesTags(target, tags, match));
 }
 
 export function launchSpecRef(spec: VolundrLaunchSpec): string {
@@ -870,10 +991,16 @@ export function RuntimeStep({
   onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
 }) {
-  const modelOptions = Object.entries(models).map(([id, model]) => ({
+  const compatibleModels = filterModelsForDefinition(models, form.definition, sessionDefinitions);
+  const modelOptions = Object.entries(compatibleModels).map(([id, model]) => ({
     value: id,
     label: formatModelOption(id, model),
   }));
+  const selectedDefinition =
+    findSessionDefinition(form.definition, sessionDefinitions)?.displayName ?? form.definition;
+  const totalModelCount = Object.keys(models).length;
+  const targetTagOptions = getTargetTagOptions(targets);
+  const matchingTagTargets = getMatchingTargets(targets, form.targetTags, form.targetMatch);
   const filteredWorkspaces = workspaces.filter((workspace) => {
     if (form.sourcetype !== 'git' || !form.repo.trim() || !workspace.sourceUrl) return true;
     return normalizeRepoUrl(workspace.sourceUrl) === normalizeRepoUrl(form.repo);
@@ -1078,8 +1205,13 @@ export function RuntimeStep({
                 }`}
                 onClick={() => {
                   const patch: Partial<WizardForm> = { definition: def.key };
-                  if (def.defaultModel && models[def.defaultModel]) {
-                    patch.model = def.defaultModel;
+                  const defaultModel = pickDefaultModelForDefinition(
+                    models,
+                    def.key,
+                    sessionDefinitions,
+                  );
+                  if (defaultModel) {
+                    patch.model = defaultModel;
                   }
                   update(patch);
                 }}
@@ -1108,6 +1240,13 @@ export function RuntimeStep({
                   placeholder="sonnet-primary"
                 />
               )}
+              {totalModelCount > 0 ? (
+                <div className="niuu:text-xs niuu:text-text-faint">
+                  {modelOptions.length === totalModelCount
+                    ? `Showing all ${totalModelCount} Bifrost models for ${selectedDefinition}.`
+                    : `Showing ${modelOptions.length} of ${totalModelCount} Bifrost models compatible with ${selectedDefinition}.`}
+                </div>
+              ) : null}
             </Field>
           </div>
           {workspaceOptions.length > 1 ? (
@@ -1124,16 +1263,92 @@ export function RuntimeStep({
           ) : null}
           {targets.length > 0 ? (
             <Field label="Forge">
-              <WizardSelect
-                options={targets.map((target) => ({
-                  value: target.id,
-                  label: `${target.name}${target.isDefault ? ' (default)' : ''}`,
-                }))}
-                value={form.instanceId}
-                onChange={(value) => update({ instanceId: value })}
-                placeholder="Select forge"
-                testId="forge-target-select"
-              />
+              <div className="niuu:space-y-3">
+                <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+                  <button
+                    type="button"
+                    className={`niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs ${
+                      form.targetMode === 'instance'
+                        ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
+                        : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-faint niuu:hover:border-brand'
+                    }`}
+                    onClick={() => update({ targetMode: 'instance' })}
+                  >
+                    Specific Forge
+                  </button>
+                  <button
+                    type="button"
+                    className={`niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs ${
+                      form.targetMode === 'tags'
+                        ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
+                        : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-faint niuu:hover:border-brand'
+                    }`}
+                    onClick={() => update({ targetMode: 'tags' })}
+                    disabled={targetTagOptions.length === 0}
+                  >
+                    Match tags
+                  </button>
+                </div>
+                {form.targetMode === 'tags' ? (
+                  <div className="niuu:space-y-3 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
+                    <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+                      {targetTagOptions.map((tag) => {
+                        const selected = form.targetTags.includes(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            className={`niuu:rounded-full niuu:border niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono ${
+                              selected
+                                ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
+                                : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:text-text-faint niuu:hover:border-brand'
+                            }`}
+                            onClick={() =>
+                              update({
+                                targetTags: selected
+                                  ? form.targetTags.filter((item) => item !== tag)
+                                  : [...form.targetTags, tag],
+                              })
+                            }
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <WizardSelect
+                      options={[
+                        { value: 'all', label: 'Match all selected tags' },
+                        { value: 'any', label: 'Match any selected tag' },
+                      ]}
+                      value={form.targetMatch}
+                      onChange={(value) => update({ targetMatch: value === 'any' ? 'any' : 'all' })}
+                      placeholder="Tag match"
+                      testId="forge-target-match-select"
+                    />
+                    <div className="niuu:text-xs niuu:text-text-faint">
+                      {form.targetTags.length === 0
+                        ? 'No tags selected; Guild will route to the default enabled Forge.'
+                        : `${matchingTagTargets.length} matching Forge${matchingTagTargets.length === 1 ? '' : 's'}: ${
+                            matchingTagTargets.map((target) => target.name).join(', ') || 'none'
+                          }`}
+                    </div>
+                  </div>
+                ) : (
+                  <WizardSelect
+                    options={targets.map((target) => ({
+                      value: target.id,
+                      label: `${target.name}${target.isDefault ? ' (default)' : ''}${
+                        target.tags.length ? ` · ${target.tags.join(', ')}` : ''
+                      }`,
+                    }))}
+                    value={form.instanceId}
+                    onChange={(value) => update({ instanceId: value })}
+                    placeholder="Select forge"
+                    testId="forge-target-select"
+                  />
+                )}
+              </div>
             </Field>
           ) : null}
           <RuntimePanel
@@ -1666,7 +1881,9 @@ export function ConfirmStep({
   const definitionLabel =
     sessionDefinitions.find((d) => d.key === form.definition)?.displayName ?? form.definition;
   const targetLabel =
-    targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
+    form.targetMode === 'tags'
+      ? `tags(${form.targetMatch}): ${form.targetTags.join(', ')}`
+      : targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
   const integrationLabels = form.selectedIntegrations.map((id) => {
     const integration = integrations.find((item) => item.id === id);
     return integration ? formatIntegrationLabel(integration) : id;
@@ -1940,6 +2157,9 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
     gpu: '0',
     cluster: '',
     instanceId: '',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
   }));
@@ -2052,8 +2272,17 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
           }
         }
 
-        if (Object.keys(models).length > 0 && !models[current.model]) {
-          next.model = pickDefaultModel(models);
+        const compatibleModels = filterModelsForDefinition(
+          models,
+          current.definition,
+          sessionDefinitions,
+        );
+        if (Object.keys(compatibleModels).length > 0 && !compatibleModels[current.model]) {
+          next.model = pickDefaultModelForDefinition(
+            models,
+            current.definition,
+            sessionDefinitions,
+          );
           changed = true;
         }
 
@@ -2063,12 +2292,16 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
             next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
             changed = true;
           }
+          if (current.targetMode === 'tags' && getTargetTagOptions(targets).length === 0) {
+            next.targetMode = 'instance';
+            changed = true;
+          }
         }
 
         return changed ? next : current;
       });
     });
-  }, [repos, models, targets]);
+  }, [repos, models, sessionDefinitions, targets]);
 
   useEffect(() => {
     const query = form.trackerQuery.trim();
@@ -2214,6 +2447,13 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
   const effectiveSessionName = deriveSessionName(form);
   const sessionNameError = validateSessionName(effectiveSessionName);
   const resourceErrors = getResourceErrors(form, clusterResources);
+  const matchingTargets = getMatchingTargets(targets, form.targetTags, form.targetMatch);
+  const targetRoutingError =
+    form.targetMode === 'tags' && form.targetTags.length === 0
+      ? 'Select at least one Forge tag.'
+      : form.targetMode === 'tags' && matchingTargets.length === 0
+        ? 'No enabled Forge target matches the selected tags.'
+        : null;
   const sourceReady =
     form.sourcetype === 'blank' ||
     (form.sourcetype === 'git'
@@ -2223,6 +2463,7 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
     Boolean(form.model.trim()) &&
     sourceReady &&
     !sessionNameError &&
+    !targetRoutingError &&
     !launching &&
     !resourceErrors.cpu &&
     !resourceErrors.memory &&
@@ -2230,7 +2471,9 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
 
   async function handleLaunch() {
     if (!canLaunch) {
-      setLaunchError(sessionNameError ?? 'Fill in the required launch fields first.');
+      setLaunchError(
+        sessionNameError ?? targetRoutingError ?? 'Fill in the required launch fields first.',
+      );
       return;
     }
 
@@ -2280,7 +2523,9 @@ export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: Launc
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
         terminalRestricted: false,
-        instanceId: form.instanceId || undefined,
+        instanceId: form.targetMode === 'instance' ? form.instanceId || undefined : undefined,
+        targetTags: form.targetMode === 'tags' ? form.targetTags : undefined,
+        targetMatch: form.targetMode === 'tags' ? form.targetMatch : undefined,
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,
         integrationIds: form.selectedIntegrations.length ? form.selectedIntegrations : undefined,

@@ -1101,6 +1101,17 @@ export function createMockVolundrService(): IVolundrService {
         enabled: true,
         isDefault: true,
         visibility: 'system',
+        tags: ['local', 'default'],
+      },
+      {
+        id: 'mock-volundr-gpu',
+        slug: 'mock-volundr-gpu',
+        name: 'Mock Volundr GPU',
+        baseUrl: 'http://127.0.0.1:8282',
+        enabled: true,
+        isDefault: false,
+        visibility: 'system',
+        tags: ['gpu', 'batch'],
       },
     ],
 
@@ -1152,8 +1163,14 @@ export function createMockVolundrService(): IVolundrService {
       lastActive: Date.now(),
       messageCount: 0,
       tokensUsed: 0,
-      instanceId: config.instanceId ?? 'mock-volundr-default',
-      instanceName: config.instanceId ? 'Selected Mock Volundr' : 'Mock Volundr',
+      instanceId:
+        config.instanceId ??
+        (config.targetTags?.includes('gpu') ? 'mock-volundr-gpu' : 'mock-volundr-default'),
+      instanceName: config.instanceId
+        ? 'Selected Mock Volundr'
+        : config.targetTags?.includes('gpu')
+          ? 'Mock Volundr GPU'
+          : 'Mock Volundr',
     }),
 
     evaluatePermissionAutoApproval: async (_sessionId, request) => ({

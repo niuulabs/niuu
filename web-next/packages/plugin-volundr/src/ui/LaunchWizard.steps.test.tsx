@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   ClusterResourceInfo,
   IntegrationConnection,
@@ -23,6 +23,7 @@ import {
 const MODELS: Record<string, VolundrModel> = {
   'sonnet-primary': { name: 'Sonnet', provider: 'anthropic', tier: 'smart' },
   'gpt-test': { name: 'GPT Test', provider: 'openai', tier: 'fast' },
+  'local-test': { name: 'Local Test', provider: 'local', tier: 'fast' },
 };
 
 const CREDENTIALS: StoredCredential[] = [
@@ -91,6 +92,7 @@ const DEFINITIONS: SessionDefinition[] = [
     description: '',
     labels: [],
     defaultModel: 'sonnet-primary',
+    compatibleProviders: ['anthropic'],
   },
   {
     key: 'skuld-codex',
@@ -98,6 +100,15 @@ const DEFINITIONS: SessionDefinition[] = [
     description: '',
     labels: [],
     defaultModel: 'gpt-test',
+    compatibleProviders: ['openai'],
+  },
+  {
+    key: 'skuldOpenCode',
+    displayName: 'OpenCode',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: [],
   },
 ];
 
@@ -123,8 +134,26 @@ const CLUSTER_RESOURCES: ClusterResourceInfo = {
 };
 
 const TARGETS: VolundrTarget[] = [
-  { id: 'forge-alpha', name: 'Forge Alpha', kind: 'volundr', isDefault: true },
-  { id: 'forge-beta', name: 'Forge Beta', kind: 'volundr', isDefault: false },
+  {
+    id: 'forge-alpha',
+    slug: 'forge-alpha',
+    name: 'Forge Alpha',
+    baseUrl: 'https://alpha.example.test',
+    enabled: true,
+    isDefault: true,
+    visibility: 'system',
+    tags: ['local', 'default'],
+  },
+  {
+    id: 'forge-beta',
+    slug: 'forge-beta',
+    name: 'Forge Beta',
+    baseUrl: 'https://beta.example.test',
+    enabled: true,
+    isDefault: false,
+    visibility: 'system',
+    tags: ['gpu', 'batch'],
+  },
 ];
 
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
@@ -152,6 +181,9 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     gpu: '0',
     cluster: '',
     instanceId: 'forge-alpha',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
     ...overrides,
@@ -410,12 +442,100 @@ describe('LaunchWizard step components', () => {
     );
   });
 
+  it('scopes model dropdown options to the selected runtime', () => {
+    const update = vi.fn();
+    const { rerender } = render(
+      <RuntimeStep
+        form={makeForm()}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    let select = screen.getByTestId('model-select');
+    expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
+    expect(within(select).queryByRole('option', { name: /GPT Test/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing 1 of 3 Bifrost models compatible with Claude Code/),
+    ).toBeInTheDocument();
+
+    rerender(
+      <RuntimeStep
+        form={makeForm({ definition: 'skuldOpenCode' })}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    select = screen.getByTestId('model-select');
+    expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: /GPT Test/ })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: /Local Test/ })).toBeInTheDocument();
+    expect(screen.getByText(/Showing all 3 Bifrost models for OpenCode/)).toBeInTheDocument();
+  });
+
+  it('shows tag-based Forge routing controls', () => {
+    const update = vi.fn();
+    render(
+      <RuntimeStep
+        form={makeForm({ targetMode: 'tags', targetTags: ['gpu'] })}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();
+    expect(screen.getByTestId('forge-target-match-select')).toBeInTheDocument();
+    expect(screen.getByText('gpu')).toBeInTheDocument();
+    expect(screen.getByText(/1 matching Forge: Forge Beta/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('batch'));
+    expect(update).toHaveBeenCalledWith({ targetTags: ['gpu', 'batch'] });
+    fireEvent.click(screen.getByText('Specific Forge'));
+    expect(update).toHaveBeenCalledWith({ targetMode: 'instance' });
+  });
+
   it('handles runtime field updates, credential toggles, and removal flows', () => {
     const update = vi.fn();
 
     render(
       <RuntimeStep
         form={makeForm({
+          definition: 'skuld-codex',
+          model: 'gpt-test',
           workspaceId: 'ws-1',
           selectedCredentials: ['GITHUB_TOKEN'],
           selectedIntegrations: ['int-1'],
