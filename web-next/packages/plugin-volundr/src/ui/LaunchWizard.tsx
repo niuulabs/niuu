@@ -37,13 +37,7 @@ type WizardStep = 'source' | 'runtime' | 'confirm' | 'booting';
 
 type RuntimeModelDescriptor = Pick<
   BifrostModel,
-  | 'name'
-  | 'provider'
-  | 'vendor'
-  | 'tier'
-  | 'color'
-  | 'vram'
-  | 'sessionDefinition'
+  'name' | 'provider' | 'vendor' | 'tier' | 'color' | 'vram' | 'sessionDefinition'
 > & {
   cost?: string | number;
   providerKeys?: string[];
@@ -291,8 +285,9 @@ function findSessionDefinition(
 ): SessionDefinition | null {
   const normalized = normalizeDefinitionKey(definitionKey);
   return (
-    sessionDefinitions.find((definition) => normalizeDefinitionKey(definition.key) === normalized) ??
-    null
+    sessionDefinitions.find(
+      (definition) => normalizeDefinitionKey(definition.key) === normalized,
+    ) ?? null
   );
 }
 
@@ -1883,7 +1878,9 @@ export function ConfirmStep({
   const targetLabel =
     form.targetMode === 'tags'
       ? `tags(${form.targetMatch}): ${form.targetTags.join(', ')}`
-      : targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
+      : targets.find((target) => target.id === form.instanceId)?.name ||
+        form.instanceId ||
+        'default';
   const integrationLabels = form.selectedIntegrations.map((id) => {
     const integration = integrations.find((item) => item.id === id);
     return integration ? formatIntegrationLabel(integration) : id;

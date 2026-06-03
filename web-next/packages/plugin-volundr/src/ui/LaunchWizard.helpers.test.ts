@@ -219,9 +219,7 @@ describe('LaunchWizard helpers', () => {
     expect(isModelCompatibleWithDefinition(models['gpt-5.5']!, 'skuldClaude', definitions)).toBe(
       false,
     );
-    expect(pickDefaultModelForDefinition(models, 'skuldClaude', definitions)).toBe(
-      'claude-sonnet',
-    );
+    expect(pickDefaultModelForDefinition(models, 'skuldClaude', definitions)).toBe('claude-sonnet');
     expect(pickDefaultModelForDefinition(models, 'skuldCodex', definitions)).toBe('gpt-5.5');
   });
 

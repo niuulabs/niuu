@@ -97,7 +97,10 @@ function compactAge(timestamp: number) {
 function formatSpecResources(spec: VolundrLaunchSpec) {
   const cpu = spec.resourceConfig.cpu ? `${spec.resourceConfig.cpu}c` : '';
   const mem = spec.resourceConfig.memory ? spec.resourceConfig.memory : '';
-  const gpu = spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0' ? `gpu ${spec.resourceConfig.gpu}` : '';
+  const gpu =
+    spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0'
+      ? `gpu ${spec.resourceConfig.gpu}`
+      : '';
   return [cpu, mem, gpu, spec.scope].filter(Boolean).join('  ');
 }
 
@@ -353,9 +356,7 @@ function QuickLaunchCard({
         {isDefault ? <span className="vol-forge__launch-default">DEFAULT</span> : null}
       </div>
       <div className="vol-forge__launch-name">{spec.name}</div>
-      <div className="vol-forge__launch-desc">
-        {spec.description || 'catalog launch spec'}
-      </div>
+      <div className="vol-forge__launch-desc">{spec.description || 'catalog launch spec'}</div>
       <div className="vol-forge__launch-foot">
         <span>{formatSpecResources(spec)}</span>
         {spec.model ? <span>{spec.model}</span> : null}

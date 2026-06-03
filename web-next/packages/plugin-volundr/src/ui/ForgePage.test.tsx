@@ -244,7 +244,9 @@ describe('ForgePage', () => {
 
   it('renders catalog launch specs on quick-launch cards', async () => {
     wrap();
-    await waitFor(() => expect(screen.getAllByTestId('quick-launch-card').length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('quick-launch-card').length).toBeGreaterThan(0),
+    );
     expect(screen.getByText('standard-claude')).toBeInTheDocument();
     expect(screen.getByText('standard-codex')).toBeInTheDocument();
     expect(screen.getByText(/from catalog/i)).toBeInTheDocument();

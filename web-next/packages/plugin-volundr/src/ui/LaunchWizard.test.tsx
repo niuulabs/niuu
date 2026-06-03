@@ -613,12 +613,12 @@ source:
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <ServicesProvider
-        services={{
-          bifrost: createMockBifrostService(),
-          volundr: service,
-          'niuu.repos': {
-            getRepos: service.getRepos.bind(service),
-            getBranches: async () => [],
+          services={{
+            bifrost: createMockBifrostService(),
+            volundr: service,
+            'niuu.repos': {
+              getRepos: service.getRepos.bind(service),
+              getBranches: async () => [],
             },
           }}
         >
@@ -632,12 +632,12 @@ source:
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <ServicesProvider
-        services={{
-          bifrost: createMockBifrostService(),
-          volundr: service,
-          'niuu.repos': {
-            getRepos: service.getRepos.bind(service),
-            getBranches: async () => [],
+          services={{
+            bifrost: createMockBifrostService(),
+            volundr: service,
+            'niuu.repos': {
+              getRepos: service.getRepos.bind(service),
+              getBranches: async () => [],
             },
           }}
         >

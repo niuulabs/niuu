@@ -6,7 +6,10 @@ import type { VolundrLaunchSpec } from '../models/volundr.model';
 function formatResources(spec: VolundrLaunchSpec): string {
   const cpu = spec.resourceConfig.cpu ? `cpu ${spec.resourceConfig.cpu}` : '';
   const memory = spec.resourceConfig.memory ? `mem ${spec.resourceConfig.memory}` : '';
-  const gpu = spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0' ? `gpu ${spec.resourceConfig.gpu}` : '';
+  const gpu =
+    spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0'
+      ? `gpu ${spec.resourceConfig.gpu}`
+      : '';
   return [cpu, memory, gpu].filter(Boolean).join(' · ') || 'default resources';
 }
 
@@ -51,7 +54,9 @@ function LaunchSpecCard({ spec }: { spec: VolundrLaunchSpec }) {
         </div>
         <div>
           <dt className="niuu:text-text-faint">Model</dt>
-          <dd className="niuu:mt-1 niuu:text-text-secondary">{spec.model ?? 'selected at launch'}</dd>
+          <dd className="niuu:mt-1 niuu:text-text-secondary">
+            {spec.model ?? 'selected at launch'}
+          </dd>
         </div>
         <div>
           <dt className="niuu:text-text-faint">Resources</dt>
