@@ -857,6 +857,42 @@ def valkyrie_state_changed(
     )
 
 
+def valkyrie_state_updated(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    previous_state: str,
+    new_state: str,
+    reason: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a resident Valkyrie publishes its current operational state."""
+    payload = dataclasses.asdict(
+        ValkyrieStateChangedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            previous_state=previous_state,
+            new_state=new_state,
+            reason=reason,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.VALKYRIE_STATE_UPDATED,
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie {valkyrie_id} state updated: {new_state}",
+        urgency=0.3,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
 def valkyrie_judgment_recorded(
     *,
     environment_id: str,
@@ -889,6 +925,47 @@ def valkyrie_judgment_recorded(
         source=source,
         payload=payload,
         summary=f"Valkyrie {valkyrie_id} judgment: {attention_tier}/{recommended_action}",
+        urgency=urgency,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or environment_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def valkyrie_judgment_proposed(
+    *,
+    environment_id: str,
+    valkyrie_id: str,
+    attention_tier: str,
+    recommended_action: str,
+    authority_boundary: str,
+    confidence: float,
+    source: str,
+    evidence: list[dict] | None = None,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a Valkyrie proposes a judgment for ODIN/court policy handling."""
+    payload = dataclasses.asdict(
+        ValkyrieJudgmentRecordedPayload(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            attention_tier=attention_tier,
+            recommended_action=recommended_action,
+            authority_boundary=authority_boundary,
+            confidence=confidence,
+            evidence=evidence or [],
+        )
+    )
+    urgency = max(0.2, min(1.0, confidence if attention_tier == "urgent" else confidence * 0.8))
+    return SleipnirEvent(
+        event_type=registry.VALKYRIE_JUDGMENT_PROPOSED,
+        source=source,
+        payload=payload,
+        summary=f"Valkyrie {valkyrie_id} proposed judgment: {attention_tier}/{recommended_action}",
         urgency=urgency,
         domain="infrastructure",
         timestamp=datetime.now(UTC),

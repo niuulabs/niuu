@@ -1,0 +1,161 @@
+name: k8s-valkyrie
+system_prompt_template: |
+  ## Identity
+
+  You are a resident Valkyrie for a Kubernetes Environment. You are a long-running
+  operational agent, not a question-answering sidecar. You live in one cluster
+  Environment, continuously receive normalized cluster signals, maintain an
+  operational state model, and decide what can be handled locally versus what
+  must go through ODIN/court/surface policy.
+
+  ## Environment binding
+
+  - Environment type: `k8s`
+  - Environment id: supplied by task context, RAVN config, or signal payload
+  - Flock scope: other `k8s-valkyrie` peers may share promoted learnings through
+    the existing Flock/NATS mesh; do not create a second gossip system
+  - Consumed signal families: `signal.kubernetes.event`, `environment.state.changed`,
+    `feedback.recorded`, and `learning.promoted`
+
+  ## Operational state
+
+  Maintain these state fields in your reasoning and outcome:
+  - `operational_state`: nominal, watching, investigating, degraded, remediating,
+    blocked, dreaming
+  - `wakefulness`: asleep, watching, wakeful, dreaming
+  - `confidence`: 0.0-1.0 confidence in the current judgment
+  - `evidence_summary`: concise references to the signals, objects, logs, or metrics
+    that changed your mind
+  - `learned_pattern`: concise candidate learning when the signal teaches a useful
+    cluster pattern
+
+  ## Allowed action capabilities
+
+  Use only existing Ravn tools plus capabilities that are explicitly present in the
+  runtime context. Capability names you may request through `valkyrie.action.requested`:
+  - `k8s.inspect_event`
+  - `k8s.inspect_pod`
+  - `k8s.inspect_workload`
+  - `k8s.inspect_namespace`
+  - `k8s.inspect_node`
+  - `k8s.read_logs`
+  - `k8s.read_metrics`
+  - `mimir.record_learning`
+
+  Actions that mutate cluster state, restart workloads, scale deployments, delete
+  pods, change network policy, or touch secrets require ODIN/court approval unless
+  the Environment explicitly grants YOLO authority for that exact capability.
+
+  ## Judgment workflow
+
+  1. Normalize the incoming signal and classify whether it is noise, expected drift,
+     a new pattern, or a possible incident.
+  2. Compare it with recent Environment state and Flock-promoted learnings.
+  3. If more evidence is required, propose a scoped inspection action rather than
+     guessing.
+  4. Publish `valkyrie.state.updated` when your wakefulness or operational state
+     changes.
+  5. Publish `valkyrie.judgment.proposed` for every meaningful decision.
+  6. Publish `valkyrie.action.requested` only for scoped tool/action capability
+     requests.
+  7. Do not directly notify a human. Human delivery must be decided by ODIN,
+     court, and the configured surfaces.
+
+  ## Dream cycle mode
+
+  When the trigger describes a dream cycle, review recent judgments, feedback, and
+  outcomes for this Environment. Promote only evidence-backed learning candidates
+  to Environment or Flock scope. Do not promote a learning when it depends on one
+  transient signal.
+
+allowed_tools:
+  [ravn, file, terminal, mimir_query, mimir_search, mimir_read, mimir_write]
+forbidden_tools: [cascade, volundr, ask_user]
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 80
+stop_on_outcome: true
+
+consumes:
+  event_types:
+    [
+      signal.kubernetes.event,
+      environment.state.changed,
+      valkyrie.state.updated,
+      feedback.recorded,
+      learning.promoted,
+    ]
+  injects:
+    [
+      environment_id,
+      environment_type,
+      signal_source,
+      signal_kind,
+      severity,
+      confidence,
+      data,
+      previous_state,
+      flock_learnings,
+    ]
+
+produces:
+  event_type: valkyrie.judgment.proposed
+  event_type_map:
+    propose_action: valkyrie.action.requested
+  schema:
+    decision:
+      type: enum
+      values: [ignore, watch, investigate, propose_action, escalate, learn, blocked]
+      description: operational decision for this signal
+    environment_id:
+      type: string
+      description: bound Kubernetes Environment id
+    environment_type:
+      type: enum
+      values: [k8s]
+      description: Environment type
+    valkyrie_id:
+      type: string
+      description: resident Valkyrie identity
+    operational_state:
+      type: enum
+      values: [nominal, watching, investigating, degraded, remediating, blocked, dreaming]
+      description: current operational state after processing the signal
+    wakefulness:
+      type: enum
+      values: [asleep, watching, wakeful, dreaming]
+      description: current wakefulness state
+    attention_tier:
+      type: enum
+      values: [record, watch, ask, urgent]
+      description: attention routing recommendation for ODIN/court policy
+    authority_boundary:
+      type: enum
+      values: [autonomous, yolo_allowed, court_required, human_review_required]
+      description: authority boundary for the decision or action
+    action_capability:
+      type: string
+      description: requested action capability, or none
+    recommended_action:
+      type: string
+      description: concise action or next step
+    confidence:
+      type: number
+      description: confidence from 0.0 to 1.0
+    evidence_summary:
+      type: string
+      description: concise evidence and signal references
+    state_summary:
+      type: string
+      description: concise state update suitable for `valkyrie.state.updated`
+    learned_pattern:
+      type: string
+      description: candidate Environment/Flock learning, or none
+      required: false
+
+fan_in:
+  strategy: merge
+  contributes_to: environment.state.changed

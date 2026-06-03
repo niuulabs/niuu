@@ -19,8 +19,10 @@ from sleipnir.domain.catalog import (
     signal_received,
     valkyrie_action_completed,
     valkyrie_action_requested,
+    valkyrie_judgment_proposed,
     valkyrie_judgment_recorded,
     valkyrie_state_changed,
+    valkyrie_state_updated,
 )
 from sleipnir.domain.events import EVENT_NAMESPACES, SleipnirEvent, validate_event_type
 from sleipnir.domain.valkyrie_examples import (
@@ -48,7 +50,9 @@ TAXONOMY_CONSTANTS = [
     registry.SIGNAL_INBOX_MESSAGE,
     registry.SIGNAL_PRINTER_EVENT,
     registry.VALKYRIE_STATE_CHANGED,
+    registry.VALKYRIE_STATE_UPDATED,
     registry.VALKYRIE_JUDGMENT_RECORDED,
+    registry.VALKYRIE_JUDGMENT_PROPOSED,
     registry.VALKYRIE_ACTION_REQUESTED,
     registry.VALKYRIE_ACTION_COMPLETED,
     registry.ODIN_COURT_DECIDED,
@@ -105,6 +109,16 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         correlation_id="corr-1",
         causation_id=state.event_id,
     )
+    state_update = valkyrie_state_updated(
+        environment_id="cluster-a",
+        valkyrie_id="k8s-valkyrie",
+        previous_state="watching",
+        new_state="wakeful",
+        reason="published current resident state",
+        source="valkyrie:k8s",
+        correlation_id="corr-1",
+        causation_id=valkyrie_state.event_id,
+    )
     judgment = valkyrie_judgment_recorded(
         environment_id="cluster-a",
         valkyrie_id="k8s-valkyrie",
@@ -115,7 +129,19 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         evidence=[{"event_id": state.event_id}],
         source="valkyrie:k8s",
         correlation_id="corr-1",
-        causation_id=valkyrie_state.event_id,
+        causation_id=state_update.event_id,
+    )
+    proposed_judgment = valkyrie_judgment_proposed(
+        environment_id="cluster-a",
+        valkyrie_id="k8s-valkyrie",
+        attention_tier="watch",
+        recommended_action="inspect_pod",
+        authority_boundary="autonomous",
+        confidence=0.84,
+        evidence=[{"event_id": state_update.event_id}],
+        source="valkyrie:k8s",
+        correlation_id="corr-1",
+        causation_id=judgment.event_id,
     )
     action = valkyrie_action_requested(
         environment_id="cluster-a",
@@ -127,7 +153,7 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         dry_run=False,
         source="valkyrie:k8s",
         correlation_id="corr-1",
-        causation_id=judgment.event_id,
+        causation_id=proposed_judgment.event_id,
     )
     action_done = valkyrie_action_completed(
         environment_id="cluster-a",
@@ -205,7 +231,9 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         signal,
         state,
         valkyrie_state,
+        state_update,
         judgment,
+        proposed_judgment,
         action,
         action_done,
         court,
@@ -218,6 +246,8 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
     assert all(isinstance(event, SleipnirEvent) for event in events)
     assert [event.correlation_id for event in events] == ["corr-1"] * len(events)
     assert state.causation_id == signal.event_id
+    assert state_update.event_type == registry.VALKYRIE_STATE_UPDATED
+    assert proposed_judgment.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED
     assert action.payload["authority_boundary"] == "autonomous"
     assert room.payload["participants"] == ["human:operator", "valkyrie:k8s"]
 

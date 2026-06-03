@@ -386,8 +386,14 @@ SIGNAL_PRINTER_EVENT: str = "signal.printer.event"
 #: A Valkyrie's wake/sleep/dream/health state changed.
 VALKYRIE_STATE_CHANGED: str = "valkyrie.state.changed"
 
+#: A Valkyrie published its current operational/wakefulness state.
+VALKYRIE_STATE_UPDATED: str = "valkyrie.state.updated"
+
 #: A Valkyrie recorded an operational judgment.
 VALKYRIE_JUDGMENT_RECORDED: str = "valkyrie.judgment.recorded"
+
+#: A Valkyrie proposed an operational judgment for downstream policy/court handling.
+VALKYRIE_JUDGMENT_PROPOSED: str = "valkyrie.judgment.proposed"
 
 #: A Valkyrie requested a scoped action.
 VALKYRIE_ACTION_REQUESTED: str = "valkyrie.action.requested"
