@@ -433,6 +433,9 @@ ODIN_COURT_DISSENT_RECORDED: str = "odin.court.dissent.recorded"
 #: An attention decision was recorded.
 ATTENTION_DECIDED: str = "attention.decided"
 
+#: ODIN court recorded a final attention/action/escalation decision.
+ATTENTION_DECISION_MADE: str = "attention.decision.made"
+
 #: A signal/state/judgment was escalated to a human or surface.
 ATTENTION_ESCALATED: str = "attention.escalated"
 

@@ -10,6 +10,7 @@ from sleipnir.adapters.serialization import deserialize, serialize
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     attention_decided,
+    attention_decision_made,
     environment_state_changed,
     feedback_recorded,
     learning_promoted,
@@ -62,6 +63,7 @@ TAXONOMY_CONSTANTS = [
     registry.VALKYRIE_ACTION_COMPLETED,
     registry.VALKYRIE_ACTION_EXECUTED,
     registry.ODIN_COURT_DECIDED,
+    registry.ATTENTION_DECISION_MADE,
     registry.ATTENTION_ESCALATED,
     registry.FEEDBACK_RECORDED,
     registry.LEARNING_PROMOTED,
@@ -235,15 +237,33 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         correlation_id="corr-1",
         causation_id=court.event_id,
     )
+    decision = attention_decision_made(
+        environment_id="cluster-a",
+        root_correlation_id="corr-1",
+        decision="record_only",
+        tier="ambient",
+        action_authorization="none",
+        escalation_path="mimir",
+        huddle_id="",
+        judgment_refs=[proposed_judgment.event_id],
+        action_refs=[action_proposed.event_id],
+        dissent=[],
+        evidence=[{"event_id": proposed_judgment.event_id}],
+        rationale="ambient signal can be recorded",
+        audit_ref="odin-court:cluster-a:corr-1",
+        source="odin:court",
+        correlation_id="corr-1",
+        causation_id=attention.event_id,
+    )
     feedback = feedback_recorded(
         environment_id="cluster-a",
-        target_event_id=attention.event_id,
+        target_event_id=decision.event_id,
         feedback_type="attention",
         rating="correct",
         notes="Good suppression.",
         source="human:operator",
         correlation_id="corr-1",
-        causation_id=attention.event_id,
+        causation_id=decision.event_id,
     )
     learning = learning_promoted(
         environment_id="cluster-a",
@@ -290,6 +310,7 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
         action_done,
         court,
         attention,
+        decision,
         feedback,
         learning,
         participant,
@@ -306,6 +327,8 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
     assert action_proposed.event_type == registry.VALKYRIE_ACTION_PROPOSED
     assert action_executed.event_type == registry.VALKYRIE_ACTION_EXECUTED
     assert action.payload["authority_boundary"] == "autonomous"
+    assert decision.event_type == registry.ATTENTION_DECISION_MADE
+    assert decision.payload["decision"] == "record_only"
     assert room.payload["participants"] == ["human:operator", "valkyrie:k8s"]
 
 

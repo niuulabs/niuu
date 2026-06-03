@@ -271,6 +271,23 @@ class AttentionDecidedPayload:
 
 
 @dataclass(frozen=True)
+class AttentionDecisionMadePayload:
+    environment_id: str
+    root_correlation_id: str
+    decision: str
+    tier: str
+    action_authorization: str
+    escalation_path: str
+    huddle_id: str
+    judgment_refs: list[str]
+    action_refs: list[str]
+    dissent: list[dict]
+    evidence: list[dict]
+    rationale: str
+    audit_ref: str
+
+
+@dataclass(frozen=True)
 class FeedbackRecordedPayload:
     environment_id: str
     target_event_id: str
@@ -1309,6 +1326,58 @@ def attention_decided(
     )
 
 
+def attention_decision_made(
+    *,
+    environment_id: str,
+    root_correlation_id: str,
+    decision: str,
+    tier: str,
+    action_authorization: str,
+    escalation_path: str,
+    huddle_id: str,
+    judgment_refs: list[str],
+    action_refs: list[str],
+    dissent: list[dict] | None,
+    evidence: list[dict] | None,
+    rationale: str,
+    audit_ref: str,
+    source: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit ODIN court's final attention/action/escalation decision."""
+    payload = dataclasses.asdict(
+        AttentionDecisionMadePayload(
+            environment_id=environment_id,
+            root_correlation_id=root_correlation_id,
+            decision=decision,
+            tier=tier,
+            action_authorization=action_authorization,
+            escalation_path=escalation_path,
+            huddle_id=huddle_id,
+            judgment_refs=judgment_refs,
+            action_refs=action_refs,
+            dissent=dissent or [],
+            evidence=evidence or [],
+            rationale=rationale,
+            audit_ref=audit_ref,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.ATTENTION_DECISION_MADE,
+        source=source,
+        payload=payload,
+        summary=f"Attention decision {decision}/{tier}: {rationale[:80]}",
+        urgency=_attention_urgency(tier),
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or root_correlation_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
 def feedback_recorded(
     *,
     environment_id: str,
@@ -1589,11 +1658,11 @@ def _attention_urgency(attention_tier: str) -> float:
     match attention_tier:
         case "urgent":
             return 0.95
-        case "review":
+        case "present" | "review":
             return 0.75
-        case "watch":
+        case "ambient" | "watch":
             return 0.5
-        case "record":
+        case "silent" | "record":
             return 0.25
         case "suppress":
             return 0.1
