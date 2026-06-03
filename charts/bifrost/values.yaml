@@ -196,6 +196,13 @@ podDisruptionBudget:
   # -- Maximum number of pods that can be unavailable (alternative to minAvailable).
   maxUnavailable: null
 
+# -- Deployment rollout strategy.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
 # -- Node selector for pod assignment.
 nodeSelector: {}
 # -- Tolerations for pod scheduling.
