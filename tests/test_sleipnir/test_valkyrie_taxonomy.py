@@ -15,6 +15,7 @@ from sleipnir.domain.catalog import (
     environment_state_changed,
     feedback_preference_updated,
     feedback_recorded,
+    learning_adoption_recorded,
     learning_promoted,
     odin_court_decided,
     participant_joined,
@@ -74,6 +75,7 @@ TAXONOMY_CONSTANTS = [
     registry.FEEDBACK_RECORDED,
     registry.FEEDBACK_PREFERENCE_UPDATED,
     registry.LEARNING_PROMOTED,
+    registry.LEARNING_ADOPTION_RECORDED,
     registry.PARTICIPANT_JOINED,
     registry.ROOM_OPENED,
     registry.ROOM_MESSAGE_RECORDED,
@@ -425,6 +427,24 @@ def test_catalog_factories_create_representative_taxonomy_events() -> None:
     assert room_context.event_type == registry.ROOM_CONTEXT_SNAPSHOT_RECORDED
     assert room_transcript.event_type == registry.ROOM_TRANSCRIPT_RECORDED
     assert room_closed_event.event_type == registry.ROOM_CLOSED
+
+
+def test_learning_adoption_recorded_event() -> None:
+    event = learning_adoption_recorded(
+        environment_id="cluster-b",
+        learning_id="learn-1",
+        promotion_id="promotion-1",
+        action="adopted",
+        rationale="Canary passed on staging.",
+        canary_passed=True,
+        source="valkyrie:k8s-b",
+        correlation_id="promotion-1",
+    )
+
+    assert event.event_type == registry.LEARNING_ADOPTION_RECORDED
+    assert event.payload["environment_id"] == "cluster-b"
+    assert event.payload["action"] == "adopted"
+    assert event.payload["canary_passed"] is True
 
 
 def test_resident_feedback_type_vocabulary_covers_reframed_workflows() -> None:

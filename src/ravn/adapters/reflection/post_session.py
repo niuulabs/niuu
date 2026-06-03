@@ -302,6 +302,9 @@ async def fetch_relevant_learnings(
     repo_slug: str,
     max_pages: int,
     token_budget: int,
+    environment_id: str = "",
+    domain: str = "",
+    flock_id: str = "",
 ) -> str:
     """Query Mímir for learning pages matching *repo_slug* and format for injection.
 
@@ -318,16 +321,13 @@ async def fetch_relevant_learnings(
     if not pages:
         return ""
 
-    # Filter to pages relevant to this repo_slug.
-    # Pages are stored at learnings/{safe_repo}/{slug} — match by path prefix.
-    if repo_slug:
-        safe_repo = re.sub(r"[^a-z0-9_-]", "-", repo_slug.lower())
-        prefix = f"learnings/{safe_repo}/"
-        relevant = [
-            p for p in pages if p.path.startswith(prefix) or p.path.startswith("learnings/general/")
-        ]
-    else:
-        relevant = list(pages)
+    prefixes = _learning_injection_prefixes(
+        repo_slug=repo_slug,
+        environment_id=environment_id,
+        domain=domain,
+        flock_id=flock_id,
+    )
+    relevant = [p for p in pages if any(p.path.startswith(prefix) for prefix in prefixes)]
 
     _epoch = datetime(1970, 1, 1, tzinfo=UTC)
     # Sort by recency (most recently updated first).
@@ -361,6 +361,33 @@ async def fetch_relevant_learnings(
         return ""
 
     return "\n".join(lines)
+
+
+def _learning_injection_prefixes(
+    *,
+    repo_slug: str = "",
+    environment_id: str = "",
+    domain: str = "",
+    flock_id: str = "",
+) -> list[str]:
+    """Return ordered learning prefixes for local and promoted knowledge."""
+    prefixes: list[str] = []
+    if repo_slug:
+        safe_repo = re.sub(r"[^a-z0-9_-]", "-", repo_slug.lower())
+        prefixes.append(f"learnings/{safe_repo}/")
+    if environment_id:
+        prefixes.append(f"learnings/environment/{_scope_slug(environment_id)}/")
+    if flock_id:
+        prefixes.append(f"learnings/flock/{_scope_slug(flock_id)}/")
+    if domain:
+        prefixes.extend(
+            [
+                f"learnings/domain/{_scope_slug(domain)}/",
+                f"learnings/flock/{_scope_slug(f'flock:{domain}')}/",
+            ]
+        )
+    prefixes.extend(["learnings/shared/", "learnings/general/"])
+    return list(dict.fromkeys(prefixes))
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +580,12 @@ def _slugify(text: str) -> str:
     slug = re.sub(r"[\s_-]+", "-", slug)
     slug = slug.strip("-")
     return slug[:60] or "learning"
+
+
+def _scope_slug(text: str) -> str:
+    """Convert Environment/Flock/domain identifiers to promoted-learning path slugs."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:80] or "general"
 
 
 def _escape_yaml(text: str) -> str:

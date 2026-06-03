@@ -352,6 +352,17 @@ class LearningPromotedPayload:
 
 
 @dataclass(frozen=True)
+class LearningAdoptionRecordedPayload:
+    environment_id: str
+    learning_id: str
+    promotion_id: str
+    action: str
+    rationale: str
+    canary_passed: bool
+    local_override_path: str
+
+
+@dataclass(frozen=True)
 class ParticipantJoinedPayload:
     environment_id: str
     participant_id: str
@@ -1607,6 +1618,46 @@ def learning_promoted(
         domain="infrastructure",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or learning_id,
+        causation_id=causation_id,
+        tenant_id=tenant_id,
+    )
+
+
+def learning_adoption_recorded(
+    *,
+    environment_id: str,
+    learning_id: str,
+    promotion_id: str,
+    action: str,
+    source: str,
+    rationale: str = "",
+    canary_passed: bool = False,
+    local_override_path: str = "",
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a peer Environment canaries, adopts, rejects, or overrides a learning."""
+    payload = dataclasses.asdict(
+        LearningAdoptionRecordedPayload(
+            environment_id=environment_id,
+            learning_id=learning_id,
+            promotion_id=promotion_id,
+            action=action,
+            rationale=rationale,
+            canary_passed=canary_passed,
+            local_override_path=local_override_path,
+        )
+    )
+    return SleipnirEvent(
+        event_type=registry.LEARNING_ADOPTION_RECORDED,
+        source=source,
+        payload=payload,
+        summary=f"Learning {learning_id} adoption in {environment_id}: {action}",
+        urgency=0.2 if action in {"canary", "adopted"} else 0.5,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or promotion_id,
         causation_id=causation_id,
         tenant_id=tenant_id,
     )
