@@ -183,13 +183,11 @@ class PostSessionReflectionService:
             return None
 
         raw = response.content.strip()
-        if raw.lower() == "null":
+        found_json, parsed = _parse_reflection_json(raw)
+        if not found_json:
+            logger.warning("PostSessionReflectionService: malformed JSON from LLM")
             return None
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.warning("PostSessionReflectionService: malformed JSON from LLM: %s", exc)
+        if parsed is None:
             return None
 
         if not isinstance(parsed, dict):
@@ -289,6 +287,51 @@ class PostSessionReflectionService:
                 return page
 
         return None
+
+
+def _parse_reflection_json(raw: str) -> tuple[bool, object | None]:
+    """Parse the reflection model's JSON object or null from common wrappers."""
+    text = raw.strip()
+    if not text:
+        return False, None
+
+    for candidate in _reflection_json_candidates(text):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        if candidate.lower() == "null":
+            return True, None
+        try:
+            return True, json.loads(candidate)
+        except json.JSONDecodeError:
+            found, parsed = _raw_decode_embedded_json(candidate)
+            if found:
+                return True, parsed
+
+    return False, None
+
+
+def _reflection_json_candidates(text: str) -> list[str]:
+    """Return likely JSON snippets, prioritizing fenced blocks over full text."""
+    candidates: list[str] = []
+    fence_pattern = re.compile(r"```(?:json|JSON)?\s*(.*?)```", flags=re.DOTALL)
+    candidates.extend(match.group(1) for match in fence_pattern.finditer(text))
+    candidates.append(text)
+    return candidates
+
+
+def _raw_decode_embedded_json(text: str) -> tuple[bool, object | None]:
+    """Decode the first JSON value embedded in prose, if one exists."""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[n":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        return True, parsed
+    return False, None
 
 
 # ---------------------------------------------------------------------------

@@ -147,6 +147,77 @@ async def test_process_calls_mimir_write_on_valid_learning():
 
 
 @pytest.mark.asyncio
+async def test_process_extracts_learning_from_fenced_json():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response(
+        """```json
+{
+  "title": "Treat BackoffLimitExceeded as recurring signal",
+  "learning": "Repeated reconcile job backoffs should be grouped before paging.",
+  "type": "observation",
+  "tags": ["k8s", "openbao"],
+  "evidence": "The same warning appeared across multiple reconcile jobs."
+}
+```"""
+    )
+    config = _make_config(llm_alias="Qwen/Qwen3.6-35B-A3B-FP8")
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-fenced",
+            "persona": "k8s-valkyrie",
+            "outcome": "propose_action",
+            "token_count": 8000,
+            "duration_s": 42.0,
+            "repo_slug": "niuulabs/volundr",
+        }
+    )
+
+    mimir.upsert_page.assert_awaited_once()
+    assert llm.generate.await_args.kwargs["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+
+
+@pytest.mark.asyncio
+async def test_process_extracts_learning_from_prose_wrapped_json():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response(
+        """
+Here is the learning I found:
+{
+  "title": "Verify cluster tools before proposing remediation",
+  "learning": "When cluster inspection tools are unavailable, propose inspection first.",
+  "type": "decision",
+  "tags": ["k8s", "tools"],
+  "evidence": "The session reasoned from the signal alone because direct tooling was unavailable."
+}
+Done.
+"""
+    )
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-prose",
+            "persona": "k8s-valkyrie",
+            "outcome": "propose_action",
+            "token_count": 8000,
+            "duration_s": 42.0,
+            "repo_slug": "niuulabs/volundr",
+        }
+    )
+
+    mimir.upsert_page.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_skips_on_null_learning():
     bus = InProcessBus()
     mimir = AsyncMock()
@@ -164,6 +235,29 @@ async def test_process_skips_on_null_learning():
         "repo_slug": "",
     }
     await svc._process(payload)
+
+    mimir.upsert_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_skips_on_fenced_null_learning():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("```json\nnull\n```")
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-null-fence",
+            "persona": "ravn",
+            "outcome": "success",
+            "token_count": 1000,
+            "duration_s": 30.0,
+            "repo_slug": "",
+        }
+    )
 
     mimir.upsert_page.assert_not_awaited()
 
