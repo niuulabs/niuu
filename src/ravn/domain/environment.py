@@ -296,7 +296,20 @@ class Environment(BaseModel):
             "name": self.name,
             "type": self.type,
             "flocks": self.flock_ids,
-            "signal_subjects": self.signal_subjects(),
+            "signal_sources": [
+                {
+                    "id": source.id,
+                    "name": source.name,
+                    "kind": source.kind,
+                    "adapter": source.adapter,
+                    "enabled": source.enabled,
+                    "kwargs": {
+                        "metadata": source.metadata,
+                        "replay_cursor": source.replay_cursor,
+                    },
+                }
+                for source in self.signal_sources
+            ],
         }
 
     def to_ting_flock_refs(self) -> list[dict[str, Any]]:

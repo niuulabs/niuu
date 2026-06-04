@@ -181,6 +181,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "ravn-runtime-api": "ravn",
     "ravn-session-api": "ravn",
     "ravn-trigger-api": "ravn",
+    "ravn-valkyrie-api": "ravn",
     "llm-api": "bifrost",
     "catalog-api": "volundr",
     "dispatch-api": "ting",

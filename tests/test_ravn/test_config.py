@@ -23,6 +23,7 @@ from ravn.config import (
     PermissionConfig,
     PermissionRuleConfig,
     Settings,
+    SignalSourceConfig,
     ThreadConfig,
     ToolAdapterConfig,
     ToolsConfig,
@@ -290,6 +291,36 @@ class TestChannelConfig:
         )
         assert "Slack" in c.adapter
         assert "webhook" in c.kwargs
+
+
+class TestSignalSourceConfig:
+    def test_adapter_kwargs_and_secret_env_mapping(self) -> None:
+        c = SignalSourceConfig(
+            id="nats-upstream-signals",
+            name="Upstream NATS Signals",
+            kind="webhook",
+            adapter="ravn.adapters.environment_signals.NatsSignalAdapter",
+            kwargs={
+                "servers_env": "NATS_URL",
+                "subjects": ["external.cluster.events"],
+            },
+            secret_kwargs_env={"token": "UPSTREAM_NATS_TOKEN"},
+        )
+
+        assert c.adapter.endswith("NatsSignalAdapter")
+        assert c.kwargs["subjects"] == ["external.cluster.events"]
+        assert c.secret_kwargs_env == {"token": "UPSTREAM_NATS_TOKEN"}
+
+    def test_config_is_not_an_alias_for_kwargs(self) -> None:
+        c = SignalSourceConfig.model_validate(
+            {
+                "id": "canonical",
+                "adapter": "pkg.Adapter",
+                "config": {"path": "/tmp/signals.jsonl"},
+            }
+        )
+
+        assert c.kwargs == {}
 
 
 class TestLoggingConfig:

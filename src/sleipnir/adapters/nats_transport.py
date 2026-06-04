@@ -64,6 +64,7 @@ Configuration example
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import ssl
 from collections import deque
@@ -237,6 +238,20 @@ def _nats_subjects_for_patterns(patterns: list[str], prefix: str) -> list[str]:
         else:
             subjects.append(f"{prefix}.{pattern}")
     return subjects or [f"{prefix}.>"]
+
+
+def _durable_name_for_subject(consumer_group: str, subject: str) -> str:
+    """Return a stable JetStream durable name for a consumer group and filter subject.
+
+    JetStream durables are bound to their filter subject.  A single logical
+    service group may subscribe to RPC plus several event subjects, so each
+    filter needs its own durable while replicas sharing the same filter still
+    share work.
+    """
+    safe_group = "".join(ch if ch.isalnum() or ch in ("_", "-") else "-" for ch in consumer_group)
+    safe_group = safe_group.strip("-_") or "group"
+    digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:12]
+    return f"{safe_group[:48]}-{digest}"
 
 
 def _parse_retention(retention_str: str) -> Any:
@@ -655,7 +670,7 @@ class NatsSubscriber(SleipnirSubscriber):
 
         kwargs: dict[str, Any] = {"stream": self._stream_name, "config": config}
         if self._consumer_group is not None:
-            kwargs["durable"] = self._consumer_group
+            kwargs["durable"] = _durable_name_for_subject(self._consumer_group, subject)
             kwargs["queue"] = self._consumer_group
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)

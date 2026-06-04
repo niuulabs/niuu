@@ -17,6 +17,7 @@ export function useValkyrieDashboard() {
   return useQuery({
     queryKey: VALKYRIE_DASHBOARD_QUERY_KEY,
     queryFn: () => service.getDashboard(),
+    refetchInterval: 10_000,
   });
 }
 

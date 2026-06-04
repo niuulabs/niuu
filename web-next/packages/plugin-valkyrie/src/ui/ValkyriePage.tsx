@@ -4,6 +4,7 @@ import {
   Bell,
   Brain,
   Check,
+  Database,
   GitBranch,
   MessageSquare,
   Moon,
@@ -22,8 +23,8 @@ import {
 } from '../application/useValkyrieDashboard';
 
 const PANEL =
-  'niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:rounded-lg';
-const PANEL_PAD = `${PANEL} niuu:p-4`;
+  'niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:rounded-md';
+const PANEL_PAD = `${PANEL} niuu:p-3`;
 const MUTED = 'niuu:text-text-muted';
 const BUTTON =
   'niuu:inline-flex niuu:items-center niuu:justify-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:border-brand niuu:disabled:opacity-50';
@@ -45,6 +46,10 @@ function kindLabel(kind: EnvironmentKind): string {
 
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function compactNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { notation: 'compact' }).format(value);
 }
 
 function formatShortTime(value: string | undefined): string {
@@ -116,7 +121,7 @@ function EnvironmentRail({
   onSelectFlock,
 }: EnvironmentRailProps) {
   return (
-    <aside className="niuu:flex niuu:flex-col niuu:gap-4 niuu:min-w-0">
+    <aside className="niuu:flex niuu:h-full niuu:min-h-0 niuu:min-w-0 niuu:flex-col niuu:gap-3 niuu:overflow-auto">
       <section className={PANEL_PAD} aria-label="Environments">
         <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between">
           <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Environments</h2>
@@ -212,7 +217,7 @@ function KpiStrip({ dashboard }: { dashboard: ValkyrieDashboard }) {
   return (
     <section
       data-testid="valkyrie-kpi-strip"
-      className="niuu:grid niuu:grid-cols-2 niuu:gap-3 md:niuu:grid-cols-5"
+      className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-5"
     >
       {items.map((item) => (
         <div key={item.label} className={PANEL_PAD}>
@@ -220,11 +225,115 @@ function KpiStrip({ dashboard }: { dashboard: ValkyrieDashboard }) {
             <span className="niuu:text-xs">{item.label}</span>
             <item.icon size={16} aria-hidden="true" />
           </div>
-          <div className="niuu:mt-2 niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
+          <div className="niuu:mt-1 niuu:text-xl niuu:font-semibold niuu:text-text-primary">
             {item.value}
           </div>
         </div>
       ))}
+    </section>
+  );
+}
+
+function FlockReportPanel({ dashboard }: { dashboard: ValkyrieDashboard }) {
+  const report = dashboard.liveReport;
+  if (!report) return null;
+
+  const totals = [
+    { label: 'Messages', value: compactNumber(report.totalMessages) },
+    { label: 'Stream', value: report.sharedStream },
+    { label: 'Route', value: report.routeSubject },
+    { label: 'Mode', value: report.projectionMode },
+  ];
+
+  return (
+    <section className={PANEL_PAD} data-testid="flock-live-report">
+      <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-3">
+        <div className="niuu:min-w-0">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <Database size={16} className="niuu:text-brand" aria-hidden="true" />
+            <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+              {report.title}
+            </h2>
+          </div>
+          <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+            observed {formatShortTime(report.lastObservedAt)} · {report.status}
+          </p>
+        </div>
+        <div className="niuu:grid niuu:w-full niuu:grid-cols-2 niuu:gap-2 niuu:md:w-auto niuu:md:grid-cols-4">
+          {totals.map((item) => (
+            <div
+              key={item.label}
+              className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2"
+            >
+              <div className="niuu:text-xs niuu:text-text-muted">{item.label}</div>
+              <div className="niuu:mt-1 niuu:truncate niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                {item.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="niuu:mt-3 niuu:grid niuu:gap-3 niuu:lg:grid-cols-2">
+        {report.transports.map((transport) => (
+          <article
+            key={transport.id}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+          >
+            <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
+              <div className="niuu:min-w-0">
+                <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                  {transport.label}
+                </h3>
+                <p className="niuu:truncate niuu:text-xs niuu:text-text-muted">
+                  {transport.account} · {transport.streamName}
+                </p>
+              </div>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                {transport.health}
+              </span>
+            </div>
+            <dl className="niuu:mt-3 niuu:grid niuu:grid-cols-3 niuu:gap-2 niuu:text-xs">
+              <div>
+                <dt className={MUTED}>Signals</dt>
+                <dd className="niuu:text-text-primary">{compactNumber(transport.signalCount)}</dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Judgments</dt>
+                <dd className="niuu:text-text-primary">
+                  {compactNumber(transport.judgmentCount)}
+                </dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Actions</dt>
+                <dd className="niuu:text-text-primary">{compactNumber(transport.actionCount)}</dd>
+              </div>
+            </dl>
+            <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5">
+              {transport.consumerFilterSubjects.slice(0, 4).map((subject) => (
+                <span
+                  key={subject}
+                  className="niuu:max-w-full niuu:truncate niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
+                  title={subject}
+                >
+                  {subject}
+                </span>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:md:grid-cols-3">
+        {report.findings.map((finding) => (
+          <div
+            key={finding}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-muted"
+          >
+            {finding}
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -244,7 +353,7 @@ function ResidentPanel({
         <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Residents</h2>
         <span className={MUTED}>{slice.valkyries.length}</span>
       </div>
-      <div className="niuu:grid niuu:gap-3 lg:niuu:grid-cols-2">
+      <div className="niuu:grid niuu:gap-3 niuu:2xl:grid-cols-2">
         {slice.valkyries.map((valkyrie) => (
           <div
             key={valkyrie.id}
@@ -321,7 +430,7 @@ function EnvironmentStatePanel({
                 {state.drift}
               </span>
             </div>
-            <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs md:niuu:grid-cols-2">
+            <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs niuu:md:grid-cols-2">
               <div>
                 <dt className={MUTED}>Desired</dt>
                 <dd className="niuu:text-text-primary">{state.desired}</dd>
@@ -349,12 +458,12 @@ function SignalPanel({
   const liveSignals = useValkyrieSignals();
   const visibleLiveSignals = liveSignals.filter((event) => event.environmentId === environmentId);
   return (
-    <section className={PANEL_PAD} data-testid="signal-panel">
+    <section className={`${PANEL_PAD} niuu:min-h-0`} data-testid="signal-panel">
       <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between">
         <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Signals</h2>
         <span className={MUTED}>{visibleLiveSignals.length} live</span>
       </div>
-      <div className="niuu:flex niuu:flex-col niuu:gap-2">
+      <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-2">
         {slice.signals.map((signal) => (
           <div
             key={signal.id}
@@ -390,7 +499,7 @@ function DecisionsPanel({
       <h2 className="niuu:mb-3 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
         Judgments, Court, Actions
       </h2>
-      <div className="niuu:grid niuu:gap-3 xl:niuu:grid-cols-3">
+      <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-3">
         <div>
           <h3 className="niuu:mb-2 niuu:text-xs niuu:font-semibold niuu:text-text-muted">
             Judgments
@@ -506,7 +615,7 @@ function LearningPanel({
               </div>
               <LearningControls learning={learning} />
             </div>
-            <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs md:niuu:grid-cols-4">
+            <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs niuu:md:grid-cols-4">
               <div>
                 <dt className={MUTED}>Status</dt>
                 <dd className="niuu:text-text-primary">{learning.status}</dd>
@@ -636,7 +745,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
   if (!selectedEnvironment) return <EmptyState label="No environments" />;
 
   return (
-    <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:gap-4 xl:niuu:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:gap-3 niuu:xl:grid-cols-[260px_minmax(0,1fr)]">
       <EnvironmentRail
         dashboard={dashboard}
         selectedEnvironmentId={selectedEnvironment.id}
@@ -648,7 +757,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
         onSelectFlock={setSelectedFlockId}
       />
       <main className="niuu:min-w-0 niuu:overflow-auto">
-        <div className="niuu:flex niuu:flex-col niuu:gap-4">
+        <div className="niuu:flex niuu:flex-col niuu:gap-3">
           <header className="niuu:flex niuu:flex-wrap niuu:items-end niuu:justify-between niuu:gap-3">
             <div className="niuu:min-w-0">
               <h1 className="niuu:truncate niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
@@ -663,14 +772,17 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
             </div>
           </header>
           <KpiStrip dashboard={dashboard} />
-          <div className="niuu:grid niuu:gap-4 2xl:niuu:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
-            <div className="niuu:flex niuu:flex-col niuu:gap-4">
+          <FlockReportPanel dashboard={dashboard} />
+          <div className="niuu:grid niuu:gap-3 niuu:md:grid-cols-2 niuu:xl:grid-cols-[minmax(220px,0.8fr)_minmax(300px,1.15fr)_minmax(260px,0.85fr)]">
+            <div className="niuu:flex niuu:flex-col niuu:gap-3">
               <ResidentPanel dashboard={dashboard} environmentId={selectedEnvironment.id} />
-              <SignalPanel dashboard={dashboard} environmentId={selectedEnvironment.id} />
               <EnvironmentStatePanel dashboard={dashboard} environmentId={selectedEnvironment.id} />
+            </div>
+            <div className="niuu:flex niuu:flex-col niuu:gap-3">
+              <SignalPanel dashboard={dashboard} environmentId={selectedEnvironment.id} />
               <DecisionsPanel dashboard={dashboard} environmentId={selectedEnvironment.id} />
             </div>
-            <div className="niuu:flex niuu:flex-col niuu:gap-4">
+            <div className="niuu:flex niuu:flex-col niuu:gap-3">
               <LearningPanel
                 dashboard={dashboard}
                 environmentId={selectedEnvironment.id}
@@ -699,7 +811,7 @@ export function ValkyriePage() {
   return (
     <div
       data-testid="valkyrie-page"
-      className="niuu:h-full niuu:min-h-0 niuu:overflow-hidden niuu:bg-bg-primary niuu:p-4"
+      className="niuu:h-full niuu:min-h-0 niuu:overflow-hidden niuu:bg-bg-primary niuu:p-3"
     >
       <MainConsole dashboard={data} />
     </div>

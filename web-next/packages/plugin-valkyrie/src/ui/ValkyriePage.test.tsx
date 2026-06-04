@@ -16,6 +16,7 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('environment-state-panel')).toBeInTheDocument();
     expect(screen.getByTestId('huddle-panel')).toBeInTheDocument();
     expect(screen.getByTestId('learning-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('flock-live-report')).toHaveTextContent('K8s flock routing');
   });
 
   it('switches from environment learning to flock learning', async () => {

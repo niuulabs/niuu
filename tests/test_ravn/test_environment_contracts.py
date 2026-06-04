@@ -47,14 +47,24 @@ def test_environment_examples_share_one_serializable_model() -> None:
         assert loaded.learning_scopes
 
 
-def test_environment_projects_to_existing_ravn_config_and_nats_subjects() -> None:
+def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects() -> None:
     environment = k8s_environment_fixture()
     config = EnvironmentConfig(**environment.to_ravn_environment_config())
 
     assert config.id == "cluster-prod-a"
     assert config.type == "k8s"
     assert config.flocks == ["k8s-valkyries"]
-    assert config.signal_subjects == [
+    assert [source.id for source in config.signal_sources] == [
+        "kubernetes-events",
+        "prometheus-alerts",
+    ]
+    assert config.signal_sources[0].adapter == "ravn.adapters.environment.kubernetes"
+    assert config.signal_sources[0].kwargs == {
+        "metadata": {"cluster": "prod-a"},
+        "replay_cursor": "",
+    }
+    assert config.signal_subjects == []
+    assert environment.signal_subjects() == [
         "ravn.environment.signal.kubernetes.*",
         "ravn.environment.environment.state",
         "ravn.environment.signal.metrics.*",

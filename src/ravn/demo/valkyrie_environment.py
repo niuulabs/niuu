@@ -100,7 +100,7 @@ def _subject(environment_id: str, event_type: str) -> str:
 
 
 def _flock_subject(flock_id: str, suffix: str) -> str:
-    return f"odin.flock.{flock_id}.{suffix}"
+    return f"flock.{flock_id}.{suffix}"
 
 
 def _source(valkyrie_id: str) -> str:

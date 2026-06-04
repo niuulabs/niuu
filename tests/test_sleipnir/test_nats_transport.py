@@ -40,6 +40,7 @@ from sleipnir.adapters.nats_transport import (
     _build_tls_context,
     _decode_nats_message,
     _DeduplicationCache,
+    _durable_name_for_subject,
     _nats_subject_for_event,
     _nats_subjects_for_patterns,
     _parse_retention,
@@ -169,6 +170,32 @@ def test_subjects_empty_list_returns_all():
     """Empty pattern list → subscribe-all (safe default)."""
     result = _nats_subjects_for_patterns([], "sleipnir")
     assert result == ["sleipnir.>"]
+
+
+def test_durable_name_includes_filter_subject_hash():
+    """One consumer group can own multiple JetStream filter subjects safely."""
+    rpc_durable = _durable_name_for_subject(
+        "valhalla-valkyries",
+        "obs.valhalla.ravn.mesh.rpc.valkyrie_valhalla_k8s",
+    )
+    judgment_durable = _durable_name_for_subject(
+        "valhalla-valkyries",
+        "obs.valhalla.ravn.mesh.valkyrie.judgment.proposed",
+    )
+
+    assert rpc_durable.startswith("valhalla-valkyries-")
+    assert judgment_durable.startswith("valhalla-valkyries-")
+    assert rpc_durable != judgment_durable
+    assert len(rpc_durable) <= 64
+    assert len(judgment_durable) <= 64
+
+
+def test_durable_name_sanitizes_consumer_group():
+    durable = _durable_name_for_subject("cluster/k8s valkyries", "obs.ymir.>")
+
+    assert durable.startswith("cluster-k8s-valkyries-")
+    assert "/" not in durable
+    assert " " not in durable
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +495,8 @@ async def test_subscriber_consumer_group_sets_durable_and_queue(mock_nats):
     await sub.start()
     await sub.subscribe(["*"], AsyncMock())
     kwargs = js.subscribe.call_args[1]
-    assert kwargs["durable"] == "my-service"
+    assert kwargs["durable"].startswith("my-service-")
+    assert kwargs["durable"] != "my-service"
     assert kwargs["queue"] == "my-service"
     await sub.stop()
 
@@ -758,7 +786,8 @@ async def test_transport_consumer_group_forwarded(mock_nats):
     await transport.start()
     await transport.subscribe(["*"], AsyncMock())
     kwargs = js.subscribe.call_args[1]
-    assert kwargs["durable"] == "workers"
+    assert kwargs["durable"].startswith("workers-")
+    assert kwargs["queue"] == "workers"
     await transport.stop()
 
 

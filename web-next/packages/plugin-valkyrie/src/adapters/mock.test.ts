@@ -10,7 +10,8 @@ describe('createMockValkyrieService', () => {
       'host',
       'printer',
     ]);
-    expect(dashboard.flocks.map((entry) => entry.natsSubject)).toContain('odin.flock.k8s.>');
+    expect(dashboard.flocks.map((entry) => entry.natsSubject)).toContain('flock.k8s.>');
+    expect(dashboard.liveReport?.routeSubject).toBe('flock.k8s.>');
   });
 
   it('updates huddle membership and learning decisions', async () => {

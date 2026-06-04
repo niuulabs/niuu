@@ -121,6 +121,66 @@ def test_status_endpoint(client: TestClient):
     assert "session_count" in data
 
 
+def test_valkyrie_dashboard_projection(client: TestClient):
+    resp = client.get("/api/v1/ravn/valkyrie/dashboard")
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["environments"][0]["name"] == "Valhalla k8s"
+    assert data["flocks"][0]["natsSubject"] == "flock.k8s.>"
+    assert data["liveReport"]["routeSubject"] == "flock.k8s.>"
+    assert any(learning["scope"] == "flock" for learning in data["learnings"])
+
+
+def test_valkyrie_dashboard_mutations(client: TestClient):
+    autonomy = client.post(
+        "/api/v1/ravn/valkyrie/autonomy",
+        json={
+            "valkyrieId": "valkyrie-valhalla-sigrun",
+            "mode": "yolo",
+            "reason": "test",
+        },
+    )
+    assert autonomy.status_code == 200
+    sigrun = next(
+        entry
+        for entry in autonomy.json()["valkyries"]
+        if entry["id"] == "valkyrie-valhalla-sigrun"
+    )
+    assert sigrun["autonomyMode"] == "yolo"
+
+    joined = client.post("/api/v1/ravn/valkyrie/huddles/huddle-valhalla-now/join", json={})
+    assert joined.status_code == 200
+    assert joined.json()["joined"] is True
+
+    message = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-valhalla-now/messages",
+        json={"huddleId": "huddle-valhalla-now", "body": "joining from the test flock"},
+    )
+    assert message.status_code == 200
+    assert message.json()["authorId"] == "operator"
+
+    learning = client.post(
+        "/api/v1/ravn/valkyrie/learnings/learning-k8s-rollout-noise/adopt",
+        json={"learningId": "learning-k8s-rollout-noise", "reason": "test"},
+    )
+    assert learning.status_code == 200
+    assert learning.json()["status"] == "adopted"
+
+
+def test_valkyrie_signal_stream_replays_events(client: TestClient):
+    with client.stream(
+        "GET",
+        "/api/v1/ravn/valkyrie/signals?replay_once=true",
+    ) as resp:
+        assert resp.status_code == 200
+        body = resp.read().decode("utf-8")
+
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert "data: " in body
+    assert "signal-k8s-checkout-probe" in body
+
+
 def test_list_sessions_returns_seeded_runtime_sessions(client: TestClient):
     resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200

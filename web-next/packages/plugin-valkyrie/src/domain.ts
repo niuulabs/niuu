@@ -145,6 +145,37 @@ export interface FlockSummary {
   lastExchangeAt: string;
 }
 
+export interface FlockTransportStatus {
+  id: string;
+  label: string;
+  environmentId?: string;
+  account: string;
+  streamName: string;
+  subjectPrefix: string;
+  messageCount: number;
+  signalCount: number;
+  activityCount: number;
+  judgmentCount: number;
+  actionCount: number;
+  rejectedCount: number;
+  consumerFilterSubjects: string[];
+  health: EnvironmentHealth;
+  lastMessageAt?: string;
+  notes: string[];
+}
+
+export interface FlockLiveReport {
+  title: string;
+  status: EnvironmentHealth;
+  lastObservedAt: string;
+  totalMessages: number;
+  sharedStream: string;
+  routeSubject: string;
+  projectionMode: 'local' | 'flock' | 'mixed';
+  transports: FlockTransportStatus[];
+  findings: string[];
+}
+
 export interface ValkyrieDashboard {
   environments: EnvironmentSummary[];
   valkyries: ValkyrieResident[];
@@ -156,6 +187,7 @@ export interface ValkyrieDashboard {
   actions: ActionRecord[];
   huddles: HuddleSummary[];
   learnings: LearningRecord[];
+  liveReport?: FlockLiveReport;
   updatedAt: string;
 }
 

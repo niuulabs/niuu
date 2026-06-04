@@ -242,6 +242,7 @@ class TestRouteDomainSelection:
             "ravn-runtime-api",
             "ravn-session-api",
             "ravn-trigger-api",
+            "ravn-valkyrie-api",
             "catalog-api",
             "dispatch-api",
             "event-api",

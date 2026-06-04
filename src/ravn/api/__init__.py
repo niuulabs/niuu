@@ -55,6 +55,7 @@ from ravn.api.runtime_data import (
     list_triggers as list_runtime_triggers,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.api.valkyries import create_valkyrie_router
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import (
     WardenConsoleConfig,
@@ -613,5 +614,7 @@ def create_app(
         from ravn.api.personas import create_personas_router
 
         app.include_router(create_personas_router(persona_loader))
+
+    app.include_router(create_valkyrie_router())
 
     return app
