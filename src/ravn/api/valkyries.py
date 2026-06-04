@@ -22,6 +22,16 @@ from ravn.demo.valkyrie_environment import DEMO_STARTED_AT, build_valkyrie_envir
 
 Dashboard = dict[str, Any]
 
+K8S_CLUSTERS: tuple[dict[str, Any], ...] = (
+    {"id": "valhalla", "name": "Valhalla", "health": "watch", "signals": 18, "unresolved": 2},
+    {"id": "ymir", "name": "Ymir", "health": "watch", "signals": 22, "unresolved": 2},
+    {"id": "eitri", "name": "Eitri", "health": "watch", "signals": 8, "unresolved": 1},
+    {"id": "glitnir", "name": "Glitnir", "health": "healthy", "signals": 6, "unresolved": 0},
+    {"id": "jarnvidr", "name": "Jarnvidr", "health": "watch", "signals": 9, "unresolved": 1},
+    {"id": "noatun", "name": "Noatun", "health": "healthy", "signals": 5, "unresolved": 0},
+    {"id": "valaskjalf", "name": "Valaskjalf", "health": "watch", "signals": 7, "unresolved": 1},
+)
+
 
 class HuddleSendRequest(BaseModel):
     huddleId: str  # noqa: N815
@@ -48,72 +58,57 @@ def _now() -> str:
 
 
 def _live_report(last_observed_at: str, poll_count: int = 0) -> dict[str, Any]:
-    valhalla_messages = 39_062 + poll_count
-    ymir_messages = 32_746 + poll_count
-    return {
-        "title": "K8s flock routing",
-        "status": "watch",
-        "lastObservedAt": last_observed_at,
-        "totalMessages": valhalla_messages + ymir_messages,
-        "sharedStream": "flock-k8s-events",
-        "routeSubject": "flock.k8s.>",
-        "projectionMode": "mixed",
-        "transports": [
+    base_messages = {
+        "valhalla": 39_062,
+        "ymir": 32_746,
+        "eitri": 4_200,
+        "glitnir": 3_100,
+        "jarnvidr": 3_850,
+        "noatun": 2_750,
+        "valaskjalf": 3_400,
+    }
+    transports = []
+    for index, cluster in enumerate(K8S_CLUSTERS):
+        cluster_id = cluster["id"]
+        messages = base_messages[cluster_id] + poll_count
+        transports.append(
             {
-                "id": "transport-valhalla",
-                "label": "Valhalla k8s",
-                "environmentId": "env-k8s-valhalla",
-                "account": "obs-valhalla",
-                "streamName": "obs-valhalla-events",
-                "subjectPrefix": "obs.valhalla",
-                "messageCount": valhalla_messages,
-                "signalCount": 3_280,
-                "activityCount": 35_679 + poll_count,
-                "judgmentCount": 74,
-                "actionCount": 29,
-                "rejectedCount": 18,
+                "id": f"transport-{cluster_id}",
+                "label": f"{cluster['name']} k8s",
+                "environmentId": f"env-k8s-{cluster_id}",
+                "account": f"obs-{cluster_id}",
+                "streamName": f"obs-{cluster_id}-events",
+                "subjectPrefix": f"obs.{cluster_id}",
+                "messageCount": messages,
+                "signalCount": cluster["signals"] * 180,
+                "activityCount": max(messages - 3_000, 0),
+                "judgmentCount": 40 + index,
+                "actionCount": 16 + index,
+                "rejectedCount": 8 + index,
                 "consumerFilterSubjects": [
-                    "obs.valhalla.ravn.mesh.rpc.valkyrie_valhalla_k8s",
-                    "obs.valhalla.ravn.mesh.signal.kubernetes.event",
-                    "obs.valhalla.ravn.mesh.valkyrie.judgment.>",
-                    "flock.k8s.>",
+                    f"obs.{cluster_id}.ravn.mesh.rpc.valkyrie_{cluster_id}_k8s",
+                    f"obs.{cluster_id}.signal.kubernetes.event",
+                    f"obs.{cluster_id}.ravn.mesh.valkyrie.judgment.>",
+                    f"flock.k8s.{cluster_id}.>",
                 ],
-                "health": "watch",
-                "lastMessageAt": _timestamp(42),
+                "health": cluster["health"],
+                "lastMessageAt": _timestamp(42 + index),
                 "notes": [
-                    "Local operational signals stay on obs.valhalla.",
+                    f"Local operational signals stay on obs.{cluster_id}.",
                     "Judgments, actions, activity, and promoted learning project into "
                     "the k8s flock stream.",
                 ],
             },
-            {
-                "id": "transport-ymir",
-                "label": "Ymir k8s",
-                "environmentId": "env-k8s-ymir",
-                "account": "obs-ymir",
-                "streamName": "obs-ymir-events",
-                "subjectPrefix": "obs.ymir",
-                "messageCount": ymir_messages,
-                "signalCount": 5_133,
-                "activityCount": 27_522 + poll_count,
-                "judgmentCount": 67,
-                "actionCount": 24,
-                "rejectedCount": 15,
-                "consumerFilterSubjects": [
-                    "obs.ymir.ravn.mesh.rpc.valkyrie_ymir_k8s",
-                    "obs.ymir.ravn.mesh.signal.kubernetes.event",
-                    "obs.ymir.ravn.mesh.valkyrie.judgment.>",
-                    "flock.k8s.>",
-                ],
-                "health": "watch",
-                "lastMessageAt": _timestamp(43),
-                "notes": [
-                    "Ymir remains the observability hub.",
-                    "Flock stream consumers read the shared k8s projection without "
-                    "copying the signal bus.",
-                ],
-            },
-        ],
+        )
+    return {
+        "title": "K8s flock routing",
+        "status": "watch",
+        "lastObservedAt": last_observed_at,
+        "totalMessages": sum(entry["messageCount"] for entry in transports),
+        "sharedStream": "flock-k8s-*-events",
+        "routeSubject": "flock.k8s.>",
+        "projectionMode": "mixed",
+        "transports": transports,
         "findings": [
             "Existing NATS and Sleipnir paths are the bus; the flock view is a "
             "JetStream projection.",
@@ -124,6 +119,53 @@ def _live_report(last_observed_at: str, poll_count: int = 0) -> dict[str, Any]:
     }
 
 
+def _k8s_environment_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, cluster in enumerate(K8S_CLUSTERS):
+        cluster_id = cluster["id"]
+        entries.append(
+            {
+                "id": f"env-k8s-{cluster_id}",
+                "name": f"{cluster['name']} k8s",
+                "kind": "kubernetes",
+                "health": cluster["health"],
+                "flockId": "flock-k8s",
+                "topologyNodeIds": [f"environment:k8s-cluster-{cluster_id}"],
+                "signalCount": cluster["signals"],
+                "unresolvedSignalCount": cluster["unresolved"],
+                "wakefulCount": 1,
+                "dreamingCount": 0,
+                "lastSignalAt": _timestamp(18 + index * 3),
+            },
+        )
+    return entries
+
+
+def _k8s_valkyrie_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, cluster in enumerate(K8S_CLUSTERS):
+        cluster_id = cluster["id"]
+        entries.append(
+            {
+                "id": f"valkyrie-{cluster_id}-k8s",
+                "name": f"{cluster['name']} Valkyrie",
+                "environmentId": f"env-k8s-{cluster_id}",
+                "flockId": "flock-k8s",
+                "persona": "k8s-valkyrie",
+                "specialty": "cluster event triage and flock learning exchange",
+                "wakefulness": "watching",
+                "autonomyMode": "delegated",
+                "status": "online",
+                "confidence": round(0.82 + min(index, 5) * 0.02, 2),
+                "inboxSubjects": ["signal.kubernetes.*", "flock.k8s.*"],
+                "toolCount": 12,
+                "lastDreamAt": _timestamp(34 + index),
+                "lastActionAt": _timestamp(22 + index),
+            },
+        )
+    return entries
+
+
 def _initial_dashboard() -> Dashboard:
     artifact = build_valkyrie_environment_demo()
     event_count = artifact.summary["event_count"]
@@ -131,32 +173,7 @@ def _initial_dashboard() -> Dashboard:
 
     return {
         "environments": [
-            {
-                "id": "env-k8s-valhalla",
-                "name": "Valhalla k8s",
-                "kind": "kubernetes",
-                "health": "watch",
-                "flockId": "flock-k8s",
-                "topologyNodeIds": ["environment:k8s-cluster-a", "environment:k8s-cluster-b"],
-                "signalCount": 18,
-                "unresolvedSignalCount": 2,
-                "wakefulCount": 2,
-                "dreamingCount": 1,
-                "lastSignalAt": _timestamp(18),
-            },
-            {
-                "id": "env-k8s-ymir",
-                "name": "Ymir k8s",
-                "kind": "kubernetes",
-                "health": "watch",
-                "flockId": "flock-k8s",
-                "topologyNodeIds": ["environment:k8s-cluster-ymir"],
-                "signalCount": 22,
-                "unresolvedSignalCount": 2,
-                "wakefulCount": 1,
-                "dreamingCount": 0,
-                "lastSignalAt": _timestamp(37),
-            },
+            *_k8s_environment_entries(),
             {
                 "id": "env-host-inbox",
                 "name": "Host inbox",
@@ -185,54 +202,7 @@ def _initial_dashboard() -> Dashboard:
             },
         ],
         "valkyries": [
-            {
-                "id": "valkyrie-valhalla-sigrun",
-                "name": "Sigrun",
-                "environmentId": "env-k8s-valhalla",
-                "flockId": "flock-k8s",
-                "persona": "k8s-valkyrie",
-                "specialty": "cluster event triage and safe remediation",
-                "wakefulness": "watching",
-                "autonomyMode": "delegated",
-                "status": "online",
-                "confidence": 0.91,
-                "inboxSubjects": ["ravn.environment.signal.kubernetes.*"],
-                "toolCount": 12,
-                "lastDreamAt": _timestamp(34),
-                "lastActionAt": _timestamp(22),
-            },
-            {
-                "id": "valkyrie-valhalla-runa",
-                "name": "Runa",
-                "environmentId": "env-k8s-valhalla",
-                "flockId": "flock-k8s",
-                "persona": "k8s-valkyrie",
-                "specialty": "rollout noise suppression and baseline learning",
-                "wakefulness": "dreaming",
-                "autonomyMode": "supervised",
-                "status": "busy",
-                "confidence": 0.86,
-                "inboxSubjects": ["ravn.environment.learning.*"],
-                "toolCount": 9,
-                "lastDreamAt": _timestamp(38),
-                "lastActionAt": _timestamp(20),
-            },
-            {
-                "id": "valkyrie-ymir-k8s",
-                "name": "Mist",
-                "environmentId": "env-k8s-ymir",
-                "flockId": "flock-k8s",
-                "persona": "k8s-valkyrie",
-                "specialty": "hub cluster event triage and flock learning exchange",
-                "wakefulness": "watching",
-                "autonomyMode": "delegated",
-                "status": "online",
-                "confidence": 0.87,
-                "inboxSubjects": ["ravn.environment.signal.kubernetes.*", "flock.k8s.*"],
-                "toolCount": 12,
-                "lastDreamAt": _timestamp(35),
-                "lastActionAt": _timestamp(36),
-            },
+            *_k8s_valkyrie_entries(),
             {
                 "id": "valkyrie-host-email",
                 "name": "Kara",
@@ -272,11 +242,11 @@ def _initial_dashboard() -> Dashboard:
                 "name": "K8s Valkyrie flock",
                 "domain": "kubernetes operations",
                 "natsSubject": "flock.k8s.>",
-                "environmentIds": ["env-k8s-valhalla", "env-k8s-ymir"],
+                "environmentIds": [
+                    f"env-k8s-{cluster['id']}" for cluster in K8S_CLUSTERS
+                ],
                 "valkyrieIds": [
-                    "valkyrie-valhalla-sigrun",
-                    "valkyrie-valhalla-runa",
-                    "valkyrie-ymir-k8s",
+                    f"valkyrie-{cluster['id']}-k8s" for cluster in K8S_CLUSTERS
                 ],
                 "learningIds": ["learning-k8s-rollout-noise"],
                 "health": "watch",
@@ -315,7 +285,7 @@ def _initial_dashboard() -> Dashboard:
                 "severity": "info",
                 "status": "resolved",
                 "receivedAt": _timestamp(1),
-                "assignedValkyrieId": "valkyrie-valhalla-runa",
+                "assignedValkyrieId": "valkyrie-valhalla-k8s",
                 "labels": ["rollout", "noise"],
             },
             {
@@ -327,7 +297,7 @@ def _initial_dashboard() -> Dashboard:
                 "severity": "warning",
                 "status": "acting",
                 "receivedAt": _timestamp(18),
-                "assignedValkyrieId": "valkyrie-valhalla-sigrun",
+                "assignedValkyrieId": "valkyrie-valhalla-k8s",
                 "labels": ["checkout", "probe"],
             },
             {
@@ -361,9 +331,11 @@ def _initial_dashboard() -> Dashboard:
                 "environmentId": "env-k8s-valhalla",
                 "name": "Checkout rollout",
                 "desired": "Available replicas match rollout target",
-                "observed": "Readiness failures above baseline; waiting on Sigrun action proposal",
+                "observed": (
+                    "Readiness failures above baseline; waiting on Valhalla action proposal"
+                ),
                 "drift": "minor",
-                "maintainedBy": ["valkyrie-valhalla-sigrun"],
+                "maintainedBy": ["valkyrie-valhalla-k8s"],
                 "updatedAt": _timestamp(21),
             },
             {
@@ -402,7 +374,7 @@ def _initial_dashboard() -> Dashboard:
                 "id": "judgment-k8s-probe",
                 "environmentId": "env-k8s-valhalla",
                 "signalId": "signal-k8s-checkout-probe",
-                "valkyrieId": "valkyrie-valhalla-sigrun",
+                "valkyrieId": "valkyrie-valhalla-k8s",
                 "verdict": "act",
                 "confidence": 0.88,
                 "rationale": (
@@ -428,7 +400,7 @@ def _initial_dashboard() -> Dashboard:
                 "title": "Patch checkout rollout probe budget",
                 "status": "approved",
                 "risk": "medium",
-                "decidedBy": ["valkyrie-valhalla-sigrun", "valkyrie-valhalla-runa"],
+                "decidedBy": ["valkyrie-valhalla-k8s"],
                 "createdAt": _timestamp(22),
             },
             {
@@ -448,7 +420,7 @@ def _initial_dashboard() -> Dashboard:
                 "title": "Collect rollout events and pod logs",
                 "status": "succeeded",
                 "risk": "low",
-                "ownerValkyrieId": "valkyrie-valhalla-sigrun",
+                "ownerValkyrieId": "valkyrie-valhalla-k8s",
                 "startedAt": _timestamp(20),
                 "finishedAt": _timestamp(21),
             },
@@ -469,14 +441,14 @@ def _initial_dashboard() -> Dashboard:
                 "environmentId": "env-k8s-valhalla",
                 "title": "Checkout rollout huddle",
                 "status": "open",
-                "participantIds": ["valkyrie-valhalla-sigrun", "valkyrie-valhalla-runa"],
+                "participantIds": ["valkyrie-valhalla-k8s"],
                 "joined": False,
                 "messages": [
                     {
                         "id": "message-k8s-1",
                         "huddleId": "huddle-valhalla-now",
-                        "authorId": "valkyrie-valhalla-sigrun",
-                        "authorName": "Sigrun",
+                        "authorId": "valkyrie-valhalla-k8s",
+                        "authorName": "Valhalla Valkyrie",
                         "body": "Readiness failures are isolated to checkout-api v42.",
                         "createdAt": _timestamp(21),
                     }
@@ -514,7 +486,7 @@ def _initial_dashboard() -> Dashboard:
                 "scope": "flock",
                 "status": "canary",
                 "sourceEnvironmentId": "env-k8s-valhalla",
-                "sourceValkyrieId": "valkyrie-valhalla-runa",
+                "sourceValkyrieId": "valkyrie-valhalla-k8s",
                 "targetFlockId": "flock-k8s",
                 "confidence": 0.9,
                 "evaluation": "Passed replay against k8s cluster A and B event fixtures.",

@@ -136,18 +136,18 @@ def test_valkyrie_dashboard_mutations(client: TestClient):
     autonomy = client.post(
         "/api/v1/ravn/valkyrie/autonomy",
         json={
-            "valkyrieId": "valkyrie-valhalla-sigrun",
+            "valkyrieId": "valkyrie-valhalla-k8s",
             "mode": "yolo",
             "reason": "test",
         },
     )
     assert autonomy.status_code == 200
-    sigrun = next(
+    valhalla = next(
         entry
         for entry in autonomy.json()["valkyries"]
-        if entry["id"] == "valkyrie-valhalla-sigrun"
+        if entry["id"] == "valkyrie-valhalla-k8s"
     )
-    assert sigrun["autonomyMode"] == "yolo"
+    assert valhalla["autonomyMode"] == "yolo"
 
     joined = client.post("/api/v1/ravn/valkyrie/huddles/huddle-valhalla-now/join", json={})
     assert joined.status_code == 200
