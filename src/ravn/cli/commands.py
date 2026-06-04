@@ -1505,7 +1505,7 @@ def _build_agent(
         iteration_budget=iteration_budget,
         compressor=compressor,
         prompt_builder=prompt_builder,
-        reflection_model=settings.memory.reflection_model,
+        reflection_model=settings.effective_memory_reflection_model(),
         reflection_max_tokens=settings.memory.reflection_max_tokens,
         task_summary_max_chars=settings.memory.task_summary_max_chars,
         input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -1517,7 +1517,7 @@ def _build_agent(
         auto_checkpoint_before_destructive=cp_cfg.auto_before_destructive,
         budget_milestone_fractions=cp_cfg.budget_milestone_fractions,
         sleipnir_publisher=sleipnir_publisher,
-        reflection_config=settings.reflection,
+        reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
     )
 
@@ -1641,7 +1641,7 @@ async def _run_with_signals(
                 subscriber=in_process_bus,
                 mimir=_refl_mimir,
                 llm=_build_llm(settings),
-                config=settings.reflection,
+                config=settings.effective_post_session_reflection_config(),
             )
             await reflection_svc.start()
 
@@ -2205,7 +2205,7 @@ async def _run_gateway(
             iteration_budget=budget,
             compressor=compressor,
             prompt_builder=prompt_builder,
-            reflection_model=settings.memory.reflection_model,
+            reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -2504,7 +2504,7 @@ async def _run_daemon(
             iteration_budget=budget,
             compressor=compressor,
             prompt_builder=prompt_builder,
-            reflection_model=settings.memory.reflection_model,
+            reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -2512,7 +2512,7 @@ async def _run_daemon(
             extended_thinking=extended_thinking,
             # NIU-598: session lifecycle events + learnings injection
             sleipnir_publisher=daemon_bus,
-            reflection_config=settings.reflection,
+            reflection_config=settings.effective_post_session_reflection_config(),
             persona=resolved_persona.name if resolved_persona else "",
             # NIU-612: persona config for outcome parsing + early termination
             persona_config=resolved_persona,
@@ -2714,7 +2714,7 @@ async def _run_daemon(
             subscriber=daemon_bus,
             mimir=daemon_mimir,
             llm=llm,
-            config=settings.reflection,
+            config=settings.effective_post_session_reflection_config(),
         )
         await daemon_reflection_svc.start()
 

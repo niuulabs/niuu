@@ -64,6 +64,21 @@ class TestBuildAgentReflectionWiring:
         assert agent._reflection_config.learning_token_budget == 999
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_reflection_fallbacks_resolve_to_effective_model(self, settings: Settings) -> None:
+        """Agent reflection config can follow the effective agent model."""
+        from ravn.cli.commands import _build_agent
+
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.memory.reflection_model = "same-as-agent"
+        settings.reflection.llm_alias = "same-as-agent"
+
+        agent, _ = _build_agent(settings)
+
+        assert agent._reflection_model == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert agent._reflection_config.llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert settings.reflection.llm_alias == "same-as-agent"
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_persona_name_forwarded_when_persona_config_present(self, settings: Settings) -> None:
         """Agent._persona is set to the persona config name when provided."""
         from ravn.adapters.personas.loader import PersonaConfig

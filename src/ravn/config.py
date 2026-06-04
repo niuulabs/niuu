@@ -453,7 +453,10 @@ class MemoryConfig(BaseModel):
     # Reflection config (merged from OutcomeConfig, NIU-574)
     reflection_model: str = Field(
         default="claude-haiku-4-5-20251001",
-        description="Model alias used for the compact post-task reflection call.",
+        description=(
+            "Model alias used for the compact post-task reflection call. Use empty, "
+            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model."
+        ),
     )
     reflection_max_tokens: int = Field(
         default=512,
@@ -2077,7 +2080,8 @@ class WakefulnessConfig(BaseModel):
         default="fast",
         description=(
             "LLM alias for the reflection call.  Should resolve to a cheap/fast "
-            "model in the LLM aliases map."
+            "model in the LLM aliases map. Use empty, 'default', 'agent', or "
+            "'same-as-agent' to reuse the effective agent model."
         ),
     )
     max_intents_per_reflection: int = Field(
@@ -2817,6 +2821,27 @@ class Settings(BaseSettings):
             )
             return self.agent.model
         return _default
+
+    @staticmethod
+    def _uses_effective_agent_model(value: str | None) -> bool:
+        if value is None:
+            return True
+        return value.strip().lower() in {"", "default", "agent", "same-as-agent"}
+
+    def effective_memory_reflection_model(self) -> str:
+        """Return the model for compact post-task reflections."""
+
+        configured = self.memory.reflection_model
+        if self._uses_effective_agent_model(configured):
+            return self.effective_model()
+        return configured
+
+    def effective_post_session_reflection_config(self) -> PostSessionReflectionConfig:
+        """Return post-session reflection config with any model fallback resolved."""
+
+        if not self._uses_effective_agent_model(self.reflection.llm_alias):
+            return self.reflection
+        return self.reflection.model_copy(update={"llm_alias": self.effective_model()})
 
     def effective_max_tokens(self) -> int:
         """Return the resolved max_tokens.

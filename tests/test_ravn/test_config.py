@@ -87,6 +87,39 @@ class TestLLMConfig:
         assert c.fallbacks[0].adapter == "pkg.FallbackA"
 
 
+class TestReflectionModelFallbacks:
+    def test_memory_reflection_model_can_use_effective_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.memory.reflection_model = "same-as-agent"
+
+        assert settings.effective_memory_reflection_model() == "Qwen/Qwen3.6-35B-A3B-FP8"
+
+    def test_memory_reflection_model_keeps_explicit_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.memory.reflection_model = "claude-haiku-4-5-20251001"
+
+        assert settings.effective_memory_reflection_model() == "claude-haiku-4-5-20251001"
+
+    def test_post_session_reflection_config_can_use_effective_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "agent"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert settings.reflection.llm_alias == "agent"
+
+    def test_post_session_reflection_config_keeps_explicit_alias(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "fast"
+
+        assert settings.effective_post_session_reflection_config() is settings.reflection
+
+
 class TestToolAdapterConfig:
     def test_required_adapter(self) -> None:
         c = ToolAdapterConfig(adapter="mypkg.MyTool")
