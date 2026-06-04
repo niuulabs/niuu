@@ -670,8 +670,9 @@ class NatsSubscriber(SleipnirSubscriber):
 
         kwargs: dict[str, Any] = {"stream": self._stream_name, "config": config}
         if self._consumer_group is not None:
-            kwargs["durable"] = _durable_name_for_subject(self._consumer_group, subject)
-            kwargs["queue"] = self._consumer_group
+            durable = _durable_name_for_subject(self._consumer_group, subject)
+            kwargs["durable"] = durable
+            kwargs["queue"] = durable
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)
 

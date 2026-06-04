@@ -497,7 +497,7 @@ async def test_subscriber_consumer_group_sets_durable_and_queue(mock_nats):
     kwargs = js.subscribe.call_args[1]
     assert kwargs["durable"].startswith("my-service-")
     assert kwargs["durable"] != "my-service"
-    assert kwargs["queue"] == "my-service"
+    assert kwargs["queue"] == kwargs["durable"]
     await sub.stop()
 
 
@@ -787,7 +787,7 @@ async def test_transport_consumer_group_forwarded(mock_nats):
     await transport.subscribe(["*"], AsyncMock())
     kwargs = js.subscribe.call_args[1]
     assert kwargs["durable"].startswith("workers-")
-    assert kwargs["queue"] == "workers"
+    assert kwargs["queue"] == kwargs["durable"]
     await transport.stop()
 
 
