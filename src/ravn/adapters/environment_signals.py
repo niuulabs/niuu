@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -109,6 +110,7 @@ class _IterableSignalAdapter(SignalAdapter):
         source_id: str,
         raw_items: Iterable[Any] | None = None,
         provider: RawProvider | None = None,
+        **_: Any,
     ) -> None:
         self.environment = environment
         self._source_id = source_id
@@ -133,8 +135,62 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
 
     signal_type: NormalizedSignalType = "kubernetes"
 
+    def __init__(
+        self,
+        *,
+        environment: Environment,
+        source_id: str = "kubernetes-events",
+        raw_items: Iterable[Any] | None = None,
+        provider: RawProvider | None = None,
+        core_v1: Any | None = None,
+        in_cluster: bool = False,
+        kubeconfig_env: str = "",
+        kubeconfig_path: str = "",
+        namespaces: list[str] | None = None,
+        include_reasons: list[str] | None = None,
+        exclude_reasons: list[str] | None = None,
+        field_selector: str = "",
+        label_selector: str = "",
+        limit: int | None = None,
+    ) -> None:
+        self._core_v1 = core_v1
+        self._in_cluster = in_cluster
+        self._kubeconfig_env = kubeconfig_env
+        self._kubeconfig_path = kubeconfig_path
+        self._namespaces = list(namespaces or [])
+        self._include_reasons = {reason.lower() for reason in include_reasons or []}
+        self._exclude_reasons = {reason.lower() for reason in exclude_reasons or []}
+        self._field_selector = field_selector
+        self._label_selector = label_selector
+        self._limit = limit
+        self._client_loaded = core_v1 is not None
+        selected_provider = provider
+        if selected_provider is None and raw_items is None:
+            selected_provider = self._provider_from_kubernetes
+        super().__init__(
+            environment=environment,
+            source_id=source_id,
+            raw_items=raw_items,
+            provider=selected_provider,
+        )
+
     async def collect(self) -> list[NormalizedSignal]:
-        return [self.normalize_event(raw) for raw in await self._raw()]
+        signals = [self.normalize_event(raw) for raw in await self._raw()]
+        if self._include_reasons:
+            signals = [
+                signal
+                for signal in signals
+                if _text(signal.normalized_payload.get("reason")).lower()
+                in self._include_reasons
+            ]
+        if self._exclude_reasons:
+            signals = [
+                signal
+                for signal in signals
+                if _text(signal.normalized_payload.get("reason")).lower()
+                not in self._exclude_reasons
+            ]
+        return signals
 
     @classmethod
     def from_kubernetes_client(
@@ -146,11 +202,55 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
     ) -> KubernetesSignalAdapter:
         """Build from an injected Kubernetes CoreV1Api-like client."""
 
-        def provider() -> Iterable[Any]:
-            events = core_v1.list_event_for_all_namespaces()
-            return getattr(events, "items", events)
+        return cls(environment=environment, source_id=source_id, core_v1=core_v1)
 
-        return cls(environment=environment, source_id=source_id, provider=provider)
+    async def _provider_from_kubernetes(self) -> list[Any]:
+        core_v1 = await self._load_core_v1()
+        list_kwargs: dict[str, Any] = {}
+        if self._field_selector:
+            list_kwargs["field_selector"] = self._field_selector
+        if self._label_selector:
+            list_kwargs["label_selector"] = self._label_selector
+        if self._limit is not None:
+            list_kwargs["limit"] = self._limit
+
+        items: list[Any] = []
+        if self._namespaces:
+            for namespace in self._namespaces:
+                result = core_v1.list_namespaced_event(namespace, **list_kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                items.extend(list(getattr(result, "items", result)))
+            return items
+
+        result = core_v1.list_event_for_all_namespaces(**list_kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return list(getattr(result, "items", result))
+
+    async def _load_core_v1(self) -> Any:
+        if self._core_v1 is not None and self._client_loaded:
+            return self._core_v1
+        try:
+            from kubernetes_asyncio import client, config
+        except ImportError as exc:  # pragma: no cover - exercised in minimal installs
+            raise RuntimeError(
+                "KubernetesSignalAdapter requires kubernetes-asyncio. "
+                "Install niuu with the k8s extra."
+            ) from exc
+
+        if self._in_cluster:
+            config.load_incluster_config()
+        else:
+            kubeconfig = self._kubeconfig_path
+            if not kubeconfig and self._kubeconfig_env:
+                kubeconfig = os.environ.get(self._kubeconfig_env, "")
+            load_result = config.load_kube_config(config_file=kubeconfig or None)
+            if inspect.isawaitable(load_result):
+                await load_result
+        self._core_v1 = client.CoreV1Api()
+        self._client_loaded = True
+        return self._core_v1
 
     def normalize_event(self, raw: Any) -> NormalizedSignal:
         metadata = _field(raw, "metadata", default={}) or {}

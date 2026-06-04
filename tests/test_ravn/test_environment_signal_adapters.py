@@ -273,6 +273,24 @@ def test_signal_sources_project_into_existing_observatory_surface() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kubernetes_adapter_accepts_runtime_client_kwargs() -> None:
+    environment = k8s_environment_fixture()
+    adapter = KubernetesSignalAdapter(
+        environment=environment,
+        source_id="kubernetes-events",
+        core_v1=_FakeCoreV1([_k8s_warning_event()]),
+        in_cluster=True,
+        namespaces=[],
+        exclude_reasons=["Pulled"],
+    )
+
+    signals = await adapter.collect()
+
+    assert len(signals) == 1
+    assert signals[0].provider_event_id == "ev-k8s-oom"
+
+
+@pytest.mark.asyncio
 async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
     adapters = demo_signal_adapters()
     events_by_environment: dict[str, list[SleipnirEvent]] = {}

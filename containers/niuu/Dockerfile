@@ -33,7 +33,7 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s
+RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
 # ---------------------------------------------------------------------------
 # Runtime — minimal image with no build tools or pip

@@ -1603,6 +1603,54 @@ class MeshNatsConfig(BaseModel):
         default=60,
         description="Maximum reconnect attempts before the NATS client gives up.",
     )
+    ensure_stream: bool = Field(
+        default=True,
+        description="Create/ensure the JetStream stream on startup. Disable for GitOps streams.",
+    )
+    tls_ca_file: str = Field(
+        default="",
+        description="Optional CA bundle path for TLS-secured NATS servers.",
+    )
+    tls_cert_file: str = Field(
+        default="",
+        description="Optional client TLS certificate path.",
+    )
+    tls_key_file: str = Field(
+        default="",
+        description="Optional client TLS private key path.",
+    )
+    tls_hostname: str = Field(
+        default="",
+        description="Optional TLS server name override.",
+    )
+    tls_handshake_first: bool = Field(
+        default=False,
+        description="Use TLS-first handshakes for NATS servers that require it.",
+    )
+    user: str = Field(
+        default="",
+        description="Optional NATS username.",
+    )
+    user_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS username.",
+    )
+    password_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS password.",
+    )
+    token_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS token.",
+    )
+    nkeys_seed_file: str = Field(
+        default="",
+        description="Optional mounted NKey seed file path.",
+    )
+    nkeys_seed_env: str = Field(
+        default="",
+        description="Optional env var containing an NKey seed string.",
+    )
 
 
 class DiscoveryMdnsConfig(BaseModel):
@@ -2526,6 +2574,39 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class SignalSourceConfig(BaseModel):
+    """Adapter-backed signal source for a resident Valkyrie Environment."""
+
+    id: str = Field(
+        default="",
+        description="Stable source id, for example k8s-events or host-mail.",
+    )
+    name: str = Field(
+        default="",
+        description="Human-readable source name for UI and audit logs.",
+    )
+    adapter: str = Field(
+        default="",
+        description="Import path or connector id for the signal source adapter.",
+    )
+    kind: str = Field(
+        default="generic",
+        description="Provider-neutral signal kind, for example kubernetes, email, or printer.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether this source should be started by the resident Valkyrie.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Adapter constructor kwargs. Keep mesh transport subjects out of this shape.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map adapter kwarg names to environment variable names for secrets.",
+    )
+
+
 class EnvironmentConfig(BaseModel):
     """Runtime environment identity for long-running resident Valkyries."""
 
@@ -2545,9 +2626,28 @@ class EnvironmentConfig(BaseModel):
         default_factory=list,
         description="Existing flock names this Valkyrie participates in.",
     )
+    signal_sources: list[SignalSourceConfig] = Field(
+        default_factory=list,
+        description="Adapter-backed signal feeds this Valkyrie should watch.",
+    )
+    signal_poll_interval_seconds: float = Field(
+        default=10.0,
+        description="Seconds between polling enabled signal sources.",
+    )
+    signal_dedupe_cache_size: int = Field(
+        default=2048,
+        description="Maximum signal ids remembered per daemon to avoid duplicate work.",
+    )
+    signal_task_severities: list[str] = Field(
+        default_factory=lambda: ["warning", "critical"],
+        description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+    )
     signal_subjects: list[str] = Field(
         default_factory=list,
-        description="NATS signal subjects this Valkyrie should consider for attention.",
+        description=(
+            "Legacy derived bus subjects. Prefer signal_sources in user config; "
+            "transport adapters derive subscriptions from enabled sources."
+        ),
     )
 
 

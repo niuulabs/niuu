@@ -8,14 +8,14 @@
 #   - Existing Ravn flock runtime, cascade delegation, Mimir, and wakefulness
 #   - NATS JetStream as the shared mesh/event substrate
 #   - Environment identity carried in config for routing, UI, and audit trails
-#   - Signal subject patterns for k8s, host, printer, and operator events
+#   - Adapter-backed signal sources for k8s, host, printer, and operator events
 #   - JetStream replay knobs for recovering after restarts
 #
 # Architecture:
-#   signals.* ---> NATS JetStream <--- Valkyrie A
-#                        ^             Valkyrie B
-#                        |             Valkyrie C
-#                  existing flock learning and delegation
+#   source adapters ---> Ravn mesh/NATS JetStream <--- Valkyrie A
+#                              ^                    Valkyrie B
+#                              |                    Valkyrie C
+#                        existing flock learning and delegation
 #
 # Prerequisites:
 #   - An LLM provider configured on each resident Valkyrie
@@ -36,11 +36,48 @@ environment:
   type: local
   flocks:
     - valkyries
-  signal_subjects:
-    - signal.kubernetes.>
-    - signal.host.>
-    - signal.printer.>
-    - signal.operator.>
+  signal_poll_interval_seconds: 10.0
+  signal_dedupe_cache_size: 2048
+  signal_task_severities:
+    - warning
+    - critical
+  signal_sources:
+    - id: kubernetes-events
+      name: Kubernetes Events
+      kind: kubernetes
+      adapter: ravn.adapters.environment_signals.KubernetesSignalAdapter
+      enabled: true
+      kwargs:
+        kubeconfig_env: KUBECONFIG
+        namespaces: []                  # empty means all namespaces
+        include_reasons: []             # empty means all reasons
+        exclude_reasons:
+          - Pulled
+          - Pulling
+    - id: host-events
+      name: Host Events
+      kind: host
+      adapter: ravn.adapters.environment_signals.HostSignalAdapter
+      enabled: true
+      kwargs:
+        providers:
+          - system
+          - process
+    - id: printer-telemetry
+      name: Printer Telemetry
+      kind: printer_telemetry
+      adapter: ravn.adapters.environment_signals.PrinterPiSignalAdapter
+      enabled: false
+      kwargs:
+        moonraker_url_env: MOONRAKER_URL
+    - id: operator-events
+      name: Operator Events
+      kind: host
+      adapter: ravn.adapters.environment_signals.HostSignalAdapter
+      enabled: true
+      kwargs:
+        provider: gateway.http
+        category: operator
 
 llm:
   model: ""                              # set to your model name

@@ -21,9 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sleipnir.adapters.nats_transport import (
+    DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_DEDUP_CACHE_SIZE,
     DEFAULT_MAX_AGE_SECONDS,
     DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_RECONNECT_ATTEMPTS,
     DEFAULT_RETENTION,
     DEFAULT_RING_BUFFER_DEPTH,
     DEFAULT_SERVERS,
@@ -261,6 +263,32 @@ async def test_publisher_start_connects_and_ensures_stream(mock_nats):
     await pub.start()
     mock_module.connect.assert_called_once()
     js.stream_info.assert_called_once_with(DEFAULT_STREAM_NAME)
+
+
+async def test_publisher_start_passes_auth_and_can_skip_stream_ensure(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsPublisher(
+        servers=["tls://nats.example:4222"],
+        ensure_stream=False,
+        user="valkyrie",
+        password="secret",
+        tls_hostname="nats.example",
+        tls_handshake_first=True,
+    )
+
+    await pub.start()
+
+    mock_module.connect.assert_called_once_with(
+        servers=["tls://nats.example:4222"],
+        connect_timeout=DEFAULT_CONNECT_TIMEOUT_S,
+        max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        user="valkyrie",
+        password="secret",
+        tls_hostname="nats.example",
+        tls_handshake_first=True,
+    )
+    js.stream_info.assert_not_called()
+    js.add_stream.assert_not_called()
 
 
 async def test_publisher_start_creates_stream_when_missing(mock_nats):

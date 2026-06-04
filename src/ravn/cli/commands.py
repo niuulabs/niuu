@@ -2569,6 +2569,7 @@ async def _run_daemon(
     trigger_names: list[str] = []
     drive_loop: Any = None
     _cascade_participant: Any = None
+    environment_signal_runtime: Any | None = None
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
@@ -2643,6 +2644,17 @@ async def _run_daemon(
 
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
+
+    environment_signal_runtime = _build_environment_signal_runtime(
+        settings,
+        drive_loop=drive_loop,
+        persona_config=persona_config,
+    )
+    if environment_signal_runtime is not None:
+        await environment_signal_runtime.start()
+        tasks.append(
+            asyncio.create_task(environment_signal_runtime.wait(), name="environment_signals")
+        )
 
     async def _handle_mcp_tool_result(
         server_name: str,
@@ -2728,6 +2740,8 @@ async def _run_daemon(
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
+        if environment_signal_runtime is not None:
+            await environment_signal_runtime.stop()
         return
 
     try:
@@ -2742,6 +2756,8 @@ async def _run_daemon(
         await asyncio.gather(*tasks, return_exceptions=True)
         if _cascade_participant is not None:
             await _cascade_participant.stop()
+        if environment_signal_runtime is not None:
+            await environment_signal_runtime.stop()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
@@ -2752,6 +2768,64 @@ async def _run_daemon(
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
+
+
+def _build_environment_signal_runtime(
+    settings: Settings,
+    *,
+    drive_loop: Any | None = None,
+    persona_config: Any | None = None,
+) -> Any | None:
+    """Build the resident Environment signal runtime when sources are configured."""
+    enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
+    if not enabled_sources:
+        return None
+    if not settings.mesh.enabled:
+        logger.warning("environment_signals: mesh is disabled; signal sources will not start")
+        return None
+
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+    from ravn.environment_signal_runtime import EnvironmentSignalRuntime  # noqa: PLC0415
+
+    if settings.mesh.adapters:
+        entry = settings.mesh.adapters[0]
+        adapter = entry.get("transport", settings.mesh.adapter or "nng")
+    else:
+        adapter = settings.mesh.adapter or "nng"
+
+    kwargs = _resolve_transport_kwargs(settings, adapter)
+    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
+        logger.warning("environment_signals: %s transport unavailable", adapter)
+        return None
+
+    publisher = build_transport(adapter, **kwargs)
+    if publisher is None:
+        logger.warning("environment_signals: failed to build %s transport", adapter)
+        return None
+
+    try:
+        output_mode = OutputMode(settings.initiative.default_output_mode)
+    except ValueError:
+        logger.warning(
+            "environment_signals: invalid initiative.default_output_mode=%r; using ambient",
+            settings.initiative.default_output_mode,
+        )
+        output_mode = OutputMode.AMBIENT
+
+    persona = None
+    if persona_config is not None:
+        persona = getattr(persona_config, "name", None)
+    if not persona:
+        persona = settings.initiative.default_persona or None
+
+    return EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=publisher,
+        enqueue=drive_loop.enqueue if drive_loop is not None else None,
+        persona=persona,
+        output_mode=output_mode,
+        owns_publisher=True,
+    )
 
 
 def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:
@@ -3749,6 +3823,23 @@ def _resolve_transport_kwargs(
             "ring_buffer_depth": nats_cfg.ring_buffer_depth,
             "connect_timeout_s": nats_cfg.connect_timeout_s,
             "max_reconnect_attempts": nats_cfg.max_reconnect_attempts,
+            "ensure_stream": nats_cfg.ensure_stream,
+            "tls_ca_file": nats_cfg.tls_ca_file,
+            "tls_cert_file": nats_cfg.tls_cert_file,
+            "tls_key_file": nats_cfg.tls_key_file,
+            "tls_hostname": nats_cfg.tls_hostname,
+            "tls_handshake_first": nats_cfg.tls_handshake_first,
+            "user": os.environ.get(nats_cfg.user_env, nats_cfg.user)
+            if nats_cfg.user_env
+            else nats_cfg.user,
+            "password": os.environ.get(nats_cfg.password_env, "")
+            if nats_cfg.password_env
+            else "",
+            "token": os.environ.get(nats_cfg.token_env, "") if nats_cfg.token_env else "",
+            "nkeys_seed_file": nats_cfg.nkeys_seed_file,
+            "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")
+            if nats_cfg.nkeys_seed_env
+            else "",
         }
         if nats_cfg.consumer_group:
             kwargs["consumer_group"] = nats_cfg.consumer_group

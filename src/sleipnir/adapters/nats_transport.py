@@ -65,9 +65,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 try:
@@ -112,6 +114,65 @@ DEFAULT_CONNECT_TIMEOUT_S = 10.0
 
 #: Maximum reconnect attempts before giving up (-1 = unlimited).
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 60
+
+
+def _build_tls_context(
+    *,
+    tls_ca_file: str = "",
+    tls_cert_file: str = "",
+    tls_key_file: str = "",
+) -> ssl.SSLContext | None:
+    """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
+    if not tls_ca_file and not tls_cert_file and not tls_key_file:
+        return None
+    context = ssl.create_default_context(cafile=tls_ca_file or None)
+    if tls_cert_file or tls_key_file:
+        context.load_cert_chain(certfile=tls_cert_file, keyfile=tls_key_file or None)
+    return context
+
+
+def _read_optional_file(path: str) -> str:
+    if not path:
+        return ""
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
+def _connect_options(
+    *,
+    tls_ca_file: str = "",
+    tls_cert_file: str = "",
+    tls_key_file: str = "",
+    tls_hostname: str = "",
+    tls_handshake_first: bool = False,
+    user: str = "",
+    password: str = "",
+    token: str = "",
+    nkeys_seed_file: str = "",
+    nkeys_seed: str = "",
+) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    tls_context = _build_tls_context(
+        tls_ca_file=tls_ca_file,
+        tls_cert_file=tls_cert_file,
+        tls_key_file=tls_key_file,
+    )
+    if tls_context is not None:
+        options["tls"] = tls_context
+    if tls_hostname:
+        options["tls_hostname"] = tls_hostname
+    if tls_handshake_first:
+        options["tls_handshake_first"] = True
+    if user:
+        options["user"] = user
+    if password:
+        options["password"] = password
+    if token:
+        options["token"] = token
+    if nkeys_seed_file:
+        options["nkeys_seed"] = nkeys_seed_file
+    elif nkeys_seed:
+        options["nkeys_seed_str"] = nkeys_seed
+    return options
 
 #: Maximum number of event IDs held in the deduplication cache.
 DEFAULT_DEDUP_CACHE_SIZE = 10_000
@@ -289,6 +350,17 @@ class NatsPublisher(SleipnirPublisher):
         max_bytes: int = DEFAULT_MAX_BYTES,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
     ) -> None:
         _require_nats()
         self._servers = servers or DEFAULT_SERVERS
@@ -299,6 +371,19 @@ class NatsPublisher(SleipnirPublisher):
         self._max_bytes = max_bytes
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._ensure_stream = ensure_stream
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
         self._client: Any = None
         self._js: Any = None
 
@@ -308,16 +393,18 @@ class NatsPublisher(SleipnirPublisher):
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
         )
         self._js = self._client.jetstream()
-        await _ensure_stream(
-            self._js,
-            self._stream_name,
-            self._subject_prefix,
-            self._retention,
-            self._max_age_seconds,
-            self._max_bytes,
-        )
+        if self._ensure_stream:
+            await _ensure_stream(
+                self._js,
+                self._stream_name,
+                self._subject_prefix,
+                self._retention,
+                self._max_age_seconds,
+                self._max_bytes,
+            )
         logger.debug(
             "NatsPublisher: connected to %s, stream=%r",
             self._servers,
@@ -404,6 +491,17 @@ class NatsSubscriber(SleipnirSubscriber):
         ring_buffer_depth: int = DEFAULT_RING_BUFFER_DEPTH,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
     ) -> None:
         _require_nats()
         if ring_buffer_depth < 1:
@@ -420,6 +518,19 @@ class NatsSubscriber(SleipnirSubscriber):
         self._ring_buffer_depth = ring_buffer_depth
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._ensure_stream = ensure_stream
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
         self._client: Any = None
         self._js: Any = None
         self._nats_subs: list[Any] = []
@@ -432,16 +543,18 @@ class NatsSubscriber(SleipnirSubscriber):
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
         )
         self._js = self._client.jetstream()
-        await _ensure_stream(
-            self._js,
-            self._stream_name,
-            self._subject_prefix,
-            self._retention,
-            self._max_age_seconds,
-            self._max_bytes,
-        )
+        if self._ensure_stream:
+            await _ensure_stream(
+                self._js,
+                self._stream_name,
+                self._subject_prefix,
+                self._retention,
+                self._max_age_seconds,
+                self._max_bytes,
+            )
         self._running = True
         logger.debug(
             "NatsSubscriber: connected to %s, stream=%r, group=%r",
@@ -595,6 +708,17 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         ring_buffer_depth: int = DEFAULT_RING_BUFFER_DEPTH,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -606,6 +730,17 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             max_bytes=max_bytes,
             connect_timeout_s=connect_timeout_s,
             max_reconnect_attempts=max_reconnect_attempts,
+            ensure_stream=ensure_stream,
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
         )
         self._subscriber = NatsSubscriber(
             servers=servers,
@@ -620,6 +755,17 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             ring_buffer_depth=ring_buffer_depth,
             connect_timeout_s=connect_timeout_s,
             max_reconnect_attempts=max_reconnect_attempts,
+            ensure_stream=ensure_stream,
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
         )
 
     async def start(self) -> None:
