@@ -1627,6 +1627,10 @@ class MeshNatsConfig(BaseModel):
         default=False,
         description="Use TLS-first handshakes for NATS servers that require it.",
     )
+    tls_insecure_skip_verify: bool = Field(
+        default=False,
+        description="Disable NATS TLS certificate verification for internal/self-signed endpoints.",
+    )
     user: str = Field(
         default="",
         description="Optional NATS username.",

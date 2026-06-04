@@ -121,11 +121,20 @@ def _build_tls_context(
     tls_ca_file: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
+    tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
-    if not tls_ca_file and not tls_cert_file and not tls_key_file:
+    if (
+        not tls_ca_file
+        and not tls_cert_file
+        and not tls_key_file
+        and not tls_insecure_skip_verify
+    ):
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
+    if tls_insecure_skip_verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
     if tls_cert_file or tls_key_file:
         context.load_cert_chain(certfile=tls_cert_file, keyfile=tls_key_file or None)
     return context
@@ -144,6 +153,7 @@ def _connect_options(
     tls_key_file: str = "",
     tls_hostname: str = "",
     tls_handshake_first: bool = False,
+    tls_insecure_skip_verify: bool = False,
     user: str = "",
     password: str = "",
     token: str = "",
@@ -155,6 +165,7 @@ def _connect_options(
         tls_ca_file=tls_ca_file,
         tls_cert_file=tls_cert_file,
         tls_key_file=tls_key_file,
+        tls_insecure_skip_verify=tls_insecure_skip_verify,
     )
     if tls_context is not None:
         options["tls"] = tls_context
@@ -356,6 +367,7 @@ class NatsPublisher(SleipnirPublisher):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
@@ -378,6 +390,7 @@ class NatsPublisher(SleipnirPublisher):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,
@@ -497,6 +510,7 @@ class NatsSubscriber(SleipnirSubscriber):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
@@ -525,6 +539,7 @@ class NatsSubscriber(SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,
@@ -714,6 +729,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
@@ -736,6 +752,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,
@@ -761,6 +778,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,

@@ -15,6 +15,7 @@ Skip all tests if nats-py is not installed.
 from __future__ import annotations
 
 import asyncio
+import ssl
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +37,7 @@ from sleipnir.adapters.nats_transport import (
     NatsSubscriber,
     NatsTransport,
     _BridgeSubscription,
+    _build_tls_context,
     _decode_nats_message,
     _DeduplicationCache,
     _nats_subject_for_event,
@@ -250,6 +252,14 @@ def test_dedup_cache_max_size_respected():
         cache.mark_seen(f"evt-{i:03d}")
     assert len(cache._seen) == 5
     assert len(cache._order) == 5
+
+
+def test_tls_context_can_skip_verification_for_internal_clusters():
+    context = _build_tls_context(tls_insecure_skip_verify=True)
+
+    assert context is not None
+    assert context.check_hostname is False
+    assert context.verify_mode == ssl.CERT_NONE
 
 
 # ---------------------------------------------------------------------------

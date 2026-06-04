@@ -3829,6 +3829,7 @@ def _resolve_transport_kwargs(
             "tls_key_file": nats_cfg.tls_key_file,
             "tls_hostname": nats_cfg.tls_hostname,
             "tls_handshake_first": nats_cfg.tls_handshake_first,
+            "tls_insecure_skip_verify": nats_cfg.tls_insecure_skip_verify,
             "user": os.environ.get(nats_cfg.user_env, nats_cfg.user)
             if nats_cfg.user_env
             else nats_cfg.user,
