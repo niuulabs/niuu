@@ -420,6 +420,24 @@ correlation_ids:
         assert outcome["expires_at"] == "2026-06-04T20:30:00+00:00"
         json.dumps(outcome)
 
+    def test_resident_valkyrie_normalization_coerces_loose_correlation_ids(self) -> None:
+        list_outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {"correlation_ids": ["pod/skuld-a", "event/backoff"]},
+        )
+        scalar_outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {"correlation_ids": "pod/skuld-a"},
+        )
+        empty_outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {"correlation_ids": ""},
+        )
+
+        assert list_outcome["correlation_ids"] == {"refs": ["pod/skuld-a", "event/backoff"]}
+        assert scalar_outcome["correlation_ids"] == {"root": "pod/skuld-a"}
+        assert empty_outcome["correlation_ids"] == {}
+
     @pytest.mark.asyncio
     async def test_invalid_resident_valkyrie_judgment_is_rejected_before_publication(
         self,

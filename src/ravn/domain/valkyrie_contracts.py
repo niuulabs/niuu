@@ -137,6 +137,16 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
         }
         if flattened_correlation:
             normalized["correlation_ids"] = flattened_correlation
+        elif isinstance(correlation_ids, list):
+            normalized["correlation_ids"] = (
+                {"refs": correlation_ids}
+                if correlation_ids
+                else {}
+            )
+        elif str(correlation_ids or "").strip():
+            normalized["correlation_ids"] = {"root": str(correlation_ids).strip()}
+        else:
+            normalized["correlation_ids"] = {}
 
     if not str(normalized.get("state_summary", "") or "").strip():
         operational_state = str(normalized.get("operational_state", "") or "").strip()
