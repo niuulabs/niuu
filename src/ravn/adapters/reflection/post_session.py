@@ -48,7 +48,7 @@ _CONFIDENCE_HIGH_THRESHOLD = 3
 
 _REFLECTION_SYSTEM = (
     "You are an expert at extracting operational learnings from software engineering sessions. "
-    "Respond only with valid JSON — no markdown fences, no commentary."
+    "Respond only with valid JSON or the literal null. No markdown fences, no commentary."
 )
 
 _REFLECTION_PROMPT = """\
@@ -78,7 +78,9 @@ Respond with a single JSON object:
 }}
 
 If the session was unremarkable and no useful learning can be extracted, \
-respond with: null\
+respond with exactly: null
+
+Do not explain why there is no learning. Do not wrap the response in markdown.\
 """
 
 
@@ -185,7 +187,10 @@ class PostSessionReflectionService:
         raw = response.content.strip()
         found_json, parsed = _parse_reflection_json(raw)
         if not found_json:
-            logger.warning("PostSessionReflectionService: malformed JSON from LLM")
+            logger.warning(
+                "PostSessionReflectionService: malformed JSON from LLM excerpt=%r",
+                _compact_log_excerpt(raw),
+            )
             return None
         if parsed is None:
             return None
@@ -294,6 +299,8 @@ def _parse_reflection_json(raw: str) -> tuple[bool, object | None]:
     text = raw.strip()
     if not text:
         return False, None
+    if _looks_like_no_learning_response(text):
+        return True, None
 
     for candidate in _reflection_json_candidates(text):
         candidate = candidate.strip()
@@ -305,6 +312,9 @@ def _parse_reflection_json(raw: str) -> tuple[bool, object | None]:
             return True, json.loads(candidate)
         except json.JSONDecodeError:
             found, parsed = _raw_decode_embedded_json(candidate)
+            if found:
+                return True, parsed
+            found, parsed = _parse_yamlish_json(candidate)
             if found:
                 return True, parsed
 
@@ -332,6 +342,46 @@ def _raw_decode_embedded_json(text: str) -> tuple[bool, object | None]:
             continue
         return True, parsed
     return False, None
+
+
+def _parse_yamlish_json(text: str) -> tuple[bool, object | None]:
+    """Parse JSON-shaped output with local-model looseness such as trailing commas."""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return False, None
+    try:
+        import yaml  # PyYAML is already present via pydantic-settings[yaml].
+
+        parsed = yaml.safe_load(stripped)
+    except Exception:
+        return False, None
+    if parsed is None or isinstance(parsed, dict | list):
+        return True, parsed
+    return False, None
+
+
+def _looks_like_no_learning_response(text: str) -> bool:
+    """Treat common prose refusals as a null learning."""
+    normalized = re.sub(r"\s+", " ", text.strip().lower()).strip(" .")
+    if normalized == "null":
+        return True
+    no_learning_markers = (
+        "no actionable learning",
+        "no useful learning",
+        "no learning can be extracted",
+        "no learning extracted",
+        "session was unremarkable",
+        "nothing useful to learn",
+    )
+    return any(marker in normalized for marker in no_learning_markers)
+
+
+def _compact_log_excerpt(text: str, *, limit: int = 200) -> str:
+    """Return a single-line bounded excerpt safe for parser diagnostics."""
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
 
 
 # ---------------------------------------------------------------------------

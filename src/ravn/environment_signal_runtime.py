@@ -237,7 +237,9 @@ class EnvironmentSignalRuntime:
             f"Object: {signal.object_ref}\n"
             f"Payload: {signal.normalized_payload}\n\n"
             "Decide whether this is noise, needs watchful state, or requires action. "
-            "Use existing tools and memory before proposing any new tooling."
+            "Use existing tools and memory before proposing any new tooling. "
+            "Always finish with a valkyrie.judgment.proposed outcome block for this signal, "
+            "including when the decision is ignore or watch."
         )
         return AgentTask(
             task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",

@@ -263,6 +263,63 @@ async def test_process_skips_on_fenced_null_learning():
 
 
 @pytest.mark.asyncio
+async def test_process_treats_no_learning_prose_as_null():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response(
+        "No actionable learning can be extracted from this session."
+    )
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-no-learning-prose",
+            "persona": "ravn",
+            "outcome": "success",
+            "token_count": 1000,
+            "duration_s": 30.0,
+            "repo_slug": "",
+        }
+    )
+
+    mimir.upsert_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_extracts_learning_from_yamlish_json():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response(
+        """{
+  "title": "Group repeated warning jobs",
+  "learning": "Repeated warning jobs should be grouped before proposing escalation.",
+  "type": "observation",
+  "tags": ["k8s", "signals",],
+  "evidence": "The same warning pattern appeared several times.",
+}"""
+    )
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-yamlish",
+            "persona": "k8s-valkyrie",
+            "outcome": "propose_action",
+            "token_count": 8000,
+            "duration_s": 42.0,
+            "repo_slug": "niuulabs/volundr",
+        }
+    )
+
+    mimir.upsert_page.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_skips_on_llm_error():
     bus = InProcessBus()
     mimir = AsyncMock()
