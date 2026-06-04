@@ -288,6 +288,44 @@ async def test_process_treats_no_learning_prose_as_null():
 
 
 @pytest.mark.asyncio
+async def test_process_retries_empty_reflection_response():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    llm = AsyncMock()
+    llm.generate.side_effect = [
+        _make_llm_response(""),
+        _make_llm_response(
+            json.dumps(
+                {
+                    "title": "Retry empty local reflection responses",
+                    "learning": "Empty local model responses should be retried once.",
+                    "type": "observation",
+                    "tags": ["local-llm", "reflection"],
+                    "evidence": "The first reflection response was empty.",
+                }
+            )
+        ),
+    ]
+    config = _make_config()
+    svc = PostSessionReflectionService(bus, mimir, llm, config)
+
+    await svc._process(
+        {
+            "session_id": "sess-empty-retry",
+            "persona": "k8s-valkyrie",
+            "outcome": "success",
+            "token_count": 8000,
+            "duration_s": 42.0,
+            "repo_slug": "niuulabs/volundr",
+        }
+    )
+
+    assert llm.generate.await_count == 2
+    mimir.upsert_page.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_extracts_learning_from_yamlish_json():
     bus = InProcessBus()
     mimir = AsyncMock()

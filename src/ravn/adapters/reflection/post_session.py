@@ -172,26 +172,46 @@ class PostSessionReflectionService:
             repo_slug=payload.get("repo_slug", ""),
         )
 
-        try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system=_REFLECTION_SYSTEM,
-                model=self._config.llm_alias,
-                max_tokens=self._config.max_tokens,
-            )
-        except Exception as exc:
-            logger.warning("PostSessionReflectionService: LLM call failed: %s", exc)
-            return None
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                response = await self._llm.generate(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    system=_REFLECTION_SYSTEM,
+                    model=self._config.llm_alias,
+                    max_tokens=self._config.max_tokens,
+                )
+            except Exception as exc:
+                logger.warning("PostSessionReflectionService: LLM call failed: %s", exc)
+                return None
 
-        raw = response.content.strip()
-        found_json, parsed = _parse_reflection_json(raw)
-        if not found_json:
+            raw = response.content.strip()
+            if not raw:
+                if attempt + 1 < attempts:
+                    logger.info("PostSessionReflectionService: empty LLM response; retrying")
+                    continue
+                return None
+
+            found_json, parsed = _parse_reflection_json(raw)
+            if found_json:
+                break
+
+            if attempt + 1 < attempts:
+                logger.info(
+                    "PostSessionReflectionService: malformed JSON from LLM; retrying excerpt=%r",
+                    _compact_log_excerpt(raw),
+                )
+                continue
+
             logger.warning(
                 "PostSessionReflectionService: malformed JSON from LLM excerpt=%r",
                 _compact_log_excerpt(raw),
             )
             return None
+        else:
+            return None
+
         if parsed is None:
             return None
 
