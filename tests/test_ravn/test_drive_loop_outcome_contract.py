@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,6 +11,7 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from ravn.domain.events import RavnEventType
+from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
 from ravn.drive_loop import (
     _default_success_verdict,
     _extract_mimir_dream_counts,
@@ -337,6 +339,88 @@ files_changed: 2
         assert alias_event.payload["routing_only"] is True
 
     @pytest.mark.asyncio
+    async def test_resident_valkyrie_judgment_normalizes_local_model_yaml_drift(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+
+        task = _make_agent_task(task_id="task-k8s-drift")
+        task.session_id = "sess-k8s-drift"
+
+        await dl._emit_mesh_outcome_event(
+            task,
+            """\
+---outcome---
+decision: propose_action
+environment_id: cluster-a
+valkyrie_id: k8s-valkyrie
+signal_refs: evt-k8s-1
+tier: ambient
+confidence: "0.84"
+operational_state: investigating
+wakefulness: watchful
+rationale: pod restart signal needs inspection
+evidence:
+  event_id: evt-k8s-1
+  kind: kubernetes
+recommended_action: inspect pod before changing cluster state
+action_authority: yolo
+target_surfaces: surface:ops
+expires_at: 2026-06-04T20:30:00Z
+dissent_refs: null
+correlation_ids:
+  root: corr-k8s-1
+  task: task-k8s-1
+---end---
+""",
+            success=True,
+        )
+
+        canonical_event = mesh.publish.await_args_list[0].args[0]
+        outcome = canonical_event.payload["outcome"]
+        assert canonical_event.payload["valid"] is True
+        assert outcome["signal_refs"] == ["evt-k8s-1"]
+        assert outcome["confidence"] == 0.84
+        assert outcome["wakefulness"] == "watching"
+        assert outcome["action_authority"] == "yolo_allowed"
+        assert outcome["evidence"] == [{"event_id": "evt-k8s-1", "kind": "kubernetes"}]
+        assert outcome["target_surfaces"] == ["surface:ops"]
+        assert outcome["dissent_refs"] == []
+        assert outcome["expires_at"] == "2026-06-04T20:30:00Z"
+        assert outcome["state_summary"].startswith("investigating:")
+        json.dumps(canonical_event.payload)
+
+    def test_resident_valkyrie_normalization_makes_yaml_datetime_wire_safe(self) -> None:
+        outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {
+                "environment_id": "cluster-a",
+                "valkyrie_id": "k8s-valkyrie",
+                "signal_refs": ["evt-k8s-1"],
+                "tier": "ambient",
+                "confidence": 0.84,
+                "operational_state": "investigating",
+                "rationale": "pod restart signal needs inspection",
+                "evidence": [{"event_id": "evt-k8s-1"}],
+                "recommended_action": "inspect pod",
+                "action_authority": "autonomous",
+                "target_surfaces": ["surface:ops"],
+                "expires_at": datetime(2026, 6, 4, 20, 30, tzinfo=UTC),
+                "dissent_refs": [],
+                "correlation_ids": {"root": "corr-k8s-1"},
+            },
+        )
+
+        assert outcome["expires_at"] == "2026-06-04T20:30:00+00:00"
+        json.dumps(outcome)
+
+    @pytest.mark.asyncio
     async def test_invalid_resident_valkyrie_judgment_is_rejected_before_publication(
         self,
     ) -> None:
@@ -368,6 +452,7 @@ files_changed: 2
         assert rejected_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
         assert rejected_event.payload["valid"] is False
         assert any("tier" in error for error in rejected_event.payload["errors"])
+        json.dumps(rejected_event.payload)
         skuld_channel.emit.assert_awaited_once()
 
     @pytest.mark.asyncio

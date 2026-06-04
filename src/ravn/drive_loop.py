@@ -42,6 +42,7 @@ from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
     is_valkyrie_outcome_event,
+    normalize_valkyrie_outcome,
     validate_valkyrie_outcome,
 )
 from ravn.ports.channel import ChannelPort
@@ -208,6 +209,16 @@ def _parse_outcome_for_persona(
                 exc_info=True,
             )
     return parse_outcome_block(response_text)
+
+
+def _outcome_parse_errors(errors: list[str]) -> list[str]:
+    """Keep only errors that mean the outcome block itself was not parseable."""
+    return [
+        error
+        for error in errors
+        if error.startswith("YAML parse error:")
+        or "did not parse as a YAML mapping" in error
+    ]
 
 
 def _coerce_nonnegative_int(value: object) -> int | None:
@@ -1574,6 +1585,8 @@ class DriveLoop:
         if canonical_event_type == "mimir.source.ingested":
             for key, value in self._default_mimir_mount_fields().items():
                 outcome_fields.setdefault(key, value)
+        if is_valkyrie_outcome_event(canonical_event_type):
+            outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
 
         event_type_map = self._persona_config.produces.event_type_map
         success_verdict = _default_success_verdict(self._persona_config.produces)
@@ -1624,7 +1637,7 @@ class DriveLoop:
             if parsed is None:
                 validation_errors.append("resident Valkyrie outcome block is missing")
             elif not parsed.valid:
-                validation_errors.extend(parsed.errors)
+                validation_errors.extend(_outcome_parse_errors(parsed.errors))
             validation_errors.extend(
                 validate_valkyrie_outcome(canonical_event_type, outcome_fields)
             )
@@ -1681,6 +1694,7 @@ class DriveLoop:
                             exc_info=True,
                         )
                 return
+            valid = True
 
         await self._maybe_publish_workflow_artifacts(task, outcome_fields)
 
