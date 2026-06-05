@@ -1370,13 +1370,19 @@ class ValkyrieTelemetrySubscription:
     async def _bootstrap_subscribers(self) -> None:
         if self._startup_delay_seconds > 0:
             await asyncio.sleep(self._startup_delay_seconds)
-        failed = []
-        for label, subscriber in self._subscribers:
-            if self._stopping:
-                return
-            if not await self._start_subscriber(label, subscriber):
-                failed.append((label, subscriber))
-            await asyncio.sleep(0)
+        if self._stopping:
+            return
+        results = await asyncio.gather(
+            *(
+                self._start_subscriber(label, subscriber)
+                for label, subscriber in self._subscribers
+            ),
+        )
+        failed = [
+            subscriber_spec
+            for subscriber_spec, started in zip(self._subscribers, results, strict=True)
+            if not started
+        ]
         if failed:
             self._retry_task = asyncio.create_task(self._retry_failed(failed))
         if not self._subscriptions:
@@ -1394,7 +1400,11 @@ class ValkyrieTelemetrySubscription:
                 timeout=self._subscriber_start_timeout_seconds,
             )
         except Exception as exc:
-            logger.warning("valkyrie_dashboard: telemetry stream %s did not start: %s", label, exc)
+            logger.warning(
+                "valkyrie_dashboard: telemetry stream %s did not start: %r",
+                label,
+                exc,
+            )
             if hasattr(subscriber, "stop"):
                 with contextlib.suppress(Exception):
                     await subscriber.stop()
@@ -1416,13 +1426,19 @@ class ValkyrieTelemetrySubscription:
         pending = list(failed)
         while pending and not self._stopping:
             await asyncio.sleep(self._retry_interval_seconds)
-            next_pending = []
-            for label, subscriber in pending:
-                if self._stopping:
-                    return
-                if not await self._start_subscriber(label, subscriber):
-                    next_pending.append((label, subscriber))
-                await asyncio.sleep(0)
+            if self._stopping:
+                return
+            results = await asyncio.gather(
+                *(
+                    self._start_subscriber(label, subscriber)
+                    for label, subscriber in pending
+                ),
+            )
+            next_pending = [
+                subscriber_spec
+                for subscriber_spec, started in zip(pending, results, strict=True)
+                if not started
+            ]
             pending = next_pending
 
 

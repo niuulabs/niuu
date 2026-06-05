@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from ravn.api import create_app
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
+    ValkyrieTelemetrySubscription,
     build_nats_telemetry_subscription_from_env,
 )
 from ravn.api.warden_stream import WardenStreamBroker
@@ -677,6 +678,58 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     asyncio.run(subscription.stop())
     assert all(entry.subscription.unsubscribed for entry in created)
     assert all(entry.stopped for entry in created)
+
+
+def test_valkyrie_dashboard_telemetry_subscription_starts_streams_concurrently():
+    projection = ValkyrieDashboardProjection()
+    subscribed: list[str] = []
+
+    class FakeSubscription:
+        async def unsubscribe(self) -> None:
+            return None
+
+    class SlowSubscriber:
+        async def start(self) -> None:
+            await asyncio.sleep(2)
+
+        async def subscribe(self, event_types, handler):
+            del event_types, handler
+            subscribed.append("slow")
+            return FakeSubscription()
+
+        async def stop(self) -> None:
+            return None
+
+    class FastSubscriber:
+        async def start(self) -> None:
+            return None
+
+        async def subscribe(self, event_types, handler):
+            del event_types, handler
+            subscribed.append("fast")
+            return FakeSubscription()
+
+        async def stop(self) -> None:
+            return None
+
+    async def start_and_check() -> None:
+        subscription = ValkyrieTelemetrySubscription(
+            projection=projection,
+            subscribers=[
+                ("slow-stream", SlowSubscriber()),
+                ("fast-stream", FastSubscriber()),
+            ],
+            event_types=["*"],
+            startup_delay_seconds=0,
+            subscriber_start_timeout_seconds=1,
+            retry_interval_seconds=30,
+        )
+        await subscription.start()
+        await asyncio.sleep(0.2)
+        assert subscribed == ["fast"]
+        await subscription.stop()
+
+    asyncio.run(start_and_check())
 
 
 def test_valkyrie_dashboard_mutations(client: TestClient):
