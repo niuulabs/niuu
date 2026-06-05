@@ -59,7 +59,9 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('valkyrie-live-scope-rail')).toHaveTextContent('All Valkyries');
     expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Open signals');
     expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Learning in test');
-    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent('Signal tail');
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
+      'Live event and log tail',
+    );
     expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
       'Prepare a guarded rollout fix',
     );
@@ -81,7 +83,7 @@ describe('ValkyriePage', () => {
     expect(screen.queryByTestId('signal-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('huddle-panel')).not.toBeInTheDocument();
     expect(screen.getByText('Printer forge')).toBeInTheDocument();
-    expect(screen.getAllByText(/awaiting telemetry/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/configured only/i).length).toBeGreaterThan(0);
     expect(
       screen.queryByText('External sender asks for review before Friday'),
     ).not.toBeInTheDocument();

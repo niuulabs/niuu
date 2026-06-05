@@ -13,6 +13,7 @@ export interface EnvironmentSummary {
   name: string;
   kind: EnvironmentKind;
   health: EnvironmentHealth;
+  identitySource?: 'configured' | 'observed';
   flockId?: string;
   topologyNodeIds: string[];
   signalCount: number;
@@ -37,6 +38,8 @@ export interface ValkyrieResident {
   toolCount: number;
   lastDreamAt?: string;
   lastActionAt?: string;
+  lastObservedAt?: string;
+  identitySource?: 'configured' | 'observed';
 }
 
 export interface EnvironmentSignal {
@@ -179,6 +182,7 @@ export interface FlockLiveReport {
 export interface ValkyrieTelemetryTotals {
   eventsObserved: number;
   rawSignalEvents: number;
+  logEvents?: number;
   pollsCompleted: number;
   pollFailures: number;
   signalsCollected: number;
@@ -195,7 +199,11 @@ export interface ValkyrieTelemetryTotals {
   dreamCyclesStarted: number;
   dreamCyclesCompleted: number;
   dreamCyclesFailed: number;
+  dreamCyclesNoop?: number;
   flockMessages: number;
+  llmCalls?: number;
+  llmTokens?: number;
+  budgetDrops?: number;
   wakefulnessChanges?: number;
   toolRequests?: number;
   skillProposals?: number;
@@ -263,7 +271,20 @@ export interface ValkyrieOutcomeTelemetry {
 export interface ValkyrieEventTelemetry {
   id: string;
   eventType: string;
-  kind: 'signal' | 'judgment' | 'action' | 'learning' | 'task' | 'runtime' | 'wakefulness' | 'event';
+  kind:
+    | 'signal'
+    | 'judgment'
+    | 'action'
+    | 'learning'
+    | 'task'
+    | 'runtime'
+    | 'wakefulness'
+    | 'presence'
+    | 'flock'
+    | 'log'
+    | 'llm'
+    | 'tool'
+    | 'event';
   environmentId: string;
   valkyrieId?: string;
   valkyrieName?: string;
@@ -273,6 +294,19 @@ export interface ValkyrieEventTelemetry {
   observedAt: string;
   correlationId?: string;
   details?: Record<string, unknown>;
+}
+
+export interface ValkyrieLogTelemetry {
+  id: string;
+  eventType: string;
+  environmentId: string;
+  valkyrieId?: string;
+  valkyrieName?: string;
+  level: string;
+  component: string;
+  message: string;
+  taskId?: string;
+  observedAt: string;
 }
 
 export interface ValkyrieLearningTelemetry {
@@ -335,6 +369,7 @@ export interface ValkyrieTelemetry {
   recentTasks: ValkyrieTaskTelemetry[];
   recentOutcomes: ValkyrieOutcomeTelemetry[];
   recentEvents?: ValkyrieEventTelemetry[];
+  recentLogs?: ValkyrieLogTelemetry[];
   recentLearning?: ValkyrieLearningTelemetry[];
   recentToolNeeds?: ValkyrieToolNeedTelemetry[];
   runtime: ValkyrieRuntimeTelemetry[];

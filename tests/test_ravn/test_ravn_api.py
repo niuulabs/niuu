@@ -232,6 +232,22 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     )
     projection.record_event(
         SleipnirEvent(
+            event_type="learning.dream.noop",
+            source="valkyrie:valkyrie-ymir-k8s",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "dream_id": "dream:ymir:noop",
+                "summary": "No improvement extracted.",
+            },
+            summary="dream produced no improvement",
+            urgency=0.1,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 2, 30, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
             event_type="valkyrie.judgment.proposed",
             source="ravn:valkyrie:ymir",
             payload={
@@ -250,6 +266,58 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
             urgency=0.7,
             domain="infrastructure",
             timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="ravn.task.dropped",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "task_id": "task-budget",
+                "title": "Budget capped task",
+                "reason": "daily budget cap reached",
+                "persona": "k8s-valkyrie",
+            },
+            summary="task dropped",
+            urgency=0.5,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 5, 30, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="ravn.llm.call.completed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+                "total_tokens": 42,
+            },
+            summary="llm call completed",
+            urgency=0.1,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 6, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="ravn.log.warning",
+            source="ravn.drive_loop",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "valkyrie_name": "Sigrun",
+                "level": "warning",
+                "component": "drive_loop",
+                "message": "daily budget warning",
+                "task_id": "task-budget",
+            },
+            summary="daily budget warning",
+            urgency=0.3,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 7, tzinfo=UTC),
         )
     )
     projection.record_event(
@@ -293,18 +361,23 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
 
     assert telemetry["verified"] is True
     assert telemetry["source"] == "sleipnir_events"
-    assert telemetry["totals"]["eventsObserved"] == 6
+    assert telemetry["totals"]["eventsObserved"] == 10
     assert telemetry["totals"]["pollsCompleted"] == 1
     assert telemetry["totals"]["signalsCollected"] == 8
     assert telemetry["totals"]["signalsPublished"] == 5
     assert telemetry["totals"]["duplicateSignals"] == 3
     assert telemetry["totals"]["tasksEnqueued"] == 2
-    assert telemetry["totals"]["learningEvents"] == 1
-    assert telemetry["totals"]["dreamCyclesCompleted"] == 1
+    assert telemetry["totals"]["learningEvents"] == 2
+    assert telemetry["totals"]["dreamCyclesCompleted"] == 2
+    assert telemetry["totals"]["dreamCyclesNoop"] == 1
     assert telemetry["totals"]["judgments"] == 1
     assert telemetry["totals"]["actions"] == 1
     assert telemetry["totals"]["toolRequests"] == 1
     assert telemetry["totals"]["wakefulnessChanges"] == 1
+    assert telemetry["totals"]["llmCalls"] == 1
+    assert telemetry["totals"]["llmTokens"] == 42
+    assert telemetry["totals"]["logEvents"] == 1
+    assert telemetry["totals"]["budgetDrops"] == 1
     assert telemetry["byEnvironment"][0]["environmentId"] == "ymir"
     assert telemetry["byEnvironment"][0]["tasksEnqueued"] == 2
     assert telemetry["byEnvironment"][0]["judgments"] == 1
@@ -314,8 +387,9 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
         telemetry["recentOutcomes"][1]["summary"]
         == "Persistent ImagePullBackOff requires inspection."
     )
-    assert telemetry["recentEvents"][0]["kind"] == "wakefulness"
+    assert telemetry["recentEvents"][0]["kind"] == "log"
     assert telemetry["recentEvents"][0]["environmentId"] == "ymir"
+    assert telemetry["recentLogs"][0]["message"] == "daily budget warning"
     assert telemetry["recentLearning"][0]["status"] == "wakefulness"
     assert telemetry["recentToolNeeds"][0]["capability"] == "k8s.inspect_pod"
     assert telemetry["recentPolls"][0]["sourceId"] == "kubernetes-events"
@@ -324,6 +398,41 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["runtime"][0]["residentPersonality"] == "Evidence-first cluster guardian."
     assert any(event.get("valkyrieName") == "Sigrun" for event in telemetry["recentEvents"])
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+    assert projection.logs()[0]["component"] == "drive_loop"
+
+
+def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.presence.announced",
+            source="ravn:valkyrie:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "valkyrie_id": "valkyrie-valhalla-k8s",
+                "valkyrie_name": "Runa",
+                "resident_personality": "Pattern-minded state maintainer.",
+                "source_count": 2,
+                "drive_loop_enabled": True,
+                "initiative_enabled": True,
+                "poll_interval_seconds": 15,
+            },
+            summary="presence announced",
+            urgency=0.1,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, tzinfo=UTC),
+        )
+    )
+
+    dashboard = projection.dashboard()
+
+    valkyrie = dashboard["valkyries"][0]
+    assert valkyrie["name"] == "Runa"
+    assert valkyrie["identitySource"] == "observed"
+    assert valkyrie["specialty"] == "Pattern-minded state maintainer."
+    assert dashboard["environments"][0]["identitySource"] == "observed"
+    assert dashboard["telemetry"]["runtime"][0]["valkyrieName"] == "Runa"
 
 
 def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy():

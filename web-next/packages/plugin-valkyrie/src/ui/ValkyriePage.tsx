@@ -712,10 +712,6 @@ export type LiveView = 'console' | 'topology' | 'lineage' | 'learning' | 'huddle
 
 function LiveMetricGrid({ telemetry }: { telemetry: ValkyrieTelemetry }) {
   const totals = telemetry.totals;
-  const activeTasks = Math.max(
-    0,
-    totals.tasksStarted - totals.tasksCompleted - totals.tasksFailed,
-  );
   const dreaming = Math.max(0, totals.dreamCyclesStarted - totals.dreamCyclesCompleted);
   const metrics = [
     {
@@ -724,14 +720,25 @@ function LiveMetricGrid({ telemetry }: { telemetry: ValkyrieTelemetry }) {
       icon: Bell,
     },
     { label: 'Residents', value: compactNumber(telemetry.runtime.length), icon: Shield },
-    { label: 'Dreaming', value: compactNumber(dreaming || totals.dreamCyclesStarted), icon: Moon },
+    {
+      label: 'Dreams',
+      value: compactNumber(
+        dreaming || totals.dreamCyclesStarted || totals.dreamCyclesNoop || totals.dreamCyclesCompleted,
+      ),
+      icon: Moon,
+    },
     { label: 'Learning in test', value: compactNumber(totals.learningEvents), icon: Brain },
-    { label: 'Active actions', value: compactNumber(activeTasks || totals.actions), icon: Zap },
+    {
+      label: 'LLM calls',
+      value: compactNumber(totals.llmCalls || telemetry.recentOutcomes.length),
+      icon: Cpu,
+    },
+    { label: 'Budget drops', value: compactNumber(totals.budgetDrops || 0), icon: Zap },
   ];
 
   return (
     <section
-      className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-5"
+      className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-3 niuu:xl:grid-cols-6"
       data-testid="valkyrie-live-metrics"
     >
       {metrics.map((metric) => (
@@ -815,19 +822,52 @@ function EventLogPanel({
   const events = (telemetry.recentEvents ?? []).filter(
     (event) => environmentMatchesSelection(environmentId, event.environmentId),
   );
+  const logs = (telemetry.recentLogs ?? []).filter((log) =>
+    environmentMatchesSelection(environmentId, log.environmentId),
+  );
+  const rows = [
+    ...events.map((event) => ({
+      id: event.id,
+      observedAt: event.observedAt,
+      environmentId: event.environmentId,
+      kind: event.kind,
+      summary: event.summary,
+      meta: [
+        event.eventType,
+        event.valkyrieName || event.valkyrieId || '',
+        detailText(event.details),
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      source: event.source || '',
+    })),
+    ...logs.map((log) => ({
+      id: log.id,
+      observedAt: log.observedAt,
+      environmentId: log.environmentId,
+      kind: log.level || 'log',
+      summary: log.message,
+      meta: [log.eventType, log.valkyrieName || log.valkyrieId || '', log.taskId || '']
+        .filter(Boolean)
+        .join(' · '),
+      source: log.component,
+    })),
+  ].sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt));
   return (
     <section className={`${PANEL_PAD} niuu:min-h-0`} data-testid="valkyrie-event-log">
       <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
         <div className="niuu:flex niuu:items-center niuu:gap-2">
           <Terminal size={16} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Signal tail</h2>
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+            Live event and log tail
+          </h2>
         </div>
         <span className="niuu:text-xs niuu:text-text-muted">
-          sleipnir · {compactNumber(events.length)} retained
+          NATS · {compactNumber(events.length)} events · {compactNumber(logs.length)} logs
         </span>
       </div>
       <div className="niuu:max-h-[34rem] niuu:overflow-auto niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary">
-        {events.slice(0, 80).map((event) => (
+        {rows.slice(0, 100).map((event) => (
           <div
             key={event.id}
             className="niuu:grid niuu:gap-2 niuu:border-0 niuu:border-b niuu:border-solid niuu:border-border niuu:px-3 niuu:py-2 niuu:text-xs niuu:last:border-b-0 niuu:md:grid-cols-[7rem_9rem_minmax(0,1fr)_9rem]"
@@ -840,17 +880,15 @@ function EventLogPanel({
               </span>
               <span className="niuu:text-text-primary">{event.summary}</span>
               <span className="niuu:mt-1 niuu:block niuu:truncate niuu:text-text-muted">
-                {event.eventType}
-                {event.valkyrieName || event.valkyrieId
-                  ? ` · ${event.valkyrieName || event.valkyrieId}`
-                  : ''}
-                {detailText(event.details) ? ` · ${detailText(event.details)}` : ''}
+                {event.meta}
               </span>
             </span>
             <span className="niuu:truncate niuu:text-text-muted">{valueOrNone(event.source)}</span>
           </div>
         ))}
-        {events.length === 0 ? <EmptyState label="No Valkyrie event log entries" /> : null}
+        {rows.length === 0 ? (
+          <EmptyState label="No Valkyrie events or structured logs observed" />
+        ) : null}
       </div>
     </section>
   );
@@ -880,6 +918,26 @@ function LearningOpsPanel({
         </span>
       </div>
       <div className="niuu:grid niuu:gap-2">
+        <div className="niuu:grid niuu:grid-cols-3 niuu:gap-2">
+          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+            <div className={MUTED}>Started</div>
+            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+              {compactNumber(telemetry.totals.dreamCyclesStarted)}
+            </div>
+          </div>
+          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+            <div className={MUTED}>Completed</div>
+            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+              {compactNumber(telemetry.totals.dreamCyclesCompleted)}
+            </div>
+          </div>
+          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+            <div className={MUTED}>No-op</div>
+            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+              {compactNumber(telemetry.totals.dreamCyclesNoop || 0)}
+            </div>
+          </div>
+        </div>
         {learning.slice(0, 8).map((entry) => (
           <article key={entry.id} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
             <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
@@ -1000,6 +1058,9 @@ function LiveScopeRail({
     ]),
   );
   const environments = dashboard.environments;
+  const residentByEnvironment = new Map(
+    dashboard.valkyries.map((valkyrie) => [valkyrie.environmentId, valkyrie]),
+  );
   return (
     <aside
       className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-3 niuu:overflow-auto niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:p-3"
@@ -1050,6 +1111,7 @@ function LiveScopeRail({
           const selected = selectedEnvironmentId === environment.id;
           const observedSignals = observed?.signalsPublished ?? 0;
           const queued = observed?.tasksEnqueued ?? 0;
+          const resident = residentByEnvironment.get(environment.id);
           return (
             <button
               key={environment.id}
@@ -1067,7 +1129,14 @@ function LiveScopeRail({
                   {environment.name}
                 </span>
                 <span className="niuu:block niuu:truncate niuu:text-xs niuu:text-text-muted">
-                  {kindLabel(environment.kind)} · {observed ? 'verified telemetry' : 'awaiting telemetry'}
+                  {kindLabel(environment.kind)}
+                  {resident?.name ? ` · ${resident.name}` : ''}
+                  {' · '}
+                  {resident?.identitySource === 'observed'
+                    ? 'observed resident'
+                    : observed
+                      ? 'observed events'
+                      : 'configured only'}
                   {queued > 0 ? ` · ${compactNumber(queued)} queued` : ''}
                 </span>
               </span>
@@ -1102,6 +1171,13 @@ function LlmStatusPanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
         <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">LLM backend</h2>
       </div>
       <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs">
+        <div>
+          <dt className={MUTED}>Observed calls</dt>
+          <dd className="niuu:text-text-primary">
+            {compactNumber(telemetry.totals.llmCalls || 0)} calls ·{' '}
+            {compactNumber(telemetry.totals.llmTokens || 0)} tokens
+          </dd>
+        </div>
         <div>
           <dt className={MUTED}>Model</dt>
           <dd className="niuu:break-words niuu:text-text-primary">

@@ -229,6 +229,7 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
         "totals": {
             "eventsObserved": 0,
             "rawSignalEvents": 0,
+            "logEvents": 0,
             "pollsCompleted": 0,
             "pollFailures": 0,
             "signalsCollected": 0,
@@ -245,7 +246,11 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
             "dreamCyclesStarted": 0,
             "dreamCyclesCompleted": 0,
             "dreamCyclesFailed": 0,
+            "dreamCyclesNoop": 0,
             "flockMessages": 0,
+            "llmCalls": 0,
+            "llmTokens": 0,
+            "budgetDrops": 0,
             "wakefulnessChanges": 0,
             "toolRequests": 0,
             "skillProposals": 0,
@@ -255,6 +260,7 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
         "recentTasks": [],
         "recentOutcomes": [],
         "recentEvents": [],
+        "recentLogs": [],
         "recentLearning": [],
         "recentToolNeeds": [],
         "runtime": [],
@@ -288,7 +294,13 @@ def _is_raw_signal_event(event: dict[str, Any]) -> bool:
 
 
 def _is_runtime_event(event: dict[str, Any]) -> bool:
-    return str(event.get("event_type") or "") == "valkyrie.runtime.started"
+    event_type = str(event.get("event_type") or "")
+    return event_type in {
+        "valkyrie.runtime.started",
+        "valkyrie.presence.announced",
+        "valkyrie.presence.heartbeat",
+        "valkyrie.state.updated",
+    }
 
 
 def _event_timestamp(event: dict[str, Any]) -> str:
@@ -324,32 +336,52 @@ def _event_valkyrie_id(payload: dict[str, Any]) -> str:
 
 
 def _event_valkyrie_name(payload: dict[str, Any]) -> str:
-    return str(payload.get("valkyrie_name") or payload.get("valkyrieName") or "")
+    return str(
+        payload.get("valkyrie_name")
+        or payload.get("valkyrieName")
+        or payload.get("resident_name")
+        or ""
+    )
+
+
+def _event_kind(event_type: str) -> str:
+    if event_type.startswith("signal."):
+        return "signal"
+    if event_type.startswith("valkyrie.judgment."):
+        return "judgment"
+    if event_type.startswith("valkyrie.action."):
+        return "action"
+    if event_type.startswith("learning.") or event_type.startswith("flock.learning."):
+        return "learning"
+    if event_type.startswith("ravn.task."):
+        return "task"
+    if event_type.startswith("ravn.log.") or event_type.startswith("valkyrie.log."):
+        return "log"
+    if event_type.startswith("ravn.llm.") or event_type.startswith("llm."):
+        return "llm"
+    if event_type.startswith("tool.") or event_type.startswith("skill."):
+        return "tool"
+    if event_type.startswith("self_improvement."):
+        return "learning"
+    if event_type.startswith("flock."):
+        return "flock"
+    if event_type.startswith("valkyrie.presence."):
+        return "presence"
+    if event_type in {"valkyrie.runtime.started", "valkyrie.state.updated"}:
+        return "runtime"
+    if event_type == "valkyrie.wakefulness.changed":
+        return "wakefulness"
+    return "event"
 
 
 def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("event_type") or "")
     summary = str(event.get("summary") or payload.get("summary") or event_type)
-    kind = "event"
-    if event_type.startswith("signal."):
-        kind = "signal"
-    elif event_type.startswith("valkyrie.judgment."):
-        kind = "judgment"
-    elif event_type.startswith("valkyrie.action."):
-        kind = "action"
-    elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
-        kind = "learning"
-    elif event_type.startswith("ravn.task."):
-        kind = "task"
-    elif event_type == "valkyrie.runtime.started":
-        kind = "runtime"
-    elif event_type == "valkyrie.wakefulness.changed":
-        kind = "wakefulness"
     event_id = event.get("event_id") or event.get("id") or f"{event_type}:{_event_timestamp(event)}"
     return {
         "id": str(event_id),
         "eventType": event_type,
-        "kind": kind,
+        "kind": _event_kind(event_type),
         "environmentId": _event_environment_id(event, payload),
         "valkyrieId": _event_valkyrie_id(payload),
         "valkyrieName": _event_valkyrie_name(payload),
@@ -369,6 +401,32 @@ def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str
                 "published_signal_event_ids",
             }
         },
+    }
+
+
+def _structured_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "")
+    level = str(payload.get("level") or payload.get("severity") or "info").lower()
+    message = str(
+        payload.get("message")
+        or payload.get("body")
+        or payload.get("summary")
+        or event.get("summary")
+        or event_type
+    )
+    log_id = event.get("event_id") or event.get("id") or f"{event_type}:{_event_timestamp(event)}"
+    component = payload.get("component") or payload.get("logger") or event.get("source") or ""
+    return {
+        "id": str(log_id),
+        "eventType": event_type,
+        "environmentId": _event_environment_id(event, payload),
+        "valkyrieId": _event_valkyrie_id(payload),
+        "valkyrieName": _event_valkyrie_name(payload),
+        "level": level,
+        "component": str(component),
+        "message": message,
+        "taskId": str(payload.get("task_id") or ""),
+        "observedAt": _event_timestamp(event),
     }
 
 
@@ -434,6 +492,98 @@ def _tool_need_entry(
     }
 
 
+def _runtime_entry(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    timestamp: str,
+) -> dict[str, Any]:
+    return {
+        "environmentId": _event_environment_id(event, payload),
+        "valkyrieId": _event_valkyrie_id(payload),
+        "valkyrieName": _event_valkyrie_name(payload),
+        "residentPersonality": str(payload.get("resident_personality") or ""),
+        "sourceCount": payload.get("source_count", 0),
+        "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
+        "initiativeEnabled": bool(payload.get("initiative_enabled")),
+        "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
+        "observedAt": timestamp,
+    }
+
+
+def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
+    telemetry = dashboard.get("telemetry") if isinstance(dashboard.get("telemetry"), dict) else {}
+    runtime = telemetry.get("runtime") if isinstance(telemetry.get("runtime"), list) else []
+    observed_by_id = {
+        str(entry.get("valkyrieId") or ""): entry
+        for entry in runtime
+        if isinstance(entry, dict) and str(entry.get("valkyrieId") or "")
+    }
+    observed_by_env: dict[str, dict[str, Any]] = {}
+    for entry in runtime:
+        if not isinstance(entry, dict):
+            continue
+        env_id = str(entry.get("environmentId") or "")
+        if not env_id:
+            continue
+        observed_by_env[env_id] = entry
+        observed_by_env[f"env-k8s-{env_id}"] = entry
+        observed_by_env[f"env-host-{env_id}"] = entry
+        observed_by_env[f"env-printer-{env_id}"] = entry
+    for environment in dashboard.get("environments", []):
+        if not isinstance(environment, dict):
+            continue
+        observed = observed_by_env.get(str(environment.get("id") or ""))
+        environment["identitySource"] = "observed" if observed else "configured"
+        if observed:
+            environment["lastSignalAt"] = str(
+                observed.get("observedAt") or environment.get("lastSignalAt") or ""
+            )
+            environment["wakefulCount"] = max(_as_int(environment.get("wakefulCount"), 0), 1)
+
+    known_valkyrie_ids = set()
+    for valkyrie in dashboard.get("valkyries", []):
+        if not isinstance(valkyrie, dict):
+            continue
+        valkyrie_id = str(valkyrie.get("id") or "")
+        known_valkyrie_ids.add(valkyrie_id)
+        observed = observed_by_id.get(valkyrie_id)
+        if observed is None:
+            valkyrie["identitySource"] = "configured"
+            continue
+        if observed.get("valkyrieName"):
+            valkyrie["name"] = str(observed["valkyrieName"])
+        if observed.get("residentPersonality"):
+            valkyrie["specialty"] = str(observed["residentPersonality"])
+        valkyrie["identitySource"] = "observed"
+        valkyrie["status"] = "online"
+        valkyrie["lastObservedAt"] = str(observed.get("observedAt") or "")
+
+    for valkyrie_id, observed in observed_by_id.items():
+        if valkyrie_id in known_valkyrie_ids:
+            continue
+        dashboard.setdefault("valkyries", []).append(
+            {
+                "id": valkyrie_id,
+                "name": str(observed.get("valkyrieName") or valkyrie_id),
+                "environmentId": str(observed.get("environmentId") or "unknown"),
+                "flockId": "",
+                "persona": "observed-valkyrie",
+                "specialty": str(observed.get("residentPersonality") or "observed resident"),
+                "wakefulness": "watching",
+                "autonomyMode": "delegated" if observed.get("driveLoopEnabled") else "manual",
+                "status": "online",
+                "confidence": 0.0,
+                "inboxSubjects": [],
+                "toolCount": 0,
+                "lastDreamAt": "",
+                "lastActionAt": "",
+                "identitySource": "observed",
+                "lastObservedAt": str(observed.get("observedAt") or ""),
+            }
+        )
+    return dashboard
+
+
 def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str) -> dict[str, Any]:
     entry = entries.get(env_id)
     if entry is None:
@@ -473,9 +623,10 @@ def _aggregate_telemetry(
     recent_tasks: list[dict[str, Any]] = []
     recent_outcomes: list[dict[str, Any]] = []
     recent_events: list[dict[str, Any]] = []
+    recent_logs: list[dict[str, Any]] = []
     recent_learning: list[dict[str, Any]] = []
     recent_tool_needs: list[dict[str, Any]] = []
-    runtime: list[dict[str, Any]] = []
+    runtime_by_key: dict[str, dict[str, Any]] = {}
     llm = {
         "status": "unknown",
         "model": "",
@@ -496,7 +647,15 @@ def _aggregate_telemetry(
         totals["eventsObserved"] += 1
         recent_events.append(_event_log_entry(event, payload))
 
-        if event_type == "valkyrie.signal_poll.completed":
+        if event_type.startswith("ravn.log.") or event_type.startswith("valkyrie.log."):
+            totals["logEvents"] += 1
+            recent_logs.append(_structured_log_entry(event, payload))
+        elif event_type.startswith("ravn.llm.") or event_type.startswith("llm."):
+            totals["llmCalls"] += 1
+            totals["llmTokens"] += _payload_int(payload, "total_tokens")
+            if not totals["llmTokens"]:
+                totals["llmTokens"] += _payload_int(payload, "tokens")
+        elif event_type == "valkyrie.signal_poll.completed":
             collected = _payload_int(payload, "collected_count")
             published = _payload_int(payload, "published_count")
             duplicates = _payload_int(payload, "duplicate_count")
@@ -536,20 +695,12 @@ def _aggregate_telemetry(
                     "observedAt": timestamp,
                 }
             )
-        elif event_type == "valkyrie.runtime.started":
-            runtime.append(
-                {
-                    "environmentId": env_id,
-                    "valkyrieId": payload.get("valkyrie_id", ""),
-                    "valkyrieName": payload.get("valkyrie_name", ""),
-                    "residentPersonality": payload.get("resident_personality", ""),
-                    "sourceCount": payload.get("source_count", 0),
-                    "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
-                    "initiativeEnabled": bool(payload.get("initiative_enabled")),
-                    "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
-                    "observedAt": timestamp,
-                }
+        elif _is_runtime_event(event):
+            runtime_entry = _runtime_entry(event, payload, timestamp)
+            runtime_key = (
+                f"{runtime_entry['environmentId']}:{runtime_entry['valkyrieId'] or 'unknown'}"
             )
+            runtime_by_key[runtime_key] = runtime_entry
             llm = {
                 "status": "configured",
                 "model": str(payload.get("llm_model") or ""),
@@ -601,13 +752,16 @@ def _aggregate_telemetry(
         elif event_type == "ravn.task.dropped":
             totals["tasksDropped"] += 1
             entry["tasksDropped"] += 1
+            reason = str(payload.get("reason") or "")
+            if "budget" in reason.lower() or "cap" in reason.lower():
+                totals["budgetDrops"] += 1
             recent_tasks.append(
                 {
                     "environmentId": env_id,
                     "taskId": payload.get("task_id", ""),
                     "title": payload.get("title", ""),
                     "status": "dropped",
-                    "reason": payload.get("reason", ""),
+                    "reason": reason,
                     "triggeredBy": payload.get("triggered_by", ""),
                     "persona": payload.get("persona", ""),
                     "observedAt": timestamp,
@@ -694,6 +848,9 @@ def _aggregate_telemetry(
                 entry["dreamCycles"] += 1
             elif event_type == "learning.dream.completed":
                 totals["dreamCyclesCompleted"] += 1
+            elif event_type == "learning.dream.noop":
+                totals["dreamCyclesNoop"] += 1
+                totals["dreamCyclesCompleted"] += 1
             elif event_type == "learning.dream.failed":
                 totals["dreamCyclesFailed"] += 1
         elif event_type == "valkyrie.wakefulness.changed":
@@ -702,10 +859,26 @@ def _aggregate_telemetry(
         elif (
             event_type.startswith("self_improvement.")
             or event_type.startswith("skill.")
+            or event_type.startswith("tool.")
             or event_type == "skill_manage"
         ):
             totals["skillProposals"] += 1
             recent_learning.append(_learning_entry(event, payload))
+            capability = str(
+                payload.get("capability")
+                or payload.get("tool")
+                or payload.get("artifact_type")
+                or event_type
+            )
+            totals["toolRequests"] += 1
+            recent_tool_needs.append(
+                _tool_need_entry(
+                    event,
+                    payload,
+                    capability=capability,
+                    status=event_type.rsplit(".", 1)[-1],
+                )
+            )
         elif event_type.startswith("flock."):
             totals["flockMessages"] += 1
 
@@ -719,8 +892,18 @@ def _aggregate_telemetry(
         gaps.append("No verified valkyrie.action.* events observed.")
     if totals["learningEvents"] == 0:
         gaps.append("No verified learning or flock.learning events observed.")
-    if totals["dreamCyclesStarted"] == 0:
+    runtime = sorted(
+        runtime_by_key.values(),
+        key=lambda item: item.get("observedAt", ""),
+        reverse=True,
+    )
+    if totals["dreamCyclesStarted"] == 0 and totals["dreamCyclesNoop"] == 0:
         gaps.append("No verified dream-cycle events observed.")
+    elif (
+        totals["dreamCyclesStarted"] > 0
+        and totals["learningEvents"] <= totals["dreamCyclesStarted"]
+    ):
+        gaps.append("Dream cycles are running, but no improvement artifacts were extracted yet.")
     if totals["toolRequests"] == 0:
         gaps.append("No verified tool/action capability requests observed.")
     if totals["skillProposals"] == 0 and totals["learningEvents"] == 0:
@@ -757,6 +940,11 @@ def _aggregate_telemetry(
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:120],
+        "recentLogs": sorted(
+            recent_logs,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:120],
         "recentLearning": sorted(
             recent_learning,
             key=lambda item: item.get("observedAt", ""),
@@ -767,11 +955,7 @@ def _aggregate_telemetry(
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:60],
-        "runtime": sorted(
-            runtime,
-            key=lambda item: item.get("observedAt", ""),
-            reverse=True,
-        ),
+        "runtime": runtime,
         "llm": llm,
         "gaps": gaps,
     }
@@ -840,6 +1024,7 @@ def _configured_valkyrie_entries(
                 "toolCount": _as_int(_field(combined, "toolCount", "tool_count", default=0)),
                 "lastDreamAt": str(_field(combined, "lastDreamAt", "last_dream_at", default="")),
                 "lastActionAt": str(_field(combined, "lastActionAt", "last_action_at", default="")),
+                "identitySource": "configured",
             },
         )
     return entries
@@ -958,7 +1143,7 @@ class ValkyrieDashboardProjection:
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
-        return deepcopy(self._dashboard)
+        return _merge_observed_runtime(deepcopy(self._dashboard))
 
     def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
         event_data = _event_dict(event)
@@ -1073,6 +1258,20 @@ class ValkyrieDashboardProjection:
 
     def events(self) -> list[dict[str, Any]]:
         return _signal_events(self._dashboard)
+
+    def telemetry_events(self) -> list[dict[str, Any]]:
+        telemetry = self.dashboard().get("telemetry", {})
+        if not isinstance(telemetry, dict):
+            return []
+        events = telemetry.get("recentEvents", [])
+        return deepcopy(events if isinstance(events, list) else [])
+
+    def logs(self) -> list[dict[str, Any]]:
+        telemetry = self.dashboard().get("telemetry", {})
+        if not isinstance(telemetry, dict):
+            return []
+        logs = telemetry.get("recentLogs", [])
+        return deepcopy(logs if isinstance(logs, list) else [])
 
     def _touch(self) -> None:
         self._dashboard["updatedAt"] = _now()
@@ -1463,6 +1662,14 @@ def create_valkyrie_router(
     @router.post("/autonomy")
     async def update_autonomy(request: AutonomyUpdateRequest) -> Dashboard:
         return store.update_autonomy(request)
+
+    @router.get("/telemetry/events")
+    async def list_telemetry_events() -> list[dict[str, Any]]:
+        return store.telemetry_events()
+
+    @router.get("/logs")
+    async def list_logs() -> list[dict[str, Any]]:
+        return store.logs()
 
     @router.get("/signals")
     async def signal_stream(replay_once: bool = False) -> StreamingResponse:
