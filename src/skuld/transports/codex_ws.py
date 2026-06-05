@@ -139,11 +139,15 @@ class CodexWebSocketTransport(CLITransport):
         codex_port: int = 0,
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
+        reasoning_effort: str = "",
         **_kwargs: object,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        # Default Codex to HIGH reasoning effort when none is specified — push new
+        # sessions to think hard by default (Codex has no `max` tier).
+        self._reasoning_effort = reasoning_effort or "high"
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
@@ -152,7 +156,7 @@ class CodexWebSocketTransport(CLITransport):
         self._codex_port = codex_port or _pick_free_port()
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
-        self._resume_session_id = resume_session_id
+        self._resume_session_id = (resume_session_id or "").strip() or None
         self._env = dict(os.environ)
 
         self._process: asyncio.subprocess.Process | None = None
@@ -435,6 +439,22 @@ class CodexWebSocketTransport(CLITransport):
             }
             if self._model:
                 thread_params["model"] = self._model
+            # Reasoning effort -> codex thread param. Codex accepts
+            # minimal/low/medium/high; map extra-high/xhigh/max to the highest
+            # supported value so an unknown alias can never break the session.
+            if self._reasoning_effort:
+                _eff = self._reasoning_effort.strip().lower()
+                _map = {
+                    "minimal": "minimal",
+                    "low": "low",
+                    "medium": "medium",
+                    "high": "high",
+                    "extra-high": "high",
+                    "extra_high": "high",
+                    "xhigh": "high",
+                    "max": "high",
+                }
+                thread_params["modelReasoningEffort"] = _map.get(_eff, "high")
             thread_params.update(self._permission_thread_params())
             if self._system_prompt:
                 # baseInstructions = role/persona ("you are a service developer…")

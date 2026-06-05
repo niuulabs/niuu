@@ -523,6 +523,9 @@ class SDKTransport(CLITransport):
             "mcp_servers": self._mcp_servers,
             "include_partial_messages": True,
             "thinking": {"type": "adaptive", "display": "summarized"},
+            # Default Claude to MAX reasoning effort ("ultra") — push new sessions
+            # to think hardest by default (Anthropic `effort` param, Opus/Sonnet 4.6+).
+            "effort": "max",
             "env": env,
         }
         if self._skip_permissions:

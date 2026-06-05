@@ -1115,7 +1115,9 @@ class Broker:
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
         """Save any accumulated assistant content as a conversation turn."""
         content = self._pending_assistant_content
-        if not content:
+        # Save when there's text OR captured parts (tool_use/tool_result/reasoning)
+        # — a tool-only assistant turn (no prose) must still persist its tool cards.
+        if not content and not self._pending_assistant_parts:
             return
 
         # Flush remaining reasoning
@@ -2904,6 +2906,24 @@ class Broker:
                 )
         elif tool_result_only_user_event:
             await self._finish_assistant_tool_trace_spans_from_user_event(data)
+            # Persist tool_result blocks onto the open assistant turn so the saved
+            # conversation carries tool OUTPUT (not just the call) for read-back.
+            tr_msg = data.get("message", {})
+            tr_blocks = tr_msg.get("content", []) if isinstance(tr_msg, dict) else []
+            for tr_block in tr_blocks or []:
+                if (
+                    isinstance(tr_block, dict)
+                    and tr_block.get("type") == "tool_result"
+                    and tr_block.get("tool_use_id")
+                ):
+                    self._pending_assistant_parts.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tr_block.get("tool_use_id"),
+                            "content": tr_block.get("content"),
+                            "is_error": bool(tr_block.get("is_error")),
+                        }
+                    )
         elif event_type == "result":
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
@@ -2915,30 +2935,44 @@ class Broker:
         # We also handle the HTTP streaming format (content_block_delta, result)
         # for backward compatibility.
         if event_type == "assistant":
-            # Extract content from the assistant message
+            # Extract content and ACCUMULATE parts across the messages of one turn
+            # (a tool_use message, then the final text), so the SAVED conversation
+            # turn carries tool calls + reasoning — not just text — and reloads with
+            # its tool cards. Parts are reset on flush, not per message.
             message = data.get("message", {})
             content_blocks = message.get("content", [])
             if isinstance(content_blocks, list) and content_blocks:
                 text_parts = []
-                reasoning_parts = []
                 for block in content_blocks:
                     if not isinstance(block, dict):
                         continue
-                    if block.get("type") == "text" and block.get("text"):
+                    btype = block.get("type")
+                    if btype == "text" and block.get("text"):
                         text_parts.append(block["text"])
-                    elif block.get("type") == "thinking" and block.get("thinking"):
-                        reasoning_parts.append(block["thinking"])
+                        self._pending_assistant_parts.append(
+                            {"type": "text", "text": block["text"]}
+                        )
+                    elif btype == "thinking" and block.get("thinking"):
+                        # Keep last 500 chars per reasoning block as a summary.
+                        self._pending_assistant_parts.append(
+                            {"type": "reasoning", "text": str(block["thinking"])[-500:]}
+                        )
+                    elif btype == "tool_use" and block.get("id"):
+                        self._pending_assistant_parts.append(
+                            {
+                                "type": "tool_use",
+                                "id": block.get("id"),
+                                "name": block.get("name"),
+                                "input": block.get("input") or {},
+                            }
+                        )
                 text_content = "\n".join(text_parts)
                 if text_content:
-                    self._pending_assistant_content = text_content
-                    self._pending_assistant_parts = []
-                    if reasoning_parts:
-                        # Keep last 500 chars of reasoning as summary
-                        combined = "\n".join(reasoning_parts)
-                        self._pending_assistant_parts.append(
-                            {"type": "reasoning", "text": combined[-500:]}
-                        )
-                    self._pending_assistant_parts.append({"type": "text", "text": text_content})
+                    self._pending_assistant_content = (
+                        f"{self._pending_assistant_content}\n{text_content}"
+                        if self._pending_assistant_content
+                        else text_content
+                    )
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
