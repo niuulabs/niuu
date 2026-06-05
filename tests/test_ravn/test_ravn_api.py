@@ -442,6 +442,10 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "ymir-pass")
     monkeypatch.setenv("VALHALLA_PASS", "valhalla-pass")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS", "3600")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_STARTUP_DELAY_SECONDS", "0")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_START_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS", "0")
     monkeypatch.setenv(
         "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
         (
@@ -461,13 +465,19 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     assert created[0].kwargs["user"] == "valkyrie-ymir"
     assert created[0].kwargs["password"] == "ymir-pass"
     assert created[0].kwargs["replay_from_time"] is not None
+    assert created[0].kwargs["connect_timeout_s"] == 1.5
+    assert created[0].kwargs["max_reconnect_attempts"] == 0
     assert created[1].kwargs["stream_name"] == "obs-valhalla-events"
     assert created[1].kwargs["subject_prefix"] == "obs.valhalla"
     assert created[1].kwargs["consumer_group"] == "dashboard-obs-valhalla-events"
     assert created[1].kwargs["user"] == "valkyrie-dashboard-valhalla"
     assert created[1].kwargs["password"] == "valhalla-pass"
 
-    asyncio.run(subscription.start())
+    async def start_and_flush() -> None:
+        await subscription.start()
+        await asyncio.sleep(0.1)
+
+    asyncio.run(start_and_flush())
     assert all(entry.started for entry in created)
     assert all(entry.event_types == ["*"] for entry in created)
 

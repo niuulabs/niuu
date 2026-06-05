@@ -1300,12 +1300,16 @@ class ValkyrieTelemetrySubscription:
         subscribers: list[tuple[str, Any]],
         event_types: list[str],
         retry_interval_seconds: int = 30,
+        startup_delay_seconds: float = 5.0,
+        subscriber_start_timeout_seconds: float = 5.0,
     ) -> None:
         self._projection = projection
         self._subscribers = subscribers
         self._event_types = event_types
         self._subscriptions: list[tuple[str, Any]] = []
         self._retry_interval_seconds = max(retry_interval_seconds, 1)
+        self._startup_delay_seconds = max(startup_delay_seconds, 0.0)
+        self._subscriber_start_timeout_seconds = max(subscriber_start_timeout_seconds, 1.0)
         self._bootstrap_task: asyncio.Task[None] | None = None
         self._retry_task: asyncio.Task[None] | None = None
         self._started_labels: set[str] = set()
@@ -1339,12 +1343,15 @@ class ValkyrieTelemetrySubscription:
                     await subscriber.stop()
 
     async def _bootstrap_subscribers(self) -> None:
+        if self._startup_delay_seconds > 0:
+            await asyncio.sleep(self._startup_delay_seconds)
         failed = []
         for label, subscriber in self._subscribers:
             if self._stopping:
                 return
             if not await self._start_subscriber(label, subscriber):
                 failed.append((label, subscriber))
+            await asyncio.sleep(0)
         if failed:
             self._retry_task = asyncio.create_task(self._retry_failed(failed))
         if not self._subscriptions:
@@ -1357,8 +1364,10 @@ class ValkyrieTelemetrySubscription:
         if label in self._started_labels:
             return True
         try:
-            await subscriber.start()
-            subscription = await subscriber.subscribe(self._event_types, self._handle)
+            subscription = await asyncio.wait_for(
+                self._start_subscriber_subscription(subscriber),
+                timeout=self._subscriber_start_timeout_seconds,
+            )
         except Exception as exc:
             logger.warning("valkyrie_dashboard: telemetry stream %s did not start: %s", label, exc)
             if hasattr(subscriber, "stop"):
@@ -1374,6 +1383,10 @@ class ValkyrieTelemetrySubscription:
         )
         return True
 
+    async def _start_subscriber_subscription(self, subscriber: Any) -> Any:
+        await subscriber.start()
+        return await subscriber.subscribe(self._event_types, self._handle)
+
     async def _retry_failed(self, failed: list[tuple[str, Any]]) -> None:
         pending = list(failed)
         while pending and not self._stopping:
@@ -1384,6 +1397,7 @@ class ValkyrieTelemetrySubscription:
                     return
                 if not await self._start_subscriber(label, subscriber):
                     next_pending.append((label, subscriber))
+                await asyncio.sleep(0)
             pending = next_pending
 
 
@@ -1398,6 +1412,16 @@ def _env_int(value: str | None, default: int) -> int:
         return int(value)
     except ValueError:
         logger.warning("invalid integer environment value %r; using %s", value, default)
+        return default
+
+
+def _env_float(value: str | None, default: float) -> float:
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("invalid float environment value %r; using %s", value, default)
         return default
 
 
@@ -1466,6 +1490,22 @@ def build_nats_telemetry_subscription_from_env(
         os.environ.get("RAVN_VALKYRIE_TELEMETRY_RETRY_SECONDS"),
         30,
     )
+    startup_delay_seconds = _env_float(
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_STARTUP_DELAY_SECONDS"),
+        5.0,
+    )
+    subscriber_start_timeout_seconds = _env_float(
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_START_TIMEOUT_SECONDS"),
+        5.0,
+    )
+    connect_timeout_seconds = _env_float(
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS"),
+        2.0,
+    )
+    max_reconnect_attempts = _env_int(
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS"),
+        0,
+    )
     replay_from_time = (
         datetime.now(UTC) - timedelta(seconds=replay_seconds) if replay_seconds > 0 else None
     )
@@ -1482,6 +1522,8 @@ def build_nats_telemetry_subscription_from_env(
                     subject_prefix=spec["subject_prefix"],
                     consumer_group=f"{consumer_group}-{consumer_suffix}",
                     replay_from_time=replay_from_time,
+                    connect_timeout_s=connect_timeout_seconds,
+                    max_reconnect_attempts=max_reconnect_attempts,
                     ensure_stream=False,
                     tls_ca_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", ""),
                     tls_cert_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", ""),
@@ -1509,6 +1551,8 @@ def build_nats_telemetry_subscription_from_env(
         projection=projection,
         subscribers=subscribers,
         retry_interval_seconds=retry_interval_seconds,
+        startup_delay_seconds=startup_delay_seconds,
+        subscriber_start_timeout_seconds=subscriber_start_timeout_seconds,
         # Subscribe once to the environment stream and let the projection decide
         # what to count. Multiple JetStream push consumers with the same config
         # can silently miss delivery in the live NATS setup.
