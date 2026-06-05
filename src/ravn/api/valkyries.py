@@ -26,6 +26,8 @@ from sleipnir.domain.events import SleipnirEvent
 
 Dashboard = dict[str, Any]
 logger = logging.getLogger(__name__)
+RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
+CONTROL_TELEMETRY_LIMIT = 2_000
 
 K8S_CLUSTERS: tuple[dict[str, Any], ...] = (
     {"id": "valhalla", "name": "Valhalla", "health": "watch", "signals": 18, "unresolved": 2},
@@ -177,6 +179,11 @@ def _event_dict(event: SleipnirEvent | dict[str, Any]) -> dict[str, Any]:
     if isinstance(event, SleipnirEvent):
         return event.to_dict()
     return dict(event)
+
+
+def _is_raw_signal_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("event_type") or "")
+    return event_type.startswith("signal.")
 
 
 def _event_timestamp(event: dict[str, Any]) -> str:
@@ -937,15 +944,21 @@ class ValkyrieDashboardProjection:
     def __init__(self) -> None:
         self._dashboard = _initial_dashboard()
         self._poll_count = 0
-        self._telemetry_events: list[dict[str, Any]] = []
+        self._raw_signal_events: list[dict[str, Any]] = []
+        self._control_events: list[dict[str, Any]] = []
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
         return deepcopy(self._dashboard)
 
     def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
-        self._telemetry_events.append(_event_dict(event))
-        self._telemetry_events = self._telemetry_events[-1_000:]
+        event_data = _event_dict(event)
+        if _is_raw_signal_event(event_data):
+            self._raw_signal_events.append(event_data)
+            self._raw_signal_events = self._raw_signal_events[-RAW_SIGNAL_TELEMETRY_LIMIT:]
+        else:
+            self._control_events.append(event_data)
+            self._control_events = self._control_events[-CONTROL_TELEMETRY_LIMIT:]
         self._touch()
 
     def environments(self) -> list[dict[str, Any]]:
@@ -1049,7 +1062,7 @@ class ValkyrieDashboardProjection:
         observed_at = _now()
         self._dashboard["liveReport"] = _live_report(observed_at, self._poll_count)
         self._dashboard["telemetry"] = _aggregate_telemetry(
-            self._telemetry_events,
+            [*self._raw_signal_events, *self._control_events],
             observed_at=observed_at,
         )
         self._dashboard["updatedAt"] = observed_at

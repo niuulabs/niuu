@@ -241,6 +241,54 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
 
 
+def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.runtime.started",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "source_count": 1,
+                "drive_loop_enabled": True,
+                "initiative_enabled": True,
+                "poll_interval_seconds": 15,
+                "llm_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+                "reflection_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+                "post_session_reflection_enabled": True,
+            },
+            summary="runtime started",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, tzinfo=UTC),
+        )
+    )
+    for index in range(1_200):
+        projection.record_event(
+            SleipnirEvent(
+                event_type="signal.kubernetes.event",
+                source="ravn:valkyrie:ymir",
+                payload={
+                    "environment_id": "ymir",
+                    "signal_id": f"signal-{index}",
+                },
+                summary="raw signal",
+                urgency=0.1,
+                domain="infrastructure",
+                timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+            )
+        )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    assert telemetry["totals"]["rawSignalEvents"] == 1_000
+    assert telemetry["runtime"][0]["valkyrieId"] == "valkyrie-ymir-k8s"
+    assert telemetry["llm"]["status"] == "configured"
+    assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
+    assert "No valkyrie.runtime.started events observed." not in telemetry["gaps"]
+
+
 def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("NATS_URL", "nats://should-not-be-used:4222")
     monkeypatch.delenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", raising=False)
