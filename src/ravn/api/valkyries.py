@@ -9,7 +9,10 @@ without inventing a second lifecycle.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
+import os
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,8 +22,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ravn.demo.valkyrie_environment import DEMO_STARTED_AT, build_valkyrie_environment_demo
+from sleipnir.domain.events import SleipnirEvent
 
 Dashboard = dict[str, Any]
+logger = logging.getLogger(__name__)
 
 K8S_CLUSTERS: tuple[dict[str, Any], ...] = (
     {"id": "valhalla", "name": "Valhalla", "health": "watch", "signals": 18, "unresolved": 2},
@@ -116,6 +121,244 @@ def _live_report(last_observed_at: str, poll_count: int = 0) -> dict[str, Any]:
             "and flock subjects can coexist.",
             "The UI should show both local environment health and flock-sharing health.",
         ],
+    }
+
+
+def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
+    return {
+        "source": "demo_projection",
+        "verified": False,
+        "lastObservedAt": last_observed_at,
+        "totals": {
+            "eventsObserved": 0,
+            "rawSignalEvents": 0,
+            "pollsCompleted": 0,
+            "pollFailures": 0,
+            "signalsCollected": 0,
+            "signalsPublished": 0,
+            "duplicateSignals": 0,
+            "tasksEnqueued": 0,
+            "judgments": 0,
+            "actions": 0,
+            "learningEvents": 0,
+            "dreamCyclesStarted": 0,
+            "dreamCyclesCompleted": 0,
+            "dreamCyclesFailed": 0,
+            "flockMessages": 0,
+        },
+        "byEnvironment": [],
+        "recentPolls": [],
+        "runtime": [],
+        "llm": {
+            "status": "unknown",
+            "model": "",
+            "reflectionModel": "",
+            "postSessionReflectionEnabled": False,
+            "lastObservedAt": "",
+        },
+        "gaps": [
+            "No verified Sleipnir telemetry events have reached this API process yet.",
+            "Seeded signals, judgments, actions, huddles, and learnings are demo projection data.",
+            (
+                "Deploy runtime telemetry and wire the API/dashboard consumer before treating "
+                "counts as live."
+            ),
+        ],
+    }
+
+
+def _event_dict(event: SleipnirEvent | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(event, SleipnirEvent):
+        return event.to_dict()
+    return dict(event)
+
+
+def _event_timestamp(event: dict[str, Any]) -> str:
+    timestamp = event.get("timestamp")
+    if isinstance(timestamp, datetime):
+        return timestamp.isoformat()
+    if isinstance(timestamp, str):
+        return timestamp
+    return _now()
+
+
+def _payload_int(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) else 0
+
+
+def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str) -> dict[str, Any]:
+    entry = entries.get(env_id)
+    if entry is None:
+        entry = {
+            "environmentId": env_id,
+            "lastObservedAt": "",
+            "pollsCompleted": 0,
+            "pollFailures": 0,
+            "signalsCollected": 0,
+            "signalsPublished": 0,
+            "duplicateSignals": 0,
+            "tasksEnqueued": 0,
+            "judgments": 0,
+            "actions": 0,
+            "learningEvents": 0,
+            "dreamCycles": 0,
+        }
+        entries[env_id] = entry
+    return entry
+
+
+def _aggregate_telemetry(
+    events: list[dict[str, Any]],
+    *,
+    observed_at: str,
+) -> dict[str, Any]:
+    if not events:
+        return _empty_telemetry(observed_at)
+
+    totals = _empty_telemetry(observed_at)["totals"]
+    by_environment: dict[str, dict[str, Any]] = {}
+    recent_polls: list[dict[str, Any]] = []
+    runtime: list[dict[str, Any]] = []
+    llm = {
+        "status": "unknown",
+        "model": "",
+        "reflectionModel": "",
+        "postSessionReflectionEnabled": False,
+        "lastObservedAt": "",
+    }
+
+    for raw_event in events:
+        event = _event_dict(raw_event)
+        event_type = str(event.get("event_type") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        timestamp = _event_timestamp(event)
+        env_id = str(
+            payload.get("environment_id")
+            or payload.get("environmentId")
+            or event.get("tenant_id")
+            or "unknown"
+        )
+        entry = _environment_telemetry_entry(by_environment, env_id)
+        entry["lastObservedAt"] = max(entry["lastObservedAt"], timestamp)
+        totals["eventsObserved"] += 1
+
+        if event_type == "valkyrie.signal_poll.completed":
+            collected = _payload_int(payload, "collected_count")
+            published = _payload_int(payload, "published_count")
+            duplicates = _payload_int(payload, "duplicate_count")
+            enqueued = _payload_int(payload, "enqueued_task_count")
+            totals["pollsCompleted"] += 1
+            totals["signalsCollected"] += collected
+            totals["signalsPublished"] += published
+            totals["duplicateSignals"] += duplicates
+            totals["tasksEnqueued"] += enqueued
+            entry["pollsCompleted"] += 1
+            entry["signalsCollected"] += collected
+            entry["signalsPublished"] += published
+            entry["duplicateSignals"] += duplicates
+            entry["tasksEnqueued"] += enqueued
+            recent_polls.append(
+                {
+                    "environmentId": env_id,
+                    "sourceId": payload.get("source_id", ""),
+                    "status": "completed",
+                    "collected": collected,
+                    "published": published,
+                    "duplicates": duplicates,
+                    "tasksEnqueued": enqueued,
+                    "durationMs": _payload_int(payload, "duration_ms"),
+                    "observedAt": timestamp,
+                }
+            )
+        elif event_type == "valkyrie.signal_poll.failed":
+            totals["pollFailures"] += 1
+            entry["pollFailures"] += 1
+            recent_polls.append(
+                {
+                    "environmentId": env_id,
+                    "sourceId": payload.get("source_id", ""),
+                    "status": "failed",
+                    "error": payload.get("error", ""),
+                    "observedAt": timestamp,
+                }
+            )
+        elif event_type == "valkyrie.runtime.started":
+            runtime.append(
+                {
+                    "environmentId": env_id,
+                    "valkyrieId": payload.get("valkyrie_id", ""),
+                    "sourceCount": payload.get("source_count", 0),
+                    "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
+                    "initiativeEnabled": bool(payload.get("initiative_enabled")),
+                    "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
+                    "observedAt": timestamp,
+                }
+            )
+            llm = {
+                "status": "configured",
+                "model": str(payload.get("llm_model") or ""),
+                "reflectionModel": str(payload.get("reflection_model") or ""),
+                "postSessionReflectionEnabled": bool(
+                    payload.get("post_session_reflection_enabled")
+                ),
+                "lastObservedAt": timestamp,
+            }
+        elif event_type.startswith("signal."):
+            totals["rawSignalEvents"] += 1
+        elif event_type.startswith("valkyrie.judgment."):
+            totals["judgments"] += 1
+            entry["judgments"] += 1
+        elif event_type.startswith("valkyrie.action."):
+            totals["actions"] += 1
+            entry["actions"] += 1
+        elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
+            totals["learningEvents"] += 1
+            entry["learningEvents"] += 1
+            if event_type == "learning.dream.started":
+                totals["dreamCyclesStarted"] += 1
+                entry["dreamCycles"] += 1
+            elif event_type == "learning.dream.completed":
+                totals["dreamCyclesCompleted"] += 1
+            elif event_type == "learning.dream.failed":
+                totals["dreamCyclesFailed"] += 1
+        elif event_type.startswith("flock."):
+            totals["flockMessages"] += 1
+
+    gaps: list[str] = []
+    if totals["judgments"] == 0:
+        gaps.append("No verified valkyrie.judgment.* events observed.")
+    if totals["actions"] == 0:
+        gaps.append("No verified valkyrie.action.* events observed.")
+    if totals["learningEvents"] == 0:
+        gaps.append("No verified learning or flock.learning events observed.")
+    if totals["dreamCyclesStarted"] == 0:
+        gaps.append("No verified dream-cycle events observed.")
+    if not runtime:
+        gaps.append("No valkyrie.runtime.started events observed.")
+
+    return {
+        "source": "sleipnir_events",
+        "verified": True,
+        "lastObservedAt": max(_event_timestamp(_event_dict(event)) for event in events),
+        "totals": totals,
+        "byEnvironment": sorted(
+            by_environment.values(),
+            key=lambda item: (item["environmentId"] == "unknown", item["environmentId"]),
+        ),
+        "recentPolls": sorted(
+            recent_polls,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:30],
+        "runtime": sorted(
+            runtime,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        ),
+        "llm": llm,
+        "gaps": gaps,
     }
 
 
@@ -530,6 +773,7 @@ def _initial_dashboard() -> Dashboard:
             },
         ],
         "liveReport": _live_report(updated_at),
+        "telemetry": _empty_telemetry(updated_at),
         "updatedAt": updated_at,
     }
 
@@ -566,10 +810,16 @@ class ValkyrieDashboardProjection:
     def __init__(self) -> None:
         self._dashboard = _initial_dashboard()
         self._poll_count = 0
+        self._telemetry_events: list[dict[str, Any]] = []
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
         return deepcopy(self._dashboard)
+
+    def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
+        self._telemetry_events.append(_event_dict(event))
+        self._telemetry_events = self._telemetry_events[-1_000:]
+        self._touch()
 
     def environments(self) -> list[dict[str, Any]]:
         return self.dashboard()["environments"]
@@ -671,6 +921,10 @@ class ValkyrieDashboardProjection:
         self._poll_count += 1
         observed_at = _now()
         self._dashboard["liveReport"] = _live_report(observed_at, self._poll_count)
+        self._dashboard["telemetry"] = _aggregate_telemetry(
+            self._telemetry_events,
+            observed_at=observed_at,
+        )
         self._dashboard["updatedAt"] = observed_at
 
     def _require_huddle(self, huddle_id: str) -> dict[str, Any]:
@@ -690,6 +944,100 @@ class ValkyrieDashboardProjection:
         if learning is None:
             raise HTTPException(status_code=404, detail="Learning not found")
         return learning
+
+
+class ValkyrieTelemetrySubscription:
+    """Feed live Sleipnir/NATS telemetry events into the dashboard projection."""
+
+    def __init__(
+        self,
+        *,
+        projection: ValkyrieDashboardProjection,
+        subscriber: Any,
+        event_types: list[str],
+    ) -> None:
+        self._projection = projection
+        self._subscriber = subscriber
+        self._event_types = event_types
+        self._subscription: Any | None = None
+
+    async def start(self) -> None:
+        await self._subscriber.start()
+        self._subscription = await self._subscriber.subscribe(self._event_types, self._handle)
+        logger.info(
+            "valkyrie_dashboard: subscribed to telemetry events: %s",
+            ", ".join(self._event_types),
+        )
+
+    async def stop(self) -> None:
+        if self._subscription is not None:
+            with contextlib.suppress(Exception):
+                await self._subscription.unsubscribe()
+            self._subscription = None
+        if hasattr(self._subscriber, "stop"):
+            await self._subscriber.stop()
+
+    async def _handle(self, event: SleipnirEvent) -> None:
+        self._projection.record_event(event)
+
+
+def build_nats_telemetry_subscription_from_env(
+    projection: ValkyrieDashboardProjection,
+) -> ValkyrieTelemetrySubscription | None:
+    """Build the optional dashboard telemetry NATS consumer from environment vars."""
+    servers_raw = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
+    if not servers_raw:
+        return None
+
+    from sleipnir.adapters.nats_transport import NatsSubscriber  # noqa: PLC0415
+
+    servers = [entry.strip() for entry in servers_raw.split(",") if entry.strip()]
+    stream_name = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment")
+    subject_prefix = os.environ.get(
+        "RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX",
+        "ravn.environment",
+    )
+    consumer_group = os.environ.get(
+        "RAVN_VALKYRIE_TELEMETRY_CONSUMER_GROUP",
+        "ravn-valkyrie-dashboard",
+    )
+    password = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "")
+    return ValkyrieTelemetrySubscription(
+        projection=projection,
+        subscriber=NatsSubscriber(
+            servers=servers,
+            stream_name=stream_name,
+            subject_prefix=subject_prefix,
+            consumer_group=consumer_group,
+            ensure_stream=False,
+            tls_ca_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", ""),
+            tls_cert_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", ""),
+            tls_key_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE", ""),
+            tls_hostname=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", ""),
+            tls_handshake_first=_env_bool(
+                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST")
+            ),
+            tls_insecure_skip_verify=_env_bool(
+                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY")
+            ),
+            user=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", ""),
+            password=password,
+            token=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
+            nkeys_seed_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED_FILE", ""),
+            nkeys_seed=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED", ""),
+        ),
+        event_types=[
+            "valkyrie.*",
+            "signal.*",
+            "learning.*",
+            "flock.*",
+            "odin.*",
+        ],
+    )
+
+
+def _env_bool(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def create_valkyrie_router(

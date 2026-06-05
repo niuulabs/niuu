@@ -176,6 +176,82 @@ export interface FlockLiveReport {
   findings: string[];
 }
 
+export interface ValkyrieTelemetryTotals {
+  eventsObserved: number;
+  rawSignalEvents: number;
+  pollsCompleted: number;
+  pollFailures: number;
+  signalsCollected: number;
+  signalsPublished: number;
+  duplicateSignals: number;
+  tasksEnqueued: number;
+  judgments: number;
+  actions: number;
+  learningEvents: number;
+  dreamCyclesStarted: number;
+  dreamCyclesCompleted: number;
+  dreamCyclesFailed: number;
+  flockMessages: number;
+}
+
+export interface ValkyrieEnvironmentTelemetry {
+  environmentId: string;
+  lastObservedAt: string;
+  pollsCompleted: number;
+  pollFailures: number;
+  signalsCollected: number;
+  signalsPublished: number;
+  duplicateSignals: number;
+  tasksEnqueued: number;
+  judgments: number;
+  actions: number;
+  learningEvents: number;
+  dreamCycles: number;
+}
+
+export interface ValkyriePollTelemetry {
+  environmentId: string;
+  sourceId: string;
+  status: 'completed' | 'failed';
+  collected?: number;
+  published?: number;
+  duplicates?: number;
+  tasksEnqueued?: number;
+  durationMs?: number;
+  error?: string;
+  observedAt: string;
+}
+
+export interface ValkyrieRuntimeTelemetry {
+  environmentId: string;
+  valkyrieId: string;
+  sourceCount: number;
+  driveLoopEnabled: boolean;
+  initiativeEnabled: boolean;
+  pollIntervalSeconds: number;
+  observedAt: string;
+}
+
+export interface ValkyrieLlmTelemetry {
+  status: 'unknown' | 'configured' | 'healthy' | 'degraded' | 'failed';
+  model: string;
+  reflectionModel: string;
+  postSessionReflectionEnabled: boolean;
+  lastObservedAt: string;
+}
+
+export interface ValkyrieTelemetry {
+  source: 'demo_projection' | 'sleipnir_events' | string;
+  verified: boolean;
+  lastObservedAt: string;
+  totals: ValkyrieTelemetryTotals;
+  byEnvironment: ValkyrieEnvironmentTelemetry[];
+  recentPolls: ValkyriePollTelemetry[];
+  runtime: ValkyrieRuntimeTelemetry[];
+  llm: ValkyrieLlmTelemetry;
+  gaps: string[];
+}
+
 export interface ValkyrieDashboard {
   environments: EnvironmentSummary[];
   valkyries: ValkyrieResident[];
@@ -188,6 +264,7 @@ export interface ValkyrieDashboard {
   huddles: HuddleSummary[];
   learnings: LearningRecord[];
   liveReport?: FlockLiveReport;
+  telemetry?: ValkyrieTelemetry;
   updatedAt: string;
 }
 

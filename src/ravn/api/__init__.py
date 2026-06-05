@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,8 +55,12 @@ from ravn.api.runtime_data import (
 from ravn.api.runtime_data import (
     list_triggers as list_runtime_triggers,
 )
+from ravn.api.valkyries import (
+    ValkyrieDashboardProjection,
+    build_nats_telemetry_subscription_from_env,
+    create_valkyrie_router,
+)
 from ravn.api.warden_stream import WardenStreamBroker
-from ravn.api.valkyries import create_valkyrie_router
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import (
     WardenConsoleConfig,
@@ -70,6 +75,9 @@ from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
     from ravn.ports.persona import PersonaRegistryPort
+
+
+logger = logging.getLogger(__name__)
 
 
 class TriggerCreateRequest(BaseModel):
@@ -615,6 +623,21 @@ def create_app(
 
         app.include_router(create_personas_router(persona_loader))
 
-    app.include_router(create_valkyrie_router())
+    valkyrie_projection = ValkyrieDashboardProjection()
+    valkyrie_telemetry = build_nats_telemetry_subscription_from_env(valkyrie_projection)
+    if valkyrie_telemetry is not None:
+
+        @app.on_event("startup")
+        async def start_valkyrie_telemetry() -> None:
+            try:
+                await valkyrie_telemetry.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("valkyrie telemetry subscription did not start: %s", exc)
+
+        @app.on_event("shutdown")
+        async def stop_valkyrie_telemetry() -> None:
+            await valkyrie_telemetry.stop()
+
+    app.include_router(create_valkyrie_router(valkyrie_projection))
 
     return app

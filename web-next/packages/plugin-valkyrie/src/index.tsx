@@ -45,8 +45,14 @@ export type {
   SignalSeverity,
   SignalStatus,
   ValkyrieDashboard,
+  ValkyrieEnvironmentTelemetry,
+  ValkyrieLlmTelemetry,
+  ValkyriePollTelemetry,
   ValkyrieResident,
   ValkyrieSignalEvent,
+  ValkyrieRuntimeTelemetry,
+  ValkyrieTelemetry,
+  ValkyrieTelemetryTotals,
   WakefulnessState,
 } from './domain';
 export type {

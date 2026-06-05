@@ -10,6 +10,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 
 from ravn.config import Settings, SignalSourceConfig
@@ -18,6 +19,7 @@ from ravn.domain.environment import (
     FlockMembership,
     SignalSource,
     TopologyRef,
+    apply_environment_metadata,
 )
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
@@ -119,6 +121,7 @@ class EnvironmentSignalRuntime:
         if self._owns_publisher and hasattr(self._publisher, "start"):
             await self._publisher.start()  # type: ignore[attr-defined]
         self._adapters = self._build_adapters()
+        await self._publish_runtime_started()
         for adapter in self._adapters:
             self._tasks.append(
                 asyncio.create_task(
@@ -182,12 +185,15 @@ class EnvironmentSignalRuntime:
                     adapter.source_id,
                     exc,
                 )
+                await self._publish_signal_poll_failed(adapter, exc)
             await asyncio.sleep(interval)
 
     async def _collect_adapter_once(self, adapter: SignalAdapter) -> int:
-        signals = [signal for signal in await adapter.collect() if self._remember(signal)]
-        if not signals:
-            return 0
+        started = perf_counter()
+        collected = await adapter.collect()
+        signals = [signal for signal in collected if self._remember(signal)]
+        events: list[SleipnirEvent] = []
+        enqueued_count = 0
         events = [
             signal.to_event(
                 source=f"adapter:{adapter.source_id}",
@@ -196,11 +202,23 @@ class EnvironmentSignalRuntime:
             )
             for signal in signals
         ]
-        await self._publisher.publish_batch(events)
+        if events:
+            await self._publisher.publish_batch(events)
         if self._enqueue is not None:
             for signal, event in zip(signals, events, strict=True):
                 if signal.severity in self._settings.environment.signal_task_severities:
                     await self._enqueue(self._task_from_signal(signal, event))
+                    enqueued_count += 1
+        duration_ms = int((perf_counter() - started) * 1000)
+        await self._publish_signal_poll_completed(
+            adapter,
+            collected=collected,
+            published_events=events,
+            enqueued_count=enqueued_count,
+            duration_ms=duration_ms,
+        )
+        if not events:
+            return 0
         logger.info(
             "environment_signals: source=%s published=%d environment=%s",
             adapter.source_id,
@@ -252,3 +270,122 @@ class EnvironmentSignalRuntime:
             root_correlation_id=event.correlation_id or signal.correlation_id,
             workflow_parent_event_id=event.event_id,
         )
+
+    async def _publish_runtime_started(self) -> None:
+        sources = [
+            {
+                "id": adapter.source_id,
+                "signal_type": adapter.signal_type,
+            }
+            for adapter in self._adapters
+        ]
+        payload = {
+            "valkyrie_id": self._settings.mesh.own_peer_id,
+            "environment_id": self._environment.id,
+            "source_count": len(sources),
+            "sources": sources,
+            "poll_interval_seconds": self._settings.environment.signal_poll_interval_seconds,
+            "signal_task_severities": list(self._settings.environment.signal_task_severities),
+            "drive_loop_enabled": self._enqueue is not None,
+            "initiative_enabled": self._settings.initiative.enabled,
+            "llm_model": self._settings.effective_model(),
+            "reflection_model": self._settings.effective_memory_reflection_model(),
+            "post_session_reflection_enabled": self._settings.reflection.enabled,
+            "post_session_reflection_model": (
+                self._settings.effective_post_session_reflection_config().llm_alias
+            ),
+        }
+        event = SleipnirEvent(
+            event_type="valkyrie.runtime.started",
+            source=f"ravn:valkyrie:{self._environment.id}",
+            payload=payload,
+            summary=(
+                f"Valkyrie runtime started in {self._environment.id} "
+                f"with {len(sources)} signal source(s)"
+            ),
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=SleipnirEvent.now(),
+            tenant_id=self._environment.tenant_id,
+        )
+        await self._publish_telemetry_event(event)
+
+    async def _publish_signal_poll_completed(
+        self,
+        adapter: SignalAdapter,
+        *,
+        collected: list[NormalizedSignal],
+        published_events: list[SleipnirEvent],
+        enqueued_count: int,
+        duration_ms: int,
+    ) -> None:
+        severity_counts: dict[str, int] = {}
+        for signal in collected:
+            severity_counts[signal.severity] = severity_counts.get(signal.severity, 0) + 1
+        published_signal_ids = [event.event_id for event in published_events]
+        duplicate_count = len(collected) - len(published_events)
+        payload = {
+            "valkyrie_id": self._settings.mesh.own_peer_id,
+            "environment_id": self._environment.id,
+            "source_id": adapter.source_id,
+            "signal_type": adapter.signal_type,
+            "collected_count": len(collected),
+            "new_count": len(published_events),
+            "duplicate_count": duplicate_count,
+            "published_count": len(published_events),
+            "enqueued_task_count": enqueued_count,
+            "drive_loop_enabled": self._enqueue is not None,
+            "duration_ms": duration_ms,
+            "severity_counts": severity_counts,
+            "published_signal_event_ids": published_signal_ids[:25],
+            "truncated_signal_event_ids": max(0, len(published_signal_ids) - 25),
+        }
+        event = SleipnirEvent(
+            event_type="valkyrie.signal_poll.completed",
+            source=f"ravn:valkyrie:{self._environment.id}",
+            payload=payload,
+            summary=(
+                f"{adapter.source_id} poll collected {len(collected)} signal(s), "
+                f"published {len(published_events)}, enqueued {enqueued_count}"
+            ),
+            urgency=0.4 if published_events else 0.1,
+            domain="infrastructure",
+            timestamp=SleipnirEvent.now(),
+            tenant_id=self._environment.tenant_id,
+        )
+        await self._publish_telemetry_event(event)
+
+    async def _publish_signal_poll_failed(
+        self,
+        adapter: SignalAdapter,
+        exc: Exception,
+    ) -> None:
+        event = SleipnirEvent(
+            event_type="valkyrie.signal_poll.failed",
+            source=f"ravn:valkyrie:{self._environment.id}",
+            payload={
+                "valkyrie_id": self._settings.mesh.own_peer_id,
+                "environment_id": self._environment.id,
+                "source_id": adapter.source_id,
+                "signal_type": adapter.signal_type,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+            summary=f"{adapter.source_id} poll failed: {exc}",
+            urgency=0.8,
+            domain="infrastructure",
+            timestamp=SleipnirEvent.now(),
+            tenant_id=self._environment.tenant_id,
+        )
+        await self._publish_telemetry_event(event)
+
+    async def _publish_telemetry_event(self, event: SleipnirEvent) -> None:
+        apply_environment_metadata(event, self._environment)
+        try:
+            await self._publisher.publish(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "environment_signals: failed to publish telemetry event %s: %s",
+                event.event_type,
+                exc,
+            )

@@ -15,7 +15,7 @@ from sleipnir.domain.events import SleipnirEvent
 
 
 def _settings() -> Settings:
-    return Settings(
+    settings = Settings(
         environment=EnvironmentConfig(
             id="host-jozef",
             name="Jozef Host",
@@ -44,6 +44,8 @@ def _settings() -> Settings:
             ],
         )
     )
+    settings.mesh.own_peer_id = "valkyrie-host-jozef"
+    return settings
 
 
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
@@ -59,8 +61,10 @@ def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> Non
 async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     bus = InProcessBus()
     received: list[SleipnirEvent] = []
+    telemetry: list[SleipnirEvent] = []
     enqueued: list[AgentTask] = []
     await bus.subscribe(["signal.*"], lambda event: _record(received, event))
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
     runtime = EnvironmentSignalRuntime(
         settings=_settings(),
         publisher=bus,
@@ -76,10 +80,62 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert second_count == 0
     assert [event.event_type for event in received] == ["signal.host.event"]
     assert received[0].payload["environment_id"] == "host-jozef"
+    assert [event.event_type for event in telemetry] == [
+        "valkyrie.signal_poll.completed",
+        "valkyrie.signal_poll.completed",
+    ]
+    assert telemetry[0].payload["environment_id"] == "host-jozef"
+    assert telemetry[0].payload["valkyrie_id"] == "valkyrie-host-jozef"
+    assert telemetry[0].payload["source_id"] == "host-events"
+    assert telemetry[0].payload["collected_count"] == 1
+    assert telemetry[0].payload["new_count"] == 1
+    assert telemetry[0].payload["duplicate_count"] == 0
+    assert telemetry[0].payload["published_count"] == 1
+    assert telemetry[0].payload["enqueued_task_count"] == 1
+    assert telemetry[0].payload["drive_loop_enabled"] is True
+    assert telemetry[0].payload["severity_counts"] == {"critical": 1}
+    assert telemetry[0].payload["nats_subject"] == (
+        "ravn.environment.valkyrie.signal_poll.completed"
+    )
+    assert telemetry[1].payload["collected_count"] == 1
+    assert telemetry[1].payload["new_count"] == 0
+    assert telemetry[1].payload["duplicate_count"] == 1
+    assert telemetry[1].payload["published_count"] == 0
+    assert telemetry[1].payload["enqueued_task_count"] == 0
     assert len(enqueued) == 1
     assert enqueued[0].triggered_by == "signal:signal.host.event"
     assert enqueued[0].root_correlation_id == received[0].correlation_id
     assert "Use existing tools and memory" in enqueued[0].initiative_context
+
+
+@pytest.mark.asyncio
+async def test_runtime_start_publishes_configuration_telemetry() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(),
+        publisher=bus,
+        enqueue=None,
+    )
+
+    await runtime.start()
+    await bus.flush()
+    await runtime.stop()
+
+    assert len(telemetry) == 1
+    payload = telemetry[0].payload
+    assert payload["environment_id"] == "host-jozef"
+    assert payload["valkyrie_id"] == "valkyrie-host-jozef"
+    assert payload["source_count"] == 1
+    assert payload["sources"] == [{"id": "host-events", "signal_type": "host"}]
+    assert payload["poll_interval_seconds"] == 0.01
+    assert payload["signal_task_severities"] == ["warning", "critical"]
+    assert payload["drive_loop_enabled"] is False
+    assert payload["initiative_enabled"] is False
+    assert payload["llm_model"] == _settings().effective_model()
+    assert payload["reflection_model"] == _settings().effective_memory_reflection_model()
+    assert payload["nats_subject"] == "ravn.environment.valkyrie.runtime.started"
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:

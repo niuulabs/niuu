@@ -14,7 +14,13 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import type { AutonomyMode, EnvironmentKind, LearningRecord, ValkyrieDashboard } from '../domain';
+import type {
+  AutonomyMode,
+  EnvironmentKind,
+  LearningRecord,
+  ValkyrieDashboard,
+  ValkyrieTelemetry,
+} from '../domain';
 import { selectEnvironmentSlice, selectFlockLearnings } from '../application/selectors';
 import {
   useValkyrieActions,
@@ -230,6 +236,131 @@ function KpiStrip({ dashboard }: { dashboard: ValkyrieDashboard }) {
           </div>
         </div>
       ))}
+    </section>
+  );
+}
+
+function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
+  if (!telemetry) return null;
+  const totals = telemetry.totals;
+  const signalYield =
+    totals.signalsCollected > 0 ? totals.signalsPublished / totals.signalsCollected : 0;
+  const items = [
+    { label: 'Events', value: compactNumber(totals.eventsObserved) },
+    { label: 'Signals in', value: compactNumber(totals.signalsCollected) },
+    { label: 'Published', value: compactNumber(totals.signalsPublished) },
+    { label: 'Tasks', value: compactNumber(totals.tasksEnqueued) },
+    { label: 'Judgments', value: compactNumber(totals.judgments) },
+    { label: 'Actions', value: compactNumber(totals.actions) },
+    { label: 'Learning', value: compactNumber(totals.learningEvents) },
+    { label: 'Dreams', value: `${totals.dreamCyclesCompleted}/${totals.dreamCyclesStarted}` },
+  ];
+
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-telemetry-panel">
+      <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-3">
+        <div className="niuu:min-w-0">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <Activity size={16} className="niuu:text-brand" aria-hidden="true" />
+            <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+              Operational telemetry
+            </h2>
+            <span
+              className={`niuu:rounded-full niuu:px-2 niuu:py-1 niuu:text-xs ${
+                telemetry.verified
+                  ? 'niuu:bg-success-bg niuu:text-success'
+                  : 'niuu:bg-warning-bg niuu:text-warning'
+              }`}
+            >
+              {telemetry.verified ? 'verified' : 'unverified'}
+            </span>
+          </div>
+          <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+            {telemetry.source} · observed {formatShortTime(telemetry.lastObservedAt)}
+          </p>
+        </div>
+        <div className="niuu:min-w-44 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs">
+          <div className={MUTED}>LLM</div>
+          <div className="niuu:mt-1 niuu:truncate niuu:text-sm niuu:font-medium niuu:text-text-primary">
+            {telemetry.llm.model || 'unknown'}
+          </div>
+          <div className="niuu:mt-1 niuu:text-text-muted">
+            {telemetry.llm.status} · reflection{' '}
+            {telemetry.llm.postSessionReflectionEnabled ? 'on' : 'off'}
+          </div>
+        </div>
+      </div>
+
+      <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-4 niuu:2xl:grid-cols-8">
+        {items.map((item) => (
+          <div
+            key={item.label}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2"
+          >
+            <div className="niuu:text-xs niuu:text-text-muted">{item.label}</div>
+            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="niuu:mt-3 niuu:grid niuu:gap-3 niuu:xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
+            <h3 className="niuu:text-xs niuu:font-semibold niuu:text-text-muted">Recent polls</h3>
+            <span className="niuu:text-xs niuu:text-text-muted">
+              yield {percent(signalYield)}
+            </span>
+          </div>
+          <div className="niuu:grid niuu:gap-2">
+            {telemetry.recentPolls.slice(0, 5).map((poll) => (
+              <div
+                key={`${poll.environmentId}:${poll.sourceId}:${poll.observedAt}`}
+                className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_auto] niuu:items-center niuu:gap-2 niuu:rounded-md niuu:bg-bg-secondary niuu:px-3 niuu:py-2"
+              >
+                <div className="niuu:min-w-0">
+                  <div className="niuu:truncate niuu:text-sm niuu:text-text-primary">
+                    {poll.environmentId} · {poll.sourceId || 'source'}
+                  </div>
+                  <div className="niuu:truncate niuu:text-xs niuu:text-text-muted">
+                    {poll.status === 'failed'
+                      ? poll.error || 'failed'
+                      : `${poll.collected ?? 0} collected · ${poll.published ?? 0} published · ${
+                          poll.tasksEnqueued ?? 0
+                        } tasks`}
+                  </div>
+                </div>
+                <span className="niuu:text-xs niuu:text-text-muted">
+                  {formatShortTime(poll.observedAt)}
+                </span>
+              </div>
+            ))}
+            {telemetry.recentPolls.length === 0 ? <EmptyState label="No poll telemetry" /> : null}
+          </div>
+        </div>
+
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <h3 className="niuu:mb-2 niuu:text-xs niuu:font-semibold niuu:text-text-muted">
+            Gaps
+          </h3>
+          <div className="niuu:flex niuu:flex-col niuu:gap-2">
+            {telemetry.gaps.slice(0, 5).map((gap) => (
+              <div
+                key={gap}
+                className="niuu:rounded-md niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted"
+              >
+                {gap}
+              </div>
+            ))}
+            {telemetry.gaps.length === 0 ? (
+              <div className="niuu:rounded-md niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-muted">
+                No telemetry gaps in the current window
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
@@ -772,6 +903,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
             </div>
           </header>
           <KpiStrip dashboard={dashboard} />
+          <TelemetryPanel telemetry={dashboard.telemetry} />
           <FlockReportPanel dashboard={dashboard} />
           <div className="niuu:grid niuu:gap-3 niuu:md:grid-cols-2 niuu:xl:grid-cols-[minmax(220px,0.8fr)_minmax(300px,1.15fr)_minmax(260px,0.85fr)]">
             <div className="niuu:flex niuu:flex-col niuu:gap-3">

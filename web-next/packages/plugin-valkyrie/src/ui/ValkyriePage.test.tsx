@@ -16,6 +16,13 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('environment-state-panel')).toBeInTheDocument();
     expect(screen.getByTestId('huddle-panel')).toBeInTheDocument();
     expect(screen.getByTestId('learning-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent(
+      'Operational telemetry',
+    );
+    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('verified');
+    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent(
+      'Qwen/Qwen3.6-35B-A3B-FP8',
+    );
     expect(screen.getByTestId('flock-live-report')).toHaveTextContent('K8s flock routing');
   });
 
