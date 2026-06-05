@@ -196,6 +196,9 @@ export interface ValkyrieTelemetryTotals {
   dreamCyclesCompleted: number;
   dreamCyclesFailed: number;
   flockMessages: number;
+  wakefulnessChanges?: number;
+  toolRequests?: number;
+  skillProposals?: number;
 }
 
 export interface ValkyrieEnvironmentTelemetry {
@@ -257,6 +260,50 @@ export interface ValkyrieOutcomeTelemetry {
   observedAt: string;
 }
 
+export interface ValkyrieEventTelemetry {
+  id: string;
+  eventType: string;
+  kind: 'signal' | 'judgment' | 'action' | 'learning' | 'task' | 'runtime' | 'wakefulness' | 'event';
+  environmentId: string;
+  valkyrieId?: string;
+  source?: string;
+  summary: string;
+  urgency?: number;
+  observedAt: string;
+  correlationId?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface ValkyrieLearningTelemetry {
+  id: string;
+  eventType: string;
+  environmentId: string;
+  valkyrieId?: string;
+  dreamId?: string;
+  title: string;
+  status: string;
+  artifactType?: string;
+  riskClass?: string;
+  policyDecision?: string;
+  proposalsCreated?: number;
+  proposalsApplied?: number;
+  proposalsDeferred?: number;
+  observedAt: string;
+  summary?: string;
+}
+
+export interface ValkyrieToolNeedTelemetry {
+  id: string;
+  eventType: string;
+  environmentId: string;
+  valkyrieId?: string;
+  taskId?: string;
+  capability: string;
+  status: string;
+  summary: string;
+  observedAt: string;
+}
+
 export interface ValkyrieRuntimeTelemetry {
   environmentId: string;
   valkyrieId: string;
@@ -284,6 +331,9 @@ export interface ValkyrieTelemetry {
   recentPolls: ValkyriePollTelemetry[];
   recentTasks: ValkyrieTaskTelemetry[];
   recentOutcomes: ValkyrieOutcomeTelemetry[];
+  recentEvents?: ValkyrieEventTelemetry[];
+  recentLearning?: ValkyrieLearningTelemetry[];
+  recentToolNeeds?: ValkyrieToolNeedTelemetry[];
   runtime: ValkyrieRuntimeTelemetry[];
   llm: ValkyrieLlmTelemetry;
   gaps: string[];

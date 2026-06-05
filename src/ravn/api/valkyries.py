@@ -151,11 +151,17 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
             "dreamCyclesCompleted": 0,
             "dreamCyclesFailed": 0,
             "flockMessages": 0,
+            "wakefulnessChanges": 0,
+            "toolRequests": 0,
+            "skillProposals": 0,
         },
         "byEnvironment": [],
         "recentPolls": [],
         "recentTasks": [],
         "recentOutcomes": [],
+        "recentEvents": [],
+        "recentLearning": [],
+        "recentToolNeeds": [],
         "runtime": [],
         "llm": {
             "status": "unknown",
@@ -204,6 +210,130 @@ def _payload_int(payload: dict[str, Any], key: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def _payload_float(payload: dict[str, Any], key: str) -> float:
+    value = payload.get(key)
+    return value if isinstance(value, int | float) else 0.0
+
+
+def _event_environment_id(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("environment_id")
+        or payload.get("environmentId")
+        or event.get("tenant_id")
+        or "unknown"
+    )
+
+
+def _event_valkyrie_id(payload: dict[str, Any]) -> str:
+    return str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")
+
+
+def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "")
+    summary = str(event.get("summary") or payload.get("summary") or event_type)
+    kind = "event"
+    if event_type.startswith("signal."):
+        kind = "signal"
+    elif event_type.startswith("valkyrie.judgment."):
+        kind = "judgment"
+    elif event_type.startswith("valkyrie.action."):
+        kind = "action"
+    elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
+        kind = "learning"
+    elif event_type.startswith("ravn.task."):
+        kind = "task"
+    elif event_type == "valkyrie.runtime.started":
+        kind = "runtime"
+    elif event_type == "valkyrie.wakefulness.changed":
+        kind = "wakefulness"
+    event_id = event.get("event_id") or event.get("id") or f"{event_type}:{_event_timestamp(event)}"
+    return {
+        "id": str(event_id),
+        "eventType": event_type,
+        "kind": kind,
+        "environmentId": _event_environment_id(event, payload),
+        "valkyrieId": _event_valkyrie_id(payload),
+        "source": str(event.get("source") or ""),
+        "summary": summary,
+        "urgency": _payload_float(event, "urgency"),
+        "observedAt": _event_timestamp(event),
+        "correlationId": str(event.get("correlation_id") or payload.get("correlation_id") or ""),
+        "details": {
+            key: value
+            for key, value in payload.items()
+            if key
+            not in {
+                "status",
+                "fields",
+                "outcome",
+                "published_signal_event_ids",
+            }
+        },
+    }
+
+
+def _learning_entry(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    status: str = "",
+) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "")
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    details = fields or payload
+    return {
+        "id": str(
+            payload.get("proposal_id")
+            or payload.get("learning_id")
+            or payload.get("dream_id")
+            or event.get("event_id")
+            or f"{event_type}:{_event_timestamp(event)}"
+        ),
+        "eventType": event_type,
+        "environmentId": _event_environment_id(event, payload),
+        "valkyrieId": _event_valkyrie_id(payload),
+        "dreamId": str(payload.get("dream_id") or ""),
+        "title": str(
+            details.get("title")
+            or details.get("artifact_type")
+            or event.get("summary")
+            or event_type
+        ),
+        "status": status or str(details.get("status") or event_type.rsplit(".", 1)[-1]),
+        "artifactType": str(details.get("artifact_type") or ""),
+        "riskClass": str(details.get("risk_class") or ""),
+        "policyDecision": str(details.get("policy_decision") or ""),
+        "proposalsCreated": _payload_int(payload, "proposals_created"),
+        "proposalsApplied": _payload_int(payload, "proposals_applied"),
+        "proposalsDeferred": _payload_int(payload, "proposals_deferred"),
+        "observedAt": _event_timestamp(event),
+        "summary": str(event.get("summary") or ""),
+    }
+
+
+def _tool_need_entry(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    capability: str,
+    status: str,
+) -> dict[str, Any]:
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+    details = fields or outcome or payload
+    return {
+        "id": str(event.get("event_id") or f"{capability}:{_event_timestamp(event)}"),
+        "eventType": str(event.get("event_type") or ""),
+        "environmentId": _event_environment_id(event, payload),
+        "valkyrieId": _event_valkyrie_id(payload),
+        "taskId": str(payload.get("task_id") or ""),
+        "capability": capability,
+        "status": status,
+        "summary": str(details.get("summary") or event.get("summary") or capability),
+        "observedAt": _event_timestamp(event),
+    }
+
+
 def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str) -> dict[str, Any]:
     entry = entries.get(env_id)
     if entry is None:
@@ -242,6 +372,9 @@ def _aggregate_telemetry(
     recent_polls: list[dict[str, Any]] = []
     recent_tasks: list[dict[str, Any]] = []
     recent_outcomes: list[dict[str, Any]] = []
+    recent_events: list[dict[str, Any]] = []
+    recent_learning: list[dict[str, Any]] = []
+    recent_tool_needs: list[dict[str, Any]] = []
     runtime: list[dict[str, Any]] = []
     llm = {
         "status": "unknown",
@@ -257,15 +390,11 @@ def _aggregate_telemetry(
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         payload = payload if isinstance(payload, dict) else {}
         timestamp = _event_timestamp(event)
-        env_id = str(
-            payload.get("environment_id")
-            or payload.get("environmentId")
-            or event.get("tenant_id")
-            or "unknown"
-        )
+        env_id = _event_environment_id(event, payload)
         entry = _environment_telemetry_entry(by_environment, env_id)
         entry["lastObservedAt"] = max(entry["lastObservedAt"], timestamp)
         totals["eventsObserved"] += 1
+        recent_events.append(_event_log_entry(event, payload))
 
         if event_type == "valkyrie.signal_poll.completed":
             collected = _payload_int(payload, "collected_count")
@@ -416,6 +545,22 @@ def _aggregate_telemetry(
             fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
             outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
             details = fields or outcome or payload
+            capability = str(
+                details.get("action_capability")
+                or details.get("recommended_action")
+                or payload.get("recommended_action")
+                or ""
+            )
+            if capability:
+                totals["toolRequests"] += 1
+                recent_tool_needs.append(
+                    _tool_need_entry(
+                        event,
+                        payload,
+                        capability=capability,
+                        status=event_type.rsplit(".", 1)[-1],
+                    )
+                )
             recent_outcomes.append(
                 {
                     "environmentId": env_id,
@@ -441,6 +586,7 @@ def _aggregate_telemetry(
         elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
             totals["learningEvents"] += 1
             entry["learningEvents"] += 1
+            recent_learning.append(_learning_entry(event, payload))
             if event_type == "learning.dream.started":
                 totals["dreamCyclesStarted"] += 1
                 entry["dreamCycles"] += 1
@@ -448,6 +594,16 @@ def _aggregate_telemetry(
                 totals["dreamCyclesCompleted"] += 1
             elif event_type == "learning.dream.failed":
                 totals["dreamCyclesFailed"] += 1
+        elif event_type == "valkyrie.wakefulness.changed":
+            totals["wakefulnessChanges"] += 1
+            recent_learning.append(_learning_entry(event, payload, status="wakefulness"))
+        elif (
+            event_type.startswith("self_improvement.")
+            or event_type.startswith("skill.")
+            or event_type == "skill_manage"
+        ):
+            totals["skillProposals"] += 1
+            recent_learning.append(_learning_entry(event, payload))
         elif event_type.startswith("flock."):
             totals["flockMessages"] += 1
 
@@ -463,6 +619,10 @@ def _aggregate_telemetry(
         gaps.append("No verified learning or flock.learning events observed.")
     if totals["dreamCyclesStarted"] == 0:
         gaps.append("No verified dream-cycle events observed.")
+    if totals["toolRequests"] == 0:
+        gaps.append("No verified tool/action capability requests observed.")
+    if totals["skillProposals"] == 0 and totals["learningEvents"] == 0:
+        gaps.append("No verified skill or self-improvement proposals observed.")
     if not runtime:
         gaps.append("No valkyrie.runtime.started events observed.")
 
@@ -490,6 +650,21 @@ def _aggregate_telemetry(
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:30],
+        "recentEvents": sorted(
+            recent_events,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:120],
+        "recentLearning": sorted(
+            recent_learning,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:60],
+        "recentToolNeeds": sorted(
+            recent_tool_needs,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:60],
         "runtime": sorted(
             runtime,
             key=lambda item: item.get("observedAt", ""),

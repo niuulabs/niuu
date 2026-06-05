@@ -55,15 +55,31 @@ describe('ValkyriePage', () => {
     render(<ValkyriePage />, { wrapper: wrapWithValkyrie() });
 
     expect(await screen.findByTestId('valkyrie-live-console')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'Live Valkyries' })).toBeInTheDocument();
-    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('verified');
+    expect(screen.getByRole('heading', { level: 1, name: 'Valhalla k8s' })).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-live-scope-rail')).toHaveTextContent('All Valkyries');
+    expect(screen.getByRole('button', { name: /Console/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Learning/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Autonomy/i })).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Judgments');
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent('Event log');
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
+      'Prepare a guarded rollout fix',
+    );
+    expect(screen.getByTestId('valkyrie-work-queue')).toHaveTextContent('Pod checkout/api');
+    expect(screen.getByTestId('valkyrie-learning-ops')).toHaveTextContent(
+      'learning.dream.completed',
+    );
+    expect(screen.getByTestId('valkyrie-tool-needs')).toHaveTextContent(
+      'prepare_rollout_remediation',
+    );
+    expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent(
+      'Qwen/Qwen3.6-35B-A3B-FP8',
+    );
     expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent('env-k8s-valhalla');
     expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
       'valkyrie-valhalla-sigrun',
     );
-    expect(screen.getByTestId('valkyrie-live-conclusions')).toHaveTextContent(
-      'Persistent ImagePullBackOff',
-    );
+    expect(screen.queryByTestId('valkyrie-telemetry-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('signal-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('huddle-panel')).not.toBeInTheDocument();
     expect(screen.queryByText('Printer forge')).not.toBeInTheDocument();

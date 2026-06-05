@@ -214,12 +214,48 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
             timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
         )
     )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.action.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "task_id": "task-k8s-1",
+                "fields": {
+                    "action_capability": "k8s.inspect_pod",
+                    "summary": "Needs pod logs before remediation.",
+                },
+            },
+            summary="action proposed",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 4, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.wakefulness.changed",
+            source="valkyrie:valkyrie-ymir-k8s",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "previous_state": "watchful",
+                "new_state": "dreaming",
+                "reason": "dream cycle started",
+            },
+            summary="wakefulness changed",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 5, tzinfo=UTC),
+        )
+    )
 
     telemetry = projection.dashboard()["telemetry"]
 
     assert telemetry["verified"] is True
     assert telemetry["source"] == "sleipnir_events"
-    assert telemetry["totals"]["eventsObserved"] == 4
+    assert telemetry["totals"]["eventsObserved"] == 6
     assert telemetry["totals"]["pollsCompleted"] == 1
     assert telemetry["totals"]["signalsCollected"] == 8
     assert telemetry["totals"]["signalsPublished"] == 5
@@ -228,14 +264,22 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["totals"]["learningEvents"] == 1
     assert telemetry["totals"]["dreamCyclesCompleted"] == 1
     assert telemetry["totals"]["judgments"] == 1
+    assert telemetry["totals"]["actions"] == 1
+    assert telemetry["totals"]["toolRequests"] == 1
+    assert telemetry["totals"]["wakefulnessChanges"] == 1
     assert telemetry["byEnvironment"][0]["environmentId"] == "ymir"
     assert telemetry["byEnvironment"][0]["tasksEnqueued"] == 2
     assert telemetry["byEnvironment"][0]["judgments"] == 1
-    assert telemetry["recentOutcomes"][0]["taskId"] == "task-k8s-1"
+    assert telemetry["recentOutcomes"][0]["type"] == "action"
+    assert telemetry["recentOutcomes"][1]["taskId"] == "task-k8s-1"
     assert (
-        telemetry["recentOutcomes"][0]["summary"]
+        telemetry["recentOutcomes"][1]["summary"]
         == "Persistent ImagePullBackOff requires inspection."
     )
+    assert telemetry["recentEvents"][0]["kind"] == "wakefulness"
+    assert telemetry["recentEvents"][0]["environmentId"] == "ymir"
+    assert telemetry["recentLearning"][0]["status"] == "wakefulness"
+    assert telemetry["recentToolNeeds"][0]["capability"] == "k8s.inspect_pod"
     assert telemetry["recentPolls"][0]["sourceId"] == "kubernetes-events"
     assert telemetry["runtime"][0]["driveLoopEnabled"] is True
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
