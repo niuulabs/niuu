@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import uuid
 from dataclasses import asdict
 from typing import Any
 
@@ -51,6 +52,25 @@ _TRANSIENT_ERROR_RE = re.compile(
 )
 _MAX_TRANSIENT_RETRIES = 1
 _DEFAULT_TURN_TIMEOUT_S = 0.0
+
+
+def _claude_effort_for_model(model: str) -> str:
+    """Reasoning effort to push a new Claude session to, by model.
+
+    Effort scale (Anthropic): low < medium < high < xhigh < max (default high).
+    Claude Code's "ultracode" == `xhigh` (NOT a separate level), which Anthropic
+    recommends for Opus 4.7/4.8 coding (`max` overthinks + costs more, reserved for
+    frontier problems). `xhigh` is Opus-4.7/4.8 only; `max` covers Sonnet 4.6 /
+    Opus 4.6. Unknown models fall back to the SDK default to avoid API rejection.
+    """
+    m = (model or "").lower()
+    if "opus-4-8" in m or "opus-4-7" in m:
+        return "xhigh"
+    if "opus-4-6" in m or "sonnet-4-6" in m or "opus-4-5" in m:
+        return "max"
+    return "high"
+
+
 _SDK_TIMEOUT_RECOVERY_PROMPT = (
     "Time budget reached. Stop exploring and conclude immediately using the current "
     "workspace state. Do not do more investigation. Return only the required final "
@@ -523,9 +543,12 @@ class SDKTransport(CLITransport):
             "mcp_servers": self._mcp_servers,
             "include_partial_messages": True,
             "thinking": {"type": "adaptive", "display": "summarized"},
-            # Default Claude to MAX reasoning effort ("ultra") — push new sessions
-            # to think hardest by default (Anthropic `effort` param, Opus/Sonnet 4.6+).
-            "effort": "max",
+            # Push new sessions to the highest sensible reasoning effort by model
+            # (xhigh = Claude Code's "ultracode" level on Opus 4.7/4.8; max on
+            # Sonnet 4.6 / Opus 4.6). Anthropic `effort` param.
+            "effort": _claude_effort_for_model(self._model),
+            # A fresh Forge session must NEVER --continue the cwd's project history.
+            "continue_conversation": False,
             "env": env,
         }
         if self._skip_permissions:
@@ -533,7 +556,15 @@ class SDKTransport(CLITransport):
         if self._resume_session_id:
             # Reload the prior conversation so the agent continues where it
             # left off. ClaudeAgentOptions.resume is supported by the pinned SDK.
+            # Do NOT also set session_id — the SDK forbids session_id + resume
+            # unless fork_session is set.
             option_kwargs["resume"] = self._resume_session_id
+        else:
+            # No explicit resume: pin a brand-new Claude session id so the CLI
+            # starts FRESH instead of attaching to the cwd's most-recent native
+            # session (~/.claude/projects/<hashed-cwd>/) — the "new session
+            # continues the folder's old history" bug. --session-id needs a UUID.
+            option_kwargs["session_id"] = str(uuid.uuid4())
         options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options)
         self._client = await client.__aenter__()
