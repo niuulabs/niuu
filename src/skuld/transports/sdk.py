@@ -257,6 +257,27 @@ def _to_stream_json(message: object) -> dict[str, Any] | None:
     return None
 
 
+def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> str:
+    """Build the tool_result text the model reads after a human answers an
+    AskUserQuestion. `answers` is a list aligned to `questions`, each entry like
+    {"answer": str | list[str]} (optionally "header"/"question"). Tolerant of
+    shape drift from clients."""
+    answer_list = answers if isinstance(answers, list) else []
+    lines: list[str] = []
+    for i, q in enumerate(questions):
+        entry = answer_list[i] if i < len(answer_list) else {}
+        chosen: object = entry.get("answer") if isinstance(entry, dict) else entry
+        if isinstance(chosen, list):
+            chosen = ", ".join(str(c) for c in chosen)
+        header = ""
+        if isinstance(q, dict):
+            header = str(q.get("header") or q.get("question") or "")
+        label = header or f"Question {i + 1}"
+        lines.append(f"- {label}: {chosen if chosen not in (None, '') else '(no answer)'}")
+    body = "\n".join(lines) if lines else "(no answer)"
+    return f"The user answered your question(s):\n{body}\nProceed using these answers."
+
+
 class SDKTransport(CLITransport):
     """Claude SDK-backed transport that preserves existing broker event shapes."""
 
@@ -292,6 +313,11 @@ class SDKTransport(CLITransport):
         self._turn_active = False
         self._pending_steers: list[str] = []
         self._steer_interrupt_requested = False
+        # AskUserQuestion human-in-the-loop: request_id -> Future resolved when a
+        # client answers (via send_control "ask_user_answer"). See
+        # _handle_ask_user_question / _on_can_use_tool.
+        self._pending_questions: dict[str, asyncio.Future] = {}
+        self._question_seq = 0
 
     @property
     def capabilities(self) -> TransportCapabilities:
@@ -468,8 +494,83 @@ class SDKTransport(CLITransport):
             return
         await client.interrupt()
 
+    async def _on_can_use_tool(
+        self, tool_name: str, tool_input: dict[str, Any], context: object
+    ) -> object:
+        """Permission callback. AskUserQuestion is routed to a human (blocks until
+        a client answers); every other tool is allowed (preserving the prior
+        default-mode behavior where the SDK ran without a permission handler).
+
+        ExitPlanMode is intentionally auto-allowed + display-only (product
+        decision): we never run formal plan mode, so there is no plan to gate.
+        """
+        from claude_agent_sdk import PermissionResultAllow
+
+        if tool_name == "AskUserQuestion":
+            return await self._handle_ask_user_question(tool_input, context)
+        return PermissionResultAllow()
+
+    async def _handle_ask_user_question(
+        self, tool_input: dict[str, Any], context: object
+    ) -> object:
+        """Surface an AskUserQuestion to connected clients and block until one
+        answers, then hand the chosen option(s) back to the agent.
+
+        Mechanism (verified live): the SDK's "allow + updated_input" path does NOT
+        deliver answers in headless mode (the CLI emits an empty "answered"
+        template). Returning a Deny whose *message* states the chosen option(s)
+        DOES reach the model as the tool_result, and it continues correctly. So we
+        deny-with-answer rather than allow.
+        """
+        from claude_agent_sdk import PermissionResultDeny
+
+        questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+        if not questions:
+            return PermissionResultDeny(message="No questions were provided.")
+
+        self._question_seq += 1
+        request_id = f"askq-{self._question_seq}-{uuid.uuid4().hex[:8]}"
+        tool_use_id = getattr(context, "tool_use_id", None)
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_questions[request_id] = fut
+
+        await self._emit_event(
+            {
+                "type": "ask_user_question",
+                "request_id": request_id,
+                "tool_use_id": tool_use_id,
+                "questions": questions,
+            }
+        )
+
+        try:
+            answers = await fut
+        except asyncio.CancelledError:
+            return PermissionResultDeny(
+                message="The question was cancelled before the user answered."
+            )
+        finally:
+            self._pending_questions.pop(request_id, None)
+
+        return PermissionResultDeny(message=_format_answer_message(questions, answers))
+
+    def resolve_question(self, request_id: str, answers: object) -> bool:
+        """Resolve a pending AskUserQuestion future with a client's answers.
+        Returns True if a matching pending question was found."""
+        fut = self._pending_questions.get(str(request_id)) if request_id else None
+        if fut is None or fut.done():
+            return False
+        fut.set_result(answers if answers is not None else [])
+        return True
+
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Handle runtime control messages against the live SDK session."""
+        if subtype == "ask_user_answer":
+            request_id = kwargs.get("request_id")
+            answers = kwargs.get("answers")
+            self.resolve_question(str(request_id or ""), answers)
+            return
+
         client = self._client
         if client is None:
             return
@@ -550,6 +651,13 @@ class SDKTransport(CLITransport):
             # A fresh Forge session must NEVER --continue the cwd's project history.
             "continue_conversation": False,
             "env": env,
+            # Route tool permissions through our handler so AskUserQuestion can be
+            # answered by a human (blocks until a client responds); all other
+            # tools are allowed. Requires streaming mode (we use it). NOTE: when
+            # skip_permissions sets bypassPermissions below, the SDK bypasses this
+            # callback entirely — so interactive Q&A only works on the default
+            # (non-bypass) permission path.
+            "can_use_tool": self._on_can_use_tool,
         }
         if self._skip_permissions:
             option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE

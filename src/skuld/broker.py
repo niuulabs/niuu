@@ -3231,6 +3231,15 @@ class Broker:
                     auto_approved=False,
                 )
 
+            # AskUserQuestion: a human answered a question the agent asked.
+            # Resolves the blocking can_use_tool future in SDKTransport.
+            case "ask_user_answer":
+                await self._transport.send_control(
+                    "ask_user_answer",
+                    request_id=data.get("request_id", ""),
+                    answers=data.get("answers", []),
+                )
+
             # Phase 3: interrupt current turn
             case "interrupt":
                 await self._transport.send_control("interrupt")
