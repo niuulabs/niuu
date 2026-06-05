@@ -138,6 +138,10 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
             "signalsPublished": 0,
             "duplicateSignals": 0,
             "tasksEnqueued": 0,
+            "tasksStarted": 0,
+            "tasksCompleted": 0,
+            "tasksFailed": 0,
+            "tasksDropped": 0,
             "judgments": 0,
             "actions": 0,
             "learningEvents": 0,
@@ -148,6 +152,7 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
         },
         "byEnvironment": [],
         "recentPolls": [],
+        "recentTasks": [],
         "runtime": [],
         "llm": {
             "status": "unknown",
@@ -199,6 +204,10 @@ def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str
             "signalsPublished": 0,
             "duplicateSignals": 0,
             "tasksEnqueued": 0,
+            "tasksStarted": 0,
+            "tasksCompleted": 0,
+            "tasksFailed": 0,
+            "tasksDropped": 0,
             "judgments": 0,
             "actions": 0,
             "learningEvents": 0,
@@ -219,6 +228,7 @@ def _aggregate_telemetry(
     totals = _empty_telemetry(observed_at)["totals"]
     by_environment: dict[str, dict[str, Any]] = {}
     recent_polls: list[dict[str, Any]] = []
+    recent_tasks: list[dict[str, Any]] = []
     runtime: list[dict[str, Any]] = []
     llm = {
         "status": "unknown",
@@ -307,6 +317,58 @@ def _aggregate_telemetry(
             }
         elif event_type.startswith("signal."):
             totals["rawSignalEvents"] += 1
+        elif event_type == "ravn.task.started":
+            totals["tasksStarted"] += 1
+            entry["tasksStarted"] += 1
+            recent_tasks.append(
+                {
+                    "environmentId": env_id,
+                    "taskId": payload.get("task_id", ""),
+                    "title": payload.get("title", ""),
+                    "status": "started",
+                    "triggeredBy": payload.get("triggered_by", ""),
+                    "persona": payload.get("persona", ""),
+                    "observedAt": timestamp,
+                }
+            )
+        elif event_type == "ravn.task.completed":
+            outcome = str(payload.get("outcome") or "")
+            totals["tasksCompleted"] += 1
+            entry["tasksCompleted"] += 1
+            if outcome not in {"success", "completed", "complete"}:
+                totals["tasksFailed"] += 1
+                entry["tasksFailed"] += 1
+            recent_tasks.append(
+                {
+                    "environmentId": env_id,
+                    "taskId": payload.get("task_id", ""),
+                    "title": payload.get("title", ""),
+                    "status": (
+                        "completed"
+                        if outcome in {"success", "completed", "complete"}
+                        else "failed"
+                    ),
+                    "outcome": outcome,
+                    "triggeredBy": payload.get("triggered_by", ""),
+                    "persona": payload.get("persona", ""),
+                    "observedAt": timestamp,
+                }
+            )
+        elif event_type == "ravn.task.dropped":
+            totals["tasksDropped"] += 1
+            entry["tasksDropped"] += 1
+            recent_tasks.append(
+                {
+                    "environmentId": env_id,
+                    "taskId": payload.get("task_id", ""),
+                    "title": payload.get("title", ""),
+                    "status": "dropped",
+                    "reason": payload.get("reason", ""),
+                    "triggeredBy": payload.get("triggered_by", ""),
+                    "persona": payload.get("persona", ""),
+                    "observedAt": timestamp,
+                }
+            )
         elif event_type.startswith("valkyrie.judgment."):
             totals["judgments"] += 1
             entry["judgments"] += 1
@@ -328,7 +390,10 @@ def _aggregate_telemetry(
 
     gaps: list[str] = []
     if totals["judgments"] == 0:
-        gaps.append("No verified valkyrie.judgment.* events observed.")
+        if totals["tasksCompleted"] > 0:
+            gaps.append("Tasks completed but no verified valkyrie.judgment.* events observed.")
+        else:
+            gaps.append("No verified valkyrie.judgment.* events observed.")
     if totals["actions"] == 0:
         gaps.append("No verified valkyrie.action.* events observed.")
     if totals["learningEvents"] == 0:
@@ -349,6 +414,11 @@ def _aggregate_telemetry(
         ),
         "recentPolls": sorted(
             recent_polls,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:30],
+        "recentTasks": sorted(
+            recent_tasks,
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:30],

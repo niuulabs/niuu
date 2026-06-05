@@ -49,6 +49,7 @@ from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
+from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
@@ -81,6 +82,8 @@ _SUCCESS_VERDICT_PREFERENCE = (
 _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
+_RAVN_TASK_STARTED = "ravn.task.started"
+_RAVN_TASK_DROPPED = "ravn.task.dropped"
 
 
 def _default_success_verdict(produces: object) -> str:
@@ -238,6 +241,30 @@ def _coerce_nonnegative_int(value: object) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _coerce_float(value: object, *, default: float) -> float:
+    """Return *value* as a float, or *default* when it cannot be parsed."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(str(value or "").strip())
+    except ValueError:
+        return default
+
+
+def _clean_string(value: object, *, default: str = "") -> str:
+    """Return a useful string while avoiding mocked config object reprs in tests."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip() or default
+    if value.__class__.__module__.startswith("unittest.mock"):
+        return default
+    raw = str(value).strip()
+    return raw or default
 
 
 def _extract_mimir_dream_counts(
@@ -695,6 +722,7 @@ class DriveLoop:
                 task.task_id,
                 task.title,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="deadline_exceeded")
             return
 
         if self._queue.full():
@@ -703,6 +731,7 @@ class DriveLoop:
                 self._config.task_queue_max,
                 task.task_id,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="queue_full")
             return
 
         counter = self._next_counter()
@@ -1185,6 +1214,7 @@ class DriveLoop:
                 self._budget.spent_today_usd,
                 self._budget.remaining_usd,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="budget_cap_reached")
             return
 
         try:
@@ -1235,6 +1265,7 @@ class DriveLoop:
             task.title,
             task.triggered_by,
         )
+        await self._emit_sleipnir_task_started(task)
 
         await channel.emit(
             RavnEvent.task_started(
@@ -1409,6 +1440,7 @@ class DriveLoop:
             )
             if task.session_id:
                 event.payload["session_id"] = task.session_id
+            event.payload.update(self._sleipnir_task_context_payload(task))
 
             parsed = _parse_outcome_for_persona(response_text, self._persona_config)
             if parsed is not None:
@@ -1427,6 +1459,60 @@ class DriveLoop:
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
+
+    async def _emit_sleipnir_task_started(self, task: AgentTask) -> None:
+        """Publish ravn.task.started so resident queues are observable from NATS."""
+        payload = {
+            **self._sleipnir_task_context_payload(task),
+            "task_id": task.task_id,
+            "title": task.title,
+            "persona": task.persona or "",
+            "triggered_by": task.triggered_by,
+            "priority": task.priority,
+            "queue_size": self._queue.qsize(),
+            "active_count": len(self._active_tasks),
+        }
+        event = SleipnirEvent(
+            event_type=_RAVN_TASK_STARTED,
+            source=self._source_id,
+            payload=payload,
+            summary=f"Ravn task {task.task_id} started: {task.title}",
+            urgency=0.3,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=task.root_correlation_id or task.session_id or task.task_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=payload.get("tenant_id") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=_RAVN_TASK_STARTED)
+
+    async def _emit_sleipnir_task_dropped(self, task: AgentTask, *, reason: str) -> None:
+        """Publish ravn.task.dropped for capacity/deadline/budget loss accounting."""
+        payload = {
+            **self._sleipnir_task_context_payload(task),
+            "task_id": task.task_id,
+            "title": task.title,
+            "persona": task.persona or "",
+            "triggered_by": task.triggered_by,
+            "priority": task.priority,
+            "reason": reason,
+            "queue_size": self._queue.qsize(),
+            "queue_max": self._config.task_queue_max,
+            "active_count": len(self._active_tasks),
+        }
+        event = SleipnirEvent(
+            event_type=_RAVN_TASK_DROPPED,
+            source=self._source_id,
+            payload=payload,
+            summary=f"Ravn task {task.task_id} dropped: {reason}",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=task.root_correlation_id or task.session_id or task.task_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=payload.get("tenant_id") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=_RAVN_TASK_DROPPED)
 
     async def _emit_sleipnir_mimir_dream_completed(
         self,
@@ -1693,6 +1779,15 @@ class DriveLoop:
                             "continuing.",
                             exc_info=True,
                         )
+                await self._emit_sleipnir_valkyrie_outcome(
+                    VALKYRIE_JUDGMENT_REJECTED,
+                    outcome_fields,
+                    task,
+                    root_corr,
+                    valid=False,
+                    errors=validation_errors,
+                    canonical_event_type=canonical_event_type,
+                )
                 return
             valid = True
 
@@ -1774,6 +1869,15 @@ class DriveLoop:
                     "Failed to emit canonical outcome to skuld; continuing.",
                     exc_info=True,
                 )
+
+        if is_valkyrie_outcome_event(canonical_event_type):
+            await self._emit_sleipnir_valkyrie_outcome(
+                canonical_event_type,
+                outcome_fields,
+                task,
+                root_corr,
+                valid=valid,
+            )
 
         if self._mesh is None:
             mesh_available = False
@@ -1872,6 +1976,107 @@ class DriveLoop:
                     "Failed to emit routing outcome alias to skuld; continuing.",
                     exc_info=True,
                 )
+
+    async def _emit_sleipnir_valkyrie_outcome(
+        self,
+        event_type: str,
+        outcome_fields: dict[str, object],
+        task: AgentTask,
+        root_correlation_id: str,
+        *,
+        valid: bool,
+        errors: list[str] | None = None,
+        canonical_event_type: str = "",
+    ) -> None:
+        """Mirror validated resident Valkyrie outcomes onto Sleipnir/NATS."""
+        payload: dict[str, object] = {
+            **self._sleipnir_task_context_payload(task),
+            **outcome_fields,
+            "task_id": task.task_id,
+            "persona": task.persona or getattr(self._persona_config, "name", "") or "",
+            "valid": valid,
+        }
+        if errors:
+            payload["errors"] = errors
+        if canonical_event_type:
+            payload["canonical_event_type"] = canonical_event_type
+
+        environment_id = str(payload.get("environment_id") or payload.get("environmentId") or "")
+        valkyrie_id = str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")
+        confidence = _coerce_float(payload.get("confidence"), default=0.5)
+        tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
+        urgency = max(0.2, min(1.0, confidence if tier == "urgent" else confidence * 0.8))
+        event = SleipnirEvent(
+            event_type=event_type,
+            source=f"ravn:valkyrie:{environment_id or 'unknown'}",
+            payload=payload,
+            summary=self._valkyrie_outcome_summary(
+                event_type,
+                environment_id=environment_id,
+                valkyrie_id=valkyrie_id,
+                payload=payload,
+            ),
+            urgency=urgency if valid else 0.8,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=root_correlation_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=str(payload.get("tenant_id") or "") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=event_type)
+
+    @staticmethod
+    def _valkyrie_outcome_summary(
+        event_type: str,
+        *,
+        environment_id: str,
+        valkyrie_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        if event_type == VALKYRIE_JUDGMENT_REJECTED:
+            return f"Valkyrie {valkyrie_id or 'unknown'} judgment rejected"
+        if event_type.startswith("valkyrie.judgment."):
+            tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
+            action = str(payload.get("recommended_action") or "observe")
+            return (
+                f"Valkyrie {valkyrie_id or 'unknown'} judgment "
+                f"in {environment_id}: {tier}/{action}"
+            )
+        if event_type.startswith("valkyrie.action."):
+            capability = str(
+                payload.get("capability") or payload.get("recommended_action") or "action"
+            )
+            return f"Valkyrie {valkyrie_id or 'unknown'} action in {environment_id}: {capability}"
+        return f"Valkyrie {valkyrie_id or 'unknown'} outcome in {environment_id}"
+
+    def _sleipnir_task_context_payload(self, task: AgentTask) -> dict[str, object]:
+        """Return shared task/environment metadata for durable telemetry events."""
+        environment = getattr(self._settings, "environment", None)
+        mesh = getattr(self._settings, "mesh", None)
+        env_id = _clean_string(getattr(environment, "id", ""), default="")
+        env_type = _clean_string(getattr(environment, "type", ""), default="")
+        env_name = _clean_string(getattr(environment, "name", ""), default=env_id)
+        valkyrie_id = _clean_string(getattr(mesh, "own_peer_id", ""), default="")
+        tenant_id = env_id
+        return {
+            "environment_id": env_id,
+            "environment_name": env_name,
+            "environment_type": env_type,
+            "tenant_id": tenant_id,
+            "valkyrie_id": valkyrie_id,
+            "session_id": task.session_id or "",
+            "root_correlation_id": task.root_correlation_id or task.task_id,
+            "workflow_parent_event_id": task.workflow_parent_event_id or "",
+            "workflow_node_id": task.workflow_node_id or "",
+        }
+
+    async def _publish_sleipnir_event(self, event: SleipnirEvent, *, log_label: str) -> None:
+        if self._sleipnir_publisher is None:
+            return
+        try:
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit %s; continuing.", log_label, exc_info=True)
 
     def _save_task_output(self, task: AgentTask, channel: ChannelPort) -> None:
         """Persist agent response to ``task.output_path`` when set (cron tasks)."""

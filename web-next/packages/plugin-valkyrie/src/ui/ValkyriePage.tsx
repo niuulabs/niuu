@@ -250,6 +250,9 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
     { label: 'Signals in', value: compactNumber(totals.signalsCollected) },
     { label: 'Published', value: compactNumber(totals.signalsPublished) },
     { label: 'Tasks', value: compactNumber(totals.tasksEnqueued) },
+    { label: 'Started', value: compactNumber(totals.tasksStarted) },
+    { label: 'Done', value: compactNumber(totals.tasksCompleted) },
+    { label: 'Dropped', value: compactNumber(totals.tasksDropped) },
     { label: 'Judgments', value: compactNumber(totals.judgments) },
     { label: 'Actions', value: compactNumber(totals.actions) },
     { label: 'Learning', value: compactNumber(totals.learningEvents) },
@@ -291,7 +294,7 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
         </div>
       </div>
 
-      <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-4 niuu:2xl:grid-cols-8">
+      <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-4 niuu:2xl:grid-cols-11">
         {items.map((item) => (
           <div
             key={item.label}
@@ -305,7 +308,7 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
         ))}
       </div>
 
-      <div className="niuu:mt-3 niuu:grid niuu:gap-3 niuu:xl:grid-cols-[1.1fr_0.9fr]">
+      <div className="niuu:mt-3 niuu:grid niuu:gap-3 niuu:xl:grid-cols-[1fr_1fr] niuu:2xl:grid-cols-[1fr_1fr_0.8fr]">
         <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
           <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
             <h3 className="niuu:text-xs niuu:font-semibold niuu:text-text-muted">Recent polls</h3>
@@ -337,6 +340,40 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
               </div>
             ))}
             {telemetry.recentPolls.length === 0 ? <EmptyState label="No poll telemetry" /> : null}
+          </div>
+        </div>
+
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
+            <h3 className="niuu:text-xs niuu:font-semibold niuu:text-text-muted">Recent tasks</h3>
+            <span className="niuu:text-xs niuu:text-text-muted">
+              failed {compactNumber(totals.tasksFailed)}
+            </span>
+          </div>
+          <div className="niuu:grid niuu:gap-2">
+            {(telemetry.recentTasks ?? []).slice(0, 5).map((task) => (
+              <div
+                key={`${task.taskId}:${task.status}:${task.observedAt}`}
+                className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_auto] niuu:items-center niuu:gap-2 niuu:rounded-md niuu:bg-bg-secondary niuu:px-3 niuu:py-2"
+              >
+                <div className="niuu:min-w-0">
+                  <div className="niuu:truncate niuu:text-sm niuu:text-text-primary">
+                    {task.title || task.taskId}
+                  </div>
+                  <div className="niuu:truncate niuu:text-xs niuu:text-text-muted">
+                    {task.environmentId} · {task.status}
+                    {task.reason ? ` · ${task.reason}` : ''}
+                    {task.outcome ? ` · ${task.outcome}` : ''}
+                  </div>
+                </div>
+                <span className="niuu:text-xs niuu:text-text-muted">
+                  {formatShortTime(task.observedAt)}
+                </span>
+              </div>
+            ))}
+            {(telemetry.recentTasks ?? []).length === 0 ? (
+              <EmptyState label="No task telemetry" />
+            ) : null}
           </div>
         </div>
 

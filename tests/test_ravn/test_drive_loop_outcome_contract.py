@@ -302,8 +302,10 @@ files_changed: 2
     async def test_valid_resident_valkyrie_judgment_preserves_structured_metadata(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
+        published = []
         dl._mesh = mesh
         dl._skuld_channel = None
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
         dl._persona_config = SimpleNamespace(
             name="k8s-valkyrie",
@@ -337,6 +339,10 @@ files_changed: 2
         assert alias_topic == registry.VALKYRIE_ACTION_PROPOSED
         assert alias_event.payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
         assert alias_event.payload["routing_only"] is True
+        assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_PROPOSED]
+        assert published[0].payload["task_id"] == "task-k8s-1"
+        assert published[0].payload["environment_id"] == "cluster-a"
+        assert published[0].payload["valid"] is True
 
     @pytest.mark.asyncio
     async def test_resident_valkyrie_judgment_normalizes_local_model_yaml_drift(self) -> None:
@@ -445,8 +451,10 @@ correlation_ids:
         dl = _make_drive_loop()
         mesh = AsyncMock()
         skuld_channel = AsyncMock()
+        published = []
         dl._mesh = mesh
         dl._skuld_channel = skuld_channel
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
         dl._persona_config = SimpleNamespace(
             name="k8s-valkyrie",
@@ -472,6 +480,41 @@ correlation_ids:
         assert any("tier" in error for error in rejected_event.payload["errors"])
         json.dumps(rejected_event.payload)
         skuld_channel.emit.assert_awaited_once()
+        assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_REJECTED]
+        assert published[0].payload["task_id"] == "task-k8s-invalid"
+        assert published[0].payload["canonical_event_type"] == registry.VALKYRIE_JUDGMENT_PROPOSED
+        assert published[0].payload["valid"] is False
+
+    @pytest.mark.asyncio
+    async def test_task_lifecycle_publishes_sleipnir_started_completed_and_dropped(
+        self,
+    ) -> None:
+        dl = _make_drive_loop(queue_max=1)
+        published = []
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
+        dl._source_id = "drive_loop"
+
+        task = _make_agent_task(task_id="task-observed")
+        task.title = "observe cluster event"
+        task.triggered_by = "signal:signal.kubernetes.event"
+        task.root_correlation_id = "root-observed"
+
+        await dl._emit_sleipnir_task_started(task)
+        await dl._emit_sleipnir_task_completed(task, "success", response_text="")
+        await dl.enqueue(_make_agent_task(task_id="task-kept"))
+        await dl.enqueue(_make_agent_task(task_id="task-dropped"))
+
+        assert [event.event_type for event in published] == [
+            "ravn.task.started",
+            registry.RAVN_TASK_COMPLETED,
+            "ravn.task.dropped",
+        ]
+        assert published[0].payload["task_id"] == "task-observed"
+        assert published[0].payload["triggered_by"] == "signal:signal.kubernetes.event"
+        assert published[1].payload["task_id"] == "task-observed"
+        assert published[1].payload["root_correlation_id"] == "root-observed"
+        assert published[2].payload["task_id"] == "task-dropped"
+        assert published[2].payload["reason"] == "queue_full"
 
     @pytest.mark.asyncio
     async def test_success_without_verdict_still_routes_pass_alias(self) -> None:

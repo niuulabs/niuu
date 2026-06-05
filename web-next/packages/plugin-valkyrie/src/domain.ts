@@ -185,6 +185,10 @@ export interface ValkyrieTelemetryTotals {
   signalsPublished: number;
   duplicateSignals: number;
   tasksEnqueued: number;
+  tasksStarted: number;
+  tasksCompleted: number;
+  tasksFailed: number;
+  tasksDropped: number;
   judgments: number;
   actions: number;
   learningEvents: number;
@@ -203,6 +207,10 @@ export interface ValkyrieEnvironmentTelemetry {
   signalsPublished: number;
   duplicateSignals: number;
   tasksEnqueued: number;
+  tasksStarted: number;
+  tasksCompleted: number;
+  tasksFailed: number;
+  tasksDropped: number;
   judgments: number;
   actions: number;
   learningEvents: number;
@@ -219,6 +227,18 @@ export interface ValkyriePollTelemetry {
   tasksEnqueued?: number;
   durationMs?: number;
   error?: string;
+  observedAt: string;
+}
+
+export interface ValkyrieTaskTelemetry {
+  environmentId: string;
+  taskId: string;
+  title: string;
+  status: 'started' | 'completed' | 'failed' | 'dropped';
+  outcome?: string;
+  reason?: string;
+  triggeredBy?: string;
+  persona?: string;
   observedAt: string;
 }
 
@@ -247,6 +267,7 @@ export interface ValkyrieTelemetry {
   totals: ValkyrieTelemetryTotals;
   byEnvironment: ValkyrieEnvironmentTelemetry[];
   recentPolls: ValkyriePollTelemetry[];
+  recentTasks: ValkyrieTaskTelemetry[];
   runtime: ValkyrieRuntimeTelemetry[];
   llm: ValkyrieLlmTelemetry;
   gaps: string[];
