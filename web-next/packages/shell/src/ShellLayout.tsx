@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { Outlet, useRouter, useRouterState } from '@tanstack/react-router';
-import { useConfig, type PluginCtx } from '@niuulabs/plugin-sdk';
+import { useConfig, type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import {
   LiveBadge,
   Kbd,
@@ -13,9 +13,16 @@ import {
 import { useShellContext } from './ShellContext';
 import './Shell.css';
 
-function activePluginId(pathname: string, ids: string[]): string | null {
-  for (const id of ids) {
-    if (pathname === `/${id}` || pathname.startsWith(`/${id}/`)) return id;
+function pathMatches(pathname: string, basePath: string): boolean {
+  return pathname === basePath || pathname.startsWith(basePath + '/');
+}
+
+function activePluginId(pathname: string, plugins: PluginDescriptor[]): string | null {
+  for (const plugin of plugins) {
+    if (pathMatches(pathname, `/${plugin.id}`)) return plugin.id;
+    if (plugin.tabs?.some((tab) => pathMatches(pathname, tab.path ?? `/${plugin.id}/${tab.id}`))) {
+      return plugin.id;
+    }
   }
   return null;
 }
@@ -57,10 +64,7 @@ export function ShellLayout() {
     [navPlugins],
   );
 
-  const activeId = activePluginId(
-    pathname,
-    navPlugins.map((p) => p.id),
-  );
+  const activeId = activePluginId(pathname, navPlugins);
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
   const subnavCollapsed = active ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`]) : false;
 
