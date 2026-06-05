@@ -513,6 +513,182 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
   );
 }
 
+function LiveEnvironmentMatrix({ telemetry }: { telemetry: ValkyrieTelemetry }) {
+  const environments = telemetry.byEnvironment.filter(
+    (environment) =>
+      environment.pollsCompleted +
+        environment.pollFailures +
+        environment.signalsCollected +
+        environment.tasksEnqueued +
+        environment.tasksStarted +
+        environment.tasksCompleted +
+        environment.tasksDropped +
+        environment.judgments +
+        environment.actions +
+        environment.learningEvents +
+        environment.dreamCycles >
+      0,
+  );
+
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-live-environments">
+      <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Environments</h2>
+        <span className="niuu:text-xs niuu:text-text-muted">
+          {compactNumber(environments.length)} observed
+        </span>
+      </div>
+      <div className="niuu:grid niuu:gap-2 niuu:xl:grid-cols-2">
+        {environments.map((environment) => (
+          <article
+            key={environment.environmentId}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+          >
+            <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
+              <div className="niuu:min-w-0">
+                <h3 className="niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                  {environment.environmentId}
+                </h3>
+                <p className="niuu:text-xs niuu:text-text-muted">
+                  seen {formatShortTime(environment.lastObservedAt)}
+                </p>
+              </div>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                {compactNumber(environment.judgments + environment.actions)} conclusions
+              </span>
+            </div>
+            <dl className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:text-xs niuu:md:grid-cols-4">
+              <div>
+                <dt className={MUTED}>Polls</dt>
+                <dd className="niuu:text-text-primary">
+                  {compactNumber(environment.pollsCompleted)}
+                </dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Signals</dt>
+                <dd className="niuu:text-text-primary">
+                  {compactNumber(environment.signalsPublished)}
+                </dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Tasks</dt>
+                <dd className="niuu:text-text-primary">
+                  {compactNumber(environment.tasksStarted)}/
+                  {compactNumber(environment.tasksCompleted)}
+                </dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Learning</dt>
+                <dd className="niuu:text-text-primary">
+                  {compactNumber(environment.learningEvents)}
+                </dd>
+              </div>
+            </dl>
+          </article>
+        ))}
+        {environments.length === 0 ? <EmptyState label="No live environments observed" /> : null}
+      </div>
+    </section>
+  );
+}
+
+function RuntimePanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-live-runtime">
+      <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Runtime</h2>
+        <span className="niuu:text-xs niuu:text-text-muted">
+          {compactNumber(telemetry.runtime.length)} started
+        </span>
+      </div>
+      <div className="niuu:grid niuu:gap-2">
+        {telemetry.runtime.map((runtime) => (
+          <article
+            key={`${runtime.environmentId}:${runtime.valkyrieId}:${runtime.observedAt}`}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+          >
+            <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
+              <div className="niuu:min-w-0">
+                <h3 className="niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                  {runtime.valkyrieId || runtime.environmentId}
+                </h3>
+                <p className="niuu:text-xs niuu:text-text-muted">
+                  {runtime.environmentId} · seen {formatShortTime(runtime.observedAt)}
+                </p>
+              </div>
+              <span
+                className={`niuu:rounded-full niuu:px-2 niuu:py-1 niuu:text-xs ${
+                  runtime.driveLoopEnabled
+                    ? 'niuu:bg-success-bg niuu:text-success'
+                    : 'niuu:bg-warning-bg niuu:text-warning'
+                }`}
+              >
+                drive {runtime.driveLoopEnabled ? 'on' : 'off'}
+              </span>
+            </div>
+            <dl className="niuu:mt-3 niuu:grid niuu:grid-cols-3 niuu:gap-2 niuu:text-xs">
+              <div>
+                <dt className={MUTED}>Sources</dt>
+                <dd className="niuu:text-text-primary">{compactNumber(runtime.sourceCount)}</dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Poll</dt>
+                <dd className="niuu:text-text-primary">{runtime.pollIntervalSeconds}s</dd>
+              </div>
+              <div>
+                <dt className={MUTED}>Initiative</dt>
+                <dd className="niuu:text-text-primary">
+                  {runtime.initiativeEnabled ? 'on' : 'off'}
+                </dd>
+              </div>
+            </dl>
+          </article>
+        ))}
+        {telemetry.runtime.length === 0 ? <EmptyState label="No runtime starts observed" /> : null}
+      </div>
+    </section>
+  );
+}
+
+function LiveConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
+  const telemetry = dashboard.telemetry;
+  if (!telemetry?.verified) return null;
+
+  return (
+    <main
+      data-testid="valkyrie-live-console"
+      className="niuu:h-full niuu:min-h-0 niuu:overflow-auto"
+    >
+      <div className="niuu:flex niuu:flex-col niuu:gap-3">
+        <header className="niuu:flex niuu:flex-wrap niuu:items-end niuu:justify-between niuu:gap-3">
+          <div className="niuu:min-w-0">
+            <h1 className="niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
+              Live Valkyries
+            </h1>
+            <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
+              {telemetry.source} · observed {formatShortTime(telemetry.lastObservedAt)}
+            </p>
+          </div>
+          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+            <span className="niuu:rounded-full niuu:bg-success-bg niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-success">
+              verified API
+            </span>
+            <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-muted">
+              updated {formatShortTime(dashboard.updatedAt)}
+            </span>
+          </div>
+        </header>
+
+        <TelemetryPanel telemetry={telemetry} />
+        <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_340px]">
+          <LiveEnvironmentMatrix telemetry={telemetry} />
+          <RuntimePanel telemetry={telemetry} />
+        </div>
+      </div>
+    </main>
+  );
+}
+
 function FlockReportPanel({ dashboard }: { dashboard: ValkyrieDashboard }) {
   const report = dashboard.liveReport;
   if (!report) return null;
@@ -1019,6 +1195,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
       ? `${kindLabel(selectedEnvironment.kind)} · ${selectedEnvironment.health}`
       : 'No environment';
 
+  if (dashboard.telemetry?.verified) return <LiveConsole dashboard={dashboard} />;
   if (!selectedEnvironment) return <EmptyState label="No environments" />;
 
   return (

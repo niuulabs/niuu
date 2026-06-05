@@ -3,11 +3,29 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ValkyriePage } from './ValkyriePage';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
-import { createMockValkyrieService, createMockValkyrieSignalStream } from '../adapters/mock';
+import {
+  createMockValkyrieService,
+  createMockValkyrieSignalStream,
+  createSeedValkyrieDashboard,
+} from '../adapters/mock';
+
+function createDemoDashboard() {
+  const dashboard = createSeedValkyrieDashboard();
+  return {
+    ...dashboard,
+    telemetry: dashboard.telemetry
+      ? { ...dashboard.telemetry, source: 'demo_projection', verified: false }
+      : dashboard.telemetry,
+  };
+}
 
 describe('ValkyriePage', () => {
   it('renders environment, flock, signal, state, huddle, and learning panels', async () => {
-    render(<ValkyriePage />, { wrapper: wrapWithValkyrie() });
+    render(<ValkyriePage />, {
+      wrapper: wrapWithValkyrie({
+        valkyrie: createMockValkyrieService(createDemoDashboard()),
+      }),
+    });
 
     expect(await screen.findByTestId('valkyrie-page')).toBeInTheDocument();
     expect(screen.getByTestId('environment-env-k8s-valhalla')).toBeInTheDocument();
@@ -19,7 +37,7 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent(
       'Operational telemetry',
     );
-    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('verified');
+    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('unverified');
     expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent(
       'Qwen/Qwen3.6-35B-A3B-FP8',
     );
@@ -33,9 +51,34 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('flock-live-report')).toHaveTextContent('K8s flock routing');
   });
 
+  it('renders verified telemetry without seeded projection panels', async () => {
+    render(<ValkyriePage />, { wrapper: wrapWithValkyrie() });
+
+    expect(await screen.findByTestId('valkyrie-live-console')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Live Valkyries' })).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('verified');
+    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent('env-k8s-valhalla');
+    expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
+      'valkyrie-valhalla-sigrun',
+    );
+    expect(screen.getByTestId('valkyrie-live-conclusions')).toHaveTextContent(
+      'Persistent ImagePullBackOff',
+    );
+    expect(screen.queryByTestId('signal-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('huddle-panel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Printer forge')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('External sender asks for review before Friday'),
+    ).not.toBeInTheDocument();
+  });
+
   it('switches from environment learning to flock learning', async () => {
     const user = userEvent.setup();
-    render(<ValkyriePage />, { wrapper: wrapWithValkyrie() });
+    render(<ValkyriePage />, {
+      wrapper: wrapWithValkyrie({
+        valkyrie: createMockValkyrieService(createDemoDashboard()),
+      }),
+    });
 
     await user.click(await screen.findByTestId('flock-flock-k8s'));
 
@@ -47,7 +90,11 @@ describe('ValkyriePage', () => {
 
   it('lets an operator join and speak in a huddle', async () => {
     const user = userEvent.setup();
-    render(<ValkyriePage />, { wrapper: wrapWithValkyrie() });
+    render(<ValkyriePage />, {
+      wrapper: wrapWithValkyrie({
+        valkyrie: createMockValkyrieService(createDemoDashboard()),
+      }),
+    });
 
     await user.click(await screen.findByRole('button', { name: 'Join' }));
     await user.type(screen.getByLabelText(/message valhalla memory/i), 'What is blocked?');

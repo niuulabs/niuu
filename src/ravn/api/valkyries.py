@@ -186,6 +186,10 @@ def _is_raw_signal_event(event: dict[str, Any]) -> bool:
     return event_type.startswith("signal.")
 
 
+def _is_runtime_event(event: dict[str, Any]) -> bool:
+    return str(event.get("event_type") or "") == "valkyrie.runtime.started"
+
+
 def _event_timestamp(event: dict[str, Any]) -> str:
     timestamp = event.get("timestamp")
     if isinstance(timestamp, datetime):
@@ -946,6 +950,7 @@ class ValkyrieDashboardProjection:
         self._poll_count = 0
         self._raw_signal_events: list[dict[str, Any]] = []
         self._control_events: list[dict[str, Any]] = []
+        self._runtime_events: dict[str, dict[str, Any]] = {}
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
@@ -953,6 +958,18 @@ class ValkyrieDashboardProjection:
 
     def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
         event_data = _event_dict(event)
+        if _is_runtime_event(event_data):
+            raw_payload = event_data.get("payload")
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
+            env_id = str(
+                payload.get("environment_id")
+                or payload.get("environmentId")
+                or "unknown"
+            )
+            valkyrie_id = str(
+                payload.get("valkyrie_id") or payload.get("valkyrieId") or "unknown"
+            )
+            self._runtime_events[f"{env_id}:{valkyrie_id}"] = event_data
         if _is_raw_signal_event(event_data):
             self._raw_signal_events.append(event_data)
             self._raw_signal_events = self._raw_signal_events[-RAW_SIGNAL_TELEMETRY_LIMIT:]
@@ -1060,9 +1077,14 @@ class ValkyrieDashboardProjection:
     def _refresh_live_report(self) -> None:
         self._poll_count += 1
         observed_at = _now()
+        telemetry_events = [*self._raw_signal_events, *self._control_events]
+        retained_event_ids = {id(event) for event in telemetry_events}
+        telemetry_events.extend(
+            event for event in self._runtime_events.values() if id(event) not in retained_event_ids
+        )
         self._dashboard["liveReport"] = _live_report(observed_at, self._poll_count)
         self._dashboard["telemetry"] = _aggregate_telemetry(
-            [*self._raw_signal_events, *self._control_events],
+            telemetry_events,
             observed_at=observed_at,
         )
         self._dashboard["updatedAt"] = observed_at
