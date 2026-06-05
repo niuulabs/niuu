@@ -492,6 +492,34 @@ def _tool_need_entry(
     }
 
 
+def _capability_gap_from_details(details: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Return the requested capability when a judgment/action exposes a gap.
+
+    Resident Valkyries should not need a hard-coded catalog of every action they
+    might one day perform. A judgment can surface the next missing capability as
+    `action_capability` or, for older persona outputs, as a structured-looking
+    `recommended_action`. The dashboard treats that as evolution pressure.
+    """
+    capability = str(
+        details.get("action_capability")
+        or payload.get("action_capability")
+        or ""
+    ).strip()
+    if capability and capability.lower() not in {"none", "n/a", "no_action", "observe"}:
+        return capability
+
+    recommended = str(
+        details.get("recommended_action")
+        or payload.get("recommended_action")
+        or ""
+    ).strip()
+    if not recommended or recommended.lower() in {"none", "n/a", "observe", "watch"}:
+        return ""
+    if "." in recommended or "_" in recommended:
+        return recommended
+    return ""
+
+
 def _runtime_entry(
     event: dict[str, Any],
     payload: dict[str, Any],
@@ -626,6 +654,7 @@ def _aggregate_telemetry(
     recent_logs: list[dict[str, Any]] = []
     recent_learning: list[dict[str, Any]] = []
     recent_tool_needs: list[dict[str, Any]] = []
+    seen_tool_needs: set[tuple[str, str, str]] = set()
     runtime_by_key: dict[str, dict[str, Any]] = {}
     llm = {
         "status": "unknown",
@@ -646,6 +675,22 @@ def _aggregate_telemetry(
         entry["lastObservedAt"] = max(entry["lastObservedAt"], timestamp)
         totals["eventsObserved"] += 1
         recent_events.append(_event_log_entry(event, payload))
+
+        def append_tool_need(*, capability: str, status: str) -> None:
+            task_id = str(payload.get("task_id") or event.get("correlation_id") or "")
+            need_key = (env_id, task_id, capability)
+            if need_key in seen_tool_needs:
+                return
+            seen_tool_needs.add(need_key)
+            totals["toolRequests"] += 1
+            recent_tool_needs.append(
+                _tool_need_entry(
+                    event,
+                    payload,
+                    capability=capability,
+                    status=status,
+                )
+            )
 
         if event_type.startswith("ravn.log.") or event_type.startswith("valkyrie.log."):
             totals["logEvents"] += 1
@@ -773,6 +818,16 @@ def _aggregate_telemetry(
             fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
             outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
             details = fields or outcome or payload
+            capability = _capability_gap_from_details(details, payload)
+            if capability:
+                append_tool_need(
+                    capability=capability,
+                    status=str(
+                        details.get("decision")
+                        or details.get("verdict")
+                        or "needed"
+                    ),
+                )
             recent_outcomes.append(
                 {
                     "environmentId": env_id,
@@ -801,22 +856,9 @@ def _aggregate_telemetry(
             fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
             outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
             details = fields or outcome or payload
-            capability = str(
-                details.get("action_capability")
-                or details.get("recommended_action")
-                or payload.get("recommended_action")
-                or ""
-            )
+            capability = _capability_gap_from_details(details, payload)
             if capability:
-                totals["toolRequests"] += 1
-                recent_tool_needs.append(
-                    _tool_need_entry(
-                        event,
-                        payload,
-                        capability=capability,
-                        status=event_type.rsplit(".", 1)[-1],
-                    )
-                )
+                append_tool_need(capability=capability, status=event_type.rsplit(".", 1)[-1])
             recent_outcomes.append(
                 {
                     "environmentId": env_id,
@@ -906,6 +948,11 @@ def _aggregate_telemetry(
         gaps.append("Dream cycles are running, but no improvement artifacts were extracted yet.")
     if totals["toolRequests"] == 0:
         gaps.append("No verified tool/action capability requests observed.")
+    elif totals["skillProposals"] == 0:
+        gaps.append(
+            "Capability gaps are visible, but no skill or self-improvement proposals "
+            "have been observed yet."
+        )
     if totals["skillProposals"] == 0 and totals["learningEvents"] == 0:
         gaps.append("No verified skill or self-improvement proposals observed.")
     if not runtime:

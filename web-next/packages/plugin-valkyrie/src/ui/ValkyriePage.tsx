@@ -982,10 +982,12 @@ function ToolNeedsPanel({
       <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
         <div className="niuu:flex niuu:items-center niuu:gap-2">
           <Wrench size={16} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Tools</h2>
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+            Capability gaps
+          </h2>
         </div>
         <span className="niuu:text-xs niuu:text-text-muted">
-          {compactNumber(toolNeeds.length)} requests
+          {compactNumber(toolNeeds.length)} needs
         </span>
       </div>
       <div className="niuu:grid niuu:gap-2">
@@ -1006,7 +1008,126 @@ function ToolNeedsPanel({
             <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{need.summary}</p>
           </article>
         ))}
-        {toolNeeds.length === 0 ? <EmptyState label="No tool requests observed" /> : null}
+        {toolNeeds.length === 0 ? (
+          <EmptyState label="No missing capabilities observed" />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function EvolutionLoopPanel({
+  telemetry,
+  environmentId,
+}: {
+  telemetry: ValkyrieTelemetry;
+  environmentId: string;
+}) {
+  const scopedNeeds = (telemetry.recentToolNeeds ?? []).filter((entry) =>
+    environmentMatchesSelection(environmentId, entry.environmentId),
+  );
+  const scopedLearning = (telemetry.recentLearning ?? []).filter((entry) =>
+    environmentMatchesSelection(environmentId, entry.environmentId),
+  );
+  const totals = telemetry.totals;
+  const missing = scopedNeeds.length;
+  const proposals = totals.skillProposals || scopedLearning.filter((entry) =>
+    entry.eventType.startsWith('self_improvement.') || entry.eventType.startsWith('skill.'),
+  ).length;
+  const dreams =
+    totals.dreamCyclesStarted + (totals.dreamCyclesNoop || 0) + totals.dreamCyclesFailed;
+  const gapCount = missing || totals.toolRequests || 0;
+  const stages = [
+    {
+      label: 'Sense',
+      value: compactNumber(totals.signalsPublished || totals.rawSignalEvents),
+      detail: 'signals observed',
+    },
+    {
+      label: 'Judge',
+      value: compactNumber(totals.judgments),
+      detail: 'decisions proposed',
+    },
+    {
+      label: 'Gap',
+      value: compactNumber(gapCount),
+      detail: 'capabilities missing',
+    },
+    {
+      label: 'Evolve',
+      value: compactNumber(proposals),
+      detail: 'skill/self-improvement proposals',
+    },
+    {
+      label: 'Dream',
+      value: compactNumber(dreams),
+      detail: 'reflection cycles',
+    },
+  ];
+  const blocked =
+    gapCount > 0 && proposals === 0
+      ? 'Capability gaps are being noticed, but no skill evolution proposal has been observed.'
+      : dreams === 0
+        ? 'No dream cycle has been observed for this window.'
+        : '';
+
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-evolution-loop">
+      <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <Brain size={16} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+            Self-evolution loop
+          </h2>
+        </div>
+        <span
+          className={`niuu:rounded-full niuu:px-2 niuu:py-1 niuu:text-xs ${
+            blocked
+              ? 'niuu:bg-warning-bg niuu:text-warning'
+              : 'niuu:bg-success-bg niuu:text-success'
+          }`}
+        >
+          {blocked ? 'stalled' : 'flowing'}
+        </span>
+      </div>
+      <div className="niuu:grid niuu:gap-2 niuu:md:grid-cols-5">
+        {stages.map((stage) => (
+          <div
+            key={stage.label}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+          >
+            <div className="niuu:text-xs niuu:text-text-muted">{stage.label}</div>
+            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
+              {stage.value}
+            </div>
+            <div className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{stage.detail}</div>
+          </div>
+        ))}
+      </div>
+      {blocked ? (
+        <div className="niuu:mt-3 niuu:rounded-md niuu:border niuu:border-solid niuu:border-warning niuu:bg-warning-bg niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-warning">
+          {blocked}
+        </div>
+      ) : null}
+      <div className="niuu:mt-3 niuu:grid niuu:gap-2">
+        {scopedNeeds.slice(0, 3).map((need) => (
+          <article key={need.id} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+            <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+              <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                {need.capability}
+              </span>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
+                {need.status}
+              </span>
+            </div>
+            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+              {need.environmentId} · {need.summary}
+            </p>
+          </article>
+        ))}
+        {scopedNeeds.length === 0 ? (
+          <EmptyState label="No capability gaps in this scope" />
+        ) : null}
       </div>
     </section>
   );
@@ -1638,6 +1759,10 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
           {view === 'console' ? (
             <>
               <LiveMetricGrid telemetry={telemetry} />
+              <EvolutionLoopPanel
+                telemetry={telemetry}
+                environmentId={selectedEnvironmentId}
+              />
               <EventLogPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
               <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(280px,0.9fr)_minmax(320px,1.15fr)_minmax(280px,0.85fr)]">
                 <RuntimePanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
@@ -1661,7 +1786,13 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
           ) : null}
           {view === 'learning' ? (
             <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
-              <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+              <div className="niuu:grid niuu:gap-3">
+                <EvolutionLoopPanel
+                  telemetry={telemetry}
+                  environmentId={selectedEnvironmentId}
+                />
+                <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+              </div>
               <div className="niuu:grid niuu:gap-3">
                 <ToolNeedsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
                 <LlmStatusPanel telemetry={telemetry} />

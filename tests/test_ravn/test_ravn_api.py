@@ -402,6 +402,44 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert projection.logs()[0]["component"] == "drive_loop"
 
 
+def test_valkyrie_dashboard_surfaces_judgment_capability_gap(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "task_id": "task-k8s-gap",
+                "fields": {
+                    "verdict": "investigate",
+                    "confidence": 0.73,
+                    "action_capability": "discover.k8s_pod_failure_context",
+                    "recommended_action": "create read-only evidence collection skill",
+                    "capability_gap": "no reusable skill can gather pod context",
+                    "tool_evolution_plan": "use skill_list, then skill_manage propose",
+                    "summary": "Signal needs deeper pod failure context.",
+                },
+            },
+            summary="judgment proposed",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+        )
+    )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    assert telemetry["totals"]["judgments"] == 1
+    assert telemetry["totals"]["actions"] == 0
+    assert telemetry["totals"]["toolRequests"] == 1
+    assert telemetry["recentToolNeeds"][0]["capability"] == "discover.k8s_pod_failure_context"
+    assert telemetry["recentToolNeeds"][0]["status"] == "investigate"
+    assert any("Capability gaps are visible" in gap for gap in telemetry["gaps"])
+
+
 def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
     monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
     projection = ValkyrieDashboardProjection()
