@@ -2570,6 +2570,7 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
+    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
@@ -2603,7 +2604,9 @@ async def _run_daemon(
             event_publisher=event_publisher,
             resume=resume,
             mimir=daemon_mimir,
-            sleipnir_publisher=sleipnir_catalog_publisher or daemon_bus,
+            sleipnir_publisher=environment_signal_publisher
+            or sleipnir_catalog_publisher
+            or daemon_bus,
         )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
@@ -2649,6 +2652,8 @@ async def _run_daemon(
         settings,
         drive_loop=drive_loop,
         persona_config=persona_config,
+        publisher=environment_signal_publisher,
+        owns_publisher=True,
     )
     if environment_signal_runtime is not None:
         await environment_signal_runtime.start()
@@ -2775,32 +2780,18 @@ def _build_environment_signal_runtime(
     *,
     drive_loop: Any | None = None,
     persona_config: Any | None = None,
+    publisher: Any | None = None,
+    owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
     enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
     if not enabled_sources:
         return None
-    if not settings.mesh.enabled:
-        logger.warning("environment_signals: mesh is disabled; signal sources will not start")
-        return None
-
-    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
     from ravn.environment_signal_runtime import EnvironmentSignalRuntime  # noqa: PLC0415
 
-    if settings.mesh.adapters:
-        entry = settings.mesh.adapters[0]
-        adapter = entry.get("transport", settings.mesh.adapter or "nng")
-    else:
-        adapter = settings.mesh.adapter or "nng"
-
-    kwargs = _resolve_transport_kwargs(settings, adapter)
-    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
-        logger.warning("environment_signals: %s transport unavailable", adapter)
-        return None
-
-    publisher = build_transport(adapter, **kwargs)
     if publisher is None:
-        logger.warning("environment_signals: failed to build %s transport", adapter)
+        publisher = _build_environment_signal_publisher(settings)
+    if publisher is None:
         return None
 
     try:
@@ -2824,8 +2815,36 @@ def _build_environment_signal_runtime(
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
         persona=persona,
         output_mode=output_mode,
-        owns_publisher=True,
+        owns_publisher=owns_publisher,
     )
+
+
+def _build_environment_signal_publisher(settings: Settings) -> Any | None:
+    """Build the shared publisher used by resident Valkyrie signal and task telemetry."""
+    enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
+    if not enabled_sources:
+        return None
+    if not settings.mesh.enabled:
+        logger.warning("environment_signals: mesh is disabled; signal sources will not start")
+        return None
+
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+
+    if settings.mesh.adapters:
+        entry = settings.mesh.adapters[0]
+        adapter = entry.get("transport", settings.mesh.adapter or "nng")
+    else:
+        adapter = settings.mesh.adapter or "nng"
+
+    kwargs = _resolve_transport_kwargs(settings, adapter)
+    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
+        logger.warning("environment_signals: %s transport unavailable", adapter)
+        return None
+
+    publisher = build_transport(adapter, **kwargs)
+    if publisher is None:
+        logger.warning("environment_signals: failed to build %s transport", adapter)
+    return publisher
 
 
 def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:

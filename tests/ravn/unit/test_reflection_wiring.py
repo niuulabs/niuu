@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ravn.config import Settings
+from ravn.config import Settings, SignalSourceConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -280,6 +280,93 @@ class TestRunWithSignalsReflectionWiring:
 
 
 class TestRunDaemonReflectionWiring:
+    @pytest.mark.asyncio
+    async def test_daemon_shares_environment_signal_publisher_with_drive_loop(self) -> None:
+        """Resident Valkyrie task telemetry is published on the environment signal bus."""
+        settings = Settings()
+        settings.reflection.enabled = False
+        settings.initiative.enabled = True
+        settings.mesh.enabled = True
+        settings.mesh.adapters = [{"transport": "nats"}]
+        settings.environment.signal_sources = [
+            SignalSourceConfig(
+                id="host-events",
+                adapter="ravn.adapters.environment_signals.HostSignalAdapter",
+                kind="host",
+            )
+        ]
+        settings.gateway.channels.telegram.enabled = False
+        settings.gateway.channels.http.enabled = False
+        settings.gateway.channels.discord.enabled = False
+        settings.gateway.channels.slack.enabled = False
+        settings.gateway.channels.matrix.enabled = False
+        settings.gateway.channels.whatsapp.enabled = False
+
+        mock_publisher = MagicMock()
+        mock_runtime = AsyncMock()
+        mock_runtime.wait = AsyncMock(return_value=None)
+        mock_drive_loop = MagicMock()
+        mock_drive_loop._triggers = []
+        mock_drive_loop.run = AsyncMock(return_value=None)
+
+        with (
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}),
+            patch("ravn.adapters.llm.anthropic.AnthropicAdapter") as mock_llm_cls,
+            patch("ravn.cli.commands._build_mimir", return_value=None),
+            patch(
+                "ravn.cli.commands._start_mcp_shared",
+                new_callable=AsyncMock,
+                return_value=(None, []),
+            ),
+            patch("ravn.cli.commands._shutdown_mcp", new_callable=AsyncMock),
+            patch("ravn.cli.commands._wire_triggers", return_value=[]),
+            patch("ravn.cli.commands._wire_cron", return_value=[]),
+            patch("ravn.drive_loop.DriveLoop", return_value=mock_drive_loop) as drive_loop_cls,
+            patch(
+                "ravn.cli.commands._build_environment_signal_publisher",
+                return_value=mock_publisher,
+            ),
+            patch(
+                "ravn.cli.commands._build_environment_signal_runtime",
+                return_value=mock_runtime,
+            ) as build_runtime,
+        ):
+            mock_llm_cls.return_value = MagicMock()
+            from ravn.cli.commands import _run_daemon
+
+            await _run_daemon(settings)
+
+        assert drive_loop_cls.call_args.kwargs["sleipnir_publisher"] is mock_publisher
+        assert build_runtime.call_args.kwargs["publisher"] is mock_publisher
+        assert build_runtime.call_args.kwargs["owns_publisher"] is True
+        mock_runtime.start.assert_awaited_once()
+        mock_runtime.stop.assert_awaited_once()
+
+    def test_environment_signal_runtime_can_reuse_supplied_publisher(self) -> None:
+        """The runtime does not rebuild or own the publisher when one is supplied."""
+        settings = Settings()
+        settings.mesh.enabled = True
+        settings.environment.signal_sources = [
+            SignalSourceConfig(
+                id="host-events",
+                adapter="ravn.adapters.environment_signals.HostSignalAdapter",
+                kind="host",
+            )
+        ]
+        mock_publisher = MagicMock()
+
+        from ravn.cli.commands import _build_environment_signal_runtime
+
+        runtime = _build_environment_signal_runtime(
+            settings,
+            publisher=mock_publisher,
+            owns_publisher=False,
+        )
+
+        assert runtime is not None
+        assert runtime._publisher is mock_publisher
+        assert runtime._owns_publisher is False
+
     @pytest.mark.asyncio
     async def test_daemon_bus_created_when_reflection_enabled(self) -> None:
         """InProcessBus is created in daemon mode when reflection.enabled."""
