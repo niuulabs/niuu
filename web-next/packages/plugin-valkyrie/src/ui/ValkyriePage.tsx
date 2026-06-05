@@ -983,21 +983,15 @@ function LiveScopeRail({
   selectedEnvironmentId: string;
   onSelectEnvironment: (environmentId: string) => void;
 }) {
-  const environments = telemetry.byEnvironment.filter(
-    (environment) =>
-      environment.pollsCompleted +
-        environment.pollFailures +
-        environment.signalsCollected +
-        environment.tasksEnqueued +
-        environment.tasksStarted +
-        environment.tasksCompleted +
-        environment.tasksDropped +
-        environment.judgments +
-        environment.actions +
-        environment.learningEvents +
-        environment.dreamCycles >
-      0,
+  const observedByEnvironment = new Map(
+    telemetry.byEnvironment.flatMap((environment) => [
+      [environment.environmentId, environment],
+      [`env-k8s-${environment.environmentId}`, environment],
+      [`env-host-${environment.environmentId}`, environment],
+      [`env-printer-${environment.environmentId}`, environment],
+    ]),
   );
+  const environments = dashboard.environments;
   return (
     <aside
       className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-3 niuu:overflow-auto niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:p-3"
@@ -1044,13 +1038,16 @@ function LiveScopeRail({
       </button>
       <div className="niuu:grid niuu:gap-2">
         {environments.map((environment) => {
-          const selected = selectedEnvironmentId === environment.environmentId;
+          const observed = observedByEnvironment.get(environment.id);
+          const selected = selectedEnvironmentId === environment.id;
+          const observedSignals = observed?.signalsPublished ?? 0;
+          const queued = observed?.tasksEnqueued ?? 0;
           return (
             <button
-              key={environment.environmentId}
+              key={environment.id}
               type="button"
               aria-pressed={selected}
-              onClick={() => onSelectEnvironment(environment.environmentId)}
+              onClick={() => onSelectEnvironment(environment.id)}
               className={`niuu:flex niuu:w-full niuu:items-center niuu:justify-between niuu:gap-2 niuu:rounded-md niuu:border niuu:border-solid niuu:px-3 niuu:py-3 niuu:text-left ${
                 selected
                   ? 'niuu:border-brand niuu:bg-brand/12'
@@ -1059,16 +1056,21 @@ function LiveScopeRail({
             >
               <span className="niuu:min-w-0">
                 <span className="niuu:block niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-                  {environmentName(dashboard, environment.environmentId)}
+                  {environment.name}
                 </span>
                 <span className="niuu:block niuu:truncate niuu:text-xs niuu:text-text-muted">
-                  {environment.environmentId} · {compactNumber(environment.tasksEnqueued)} queued
+                  {kindLabel(environment.kind)} · {observed ? 'verified telemetry' : 'awaiting telemetry'}
+                  {queued > 0 ? ` · ${compactNumber(queued)} queued` : ''}
                 </span>
               </span>
               <span className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-1">
-                <span className="niuu:h-2 niuu:w-2 niuu:rounded-full niuu:bg-brand" />
+                <span
+                  className={`niuu:h-2 niuu:w-2 niuu:rounded-full ${
+                    observed ? 'niuu:bg-brand' : 'niuu:bg-text-muted'
+                  }`}
+                />
                 <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
-                  {compactNumber(environment.signalsPublished)}
+                  {compactNumber(observedSignals || environment.signalCount)}
                 </span>
               </span>
             </button>

@@ -80,7 +80,8 @@ describe('ValkyriePage', () => {
     expect(screen.queryByTestId('valkyrie-telemetry-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('signal-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('huddle-panel')).not.toBeInTheDocument();
-    expect(screen.queryByText('Printer forge')).not.toBeInTheDocument();
+    expect(screen.getByText('Printer forge')).toBeInTheDocument();
+    expect(screen.getAllByText(/awaiting telemetry/i).length).toBeGreaterThan(0);
     expect(
       screen.queryByText('External sender asks for review before Friday'),
     ).not.toBeInTheDocument();
