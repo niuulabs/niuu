@@ -267,6 +267,19 @@ def _clean_string(value: object, *, default: str = "") -> str:
     return raw or default
 
 
+def _json_safe(value: object) -> object:
+    """Return a msgpack/JSON-safe copy of nested telemetry payload data."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _extract_mimir_dream_counts(
     response_text: str,
     persona_config: PersonaConfig | None,
@@ -1444,7 +1457,7 @@ class DriveLoop:
 
             parsed = _parse_outcome_for_persona(response_text, self._persona_config)
             if parsed is not None:
-                event.payload["structured_outcome"] = parsed.fields
+                event.payload["structured_outcome"] = _json_safe(parsed.fields)
                 event.payload["outcome_valid"] = parsed.valid
                 for key in (
                     "verdict",
@@ -1455,7 +1468,11 @@ class DriveLoop:
                     "files_changed",
                 ):
                     if key in parsed.fields:
-                        event.payload[key] = parsed.fields[key]
+                        event.payload[key] = _json_safe(parsed.fields[key])
+            safe_payload = _json_safe(event.payload)
+            if isinstance(safe_payload, dict):
+                event.payload.clear()
+                event.payload.update(safe_payload)
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
@@ -1713,6 +1730,7 @@ class DriveLoop:
             if normalized_verdict != verdict:
                 verdict = normalized_verdict
                 outcome_fields["verdict"] = normalized_verdict
+        outcome_fields = _json_safe(outcome_fields)  # type: ignore[assignment]
         summary = str(outcome_fields.get("summary", "") or "").strip()
         files_changed = outcome_fields.get("files_changed")
         if (synthesized_pass or synthesized_from_tool_write) and not valid:
@@ -2000,6 +2018,7 @@ class DriveLoop:
             payload["errors"] = errors
         if canonical_event_type:
             payload["canonical_event_type"] = canonical_event_type
+        payload = _json_safe(payload)  # type: ignore[assignment]
 
         environment_id = str(payload.get("environment_id") or payload.get("environmentId") or "")
         valkyrie_id = str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")

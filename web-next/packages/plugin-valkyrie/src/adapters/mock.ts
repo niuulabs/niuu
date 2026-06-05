@@ -597,6 +597,37 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
           observedAt: '2026-06-03T14:06:00Z',
         },
       ],
+      recentOutcomes: [
+        {
+          environmentId: 'env-k8s-ymir',
+          type: 'judgment',
+          eventType: 'valkyrie.judgment.proposed',
+          taskId: 'task-k8s-1',
+          valkyrieId: 'valkyrie-ymir-k8s',
+          verdict: 'investigate',
+          tier: 'present',
+          confidence: 0.84,
+          recommendedAction: 'k8s.inspect_pod;k8s.inspect_workload;k8s.inspect_event',
+          summary:
+            'Persistent ImagePullBackOff on valkyrie-ymir-k8s and stale GHCR image tag require inspection.',
+          valid: true,
+          observedAt: UPDATED_AT,
+        },
+        {
+          environmentId: 'env-k8s-valhalla',
+          type: 'action',
+          eventType: 'valkyrie.action.proposed',
+          taskId: 'task-k8s-2',
+          valkyrieId: 'valkyrie-valhalla-sigrun',
+          verdict: 'propose_action',
+          tier: 'urgent',
+          confidence: 0.76,
+          recommendedAction: 'prepare_rollout_remediation',
+          summary: 'Prepare a guarded rollout fix for a repeated pull failure.',
+          valid: true,
+          observedAt: '2026-06-03T14:08:00Z',
+        },
+      ],
       runtime: [
         {
           environmentId: 'env-k8s-valhalla',

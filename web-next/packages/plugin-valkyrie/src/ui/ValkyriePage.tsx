@@ -245,6 +245,27 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
   const totals = telemetry.totals;
   const signalYield =
     totals.signalsCollected > 0 ? totals.signalsPublished / totals.signalsCollected : 0;
+  const recentOutcomes = telemetry.recentOutcomes ?? [];
+  const activeTasks = Math.max(0, totals.tasksStarted - totals.tasksCompleted - totals.tasksFailed);
+  const liveEnvironments = telemetry.byEnvironment.filter(
+    (environment) =>
+      environment.pollsCompleted +
+        environment.pollFailures +
+        environment.tasksStarted +
+        environment.tasksCompleted +
+        environment.tasksDropped +
+        environment.judgments +
+        environment.actions >
+      0,
+  );
+  const taskState =
+    activeTasks > 0
+      ? `${compactNumber(activeTasks)} active`
+      : totals.tasksDropped > 0
+        ? 'budget or queue pressure'
+        : totals.tasksCompleted > 0
+          ? 'completed work'
+          : 'watching';
   const items = [
     { label: 'Events', value: compactNumber(totals.eventsObserved) },
     { label: 'Signals in', value: compactNumber(totals.signalsCollected) },
@@ -294,6 +315,49 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
         </div>
       </div>
 
+      <div
+        className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:md:grid-cols-2 niuu:xl:grid-cols-4"
+        data-testid="live-k8s-valkyries"
+      >
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className={MUTED}>Live environments</div>
+          <div className="niuu:mt-1 niuu:text-xl niuu:font-semibold niuu:text-text-primary">
+            {compactNumber(liveEnvironments.length)}
+          </div>
+          <div className="niuu:mt-1 niuu:truncate niuu:text-xs niuu:text-text-muted">
+            {liveEnvironments.map((environment) => environment.environmentId).join(', ') || 'none'}
+          </div>
+        </div>
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className={MUTED}>Thinking</div>
+          <div className="niuu:mt-1 niuu:text-xl niuu:font-semibold niuu:text-text-primary">
+            {taskState}
+          </div>
+          <div className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+            {compactNumber(totals.tasksStarted)} started · {compactNumber(totals.tasksCompleted)}{' '}
+            completed
+          </div>
+        </div>
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className={MUTED}>Conclusions</div>
+          <div className="niuu:mt-1 niuu:text-xl niuu:font-semibold niuu:text-text-primary">
+            {compactNumber(totals.judgments + totals.actions)}
+          </div>
+          <div className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+            {compactNumber(totals.judgments)} judgments · {compactNumber(totals.actions)} actions
+          </div>
+        </div>
+        <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <div className={MUTED}>Dream cycles</div>
+          <div className="niuu:mt-1 niuu:text-xl niuu:font-semibold niuu:text-text-primary">
+            {compactNumber(totals.dreamCyclesCompleted)}
+          </div>
+          <div className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+            {compactNumber(totals.learningEvents)} learning events
+          </div>
+        </div>
+      </div>
+
       <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-4 niuu:2xl:grid-cols-11">
         {items.map((item) => (
           <div
@@ -309,12 +373,61 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
       </div>
 
       <div className="niuu:mt-3 niuu:grid niuu:gap-3 niuu:xl:grid-cols-[1fr_1fr] niuu:2xl:grid-cols-[1fr_1fr_0.8fr]">
+        <div
+          className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3 niuu:xl:col-span-2"
+          data-testid="valkyrie-live-conclusions"
+        >
+          <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
+            <h3 className="niuu:text-xs niuu:font-semibold niuu:text-text-muted">
+              Live conclusions
+            </h3>
+            <span className="niuu:text-xs niuu:text-text-muted">
+              {compactNumber(recentOutcomes.length)} observed
+            </span>
+          </div>
+          <div className="niuu:grid niuu:gap-2">
+            {recentOutcomes.slice(0, 5).map((outcome) => (
+              <div
+                key={`${outcome.eventType}:${outcome.taskId}:${outcome.observedAt}`}
+                className="niuu:grid niuu:gap-2 niuu:rounded-md niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:md:grid-cols-[minmax(0,1fr)_auto]"
+              >
+                <div className="niuu:min-w-0">
+                  <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+                    <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                      {outcome.environmentId}
+                    </span>
+                    <span className="niuu:rounded-full niuu:bg-bg-primary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
+                      {outcome.type}
+                    </span>
+                    <span className="niuu:rounded-full niuu:bg-bg-primary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
+                      {outcome.verdict || outcome.tier || 'pending'}
+                    </span>
+                    {typeof outcome.confidence === 'number' ? (
+                      <span className="niuu:text-xs niuu:text-text-muted">
+                        {percent(outcome.confidence)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="niuu:mt-1 niuu:text-sm niuu:text-text-primary">
+                    {outcome.summary || outcome.recommendedAction || outcome.taskId}
+                  </div>
+                  <div className="niuu:mt-1 niuu:truncate niuu:text-xs niuu:text-text-muted">
+                    {outcome.recommendedAction || outcome.eventType} · {outcome.taskId}
+                  </div>
+                </div>
+                <span className="niuu:text-xs niuu:text-text-muted">
+                  {formatShortTime(outcome.observedAt)}
+                </span>
+              </div>
+            ))}
+            {recentOutcomes.length === 0 ? <EmptyState label="No conclusions observed" /> : null}
+          </div>
+        </div>
+
         <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
           <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between">
             <h3 className="niuu:text-xs niuu:font-semibold niuu:text-text-muted">Recent polls</h3>
-            <span className="niuu:text-xs niuu:text-text-muted">
-              yield {percent(signalYield)}
-            </span>
+            <span className="niuu:text-xs niuu:text-text-muted">yield {percent(signalYield)}</span>
           </div>
           <div className="niuu:grid niuu:gap-2">
             {telemetry.recentPolls.slice(0, 5).map((poll) => (
@@ -378,9 +491,7 @@ function TelemetryPanel({ telemetry }: { telemetry?: ValkyrieTelemetry }) {
         </div>
 
         <div className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3">
-          <h3 className="niuu:mb-2 niuu:text-xs niuu:font-semibold niuu:text-text-muted">
-            Gaps
-          </h3>
+          <h3 className="niuu:mb-2 niuu:text-xs niuu:font-semibold niuu:text-text-muted">Gaps</h3>
           <div className="niuu:flex niuu:flex-col niuu:gap-2">
             {telemetry.gaps.slice(0, 5).map((gap) => (
               <div
@@ -468,9 +579,7 @@ function FlockReportPanel({ dashboard }: { dashboard: ValkyrieDashboard }) {
               </div>
               <div>
                 <dt className={MUTED}>Judgments</dt>
-                <dd className="niuu:text-text-primary">
-                  {compactNumber(transport.judgmentCount)}
-                </dd>
+                <dd className="niuu:text-text-primary">{compactNumber(transport.judgmentCount)}</dd>
               </div>
               <div>
                 <dt className={MUTED}>Actions</dt>

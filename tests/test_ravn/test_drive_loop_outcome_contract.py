@@ -1094,7 +1094,7 @@ summary: post-mortem source captured
         fake_event = RavnEvent(
             type=RavnEventType.OUTCOME,
             source="sleipnir",
-            payload={},
+            payload={"raw_observed_at": datetime(2026, 6, 5, 1, 42, tzinfo=UTC)},
             timestamp=datetime.now(UTC),
             urgency=0.1,
             correlation_id=task.task_id,
@@ -1117,6 +1117,39 @@ summary: post-mortem source captured
         assert payload["structured_outcome"]["verdict"] == "pass"
         assert payload["summary"] == "shipped"
         assert payload["files_changed"] == 2
+        assert payload["raw_observed_at"] == "2026-06-05T01:42:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_emit_sleipnir_valkyrie_outcome_normalizes_payload_for_msgpack(self) -> None:
+        dl = _make_drive_loop()
+        dl._source_id = "drive_loop"
+        published = []
+        dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
+
+        task = _make_agent_task(task_id="task-valkyrie-safe")
+        task.persona = "k8s-valkyrie"
+        task.session_id = "session-valkyrie-safe"
+
+        await dl._emit_sleipnir_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "tier": "present",
+                "confidence": 0.84,
+                "summary": "ImagePullBackOff needs inspection.",
+                "observed_at": datetime(2026, 6, 5, 1, 48, tzinfo=UTC),
+                "evidence": [{"seen_at": datetime(2026, 6, 5, 1, 47, tzinfo=UTC)}],
+            },
+            task,
+            "root-valkyrie-safe",
+            valid=True,
+        )
+
+        assert published
+        payload = published[0].payload
+        assert payload["observed_at"] == "2026-06-05T01:48:00+00:00"
+        assert payload["evidence"] == [{"seen_at": "2026-06-05T01:47:00+00:00"}]
 
     def test_extract_mimir_dream_counts_prefers_outcome_fields_and_falls_back_to_prose(
         self,

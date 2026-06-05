@@ -23,6 +23,11 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent(
       'Qwen/Qwen3.6-35B-A3B-FP8',
     );
+    expect(screen.getByTestId('live-k8s-valkyries')).toHaveTextContent('Thinking');
+    expect(screen.getByTestId('live-k8s-valkyries')).toHaveTextContent('Conclusions');
+    expect(screen.getByTestId('valkyrie-live-conclusions')).toHaveTextContent(
+      'Persistent ImagePullBackOff',
+    );
     expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('Recent tasks');
     expect(screen.getByTestId('valkyrie-telemetry-panel')).toHaveTextContent('queue_full');
     expect(screen.getByTestId('flock-live-report')).toHaveTextContent('K8s flock routing');

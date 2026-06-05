@@ -153,6 +153,7 @@ def _empty_telemetry(last_observed_at: str) -> dict[str, Any]:
         "byEnvironment": [],
         "recentPolls": [],
         "recentTasks": [],
+        "recentOutcomes": [],
         "runtime": [],
         "llm": {
             "status": "unknown",
@@ -229,6 +230,7 @@ def _aggregate_telemetry(
     by_environment: dict[str, dict[str, Any]] = {}
     recent_polls: list[dict[str, Any]] = []
     recent_tasks: list[dict[str, Any]] = []
+    recent_outcomes: list[dict[str, Any]] = []
     runtime: list[dict[str, Any]] = []
     llm = {
         "status": "unknown",
@@ -372,9 +374,59 @@ def _aggregate_telemetry(
         elif event_type.startswith("valkyrie.judgment."):
             totals["judgments"] += 1
             entry["judgments"] += 1
+            fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+            outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+            details = fields or outcome or payload
+            recent_outcomes.append(
+                {
+                    "environmentId": env_id,
+                    "type": "judgment",
+                    "eventType": event_type,
+                    "taskId": payload.get("task_id", ""),
+                    "valkyrieId": payload.get("valkyrie_id", ""),
+                    "verdict": details.get("verdict", payload.get("verdict", "")),
+                    "tier": details.get("tier", payload.get("tier", "")),
+                    "confidence": details.get("confidence", payload.get("confidence", 0)),
+                    "recommendedAction": details.get(
+                        "recommended_action",
+                        payload.get("recommended_action", ""),
+                    ),
+                    "summary": details.get(
+                        "summary",
+                        payload.get("summary", event.get("summary", "")),
+                    ),
+                    "valid": payload.get("valid", True),
+                    "observedAt": timestamp,
+                }
+            )
         elif event_type.startswith("valkyrie.action."):
             totals["actions"] += 1
             entry["actions"] += 1
+            fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+            outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+            details = fields or outcome or payload
+            recent_outcomes.append(
+                {
+                    "environmentId": env_id,
+                    "type": "action",
+                    "eventType": event_type,
+                    "taskId": payload.get("task_id", ""),
+                    "valkyrieId": payload.get("valkyrie_id", ""),
+                    "verdict": details.get("verdict", payload.get("verdict", "")),
+                    "tier": details.get("tier", payload.get("tier", "")),
+                    "confidence": details.get("confidence", payload.get("confidence", 0)),
+                    "recommendedAction": details.get(
+                        "recommended_action",
+                        details.get("action_capability", payload.get("recommended_action", "")),
+                    ),
+                    "summary": details.get(
+                        "summary",
+                        payload.get("summary", event.get("summary", "")),
+                    ),
+                    "valid": payload.get("valid", True),
+                    "observedAt": timestamp,
+                }
+            )
         elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
             totals["learningEvents"] += 1
             entry["learningEvents"] += 1
@@ -419,6 +471,11 @@ def _aggregate_telemetry(
         )[:30],
         "recentTasks": sorted(
             recent_tasks,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )[:30],
+        "recentOutcomes": sorted(
+            recent_outcomes,
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:30],

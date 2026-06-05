@@ -242,6 +242,21 @@ export interface ValkyrieTaskTelemetry {
   observedAt: string;
 }
 
+export interface ValkyrieOutcomeTelemetry {
+  environmentId: string;
+  type: 'judgment' | 'action';
+  eventType: string;
+  taskId: string;
+  valkyrieId?: string;
+  verdict?: string;
+  tier?: string;
+  confidence?: number;
+  recommendedAction?: string;
+  summary?: string;
+  valid?: boolean;
+  observedAt: string;
+}
+
 export interface ValkyrieRuntimeTelemetry {
   environmentId: string;
   valkyrieId: string;
@@ -268,6 +283,7 @@ export interface ValkyrieTelemetry {
   byEnvironment: ValkyrieEnvironmentTelemetry[];
   recentPolls: ValkyriePollTelemetry[];
   recentTasks: ValkyrieTaskTelemetry[];
+  recentOutcomes: ValkyrieOutcomeTelemetry[];
   runtime: ValkyrieRuntimeTelemetry[];
   llm: ValkyrieLlmTelemetry;
   gaps: string[];

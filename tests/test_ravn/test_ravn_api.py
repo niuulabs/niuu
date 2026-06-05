@@ -192,12 +192,34 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
             timestamp=datetime(2026, 6, 4, 20, 2, tzinfo=UTC),
         )
     )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "task_id": "task-k8s-1",
+                "fields": {
+                    "verdict": "investigate",
+                    "tier": "present",
+                    "confidence": 0.84,
+                    "recommended_action": "k8s.inspect_pod",
+                    "summary": "Persistent ImagePullBackOff requires inspection.",
+                },
+            },
+            summary="judgment proposed",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+        )
+    )
 
     telemetry = projection.dashboard()["telemetry"]
 
     assert telemetry["verified"] is True
     assert telemetry["source"] == "sleipnir_events"
-    assert telemetry["totals"]["eventsObserved"] == 3
+    assert telemetry["totals"]["eventsObserved"] == 4
     assert telemetry["totals"]["pollsCompleted"] == 1
     assert telemetry["totals"]["signalsCollected"] == 8
     assert telemetry["totals"]["signalsPublished"] == 5
@@ -205,8 +227,15 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["totals"]["tasksEnqueued"] == 2
     assert telemetry["totals"]["learningEvents"] == 1
     assert telemetry["totals"]["dreamCyclesCompleted"] == 1
+    assert telemetry["totals"]["judgments"] == 1
     assert telemetry["byEnvironment"][0]["environmentId"] == "ymir"
     assert telemetry["byEnvironment"][0]["tasksEnqueued"] == 2
+    assert telemetry["byEnvironment"][0]["judgments"] == 1
+    assert telemetry["recentOutcomes"][0]["taskId"] == "task-k8s-1"
+    assert (
+        telemetry["recentOutcomes"][0]["summary"]
+        == "Persistent ImagePullBackOff requires inspection."
+    )
     assert telemetry["recentPolls"][0]["sourceId"] == "kubernetes-events"
     assert telemetry["runtime"][0]["driveLoopEnabled"] is True
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
