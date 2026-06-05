@@ -1026,13 +1026,10 @@ def build_nats_telemetry_subscription_from_env(
             nkeys_seed_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED_FILE", ""),
             nkeys_seed=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED", ""),
         ),
-        event_types=[
-            "valkyrie.*",
-            "signal.*",
-            "learning.*",
-            "flock.*",
-            "odin.*",
-        ],
+        # Subscribe once to the environment stream and let the projection decide
+        # what to count. Multiple JetStream push consumers with the same config
+        # can silently miss delivery in the live NATS setup.
+        event_types=["*"],
     )
 
 
