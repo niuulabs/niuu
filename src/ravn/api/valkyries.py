@@ -1306,22 +1306,23 @@ class ValkyrieTelemetrySubscription:
         self._event_types = event_types
         self._subscriptions: list[tuple[str, Any]] = []
         self._retry_interval_seconds = max(retry_interval_seconds, 1)
+        self._bootstrap_task: asyncio.Task[None] | None = None
         self._retry_task: asyncio.Task[None] | None = None
         self._started_labels: set[str] = set()
         self._stopping = False
 
     async def start(self) -> None:
-        failed = []
-        for label, subscriber in self._subscribers:
-            if not await self._start_subscriber(label, subscriber):
-                failed.append((label, subscriber))
-        if failed:
-            self._retry_task = asyncio.create_task(self._retry_failed(failed))
-        if not self._subscriptions:
-            logger.warning("valkyrie_dashboard: no telemetry streams subscribed yet")
+        self._stopping = False
+        self._bootstrap_task = asyncio.create_task(self._bootstrap_subscribers())
+        await asyncio.sleep(0)
 
     async def stop(self) -> None:
         self._stopping = True
+        if self._bootstrap_task is not None:
+            self._bootstrap_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._bootstrap_task
+            self._bootstrap_task = None
         if self._retry_task is not None:
             self._retry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1336,6 +1337,18 @@ class ValkyrieTelemetrySubscription:
             if hasattr(subscriber, "stop"):
                 with contextlib.suppress(Exception):
                     await subscriber.stop()
+
+    async def _bootstrap_subscribers(self) -> None:
+        failed = []
+        for label, subscriber in self._subscribers:
+            if self._stopping:
+                return
+            if not await self._start_subscriber(label, subscriber):
+                failed.append((label, subscriber))
+        if failed:
+            self._retry_task = asyncio.create_task(self._retry_failed(failed))
+        if not self._subscriptions:
+            logger.warning("valkyrie_dashboard: no telemetry streams subscribed yet")
 
     async def _handle(self, event: SleipnirEvent) -> None:
         self._projection.record_event(event)
