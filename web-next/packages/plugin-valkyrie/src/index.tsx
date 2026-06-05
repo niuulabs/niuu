@@ -1,7 +1,14 @@
-import { createRoute } from '@tanstack/react-router';
+import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ValkyriePage } from './ui/ValkyriePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
+
+const createLegacyRedirect = (to: string) => ({ location }: { location: { search: unknown } }) => {
+  throw redirect({
+    to: to as never,
+    search: location.search as never,
+  });
+};
 
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
@@ -9,43 +16,79 @@ export const valkyriePlugin = definePlugin({
   title: 'Valkyrie',
   subtitle: 'resident operators',
   tabs: [
-    { id: 'console', label: 'Console', rune: '◇', path: '/valkyries' },
-    { id: 'topology', label: 'Topology', rune: 'ᛗ', path: '/valkyries/topology' },
-    { id: 'lineage', label: 'Lineage', rune: '↔', path: '/valkyries/lineage' },
-    { id: 'learning', label: 'Learning', rune: 'ᛗ', path: '/valkyries/learning' },
-    { id: 'huddles', label: 'Huddles', rune: '†', path: '/valkyries/huddles' },
-    { id: 'autonomy', label: 'Autonomy', rune: '§', path: '/valkyries/autonomy' },
+    { id: 'console', label: 'Console', rune: '◇', path: '/valkyrie' },
+    { id: 'topology', label: 'Topology', rune: 'ᛗ', path: '/valkyrie/topology' },
+    { id: 'lineage', label: 'Lineage', rune: '↔', path: '/valkyrie/lineage' },
+    { id: 'learning', label: 'Learning', rune: 'ᛗ', path: '/valkyrie/learning' },
+    { id: 'huddles', label: 'Huddles', rune: '†', path: '/valkyrie/huddles' },
+    { id: 'autonomy', label: 'Autonomy', rune: '§', path: '/valkyrie/autonomy' },
   ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries',
+      path: '/valkyrie',
       component: () => <ValkyriePage defaultView="console" />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries/topology',
+      path: '/valkyrie/topology',
       component: () => <ValkyriePage defaultView="topology" />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries/lineage',
+      path: '/valkyrie/lineage',
       component: () => <ValkyriePage defaultView="lineage" />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries/learning',
+      path: '/valkyrie/learning',
       component: () => <ValkyriePage defaultView="learning" />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries/huddles',
+      path: '/valkyrie/huddles',
       component: () => <ValkyriePage defaultView="huddles" />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries/autonomy',
+      path: '/valkyrie/autonomy',
       component: () => <ValkyriePage defaultView="autonomy" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries',
+      beforeLoad: createLegacyRedirect('/valkyrie'),
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/topology',
+      beforeLoad: createLegacyRedirect('/valkyrie/topology'),
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/lineage',
+      beforeLoad: createLegacyRedirect('/valkyrie/lineage'),
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/learning',
+      beforeLoad: createLegacyRedirect('/valkyrie/learning'),
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/huddles',
+      beforeLoad: createLegacyRedirect('/valkyrie/huddles'),
+      component: () => null,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/autonomy',
+      beforeLoad: createLegacyRedirect('/valkyrie/autonomy'),
+      component: () => null,
     }),
   ],
   topbarRight: () => <ValkyrieTopbar />,

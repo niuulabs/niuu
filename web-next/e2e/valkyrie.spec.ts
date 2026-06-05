@@ -1,42 +1,42 @@
 import { expect, test } from '@playwright/test';
 
 test('valkyrie console renders environment and flock operations', async ({ page }) => {
-  await page.goto('/valkyries');
+  await page.goto('/valkyrie');
 
   await expect(page.getByTestId('valkyrie-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByRole('heading', { name: 'Valhalla k8s' })).toBeVisible();
-  await expect(page.getByTestId('resident-panel')).toBeVisible();
-  await expect(page.getByTestId('signal-panel')).toBeVisible();
-  await expect(page.getByTestId('environment-state-panel')).toBeVisible();
-  await expect(page.getByTestId('decisions-panel')).toBeVisible();
-  await expect(page.getByTestId('huddle-panel')).toBeVisible();
-  await expect(page.getByTestId('learning-panel')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-live-console')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-live-scope-rail')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-event-log')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-work-queue')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-llm-status')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-court-panel')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-actions-panel')).toBeVisible();
 });
 
-test('valkyrie console switches to flock learning without leaving the NATS flock model', async ({
-  page,
-}) => {
-  await page.goto('/valkyries');
+test('valkyrie console switches between live route views', async ({ page }) => {
+  await page.goto('/valkyrie');
 
-  await page.getByTestId('flock-flock-k8s').click();
+  await page.getByRole('button', { name: /topology/i }).click();
+  await expect(page).toHaveURL(/\/valkyrie\/topology$/);
+  await expect(page.getByTestId('valkyrie-topology-view')).toBeVisible();
 
-  await expect(page.getByRole('heading', { name: 'Kubernetes Valkyries' })).toBeVisible();
-  await expect(page.getByText('kubernetes · odin.flock.k8s.>')).toBeVisible();
-  await expect(page.getByText('OOMKilled with rising queue depth')).toBeVisible();
-  await expect(page.getByRole('button', { name: /adopt oomkilled/i })).toBeVisible();
+  await page.getByRole('button', { name: /learning/i }).click();
+  await expect(page).toHaveURL(/\/valkyrie\/learning$/);
+  await expect(page.getByTestId('valkyrie-learning-ops')).toBeVisible();
+
+  await page.getByRole('button', { name: /huddles/i }).click();
+  await expect(page).toHaveURL(/\/valkyrie\/huddles$/);
+  await expect(page.getByTestId('valkyrie-huddles-view')).toBeVisible();
+
+  await page.getByRole('button', { name: /autonomy/i }).click();
+  await expect(page).toHaveURL(/\/valkyrie\/autonomy$/);
+  await expect(page.getByTestId('valkyrie-autonomy-panel')).toBeVisible();
 });
 
-test('valkyrie console supports operator autonomy and huddle actions', async ({ page }) => {
+test('legacy plural valkyries path redirects to the canonical console', async ({ page }) => {
   await page.goto('/valkyries');
 
-  const sigrunAutonomy = page.getByLabel('Autonomy for Sigrun');
-  await expect(sigrunAutonomy).toHaveValue('delegated');
-  await sigrunAutonomy.selectOption('yolo');
-  await expect(sigrunAutonomy).toHaveValue('yolo');
-
-  await page.getByRole('button', { name: 'Join' }).click();
-  await page.getByLabel(/message valhalla memory/i).fill('Check the pull secret rollout.');
-  await page.getByRole('button', { name: 'Send' }).click();
-
-  await expect(page.getByText('Check the pull secret rollout.')).toBeVisible();
+  await expect(page).toHaveURL(/\/valkyrie$/);
+  await expect(page.getByTestId('valkyrie-page')).toBeVisible({ timeout: 5000 });
 });
