@@ -266,6 +266,7 @@ export interface ValkyrieEventTelemetry {
   kind: 'signal' | 'judgment' | 'action' | 'learning' | 'task' | 'runtime' | 'wakefulness' | 'event';
   environmentId: string;
   valkyrieId?: string;
+  valkyrieName?: string;
   source?: string;
   summary: string;
   urgency?: number;
@@ -307,6 +308,8 @@ export interface ValkyrieToolNeedTelemetry {
 export interface ValkyrieRuntimeTelemetry {
   environmentId: string;
   valkyrieId: string;
+  valkyrieName?: string;
+  residentPersonality?: string;
   sourceCount: number;
   driveLoopEnabled: boolean;
   initiativeEnabled: boolean;

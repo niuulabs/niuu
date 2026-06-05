@@ -148,6 +148,8 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
             payload={
                 "environment_id": "ymir",
                 "valkyrie_id": "valkyrie-ymir-k8s",
+                "valkyrie_name": "Sigrun",
+                "resident_personality": "Evidence-first cluster guardian.",
                 "source_count": 1,
                 "drive_loop_enabled": True,
                 "initiative_enabled": True,
@@ -282,6 +284,9 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["recentToolNeeds"][0]["capability"] == "k8s.inspect_pod"
     assert telemetry["recentPolls"][0]["sourceId"] == "kubernetes-events"
     assert telemetry["runtime"][0]["driveLoopEnabled"] is True
+    assert telemetry["runtime"][0]["valkyrieName"] == "Sigrun"
+    assert telemetry["runtime"][0]["residentPersonality"] == "Evidence-first cluster guardian."
+    assert any(event.get("valkyrieName") == "Sigrun" for event in telemetry["recentEvents"])
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
 
 
@@ -294,6 +299,7 @@ def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy()
             payload={
                 "environment_id": "ymir",
                 "valkyrie_id": "valkyrie-ymir-k8s",
+                "valkyrie_name": "Sigrun",
                 "source_count": 1,
                 "drive_loop_enabled": True,
                 "initiative_enabled": True,
@@ -328,6 +334,7 @@ def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy()
 
     assert telemetry["totals"]["rawSignalEvents"] == 1_000
     assert telemetry["runtime"][0]["valkyrieId"] == "valkyrie-ymir-k8s"
+    assert telemetry["runtime"][0]["valkyrieName"] == "Sigrun"
     assert telemetry["llm"]["status"] == "configured"
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert "No valkyrie.runtime.started events observed." not in telemetry["gaps"]
@@ -342,6 +349,7 @@ def test_valkyrie_dashboard_keeps_runtime_telemetry_when_control_events_are_nois
             payload={
                 "environment_id": "ymir",
                 "valkyrie_id": "valkyrie-ymir-k8s",
+                "valkyrie_name": "Sigrun",
                 "source_count": 1,
                 "drive_loop_enabled": True,
                 "initiative_enabled": True,
@@ -381,6 +389,7 @@ def test_valkyrie_dashboard_keeps_runtime_telemetry_when_control_events_are_nois
 
     assert telemetry["totals"]["pollsCompleted"] == 2_000
     assert telemetry["runtime"][0]["valkyrieId"] == "valkyrie-ymir-k8s"
+    assert telemetry["runtime"][0]["valkyrieName"] == "Sigrun"
     assert telemetry["llm"]["status"] == "configured"
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert "No valkyrie.runtime.started events observed." not in telemetry["gaps"]

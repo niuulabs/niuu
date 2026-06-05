@@ -640,11 +640,18 @@ function RuntimePanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
             <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
               <div className="niuu:min-w-0">
                 <h3 className="niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-                  {runtime.valkyrieId || runtime.environmentId}
+                  {runtime.valkyrieName || runtime.valkyrieId || runtime.environmentId}
                 </h3>
                 <p className="niuu:text-xs niuu:text-text-muted">
-                  {runtime.environmentId} · seen {formatShortTime(runtime.observedAt)}
+                  {runtime.environmentId}
+                  {runtime.valkyrieId ? ` · ${runtime.valkyrieId}` : ''} · seen{' '}
+                  {formatShortTime(runtime.observedAt)}
                 </p>
+                {runtime.residentPersonality ? (
+                  <p className="niuu:mt-2 niuu:text-xs niuu:text-text-muted">
+                    {runtime.residentPersonality}
+                  </p>
+                ) : null}
               </div>
               <span
                 className={`niuu:rounded-full niuu:px-2 niuu:py-1 niuu:text-xs ${
@@ -813,7 +820,9 @@ function EventLogPanel({
               <span className="niuu:text-text-primary">{event.summary}</span>
               <span className="niuu:mt-1 niuu:block niuu:truncate niuu:text-text-muted">
                 {event.eventType}
-                {event.valkyrieId ? ` · ${event.valkyrieId}` : ''}
+                {event.valkyrieName || event.valkyrieId
+                  ? ` · ${event.valkyrieName || event.valkyrieId}`
+                  : ''}
                 {detailText(event.details) ? ` · ${detailText(event.details)}` : ''}
               </span>
             </span>
@@ -1148,11 +1157,12 @@ function AutonomyPanel({
             <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
               <div>
                 <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-                  {runtime.valkyrieId || runtime.environmentId}
+                  {runtime.valkyrieName || runtime.valkyrieId || runtime.environmentId}
                 </h3>
                 <p className="niuu:text-xs niuu:text-text-muted">
-                  {runtime.environmentId} · {runtime.sourceCount} sources · poll{' '}
-                  {runtime.pollIntervalSeconds}s
+                  {runtime.environmentId}
+                  {runtime.valkyrieId ? ` · ${runtime.valkyrieId}` : ''} ·{' '}
+                  {runtime.sourceCount} sources · poll {runtime.pollIntervalSeconds}s
                 </p>
               </div>
               <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-brand">

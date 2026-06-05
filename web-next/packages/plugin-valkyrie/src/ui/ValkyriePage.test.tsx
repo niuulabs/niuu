@@ -77,7 +77,10 @@ describe('ValkyriePage', () => {
     );
     expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent('env-k8s-valhalla');
     expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
-      'valkyrie-valhalla-sigrun',
+      'Sigrun',
+    );
+    expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
+      'Evidence-first cluster guardian',
     );
     expect(screen.queryByTestId('valkyrie-telemetry-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('signal-panel')).not.toBeInTheDocument();

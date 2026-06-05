@@ -20,6 +20,10 @@ def _settings() -> Settings:
             id="host-jozef",
             name="Jozef Host",
             type="host",
+            resident_name="Sigrun",
+            resident_personality=(
+                "Quietly skeptical and evidence-first; escalate only with crisp context."
+            ),
             flocks=["host-valkyries"],
             signal_poll_interval_seconds=0.01,
             signal_sources=[
@@ -105,6 +109,9 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert len(enqueued) == 1
     assert enqueued[0].triggered_by == "signal:signal.host.event"
     assert enqueued[0].root_correlation_id == received[0].correlation_id
+    assert "Resident Valkyrie: Sigrun" in enqueued[0].initiative_context
+    assert "Resident peer id: valkyrie-host-jozef" in enqueued[0].initiative_context
+    assert "Quietly skeptical and evidence-first" in enqueued[0].initiative_context
     assert "Use existing tools and memory" in enqueued[0].initiative_context
 
 
@@ -127,6 +134,10 @@ async def test_runtime_start_publishes_configuration_telemetry() -> None:
     payload = telemetry[0].payload
     assert payload["environment_id"] == "host-jozef"
     assert payload["valkyrie_id"] == "valkyrie-host-jozef"
+    assert payload["valkyrie_name"] == "Sigrun"
+    assert payload["resident_personality"] == (
+        "Quietly skeptical and evidence-first; escalate only with crisp context."
+    )
     assert payload["source_count"] == 1
     assert payload["sources"] == [{"id": "host-events", "signal_type": "host"}]
     assert payload["poll_interval_seconds"] == 0.01

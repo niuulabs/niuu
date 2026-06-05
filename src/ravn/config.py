@@ -2630,6 +2630,17 @@ class EnvironmentConfig(BaseModel):
         default="local",
         description="Environment type, for example k8s, host, printer, or local.",
     )
+    resident_name: str = Field(
+        default="",
+        description="Optional human-friendly name for the resident Valkyrie.",
+    )
+    resident_personality: str = Field(
+        default="",
+        description=(
+            "Optional lightweight resident guidance injected into autonomous "
+            "Valkyrie tasks."
+        ),
+    )
     flocks: list[str] = Field(
         default_factory=list,
         description="Existing flock names this Valkyrie participates in.",

@@ -246,8 +246,18 @@ class EnvironmentSignalRuntime:
                 f"{obj['kind']} {obj.get('namespace', 'default')}/{obj['name']}: "
                 f"{signal.severity}"
             )
+        resident_name = self._resident_name()
+        resident_personality = self._resident_personality()
+        identity_lines = [
+            f"Resident Valkyrie: {resident_name}",
+            f"Resident peer id: {self._settings.mesh.own_peer_id or 'unknown'}",
+        ]
+        if resident_personality:
+            identity_lines.append(f"Resident personality: {resident_personality}")
         context = (
             "A resident Valkyrie received an environment signal.\n\n"
+            + "\n".join(identity_lines)
+            + "\n\n"
             f"Environment: {signal.environment_id} ({signal.environment_type})\n"
             f"Source: {signal.source_id}\n"
             f"Signal type: {signal.signal_type}\n"
@@ -271,6 +281,16 @@ class EnvironmentSignalRuntime:
             workflow_parent_event_id=event.event_id,
         )
 
+    def _resident_name(self) -> str:
+        return (
+            self._settings.environment.resident_name
+            or self._settings.mesh.own_peer_id
+            or "Valkyrie"
+        )
+
+    def _resident_personality(self) -> str:
+        return self._settings.environment.resident_personality.strip()
+
     async def _publish_runtime_started(self) -> None:
         sources = [
             {
@@ -281,6 +301,8 @@ class EnvironmentSignalRuntime:
         ]
         payload = {
             "valkyrie_id": self._settings.mesh.own_peer_id,
+            "valkyrie_name": self._resident_name(),
+            "resident_personality": self._resident_personality(),
             "environment_id": self._environment.id,
             "source_count": len(sources),
             "sources": sources,
@@ -326,6 +348,7 @@ class EnvironmentSignalRuntime:
         duplicate_count = len(collected) - len(published_events)
         payload = {
             "valkyrie_id": self._settings.mesh.own_peer_id,
+            "valkyrie_name": self._resident_name(),
             "environment_id": self._environment.id,
             "source_id": adapter.source_id,
             "signal_type": adapter.signal_type,
@@ -365,6 +388,7 @@ class EnvironmentSignalRuntime:
             source=f"ravn:valkyrie:{self._environment.id}",
             payload={
                 "valkyrie_id": self._settings.mesh.own_peer_id,
+                "valkyrie_name": self._resident_name(),
                 "environment_id": self._environment.id,
                 "source_id": adapter.source_id,
                 "signal_type": adapter.signal_type,

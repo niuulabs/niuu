@@ -228,6 +228,10 @@ def _event_valkyrie_id(payload: dict[str, Any]) -> str:
     return str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")
 
 
+def _event_valkyrie_name(payload: dict[str, Any]) -> str:
+    return str(payload.get("valkyrie_name") or payload.get("valkyrieName") or "")
+
+
 def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("event_type") or "")
     summary = str(event.get("summary") or payload.get("summary") or event_type)
@@ -253,6 +257,7 @@ def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str
         "kind": kind,
         "environmentId": _event_environment_id(event, payload),
         "valkyrieId": _event_valkyrie_id(payload),
+        "valkyrieName": _event_valkyrie_name(payload),
         "source": str(event.get("source") or ""),
         "summary": summary,
         "urgency": _payload_float(event, "urgency"),
@@ -441,6 +446,8 @@ def _aggregate_telemetry(
                 {
                     "environmentId": env_id,
                     "valkyrieId": payload.get("valkyrie_id", ""),
+                    "valkyrieName": payload.get("valkyrie_name", ""),
+                    "residentPersonality": payload.get("resident_personality", ""),
                     "sourceCount": payload.get("source_count", 0),
                     "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
                     "initiativeEnabled": bool(payload.get("initiative_enabled")),
