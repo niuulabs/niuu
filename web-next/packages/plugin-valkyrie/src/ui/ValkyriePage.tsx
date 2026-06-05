@@ -88,6 +88,14 @@ function environmentName(dashboard: ValkyrieDashboard, environmentId: string): s
   return seeded?.name ?? environmentId;
 }
 
+function environmentMatchesSelection(selectedEnvironmentId: string, eventEnvironmentId: string): boolean {
+  return (
+    selectedEnvironmentId === 'all' ||
+    eventEnvironmentId === selectedEnvironmentId ||
+    selectedEnvironmentId.endsWith(`-${eventEnvironmentId}`)
+  );
+}
+
 function formatShortTime(value: string | undefined): string {
   if (!value) return 'none';
   const date = new Date(value);
@@ -631,7 +639,7 @@ function RuntimePanel({
 }) {
   const runtimes = telemetry.runtime.filter(
     (runtime) =>
-      !environmentId || environmentId === 'all' || runtime.environmentId === environmentId,
+      !environmentId || environmentMatchesSelection(environmentId, runtime.environmentId),
   );
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-live-runtime">
@@ -749,7 +757,7 @@ function WorkQueuePanel({
   environmentId: string;
 }) {
   const tasks = (telemetry.recentTasks ?? []).filter(
-    (task) => environmentId === 'all' || task.environmentId === environmentId,
+    (task) => environmentMatchesSelection(environmentId, task.environmentId),
   );
   return (
     <section className={`${PANEL_PAD} niuu:min-h-0`} data-testid="valkyrie-work-queue">
@@ -805,7 +813,7 @@ function EventLogPanel({
   environmentId: string;
 }) {
   const events = (telemetry.recentEvents ?? []).filter(
-    (event) => environmentId === 'all' || event.environmentId === environmentId,
+    (event) => environmentMatchesSelection(environmentId, event.environmentId),
   );
   return (
     <section className={`${PANEL_PAD} niuu:min-h-0`} data-testid="valkyrie-event-log">
@@ -856,7 +864,7 @@ function LearningOpsPanel({
   environmentId: string;
 }) {
   const learning = (telemetry.recentLearning ?? []).filter(
-    (entry) => environmentId === 'all' || entry.environmentId === environmentId,
+    (entry) => environmentMatchesSelection(environmentId, entry.environmentId),
   );
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-learning-ops">
@@ -909,7 +917,7 @@ function ToolNeedsPanel({
   environmentId: string;
 }) {
   const toolNeeds = (telemetry.recentToolNeeds ?? []).filter(
-    (entry) => environmentId === 'all' || entry.environmentId === environmentId,
+    (entry) => environmentMatchesSelection(environmentId, entry.environmentId),
   );
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-tool-needs">
@@ -1126,11 +1134,11 @@ function SignalsPanel({
   environmentId: string;
 }) {
   const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const signals = (telemetry.recentEvents ?? []).filter(
     (event) =>
-      (environmentId === 'all' || event.environmentId === environmentId) &&
+      (environmentMatchesSelection(environmentId, event.environmentId)) &&
       (event.kind === 'signal' || event.kind === 'event'),
   );
   const rows = [
@@ -1199,7 +1207,7 @@ function CourtPanel({
   environmentId: string;
 }) {
   const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const actions = outcomes.filter((outcome) => outcome.type === 'action');
   return (
@@ -1326,13 +1334,13 @@ function LineageView({
   environmentId: string;
 }) {
   const events = (telemetry.recentEvents ?? []).filter(
-    (event) => environmentId === 'all' || event.environmentId === environmentId,
+    (event) => environmentMatchesSelection(environmentId, event.environmentId),
   );
   const tasks = telemetry.recentTasks.filter(
-    (task) => environmentId === 'all' || task.environmentId === environmentId,
+    (task) => environmentMatchesSelection(environmentId, task.environmentId),
   );
   const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const rows = [
     ...events.map((event) => ({
@@ -1426,7 +1434,7 @@ function AutonomyPanel({
   environmentId: string;
 }) {
   const runtimes = telemetry.runtime.filter(
-    (runtime) => environmentId === 'all' || runtime.environmentId === environmentId,
+    (runtime) => environmentMatchesSelection(environmentId, runtime.environmentId),
   );
   const tiers = [
     { label: 'manual', tier: 'tier 0', body: 'Proposes only; every action waits.' },
@@ -1498,8 +1506,17 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
   const telemetry = dashboard.telemetry;
   if (!telemetry?.verified) return null;
   const liveEnvironmentIds = telemetry.byEnvironment.map((environment) => environment.environmentId);
+  const firstObservedEnvironmentId =
+    dashboard.environments.find((environment) =>
+      liveEnvironmentIds.some((environmentId) =>
+        environmentMatchesSelection(environment.id, environmentId),
+      ),
+    )?.id ??
+    dashboard.environments[0]?.id ??
+    liveEnvironmentIds[0] ??
+    'all';
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState(
-    () => liveEnvironmentIds[0] ?? 'all',
+    () => firstObservedEnvironmentId,
   );
   const selectedName =
     selectedEnvironmentId === 'all'
