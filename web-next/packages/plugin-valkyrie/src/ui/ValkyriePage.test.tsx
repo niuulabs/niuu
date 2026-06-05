@@ -57,25 +57,20 @@ describe('ValkyriePage', () => {
     expect(await screen.findByTestId('valkyrie-live-console')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1, name: 'Valhalla k8s' })).toBeInTheDocument();
     expect(screen.getByTestId('valkyrie-live-scope-rail')).toHaveTextContent('All Valkyries');
-    expect(screen.getByRole('button', { name: /Console/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Learning/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Autonomy/i })).toBeInTheDocument();
-    expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Judgments');
-    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent('Event log');
+    expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Open signals');
+    expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Learning in test');
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent('Signal tail');
     expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
       'Prepare a guarded rollout fix',
     );
-    expect(screen.getByTestId('valkyrie-work-queue')).toHaveTextContent('Pod checkout/api');
-    expect(screen.getByTestId('valkyrie-learning-ops')).toHaveTextContent(
-      'learning.dream.completed',
-    );
-    expect(screen.getByTestId('valkyrie-tool-needs')).toHaveTextContent(
+    expect(screen.getByTestId('valkyrie-court-panel')).toHaveTextContent('ODIN court');
+    expect(screen.getByTestId('valkyrie-actions-panel')).toHaveTextContent(
       'prepare_rollout_remediation',
     );
+    expect(screen.getByTestId('valkyrie-work-queue')).toHaveTextContent('Pod checkout/api');
     expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent(
       'Qwen/Qwen3.6-35B-A3B-FP8',
     );
-    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent('env-k8s-valhalla');
     expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
       'Sigrun',
     );
@@ -89,6 +84,35 @@ describe('ValkyriePage', () => {
     expect(
       screen.queryByText('External sender asks for review before Friday'),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders verified route views from live telemetry', async () => {
+    const { rerender } = render(<ValkyriePage defaultView="topology" />, {
+      wrapper: wrapWithValkyrie(),
+    });
+
+    expect(await screen.findByTestId('valkyrie-topology-view')).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent(
+      'env-k8s-valhalla',
+    );
+
+    rerender(<ValkyriePage defaultView="lineage" />);
+    expect(await screen.findByTestId('valkyrie-lineage-view')).toHaveTextContent(
+      'Prepare a guarded rollout fix',
+    );
+
+    rerender(<ValkyriePage defaultView="learning" />);
+    expect(await screen.findByTestId('valkyrie-learning-ops')).toHaveTextContent(
+      'learning.dream.completed',
+    );
+    expect(screen.getByTestId('valkyrie-tool-needs')).toHaveTextContent(
+      'prepare_rollout_remediation',
+    );
+
+    rerender(<ValkyriePage defaultView="huddles" />);
+    expect(await screen.findByTestId('valkyrie-huddles-view')).toHaveTextContent(
+      'No verified huddle messages',
+    );
   });
 
   it('switches from environment learning to flock learning', async () => {

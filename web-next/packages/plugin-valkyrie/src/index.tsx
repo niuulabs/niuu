@@ -1,23 +1,53 @@
 import { createRoute } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ValkyriePage } from './ui/ValkyriePage';
-import { ValkyrieSubnav } from './ui/ValkyrieSubnav';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
 
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
-  rune: 'V',
+  rune: 'ᛒ',
   title: 'Valkyrie',
-  subtitle: 'environments · flocks · learning',
-  tabs: [{ id: 'console', label: 'Console', path: '/valkyries' }],
+  subtitle: 'resident operators',
+  tabs: [
+    { id: 'console', label: 'Console', rune: '◇', path: '/valkyries' },
+    { id: 'topology', label: 'Topology', rune: 'ᛗ', path: '/valkyries/topology' },
+    { id: 'lineage', label: 'Lineage', rune: '↔', path: '/valkyries/lineage' },
+    { id: 'learning', label: 'Learning', rune: 'ᛗ', path: '/valkyries/learning' },
+    { id: 'huddles', label: 'Huddles', rune: '†', path: '/valkyries/huddles' },
+    { id: 'autonomy', label: 'Autonomy', rune: '§', path: '/valkyries/autonomy' },
+  ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/valkyries',
-      component: ValkyriePage,
+      component: () => <ValkyriePage defaultView="console" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/topology',
+      component: () => <ValkyriePage defaultView="topology" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/lineage',
+      component: () => <ValkyriePage defaultView="lineage" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/learning',
+      component: () => <ValkyriePage defaultView="learning" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/huddles',
+      component: () => <ValkyriePage defaultView="huddles" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries/autonomy',
+      component: () => <ValkyriePage defaultView="autonomy" />,
     }),
   ],
-  subnav: () => <ValkyrieSubnav />,
   topbarRight: () => <ValkyrieTopbar />,
 });
 

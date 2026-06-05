@@ -5,7 +5,7 @@ import {
   Bell,
   Brain,
   Check,
-  Clock,
+  ChevronLeft,
   Cpu,
   Database,
   GitBranch,
@@ -622,17 +622,30 @@ function LiveEnvironmentMatrix({ telemetry }: { telemetry: ValkyrieTelemetry }) 
   );
 }
 
-function RuntimePanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
+function RuntimePanel({
+  telemetry,
+  environmentId,
+}: {
+  telemetry: ValkyrieTelemetry;
+  environmentId?: string;
+}) {
+  const runtimes = telemetry.runtime.filter(
+    (runtime) =>
+      !environmentId || environmentId === 'all' || runtime.environmentId === environmentId,
+  );
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-live-runtime">
       <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
-        <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Runtime</h2>
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <Shield size={16} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Residents</h2>
+        </div>
         <span className="niuu:text-xs niuu:text-text-muted">
-          {compactNumber(telemetry.runtime.length)} started
+          {compactNumber(runtimes.length)} in scope
         </span>
       </div>
       <div className="niuu:grid niuu:gap-2">
-        {telemetry.runtime.map((runtime) => (
+        {runtimes.map((runtime) => (
           <article
             key={`${runtime.environmentId}:${runtime.valkyrieId}:${runtime.observedAt}`}
             className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
@@ -681,13 +694,13 @@ function RuntimePanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
             </dl>
           </article>
         ))}
-        {telemetry.runtime.length === 0 ? <EmptyState label="No runtime starts observed" /> : null}
+        {runtimes.length === 0 ? <EmptyState label="No runtime starts observed" /> : null}
       </div>
     </section>
   );
 }
 
-type LiveView = 'console' | 'learning' | 'autonomy' | 'runtime';
+export type LiveView = 'console' | 'topology' | 'lineage' | 'learning' | 'huddles' | 'autonomy';
 
 function LiveMetricGrid({ telemetry }: { telemetry: ValkyrieTelemetry }) {
   const totals = telemetry.totals;
@@ -695,22 +708,22 @@ function LiveMetricGrid({ telemetry }: { telemetry: ValkyrieTelemetry }) {
     0,
     totals.tasksStarted - totals.tasksCompleted - totals.tasksFailed,
   );
+  const dreaming = Math.max(0, totals.dreamCyclesStarted - totals.dreamCyclesCompleted);
   const metrics = [
-    { label: 'Events', value: compactNumber(totals.eventsObserved), icon: Radio },
-    { label: 'Signals', value: compactNumber(totals.signalsPublished), icon: Bell },
-    { label: 'Queued', value: compactNumber(totals.tasksEnqueued), icon: ListChecks },
-    { label: 'Active', value: compactNumber(activeTasks), icon: Zap },
-    { label: 'Dropped', value: compactNumber(totals.tasksDropped), icon: AlertTriangle },
-    { label: 'Judgments', value: compactNumber(totals.judgments), icon: Brain },
-    { label: 'Actions', value: compactNumber(totals.actions), icon: Check },
-    { label: 'Learning', value: compactNumber(totals.learningEvents), icon: Moon },
-    { label: 'Tools', value: compactNumber(totals.toolRequests ?? 0), icon: Wrench },
-    { label: 'Wake', value: compactNumber(totals.wakefulnessChanges ?? 0), icon: Activity },
+    {
+      label: 'Open signals',
+      value: compactNumber(totals.signalsPublished || totals.rawSignalEvents),
+      icon: Bell,
+    },
+    { label: 'Residents', value: compactNumber(telemetry.runtime.length), icon: Shield },
+    { label: 'Dreaming', value: compactNumber(dreaming || totals.dreamCyclesStarted), icon: Moon },
+    { label: 'Learning in test', value: compactNumber(totals.learningEvents), icon: Brain },
+    { label: 'Active actions', value: compactNumber(activeTasks || totals.actions), icon: Zap },
   ];
 
   return (
     <section
-      className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-5 niuu:2xl:grid-cols-10"
+      className="niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:md:grid-cols-5"
       data-testid="valkyrie-live-metrics"
     >
       {metrics.map((metric) => (
@@ -799,10 +812,10 @@ function EventLogPanel({
       <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
         <div className="niuu:flex niuu:items-center niuu:gap-2">
           <Terminal size={16} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Event log</h2>
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Signal tail</h2>
         </div>
         <span className="niuu:text-xs niuu:text-text-muted">
-          {compactNumber(events.length)} retained
+          sleipnir · {compactNumber(events.length)} retained
         </span>
       </div>
       <div className="niuu:max-h-[34rem] niuu:overflow-auto niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary">
@@ -1000,13 +1013,12 @@ function LiveScopeRail({
         <button
           type="button"
           className="niuu:rounded niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-muted"
-          disabled
         >
           Flocks
         </button>
       </div>
       <div className="niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-text-muted">
-        Live scopes
+        Where Valkyries Live
       </div>
       <button
         type="button"
@@ -1072,43 +1084,335 @@ function LiveScopeRail({
   );
 }
 
-function LiveTabs({
-  view,
-  onChange,
+function LlmStatusPanel({ telemetry }: { telemetry: ValkyrieTelemetry }) {
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-llm-status">
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <Cpu size={16} className="niuu:text-brand" aria-hidden="true" />
+        <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">LLM backend</h2>
+      </div>
+      <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs">
+        <div>
+          <dt className={MUTED}>Model</dt>
+          <dd className="niuu:break-words niuu:text-text-primary">
+            {telemetry.llm.model || 'unknown'}
+          </dd>
+        </div>
+        <div>
+          <dt className={MUTED}>Reflection model</dt>
+          <dd className="niuu:break-words niuu:text-text-primary">
+            {telemetry.llm.reflectionModel || 'unknown'}
+          </dd>
+        </div>
+        <div>
+          <dt className={MUTED}>Status</dt>
+          <dd className="niuu:text-text-primary">
+            {telemetry.llm.status} · reflection{' '}
+            {telemetry.llm.postSessionReflectionEnabled ? 'on' : 'off'}
+          </dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function SignalsPanel({
+  telemetry,
+  environmentId,
+}: {
+  telemetry: ValkyrieTelemetry;
+  environmentId: string;
+}) {
+  const outcomes = telemetry.recentOutcomes.filter(
+    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+  );
+  const signals = (telemetry.recentEvents ?? []).filter(
+    (event) =>
+      (environmentId === 'all' || event.environmentId === environmentId) &&
+      (event.kind === 'signal' || event.kind === 'event'),
+  );
+  const rows = [
+    ...signals.map((signal) => ({
+      id: signal.id,
+      title: signal.summary,
+      meta: `${signal.environmentId} · ${signal.eventType}`,
+      status: signal.kind,
+      observedAt: signal.observedAt,
+    })),
+    ...outcomes.map((outcome) => ({
+      id: `${outcome.taskId}:${outcome.type}:${outcome.observedAt}`,
+      title: outcome.summary || outcome.recommendedAction || outcome.taskId,
+      meta: `${outcome.environmentId} · ${outcome.eventType}`,
+      status: outcome.verdict || outcome.tier || outcome.type,
+      observedAt: outcome.observedAt,
+    })),
+  ].sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt));
+
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-signals-view">
+      <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <Bell size={16} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Signals</h2>
+        </div>
+        <span className="niuu:text-xs niuu:text-text-muted">
+          {compactNumber(rows.length)} in scope
+        </span>
+      </div>
+      <div className="niuu:grid niuu:gap-2">
+        {rows.slice(0, 8).map((row) => (
+          <article
+            key={row.id}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+          >
+            <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-2">
+              <div className="niuu:min-w-0">
+                <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                  {row.title}
+                </h3>
+                <p className="niuu:mt-1 niuu:truncate niuu:text-xs niuu:text-text-muted">
+                  {row.meta}
+                </p>
+              </div>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                {row.status}
+              </span>
+            </div>
+            <p className="niuu:mt-2 niuu:text-xs niuu:text-text-muted">
+              {formatShortTime(row.observedAt)}
+            </p>
+          </article>
+        ))}
+        {rows.length === 0 ? <EmptyState label="No verified signals in this scope" /> : null}
+      </div>
+    </section>
+  );
+}
+
+function CourtPanel({
+  telemetry,
+  environmentId,
+}: {
+  telemetry: ValkyrieTelemetry;
+  environmentId: string;
+}) {
+  const outcomes = telemetry.recentOutcomes.filter(
+    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+  );
+  const actions = outcomes.filter((outcome) => outcome.type === 'action');
+  return (
+    <div className="niuu:grid niuu:gap-3">
+      <section className={PANEL_PAD} data-testid="valkyrie-court-panel">
+        <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <GitBranch size={16} className="niuu:text-brand" aria-hidden="true" />
+            <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">ODIN court</h2>
+          </div>
+          <span className="niuu:text-xs niuu:text-text-muted">
+            {compactNumber(outcomes.length)}
+          </span>
+        </div>
+        <div className="niuu:grid niuu:gap-2">
+          {outcomes.slice(0, 4).map((outcome) => (
+            <article
+              key={`${outcome.taskId}:${outcome.type}:${outcome.observedAt}`}
+              className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+            >
+              <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                {outcome.summary || outcome.recommendedAction || outcome.taskId}
+              </h3>
+              <div className="niuu:mt-2 niuu:flex niuu:flex-wrap niuu:gap-2">
+                <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                  {outcome.verdict || outcome.tier || outcome.type}
+                </span>
+                {typeof outcome.confidence === 'number' ? (
+                  <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                    {percent(outcome.confidence)}
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          ))}
+          {outcomes.length === 0 ? <EmptyState label="No verified judgments or actions" /> : null}
+        </div>
+      </section>
+      <section className={PANEL_PAD} data-testid="valkyrie-actions-panel">
+        <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <Zap size={16} className="niuu:text-brand" aria-hidden="true" />
+            <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Actions</h2>
+          </div>
+          <span className="niuu:text-xs niuu:text-text-muted">{compactNumber(actions.length)}</span>
+        </div>
+        <div className="niuu:grid niuu:gap-2">
+          {actions.slice(0, 4).map((action) => (
+            <article
+              key={`${action.taskId}:${action.observedAt}`}
+              className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+            >
+              <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                {action.recommendedAction || action.summary || action.taskId}
+              </h3>
+              <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+                {action.environmentId} · {action.tier || 'action'} ·{' '}
+                {formatShortTime(action.observedAt)}
+              </p>
+            </article>
+          ))}
+          {actions.length === 0 ? <EmptyState label="No verified actions" /> : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TopologyView({
+  dashboard,
   telemetry,
 }: {
-  view: LiveView;
-  onChange: (view: LiveView) => void;
+  dashboard: ValkyrieDashboard;
   telemetry: ValkyrieTelemetry;
 }) {
-  const tabs: Array<{ id: LiveView; label: string; count: number; icon: typeof Activity }> = [
-    { id: 'console', label: 'Console', count: telemetry.totals.tasksEnqueued, icon: Terminal },
-    { id: 'learning', label: 'Learning', count: telemetry.totals.learningEvents, icon: Brain },
-    { id: 'autonomy', label: 'Autonomy', count: telemetry.totals.wakefulnessChanges ?? 0, icon: Shield },
-    { id: 'runtime', label: 'Runtime', count: telemetry.runtime.length, icon: Cpu },
-  ];
+  const report = dashboard.liveReport;
   return (
-    <nav className="niuu:flex niuu:flex-wrap niuu:gap-1" aria-label="Valkyrie live views">
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          type="button"
-          aria-pressed={view === tab.id}
-          onClick={() => onChange(tab.id)}
-          className={`niuu:inline-flex niuu:items-center niuu:gap-2 niuu:border-0 niuu:border-b-2 niuu:border-solid niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-medium ${
-            view === tab.id
-              ? 'niuu:border-brand niuu:text-text-primary'
-              : 'niuu:border-transparent niuu:text-text-muted niuu:hover:text-text-primary'
-          }`}
-        >
-          <tab.icon size={15} aria-hidden="true" />
-          {tab.label}
-          <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
-            {compactNumber(tab.count)}
-          </span>
-        </button>
-      ))}
-    </nav>
+    <div className="niuu:grid niuu:gap-3" data-testid="valkyrie-topology-view">
+      <LiveEnvironmentMatrix telemetry={telemetry} />
+      {report ? (
+        <FlockReportPanel dashboard={dashboard} />
+      ) : (
+        <EmptyState label="No live flock transport report" />
+      )}
+      <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-2">
+        {telemetry.byEnvironment.map((environment) => (
+          <section key={environment.environmentId} className={PANEL_PAD}>
+            <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
+              <div className="niuu:min-w-0">
+                <h2 className="niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                  {environmentName(dashboard, environment.environmentId)}
+                </h2>
+                <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
+                  {environment.environmentId} · seen {formatShortTime(environment.lastObservedAt)}
+                </p>
+              </div>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted">
+                {compactNumber(environment.signalsPublished)} signals
+              </span>
+            </div>
+            <div className="niuu:mt-3 niuu:grid niuu:grid-cols-[auto_1fr_auto] niuu:items-center niuu:gap-3 niuu:text-xs niuu:text-text-muted">
+              <span>signals</span>
+              <span className="niuu:h-px niuu:bg-border" />
+              <span>tasks {compactNumber(environment.tasksEnqueued)}</span>
+              <span>judgments</span>
+              <span className="niuu:h-px niuu:bg-border" />
+              <span>{compactNumber(environment.judgments)}</span>
+              <span>actions</span>
+              <span className="niuu:h-px niuu:bg-border" />
+              <span>{compactNumber(environment.actions)}</span>
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LineageView({
+  telemetry,
+  environmentId,
+}: {
+  telemetry: ValkyrieTelemetry;
+  environmentId: string;
+}) {
+  const events = (telemetry.recentEvents ?? []).filter(
+    (event) => environmentId === 'all' || event.environmentId === environmentId,
+  );
+  const tasks = telemetry.recentTasks.filter(
+    (task) => environmentId === 'all' || task.environmentId === environmentId,
+  );
+  const outcomes = telemetry.recentOutcomes.filter(
+    (outcome) => environmentId === 'all' || outcome.environmentId === environmentId,
+  );
+  const rows = [
+    ...events.map((event) => ({
+      id: event.id,
+      chain: event.correlationId || event.id,
+      kind: event.kind,
+      title: event.summary,
+      meta: `${event.environmentId} · ${event.eventType}`,
+      observedAt: event.observedAt,
+    })),
+    ...tasks.map((task) => ({
+      id: `${task.taskId}:${task.status}:${task.observedAt}`,
+      chain: task.taskId,
+      kind: 'task',
+      title: task.title || task.taskId,
+      meta: `${task.environmentId} · ${task.status}`,
+      observedAt: task.observedAt,
+    })),
+    ...outcomes.map((outcome) => ({
+      id: `${outcome.taskId}:${outcome.type}:${outcome.observedAt}`,
+      chain: outcome.taskId,
+      kind: outcome.type,
+      title: outcome.summary || outcome.recommendedAction || outcome.taskId,
+      meta: `${outcome.environmentId} · ${outcome.verdict || outcome.tier || outcome.type}`,
+      observedAt: outcome.observedAt,
+    })),
+  ].sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt));
+
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-lineage-view">
+      <div className="niuu:mb-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <GitBranch size={16} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Lineage</h2>
+        </div>
+        <span className="niuu:text-xs niuu:text-text-muted">
+          {compactNumber(rows.length)} linked events
+        </span>
+      </div>
+      <div className="niuu:grid niuu:gap-2">
+        {rows.slice(0, 30).map((row) => (
+          <article
+            key={row.id}
+            className="niuu:grid niuu:gap-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3 niuu:lg:grid-cols-[10rem_minmax(0,1fr)_11rem]"
+          >
+            <div className="niuu:min-w-0 niuu:text-xs niuu:text-text-muted">
+              <div className="niuu:font-mono niuu:text-brand">{row.kind}</div>
+              <div className="niuu:mt-1 niuu:truncate">{row.chain}</div>
+            </div>
+            <div className="niuu:min-w-0">
+              <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+                {row.title}
+              </h3>
+              <p className="niuu:mt-1 niuu:truncate niuu:text-xs niuu:text-text-muted">
+                {row.meta}
+              </p>
+            </div>
+            <div className="niuu:text-xs niuu:text-text-muted">
+              {formatShortTime(row.observedAt)}
+            </div>
+          </article>
+        ))}
+        {rows.length === 0 ? <EmptyState label="No verified lineage events" /> : null}
+      </div>
+    </section>
+  );
+}
+
+function HuddlesView({ telemetry }: { telemetry: ValkyrieTelemetry }) {
+  return (
+    <div className="niuu:grid niuu:gap-3" data-testid="valkyrie-huddles-view">
+      <section className={PANEL_PAD}>
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <MessageSquare size={16} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Huddles</h2>
+        </div>
+        <div className="niuu:mt-3">
+          <EmptyState label="No verified huddle messages are being published into telemetry yet" />
+        </div>
+      </section>
+      <GapsPanel telemetry={telemetry} />
+    </div>
   );
 }
 
@@ -1188,10 +1492,9 @@ function AutonomyPanel({
   );
 }
 
-function LiveConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
+function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: LiveView }) {
   const telemetry = dashboard.telemetry;
   if (!telemetry?.verified) return null;
-  const [view, setView] = useState<LiveView>('console');
   const liveEnvironmentIds = telemetry.byEnvironment.map((environment) => environment.environmentId);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState(
     () => liveEnvironmentIds[0] ?? 'all',
@@ -1214,93 +1517,66 @@ function LiveConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
           onSelectEnvironment={setSelectedEnvironmentId}
         />
         <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-3">
-        <header className="niuu:flex niuu:flex-wrap niuu:items-end niuu:justify-between niuu:gap-3">
-          <div className="niuu:min-w-0">
-            <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
-              <h1 className="niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
-                {selectedName}
-              </h1>
-              <span className="niuu:rounded-full niuu:bg-success-bg niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-success">
-                verified API
+          <header className="niuu:flex niuu:flex-wrap niuu:items-end niuu:justify-between niuu:gap-3">
+            <div className="niuu:min-w-0">
+              <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+                <ChevronLeft size={20} className="niuu:text-brand" aria-hidden="true" />
+                <h1 className="niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
+                  {selectedName}
+                </h1>
+              </div>
+              <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
+                {selectedEnvironmentId === 'all' ? 'all environments' : selectedEnvironmentId} ·{' '}
+                {telemetry.source} · last signal {formatShortTime(telemetry.lastObservedAt)}
+              </p>
+            </div>
+            <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+              <span className="niuu:rounded-full niuu:bg-success-bg niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-success">
+                watch
+              </span>
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-muted">
+                updated {formatShortTime(dashboard.updatedAt)}
               </span>
             </div>
-            <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
-              {telemetry.source} · observed {formatShortTime(telemetry.lastObservedAt)}
-            </p>
-          </div>
-          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-            <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-muted">
-              <Cpu size={13} className="niuu:mr-1 niuu:inline" aria-hidden="true" />
-              {telemetry.llm.model || 'unknown model'}
-            </span>
-            <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-muted">
-              <Clock size={13} className="niuu:mr-1 niuu:inline" aria-hidden="true" />
-              updated {formatShortTime(dashboard.updatedAt)}
-            </span>
-          </div>
-        </header>
+          </header>
 
-        <LiveTabs view={view} onChange={setView} telemetry={telemetry} />
-        <LiveMetricGrid telemetry={telemetry} />
-        {view === 'console' ? (
-          <div className="niuu:grid niuu:gap-3 niuu:2xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
-            <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-3">
+          {view === 'console' ? (
+            <>
+              <LiveMetricGrid telemetry={telemetry} />
               <EventLogPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-              <WorkQueuePanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-              <LiveEnvironmentMatrix telemetry={telemetry} />
-            </div>
-            <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-3">
-            <section className={PANEL_PAD} data-testid="valkyrie-llm-status">
-              <div className="niuu:flex niuu:items-center niuu:gap-2">
-                <Cpu size={16} className="niuu:text-brand" aria-hidden="true" />
-                <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-                  LLM backend
-                </h2>
+              <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(280px,0.9fr)_minmax(320px,1.15fr)_minmax(280px,0.85fr)]">
+                <RuntimePanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+                <SignalsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+                <CourtPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
               </div>
-              <dl className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:text-xs">
-                <div>
-                  <dt className={MUTED}>Model</dt>
-                  <dd className="niuu:break-words niuu:text-text-primary">
-                    {telemetry.llm.model || 'unknown'}
-                  </dd>
+              <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
+                <WorkQueuePanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+                <div className="niuu:grid niuu:gap-3">
+                  <LlmStatusPanel telemetry={telemetry} />
+                  <GapsPanel telemetry={telemetry} />
                 </div>
-                <div>
-                  <dt className={MUTED}>Reflection model</dt>
-                  <dd className="niuu:break-words niuu:text-text-primary">
-                    {telemetry.llm.reflectionModel || 'unknown'}
-                  </dd>
-                </div>
-                <div>
-                  <dt className={MUTED}>Status</dt>
-                  <dd className="niuu:text-text-primary">
-                    {telemetry.llm.status} · reflection{' '}
-                    {telemetry.llm.postSessionReflectionEnabled ? 'on' : 'off'}
-                  </dd>
-                </div>
-              </dl>
-            </section>
-            <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-            <ToolNeedsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-            <RuntimePanel telemetry={telemetry} />
-            <GapsPanel telemetry={telemetry} />
+              </div>
+            </>
+          ) : null}
+          {view === 'topology' ? (
+            <TopologyView dashboard={dashboard} telemetry={telemetry} />
+          ) : null}
+          {view === 'lineage' ? (
+            <LineageView telemetry={telemetry} environmentId={selectedEnvironmentId} />
+          ) : null}
+          {view === 'learning' ? (
+            <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
+              <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+              <div className="niuu:grid niuu:gap-3">
+                <ToolNeedsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+                <LlmStatusPanel telemetry={telemetry} />
+              </div>
             </div>
-          </div>
-        ) : null}
-        {view === 'learning' ? (
-          <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
-            <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-            <ToolNeedsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-          </div>
-        ) : null}
-        {view === 'autonomy' ? (
-          <AutonomyPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-        ) : null}
-        {view === 'runtime' ? (
-          <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
-            <RuntimePanel telemetry={telemetry} />
-            <GapsPanel telemetry={telemetry} />
-          </div>
-        ) : null}
+          ) : null}
+          {view === 'huddles' ? <HuddlesView telemetry={telemetry} /> : null}
+          {view === 'autonomy' ? (
+            <AutonomyPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
+          ) : null}
         </div>
       </div>
     </main>
@@ -1793,7 +2069,13 @@ function HuddlePanel({
   );
 }
 
-function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
+function MainConsole({
+  dashboard,
+  defaultView,
+}: {
+  dashboard: ValkyrieDashboard;
+  defaultView: LiveView;
+}) {
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState(
     () => dashboard.environments[0]?.id ?? '',
   );
@@ -1813,7 +2095,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
       ? `${kindLabel(selectedEnvironment.kind)} · ${selectedEnvironment.health}`
       : 'No environment';
 
-  if (dashboard.telemetry?.verified) return <LiveConsole dashboard={dashboard} />;
+  if (dashboard.telemetry?.verified) return <LiveConsole dashboard={dashboard} view={defaultView} />;
   if (!selectedEnvironment) return <EmptyState label="No environments" />;
 
   return (
@@ -1870,7 +2152,7 @@ function MainConsole({ dashboard }: { dashboard: ValkyrieDashboard }) {
   );
 }
 
-export function ValkyriePage() {
+export function ValkyriePage({ defaultView = 'console' }: { defaultView?: LiveView }) {
   const { data, isLoading, error } = useValkyrieDashboard();
   const errorMessage = useMemo(() => {
     if (!error) return null;
@@ -1886,7 +2168,7 @@ export function ValkyriePage() {
       data-testid="valkyrie-page"
       className="niuu:h-full niuu:min-h-0 niuu:overflow-hidden niuu:bg-bg-primary niuu:p-3"
     >
-      <MainConsole dashboard={data} />
+      <MainConsole dashboard={data} defaultView={defaultView} />
     </div>
   );
 }
