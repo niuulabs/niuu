@@ -84,6 +84,7 @@ _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
 _RAVN_TASK_DROPPED = "ravn.task.dropped"
+_RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
 
 def _default_success_verdict(produces: object) -> str:
@@ -222,6 +223,134 @@ def _outcome_parse_errors(errors: list[str]) -> list[str]:
         if error.startswith("YAML parse error:")
         or "did not parse as a YAML mapping" in error
     ]
+
+
+def _dedupe_errors(errors: list[str]) -> list[str]:
+    """Return validation errors without duplicates, preserving order."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for error in errors:
+        if error in seen:
+            continue
+        seen.add(error)
+        deduped.append(error)
+    return deduped
+
+
+def _validate_normalized_persona_schema(
+    fields: dict[str, object],
+    persona_config: PersonaConfig | None,
+) -> list[str]:
+    """Validate normalized fields against the persona outcome schema."""
+    produces = getattr(persona_config, "produces", None)
+    schema_fields = getattr(produces, "schema", None)
+    if not isinstance(schema_fields, dict):
+        return []
+
+    errors: list[str] = []
+    for name, field_def in schema_fields.items():
+        required = bool(getattr(field_def, "required", True))
+        if name not in fields:
+            if required:
+                errors.append(f"required field '{name}' is missing")
+            continue
+
+        value = fields[name]
+        field_type = str(getattr(field_def, "type", "") or "")
+        if field_type == "enum":
+            enum_values = getattr(field_def, "enum_values", None) or []
+            if str(value) not in enum_values:
+                errors.append(
+                    f"field '{name}': value {value!r} not in allowed values {enum_values}"
+                )
+        elif field_type == "number":
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                errors.append(f"field '{name}': expected number, got {type(value).__name__}")
+        elif field_type == "boolean":
+            if not isinstance(value, bool):
+                errors.append(f"field '{name}': expected boolean, got {type(value).__name__}")
+        elif field_type == "array":
+            if not isinstance(value, list):
+                errors.append(f"field '{name}': expected array, got {type(value).__name__}")
+        elif field_type == "object":
+            if not isinstance(value, dict):
+                errors.append(f"field '{name}': expected object, got {type(value).__name__}")
+        elif field_type == "string" and not isinstance(value, str):
+            errors.append(f"field '{name}': expected string, got {type(value).__name__}")
+    return errors
+
+
+def _resident_valkyrie_validation_result(
+    response_text: str,
+    persona_config: PersonaConfig | None,
+) -> tuple[str, dict[str, object], list[str]]:
+    """Parse and validate a resident Valkyrie response against its canonical contract."""
+    produces = getattr(persona_config, "produces", None)
+    canonical_event_type = str(getattr(produces, "event_type", "") or "")
+    if not canonical_event_type or not is_valkyrie_outcome_event(canonical_event_type):
+        return "", {}, []
+
+    parsed = _parse_outcome_for_persona(response_text, persona_config)
+    outcome_fields = dict(parsed.fields) if parsed is not None else {}
+    outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
+
+    validation_errors: list[str] = []
+    if parsed is None:
+        validation_errors.append("resident Valkyrie outcome block is missing")
+    elif not parsed.valid:
+        validation_errors.extend(_outcome_parse_errors(parsed.errors))
+    validation_errors.extend(_validate_normalized_persona_schema(outcome_fields, persona_config))
+    validation_errors.extend(validate_valkyrie_outcome(canonical_event_type, outcome_fields))
+    return canonical_event_type, outcome_fields, _dedupe_errors(validation_errors)
+
+
+def _build_resident_valkyrie_schema_repair_prompt(
+    *,
+    task: AgentTask,
+    original_response: str,
+    validation_errors: list[str],
+    outcome_fields: dict[str, object],
+) -> str:
+    """Build a narrow repair instruction for malformed resident Valkyrie outcomes."""
+    return (
+        "[SCHEMA REPAIR - resident Valkyrie outcome]\n"
+        "Your previous answer did not satisfy the resident Valkyrie outcome contract.\n"
+        "Do not call tools. Do not explain. Return exactly one valid YAML outcome block.\n\n"
+        "Validation errors:\n"
+        f"{json.dumps(validation_errors, indent=2)}\n\n"
+        "Fields parsed from the invalid attempt, if any:\n"
+        f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
+        "Original autonomous task context:\n"
+        "<initiative_context>\n"
+        f"{task.initiative_context}\n"
+        "</initiative_context>\n\n"
+        "Previous response:\n"
+        "<previous_response>\n"
+        f"{original_response[:4000]}\n"
+        "</previous_response>\n\n"
+        "Required block shape:\n"
+        "---outcome---\n"
+        "decision: ignore | watch | investigate | propose_action | escalate | learn | blocked\n"
+        "environment_id: <environment id from the task context>\n"
+        "environment_type: k8s\n"
+        "valkyrie_id: <resident peer id from the task context>\n"
+        "signal_refs: [<signal event id or stable ref>]\n"
+        "tier: silent | ambient | present | urgent\n"
+        "confidence: <number from 0.0 to 1.0>\n"
+        "operational_state: nominal | watching | investigating | degraded | "
+        "remediating | blocked | dreaming\n"
+        "wakefulness: asleep | watching | wakeful | dreaming\n"
+        "rationale: <concise reason grounded in evidence>\n"
+        "evidence: [{event_id: <id>, source_id: <source>, severity: <severity>}]\n"
+        "recommended_action: <specific next step, or none>\n"
+        "action_authority: autonomous | yolo_allowed | court_required | human_review_required\n"
+        "action_capability: <capability name, or none>\n"
+        "target_surfaces: []\n"
+        "expires_at: \"\"\n"
+        "dissent_refs: []\n"
+        "correlation_ids: {root: <root correlation id>, signal: <signal id>}\n"
+        "---end---"
+    )
 
 
 def _coerce_nonnegative_int(value: object) -> int | None:
@@ -1317,11 +1446,19 @@ class DriveLoop:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
                 self._record_task_cost(task, turn_result)
-                await self._maybe_publish_budget_warning(task)
-                self._save_task_output(task, capture_channel or channel)
                 response_text = (
                     capture_channel.response_text if capture_channel else turn_result.response
                 )
+                repair_result = await self._maybe_repair_resident_valkyrie_outcome(
+                    agent=agent,
+                    task=task,
+                    response_text=response_text,
+                )
+                if repair_result is not None:
+                    self._record_task_cost(task, repair_result)
+                    response_text = repair_result.response
+                await self._maybe_publish_budget_warning(task)
+                self._save_task_output(task, capture_channel or channel)
                 if response_text:
                     logger.info(
                         "drive_loop: task %s output: %s",
@@ -1430,6 +1567,67 @@ class DriveLoop:
                 "The task will not make progress until the upstream model/service recovers."
             )
         return f"{type(exc).__name__}: {exc}"
+
+    async def _maybe_repair_resident_valkyrie_outcome(
+        self,
+        *,
+        agent: object,
+        task: AgentTask,
+        response_text: str,
+    ) -> object | None:
+        """Ask the same agent for one strict contract repair when a resident output is invalid."""
+        if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
+            return None
+        canonical_event_type, outcome_fields, validation_errors = (
+            _resident_valkyrie_validation_result(response_text, self._persona_config)
+        )
+        if not canonical_event_type or not validation_errors:
+            return None
+        run_turn = getattr(agent, "run_turn", None)
+        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+            return None
+
+        logger.warning(
+            "drive_loop: repairing invalid resident Valkyrie outcome "
+            "event_type=%s task_id=%s errors=%s",
+            canonical_event_type,
+            task.task_id,
+            validation_errors,
+        )
+        repair_prompt = _build_resident_valkyrie_schema_repair_prompt(
+            task=task,
+            original_response=response_text,
+            validation_errors=validation_errors,
+            outcome_fields=outcome_fields,
+        )
+        try:
+            repair_result = await run_turn(repair_prompt)
+        except Exception:
+            logger.warning(
+                "drive_loop: resident Valkyrie schema repair failed; "
+                "continuing with original response",
+                exc_info=True,
+            )
+            return None
+
+        repaired_text = str(getattr(repair_result, "response", "") or "")
+        _, _, repaired_errors = _resident_valkyrie_validation_result(
+            repaired_text,
+            self._persona_config,
+        )
+        if repaired_errors:
+            logger.warning(
+                "drive_loop: resident Valkyrie schema repair still invalid "
+                "task_id=%s errors=%s",
+                task.task_id,
+                repaired_errors,
+            )
+        else:
+            logger.info(
+                "drive_loop: resident Valkyrie schema repair succeeded task_id=%s",
+                task.task_id,
+            )
+        return repair_result
 
     async def _emit_sleipnir_task_completed(
         self,
@@ -1737,13 +1935,9 @@ class DriveLoop:
             valid = True
 
         if is_valkyrie_outcome_event(canonical_event_type):
-            validation_errors: list[str] = []
-            if parsed is None:
-                validation_errors.append("resident Valkyrie outcome block is missing")
-            elif not parsed.valid:
-                validation_errors.extend(_outcome_parse_errors(parsed.errors))
-            validation_errors.extend(
-                validate_valkyrie_outcome(canonical_event_type, outcome_fields)
+            _, outcome_fields, validation_errors = _resident_valkyrie_validation_result(
+                response_text,
+                self._persona_config,
             )
             if validation_errors:
                 reject_payload: dict[str, object] = {

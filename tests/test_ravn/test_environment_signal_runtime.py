@@ -113,6 +113,10 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert "Resident peer id: valkyrie-host-jozef" in enqueued[0].initiative_context
     assert "Quietly skeptical and evidence-first" in enqueued[0].initiative_context
     assert "Use existing tools and memory" in enqueued[0].initiative_context
+    assert "Schema compliance is mandatory" in enqueued[0].initiative_context
+    assert "environment_id: host-jozef" in enqueued[0].initiative_context
+    assert "valkyrie_id: valkyrie-host-jozef" in enqueued[0].initiative_context
+    assert "correlation_ids:" in enqueued[0].initiative_context
 
 
 @pytest.mark.asyncio

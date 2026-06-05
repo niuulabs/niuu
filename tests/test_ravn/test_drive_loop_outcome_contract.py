@@ -11,14 +11,17 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from ravn.domain.events import RavnEventType
+from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
 from ravn.drive_loop import (
+    _build_resident_valkyrie_schema_repair_prompt,
     _default_success_verdict,
     _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
     _known_verdict_tokens,
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
+    _resident_valkyrie_validation_result,
 )
 from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
@@ -193,6 +196,63 @@ class TestDriveLoopOutcomeContract:
         assert recovered.fields["summary"] == "fallback"
         assert calls[0][1] is not None
         assert calls[1][1] is None
+
+    @pytest.mark.asyncio
+    async def test_repair_resident_valkyrie_outcome_retries_with_strict_schema(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+        task = _make_agent_task(task_id="task-valkyrie-repair")
+        task.initiative_context = (
+            "Environment: cluster-a (k8s)\n"
+            "Resident peer id: k8s-valkyrie\n"
+            "Signal type: kubernetes\n"
+        )
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def run_turn(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=_valid_valkyrie_judgment_text(),
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_resident_valkyrie_outcome(
+            agent=agent,
+            task=task,
+            response_text="Endpoints ticked off queue interCAL question",
+        )
+
+        assert repair_result is not None
+        assert agent.prompts
+        assert "Do not call tools" in agent.prompts[0]
+        assert "resident Valkyrie outcome block is missing" in agent.prompts[0]
+        _, _, validation_errors = _resident_valkyrie_validation_result(
+            repair_result.response,
+            dl._persona_config,
+        )
+        assert validation_errors == []
+
+    def test_schema_repair_prompt_includes_required_resident_contract_shape(self) -> None:
+        task = _make_agent_task(task_id="task-valkyrie-repair-prompt")
+        prompt = _build_resident_valkyrie_schema_repair_prompt(
+            task=task,
+            original_response="bad",
+            validation_errors=["resident Valkyrie outcome block is missing"],
+            outcome_fields={},
+        )
+
+        assert "decision: ignore | watch | investigate" in prompt
+        assert "confidence: <number from 0.0 to 1.0>" in prompt
+        assert "action_authority: autonomous | yolo_allowed" in prompt
 
     @pytest.mark.asyncio
     async def test_canonical_and_alias_outcomes_are_split(self) -> None:
