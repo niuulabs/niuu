@@ -1,10 +1,4 @@
-"""Resident Valkyrie dashboard projection for the Ravn API.
-
-The current implementation is a deterministic dev projection over the
-resident Valkyrie Environment demo.  It intentionally uses the same HTTP and
-SSE contract as the web console so start-dev exercises real service wiring
-without inventing a second lifecycle.
-"""
+"""Resident Valkyrie dashboard projection for the Ravn API."""
 
 from __future__ import annotations
 
@@ -21,23 +15,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ravn.demo.valkyrie_environment import DEMO_STARTED_AT, build_valkyrie_environment_demo
 from sleipnir.domain.events import SleipnirEvent
 
 Dashboard = dict[str, Any]
 logger = logging.getLogger(__name__)
 RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
-
-K8S_CLUSTERS: tuple[dict[str, Any], ...] = (
-    {"id": "valhalla", "name": "Valhalla", "health": "watch", "signals": 18, "unresolved": 2},
-    {"id": "ymir", "name": "Ymir", "health": "watch", "signals": 22, "unresolved": 2},
-    {"id": "eitri", "name": "Eitri", "health": "watch", "signals": 8, "unresolved": 1},
-    {"id": "glitnir", "name": "Glitnir", "health": "healthy", "signals": 6, "unresolved": 0},
-    {"id": "jarnvidr", "name": "Jarnvidr", "health": "watch", "signals": 9, "unresolved": 1},
-    {"id": "noatun", "name": "Noatun", "health": "healthy", "signals": 5, "unresolved": 0},
-    {"id": "valaskjalf", "name": "Valaskjalf", "health": "watch", "signals": 7, "unresolved": 1},
-)
+DASHBOARD_ENVIRONMENTS_JSON_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON"
+DASHBOARD_ENVIRONMENTS_FILE_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE"
 
 
 class HuddleSendRequest(BaseModel):
@@ -56,72 +41,182 @@ class AutonomyUpdateRequest(BaseModel):
     reason: str = ""
 
 
-def _timestamp(offset_seconds: int) -> str:
-    return (DEMO_STARTED_AT + timedelta(seconds=offset_seconds)).isoformat()
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _live_report(last_observed_at: str, poll_count: int = 0) -> dict[str, Any]:
-    base_messages = {
-        "valhalla": 39_062,
-        "ymir": 32_746,
-        "eitri": 4_200,
-        "glitnir": 3_100,
-        "jarnvidr": 3_850,
-        "noatun": 2_750,
-        "valaskjalf": 3_400,
-    }
+def _as_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if isinstance(value, list | tuple):
+        return [str(entry) for entry in value if str(entry).strip()]
+    if isinstance(value, str) and value.strip():
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+    return []
+
+
+def _field(record: dict[str, Any], *names: str, default: Any = "") -> Any:
+    for name in names:
+        value = record.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _slug(value: str) -> str:
+    return "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")
+
+
+def _environment_id(record: dict[str, Any]) -> str:
+    explicit = str(_field(record, "environmentId", "environment_id", default="")).strip()
+    if explicit:
+        return explicit
+    raw_id = _slug(str(_field(record, "id", "name", default="environment")))
+    kind = str(_field(record, "kind", default="generic"))
+    if raw_id.startswith("env-"):
+        return raw_id
+    if kind == "kubernetes":
+        return f"env-k8s-{raw_id}"
+    return f"env-{raw_id}"
+
+
+def _valkyrie_id(record: dict[str, Any], environment_id: str) -> str:
+    explicit = str(_field(record, "valkyrieId", "valkyrie_id", default="")).strip()
+    if explicit:
+        return explicit
+    return f"valkyrie-{environment_id.removeprefix('env-')}"
+
+
+def _rollup_health(health_values: list[str]) -> str:
+    order = ["critical", "degraded", "watch", "healthy"]
+    for health in order:
+        if health in health_values:
+            return health
+    return "healthy"
+
+
+def _first_transport_value(
+    transports: list[dict[str, Any]],
+    key: str,
+    default: str,
+) -> str:
+    for transport in transports:
+        value = str(transport.get(key) or "").strip()
+        if value:
+            return value
+    return default
+
+
+def _catalog_raw() -> str:
+    configured = os.environ.get(DASHBOARD_ENVIRONMENTS_JSON_ENV, "").strip()
+    if configured:
+        return configured
+    path = os.environ.get(DASHBOARD_ENVIRONMENTS_FILE_ENV, "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as exc:
+        logger.warning("could not read Valkyrie dashboard environment catalog %s: %s", path, exc)
+        return ""
+
+
+def _configured_environment_records() -> list[dict[str, Any]]:
+    raw = _catalog_raw()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("invalid Valkyrie dashboard environment catalog JSON: %s", exc)
+        return []
+    records = parsed.get("environments") if isinstance(parsed, dict) else parsed
+    if not isinstance(records, list):
+        logger.warning(
+            "Valkyrie dashboard environment catalog must be a list or object.environments"
+        )
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _live_report(
+    last_observed_at: str,
+    poll_count: int = 0,
+    environments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    del poll_count
     transports = []
-    for index, cluster in enumerate(K8S_CLUSTERS):
-        cluster_id = cluster["id"]
-        messages = base_messages[cluster_id] + poll_count
+    for environment in environments or []:
+        transport = environment.get("transport")
+        if not isinstance(transport, dict):
+            continue
         transports.append(
             {
-                "id": f"transport-{cluster_id}",
-                "label": f"{cluster['name']} k8s",
-                "environmentId": f"env-k8s-{cluster_id}",
-                "account": f"obs-{cluster_id}",
-                "streamName": f"obs-{cluster_id}-events",
-                "subjectPrefix": f"obs.{cluster_id}",
-                "messageCount": messages,
-                "signalCount": cluster["signals"] * 180,
-                "activityCount": max(messages - 3_000, 0),
-                "judgmentCount": 40 + index,
-                "actionCount": 16 + index,
-                "rejectedCount": 8 + index,
-                "consumerFilterSubjects": [
-                    f"obs.{cluster_id}.ravn.mesh.rpc.valkyrie_{cluster_id}_k8s",
-                    f"obs.{cluster_id}.signal.kubernetes.event",
-                    f"obs.{cluster_id}.ravn.mesh.valkyrie.judgment.>",
-                    f"flock.k8s.{cluster_id}.>",
-                ],
-                "health": cluster["health"],
-                "lastMessageAt": _timestamp(42 + index),
-                "notes": [
-                    f"Local operational signals stay on obs.{cluster_id}.",
-                    "Judgments, actions, activity, and promoted learning project into "
-                    "the k8s flock stream.",
-                ],
+                "id": str(transport.get("id") or f"transport-{environment['id']}"),
+                "label": str(transport.get("label") or environment["name"]),
+                "environmentId": environment["id"],
+                "account": str(transport.get("account") or ""),
+                "streamName": str(transport.get("streamName") or ""),
+                "subjectPrefix": str(transport.get("subjectPrefix") or ""),
+                "messageCount": _as_int(transport.get("messageCount"), 0),
+                "signalCount": _as_int(transport.get("signalCount"), 0),
+                "activityCount": _as_int(transport.get("activityCount"), 0),
+                "judgmentCount": _as_int(transport.get("judgmentCount"), 0),
+                "actionCount": _as_int(transport.get("actionCount"), 0),
+                "rejectedCount": _as_int(transport.get("rejectedCount"), 0),
+                "consumerFilterSubjects": _as_string_list(
+                    transport.get("consumerFilterSubjects")
+                    or transport.get("consumer_filter_subjects")
+                ),
+                "health": str(transport.get("health") or environment.get("health") or "watch"),
+                "lastMessageAt": str(
+                    transport.get("lastMessageAt")
+                    or transport.get("last_message_at")
+                    or environment.get("lastSignalAt")
+                    or ""
+                ),
+                "notes": _as_string_list(transport.get("notes")),
             },
         )
     return {
         "title": "K8s flock routing",
-        "status": "watch",
+        "status": _rollup_health([entry["health"] for entry in transports]),
         "lastObservedAt": last_observed_at,
         "totalMessages": sum(entry["messageCount"] for entry in transports),
-        "sharedStream": "flock-k8s-*-events",
-        "routeSubject": "flock.k8s.>",
-        "projectionMode": "mixed",
+        "sharedStream": _first_transport_value(transports, "streamName", "unconfigured"),
+        "routeSubject": _first_transport_value(transports, "subjectPrefix", "unconfigured"),
+        "projectionMode": "mixed" if transports else "local",
         "transports": transports,
         "findings": [
-            "Existing NATS and Sleipnir paths are the bus; the flock view is a "
-            "JetStream projection.",
-            "Durable consumers are split per filter subject so RPC, local signals, "
-            "and flock subjects can coexist.",
-            "The UI should show both local environment health and flock-sharing health.",
+            (
+                "Dashboard inventory is deployment-configured; activity appears only "
+                "after verified telemetry is observed."
+            ),
         ],
     }
 
@@ -682,421 +777,148 @@ def _aggregate_telemetry(
     }
 
 
-def _k8s_environment_entries() -> list[dict[str, Any]]:
+def _configured_environment_entries(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for index, cluster in enumerate(K8S_CLUSTERS):
-        cluster_id = cluster["id"]
+    for record in records:
+        environment_id = _environment_id(record)
+        name = str(_field(record, "name", default=environment_id))
         entries.append(
             {
-                "id": f"env-k8s-{cluster_id}",
-                "name": f"{cluster['name']} k8s",
-                "kind": "kubernetes",
-                "health": cluster["health"],
-                "flockId": "flock-k8s",
-                "topologyNodeIds": [f"environment:k8s-cluster-{cluster_id}"],
-                "signalCount": cluster["signals"],
-                "unresolvedSignalCount": cluster["unresolved"],
-                "wakefulCount": 1,
-                "dreamingCount": 0,
-                "lastSignalAt": _timestamp(18 + index * 3),
+                "id": environment_id,
+                "name": name,
+                "kind": str(_field(record, "kind", default="generic")),
+                "health": str(_field(record, "health", default="watch")),
+                "flockId": str(_field(record, "flockId", "flock_id", default="")),
+                "topologyNodeIds": _as_string_list(
+                    _field(record, "topologyNodeIds", "topology_node_ids", default=[])
+                ),
+                "signalCount": _as_int(_field(record, "signalCount", "signal_count", default=0)),
+                "unresolvedSignalCount": _as_int(
+                    _field(record, "unresolvedSignalCount", "unresolved_signal_count", default=0)
+                ),
+                "wakefulCount": _as_int(_field(record, "wakefulCount", "wakeful_count", default=1)),
+                "dreamingCount": _as_int(
+                    _field(record, "dreamingCount", "dreaming_count", default=0)
+                ),
+                "lastSignalAt": str(_field(record, "lastSignalAt", "last_signal_at", default="")),
+                "transport": _field(record, "transport", default={}),
             },
         )
     return entries
 
 
-def _k8s_valkyrie_entries() -> list[dict[str, Any]]:
+def _configured_valkyrie_entries(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for index, cluster in enumerate(K8S_CLUSTERS):
-        cluster_id = cluster["id"]
+    for record in records:
+        environment_id = _environment_id(record)
+        valkyrie = _field(record, "valkyrie", default={})
+        if not isinstance(valkyrie, dict):
+            valkyrie = {}
+        combined = {**record, **valkyrie}
+        valkyrie_id = _valkyrie_id(combined, environment_id)
         entries.append(
             {
-                "id": f"valkyrie-{cluster_id}-k8s",
-                "name": f"{cluster['name']} Valkyrie",
-                "environmentId": f"env-k8s-{cluster_id}",
-                "flockId": "flock-k8s",
-                "persona": "k8s-valkyrie",
-                "specialty": "cluster event triage and flock learning exchange",
-                "wakefulness": "watching",
-                "autonomyMode": "delegated",
-                "status": "online",
-                "confidence": round(0.82 + min(index, 5) * 0.02, 2),
-                "inboxSubjects": ["signal.kubernetes.*", "flock.k8s.*"],
-                "toolCount": 12,
-                "lastDreamAt": _timestamp(34 + index),
-                "lastActionAt": _timestamp(22 + index),
+                "id": valkyrie_id,
+                "name": str(_field(combined, "valkyrieName", "valkyrie_name", default=valkyrie_id)),
+                "environmentId": environment_id,
+                "flockId": str(_field(combined, "flockId", "flock_id", default="")),
+                "persona": str(_field(combined, "persona", default="valkyrie")),
+                "specialty": str(_field(combined, "specialty", default="resident operations")),
+                "wakefulness": str(_field(combined, "wakefulness", default="watching")),
+                "autonomyMode": str(
+                    _field(combined, "autonomyMode", "autonomy_mode", default="delegated")
+                ),
+                "status": str(_field(combined, "status", default="online")),
+                "confidence": _as_float(_field(combined, "confidence", default=0.0)),
+                "inboxSubjects": _as_string_list(
+                    _field(combined, "inboxSubjects", "inbox_subjects", default=[])
+                ),
+                "toolCount": _as_int(_field(combined, "toolCount", "tool_count", default=0)),
+                "lastDreamAt": str(_field(combined, "lastDreamAt", "last_dream_at", default="")),
+                "lastActionAt": str(_field(combined, "lastActionAt", "last_action_at", default="")),
             },
         )
     return entries
+
+
+def _configured_flock_entries(
+    records: list[dict[str, Any]],
+    environments: list[dict[str, Any]],
+    valkyries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    flocks: dict[str, dict[str, Any]] = {}
+    environment_by_id = {entry["id"]: entry for entry in environments}
+    valkyrie_by_environment = {entry["environmentId"]: entry for entry in valkyries}
+    for record in records:
+        environment_id = _environment_id(record)
+        flock_id = str(_field(record, "flockId", "flock_id", default=""))
+        if not flock_id:
+            continue
+        flock = _field(record, "flock", default={})
+        if not isinstance(flock, dict):
+            flock = {}
+        entry = flocks.setdefault(
+            flock_id,
+            {
+                "id": flock_id,
+                "name": str(_field(flock, "name", default=flock_id)),
+                "domain": str(_field(flock, "domain", default="")),
+                "natsSubject": str(_field(flock, "natsSubject", "nats_subject", default="")),
+                "environmentIds": [],
+                "valkyrieIds": [],
+                "learningIds": _as_string_list(
+                    _field(flock, "learningIds", "learning_ids", default=[])
+                ),
+                "health": "healthy",
+                "lastExchangeAt": str(
+                    _field(flock, "lastExchangeAt", "last_exchange_at", default="")
+                ),
+            },
+        )
+        if environment_id in environment_by_id:
+            entry["environmentIds"].append(environment_id)
+        valkyrie = valkyrie_by_environment.get(environment_id)
+        if valkyrie is not None:
+            entry["valkyrieIds"].append(valkyrie["id"])
+    for entry in flocks.values():
+        entry["environmentIds"] = sorted(set(entry["environmentIds"]))
+        entry["valkyrieIds"] = sorted(set(entry["valkyrieIds"]))
+        entry["health"] = _rollup_health(
+            [
+                environment_by_id[environment_id]["health"]
+                for environment_id in entry["environmentIds"]
+                if environment_id in environment_by_id
+            ]
+        )
+    return sorted(flocks.values(), key=lambda entry: entry["id"])
 
 
 def _initial_dashboard() -> Dashboard:
-    artifact = build_valkyrie_environment_demo()
-    event_count = artifact.summary["event_count"]
-    updated_at = _timestamp(event_count)
+    records = _configured_environment_records()
+    environments = _configured_environment_entries(records)
+    valkyries = _configured_valkyrie_entries(records)
+    flocks = _configured_flock_entries(records, environments, valkyries)
+    updated_at = _now()
 
     return {
-        "environments": [
-            *_k8s_environment_entries(),
-            {
-                "id": "env-host-inbox",
-                "name": "Host inbox",
-                "kind": "host",
-                "health": "healthy",
-                "flockId": "flock-personal-ops",
-                "topologyNodeIds": ["environment:host-inbox"],
-                "signalCount": 10,
-                "unresolvedSignalCount": 1,
-                "wakefulCount": 1,
-                "dreamingCount": 0,
-                "lastSignalAt": _timestamp(31),
-            },
-            {
-                "id": "env-printer-cell",
-                "name": "Printer cell",
-                "kind": "printer",
-                "health": "degraded",
-                "flockId": "flock-printers",
-                "topologyNodeIds": ["environment:printer-cell-a"],
-                "signalCount": 11,
-                "unresolvedSignalCount": 2,
-                "wakefulCount": 1,
-                "dreamingCount": 0,
-                "lastSignalAt": _timestamp(39),
-            },
-        ],
-        "valkyries": [
-            *_k8s_valkyrie_entries(),
-            {
-                "id": "valkyrie-host-email",
-                "name": "Kara",
-                "environmentId": "env-host-inbox",
-                "flockId": "flock-personal-ops",
-                "persona": "inbox-host-valkyrie",
-                "specialty": "mail attention routing and reply drafting",
-                "wakefulness": "awake",
-                "autonomyMode": "supervised",
-                "status": "online",
-                "confidence": 0.83,
-                "inboxSubjects": ["ravn.environment.signal.email.*"],
-                "toolCount": 7,
-                "lastDreamAt": _timestamp(25),
-                "lastActionAt": _timestamp(29),
-            },
-            {
-                "id": "valkyrie-printer-eir",
-                "name": "Eir",
-                "environmentId": "env-printer-cell",
-                "flockId": "flock-printers",
-                "persona": "printer-pi-valkyrie",
-                "specialty": "printer telemetry and material readiness",
-                "wakefulness": "watching",
-                "autonomyMode": "delegated",
-                "status": "blocked",
-                "confidence": 0.79,
-                "inboxSubjects": ["ravn.environment.signal.printer_telemetry.*"],
-                "toolCount": 8,
-                "lastDreamAt": _timestamp(36),
-                "lastActionAt": _timestamp(37),
-            },
-        ],
-        "flocks": [
-            {
-                "id": "flock-k8s",
-                "name": "K8s Valkyrie flock",
-                "domain": "kubernetes operations",
-                "natsSubject": "flock.k8s.>",
-                "environmentIds": [
-                    f"env-k8s-{cluster['id']}" for cluster in K8S_CLUSTERS
-                ],
-                "valkyrieIds": [
-                    f"valkyrie-{cluster['id']}-k8s" for cluster in K8S_CLUSTERS
-                ],
-                "learningIds": ["learning-k8s-rollout-noise"],
-                "health": "watch",
-                "lastExchangeAt": _timestamp(38),
-            },
-            {
-                "id": "flock-personal-ops",
-                "name": "Personal ops flock",
-                "domain": "host and inbox operations",
-                "natsSubject": "flock.personal.>",
-                "environmentIds": ["env-host-inbox"],
-                "valkyrieIds": ["valkyrie-host-email"],
-                "learningIds": ["learning-inbox-vendor-thread"],
-                "health": "healthy",
-                "lastExchangeAt": _timestamp(31),
-            },
-            {
-                "id": "flock-printers",
-                "name": "Printer cell flock",
-                "domain": "3D printer operations",
-                "natsSubject": "flock.printers.>",
-                "environmentIds": ["env-printer-cell"],
-                "valkyrieIds": ["valkyrie-printer-eir"],
-                "learningIds": ["learning-printer-resin-low"],
-                "health": "degraded",
-                "lastExchangeAt": _timestamp(39),
-            },
-        ],
-        "signals": [
-            {
-                "id": "signal-k8s-noisy-rollout",
-                "environmentId": "env-k8s-valhalla",
-                "source": "kube-event-stream",
-                "subject": "ravn.environment.signal.kubernetes.pulled",
-                "summary": "Expected image pull noise during checkout rollout was suppressed.",
-                "severity": "info",
-                "status": "resolved",
-                "receivedAt": _timestamp(1),
-                "assignedValkyrieId": "valkyrie-valhalla-k8s",
-                "labels": ["rollout", "noise"],
-            },
-            {
-                "id": "signal-k8s-checkout-probe",
-                "environmentId": "env-k8s-valhalla",
-                "source": "kube-event-stream",
-                "subject": "ravn.environment.signal.kubernetes.probe",
-                "summary": "Checkout API readiness probes are failing above learned baseline.",
-                "severity": "warning",
-                "status": "acting",
-                "receivedAt": _timestamp(18),
-                "assignedValkyrieId": "valkyrie-valhalla-k8s",
-                "labels": ["checkout", "probe"],
-            },
-            {
-                "id": "signal-host-important-mail",
-                "environmentId": "env-host-inbox",
-                "source": "mailbox-watch",
-                "subject": "ravn.environment.signal.email.important",
-                "summary": "Vendor thread looks action-worthy and has a draft response prepared.",
-                "severity": "notice",
-                "status": "triaged",
-                "receivedAt": _timestamp(31),
-                "assignedValkyrieId": "valkyrie-host-email",
-                "labels": ["email", "draft"],
-            },
-            {
-                "id": "signal-printer-resin-low",
-                "environmentId": "env-printer-cell",
-                "source": "printer-pi-telemetry",
-                "subject": "ravn.environment.signal.printer_telemetry.material",
-                "summary": "Resin is below learned threshold for the next queued print.",
-                "severity": "critical",
-                "status": "acting",
-                "receivedAt": _timestamp(39),
-                "assignedValkyrieId": "valkyrie-printer-eir",
-                "labels": ["resin", "queue"],
-            },
-        ],
-        "operationalStates": [
-            {
-                "id": "state-k8s-checkout",
-                "environmentId": "env-k8s-valhalla",
-                "name": "Checkout rollout",
-                "desired": "Available replicas match rollout target",
-                "observed": (
-                    "Readiness failures above baseline; waiting on Valhalla action proposal"
-                ),
-                "drift": "minor",
-                "maintainedBy": ["valkyrie-valhalla-k8s"],
-                "updatedAt": _timestamp(21),
-            },
-            {
-                "id": "state-host-inbox-attention",
-                "environmentId": "env-host-inbox",
-                "name": "Inbox attention",
-                "desired": "Only actionable mail reaches operator",
-                "observed": "One vendor thread routed for review with draft",
-                "drift": "none",
-                "maintainedBy": ["valkyrie-host-email"],
-                "updatedAt": _timestamp(31),
-            },
-            {
-                "id": "state-k8s-ymir",
-                "environmentId": "env-k8s-ymir",
-                "name": "Ymir control plane",
-                "desired": "Hub services remain schedulable and healthy",
-                "observed": "BackoffLimitExceeded and disk-pressure signals are under watch",
-                "drift": "minor",
-                "maintainedBy": ["valkyrie-ymir-k8s"],
-                "updatedAt": _timestamp(37),
-            },
-            {
-                "id": "state-printer-materials",
-                "environmentId": "env-printer-cell",
-                "name": "Material readiness",
-                "desired": "Queued prints have enough resin and clean vats",
-                "observed": "Resin low blocks next queued print",
-                "drift": "major",
-                "maintainedBy": ["valkyrie-printer-eir"],
-                "updatedAt": _timestamp(39),
-            },
-        ],
-        "judgments": [
-            {
-                "id": "judgment-k8s-probe",
-                "environmentId": "env-k8s-valhalla",
-                "signalId": "signal-k8s-checkout-probe",
-                "valkyrieId": "valkyrie-valhalla-k8s",
-                "verdict": "act",
-                "confidence": 0.88,
-                "rationale": (
-                    "Probe failures correlate with one rollout and match a known remediation path."
-                ),
-                "createdAt": _timestamp(19),
-            },
-            {
-                "id": "judgment-host-mail",
-                "environmentId": "env-host-inbox",
-                "signalId": "signal-host-important-mail",
-                "valkyrieId": "valkyrie-host-email",
-                "verdict": "escalate",
-                "confidence": 0.82,
-                "rationale": "Needs human approval before sending a reply.",
-                "createdAt": _timestamp(32),
-            },
-        ],
-        "courtDecisions": [
-            {
-                "id": "decision-k8s-rollout",
-                "environmentId": "env-k8s-valhalla",
-                "title": "Patch checkout rollout probe budget",
-                "status": "approved",
-                "risk": "medium",
-                "decidedBy": ["valkyrie-valhalla-k8s"],
-                "createdAt": _timestamp(22),
-            },
-            {
-                "id": "decision-printer-resin",
-                "environmentId": "env-printer-cell",
-                "title": "Pause queue until resin is replenished",
-                "status": "executed",
-                "risk": "low",
-                "decidedBy": ["valkyrie-printer-eir"],
-                "createdAt": _timestamp(40),
-            },
-        ],
-        "actions": [
-            {
-                "id": "action-k8s-rollout-check",
-                "environmentId": "env-k8s-valhalla",
-                "title": "Collect rollout events and pod logs",
-                "status": "succeeded",
-                "risk": "low",
-                "ownerValkyrieId": "valkyrie-valhalla-k8s",
-                "startedAt": _timestamp(20),
-                "finishedAt": _timestamp(21),
-            },
-            {
-                "id": "action-printer-pause",
-                "environmentId": "env-printer-cell",
-                "title": "Pause printer queue",
-                "status": "succeeded",
-                "risk": "low",
-                "ownerValkyrieId": "valkyrie-printer-eir",
-                "startedAt": _timestamp(40),
-                "finishedAt": _timestamp(41),
-            },
-        ],
-        "huddles": [
-            {
-                "id": "huddle-valhalla-now",
-                "environmentId": "env-k8s-valhalla",
-                "title": "Checkout rollout huddle",
-                "status": "open",
-                "participantIds": ["valkyrie-valhalla-k8s"],
-                "joined": False,
-                "messages": [
-                    {
-                        "id": "message-k8s-1",
-                        "huddleId": "huddle-valhalla-now",
-                        "authorId": "valkyrie-valhalla-k8s",
-                        "authorName": "Valhalla Valkyrie",
-                        "body": "Readiness failures are isolated to checkout-api v42.",
-                        "createdAt": _timestamp(21),
-                    }
-                ],
-                "lastActivityAt": _timestamp(22),
-            },
-            {
-                "id": "huddle-printer-resin",
-                "environmentId": "env-printer-cell",
-                "title": "Printer queue hold",
-                "status": "quiet",
-                "participantIds": ["valkyrie-printer-eir"],
-                "joined": False,
-                "messages": [
-                    {
-                        "id": "message-printer-1",
-                        "huddleId": "huddle-printer-resin",
-                        "authorId": "valkyrie-printer-eir",
-                        "authorName": "Eir",
-                        "body": "Queue is paused until resin is replenished.",
-                        "createdAt": _timestamp(40),
-                    }
-                ],
-                "lastActivityAt": _timestamp(40),
-            },
-        ],
-        "learnings": [
-            {
-                "id": "learning-k8s-rollout-noise",
-                "title": "Suppress expected rollout image-pull noise",
-                "summary": (
-                    f"Derived from {event_count} demo events across the ODIN "
-                    "signal-to-learning chain."
-                ),
-                "scope": "flock",
-                "status": "canary",
-                "sourceEnvironmentId": "env-k8s-valhalla",
-                "sourceValkyrieId": "valkyrie-valhalla-k8s",
-                "targetFlockId": "flock-k8s",
-                "confidence": 0.9,
-                "evaluation": "Passed replay against k8s cluster A and B event fixtures.",
-                "negativeTransferRisk": "medium",
-                "redaction": "none",
-                "promotedTool": "rollout-noise-classifier",
-                "createdAt": _timestamp(38),
-            },
-            {
-                "id": "learning-inbox-vendor-thread",
-                "title": "Vendor thread attention heuristic",
-                "summary": "Repeated sender plus contract keywords should draft but not send.",
-                "scope": "environment",
-                "status": "candidate",
-                "sourceEnvironmentId": "env-host-inbox",
-                "sourceValkyrieId": "valkyrie-host-email",
-                "targetFlockId": "flock-personal-ops",
-                "confidence": 0.76,
-                "evaluation": "Needs operator feedback on drafted reply.",
-                "negativeTransferRisk": "low",
-                "redaction": "partial",
-                "createdAt": _timestamp(33),
-            },
-            {
-                "id": "learning-printer-resin-low",
-                "title": "Pause queue on material deficit",
-                "summary": (
-                    "Printer cells may pause locally when telemetry predicts failed queued work."
-                ),
-                "scope": "flock",
-                "status": "adopted",
-                "sourceEnvironmentId": "env-printer-cell",
-                "sourceValkyrieId": "valkyrie-printer-eir",
-                "targetFlockId": "flock-printers",
-                "confidence": 0.84,
-                "evaluation": "Action is reversible and low risk.",
-                "negativeTransferRisk": "low",
-                "redaction": "none",
-                "promotedTool": "printer-queue-pauser",
-                "createdAt": _timestamp(41),
-            },
-        ],
-        "liveReport": _live_report(updated_at),
+        "environments": environments,
+        "valkyries": valkyries,
+        "flocks": flocks,
+        "signals": [],
+        "operationalStates": [],
+        "judgments": [],
+        "courtDecisions": [],
+        "actions": [],
+        "huddles": [],
+        "learnings": [],
+        "liveReport": _live_report(updated_at, environments=environments),
         "telemetry": _empty_telemetry(updated_at),
         "updatedAt": updated_at,
     }
-
 
 def _signal_events(dashboard: Dashboard) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
@@ -1264,7 +1086,11 @@ class ValkyrieDashboardProjection:
         telemetry_events.extend(
             event for event in self._runtime_events.values() if id(event) not in retained_event_ids
         )
-        self._dashboard["liveReport"] = _live_report(observed_at, self._poll_count)
+        self._dashboard["liveReport"] = _live_report(
+            observed_at,
+            self._poll_count,
+            environments=self._dashboard["environments"],
+        )
         self._dashboard["telemetry"] = _aggregate_telemetry(
             telemetry_events,
             observed_at=observed_at,

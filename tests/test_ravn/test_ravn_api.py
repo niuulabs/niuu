@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -100,8 +101,42 @@ def _store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
     )
 
 
+def _valkyrie_catalog() -> str:
+    return json.dumps(
+        {
+            "environments": [
+                {
+                    "id": "valhalla",
+                    "name": "Valhalla k8s",
+                    "kind": "kubernetes",
+                    "health": "watch",
+                    "flockId": "flock-k8s",
+                    "flock": {
+                        "name": "K8s Valkyrie flock",
+                        "domain": "kubernetes operations",
+                        "natsSubject": "flock.k8s.>",
+                    },
+                    "valkyrie": {
+                        "valkyrieId": "valkyrie-valhalla-k8s",
+                        "valkyrieName": "Sigrun",
+                        "persona": "k8s-valkyrie",
+                        "specialty": "cluster event triage and flock learning exchange",
+                        "confidence": 0.82,
+                    },
+                    "transport": {
+                        "account": "obs-valhalla",
+                        "streamName": "obs-valhalla-events",
+                        "subjectPrefix": "obs.valhalla",
+                    },
+                }
+            ]
+        }
+    )
+
+
 @pytest.fixture
-def client() -> TestClient:
+def client(monkeypatch) -> TestClient:
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
     return TestClient(create_app())
 
 
@@ -133,10 +168,11 @@ def test_valkyrie_dashboard_projection(client: TestClient):
     data = resp.json()
     assert data["environments"][0]["name"] == "Valhalla k8s"
     assert data["flocks"][0]["natsSubject"] == "flock.k8s.>"
-    assert data["liveReport"]["routeSubject"] == "flock.k8s.>"
+    assert data["liveReport"]["routeSubject"] == "obs.valhalla"
     assert data["telemetry"]["verified"] is False
     assert "demo projection" in data["telemetry"]["gaps"][1]
-    assert any(learning["scope"] == "flock" for learning in data["learnings"])
+    assert data["signals"] == []
+    assert data["learnings"] == []
 
 
 def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
@@ -395,6 +431,54 @@ def test_valkyrie_dashboard_keeps_runtime_telemetry_when_control_events_are_nois
     assert "No valkyrie.runtime.started events observed." not in telemetry["gaps"]
 
 
+def test_valkyrie_dashboard_uses_configured_environment_catalog(monkeypatch):
+    monkeypatch.setenv(
+        "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON",
+        json.dumps(
+            {
+                "environments": [
+                    {
+                        "id": "asgard",
+                        "name": "Asgard k8s",
+                        "kind": "kubernetes",
+                        "health": "healthy",
+                        "flockId": "flock-k8s",
+                        "flock": {
+                            "name": "K8s Valkyries",
+                            "domain": "kubernetes operations",
+                            "natsSubject": "flock.k8s.>",
+                        },
+                        "valkyrie": {
+                            "valkyrieId": "valkyrie-asgard-k8s",
+                            "valkyrieName": "Mist",
+                            "persona": "k8s-valkyrie",
+                            "specialty": "cluster operations",
+                            "confidence": 0.74,
+                            "inboxSubjects": ["signal.kubernetes.*"],
+                        },
+                        "transport": {
+                            "account": "obs-asgard",
+                            "streamName": "obs-asgard-events",
+                            "subjectPrefix": "obs.asgard",
+                        },
+                    }
+                ]
+            }
+        ),
+    )
+
+    dashboard = ValkyrieDashboardProjection().dashboard()
+
+    assert [environment["id"] for environment in dashboard["environments"]] == ["env-k8s-asgard"]
+    assert dashboard["environments"][0]["name"] == "Asgard k8s"
+    assert [valkyrie["id"] for valkyrie in dashboard["valkyries"]] == ["valkyrie-asgard-k8s"]
+    assert dashboard["valkyries"][0]["name"] == "Mist"
+    assert dashboard["flocks"][0]["environmentIds"] == ["env-k8s-asgard"]
+    assert dashboard["liveReport"]["transports"][0]["streamName"] == "obs-asgard-events"
+    assert dashboard["signals"] == []
+    assert dashboard["learnings"] == []
+
+
 def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("NATS_URL", "nats://should-not-be-used:4222")
     monkeypatch.delenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", raising=False)
@@ -503,24 +587,6 @@ def test_valkyrie_dashboard_mutations(client: TestClient):
     )
     assert valhalla["autonomyMode"] == "yolo"
 
-    joined = client.post("/api/v1/ravn/valkyrie/huddles/huddle-valhalla-now/join", json={})
-    assert joined.status_code == 200
-    assert joined.json()["joined"] is True
-
-    message = client.post(
-        "/api/v1/ravn/valkyrie/huddles/huddle-valhalla-now/messages",
-        json={"huddleId": "huddle-valhalla-now", "body": "joining from the test flock"},
-    )
-    assert message.status_code == 200
-    assert message.json()["authorId"] == "operator"
-
-    learning = client.post(
-        "/api/v1/ravn/valkyrie/learnings/learning-k8s-rollout-noise/adopt",
-        json={"learningId": "learning-k8s-rollout-noise", "reason": "test"},
-    )
-    assert learning.status_code == 200
-    assert learning.json()["status"] == "adopted"
-
 
 def test_valkyrie_signal_stream_replays_events(client: TestClient):
     with client.stream(
@@ -531,8 +597,7 @@ def test_valkyrie_signal_stream_replays_events(client: TestClient):
         body = resp.read().decode("utf-8")
 
     assert "text/event-stream" in resp.headers["content-type"]
-    assert "data: " in body
-    assert "signal-k8s-checkout-probe" in body
+    assert "signal-k8s-checkout-probe" not in body
 
 
 def test_list_sessions_returns_seeded_runtime_sessions(client: TestClient):
