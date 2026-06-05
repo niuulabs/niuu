@@ -402,6 +402,80 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monke
     assert build_nats_telemetry_subscription_from_env(ValkyrieDashboardProjection()) is None
 
 
+def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_streams(
+    monkeypatch,
+):
+    import sleipnir.adapters.nats_transport as nats_transport
+
+    created: list[FakeNatsSubscriber] = []
+
+    class FakeSubscription:
+        def __init__(self) -> None:
+            self.unsubscribed = False
+
+        async def unsubscribe(self) -> None:
+            self.unsubscribed = True
+
+    class FakeNatsSubscriber:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.subscription = FakeSubscription()
+            self.event_types: list[str] = []
+            created.append(self)
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def subscribe(self, event_types, handler):
+            del handler
+            self.event_types = list(event_types)
+            return self.subscription
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    monkeypatch.setattr(nats_transport, "NatsSubscriber", FakeNatsSubscriber)
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_CONSUMER_GROUP", "dashboard")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "ymir-pass")
+    monkeypatch.setenv("VALHALLA_PASS", "valhalla-pass")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS", "3600")
+    monkeypatch.setenv(
+        "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
+        (
+            "obs-ymir-events:obs.ymir:valkyrie-ymir:"
+            "RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD,"
+            "obs-valhalla-events:obs.valhalla:valkyrie-dashboard-valhalla:VALHALLA_PASS"
+        ),
+    )
+
+    subscription = build_nats_telemetry_subscription_from_env(ValkyrieDashboardProjection())
+
+    assert subscription is not None
+    assert len(created) == 2
+    assert created[0].kwargs["stream_name"] == "obs-ymir-events"
+    assert created[0].kwargs["subject_prefix"] == "obs.ymir"
+    assert created[0].kwargs["consumer_group"] == "dashboard-obs-ymir-events"
+    assert created[0].kwargs["user"] == "valkyrie-ymir"
+    assert created[0].kwargs["password"] == "ymir-pass"
+    assert created[0].kwargs["replay_from_time"] is not None
+    assert created[1].kwargs["stream_name"] == "obs-valhalla-events"
+    assert created[1].kwargs["subject_prefix"] == "obs.valhalla"
+    assert created[1].kwargs["consumer_group"] == "dashboard-obs-valhalla-events"
+    assert created[1].kwargs["user"] == "valkyrie-dashboard-valhalla"
+    assert created[1].kwargs["password"] == "valhalla-pass"
+
+    asyncio.run(subscription.start())
+    assert all(entry.started for entry in created)
+    assert all(entry.event_types == ["*"] for entry in created)
+
+    asyncio.run(subscription.stop())
+    assert all(entry.subscription.unsubscribed for entry in created)
+    assert all(entry.stopped for entry in created)
+
+
 def test_valkyrie_dashboard_mutations(client: TestClient):
     autonomy = client.post(
         "/api/v1/ravn/valkyrie/autonomy",

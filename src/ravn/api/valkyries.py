@@ -1297,32 +1297,97 @@ class ValkyrieTelemetrySubscription:
         self,
         *,
         projection: ValkyrieDashboardProjection,
-        subscriber: Any,
+        subscribers: list[tuple[str, Any]],
         event_types: list[str],
     ) -> None:
         self._projection = projection
-        self._subscriber = subscriber
+        self._subscribers = subscribers
         self._event_types = event_types
-        self._subscription: Any | None = None
+        self._subscriptions: list[tuple[str, Any]] = []
 
     async def start(self) -> None:
-        await self._subscriber.start()
-        self._subscription = await self._subscriber.subscribe(self._event_types, self._handle)
-        logger.info(
-            "valkyrie_dashboard: subscribed to telemetry events: %s",
-            ", ".join(self._event_types),
-        )
+        try:
+            for label, subscriber in self._subscribers:
+                await subscriber.start()
+                subscription = await subscriber.subscribe(self._event_types, self._handle)
+                self._subscriptions.append((label, subscription))
+                logger.info(
+                    "valkyrie_dashboard: subscribed to %s telemetry events: %s",
+                    label,
+                    ", ".join(self._event_types),
+                )
+        except Exception:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
-        if self._subscription is not None:
+        for _, subscription in self._subscriptions:
             with contextlib.suppress(Exception):
-                await self._subscription.unsubscribe()
-            self._subscription = None
-        if hasattr(self._subscriber, "stop"):
-            await self._subscriber.stop()
+                await subscription.unsubscribe()
+        self._subscriptions.clear()
+        for _, subscriber in self._subscribers:
+            if hasattr(subscriber, "stop"):
+                with contextlib.suppress(Exception):
+                    await subscriber.stop()
 
     async def _handle(self, event: SleipnirEvent) -> None:
         self._projection.record_event(event)
+
+
+def _safe_consumer_suffix(value: str) -> str:
+    return "".join(char if char.isalnum() else "-" for char in value).strip("-").lower()
+
+
+def _env_int(value: str | None, default: int) -> int:
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("invalid integer environment value %r; using %s", value, default)
+        return default
+
+
+def _telemetry_stream_specs() -> list[dict[str, str]]:
+    streams_raw = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS", "").strip()
+    default_stream = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment")
+    default_prefix = os.environ.get(
+        "RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX",
+        "ravn.environment",
+    )
+    default_user = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", "")
+    default_password_env = "RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD"
+
+    if not streams_raw:
+        return [
+            {
+                "stream_name": default_stream,
+                "subject_prefix": default_prefix,
+                "user": default_user,
+                "password_env": default_password_env,
+            }
+        ]
+
+    specs: list[dict[str, str]] = []
+    for raw_entry in streams_raw.replace("\n", ",").split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        parts = [part.strip() for part in entry.split(":")]
+        stream_name = parts[0]
+        if not stream_name:
+            continue
+        specs.append(
+            {
+                "stream_name": stream_name,
+                "subject_prefix": parts[1] if len(parts) > 1 and parts[1] else default_prefix,
+                "user": parts[2] if len(parts) > 2 and parts[2] else default_user,
+                "password_env": (
+                    parts[3] if len(parts) > 3 and parts[3] else default_password_env
+                ),
+            }
+        )
+    return specs
 
 
 def build_nats_telemetry_subscription_from_env(
@@ -1336,40 +1401,56 @@ def build_nats_telemetry_subscription_from_env(
     from sleipnir.adapters.nats_transport import NatsSubscriber  # noqa: PLC0415
 
     servers = [entry.strip() for entry in servers_raw.split(",") if entry.strip()]
-    stream_name = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment")
-    subject_prefix = os.environ.get(
-        "RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX",
-        "ravn.environment",
-    )
     consumer_group = os.environ.get(
         "RAVN_VALKYRIE_TELEMETRY_CONSUMER_GROUP",
         "ravn-valkyrie-dashboard",
     )
-    password = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "")
+    replay_seconds = _env_int(
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS"),
+        0,
+    )
+    replay_from_time = (
+        datetime.now(UTC) - timedelta(seconds=replay_seconds) if replay_seconds > 0 else None
+    )
+    subscribers = []
+    for spec in _telemetry_stream_specs():
+        stream_name = spec["stream_name"]
+        consumer_suffix = _safe_consumer_suffix(stream_name)
+        subscribers.append(
+            (
+                f"{stream_name}/{spec['subject_prefix']}",
+                NatsSubscriber(
+                    servers=servers,
+                    stream_name=stream_name,
+                    subject_prefix=spec["subject_prefix"],
+                    consumer_group=f"{consumer_group}-{consumer_suffix}",
+                    replay_from_time=replay_from_time,
+                    ensure_stream=False,
+                    tls_ca_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", ""),
+                    tls_cert_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", ""),
+                    tls_key_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE", ""),
+                    tls_hostname=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", ""),
+                    tls_handshake_first=_env_bool(
+                        os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST")
+                    ),
+                    tls_insecure_skip_verify=_env_bool(
+                        os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY")
+                    ),
+                    user=spec["user"],
+                    password=os.environ.get(spec["password_env"], ""),
+                    token=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
+                    nkeys_seed_file=os.environ.get(
+                        "RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED_FILE",
+                        "",
+                    ),
+                    nkeys_seed=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED", ""),
+                ),
+            )
+        )
+
     return ValkyrieTelemetrySubscription(
         projection=projection,
-        subscriber=NatsSubscriber(
-            servers=servers,
-            stream_name=stream_name,
-            subject_prefix=subject_prefix,
-            consumer_group=consumer_group,
-            ensure_stream=False,
-            tls_ca_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", ""),
-            tls_cert_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", ""),
-            tls_key_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE", ""),
-            tls_hostname=os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", ""),
-            tls_handshake_first=_env_bool(
-                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST")
-            ),
-            tls_insecure_skip_verify=_env_bool(
-                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY")
-            ),
-            user=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", ""),
-            password=password,
-            token=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
-            nkeys_seed_file=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED_FILE", ""),
-            nkeys_seed=os.environ.get("RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED", ""),
-        ),
+        subscribers=subscribers,
         # Subscribe once to the environment stream and let the projection decide
         # what to count. Multiple JetStream push consumers with the same config
         # can silently miss delivery in the live NATS setup.
