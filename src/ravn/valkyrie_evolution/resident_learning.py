@@ -322,6 +322,19 @@ class ResidentLearningRuntime:
         if _review_allows_install(review, self.identity.autonomy_mode):
             installed_skill_name = await self._install_skill(artifact, build)
             await self._publish_activation(artifact, installed_skill_name, review)
+            await self._publish_adoption(
+                artifact,
+                ResidentLearningDecision(
+                    "adopted",
+                    (
+                        f"Installed {installed_skill_name}: "
+                        f"{_install_authorization_rationale(review, self.identity.autonomy_mode)}"
+                    ),
+                    installed_skill_name=installed_skill_name,
+                    review=review,
+                    relevant=True,
+                ),
+            )
             await self._publish_flock_learning_proposal(artifact, build, review)
         else:
             await self._publish_evolution_event(

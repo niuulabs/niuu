@@ -361,7 +361,22 @@ async def test_resident_micro_dream_builds_and_proposes_missing_capability(
     assert "valkyrie.evolution.built" in event_types
     assert registry.ODIN_COURT_DECIDED in event_types
     assert "valkyrie.evolution.activated" in event_types
+    assert registry.LEARNING_ADOPTION_RECORDED in event_types
     assert "valkyrie.dream.completed" in event_types
+    adoption = next(
+        event
+        for event in events
+        if event.event_type == registry.LEARNING_ADOPTION_RECORDED
+    )
+    assert adoption.payload["action"] == "adopted"
+    assert adoption.payload["ack_kind"] == "resident_learning"
+    assert adoption.payload["resident_valkyrie_id"] == "valkyrie:k8s-b"
+    assert adoption.payload["installed_skill_name"] == (
+        "valkyrie-inspect-kubernetes-pod-unhealthy"
+    )
+    assert adoption.payload["additional_nats_subjects"] == [
+        "flock.k8s.cluster-b.learning.adoption.recorded"
+    ]
     proposal = next(event for event in events if event.event_type == "flock.learning.proposed")
     assert proposal.payload["flock_id"] == "flock:k8s-valkyries"
     assert proposal.payload["artifact_content"]
