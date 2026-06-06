@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.adapters import LocalOdinReviewAdapter
+from ravn.valkyrie_evolution.adapters import LocalOdinReviewAdapter, LocalSkillBuilderAdapter
 from ravn.valkyrie_evolution.models import (
     BuildResult,
     CapabilityGap,
@@ -16,7 +16,7 @@ from ravn.valkyrie_evolution.models import (
     OperationalSignal,
     ReviewResult,
 )
-from ravn.valkyrie_evolution.ports import EvolutionReviewPort
+from ravn.valkyrie_evolution.ports import EvolutionBuilderPort, EvolutionReviewPort
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     learning_adoption_recorded,
@@ -130,6 +130,7 @@ class ResidentLearningRuntime:
         skills: SkillManagementRegistry,
         publisher: SleipnirPublisher,
         subscriber: SleipnirSubscriber,
+        builder: EvolutionBuilderPort | None = None,
         reviewer: EvolutionReviewPort | None = None,
         policy: ResidentLearningPolicy | None = None,
         source: str = "",
@@ -138,11 +139,13 @@ class ResidentLearningRuntime:
         self._skills = skills
         self._publisher = publisher
         self._subscriber = subscriber
+        self._builder = builder or LocalSkillBuilderAdapter()
         self._reviewer = reviewer or LocalOdinReviewAdapter(reviewer="odin:resident-learning")
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
+        self._local_evolved_capabilities: set[str] = set()
 
     @property
     def is_running(self) -> bool:
@@ -172,6 +175,9 @@ class ResidentLearningRuntime:
         capability = _derive_capability_name(operational_signal)
         skill = await self._find_installed_skill_by_capability(capability)
         if skill is None:
+            evolved = await self._evolve_missing_capability(operational_signal, capability)
+            if evolved is not None:
+                return evolved
             return {
                 "signalId": operational_signal.signal_id,
                 "capabilityName": capability,
@@ -219,6 +225,162 @@ class ResidentLearningRuntime:
             "skillName": skill.name,
             "judgmentEventId": judgment.event_id,
         }
+
+    async def _evolve_missing_capability(
+        self,
+        signal: OperationalSignal,
+        capability: str,
+    ) -> dict[str, Any] | None:
+        """Build a resident-local skill for a repeated capability gap."""
+
+        if capability in self._local_evolved_capabilities:
+            return None
+        if self.identity.autonomy_mode.lower() not in {"autonomous", "yolo"}:
+            await self._publish_capability_gap(signal, capability)
+            self._local_evolved_capabilities.add(capability)
+            return None
+
+        self._local_evolved_capabilities.add(capability)
+        dream_id = f"dream:{self.identity.environment_id}:{_slug(capability)}:{signal.signal_id}"
+        gap = CapabilityGap(
+            gap_id=f"gap:{self.identity.environment_id}:{_slug(capability)}",
+            capability_name=capability,
+            environment_id=self.identity.environment_id,
+            domain=signal.domain or self.identity.domain,
+            reason=f"Resident saw signal without an installed skill: {signal.summary}",
+            signal_ids=[signal.signal_id],
+            evidence={
+                "signal_id": signal.signal_id,
+                "event_type": signal.event_type,
+                "severity": signal.severity,
+                "summary": signal.summary,
+                "payload": signal.payload,
+            },
+            safety_class="read_only",
+        )
+        request = EvolutionRequest(
+            request_id=f"resident-evolve:{gap.gap_id}",
+            gap=gap,
+            autonomy_mode=self.identity.autonomy_mode,
+            target_scope="environment",
+        )
+        await self._publish_dream_event(
+            "valkyrie.dream.started",
+            dream_id,
+            {
+                "capability_name": capability,
+                "signal_id": signal.signal_id,
+                "autonomy_mode": self.identity.autonomy_mode,
+            },
+            summary=f"{self.identity.valkyrie_id} started dream for {capability}",
+            urgency=0.25,
+            correlation_id=signal.signal_id,
+        )
+        await self._publish_evolution_event(
+            "valkyrie.evolution.requested",
+            f"Requested resident evolution for {capability}",
+            asdict(request),
+            signal.signal_id,
+        )
+        build = await self._builder.build(request)
+        await self._publish_evolution_event(
+            "valkyrie.evolution.built",
+            f"Built resident skill {build.skill_name}",
+            asdict(build),
+            signal.signal_id,
+        )
+        review = await self._reviewer.review(
+            request=request,
+            build=build,
+            autonomy_mode=self.identity.autonomy_mode,
+        )
+        artifact = ResidentLearningArtifact(
+            learning_id=f"resident:{self.identity.environment_id}:{_slug(capability)}",
+            title=build.skill_name,
+            summary=build.description,
+            content=build.skill_content,
+            artifact_type=build.artifact_type,
+            scope="environment",
+            confidence=0.74,
+            source_environment_id=self.identity.environment_id,
+            source_valkyrie_id=self.identity.valkyrie_id,
+            promotion_id=f"resident:{self.identity.environment_id}:{_slug(capability)}",
+            flock_id=_normalise_flock_id(self.identity.flock_ids[0])
+            if self.identity.flock_ids
+            else "",
+            domain=gap.domain,
+            redaction_status="redacted",
+            artifact_path=build.artifact_path,
+            causation_id="",
+            correlation_id=signal.signal_id,
+            operator_command=False,
+            command_action="resident_evolve",
+        )
+        await self._publish_odin_decision(artifact, review)
+
+        installed_skill_name = ""
+        if _review_allows_install(review, self.identity.autonomy_mode):
+            installed_skill_name = await self._install_skill(artifact, build)
+            await self._publish_activation(artifact, installed_skill_name, review)
+            await self._publish_flock_learning_proposal(artifact, build, review)
+        else:
+            await self._publish_evolution_event(
+                "valkyrie.evolution.held",
+                f"Held resident skill {build.skill_name}",
+                {
+                    "skill_name": build.skill_name,
+                    "review_outcome": review.outcome,
+                    "findings": list(review.findings),
+                },
+                signal.signal_id,
+                urgency=0.6,
+            )
+
+        await self._publish_dream_event(
+            "valkyrie.dream.completed",
+            dream_id,
+            {
+                "capability_name": capability,
+                "signal_id": signal.signal_id,
+                "skills_built": [build.skill_name],
+                "skills_activated": [installed_skill_name] if installed_skill_name else [],
+                "odin_review_outcome": review.outcome,
+                "flock_proposed": bool(installed_skill_name and artifact.flock_id),
+            },
+            summary=f"{self.identity.valkyrie_id} completed dream for {capability}",
+            urgency=0.25,
+            correlation_id=signal.signal_id,
+        )
+        return {
+            "signalId": signal.signal_id,
+            "capabilityName": capability,
+            "decision": "built_capability_for_next_signal"
+            if installed_skill_name
+            else "capability_build_held",
+            "usedAdoptedLearning": False,
+            "skillName": installed_skill_name,
+            "dreamId": dream_id,
+        }
+
+    async def _publish_capability_gap(
+        self,
+        signal: OperationalSignal,
+        capability: str,
+    ) -> None:
+        await self._publish_evolution_event(
+            "valkyrie.evolution.requested",
+            f"Capability gap observed for {capability}",
+            {
+                "environment_id": self.identity.environment_id,
+                "valkyrie_id": self.identity.valkyrie_id,
+                "capability_name": capability,
+                "signal_id": signal.signal_id,
+                "autonomy_mode": self.identity.autonomy_mode,
+                "status": "deferred",
+            },
+            signal.signal_id,
+            urgency=0.45,
+        )
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
         if _is_resident_ack(event):
@@ -448,6 +610,103 @@ class ResidentLearningRuntime:
                     f"{decision.installed_skill_name}"
                 ),
                 urgency=0.45,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=artifact.correlation_id or artifact.learning_id,
+                causation_id=artifact.causation_id,
+            )
+        )
+
+    async def _publish_dream_event(
+        self,
+        event_type: str,
+        dream_id: str,
+        payload: dict[str, Any],
+        *,
+        summary: str,
+        urgency: float,
+        correlation_id: str,
+    ) -> None:
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type=event_type,
+                source=self._source,
+                payload={
+                    "environment_id": self.identity.environment_id,
+                    "environment_type": self.identity.environment_type,
+                    "valkyrie_id": self.identity.valkyrie_id,
+                    "dream_id": dream_id,
+                    **payload,
+                },
+                summary=summary,
+                urgency=urgency,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=correlation_id,
+            )
+        )
+
+    async def _publish_evolution_event(
+        self,
+        event_type: str,
+        summary: str,
+        payload: dict[str, Any],
+        correlation_id: str,
+        *,
+        urgency: float = 0.4,
+    ) -> None:
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type=event_type,
+                source=self._source,
+                payload={
+                    "environment_id": self.identity.environment_id,
+                    "environment_type": self.identity.environment_type,
+                    "valkyrie_id": self.identity.valkyrie_id,
+                    **payload,
+                },
+                summary=summary,
+                urgency=urgency,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=correlation_id,
+            )
+        )
+
+    async def _publish_flock_learning_proposal(
+        self,
+        artifact: ResidentLearningArtifact,
+        build: BuildResult,
+        review: ReviewResult,
+    ) -> None:
+        if not artifact.flock_id:
+            return
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type="flock.learning.proposed",
+                source=self._source,
+                payload={
+                    "learning_id": artifact.learning_id,
+                    "title": artifact.title,
+                    "summary": artifact.summary,
+                    "flock_id": artifact.flock_id,
+                    "artifact_type": artifact.artifact_type,
+                    "content": artifact.content,
+                    "artifact_content": artifact.content,
+                    "status": "candidate",
+                    "domain": artifact.domain,
+                    "source_environment_id": artifact.source_environment_id,
+                    "source_valkyrie_id": artifact.source_valkyrie_id,
+                    "confidence": artifact.confidence,
+                    "redaction_status": artifact.redaction_status,
+                    "promotion_id": artifact.promotion_id,
+                    "artifact_path": artifact.artifact_path,
+                    "review_outcome": review.outcome,
+                    "builder_evidence": dict(build.evidence),
+                    "nats_subject": "ravn.environment.flock.learning.proposed",
+                },
+                summary=f"flock.learning.proposed: {artifact.title}",
+                urgency=0.2,
                 domain="infrastructure",
                 timestamp=datetime.now(UTC),
                 correlation_id=artifact.correlation_id or artifact.learning_id,

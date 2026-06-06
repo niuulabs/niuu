@@ -288,6 +288,88 @@ async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tm
 
 
 @pytest.mark.asyncio
+async def test_resident_micro_dream_builds_and_proposes_missing_capability(
+    tmp_path,
+) -> None:
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await _subscribe_recorder(
+        bus,
+        [
+            "flock.learning.*",
+            "learning.*",
+            "valkyrie.dream.*",
+            "valkyrie.evolution.*",
+            "odin.*",
+            "valkyrie.judgment.*",
+        ],
+        events,
+    )
+    skills = _manager(tmp_path, "cluster-b")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-b",
+            valkyrie_id="valkyrie:k8s-b",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+    )
+
+    signal = OperationalSignal(
+        signal_id="sig-unhealthy",
+        event_type=registry.SIGNAL_KUBERNETES_EVENT,
+        environment_id="cluster-b",
+        domain="k8s",
+        severity="warning",
+        summary="Pod readiness probe failed",
+        payload={"kind": "pod", "reason": "Unhealthy", "namespace": "checkout"},
+    )
+    first = await peer.process_signal(signal)
+    await bus.flush()
+
+    assert first["decision"] == "built_capability_for_next_signal"
+    assert first["skillName"] == "valkyrie-inspect-kubernetes-pod-unhealthy"
+    installed = await skills.show("valkyrie-inspect-kubernetes-pod-unhealthy")
+    assert installed["metadata"]["scope"] == "environment"
+    assert installed["metadata"]["source"] == (
+        "flock-learning:resident:cluster-b:inspect-kubernetes-pod-unhealthy"
+    )
+    event_types = [event.event_type for event in events]
+    assert "valkyrie.dream.started" in event_types
+    assert "valkyrie.evolution.requested" in event_types
+    assert "valkyrie.evolution.built" in event_types
+    assert registry.ODIN_COURT_DECIDED in event_types
+    assert "valkyrie.evolution.activated" in event_types
+    assert "valkyrie.dream.completed" in event_types
+    proposal = next(event for event in events if event.event_type == "flock.learning.proposed")
+    assert proposal.payload["flock_id"] == "flock:k8s-valkyries"
+    assert proposal.payload["artifact_content"]
+    assert "capability: inspect.kubernetes.pod.unhealthy" in proposal.payload["content"]
+
+    replay = await peer.process_signal(
+        OperationalSignal(
+            signal_id="sig-unhealthy-next",
+            event_type=registry.SIGNAL_KUBERNETES_EVENT,
+            environment_id="cluster-b",
+            domain="k8s",
+            severity="warning",
+            summary="Pod readiness probe failed again",
+            payload={"kind": "pod", "reason": "Unhealthy", "namespace": "checkout"},
+        )
+    )
+    await bus.flush()
+
+    assert replay["usedAdoptedLearning"] is True
+    assert replay["skillName"] == "valkyrie-inspect-kubernetes-pod-unhealthy"
+    refreshed = await skills.show("valkyrie-inspect-kubernetes-pod-unhealthy")
+    assert refreshed["metadata"]["run_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_irrelevant_peer_rejects_learning_without_installing(tmp_path) -> None:
     bus = InProcessBus()
     events: list[SleipnirEvent] = []
