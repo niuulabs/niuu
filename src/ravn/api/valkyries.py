@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1004,13 +1005,38 @@ class ValkyrieLearningCommandPublisher:
                 },
                 None,
             )
-        await self._publisher.publish(event)
+        if hasattr(self._publisher, "publish_with_results"):
+            targets = await self._publisher.publish_with_results(event)  # type: ignore[attr-defined]
+        else:
+            await self._publisher.publish(event)
+            targets = [
+                {
+                    "label": "default",
+                    "published": True,
+                    "message": "published",
+                }
+            ]
+        failed_targets = [
+            target for target in targets if not bool(target.get("published"))
+        ]
+        published_count = len(targets) - len(failed_targets)
         return (
             {
-                "published": True,
+                "published": bool(targets) and not failed_targets,
                 "eventType": event.event_type,
                 "eventId": event.event_id,
-                "message": "Published to Sleipnir/NATS for resident Valkyries to consume.",
+                "message": (
+                    "Published to all configured resident Valkyrie command targets."
+                    if targets and not failed_targets
+                    else (
+                        f"Published to {published_count}/{len(targets)} configured "
+                        "resident Valkyrie command targets."
+                    )
+                ),
+                "targetCount": len(targets),
+                "publishedTargets": published_count,
+                "failedTargets": len(failed_targets),
+                "targets": targets,
                 "observedAt": _now(),
             },
             event,
@@ -1085,6 +1111,70 @@ class ValkyrieLearningCommandPublisher:
             }
         )
         return event
+
+
+@dataclass(frozen=True)
+class _CommandTarget:
+    label: str
+    publisher: SleipnirPublisher
+
+
+class _FanoutSleipnirPublisher:
+    """Publish one command event to every configured resident command target."""
+
+    def __init__(self, targets: list[_CommandTarget]) -> None:
+        self._targets = targets
+
+    async def start(self) -> None:
+        await asyncio.gather(
+            *(
+                target.publisher.start()  # type: ignore[attr-defined]
+                for target in self._targets
+                if hasattr(target.publisher, "start")
+            )
+        )
+
+    async def stop(self) -> None:
+        await asyncio.gather(
+            *(
+                target.publisher.stop()  # type: ignore[attr-defined]
+                for target in self._targets
+                if hasattr(target.publisher, "stop")
+            ),
+            return_exceptions=True,
+        )
+
+    async def publish(self, event: SleipnirEvent) -> None:
+        results = await self.publish_with_results(event)
+        failures = [result for result in results if not bool(result["published"])]
+        if failures:
+            labels = ", ".join(str(result["label"]) for result in failures)
+            raise RuntimeError(f"failed to publish to command targets: {labels}")
+
+    async def publish_with_results(self, event: SleipnirEvent) -> list[dict[str, Any]]:
+        results = await asyncio.gather(
+            *(self._publish_one(target, event) for target in self._targets),
+        )
+        return list(results)
+
+    async def _publish_one(
+        self,
+        target: _CommandTarget,
+        event: SleipnirEvent,
+    ) -> dict[str, Any]:
+        try:
+            await target.publisher.publish(event)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "label": target.label,
+                "published": False,
+                "message": str(exc),
+            }
+        return {
+            "label": target.label,
+            "published": True,
+            "message": "published",
+        }
 
 
 def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
@@ -2540,6 +2630,52 @@ def _telemetry_stream_specs() -> list[dict[str, str]]:
     return specs
 
 
+def _command_stream_specs() -> list[dict[str, str]]:
+    streams_raw = os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_STREAMS", "").strip()
+    if not streams_raw:
+        return []
+    default_stream = os.environ.get(
+        "RAVN_VALKYRIE_COMMAND_NATS_STREAM",
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment"),
+    )
+    default_prefix = os.environ.get(
+        "RAVN_VALKYRIE_COMMAND_SUBJECT_PREFIX",
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX", "ravn.environment"),
+    )
+    default_user = os.environ.get(
+        "RAVN_VALKYRIE_COMMAND_NATS_USER",
+        os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", ""),
+    )
+    default_password_env = (
+        "RAVN_VALKYRIE_COMMAND_NATS_PASSWORD"
+        if os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_PASSWORD")
+        else "RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD"
+    )
+
+    specs: list[dict[str, str]] = []
+    for raw_entry in streams_raw.replace("\n", ",").split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        parts = [part.strip() for part in entry.split(":")]
+        stream_name = parts[0] if parts and parts[0] else default_stream
+        subject_prefix = parts[1] if len(parts) > 1 and parts[1] else default_prefix
+        user = parts[2] if len(parts) > 2 and parts[2] else default_user
+        password_env = (
+            parts[3] if len(parts) > 3 and parts[3] else default_password_env
+        )
+        specs.append(
+            {
+                "stream_name": stream_name,
+                "subject_prefix": subject_prefix,
+                "user": user,
+                "password_env": password_env,
+                "label": f"{stream_name}/{subject_prefix}",
+            }
+        )
+    return specs
+
+
 def build_nats_telemetry_subscription_from_env(
     projection: ValkyrieDashboardProjection,
 ) -> ValkyrieTelemetrySubscription | None:
@@ -2650,54 +2786,48 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
     from sleipnir.adapters.nats_transport import NatsPublisher  # noqa: PLC0415
 
     command_inherits_telemetry = not os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_URL", "").strip()
-    publisher = NatsPublisher(
-        servers=[entry.strip() for entry in servers_raw.split(",") if entry.strip()],
-        stream_name=os.environ.get(
-            "RAVN_VALKYRIE_COMMAND_NATS_STREAM",
-            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment"),
-        ),
-        jetstream_domain=os.environ.get(
+    servers = [entry.strip() for entry in servers_raw.split(",") if entry.strip()]
+    stream_specs = _command_stream_specs()
+    shared_options = {
+        "servers": servers,
+        "jetstream_domain": os.environ.get(
             "RAVN_VALKYRIE_COMMAND_NATS_JETSTREAM_DOMAIN",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_JETSTREAM_DOMAIN", ""),
         ),
-        subject_prefix=os.environ.get(
-            "RAVN_VALKYRIE_COMMAND_SUBJECT_PREFIX",
-            os.environ.get("RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX", "ravn.environment"),
-        ),
-        ensure_stream=_env_bool(os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM")),
-        connect_timeout_s=_env_float(
+        "ensure_stream": _env_bool(os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM")),
+        "connect_timeout_s": _env_float(
             os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_CONNECT_TIMEOUT_SECONDS"),
             2.0,
         ),
-        max_reconnect_attempts=_env_int(
+        "max_reconnect_attempts": _env_int(
             os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_MAX_RECONNECT_ATTEMPTS"),
             0,
         ),
-        tls_ca_file=os.environ.get(
+        "tls_ca_file": os.environ.get(
             "RAVN_VALKYRIE_COMMAND_TLS_CA_FILE",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", "")
             if command_inherits_telemetry
             else "",
         ),
-        tls_cert_file=os.environ.get(
+        "tls_cert_file": os.environ.get(
             "RAVN_VALKYRIE_COMMAND_TLS_CERT_FILE",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", "")
             if command_inherits_telemetry
             else "",
         ),
-        tls_key_file=os.environ.get(
+        "tls_key_file": os.environ.get(
             "RAVN_VALKYRIE_COMMAND_TLS_KEY_FILE",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE", "")
             if command_inherits_telemetry
             else "",
         ),
-        tls_hostname=os.environ.get(
+        "tls_hostname": os.environ.get(
             "RAVN_VALKYRIE_COMMAND_TLS_HOSTNAME",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "")
             if command_inherits_telemetry
             else "",
         ),
-        tls_handshake_first=_env_bool(
+        "tls_handshake_first": _env_bool(
             os.environ.get(
                 "RAVN_VALKYRIE_COMMAND_TLS_HANDSHAKE_FIRST",
                 os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "")
@@ -2705,7 +2835,7 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
                 else "",
             )
         ),
-        tls_insecure_skip_verify=_env_bool(
+        "tls_insecure_skip_verify": _env_bool(
             os.environ.get(
                 "RAVN_VALKYRIE_COMMAND_TLS_INSECURE_SKIP_VERIFY",
                 os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY", "")
@@ -2713,6 +2843,45 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
                 else "",
             )
         ),
+        "token": os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_TOKEN",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
+        ),
+        "nkeys_seed_file": os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED_FILE", ""),
+        "nkeys_seed": os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED", ""),
+    }
+    if stream_specs:
+        targets = [
+            _CommandTarget(
+                label=spec["label"],
+                publisher=NatsPublisher(
+                    **shared_options,
+                    stream_name=spec["stream_name"],
+                    subject_prefix=spec["subject_prefix"],
+                    user=spec["user"],
+                    password=os.environ.get(spec["password_env"], ""),
+                ),
+            )
+            for spec in stream_specs
+        ]
+        return ValkyrieLearningCommandPublisher(
+            _FanoutSleipnirPublisher(targets),
+            start_timeout_seconds=_env_float(
+                os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS"),
+                5.0,
+            ),
+        )
+
+    publisher = NatsPublisher(
+        stream_name=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_STREAM",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment"),
+        ),
+        subject_prefix=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_SUBJECT_PREFIX",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX", "ravn.environment"),
+        ),
+        **shared_options,
         user=os.environ.get(
             "RAVN_VALKYRIE_COMMAND_NATS_USER",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", ""),
@@ -2721,12 +2890,6 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
             "RAVN_VALKYRIE_COMMAND_NATS_PASSWORD",
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", ""),
         ),
-        token=os.environ.get(
-            "RAVN_VALKYRIE_COMMAND_NATS_TOKEN",
-            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
-        ),
-        nkeys_seed_file=os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED_FILE", ""),
-        nkeys_seed=os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED", ""),
     )
     return ValkyrieLearningCommandPublisher(
         publisher,

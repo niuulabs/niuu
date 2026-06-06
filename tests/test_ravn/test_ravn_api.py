@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from ravn.api import create_app
 from ravn.api.valkyries import (
+    LearningDecisionRequest,
     ValkyrieDashboardProjection,
     ValkyrieLearningCommandPublisher,
     ValkyrieTelemetrySubscription,
@@ -1074,6 +1075,135 @@ def test_valkyrie_learning_command_publisher_inherits_telemetry_tls(monkeypatch)
 
     asyncio.run(publisher.start())
     assert created[0].started is True
+
+
+def test_valkyrie_learning_command_publisher_fans_out_to_command_streams(monkeypatch):
+    import sleipnir.adapters.nats_transport as nats_transport
+
+    created: list[FakeNatsPublisher] = []
+
+    class FakeNatsPublisher:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.started = False
+            self.events: list[SleipnirEvent] = []
+            created.append(self)
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            return None
+
+        async def publish(self, event: SleipnirEvent) -> None:
+            self.events.append(event)
+
+    monkeypatch.setattr(nats_transport, "NatsPublisher", FakeNatsPublisher)
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "nats.internal")
+    monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_STREAMS", "\n".join([
+        "flock-k8s-ymir-events:flock.k8s.ymir:valkyrie-dashboard-ymir:RAVN_YMIR_PASSWORD",
+        "flock-k8s-noatun-events:flock.k8s.noatun:valkyrie-dashboard-noatun:RAVN_NOATUN_PASSWORD",
+    ]))
+    monkeypatch.setenv("RAVN_YMIR_PASSWORD", "ymir-pass")
+    monkeypatch.setenv("RAVN_NOATUN_PASSWORD", "noatun-pass")
+
+    publisher = build_nats_learning_command_publisher_from_env()
+
+    assert len(created) == 2
+    assert created[0].kwargs["stream_name"] == "flock-k8s-ymir-events"
+    assert created[0].kwargs["subject_prefix"] == "flock.k8s.ymir"
+    assert created[0].kwargs["user"] == "valkyrie-dashboard-ymir"
+    assert created[0].kwargs["password"] == "ymir-pass"
+    assert created[0].kwargs["tls_hostname"] == "nats.internal"
+    assert created[1].kwargs["stream_name"] == "flock-k8s-noatun-events"
+    assert created[1].kwargs["subject_prefix"] == "flock.k8s.noatun"
+    assert created[1].kwargs["user"] == "valkyrie-dashboard-noatun"
+    assert created[1].kwargs["password"] == "noatun-pass"
+
+    before = {"scope": "environment", "sourceEnvironmentId": "ymir"}
+    learning = {
+        "id": "live-valkyrie-inspect-kubernetes-pod-oomkilled",
+        "status": "adopted",
+        "scope": "flock",
+        "sourceEnvironmentId": "ymir",
+        "title": "valkyrie-inspect-kubernetes-pod-oomkilled",
+        "artifactType": "ravn_skill_tool",
+        "artifactContent": "metadata:\n  capability: inspect.kubernetes.pod.oomkilled\n",
+        "redaction": "redacted",
+        "targetFlockId": "k8s-valkyries",
+        "domain": "k8s",
+    }
+    request = LearningDecisionRequest(
+        learningId=learning["id"],
+        operatorId="operator",
+        reason="prove fanout",
+    )
+
+    async def publish_command() -> dict:
+        await publisher.start()
+        delivery, _ = await publisher.publish(
+            action="adopt",
+            before=before,
+            learning=learning,
+            request=request,
+        )
+        await publisher.stop()
+        return delivery
+
+    delivery = asyncio.run(publish_command())
+
+    assert delivery["published"] is True
+    assert delivery["targetCount"] == 2
+    assert delivery["publishedTargets"] == 2
+    assert [event.event_type for event in created[0].events] == ["learning.adoption.recorded"]
+    assert [event.event_type for event in created[1].events] == ["learning.adoption.recorded"]
+    assert created[0].events[0].payload["artifact_content_present"] is True
+
+
+def test_valkyrie_learning_command_publisher_reports_partial_fanout_failure():
+    class PartialFanout:
+        async def publish_with_results(self, event: SleipnirEvent) -> list[dict]:
+            assert event.event_type == "learning.adoption.recorded"
+            return [
+                {"label": "flock-k8s-ymir-events/flock.k8s.ymir", "published": True},
+                {
+                    "label": "flock-k8s-noatun-events/flock.k8s.noatun",
+                    "published": False,
+                    "message": "permissions violation",
+                },
+            ]
+
+    publisher = ValkyrieLearningCommandPublisher(PartialFanout())
+    request = LearningDecisionRequest(
+        learningId="learning-1",
+        operatorId="operator",
+        reason="prove partial visibility",
+    )
+
+    delivery, event = asyncio.run(
+        publisher.publish(
+            action="adopt",
+            before={"scope": "environment", "sourceEnvironmentId": "ymir"},
+            learning={
+                "id": "learning-1",
+                "status": "adopted",
+                "scope": "flock",
+                "sourceEnvironmentId": "ymir",
+                "title": "skill-one",
+                "artifactType": "ravn_skill_tool",
+                "artifactContent": "metadata:\n  capability: inspect.test\n",
+            },
+            request=request,
+        )
+    )
+
+    assert event is not None
+    assert delivery["published"] is False
+    assert delivery["targetCount"] == 2
+    assert delivery["publishedTargets"] == 1
+    assert delivery["failedTargets"] == 1
+    assert delivery["targets"][1]["message"] == "permissions violation"
 
 
 def test_valkyrie_dashboard_telemetry_subscription_starts_streams_concurrently():
