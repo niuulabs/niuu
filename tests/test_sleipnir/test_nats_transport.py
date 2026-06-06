@@ -378,6 +378,32 @@ async def test_publisher_publish_sends_correct_subject(mock_nats):
     assert subject == "sleipnir.ravn.tool.complete"
 
 
+async def test_publisher_publish_sends_explicit_additional_subjects(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsPublisher(subject_prefix="obs.ymir")
+    await pub.start()
+    event = make_event(
+        event_type="flock.learning.proposed",
+        payload={
+            "learning_id": "resident:ymir:inspect-proof",
+            "additional_nats_subjects": [
+                "flock.k8s.ymir.flock.learning.proposed",
+                "obs.ymir.flock.learning.proposed",
+            ],
+        },
+    )
+
+    await pub.publish(event)
+
+    subjects = [call.args[0] for call in js.publish.call_args_list]
+    assert subjects == [
+        "obs.ymir.flock.learning.proposed",
+        "flock.k8s.ymir.flock.learning.proposed",
+    ]
+    payloads = [call.args[1] for call in js.publish.call_args_list]
+    assert all(_decode_nats_message(payload).event_id == event.event_id for payload in payloads)
+
+
 async def test_publisher_publish_payload_is_msgpack(mock_nats):
     mock_module, client, js, _ = mock_nats
     pub = NatsPublisher()

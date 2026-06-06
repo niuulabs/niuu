@@ -704,6 +704,9 @@ class ResidentLearningRuntime:
                     "review_outcome": review.outcome,
                     "builder_evidence": dict(build.evidence),
                     "nats_subject": "ravn.environment.flock.learning.proposed",
+                    "additional_nats_subjects": [
+                        _flock_nats_subject(self.identity, "flock.learning.proposed")
+                    ],
                 },
                 summary=f"flock.learning.proposed: {artifact.title}",
                 urgency=0.2,
@@ -742,6 +745,9 @@ class ResidentLearningRuntime:
                 "source_environment_id": artifact.source_environment_id,
                 "source_valkyrie_id": artifact.source_valkyrie_id,
                 "command_action": artifact.command_action,
+                "additional_nats_subjects": [
+                    _flock_nats_subject(self.identity, "learning.adoption.recorded")
+                ],
             }
         )
         await self._publisher.publish(event)
@@ -927,6 +933,17 @@ def _safety_class_from_content(content: str) -> str:
 
 def _authority_boundary(autonomy_mode: str) -> str:
     return "yolo" if autonomy_mode.lower() == "yolo" else "human_review_required"
+
+
+def _flock_nats_subject(identity: ResidentLearningIdentity, event_type: str) -> str:
+    domain = _nats_token(identity.domain or identity.environment_type or "environment")
+    environment_id = _nats_token(identity.environment_id)
+    return f"flock.{domain}.{environment_id}.{event_type}"
+
+
+def _nats_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value).strip()).strip("-").lower()
+    return token or "unknown"
 
 
 def _normalise_scope(scope: str) -> str:

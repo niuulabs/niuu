@@ -215,6 +215,24 @@ def _nats_subject_for_event(event_type: str, prefix: str) -> str:
     return f"{prefix}.{event_type}"
 
 
+def _additional_nats_subjects(event: SleipnirEvent) -> list[str]:
+    """Return explicit extra NATS subjects requested by the event payload."""
+
+    raw = event.payload.get("additional_nats_subjects")
+    if isinstance(raw, str):
+        candidates: list[Any] = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+    subjects: list[str] = []
+    for candidate in candidates:
+        subject = str(candidate).strip()
+        if subject:
+            subjects.append(subject)
+    return subjects
+
+
 def _nats_subjects_for_patterns(patterns: list[str], prefix: str) -> list[str]:
     """Translate Sleipnir fnmatch patterns to NATS subject filter strings.
 
@@ -477,6 +495,9 @@ class NatsPublisher(SleipnirPublisher):
         subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
         payload = serialize(event)
         await self._js.publish(subject, payload)
+        for additional_subject in _additional_nats_subjects(event):
+            if additional_subject != subject:
+                await self._js.publish(additional_subject, payload)
 
     async def publish_batch(self, events: list[SleipnirEvent]) -> None:
         for event in events:

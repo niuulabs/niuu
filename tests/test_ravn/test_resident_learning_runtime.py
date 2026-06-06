@@ -349,6 +349,9 @@ async def test_resident_micro_dream_builds_and_proposes_missing_capability(
     assert proposal.payload["flock_id"] == "flock:k8s-valkyries"
     assert proposal.payload["artifact_content"]
     assert "capability: inspect.kubernetes.pod.unhealthy" in proposal.payload["content"]
+    assert proposal.payload["additional_nats_subjects"] == [
+        "flock.k8s.cluster-b.flock.learning.proposed"
+    ]
 
     replay = await peer.process_signal(
         OperationalSignal(
@@ -447,6 +450,9 @@ async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_
     proposal = next(event for event in events if event.event_type == "flock.learning.proposed")
     assert proposal.payload["flock_id"] == "flock:k8s-valkyries"
     assert "capability: inspect.kubernetes.pod.failedmount" in proposal.payload["content"]
+    assert proposal.payload["additional_nats_subjects"] == [
+        "flock.k8s.cluster-a.flock.learning.proposed"
+    ]
 
     installed = await relevant_peer_skills.show(
         "valkyrie-inspect-kubernetes-pod-failedmount"
@@ -465,6 +471,8 @@ async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_
         event.event_type == registry.LEARNING_ADOPTION_RECORDED
         and event.payload["action"] == "adopted"
         and event.payload["resident_valkyrie_id"] == "valkyrie:k8s-b"
+        and event.payload["additional_nats_subjects"]
+        == ["flock.k8s.cluster-b.learning.adoption.recorded"]
         for event in events
     )
     assert any(
