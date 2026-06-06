@@ -625,6 +625,57 @@ def test_valkyrie_telemetry_events_can_be_filtered_and_limited(client: TestClien
     assert events[0]["details"]["learning_id"] == "learning-2"
 
 
+def test_valkyrie_telemetry_events_filter_before_recent_display_cap(client: TestClient):
+    client.post(
+        "/api/v1/ravn/valkyrie/telemetry/events",
+        json={
+            "event_id": "proof-built-before-noise",
+            "event_type": "valkyrie.evolution.built",
+            "source": "ravn:test",
+            "payload": {
+                "environment_id": "ymir",
+                "skill_name": "valkyrie-inspect-kubernetes-pod-oomkilled",
+            },
+            "summary": "Built skill before noisy poll burst",
+            "urgency": 0.2,
+            "domain": "infrastructure",
+            "timestamp": "2026-06-04T20:00:00+00:00",
+        },
+    )
+    for index in range(130):
+        client.post(
+            "/api/v1/ravn/valkyrie/telemetry/events",
+            json={
+                "event_id": f"poll-noise-{index}",
+                "event_type": "valkyrie.signal_poll.completed",
+                "source": "ravn:test",
+                "payload": {
+                    "environment_id": "ymir",
+                    "source_name": "kubernetes-events",
+                    "signals_collected": 1,
+                },
+                "summary": f"noisy poll {index}",
+                "urgency": 0.1,
+                "domain": "infrastructure",
+                "timestamp": f"2026-06-04T20:01:{index % 60:02d}+00:00",
+            },
+        )
+
+    response = client.get(
+        "/api/v1/ravn/valkyrie/telemetry/events",
+        params={
+            "event_type": "valkyrie.evolution.built",
+            "contains": "oomkilled",
+            "limit": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["eventType"] for event in events] == ["valkyrie.evolution.built"]
+    assert events[0]["id"] == "proof-built-before-noise"
+
+
 def test_valkyrie_learning_lifecycle_changes_replay_behavior(client: TestClient):
     skill_content = "\n".join(
         [

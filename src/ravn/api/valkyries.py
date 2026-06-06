@@ -2321,13 +2321,22 @@ class ValkyrieDashboardProjection:
         valkyrie_id: str = "",
         contains: str = "",
     ) -> list[dict[str, Any]]:
-        telemetry = self.dashboard().get("telemetry", {})
-        if not isinstance(telemetry, dict):
-            return []
-        events = telemetry.get("recentEvents", [])
-        if not isinstance(events, list):
-            return []
-        filtered = list(events)
+        self._refresh_live_report()
+        telemetry_events = [*self._raw_signal_events, *self._control_events]
+        retained_event_ids = {id(event) for event in telemetry_events}
+        telemetry_events.extend(
+            event for event in self._runtime_events.values() if id(event) not in retained_event_ids
+        )
+        filtered = []
+        for event in telemetry_events:
+            normalized = _event_dict(event)
+            payload = normalized.get("payload")
+            filtered.append(
+                _event_log_entry(
+                    normalized,
+                    payload if isinstance(payload, dict) else {},
+                )
+            )
         if event_type:
             filtered = [
                 event for event in filtered if str(event.get("eventType") or "") == event_type
@@ -2348,6 +2357,11 @@ class ValkyrieDashboardProjection:
                 event for event in filtered if needle in json.dumps(event).lower()
             ]
         bounded_limit = max(1, min(int(limit or 200), 1_000))
+        filtered = sorted(
+            filtered,
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )
         return deepcopy(filtered[:bounded_limit])
 
     def logs(self) -> list[dict[str, Any]]:
