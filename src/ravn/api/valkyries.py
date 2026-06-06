@@ -1895,7 +1895,12 @@ class ValkyrieDashboardProjection:
         self._refresh_live_report()
         return _merge_observed_runtime(deepcopy(self._dashboard))
 
-    def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
+    def record_event(
+        self,
+        event: SleipnirEvent | dict[str, Any],
+        *,
+        refresh: bool = True,
+    ) -> None:
         event_data = _event_dict(event)
         event_id = str(event_data.get("event_id") or "")
         if event_id:
@@ -1926,7 +1931,10 @@ class ValkyrieDashboardProjection:
         else:
             self._control_events.append(event_data)
             self._control_events = self._control_events[-CONTROL_TELEMETRY_LIMIT:]
-        self._touch()
+        if refresh:
+            self._touch()
+        else:
+            self._dashboard["updatedAt"] = _now()
 
     def environments(self) -> list[dict[str, Any]]:
         return self.dashboard()["environments"]
@@ -3147,7 +3155,7 @@ def create_valkyrie_router(
 
     @router.post("/telemetry/events")
     async def record_telemetry_event(event: dict[str, Any], minimal: bool = False) -> Dashboard:
-        store.record_event(event)
+        store.record_event(event, refresh=not minimal)
         if minimal:
             return {
                 "accepted": True,
