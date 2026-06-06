@@ -299,7 +299,22 @@ async def test_publisher_start_connects_and_ensures_stream(mock_nats):
     pub = NatsPublisher(servers=["nats://localhost:4222"])
     await pub.start()
     mock_module.connect.assert_called_once()
+    client.jetstream.assert_called_once_with()
     js.stream_info.assert_called_once_with(DEFAULT_STREAM_NAME)
+
+
+async def test_publisher_start_uses_configured_jetstream_domain(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsPublisher(
+        servers=["nats://localhost:4222"],
+        jetstream_domain="ymir",
+        ensure_stream=False,
+    )
+
+    await pub.start()
+
+    client.jetstream.assert_called_once_with(domain="ymir")
+    js.stream_info.assert_not_called()
 
 
 async def test_publisher_start_passes_auth_and_can_skip_stream_ensure(mock_nats):
@@ -446,7 +461,19 @@ async def test_subscriber_start_connects(mock_nats):
     sub = NatsSubscriber()
     await sub.start()
     mock_module.connect.assert_called_once()
+    client.jetstream.assert_called_once_with()
     assert sub._running is True
+
+
+async def test_subscriber_start_uses_configured_jetstream_domain(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(jetstream_domain="ymir", ensure_stream=False)
+
+    await sub.start()
+
+    client.jetstream.assert_called_once_with(domain="ymir")
+    js.stream_info.assert_not_called()
+    await sub.stop()
 
 
 async def test_subscriber_subscribe_before_start_raises():
@@ -486,6 +513,30 @@ async def test_subscriber_subscribe_namespace_wildcard_subject(mock_nats):
     await sub.subscribe(["ravn.*"], AsyncMock())
     subject = js.subscribe.call_args[0][0]
     assert subject == "sleipnir.ravn.>"
+    await sub.stop()
+
+
+async def test_subscriber_adds_extra_stream_subjects(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        extra_subscriptions=[
+            {"subject": "flock.k8s.>", "stream_name": "flock-k8s-events"},
+        ],
+    )
+    await sub.start()
+    await sub.subscribe(["flock.learning.proposed"], AsyncMock())
+
+    calls = js.subscribe.call_args_list
+    assert [call.args[0] for call in calls] == [
+        "obs.valhalla.flock.learning.proposed",
+        "flock.k8s.>",
+    ]
+    assert [call.kwargs["stream"] for call in calls] == [
+        "obs-valhalla-events",
+        "flock-k8s-events",
+    ]
     await sub.stop()
 
 
@@ -788,6 +839,18 @@ async def test_transport_consumer_group_forwarded(mock_nats):
     kwargs = js.subscribe.call_args[1]
     assert kwargs["durable"].startswith("workers-")
     assert kwargs["queue"] == kwargs["durable"]
+    await transport.stop()
+
+
+async def test_transport_jetstream_domain_forwarded_to_publisher_and_subscriber(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    transport = NatsTransport(jetstream_domain="ymir", ensure_stream=False)
+
+    await transport.start()
+
+    assert client.jetstream.call_count == 2
+    assert client.jetstream.call_args_list[0].kwargs == {"domain": "ymir"}
+    assert client.jetstream.call_args_list[1].kwargs == {"domain": "ymir"}
     await transport.stop()
 
 

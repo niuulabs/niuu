@@ -56,6 +56,7 @@ Configuration example
       servers: ["nats://nats:4222"]
       stream:
         name: "sleipnir"
+        jetstream_domain: ""       # optional; empty uses the server default
         retention: "limits"        # or "interest", "workqueue"
         max_age: "7d"
         max_bytes: "1GB"
@@ -371,6 +372,7 @@ class NatsPublisher(SleipnirPublisher):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -393,6 +395,7 @@ class NatsPublisher(SleipnirPublisher):
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+        self._jetstream_domain = jetstream_domain.strip()
         self._retention = retention
         self._max_age_seconds = max_age_seconds
         self._max_bytes = max_bytes
@@ -423,7 +426,8 @@ class NatsPublisher(SleipnirPublisher):
             max_reconnect_attempts=self._max_reconnect_attempts,
             **self._connect_options,
         )
-        self._js = self._client.jetstream()
+        js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
+        self._js = self._client.jetstream(**js_options)
         if self._ensure_stream:
             await _ensure_stream(
                 self._js,
@@ -434,9 +438,10 @@ class NatsPublisher(SleipnirPublisher):
                 self._max_bytes,
             )
         logger.debug(
-            "NatsPublisher: connected to %s, stream=%r",
+            "NatsPublisher: connected to %s, stream=%r, jetstream_domain=%r",
             self._servers,
             self._stream_name,
+            self._jetstream_domain,
         )
 
     async def stop(self) -> None:
@@ -510,6 +515,7 @@ class NatsSubscriber(SleipnirSubscriber):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -531,6 +537,7 @@ class NatsSubscriber(SleipnirSubscriber):
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        extra_subscriptions: list[dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         if ring_buffer_depth < 1:
@@ -538,6 +545,7 @@ class NatsSubscriber(SleipnirSubscriber):
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+        self._jetstream_domain = jetstream_domain.strip()
         self._retention = retention
         self._max_age_seconds = max_age_seconds
         self._max_bytes = max_bytes
@@ -561,6 +569,16 @@ class NatsSubscriber(SleipnirSubscriber):
             nkeys_seed_file=nkeys_seed_file,
             nkeys_seed=nkeys_seed,
         )
+        self._extra_subscriptions = [
+            {
+                "subject": str(entry.get("subject") or "").strip(),
+                "stream_name": str(
+                    entry.get("stream_name") or entry.get("streamName") or ""
+                ).strip(),
+            }
+            for entry in extra_subscriptions or []
+            if str(entry.get("subject") or "").strip()
+        ]
         self._client: Any = None
         self._js: Any = None
         self._nats_subs: list[Any] = []
@@ -575,7 +593,8 @@ class NatsSubscriber(SleipnirSubscriber):
             max_reconnect_attempts=self._max_reconnect_attempts,
             **self._connect_options,
         )
-        self._js = self._client.jetstream()
+        js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
+        self._js = self._client.jetstream(**js_options)
         if self._ensure_stream:
             await _ensure_stream(
                 self._js,
@@ -587,10 +606,11 @@ class NatsSubscriber(SleipnirSubscriber):
             )
         self._running = True
         logger.debug(
-            "NatsSubscriber: connected to %s, stream=%r, group=%r",
+            "NatsSubscriber: connected to %s, stream=%r, group=%r, jetstream_domain=%r",
             self._servers,
             self._stream_name,
             self._consumer_group,
+            self._jetstream_domain,
         )
 
     async def stop(self) -> None:
@@ -635,10 +655,27 @@ class NatsSubscriber(SleipnirSubscriber):
         self._subscriptions.append(sub)
 
         config = self._build_consumer_config()
-        subjects = _nats_subjects_for_patterns(event_types, self._subject_prefix)
+        subscriptions = [
+            {"subject": subject, "stream_name": self._stream_name}
+            for subject in _nats_subjects_for_patterns(event_types, self._subject_prefix)
+        ]
+        subscriptions.extend(self._extra_subscriptions)
 
-        for subject in subjects:
-            nats_sub = await self._create_nats_subscription(subject, event_types, sub, config)
+        seen: set[tuple[str, str]] = set()
+        for subscription in subscriptions:
+            subject = subscription["subject"]
+            stream_name = subscription.get("stream_name") or self._stream_name
+            key = (stream_name, subject)
+            if key in seen:
+                continue
+            seen.add(key)
+            nats_sub = await self._create_nats_subscription(
+                subject,
+                event_types,
+                sub,
+                config,
+                stream_name=stream_name,
+            )
             self._nats_subs.append(nats_sub)
 
         return sub
@@ -649,6 +686,7 @@ class NatsSubscriber(SleipnirSubscriber):
         patterns: list[str],
         sub: _BaseSubscription,
         config: Any,
+        stream_name: str | None = None,
     ) -> Any:
         """Create a JetStream push subscription for *subject*."""
 
@@ -668,7 +706,7 @@ class NatsSubscriber(SleipnirSubscriber):
                 with suppress(Exception):
                     await msg.ack()
 
-        kwargs: dict[str, Any] = {"stream": self._stream_name, "config": config}
+        kwargs: dict[str, Any] = {"stream": stream_name or self._stream_name, "config": config}
         if self._consumer_group is not None:
             durable = _durable_name_for_subject(self._consumer_group, subject)
             kwargs["durable"] = durable
@@ -730,6 +768,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -751,12 +790,14 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        extra_subscriptions: list[dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
             servers=servers,
             stream_name=stream_name,
             subject_prefix=subject_prefix,
+            jetstream_domain=jetstream_domain,
             retention=retention,
             max_age_seconds=max_age_seconds,
             max_bytes=max_bytes,
@@ -779,6 +820,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             servers=servers,
             stream_name=stream_name,
             subject_prefix=subject_prefix,
+            jetstream_domain=jetstream_domain,
             retention=retention,
             max_age_seconds=max_age_seconds,
             max_bytes=max_bytes,
@@ -800,6 +842,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             token=token,
             nkeys_seed_file=nkeys_seed_file,
             nkeys_seed=nkeys_seed,
+            extra_subscriptions=extra_subscriptions,
         )
 
     async def start(self) -> None:

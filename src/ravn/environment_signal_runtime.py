@@ -29,6 +29,7 @@ from sleipnir.ports.events import SleipnirPublisher
 logger = logging.getLogger(__name__)
 
 EnqueueFn = Callable[[AgentTask], Awaitable[None]]
+ResidentSignalFn = Callable[[SleipnirEvent], Awaitable[dict[str, Any] | None]]
 
 
 def _import_class(dotted_path: str) -> type:
@@ -96,6 +97,7 @@ class EnvironmentSignalRuntime:
         settings: Settings,
         publisher: SleipnirPublisher,
         enqueue: EnqueueFn | None = None,
+        resident_signal_processor: ResidentSignalFn | None = None,
         persona: str | None = None,
         output_mode: OutputMode = OutputMode.AMBIENT,
         owns_publisher: bool = False,
@@ -103,6 +105,7 @@ class EnvironmentSignalRuntime:
         self._settings = settings
         self._publisher = publisher
         self._enqueue = enqueue
+        self._resident_signal_processor = resident_signal_processor
         self._persona = persona
         self._output_mode = output_mode
         self._owns_publisher = owns_publisher
@@ -204,16 +207,29 @@ class EnvironmentSignalRuntime:
         ]
         if events:
             await self._publisher.publish_batch(events)
+        resident_results = await self._process_resident_learning(events)
         if self._enqueue is not None:
-            for signal, event in zip(signals, events, strict=True):
+            for signal, event, resident_result in zip(
+                signals,
+                events,
+                resident_results,
+                strict=True,
+            ):
                 if signal.severity in self._settings.environment.signal_task_severities:
-                    await self._enqueue(self._task_from_signal(signal, event))
+                    await self._enqueue(
+                        self._task_from_signal(
+                            signal,
+                            event,
+                            resident_learning_result=resident_result,
+                        )
+                    )
                     enqueued_count += 1
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
             collected=collected,
             published_events=events,
+            resident_results=resident_results,
             enqueued_count=enqueued_count,
             duration_ms=duration_ms,
         )
@@ -238,7 +254,39 @@ class EnvironmentSignalRuntime:
             self._seen.popitem(last=False)
         return True
 
-    def _task_from_signal(self, signal: NormalizedSignal, event: SleipnirEvent) -> AgentTask:
+    async def _process_resident_learning(
+        self,
+        events: list[SleipnirEvent],
+    ) -> list[dict[str, Any] | None]:
+        if self._resident_signal_processor is None:
+            return [None for _ in events]
+        results: list[dict[str, Any] | None] = []
+        for event in events:
+            try:
+                results.append(await self._resident_signal_processor(event))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "environment_signals: resident learning failed for event=%s: %s",
+                    event.event_id,
+                    exc,
+                )
+                await self._publish_resident_learning_failed(event, exc)
+                results.append(
+                    {
+                        "usedAdoptedLearning": False,
+                        "decision": "resident_learning_failed",
+                        "error": str(exc),
+                    }
+                )
+        return results
+
+    def _task_from_signal(
+        self,
+        signal: NormalizedSignal,
+        event: SleipnirEvent,
+        *,
+        resident_learning_result: dict[str, Any] | None = None,
+    ) -> AgentTask:
         title = f"{signal.signal_type} signal: {signal.severity}"
         obj = signal.object_ref or {}
         if obj.get("kind") and obj.get("name"):
@@ -254,9 +302,26 @@ class EnvironmentSignalRuntime:
         ]
         if resident_personality:
             identity_lines.append(f"Resident personality: {resident_personality}")
+        learning_context = ""
+        if resident_learning_result:
+            if resident_learning_result.get("usedAdoptedLearning"):
+                learning_context = (
+                    "\nResident learning matched this signal before task enqueue:\n"
+                    f"- decision: {resident_learning_result.get('decision')}\n"
+                    f"- skill: {resident_learning_result.get('skillName')}\n"
+                    f"- capability: {resident_learning_result.get('capabilityName')}\n"
+                    "Use the adopted skill context before proposing new tooling.\n"
+                )
+            elif resident_learning_result.get("decision"):
+                learning_context = (
+                    "\nResident learning checked this signal before task enqueue:\n"
+                    f"- decision: {resident_learning_result.get('decision')}\n"
+                    f"- capability: {resident_learning_result.get('capabilityName')}\n"
+                )
         context = (
             "A resident Valkyrie received an environment signal.\n\n"
             + "\n".join(identity_lines)
+            + learning_context
             + "\n\n"
             f"Environment: {signal.environment_id} ({signal.environment_type})\n"
             f"Source: {signal.source_id}\n"
@@ -367,6 +432,7 @@ class EnvironmentSignalRuntime:
         *,
         collected: list[NormalizedSignal],
         published_events: list[SleipnirEvent],
+        resident_results: list[dict[str, Any] | None],
         enqueued_count: int,
         duration_ms: int,
     ) -> None:
@@ -375,6 +441,12 @@ class EnvironmentSignalRuntime:
             severity_counts[signal.severity] = severity_counts.get(signal.severity, 0) + 1
         published_signal_ids = [event.event_id for event in published_events]
         duplicate_count = len(collected) - len(published_events)
+        resident_checked_count = sum(result is not None for result in resident_results)
+        resident_used_count = sum(
+            1
+            for result in resident_results
+            if result is not None and result.get("usedAdoptedLearning") is True
+        )
         payload = {
             "valkyrie_id": self._settings.mesh.own_peer_id,
             "valkyrie_name": self._resident_name(),
@@ -386,6 +458,8 @@ class EnvironmentSignalRuntime:
             "duplicate_count": duplicate_count,
             "published_count": len(published_events),
             "enqueued_task_count": enqueued_count,
+            "resident_learning_checked_count": resident_checked_count,
+            "resident_learning_used_count": resident_used_count,
             "drive_loop_enabled": self._enqueue is not None,
             "duration_ms": duration_ms,
             "severity_counts": severity_counts,
@@ -404,6 +478,33 @@ class EnvironmentSignalRuntime:
             domain="infrastructure",
             timestamp=SleipnirEvent.now(),
             tenant_id=self._environment.tenant_id,
+        )
+        await self._publish_telemetry_event(event)
+
+    async def _publish_resident_learning_failed(
+        self,
+        signal_event: SleipnirEvent,
+        exc: Exception,
+    ) -> None:
+        event = SleipnirEvent(
+            event_type="valkyrie.resident_learning.failed",
+            source=f"ravn:valkyrie:{self._environment.id}",
+            payload={
+                "valkyrie_id": self._settings.mesh.own_peer_id,
+                "valkyrie_name": self._resident_name(),
+                "environment_id": self._environment.id,
+                "signal_event_id": signal_event.event_id,
+                "signal_event_type": signal_event.event_type,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+            summary=f"Resident learning failed for signal {signal_event.event_id}: {exc}",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=SleipnirEvent.now(),
+            tenant_id=self._environment.tenant_id,
+            correlation_id=signal_event.correlation_id,
+            causation_id=signal_event.event_id,
         )
         await self._publish_telemetry_event(event)
 

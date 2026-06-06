@@ -8,13 +8,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ravn.api import create_app
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
+    ValkyrieLearningCommandPublisher,
     ValkyrieTelemetrySubscription,
+    build_nats_learning_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
+    create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.ports.warden_deployer import (
@@ -93,6 +97,17 @@ class FakeWardenDeployer:
                 }
             )
         )
+
+
+class FakeSleipnirPublisher:
+    def __init__(self) -> None:
+        self.events: list[SleipnirEvent] = []
+
+    async def publish(self, event: SleipnirEvent) -> None:
+        self.events.append(event)
+
+    async def publish_batch(self, events: list[SleipnirEvent]) -> None:
+        self.events.extend(events)
 
 
 def _store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
@@ -440,6 +455,305 @@ def test_valkyrie_dashboard_surfaces_judgment_capability_gap(monkeypatch):
     assert any("Capability gaps are visible" in gap for gap in telemetry["gaps"])
 
 
+def test_valkyrie_dashboard_projects_evolution_learning_for_review(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    timestamp = datetime(2026, 6, 4, 20, 9, tzinfo=UTC)
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.evolution.built",
+            source="ravn:valkyrie:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "request_id": "evolve-gap-1",
+                "skill_name": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "artifact_type": "ravn_skill_tool",
+                "gap": {
+                    "capability_name": "inspect.kubernetes.pod.oomkilled",
+                    "environment_id": "valhalla",
+                    "source_valkyrie_id": "valkyrie-valhalla-k8s",
+                    "evidence": {"summary": "Pod restart loop with OOMKilled reason"},
+                },
+                "confidence": 0.81,
+            },
+            summary="Built skill valkyrie-inspect-kubernetes-pod-oomkilled",
+            urgency=0.4,
+            domain="infrastructure",
+            timestamp=timestamp,
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="odin.court.decided",
+            source="odin:local-court",
+            payload={
+                "environment_id": "valhalla",
+                "request_id": "evolve-gap-1",
+                "artifact_name": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "outcome": "approved",
+                "rationale": "Artifact is scoped and read-only.",
+                "confidence": 0.81,
+            },
+            summary="Odin reviewed valkyrie-inspect-kubernetes-pod-oomkilled: approved",
+            urgency=0.5,
+            domain="infrastructure",
+            timestamp=timestamp,
+        )
+    )
+
+    dashboard = projection.dashboard()
+    telemetry = dashboard["telemetry"]
+    learning = dashboard["learnings"][0]
+
+    assert telemetry["totals"]["learningEvents"] == 2
+    assert any(entry["status"] == "canary" for entry in telemetry["recentLearning"])
+    assert learning["id"].startswith("live-")
+    assert learning["title"] == "valkyrie-inspect-kubernetes-pod-oomkilled"
+    assert learning["status"] == "canary"
+    assert learning["promotedTool"] == "valkyrie-inspect-kubernetes-pod-oomkilled"
+
+    decided = projection.decide_learning(learning["id"], "adopted")
+
+    assert decided["status"] == "adopted"
+    assert projection.dashboard()["learnings"][0]["status"] == "adopted"
+
+
+def test_valkyrie_api_ingests_local_proof_telemetry(client: TestClient):
+    event = {
+        "event_id": "proof-built-1",
+        "event_type": "valkyrie.evolution.built",
+        "source": "ravn:valkyrie-evolution-proof",
+        "payload": {
+            "environment_id": "valhalla",
+            "request_id": "evolve-gap-1",
+            "skill_name": "valkyrie-inspect-host-disk-pressure",
+            "artifact_type": "ravn_skill_tool",
+            "gap": {
+                "capability_name": "inspect.host.disk_pressure",
+                "environment_id": "valhalla",
+                "source_valkyrie_id": "valkyrie-valhalla-k8s",
+            },
+        },
+        "summary": "Built skill valkyrie-inspect-host-disk-pressure",
+        "urgency": 0.4,
+        "domain": "infrastructure",
+        "timestamp": "2026-06-04T20:09:00+00:00",
+    }
+
+    response = client.post("/api/v1/ravn/valkyrie/telemetry/events", json=event)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["telemetry"]["verified"] is True
+    assert data["learnings"][0]["title"] == "valkyrie-inspect-host-disk-pressure"
+    assert data["learnings"][0]["status"] == "candidate"
+
+
+def test_valkyrie_learning_lifecycle_changes_replay_behavior(client: TestClient):
+    skill_content = "\n".join(
+        [
+            "# skill: valkyrie-inspect-printer-printer-resin-low",
+            "",
+            "metadata:",
+            "  capability: inspect.printer.printer.resin-low",
+            "  safety_class: read_only",
+        ]
+    )
+    event = {
+        "event_id": "proof-built-printer",
+        "event_type": "valkyrie.evolution.built",
+        "source": "ravn:valkyrie-evolution-proof",
+        "payload": {
+            "environment_id": "local-proof",
+            "request_id": "evolve-gap-printer",
+            "skill_name": "valkyrie-inspect-printer-printer-resin-low",
+            "artifact_type": "ravn_skill_tool",
+            "skill_content": skill_content,
+            "target_scope": "environment",
+            "gap": {
+                "capability_name": "inspect.printer.printer.resin-low",
+                "environment_id": "local-proof",
+                "source_valkyrie_id": "valkyrie-local",
+                "signal_ids": ["sig-printer-resin-low"],
+                "reason": "printer reported resin_low",
+                "evidence": {
+                    "summary": "Printer reports resin below learned threshold",
+                    "payload": {"reason": "resin_low"},
+                },
+            },
+        },
+        "summary": "Built skill valkyrie-inspect-printer-printer-resin-low",
+        "urgency": 0.4,
+        "domain": "home",
+        "timestamp": "2026-06-04T20:09:00+00:00",
+    }
+    dashboard = client.post("/api/v1/ravn/valkyrie/telemetry/events", json=event).json()
+    learning = next(
+        entry
+        for entry in dashboard["learnings"]
+        if entry["title"] == "valkyrie-inspect-printer-printer-resin-low"
+    )
+    signal = {
+        "event_type": "signal.printer.event",
+        "payload": {
+            "signal_id": "sig-printer-resin-low",
+            "kind": "printer",
+            "reason": "resin_low",
+        },
+    }
+
+    before = client.post("/api/v1/ravn/valkyrie/proof/replay-signal", json=signal).json()
+    adopted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/adopt",
+        json={"learningId": learning["id"], "reason": "approved after artifact review"},
+    ).json()
+    after = client.post("/api/v1/ravn/valkyrie/proof/replay-signal", json=signal).json()
+    promoted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/promote",
+        json={
+            "learningId": learning["id"],
+            "reason": "replay passed locally",
+            "targetScope": "domain",
+        },
+    ).json()
+    demoted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/demote",
+        json={
+            "learningId": learning["id"],
+            "reason": "limit transfer after review",
+            "targetScope": "environment",
+        },
+    ).json()
+    rolled_back = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/rollback",
+        json={"learningId": learning["id"], "reason": "negative transfer"},
+    ).json()
+    final = client.post("/api/v1/ravn/valkyrie/proof/replay-signal", json=signal).json()
+    refreshed = client.get(f"/api/v1/ravn/valkyrie/learnings/{learning['id']}").json()
+
+    assert before["usedAdoptedLearning"] is False
+    assert adopted["active"] is True
+    assert adopted["artifactContent"] == skill_content
+    assert after["usedAdoptedLearning"] is True
+    assert after["learningId"] == learning["id"]
+    assert promoted["scope"] == "domain"
+    assert demoted["scope"] == "environment"
+    assert rolled_back["active"] is False
+    assert rolled_back["status"] == "rolled_back"
+    assert final["usedAdoptedLearning"] is False
+    assert refreshed["status"] == "rolled_back"
+    assert refreshed["scope"] == "environment"
+    assert any(
+        entry["eventType"] == "valkyrie.learning.adopt"
+        for entry in refreshed["history"]
+    )
+    assert any(
+        entry["eventType"] == "valkyrie.learning.promoted"
+        for entry in refreshed["history"]
+    )
+    assert any(
+        entry["eventType"] == "valkyrie.learning.demoted"
+        for entry in refreshed["history"]
+    )
+    assert any(
+        entry["eventType"] == "valkyrie.learning.rolled_back"
+        for entry in refreshed["history"]
+    )
+
+
+def test_valkyrie_learning_actions_publish_sleipnir_commands():
+    projection = ValkyrieDashboardProjection()
+    fake_publisher = FakeSleipnirPublisher()
+    app = FastAPI()
+    app.include_router(
+        create_valkyrie_router(
+            projection,
+            learning_command_publisher=ValkyrieLearningCommandPublisher(fake_publisher),
+        )
+    )
+    client = TestClient(app)
+    event = {
+        "event_id": "proof-built-printer-command",
+        "event_type": "valkyrie.evolution.built",
+        "source": "ravn:valkyrie-evolution-proof",
+        "payload": {
+            "environment_id": "local-proof",
+            "request_id": "evolve-gap-printer",
+            "skill_name": "valkyrie-inspect-printer-printer-resin-low",
+            "artifact_type": "ravn_skill_tool",
+            "skill_content": "\n".join(
+                [
+                    "# skill: valkyrie-inspect-printer-printer-resin-low",
+                    "metadata:",
+                    "  capability: inspect.printer.printer.resin-low",
+                ]
+            ),
+            "target_scope": "flock",
+            "gap": {
+                "capability_name": "inspect.printer.printer.resin-low",
+                "environment_id": "local-proof",
+                "source_valkyrie_id": "valkyrie-local",
+                "signal_ids": ["sig-printer-resin-low"],
+            },
+        },
+        "summary": "Built skill valkyrie-inspect-printer-printer-resin-low",
+        "timestamp": "2026-06-04T20:09:00+00:00",
+    }
+    dashboard = client.post("/api/v1/ravn/valkyrie/telemetry/events", json=event).json()
+    learning = next(
+        entry
+        for entry in dashboard["learnings"]
+        if entry["title"] == "valkyrie-inspect-printer-printer-resin-low"
+    )
+
+    adopted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/adopt",
+        json={
+            "learningId": learning["id"],
+            "operatorId": "test-operator",
+            "reason": "publish adoption command",
+        },
+    ).json()
+    promoted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/promote",
+        json={
+            "learningId": learning["id"],
+            "operatorId": "test-operator",
+            "reason": "publish scope command",
+            "targetScope": "shared",
+        },
+    ).json()
+    demoted = client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning['id']}/demote",
+        json={
+            "learningId": learning["id"],
+            "operatorId": "test-operator",
+            "reason": "publish demotion command",
+            "targetScope": "flock",
+        },
+    ).json()
+
+    assert adopted["commandDelivery"]["published"] is True
+    assert adopted["commandDelivery"]["eventType"] == "learning.adoption.recorded"
+    assert promoted["commandDelivery"]["published"] is True
+    assert promoted["commandDelivery"]["eventType"] == "learning.promoted"
+    assert demoted["commandDelivery"]["published"] is True
+    assert demoted["commandDelivery"]["eventType"] == "learning.promoted"
+    assert [event.event_type for event in fake_publisher.events] == [
+        "learning.adoption.recorded",
+        "learning.promoted",
+        "learning.promoted",
+    ]
+    adoption_event = fake_publisher.events[0]
+    assert adoption_event.payload["learning_id"] == "valkyrie-inspect-printer-printer-resin-low"
+    assert adoption_event.payload["action"] == "adopted"
+    assert adoption_event.payload["operator_id"] == "test-operator"
+    demotion_event = fake_publisher.events[-1]
+    assert demotion_event.payload["from_scope"] == "shared"
+    assert demotion_event.payload["to_scope"] == "flock"
+    assert demotion_event.payload["artifact_content_present"] is True
+
+
 def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
     monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
     projection = ValkyrieDashboardProjection()
@@ -716,6 +1030,50 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_stream
     asyncio.run(subscription.stop())
     assert all(entry.subscription.unsubscribed for entry in created)
     assert all(entry.stopped for entry in created)
+
+
+def test_valkyrie_learning_command_publisher_inherits_telemetry_tls(monkeypatch):
+    import sleipnir.adapters.nats_transport as nats_transport
+
+    created: list[FakeNatsPublisher] = []
+
+    class FakeNatsPublisher:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.started = False
+            created.append(self)
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            return None
+
+        async def publish(self, event: SleipnirEvent) -> None:
+            del event
+
+    monkeypatch.setattr(nats_transport, "NatsPublisher", FakeNatsPublisher)
+    monkeypatch.delenv("RAVN_VALKYRIE_COMMAND_NATS_URL", raising=False)
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "nats.internal")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY", "true")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "true")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_USER", "valkyrie-dashboard")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "secret")
+    monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS", "2")
+
+    publisher = build_nats_learning_command_publisher_from_env()
+
+    assert len(created) == 1
+    assert created[0].kwargs["servers"] == ["tls://nats:4222"]
+    assert created[0].kwargs["tls_hostname"] == "nats.internal"
+    assert created[0].kwargs["tls_insecure_skip_verify"] is True
+    assert created[0].kwargs["tls_handshake_first"] is True
+    assert created[0].kwargs["user"] == "valkyrie-dashboard"
+    assert created[0].kwargs["password"] == "secret"
+
+    asyncio.run(publisher.start())
+    assert created[0].started is True
 
 
 def test_valkyrie_dashboard_telemetry_subscription_starts_streams_concurrently():

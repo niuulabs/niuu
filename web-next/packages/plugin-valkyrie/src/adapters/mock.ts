@@ -137,7 +137,7 @@ const flocks: FlockSummary[] = [
     natsSubject: 'flock.k8s.>',
     environmentIds: ['env-k8s-valhalla'],
     valkyrieIds: ['valkyrie-valhalla-sigrun', 'valkyrie-valhalla-runa'],
-    learningIds: ['learn-k8s-oom-canary', 'learn-k8s-noisy-probe'],
+    learningIds: ['learn-k8s-oom-canary', 'learn-k8s-noisy-probe', 'learn-k8s-eviction-rollback'],
     health: 'watch',
     lastExchangeAt: '2026-06-03T14:05:00Z',
   },
@@ -373,6 +373,38 @@ const learnings: LearningRecord[] = [
     redaction: 'none',
     promotedTool: 'k8s_memory_pressure_probe',
     createdAt: '2026-06-03T03:20:00Z',
+    active: true,
+    currentScope: 'flock',
+    targetScope: 'shared',
+    availableScopes: ['private', 'environment', 'domain', 'flock', 'shared'],
+    artifactType: 'ravn_skill_tool',
+    artifactContent:
+      '# skill: k8s_memory_pressure_probe\n\nmetadata:\n  capability: inspect.kubernetes.pod.oomkilled\n  safety_class: read_only\n',
+    sourceSignalIds: ['sig-k8s-oom-1', 'sig-k8s-oom-2', 'sig-k8s-oom-3'],
+    sourceEvidence: { replayed: 3, predicted: 3 },
+    dreamRationale: 'Repeated OOMKilled events preceded queue-depth drift.',
+    odinReview: {
+      outcome: 'approved',
+      approved: true,
+      reviewer: 'odin:mock-court',
+      rationale: 'Read-only inspection with replay evidence.',
+      findings: [],
+      requiredForActivation: true,
+    },
+    history: [
+      {
+        eventType: 'valkyrie.evolution.built',
+        status: 'candidate',
+        summary: 'Built skill k8s_memory_pressure_probe',
+        observedAt: '2026-06-03T03:18:00Z',
+      },
+      {
+        eventType: 'valkyrie.evolution.activated',
+        status: 'canary',
+        summary: 'Started canary in Valhalla',
+        observedAt: '2026-06-03T03:20:00Z',
+      },
+    ],
   },
   {
     id: 'learn-email-vendor-escalation',
@@ -403,6 +435,23 @@ const learnings: LearningRecord[] = [
     redaction: 'none',
     promotedTool: 'printer_resin_pause',
     createdAt: '2026-06-01T22:00:00Z',
+  },
+  {
+    id: 'learn-k8s-eviction-rollback',
+    title: 'Aggressive eviction on memory pressure',
+    summary: 'Cordon and drain on first eviction caused capacity collapse on smaller clusters.',
+    scope: 'flock',
+    status: 'rolled_back',
+    sourceEnvironmentId: 'env-k8s-valhalla',
+    sourceValkyrieId: 'valkyrie-valhalla-sigrun',
+    targetFlockId: 'flock-k8s',
+    confidence: 0.44,
+    evaluation:
+      'Negative transfer on Noatun with 4 nodes; drain cascaded. Rolled back after 1 incident.',
+    negativeTransferRisk: 'high',
+    redaction: 'none',
+    promotedTool: 'node_cordon_drain',
+    createdAt: '2026-06-02T04:15:00Z',
   },
 ];
 
@@ -720,10 +769,32 @@ function replaceLearning(
   dashboard: ValkyrieDashboard,
   learningId: string,
   status: LearningRecord['status'],
+  updates: Partial<LearningRecord> = {},
 ): LearningRecord {
   const learning = dashboard.learnings.find((entry) => entry.id === learningId);
   if (!learning) throw new Error(`Learning not found: ${learningId}`);
-  const next = { ...learning, status };
+  const next = {
+    ...learning,
+    status,
+    active: status === 'adopted' || status === 'canary',
+    commandDelivery: {
+      published: true,
+      eventType: status === 'adopted' || status === 'rejected' ? 'learning.adoption.recorded' : 'learning.promoted',
+      eventId: `mock-${learningId}-${status}`,
+      message: 'Mock Sleipnir command published.',
+      observedAt: new Date().toISOString(),
+    },
+    history: [
+      ...(learning.history ?? []),
+      {
+        eventType: `mock.learning.${status}`,
+        status,
+        summary: `Mock learning changed to ${status}`,
+        observedAt: new Date().toISOString(),
+      },
+    ],
+    ...updates,
+  };
   dashboard.learnings = dashboard.learnings.map((entry) =>
     entry.id === learningId ? next : entry,
   );
@@ -748,6 +819,11 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
     },
     async getFlock(flockId) {
       return dashboard.flocks.find((entry) => entry.id === flockId) ?? null;
+    },
+    async getLearning(learningId) {
+      const learning = dashboard.learnings.find((entry) => entry.id === learningId);
+      if (!learning) throw new Error(`Learning not found: ${learningId}`);
+      return learning;
     },
     async joinHuddle(huddleId) {
       const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
@@ -790,7 +866,51 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
     async overrideLearning(request: LearningDecisionRequest) {
       void request.reason;
       void request.operatorId;
-      return replaceLearning(dashboard, request.learningId, 'canary');
+      return replaceLearning(dashboard, request.learningId, 'adopted', { override: true });
+    },
+    async canaryLearning(request: LearningDecisionRequest) {
+      return replaceLearning(dashboard, request.learningId, 'canary', {
+        canaryEnvironmentId: request.canaryEnvironmentId,
+      });
+    },
+    async promoteLearning(request: LearningDecisionRequest) {
+      const learning = dashboard.learnings.find((entry) => entry.id === request.learningId);
+      if (!learning) throw new Error(`Learning not found: ${request.learningId}`);
+      return replaceLearning(dashboard, request.learningId, learning.status, {
+        scope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
+        currentScope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
+      });
+    },
+    async demoteLearning(request: LearningDecisionRequest) {
+      const learning = dashboard.learnings.find((entry) => entry.id === request.learningId);
+      if (!learning) throw new Error(`Learning not found: ${request.learningId}`);
+      return replaceLearning(dashboard, request.learningId, learning.status, {
+        scope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
+        currentScope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
+      });
+    },
+    async rollbackLearning(request: LearningDecisionRequest) {
+      return replaceLearning(dashboard, request.learningId, 'rolled_back');
+    },
+    async replaySignal(request) {
+      const reason = String(request.payload.reason ?? '');
+      const learning = dashboard.learnings.find(
+        (entry) =>
+          entry.active &&
+          (entry.promotedTool?.includes(reason.replace('_', '-')) ||
+            entry.title.includes(reason.replace('_', '-'))),
+      );
+      return {
+        signalId: String(request.payload.signal_id ?? 'mock-signal'),
+        capabilityName: reason,
+        decision: learning ? 'inspect_with_adopted_learning' : 'defer_and_request_capability',
+        skillName: learning?.promotedTool ?? '',
+        learningId: learning?.id ?? '',
+        confidence: learning ? 0.86 : 0.42,
+        rationale: learning ? 'Mock active learning matched.' : 'No mock active learning matched.',
+        usedAdoptedLearning: Boolean(learning),
+        observedAt: new Date().toISOString(),
+      };
     },
     async updateAutonomy(request: AutonomyUpdateRequest) {
       void request.reason;

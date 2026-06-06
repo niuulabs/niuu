@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,7 +16,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from sleipnir.domain import registry
+from sleipnir.domain.catalog import learning_adoption_recorded, learning_promoted
 from sleipnir.domain.events import SleipnirEvent
+from sleipnir.ports.events import SleipnirPublisher
 
 Dashboard = dict[str, Any]
 logger = logging.getLogger(__name__)
@@ -33,6 +37,9 @@ class HuddleSendRequest(BaseModel):
 class LearningDecisionRequest(BaseModel):
     learningId: str  # noqa: N815
     reason: str = ""
+    operatorId: str = "operator"  # noqa: N815
+    targetScope: str = ""  # noqa: N815
+    canaryEnvironmentId: str = ""  # noqa: N815
 
 
 class AutonomyUpdateRequest(BaseModel):
@@ -439,34 +446,253 @@ def _learning_entry(
     event_type = str(event.get("event_type") or "")
     fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
     details = fields or payload
+    gap = details.get("gap") if isinstance(details.get("gap"), dict) else {}
+    evidence = gap.get("evidence") if isinstance(gap.get("evidence"), dict) else {}
+    source_signal_ids = _as_string_list(
+        gap.get("signal_ids") or payload.get("signal_ids") or payload.get("signal_id") or ""
+    )
+    if not source_signal_ids and payload.get("signal_id"):
+        source_signal_ids = [str(payload.get("signal_id"))]
+    artifact_content = str(
+        details.get("skill_content")
+        or payload.get("skill_content")
+        or payload.get("artifact_content")
+        or payload.get("content")
+        or ""
+    )
+    review_payload = {}
+    if event_type == "odin.court.decided":
+        dissent = payload.get("dissent") if isinstance(payload.get("dissent"), list) else []
+        review_detail = next(
+            (item for item in dissent if isinstance(item, dict) and item.get("reviewer")),
+            {},
+        )
+        review_payload = {
+            "outcome": str(payload.get("outcome") or review_detail.get("outcome") or ""),
+            "approved": bool(payload.get("approved") or review_detail.get("approved")),
+            "rationale": str(payload.get("rationale") or review_detail.get("rationale") or ""),
+            "reviewer": str(payload.get("reviewer") or review_detail.get("reviewer") or ""),
+            "findings": _as_string_list(
+                payload.get("findings") or review_detail.get("findings") or []
+            ),
+            "requiredForActivation": bool(payload.get("required_for_activation")),
+        }
     return {
         "id": str(
             payload.get("proposal_id")
             or payload.get("learning_id")
             or payload.get("dream_id")
+            or payload.get("artifact_name")
+            or payload.get("skill_name")
+            or details.get("skill_name")
+            or details.get("request_id")
             or event.get("event_id")
             or f"{event_type}:{_event_timestamp(event)}"
         ),
         "eventType": event_type,
         "environmentId": _event_environment_id(event, payload),
-        "valkyrieId": _event_valkyrie_id(payload),
+        "valkyrieId": _event_valkyrie_id(payload) or str(gap.get("source_valkyrie_id") or ""),
         "dreamId": str(payload.get("dream_id") or ""),
         "title": str(
             details.get("title")
+            or payload.get("artifact_name")
+            or payload.get("skill_name")
+            or details.get("skill_name")
+            or gap.get("capability_name")
             or details.get("artifact_type")
             or event.get("summary")
             or event_type
         ),
         "status": status or str(details.get("status") or event_type.rsplit(".", 1)[-1]),
-        "artifactType": str(details.get("artifact_type") or ""),
-        "riskClass": str(details.get("risk_class") or ""),
+        "artifactType": str(details.get("artifact_type") or payload.get("artifact_type") or ""),
+        "riskClass": str(
+            details.get("risk_class")
+            or details.get("negative_transfer_risk")
+            or payload.get("negative_transfer_risk")
+            or "low"
+        ),
         "policyDecision": str(details.get("policy_decision") or ""),
+        "scope": str(
+            details.get("target_scope")
+            or payload.get("to_scope")
+            or payload.get("scope")
+            or "flock"
+        ),
+        "sourceEnvironmentId": str(
+            gap.get("environment_id") or _event_environment_id(event, payload)
+        ),
+        "sourceValkyrieId": str(
+            payload.get("source_valkyrie_id")
+            or gap.get("source_valkyrie_id")
+            or _event_valkyrie_id(payload)
+            or "valkyrie:local"
+        ),
+        "targetFlockId": str(payload.get("flock_id") or details.get("flock_id") or "flock-local"),
+        "confidence": _payload_float(details, "confidence")
+        or _payload_float(payload, "confidence"),
+        "evaluation": str(
+            details.get("evaluation")
+            or payload.get("rationale")
+            or payload.get("summary")
+            or evidence.get("summary")
+            or event.get("summary")
+            or ""
+        ),
+        "negativeTransferRisk": str(
+            details.get("negative_transfer_risk")
+            or payload.get("negative_transfer_risk")
+            or "low"
+        ),
+        "redaction": str(
+            details.get("redaction")
+            or payload.get("redaction")
+            or payload.get("redaction_status")
+            or "none"
+        ),
+        "promotedTool": str(
+            payload.get("artifact_name")
+            or payload.get("skill_name")
+            or details.get("skill_name")
+            or details.get("artifact_name")
+            or ""
+        ),
         "proposalsCreated": _payload_int(payload, "proposals_created"),
         "proposalsApplied": _payload_int(payload, "proposals_applied"),
         "proposalsDeferred": _payload_int(payload, "proposals_deferred"),
         "observedAt": _event_timestamp(event),
         "summary": str(event.get("summary") or ""),
+        "artifactContent": artifact_content,
+        "artifactPath": str(details.get("artifact_path") or payload.get("artifact_path") or ""),
+        "sourceSignalIds": source_signal_ids,
+        "sourceEvidence": evidence,
+        "dreamRationale": str(gap.get("reason") or payload.get("rationale") or ""),
+        "odinReview": review_payload,
+        "history": [
+            {
+                "eventType": event_type,
+                "status": status or str(details.get("status") or event_type.rsplit(".", 1)[-1]),
+                "summary": str(event.get("summary") or ""),
+                "observedAt": _event_timestamp(event),
+                "residentValkyrieId": str(payload.get("resident_valkyrie_id") or ""),
+                "residentValkyrieName": str(payload.get("resident_valkyrie_name") or ""),
+                "action": str(payload.get("action") or ""),
+                "relevant": payload.get("relevant"),
+                "installedSkillName": str(payload.get("installed_skill_name") or ""),
+                "odinDecision": str(payload.get("decision") or ""),
+            }
+        ],
     }
+
+
+def _learning_status_rank(status: str) -> int:
+    return {
+        "rolled_back": 7,
+        "adopted": 6,
+        "canary": 5,
+        "candidate": 4,
+        "rejected": 3,
+        "completed": 2,
+        "started": 1,
+    }.get(status, 0)
+
+
+def _merge_learning_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        learning_id = str(entry.get("id") or "")
+        if not learning_id:
+            continue
+        existing = merged.get(learning_id)
+        if existing is None:
+            current = deepcopy(entry)
+            history = current.get("history") if isinstance(current.get("history"), list) else []
+            current["history"] = list(history)
+            current["odinReviews"] = [current["odinReview"]] if current.get("odinReview") else []
+            merged[learning_id] = current
+            continue
+
+        if _learning_status_rank(str(entry.get("status") or "")) > _learning_status_rank(
+            str(existing.get("status") or "")
+        ):
+            existing["status"] = entry.get("status") or existing.get("status")
+
+        if str(entry.get("observedAt") or "") > str(existing.get("observedAt") or ""):
+            existing["observedAt"] = entry.get("observedAt")
+            existing["eventType"] = entry.get("eventType") or existing.get("eventType")
+
+        fill_keys = (
+            "title",
+            "artifactType",
+            "riskClass",
+            "policyDecision",
+            "scope",
+            "sourceEnvironmentId",
+            "sourceValkyrieId",
+            "targetFlockId",
+            "evaluation",
+            "negativeTransferRisk",
+            "redaction",
+            "promotedTool",
+            "summary",
+            "artifactContent",
+            "artifactPath",
+            "dreamRationale",
+        )
+        for key in fill_keys:
+            if not existing.get(key) and entry.get(key):
+                existing[key] = entry[key]
+
+        if not existing.get("confidence") and entry.get("confidence"):
+            existing["confidence"] = entry["confidence"]
+        if not existing.get("sourceSignalIds") and entry.get("sourceSignalIds"):
+            existing["sourceSignalIds"] = entry["sourceSignalIds"]
+        if not existing.get("sourceEvidence") and entry.get("sourceEvidence"):
+            existing["sourceEvidence"] = entry["sourceEvidence"]
+
+        review = entry.get("odinReview")
+        if isinstance(review, dict) and review.get("reviewer"):
+            existing["odinReview"] = review
+            reviews = existing.setdefault("odinReviews", [])
+            if review not in reviews:
+                reviews.append(review)
+
+        history = entry.get("history") if isinstance(entry.get("history"), list) else []
+        existing.setdefault("history", []).extend(history)
+
+    for entry in merged.values():
+        entry["history"] = sorted(
+            entry.get("history") or [],
+            key=lambda item: item.get("observedAt", ""),
+            reverse=True,
+        )
+        resident_decisions = []
+        for history in entry["history"]:
+            if history.get("eventType") != registry.LEARNING_ADOPTION_RECORDED:
+                continue
+            resident_decisions.append(
+                {
+                    "residentValkyrieId": history.get("residentValkyrieId", ""),
+                    "residentValkyrieName": history.get("residentValkyrieName", ""),
+                    "action": history.get("action") or history.get("status") or "",
+                    "relevant": history.get("relevant"),
+                    "installedSkillName": history.get("installedSkillName", ""),
+                    "observedAt": history.get("observedAt", ""),
+                    "summary": history.get("summary", ""),
+                }
+            )
+        entry["residentDecisions"] = resident_decisions
+        entry["adoptedResidents"] = [
+            decision
+            for decision in resident_decisions
+            if str(decision.get("action") or "").lower() in {"adopted", "adopt"}
+        ]
+        entry["rejectedResidents"] = [
+            decision
+            for decision in resident_decisions
+            if str(decision.get("action") or "").lower() in {"rejected", "reject"}
+        ]
+
+    return list(merged.values())
 
 
 def _tool_need_entry(
@@ -520,6 +746,194 @@ def _capability_gap_from_details(details: dict[str, Any], payload: dict[str, Any
     return ""
 
 
+def _learning_status_for_event(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == registry.LEARNING_ADOPTION_RECORDED:
+        action = str(payload.get("action") or "").lower()
+        if action in {"adopted", "adopt"}:
+            return "adopted"
+        if action in {"canary", "canary_started"}:
+            return "canary"
+        if action in {"rejected", "reject"}:
+            return "rejected"
+        if action in {"overridden", "override"}:
+            return "adopted"
+        if action in {"regressed", "rollback", "rolled_back"}:
+            return "rolled_back"
+    if event_type == registry.LEARNING_PROMOTED:
+        return str(payload.get("status") or "")
+    if event_type == "valkyrie.evolution.built":
+        return "candidate"
+    if event_type == "valkyrie.evolution.activated":
+        if payload.get("learning_id"):
+            return "adopted"
+        return "canary"
+    if event_type == "valkyrie.evolution.proven":
+        return "adopted"
+    if event_type == "valkyrie.evolution.held":
+        return "rejected"
+    if event_type == "odin.court.decided":
+        decision = str(payload.get("decision") or "").lower()
+        if decision == "learning_adoption_blocked":
+            return "rejected"
+        if decision == "learning_adoption_allowed":
+            return "canary"
+        outcome = str(payload.get("outcome") or "").lower()
+        if outcome == "rejected":
+            return "rejected"
+        if outcome == "approved":
+            return "canary"
+    if "rolled_back" in event_type:
+        return "rolled_back"
+    return ""
+
+
+LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
+
+
+def _next_learning_scope(scope: str) -> str:
+    try:
+        index = LEARNING_SCOPES.index(scope)
+    except ValueError:
+        return "environment"
+    return LEARNING_SCOPES[min(index + 1, len(LEARNING_SCOPES) - 1)]
+
+
+def _raw_learning_id(learning_id: str) -> str:
+    return learning_id.removeprefix("live-")
+
+
+def _previous_learning_scope(scope: str) -> str:
+    try:
+        index = LEARNING_SCOPES.index(scope)
+    except ValueError:
+        return "private"
+    return LEARNING_SCOPES[max(index - 1, 0)]
+
+
+def _available_learning_scopes(scope: str) -> list[str]:
+    try:
+        index = LEARNING_SCOPES.index(scope)
+    except ValueError:
+        index = 0
+    return list(LEARNING_SCOPES[: index + 2])
+
+
+def _learning_active_for_status(status: str) -> bool:
+    return status in {"adopted", "canary"}
+
+
+def _decision_summary(action: str, request: LearningDecisionRequest | None) -> str:
+    reason = request.reason if request and request.reason else "no reason supplied"
+    return f"{action.replace('_', ' ')} by {request.operatorId if request else 'system'}: {reason}"
+
+
+def _capability_from_signal_payload(event_type: str, payload: dict[str, Any]) -> str:
+    namespace = event_type.removeprefix("signal.").removesuffix(".event")
+    if not namespace:
+        namespace = str(payload.get("namespace") or payload.get("source") or "generic")
+    reason = str(payload.get("reason") or payload.get("kind") or "unknown")
+    kind = str(payload.get("kind") or namespace)
+    return f"inspect.{_slug(namespace)}.{_slug(kind)}.{_slug(reason)}"
+
+
+def _learning_capability(learning: dict[str, Any]) -> str:
+    artifact_content = str(learning.get("artifactContent") or "")
+    match = re.search(r"^metadata:\n(?:.*\n)*?\s*capability:\s*([^\n]+)", artifact_content, re.M)
+    if match:
+        return match.group(1).strip().strip("`")
+    for value in (
+        str(learning.get("promotedTool") or ""),
+        str(learning.get("title") or ""),
+    ):
+        if value.startswith("valkyrie-inspect-"):
+            return "inspect." + value.removeprefix("valkyrie-inspect-").replace("-", ".")
+        if value.startswith("inspect."):
+            return value
+    return ""
+
+
+def _merge_learning_record(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    if existing is None:
+        return incoming
+    merged = {**existing, **incoming}
+    for key in (
+        "artifactContent",
+        "artifactPath",
+        "artifactType",
+        "promotedTool",
+        "dreamRationale",
+        "evaluation",
+        "summary",
+    ):
+        if not incoming.get(key) and existing.get(key):
+            merged[key] = existing[key]
+    for key in ("odinReview", "sourceEvidence"):
+        if not incoming.get(key) and existing.get(key):
+            merged[key] = existing[key]
+    merged["sourceSignalIds"] = list(
+        dict.fromkeys(
+            [
+                *_as_string_list(existing.get("sourceSignalIds") or []),
+                *_as_string_list(incoming.get("sourceSignalIds") or []),
+            ]
+        )
+    )
+    merged["history"] = [
+        *(existing.get("history") if isinstance(existing.get("history"), list) else []),
+        *(incoming.get("history") if isinstance(incoming.get("history"), list) else []),
+    ][-30:]
+    merged["active"] = _learning_active_for_status(str(merged.get("status") or ""))
+    merged["currentScope"] = str(merged.get("scope") or merged.get("currentScope") or "private")
+    merged["targetScope"] = _next_learning_scope(merged["currentScope"])
+    merged["availableScopes"] = _available_learning_scopes(merged["currentScope"])
+    return merged
+
+
+def _dashboard_learning_from_telemetry(entry: dict[str, Any]) -> dict[str, Any]:
+    scope = str(entry.get("scope") or "flock")
+    status = str(entry.get("status") or "candidate")
+    return {
+        "id": str(entry.get("id") or ""),
+        "title": str(entry.get("title") or entry.get("promotedTool") or "Generated capability"),
+        "summary": str(entry.get("summary") or entry.get("evaluation") or ""),
+        "scope": scope,
+        "status": status,
+        "sourceEnvironmentId": str(
+            entry.get("sourceEnvironmentId") or entry.get("environmentId") or ""
+        ),
+        "sourceValkyrieId": str(entry.get("sourceValkyrieId") or entry.get("valkyrieId") or ""),
+        "targetFlockId": str(entry.get("targetFlockId") or ""),
+        "confidence": _as_float(entry.get("confidence"), 0.0),
+        "evaluation": str(entry.get("evaluation") or entry.get("summary") or ""),
+        "negativeTransferRisk": str(entry.get("negativeTransferRisk") or "low"),
+        "redaction": str(entry.get("redaction") or "none"),
+        "promotedTool": str(entry.get("promotedTool") or ""),
+        "createdAt": str(entry.get("observedAt") or _now()),
+        "active": status in {"adopted", "canary"},
+        "currentScope": scope,
+        "targetScope": _next_learning_scope(scope),
+        "availableScopes": _available_learning_scopes(scope),
+        "artifactContent": str(entry.get("artifactContent") or ""),
+        "artifactPath": str(entry.get("artifactPath") or ""),
+        "artifactType": str(entry.get("artifactType") or ""),
+        "sourceSignalIds": _as_string_list(entry.get("sourceSignalIds") or []),
+        "sourceEvidence": (
+            entry.get("sourceEvidence") if isinstance(entry.get("sourceEvidence"), dict) else {}
+        ),
+        "dreamRationale": str(entry.get("dreamRationale") or ""),
+        "odinReview": entry.get("odinReview") if isinstance(entry.get("odinReview"), dict) else {},
+        "history": entry.get("history") if isinstance(entry.get("history"), list) else [],
+        "canaryEnvironmentId": "",
+        "operatorDecisions": [],
+        "commandDelivery": entry.get("commandDelivery")
+        if isinstance(entry.get("commandDelivery"), dict)
+        else {},
+    }
+
+
 def _runtime_entry(
     event: dict[str, Any],
     payload: dict[str, Any],
@@ -536,6 +950,141 @@ def _runtime_entry(
         "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
         "observedAt": timestamp,
     }
+
+
+class ValkyrieLearningCommandPublisher:
+    """Publish operator learning controls onto the existing Sleipnir bus."""
+
+    def __init__(
+        self,
+        publisher: SleipnirPublisher | None = None,
+        *,
+        source: str = "ravn:valkyrie-dashboard",
+        start_timeout_seconds: float = 5.0,
+    ) -> None:
+        self._publisher = publisher
+        self._source = source
+        self._start_timeout_seconds = max(start_timeout_seconds, 1.0)
+
+    async def start(self) -> None:
+        if self._publisher is not None and hasattr(self._publisher, "start"):
+            await asyncio.wait_for(
+                self._publisher.start(),  # type: ignore[attr-defined]
+                timeout=self._start_timeout_seconds,
+            )
+
+    async def stop(self) -> None:
+        if self._publisher is not None and hasattr(self._publisher, "stop"):
+            await self._publisher.stop()  # type: ignore[attr-defined]
+
+    async def publish(
+        self,
+        *,
+        action: str,
+        before: dict[str, Any],
+        learning: dict[str, Any],
+        request: LearningDecisionRequest,
+    ) -> tuple[dict[str, Any], SleipnirEvent | None]:
+        event = self._event_for_action(
+            action=action,
+            before=before,
+            learning=learning,
+            request=request,
+        )
+        if self._publisher is None:
+            return (
+                {
+                    "published": False,
+                    "eventType": event.event_type,
+                    "eventId": event.event_id,
+                    "message": (
+                        "No Sleipnir publisher configured; recorded in dashboard projection only."
+                    ),
+                    "observedAt": _now(),
+                },
+                None,
+            )
+        await self._publisher.publish(event)
+        return (
+            {
+                "published": True,
+                "eventType": event.event_type,
+                "eventId": event.event_id,
+                "message": "Published to Sleipnir/NATS for resident Valkyries to consume.",
+                "observedAt": _now(),
+            },
+            event,
+        )
+
+    def _event_for_action(
+        self,
+        *,
+        action: str,
+        before: dict[str, Any],
+        learning: dict[str, Any],
+        request: LearningDecisionRequest,
+    ) -> SleipnirEvent:
+        raw_learning_id = _raw_learning_id(str(learning.get("id") or request.learningId))
+        environment_id = str(
+            learning.get("sourceEnvironmentId")
+            or before.get("sourceEnvironmentId")
+            or "unknown"
+        )
+        correlation_id = f"valkyrie-learning:{raw_learning_id}:{action}"
+        if action in {"promote", "demote"}:
+            event = learning_promoted(
+                environment_id=environment_id,
+                learning_id=raw_learning_id,
+                from_scope=str(before.get("scope") or before.get("currentScope") or "private"),
+                to_scope=str(learning.get("scope") or learning.get("currentScope") or "private"),
+                summary=(
+                    request.reason
+                    or str(learning.get("summary") or learning.get("title") or "")
+                ),
+                confidence=_as_float(learning.get("confidence"), 0.0),
+                source=self._source,
+                correlation_id=correlation_id,
+            )
+        else:
+            adoption_action = {
+                "adopt": "adopted",
+                "reject": "rejected",
+                "override": "overridden",
+                "canary": "canary",
+                "rollback": "regressed",
+            }.get(action, action)
+            event = learning_adoption_recorded(
+                environment_id=environment_id,
+                learning_id=raw_learning_id,
+                promotion_id=raw_learning_id,
+                action=adoption_action,
+                rationale=request.reason,
+                canary_passed=action == "adopt",
+                local_override_path=str(learning.get("artifactPath") or ""),
+                source=self._source,
+                correlation_id=correlation_id,
+            )
+        event.payload.update(
+            {
+                "ui_learning_id": str(learning.get("id") or request.learningId),
+                "operator_id": request.operatorId,
+                "action_kind": action,
+                "status": str(learning.get("status") or ""),
+                "scope": str(learning.get("scope") or ""),
+                "target_scope": request.targetScope,
+                "canary_environment_id": request.canaryEnvironmentId,
+                "artifact_type": str(learning.get("artifactType") or ""),
+                "artifact_name": str(learning.get("promotedTool") or learning.get("title") or ""),
+                "artifact_path": str(learning.get("artifactPath") or ""),
+                "artifact_content": str(learning.get("artifactContent") or ""),
+                "artifact_content_present": bool(learning.get("artifactContent")),
+                "source_valkyrie_id": str(learning.get("sourceValkyrieId") or ""),
+                "flock_id": str(learning.get("targetFlockId") or ""),
+                "domain": str(learning.get("domain") or learning.get("domainScope") or ""),
+                "redaction_status": str(learning.get("redaction") or ""),
+            }
+        )
+        return event
 
 
 def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
@@ -884,7 +1433,13 @@ def _aggregate_telemetry(
         elif event_type.startswith("learning.") or event_type.startswith("flock.learning."):
             totals["learningEvents"] += 1
             entry["learningEvents"] += 1
-            recent_learning.append(_learning_entry(event, payload))
+            recent_learning.append(
+                _learning_entry(
+                    event,
+                    payload,
+                    status=_learning_status_for_event(event_type, payload),
+                )
+            )
             if event_type == "learning.dream.started":
                 totals["dreamCyclesStarted"] += 1
                 entry["dreamCycles"] += 1
@@ -898,6 +1453,62 @@ def _aggregate_telemetry(
         elif event_type == "valkyrie.wakefulness.changed":
             totals["wakefulnessChanges"] += 1
             recent_learning.append(_learning_entry(event, payload, status="wakefulness"))
+        elif event_type == "valkyrie.capability_gap.detected":
+            capability = str(payload.get("capability_name") or event.get("summary") or "unknown")
+            append_tool_need(capability=capability, status="needed")
+            recent_learning.append(_learning_entry(event, payload, status="candidate"))
+        elif event_type in {
+            "valkyrie.dream.started",
+            "valkyrie.dream.completed",
+            "valkyrie.dream.failed",
+            "valkyrie.dream.noop",
+        }:
+            totals["learningEvents"] += 1
+            entry["learningEvents"] += 1
+            recent_learning.append(
+                _learning_entry(event, payload, status=event_type.rsplit(".", 1)[-1])
+            )
+            if event_type == "valkyrie.dream.started":
+                totals["dreamCyclesStarted"] += 1
+                entry["dreamCycles"] += 1
+            elif event_type == "valkyrie.dream.completed":
+                totals["dreamCyclesCompleted"] += 1
+            elif event_type == "valkyrie.dream.noop":
+                totals["dreamCyclesNoop"] += 1
+                totals["dreamCyclesCompleted"] += 1
+            elif event_type == "valkyrie.dream.failed":
+                totals["dreamCyclesFailed"] += 1
+        elif event_type.startswith("valkyrie.evolution."):
+            status = _learning_status_for_event(event_type, payload)
+            totals["skillProposals"] += 1
+            totals["learningEvents"] += 1
+            entry["learningEvents"] += 1
+            recent_learning.append(_learning_entry(event, payload, status=status))
+            capability = str(
+                payload.get("capability_name")
+                or payload.get("skill_name")
+                or payload.get("artifact_name")
+                or event.get("summary")
+                or event_type
+            )
+            recent_tool_needs.append(
+                _tool_need_entry(
+                    event,
+                    payload,
+                    capability=capability,
+                    status=status or event_type.rsplit(".", 1)[-1],
+                )
+            )
+        elif event_type == "odin.court.decided":
+            totals["learningEvents"] += 1
+            entry["learningEvents"] += 1
+            recent_learning.append(
+                _learning_entry(
+                    event,
+                    payload,
+                    status=_learning_status_for_event(event_type, payload),
+                )
+            )
         elif (
             event_type.startswith("self_improvement.")
             or event_type.startswith("skill.")
@@ -993,7 +1604,7 @@ def _aggregate_telemetry(
             reverse=True,
         )[:120],
         "recentLearning": sorted(
-            recent_learning,
+            _merge_learning_entries(recent_learning),
             key=lambda item: item.get("observedAt", ""),
             reverse=True,
         )[:60],
@@ -1187,6 +1798,8 @@ class ValkyrieDashboardProjection:
         self._raw_signal_events: list[dict[str, Any]] = []
         self._control_events: list[dict[str, Any]] = []
         self._runtime_events: dict[str, dict[str, Any]] = {}
+        self._learning_decisions: dict[str, dict[str, Any]] = {}
+        self._seen_event_ids: set[str] = set()
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
@@ -1194,6 +1807,17 @@ class ValkyrieDashboardProjection:
 
     def record_event(self, event: SleipnirEvent | dict[str, Any]) -> None:
         event_data = _event_dict(event)
+        event_id = str(event_data.get("event_id") or "")
+        if event_id:
+            if event_id in self._seen_event_ids:
+                return
+            self._seen_event_ids.add(event_id)
+            if len(self._seen_event_ids) > CONTROL_TELEMETRY_LIMIT + RAW_SIGNAL_TELEMETRY_LIMIT:
+                self._seen_event_ids = set(
+                    list(self._seen_event_ids)[
+                        -(CONTROL_TELEMETRY_LIMIT + RAW_SIGNAL_TELEMETRY_LIMIT) :
+                    ]
+                )
         if _is_runtime_event(event_data):
             raw_payload = event_data.get("payload")
             payload = raw_payload if isinstance(raw_payload, dict) else {}
@@ -1279,11 +1903,303 @@ class ValkyrieDashboardProjection:
         self._touch()
         return deepcopy(message)
 
-    def decide_learning(self, learning_id: str, status: str) -> dict[str, Any]:
+    def learning(self, learning_id: str) -> dict[str, Any]:
+        self._refresh_live_report()
+        return deepcopy(self._require_learning(learning_id))
+
+    def decide_learning(
+        self,
+        learning_id: str,
+        status: str,
+        request: LearningDecisionRequest | None = None,
+        *,
+        action: str = "",
+    ) -> dict[str, Any]:
+        self._refresh_live_report()
         learning = self._require_learning(learning_id)
         learning["status"] = status
+        learning["active"] = _learning_active_for_status(status)
+        if action == "override":
+            learning["override"] = True
+        self._append_learning_history(
+            learning,
+            event_type=f"valkyrie.learning.{action or status}",
+            status=status,
+            summary=_decision_summary(action or status, request),
+            request=request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, action or status, request)
         self._touch()
         return deepcopy(learning)
+
+    def promote_learning(
+        self,
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        target_scope = request.targetScope or _next_learning_scope(
+            str(learning.get("scope") or "private")
+        )
+        if target_scope not in LEARNING_SCOPES:
+            raise HTTPException(status_code=422, detail="Unsupported learning scope")
+        current_index = LEARNING_SCOPES.index(str(learning.get("scope") or "private"))
+        target_index = LEARNING_SCOPES.index(target_scope)
+        if target_index > current_index + 1:
+            raise HTTPException(status_code=422, detail="Learning scope can only advance one step")
+        learning["scope"] = target_scope
+        learning["currentScope"] = target_scope
+        learning["targetScope"] = _next_learning_scope(target_scope)
+        learning["availableScopes"] = _available_learning_scopes(target_scope)
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.promoted",
+            status=str(learning.get("status") or "candidate"),
+            summary=f"Promoted learning to {target_scope}",
+            request=request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "promote", request)
+        self._touch()
+        return deepcopy(learning)
+
+    def demote_learning(
+        self,
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        target_scope = request.targetScope or _previous_learning_scope(
+            str(learning.get("scope") or "private")
+        )
+        if target_scope not in LEARNING_SCOPES:
+            raise HTTPException(status_code=422, detail="Unsupported learning scope")
+        current_index = LEARNING_SCOPES.index(str(learning.get("scope") or "private"))
+        target_index = LEARNING_SCOPES.index(target_scope)
+        if target_index < current_index - 1:
+            raise HTTPException(status_code=422, detail="Learning scope can only retreat one step")
+        if target_index > current_index:
+            raise HTTPException(status_code=422, detail="Use promote to advance learning scope")
+        learning["scope"] = target_scope
+        learning["currentScope"] = target_scope
+        learning["targetScope"] = _next_learning_scope(target_scope)
+        learning["availableScopes"] = _available_learning_scopes(target_scope)
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.demoted",
+            status=str(learning.get("status") or "candidate"),
+            summary=f"Demoted learning to {target_scope}",
+            request=request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "demote", request)
+        self._touch()
+        return deepcopy(learning)
+
+    def canary_learning(
+        self,
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        learning["status"] = "canary"
+        learning["active"] = True
+        learning["canaryEnvironmentId"] = (
+            request.canaryEnvironmentId or str(learning.get("sourceEnvironmentId") or "")
+        )
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.canary_started",
+            status="canary",
+            summary=f"Started canary in {learning['canaryEnvironmentId'] or 'source environment'}",
+            request=request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "canary", request)
+        self._touch()
+        return deepcopy(learning)
+
+    def rollback_learning(
+        self,
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        learning["status"] = "rolled_back"
+        learning["active"] = False
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.rolled_back",
+            status="rolled_back",
+            summary=_decision_summary("rollback", request),
+            request=request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "rollback", request)
+        self._touch()
+        return deepcopy(learning)
+
+    def replay_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
+        self._refresh_live_report()
+        event_type = str(signal.get("event_type") or signal.get("eventType") or "")
+        payload = signal.get("payload") if isinstance(signal.get("payload"), dict) else signal
+        payload = payload if isinstance(payload, dict) else {}
+        capability = _capability_from_signal_payload(event_type, payload)
+        learning = self._active_learning_for_capability(capability)
+        signal_id = str(payload.get("signal_id") or payload.get("signalId") or "operator-signal")
+        skill_name = (
+            str(learning.get("promotedTool") or learning.get("title") or "") if learning else ""
+        )
+        decision = {
+            "signalId": signal_id,
+            "capabilityName": capability,
+            "decision": (
+                "inspect_with_adopted_learning" if learning else "defer_and_request_capability"
+            ),
+            "skillName": skill_name,
+            "learningId": str(learning.get("id") or "") if learning else "",
+            "confidence": 0.86 if learning else 0.42,
+            "rationale": (
+                "An active adopted/canary learning now matches this signal capability."
+                if learning
+                else "No active adopted learning matches this signal capability."
+            ),
+            "usedAdoptedLearning": learning is not None,
+            "observedAt": _now(),
+        }
+        self.record_event(
+            {
+                "event_type": registry.VALKYRIE_JUDGMENT_PROPOSED,
+                "source": "ravn:valkyrie-dashboard-replay",
+                "summary": f"{decision['decision']} for {decision['signalId']}",
+                "urgency": 0.4,
+                "domain": "infrastructure",
+                "timestamp": decision["observedAt"],
+                "correlation_id": "valkyrie-dashboard-replay",
+                "payload": {
+                    "signal_id": decision["signalId"],
+                    "capability_name": capability,
+                    "decision": decision["decision"],
+                    "confidence": decision["confidence"],
+                    "skill_name": decision["skillName"],
+                    "learning_id": decision["learningId"],
+                    "rationale": decision["rationale"],
+                },
+            }
+        )
+        return decision
+
+    def record_learning_command_delivery(
+        self,
+        learning_id: str,
+        delivery: dict[str, Any],
+    ) -> dict[str, Any]:
+        learning = self._require_learning(learning_id)
+        learning["commandDelivery"] = delivery
+        self._remember_learning_decision(learning)
+        self._touch()
+        return deepcopy(learning)
+
+    def _active_learning_for_capability(self, capability: str) -> dict[str, Any] | None:
+        for learning in self._dashboard.get("learnings", []):
+            if not isinstance(learning, dict) or not learning.get("active"):
+                continue
+            if str(learning.get("status") or "") not in {"adopted", "canary"}:
+                continue
+            if _learning_capability(learning) == capability:
+                return learning
+        return None
+
+    def _append_learning_history(
+        self,
+        learning: dict[str, Any],
+        *,
+        event_type: str,
+        status: str,
+        summary: str,
+        request: LearningDecisionRequest | None,
+    ) -> None:
+        history = learning.get("history")
+        if not isinstance(history, list):
+            history = []
+        history.append(
+            {
+                "eventType": event_type,
+                "status": status,
+                "summary": summary,
+                "operatorId": request.operatorId if request else "system",
+                "reason": request.reason if request else "",
+                "observedAt": _now(),
+            }
+        )
+        learning["history"] = history[-30:]
+
+    def _record_learning_control_event(
+        self,
+        learning: dict[str, Any],
+        action: str,
+        request: LearningDecisionRequest | None,
+    ) -> None:
+        self._control_events.append(
+            {
+                "event_type": f"valkyrie.learning.{action}",
+                "source": "ravn:valkyrie-dashboard",
+                "summary": _decision_summary(action, request),
+                "urgency": 0.35,
+                "domain": "infrastructure",
+                "timestamp": _now(),
+                "correlation_id": "valkyrie-learning-ui",
+                "payload": {
+                    "learning_id": learning.get("id", ""),
+                    "title": learning.get("title", ""),
+                    "status": learning.get("status", ""),
+                    "scope": learning.get("scope", ""),
+                    "active": learning.get("active", False),
+                    "operator_id": request.operatorId if request else "system",
+                    "reason": request.reason if request else "",
+                    "target_scope": request.targetScope if request else "",
+                    "canary_environment_id": request.canaryEnvironmentId if request else "",
+                },
+            }
+        )
+        self._control_events = self._control_events[-CONTROL_TELEMETRY_LIMIT:]
+
+    def _remember_learning_decision(self, learning: dict[str, Any]) -> None:
+        learning_id = str(learning.get("id") or "")
+        if not learning_id:
+            return
+        history = learning.get("history") if isinstance(learning.get("history"), list) else []
+        decision_history = [
+            entry
+            for entry in history
+            if isinstance(entry, dict)
+            and str(entry.get("eventType") or "").startswith("valkyrie.learning.")
+        ]
+        self._learning_decisions[learning_id] = {
+            "status": str(learning.get("status") or ""),
+            "active": bool(learning.get("active")),
+            "scope": str(learning.get("scope") or learning.get("currentScope") or ""),
+            "currentScope": str(learning.get("currentScope") or learning.get("scope") or ""),
+            "targetScope": str(learning.get("targetScope") or ""),
+            "availableScopes": (
+                learning.get("availableScopes")
+                if isinstance(learning.get("availableScopes"), list)
+                else []
+            ),
+            "canaryEnvironmentId": str(learning.get("canaryEnvironmentId") or ""),
+            "override": bool(learning.get("override")),
+            "commandDelivery": (
+                learning.get("commandDelivery")
+                if isinstance(learning.get("commandDelivery"), dict)
+                else {}
+            ),
+            "decisionHistory": decision_history[-30:],
+        }
 
     def update_autonomy(self, request: AutonomyUpdateRequest) -> Dashboard:
         valid_modes = {"manual", "supervised", "delegated", "yolo"}
@@ -1341,7 +2257,76 @@ class ValkyrieDashboardProjection:
             telemetry_events,
             observed_at=observed_at,
         )
+        self._sync_live_learnings()
         self._dashboard["updatedAt"] = observed_at
+
+    def _sync_live_learnings(self) -> None:
+        telemetry = self._dashboard.get("telemetry")
+        if not isinstance(telemetry, dict):
+            return
+        recent = telemetry.get("recentLearning")
+        if not isinstance(recent, list):
+            return
+        seeded = [
+            entry
+            for entry in self._dashboard.get("learnings", [])
+            if isinstance(entry, dict) and not str(entry.get("id") or "").startswith("live-")
+        ]
+        by_id = {str(entry.get("id") or ""): entry for entry in seeded}
+        for item in sorted(recent, key=lambda entry: str(entry.get("observedAt") or "")):
+            if not isinstance(item, dict):
+                continue
+            learning = _dashboard_learning_from_telemetry(item)
+            if not learning["id"]:
+                continue
+            learning["id"] = f"live-{learning['id']}"
+            existing = by_id.get(learning["id"])
+            by_id[learning["id"]] = _merge_learning_record(existing, learning)
+            decision = self._learning_decisions.get(learning["id"])
+            if decision:
+                for key in (
+                    "status",
+                    "active",
+                    "scope",
+                    "currentScope",
+                    "targetScope",
+                    "availableScopes",
+                    "canaryEnvironmentId",
+                    "override",
+                    "commandDelivery",
+                ):
+                    if key in decision and decision[key] not in ("", []):
+                        by_id[learning["id"]][key] = decision[key]
+                decision_history = (
+                    decision.get("decisionHistory")
+                    if isinstance(decision.get("decisionHistory"), list)
+                    else []
+                )
+                if decision_history:
+                    existing_history = (
+                        by_id[learning["id"]].get("history")
+                        if isinstance(by_id[learning["id"]].get("history"), list)
+                        else []
+                    )
+                    telemetry_history = [
+                        entry
+                        for entry in existing_history
+                        if not (
+                            isinstance(entry, dict)
+                            and str(entry.get("eventType") or "").startswith(
+                                "valkyrie.learning."
+                            )
+                        )
+                    ]
+                    by_id[learning["id"]]["history"] = [
+                        *telemetry_history,
+                        *decision_history,
+                    ][-30:]
+        self._dashboard["learnings"] = sorted(
+            by_id.values(),
+            key=lambda entry: str(entry.get("createdAt") or ""),
+            reverse=True,
+        )
 
     def _require_huddle(self, huddle_id: str) -> dict[str, Any]:
         huddle = next(
@@ -1590,6 +2575,10 @@ def build_nats_telemetry_subscription_from_env(
         os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS"),
         2.0,
     )
+    jetstream_domain = os.environ.get(
+        "RAVN_VALKYRIE_TELEMETRY_NATS_JETSTREAM_DOMAIN",
+        "",
+    )
     max_reconnect_attempts = _env_int(
         os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS"),
         0,
@@ -1607,6 +2596,7 @@ def build_nats_telemetry_subscription_from_env(
                 NatsSubscriber(
                     servers=servers,
                     stream_name=stream_name,
+                    jetstream_domain=jetstream_domain,
                     subject_prefix=spec["subject_prefix"],
                     consumer_group=f"{consumer_group}-{consumer_suffix}",
                     replay_from_time=replay_from_time,
@@ -1648,15 +2638,143 @@ def build_nats_telemetry_subscription_from_env(
     )
 
 
+def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandPublisher:
+    """Build the optional learning-command publisher from environment vars."""
+    servers_raw = (
+        os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_URL", "").strip()
+        or os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
+    )
+    if not servers_raw:
+        return ValkyrieLearningCommandPublisher()
+
+    from sleipnir.adapters.nats_transport import NatsPublisher  # noqa: PLC0415
+
+    command_inherits_telemetry = not os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_URL", "").strip()
+    publisher = NatsPublisher(
+        servers=[entry.strip() for entry in servers_raw.split(",") if entry.strip()],
+        stream_name=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_STREAM",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_STREAM", "ravn_environment"),
+        ),
+        jetstream_domain=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_JETSTREAM_DOMAIN",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_JETSTREAM_DOMAIN", ""),
+        ),
+        subject_prefix=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_SUBJECT_PREFIX",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX", "ravn.environment"),
+        ),
+        ensure_stream=_env_bool(os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM")),
+        connect_timeout_s=_env_float(
+            os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_CONNECT_TIMEOUT_SECONDS"),
+            2.0,
+        ),
+        max_reconnect_attempts=_env_int(
+            os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_MAX_RECONNECT_ATTEMPTS"),
+            0,
+        ),
+        tls_ca_file=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_TLS_CA_FILE",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE", "")
+            if command_inherits_telemetry
+            else "",
+        ),
+        tls_cert_file=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_TLS_CERT_FILE",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE", "")
+            if command_inherits_telemetry
+            else "",
+        ),
+        tls_key_file=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_TLS_KEY_FILE",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE", "")
+            if command_inherits_telemetry
+            else "",
+        ),
+        tls_hostname=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_TLS_HOSTNAME",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "")
+            if command_inherits_telemetry
+            else "",
+        ),
+        tls_handshake_first=_env_bool(
+            os.environ.get(
+                "RAVN_VALKYRIE_COMMAND_TLS_HANDSHAKE_FIRST",
+                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "")
+                if command_inherits_telemetry
+                else "",
+            )
+        ),
+        tls_insecure_skip_verify=_env_bool(
+            os.environ.get(
+                "RAVN_VALKYRIE_COMMAND_TLS_INSECURE_SKIP_VERIFY",
+                os.environ.get("RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY", "")
+                if command_inherits_telemetry
+                else "",
+            )
+        ),
+        user=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_USER",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_USER", ""),
+        ),
+        password=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_PASSWORD",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", ""),
+        ),
+        token=os.environ.get(
+            "RAVN_VALKYRIE_COMMAND_NATS_TOKEN",
+            os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN", ""),
+        ),
+        nkeys_seed_file=os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED_FILE", ""),
+        nkeys_seed=os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED", ""),
+    )
+    return ValkyrieLearningCommandPublisher(
+        publisher,
+        start_timeout_seconds=_env_float(
+            os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS"),
+            5.0,
+        ),
+    )
+
+
 def _env_bool(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def create_valkyrie_router(
     projection: ValkyrieDashboardProjection | None = None,
+    learning_command_publisher: ValkyrieLearningCommandPublisher | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/ravn/valkyrie", tags=["Ravn Valkyries"])
     store = projection or ValkyrieDashboardProjection()
+    command_publisher = learning_command_publisher or ValkyrieLearningCommandPublisher()
+
+    async def finish_learning_action(
+        action: str,
+        before: dict[str, Any],
+        learning: dict[str, Any],
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        try:
+            delivery, event = await command_publisher.publish(
+                action=action,
+                before=before,
+                learning=learning,
+                request=request,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valkyrie learning command publish failed: %s", exc)
+            delivery = {
+                "published": False,
+                "eventType": "",
+                "eventId": "",
+                "message": f"Sleipnir/NATS publish failed: {exc}",
+                "observedAt": _now(),
+            }
+            event = None
+        if event is not None:
+            store.record_event(event)
+        return store.record_learning_command_delivery(str(learning["id"]), delivery)
 
     @router.get("/dashboard")
     async def get_dashboard() -> Dashboard:
@@ -1695,6 +2813,10 @@ def create_valkyrie_router(
             raise HTTPException(status_code=422, detail="Huddle id mismatch")
         return store.send_huddle_message(request)
 
+    @router.get("/learnings/{learning_id}")
+    async def get_learning(learning_id: str) -> dict[str, Any]:
+        return store.learning(learning_id)
+
     @router.post("/learnings/{learning_id}/adopt")
     async def adopt_learning(
         learning_id: str,
@@ -1702,7 +2824,9 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
-        return store.decide_learning(learning_id, "adopted")
+        before = store.learning(learning_id)
+        learning = store.decide_learning(learning_id, "adopted", request, action="adopt")
+        return await finish_learning_action("adopt", before, learning, request)
 
     @router.post("/learnings/{learning_id}/reject")
     async def reject_learning(
@@ -1711,7 +2835,9 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
-        return store.decide_learning(learning_id, "rejected")
+        before = store.learning(learning_id)
+        learning = store.decide_learning(learning_id, "rejected", request, action="reject")
+        return await finish_learning_action("reject", before, learning, request)
 
     @router.post("/learnings/{learning_id}/override")
     async def override_learning(
@@ -1720,7 +2846,57 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
-        return store.decide_learning(learning_id, "adopted")
+        before = store.learning(learning_id)
+        learning = store.decide_learning(learning_id, "adopted", request, action="override")
+        return await finish_learning_action("override", before, learning, request)
+
+    @router.post("/learnings/{learning_id}/canary")
+    async def canary_learning(
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        if request.learningId != learning_id:
+            raise HTTPException(status_code=422, detail="Learning id mismatch")
+        before = store.learning(learning_id)
+        learning = store.canary_learning(learning_id, request)
+        return await finish_learning_action("canary", before, learning, request)
+
+    @router.post("/learnings/{learning_id}/promote")
+    async def promote_learning(
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        if request.learningId != learning_id:
+            raise HTTPException(status_code=422, detail="Learning id mismatch")
+        before = store.learning(learning_id)
+        learning = store.promote_learning(learning_id, request)
+        return await finish_learning_action("promote", before, learning, request)
+
+    @router.post("/learnings/{learning_id}/demote")
+    async def demote_learning(
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        if request.learningId != learning_id:
+            raise HTTPException(status_code=422, detail="Learning id mismatch")
+        before = store.learning(learning_id)
+        learning = store.demote_learning(learning_id, request)
+        return await finish_learning_action("demote", before, learning, request)
+
+    @router.post("/learnings/{learning_id}/rollback")
+    async def rollback_learning(
+        learning_id: str,
+        request: LearningDecisionRequest,
+    ) -> dict[str, Any]:
+        if request.learningId != learning_id:
+            raise HTTPException(status_code=422, detail="Learning id mismatch")
+        before = store.learning(learning_id)
+        learning = store.rollback_learning(learning_id, request)
+        return await finish_learning_action("rollback", before, learning, request)
+
+    @router.post("/proof/replay-signal")
+    async def replay_signal(signal: dict[str, Any]) -> dict[str, Any]:
+        return store.replay_signal(signal)
 
     @router.post("/autonomy")
     async def update_autonomy(request: AutonomyUpdateRequest) -> Dashboard:
@@ -1729,6 +2905,11 @@ def create_valkyrie_router(
     @router.get("/telemetry/events")
     async def list_telemetry_events() -> list[dict[str, Any]]:
         return store.telemetry_events()
+
+    @router.post("/telemetry/events")
+    async def record_telemetry_event(event: dict[str, Any]) -> Dashboard:
+        store.record_event(event)
+        return store.dashboard()
 
     @router.get("/logs")
     async def list_logs() -> list[dict[str, Any]]:

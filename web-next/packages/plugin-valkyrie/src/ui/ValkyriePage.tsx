@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  ArrowDownLeft,
   Bell,
   Brain,
   Check,
@@ -25,6 +26,7 @@ import type {
   AutonomyMode,
   EnvironmentKind,
   LearningRecord,
+  LearningScope,
   ValkyrieDashboard,
   ValkyrieTelemetry,
 } from '../domain';
@@ -894,128 +896,6 @@ function EventLogPanel({
   );
 }
 
-function LearningOpsPanel({
-  telemetry,
-  environmentId,
-}: {
-  telemetry: ValkyrieTelemetry;
-  environmentId: string;
-}) {
-  const learning = (telemetry.recentLearning ?? []).filter(
-    (entry) => environmentMatchesSelection(environmentId, entry.environmentId),
-  );
-  return (
-    <section className={PANEL_PAD} data-testid="valkyrie-learning-ops">
-      <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-        <div className="niuu:flex niuu:items-center niuu:gap-2">
-          <Moon size={16} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-            Learning and dreams
-          </h2>
-        </div>
-        <span className="niuu:text-xs niuu:text-text-muted">
-          {compactNumber(learning.length)} events
-        </span>
-      </div>
-      <div className="niuu:grid niuu:gap-2">
-        <div className="niuu:grid niuu:grid-cols-3 niuu:gap-2">
-          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className={MUTED}>Started</div>
-            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
-              {compactNumber(telemetry.totals.dreamCyclesStarted)}
-            </div>
-          </div>
-          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className={MUTED}>Completed</div>
-            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
-              {compactNumber(telemetry.totals.dreamCyclesCompleted)}
-            </div>
-          </div>
-          <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className={MUTED}>No-op</div>
-            <div className="niuu:mt-1 niuu:text-lg niuu:font-semibold niuu:text-text-primary">
-              {compactNumber(telemetry.totals.dreamCyclesNoop || 0)}
-            </div>
-          </div>
-        </div>
-        {learning.slice(0, 8).map((entry) => (
-          <article key={entry.id} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
-              <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                {entry.title}
-              </span>
-              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
-                {entry.status}
-              </span>
-            </div>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
-              {entry.environmentId} · {entry.eventType} · {formatShortTime(entry.observedAt)}
-            </p>
-            {entry.proposalsCreated || entry.proposalsApplied || entry.proposalsDeferred ? (
-              <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
-                {entry.proposalsCreated ?? 0} proposed · {entry.proposalsApplied ?? 0} applied ·{' '}
-                {entry.proposalsDeferred ?? 0} deferred
-              </p>
-            ) : null}
-          </article>
-        ))}
-        {learning.length === 0 ? (
-          <EmptyState label="No verified learning, self-improvement, or dream events" />
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function ToolNeedsPanel({
-  telemetry,
-  environmentId,
-}: {
-  telemetry: ValkyrieTelemetry;
-  environmentId: string;
-}) {
-  const toolNeeds = (telemetry.recentToolNeeds ?? []).filter(
-    (entry) => environmentMatchesSelection(environmentId, entry.environmentId),
-  );
-  return (
-    <section className={PANEL_PAD} data-testid="valkyrie-tool-needs">
-      <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-        <div className="niuu:flex niuu:items-center niuu:gap-2">
-          <Wrench size={16} className="niuu:text-brand" aria-hidden="true" />
-          <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-            Capability gaps
-          </h2>
-        </div>
-        <span className="niuu:text-xs niuu:text-text-muted">
-          {compactNumber(toolNeeds.length)} needs
-        </span>
-      </div>
-      <div className="niuu:grid niuu:gap-2">
-        {toolNeeds.slice(0, 8).map((need) => (
-          <article key={need.id} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
-              <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                {need.capability}
-              </span>
-              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-text-muted">
-                {need.status}
-              </span>
-            </div>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">
-              {need.environmentId} · {valueOrNone(need.valkyrieId)} ·{' '}
-              {formatShortTime(need.observedAt)}
-            </p>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{need.summary}</p>
-          </article>
-        ))}
-        {toolNeeds.length === 0 ? (
-          <EmptyState label="No missing capabilities observed" />
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 function EvolutionLoopPanel({
   telemetry,
   environmentId,
@@ -1718,7 +1598,9 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
   const selectedName =
     selectedEnvironmentId === 'all'
       ? 'All Valkyries'
-      : environmentName(dashboard, selectedEnvironmentId);
+      : dashboard.environments.some((environment) => environment.id === selectedEnvironmentId)
+        ? environmentName(dashboard, selectedEnvironmentId)
+        : 'Observed environment';
 
   return (
     <main
@@ -1742,8 +1624,10 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
                 </h1>
               </div>
               <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
-                {selectedEnvironmentId === 'all' ? 'all environments' : selectedEnvironmentId} ·{' '}
-                {telemetry.source} · last signal {formatShortTime(telemetry.lastObservedAt)}
+                {selectedEnvironmentId === 'all'
+                  ? 'all environments'
+                  : `observed id ${selectedEnvironmentId}`}{' '}
+                · {telemetry.source} · last signal {formatShortTime(telemetry.lastObservedAt)}
               </p>
             </div>
             <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
@@ -1785,19 +1669,7 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
             <LineageView telemetry={telemetry} environmentId={selectedEnvironmentId} />
           ) : null}
           {view === 'learning' ? (
-            <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="niuu:grid niuu:gap-3">
-                <EvolutionLoopPanel
-                  telemetry={telemetry}
-                  environmentId={selectedEnvironmentId}
-                />
-                <LearningOpsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-              </div>
-              <div className="niuu:grid niuu:gap-3">
-                <ToolNeedsPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
-                <LlmStatusPanel telemetry={telemetry} />
-              </div>
-            </div>
+            <FlockLearningExchange dashboard={dashboard} />
           ) : null}
           {view === 'huddles' ? <HuddlesView telemetry={telemetry} /> : null}
           {view === 'autonomy' ? (
@@ -2152,6 +2024,588 @@ function LearningControls({ learning }: { learning: LearningRecord }) {
         <RotateCcw size={15} aria-hidden="true" />
       </button>
     </div>
+  );
+}
+
+function LearningDecisionButtons({ learning }: { learning: LearningRecord }) {
+  const actions = useValkyrieActions();
+  const request = { learningId: learning.id, reason: 'operator-learning-exchange' };
+  const targetScope = learning.targetScope ?? nextLearningScope(learning.scope);
+  const demoteScope = previousLearningScope(learning.scope);
+  return (
+    <div className="niuu:flex niuu:flex-wrap niuu:justify-end niuu:gap-2">
+      <button
+        type="button"
+        className={BUTTON}
+        onClick={() => actions.adoptLearning.mutate(request)}
+      >
+        <Check size={15} aria-hidden="true" />
+        adopt
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        onClick={() => actions.rejectLearning.mutate(request)}
+      >
+        <X size={15} aria-hidden="true" />
+        reject
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        onClick={() => actions.overrideLearning.mutate(request)}
+      >
+        <RotateCcw size={15} aria-hidden="true" />
+        override
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        onClick={() =>
+          actions.canaryLearning.mutate({
+            ...request,
+            canaryEnvironmentId: learning.sourceEnvironmentId,
+          })
+        }
+      >
+        <Activity size={15} aria-hidden="true" />
+        canary
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        disabled={learning.scope === 'shared'}
+        onClick={() =>
+          actions.promoteLearning.mutate({
+            ...request,
+            targetScope,
+          })
+        }
+      >
+        <GitBranch size={15} aria-hidden="true" />
+        promote
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        disabled={learning.scope === 'private'}
+        onClick={() =>
+          actions.demoteLearning.mutate({
+            ...request,
+            targetScope: demoteScope,
+          })
+        }
+      >
+        <ArrowDownLeft size={15} aria-hidden="true" />
+        demote
+      </button>
+      <button
+        type="button"
+        className={BUTTON}
+        onClick={() => actions.rollbackLearning.mutate(request)}
+      >
+        <RotateCcw size={15} aria-hidden="true" />
+        rollback
+      </button>
+    </div>
+  );
+}
+
+const LEARNING_FILTERS: Array<LearningRecord['status'] | 'all'> = [
+  'all',
+  'requested',
+  'candidate',
+  'canary',
+  'adopted',
+  'rejected',
+  'rolled_back',
+  'completed',
+];
+
+const LEARNING_SCOPES: LearningScope[] = ['private', 'environment', 'domain', 'flock', 'shared'];
+
+function nextLearningScope(scope: LearningScope): LearningScope {
+  const index = LEARNING_SCOPES.indexOf(scope);
+  return LEARNING_SCOPES[Math.min(index + 1, LEARNING_SCOPES.length - 1)] ?? 'environment';
+}
+
+function previousLearningScope(scope: LearningScope): LearningScope {
+  const index = LEARNING_SCOPES.indexOf(scope);
+  return LEARNING_SCOPES[Math.max(index - 1, 0)] ?? 'private';
+}
+
+function artifactLabel(learning: LearningRecord): string {
+  if (learning.artifactType) return learning.artifactType.replaceAll('_', ' ');
+  if (learning.promotedTool) return 'skill/tool artifact';
+  return 'no artifact attached';
+}
+
+function artifactRuntimeEffect(learning: LearningRecord): string {
+  if (!learning.artifactContent && !learning.promotedTool) {
+    return 'No generated skill/tool content is attached yet.';
+  }
+  if (learning.active) {
+    return 'Eligible for subsequent signal handling by capability match.';
+  }
+  return 'Reviewable only; not eligible for runtime use until adopted or canaried.';
+}
+
+function commandDeliveryText(learning: LearningRecord): string {
+  if (learning.commandDelivery?.published) {
+    return `notified via ${learning.commandDelivery.eventType ?? 'Sleipnir event'}`;
+  }
+  if (learning.commandDelivery?.message) return learning.commandDelivery.message;
+  return 'No learning command has been published from this dashboard action yet.';
+}
+
+function learningStatusClass(status: LearningRecord['status']): string {
+  if (status === 'rolled_back' || status === 'rejected') {
+    return 'niuu:border-critical/60 niuu:bg-critical-bg niuu:text-critical';
+  }
+  if (status === 'adopted') {
+    return 'niuu:border-border niuu:bg-bg-tertiary niuu:text-text-primary';
+  }
+  return 'niuu:border-brand/60 niuu:bg-brand/12 niuu:text-brand';
+}
+
+function transferRiskClass(risk: LearningRecord['negativeTransferRisk']): string {
+  if (risk === 'high') return 'niuu:text-critical';
+  if (risk === 'medium') return 'niuu:text-brand';
+  return 'niuu:text-text-primary';
+}
+
+function learningSourceLine(dashboard: ValkyrieDashboard, learning: LearningRecord): string {
+  const environment =
+    dashboard.environments.find((entry) => entry.id === learning.sourceEnvironmentId)?.name ??
+    learning.sourceEnvironmentId;
+  const valkyrie =
+    dashboard.valkyries.find((entry) => entry.id === learning.sourceValkyrieId)?.name ??
+    learning.sourceValkyrieId;
+  const flock =
+    dashboard.flocks.find((entry) => entry.id === learning.targetFlockId)?.name ??
+    learning.targetFlockId ??
+    'local';
+  return `${environment} > ${valkyrie} > ${flock}`;
+}
+
+function LearningScopeLadder({ learning }: { learning: LearningRecord }) {
+  const activeScope = learning.currentScope ?? learning.scope;
+  return (
+    <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3 niuu:text-sm">
+      <span className="niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-text-muted">
+        Scope ladder
+      </span>
+      {LEARNING_SCOPES.map((scope, index) => {
+        const isCurrent = scope === activeScope;
+        const isAvailable = (learning.availableScopes ?? [learning.scope]).includes(scope);
+        return (
+          <div key={scope} className="niuu:flex niuu:items-center niuu:gap-3">
+            <span
+              className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 ${
+                isCurrent
+                  ? 'niuu:border-brand niuu:bg-brand/18 niuu:text-text-primary'
+                  : isAvailable
+                    ? 'niuu:border-brand/60 niuu:bg-brand/12 niuu:text-brand'
+                    : 'niuu:border-border niuu:bg-bg-secondary niuu:text-text-muted'
+              }`}
+            >
+              {scope}
+            </span>
+            {index < LEARNING_SCOPES.length - 1 ? (
+              <span className="niuu:text-text-muted">-&gt;</span>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LearningReviewDrawer({
+  dashboard,
+  learning,
+  onClose,
+}: {
+  dashboard: ValkyrieDashboard;
+  learning: LearningRecord;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="niuu:fixed niuu:inset-0 niuu:z-50 niuu:grid niuu:bg-bg-primary/75 niuu:backdrop-blur-sm niuu:lg:grid-cols-[1fr_minmax(560px,760px)]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Review ${learning.title}`}
+    >
+      <button
+        type="button"
+        className="niuu:hidden niuu:border-0 niuu:bg-transparent niuu:lg:block"
+        aria-label="Close learning review"
+        onClick={onClose}
+      />
+      <aside className="niuu:h-full niuu:overflow-y-auto niuu:border-0 niuu:border-l niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-5">
+        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
+          <div className="niuu:min-w-0">
+            <p className="niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-brand">
+              Learning review
+            </p>
+            <h2 className="niuu:mt-2 niuu:text-2xl niuu:font-bold niuu:text-text-primary">
+              {learning.title}
+            </h2>
+            <p className="niuu:mt-2 niuu:text-sm niuu:text-text-muted">
+              {learningSourceLine(dashboard, learning)}
+            </p>
+          </div>
+          <button type="button" className={ICON_BUTTON} aria-label="Close" onClick={onClose}>
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="niuu:mt-5 niuu:flex niuu:flex-wrap niuu:gap-2">
+          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-semibold ${learningStatusClass(learning.status)}`}>
+            {learning.status.replace('_', ' ')}
+          </span>
+          <span className="niuu:rounded-full niuu:border niuu:border-solid niuu:border-brand/60 niuu:bg-brand/12 niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-brand">
+            scope {learning.scope}
+          </span>
+          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.active ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+            {learning.active ? 'active in runtime' : 'inactive in runtime'}
+          </span>
+          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.artifactContent || learning.promotedTool ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+            artifact {artifactLabel(learning)}
+          </span>
+          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.commandDelivery?.published ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+            {learning.commandDelivery?.published ? 'command published' : 'command local'}
+          </span>
+        </div>
+
+        <div className="niuu:mt-5">
+          <LearningScopeLadder learning={learning} />
+        </div>
+
+        <div className="niuu:mt-5 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+          <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+            What this changes
+          </h3>
+          <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-muted">
+            Adopt/canary makes this learning eligible for subsequent signal handling. Reject and
+            rollback make it ineligible. Promote/demote changes the scope peers may consider, one
+            step at a time. The API publishes canonical Sleipnir learning events when a command
+            publisher is configured.
+          </p>
+          <p className="niuu:mt-2 niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+            {artifactRuntimeEffect(learning)}
+          </p>
+          <p className="niuu:mt-2 niuu:text-sm niuu:text-text-muted">
+            command delivery: {commandDeliveryText(learning)}
+          </p>
+        </div>
+
+        <div className="niuu:mt-5">
+          <LearningDecisionButtons learning={learning} />
+        </div>
+
+        <section className="niuu:mt-6 niuu:grid niuu:gap-4">
+          <div className={PANEL_PAD}>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Summary</h3>
+            <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-muted">
+              {learning.summary}
+            </p>
+            <p className="niuu:mt-3 niuu:text-sm niuu:text-text-primary">
+              {learning.evaluation || 'No replay evaluation recorded yet.'}
+            </p>
+          </div>
+
+          <div className={PANEL_PAD}>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+              Generated artifact
+            </h3>
+            <p className="niuu:mt-2 niuu:text-xs niuu:text-text-muted">
+              {artifactLabel(learning)} {learning.artifactPath ? `· ${learning.artifactPath}` : ''}
+            </p>
+            <pre className="niuu:mt-3 niuu:max-h-80 niuu:overflow-auto niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:leading-5 niuu:text-text-primary">
+              {learning.artifactContent || 'No artifact content attached to this learning yet.'}
+            </pre>
+          </div>
+
+          <div className={PANEL_PAD}>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+              Source evidence
+            </h3>
+            <p className="niuu:mt-2 niuu:text-sm niuu:text-text-muted">
+              signals: {(learning.sourceSignalIds ?? []).join(', ') || 'none recorded'}
+            </p>
+            <pre className="niuu:mt-3 niuu:max-h-52 niuu:overflow-auto niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:leading-5 niuu:text-text-primary">
+              {JSON.stringify(learning.sourceEvidence ?? {}, null, 2)}
+            </pre>
+          </div>
+
+          <div className={PANEL_PAD}>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+              Odin review
+            </h3>
+            <p className="niuu:mt-2 niuu:text-sm niuu:text-text-muted">
+              {learning.odinReview?.outcome || 'no review recorded'} ·{' '}
+              {learning.odinReview?.reviewer || 'unknown reviewer'}
+            </p>
+            <p className="niuu:mt-2 niuu:text-sm niuu:leading-6 niuu:text-text-primary">
+              {learning.odinReview?.rationale || 'No rationale recorded.'}
+            </p>
+            {(learning.odinReview?.findings ?? []).length > 0 ? (
+              <ul className="niuu:mt-2 niuu:pl-5 niuu:text-sm niuu:text-text-muted">
+                {learning.odinReview?.findings?.map((finding) => (
+                  <li key={finding}>{finding}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
+          <div className={PANEL_PAD}>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">History</h3>
+            <div className="niuu:mt-3 niuu:grid niuu:gap-2">
+              {(learning.history ?? []).slice().reverse().map((entry, index) => (
+                <div
+                  key={`${entry.eventType}-${entry.observedAt}-${index}`}
+                  className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+                >
+                  <div className="niuu:flex niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
+                    <span>{entry.eventType}</span>
+                    <span>{formatShortTime(entry.observedAt)}</span>
+                  </div>
+                  <p className="niuu:mt-1 niuu:text-sm niuu:text-text-primary">
+                    {entry.summary}
+                  </p>
+                </div>
+              ))}
+              {(learning.history ?? []).length === 0 ? (
+                <p className="niuu:text-sm niuu:text-text-muted">No lifecycle history yet.</p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function FlockLearningExchange({ dashboard }: { dashboard: ValkyrieDashboard }) {
+  const [filter, setFilter] = useState<LearningRecord['status'] | 'all'>('all');
+  const [selectedLearningId, setSelectedLearningId] = useState<string | null>(null);
+  const learnings = dashboard.learnings;
+  const selectedLearning =
+    learnings.find((learning) => learning.id === selectedLearningId) ?? null;
+  const visible =
+    filter === 'all' ? learnings : learnings.filter((learning) => learning.status === filter);
+  const counts = Object.fromEntries(
+    LEARNING_FILTERS.map((status) => [
+      status,
+      status === 'all'
+        ? learnings.length
+        : learnings.filter((learning) => learning.status === status).length,
+    ]),
+  ) as Record<(typeof LEARNING_FILTERS)[number], number>;
+
+  return (
+    <section
+      className="niuu:min-h-full niuu:bg-bg-primary niuu:p-4 niuu:md:p-6"
+      data-testid="valkyrie-learning-exchange"
+    >
+      <header>
+        <div className="niuu:flex niuu:items-center niuu:gap-3">
+          <Brain size={34} className="niuu:text-brand" aria-hidden="true" />
+          <h1 className="niuu:text-3xl niuu:font-bold niuu:leading-tight niuu:text-text-primary">
+            Flock learning exchange
+          </h1>
+        </div>
+        <p className="niuu:mt-2 niuu:text-base niuu:text-text-muted">
+          vetted learnings shared across the cohort - candidate, canary, adopted, rejected,
+          rolled back
+        </p>
+      </header>
+
+      <div
+        className="niuu:mt-5 niuu:inline-flex niuu:flex-wrap niuu:overflow-hidden niuu:rounded-md niuu:border niuu:border-solid niuu:border-border"
+        aria-label="Learning status filter"
+      >
+        {LEARNING_FILTERS.map((status) => (
+          <button
+            key={status}
+            type="button"
+            aria-pressed={filter === status}
+            onClick={() => setFilter(status)}
+            className={`niuu:border-0 niuu:border-r niuu:border-solid niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:last:border-r-0 ${
+              filter === status
+                ? 'niuu:bg-brand/18 niuu:text-text-primary'
+                : 'niuu:bg-bg-secondary niuu:text-text-muted niuu:hover:text-text-primary'
+            }`}
+          >
+            {status.replace('_', ' ')} {counts[status]}
+          </button>
+        ))}
+      </div>
+
+      <div className="niuu:mt-6 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3 niuu:text-sm">
+        <LearningScopeLadder
+          learning={{
+            ...visible[0],
+            id: visible[0]?.id ?? 'scope-reference',
+            title: visible[0]?.title ?? 'Scope reference',
+            summary: visible[0]?.summary ?? '',
+            scope: visible[0]?.scope ?? 'private',
+            status: visible[0]?.status ?? 'candidate',
+            sourceEnvironmentId: visible[0]?.sourceEnvironmentId ?? '',
+            sourceValkyrieId: visible[0]?.sourceValkyrieId ?? '',
+            confidence: visible[0]?.confidence ?? 0,
+            evaluation: visible[0]?.evaluation ?? '',
+            negativeTransferRisk: visible[0]?.negativeTransferRisk ?? 'low',
+            redaction: visible[0]?.redaction ?? 'none',
+            createdAt: visible[0]?.createdAt ?? '',
+            currentScope: visible[0]?.currentScope ?? visible[0]?.scope ?? 'private',
+          }}
+        />
+      </div>
+
+      <div className="niuu:mt-6 niuu:grid niuu:gap-5 niuu:xl:grid-cols-2">
+        {visible.map((learning) => (
+          <article
+            key={learning.id}
+            className={`niuu:rounded-md niuu:border niuu:border-solid niuu:bg-bg-primary niuu:p-5 ${
+              learning.status === 'rolled_back' || learning.status === 'rejected'
+                ? 'niuu:border-critical/60'
+                : learning.status === 'canary'
+                  ? 'niuu:border-brand/70'
+                  : 'niuu:border-border'
+            }`}
+          >
+            <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
+              <div className="niuu:min-w-0">
+                <h2 className="niuu:text-xl niuu:font-bold niuu:text-text-primary">
+                  {learning.title}
+                </h2>
+                <p className="niuu:mt-2 niuu:text-base niuu:leading-7 niuu:text-text-muted">
+                  {learning.summary}
+                </p>
+              </div>
+              <div className="niuu:flex niuu:shrink-0 niuu:flex-col niuu:items-end niuu:gap-2">
+                <span
+                  className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-semibold ${learningStatusClass(
+                    learning.status,
+                  )}`}
+                >
+                  {learning.status.replace('_', ' ')}
+                </span>
+                <span className="niuu:rounded-full niuu:border niuu:border-solid niuu:border-brand/60 niuu:bg-brand/12 niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-brand">
+                  {learning.scope}
+                </span>
+              </div>
+            </div>
+
+            <div className="niuu:mt-5 niuu:text-sm niuu:text-text-muted">
+              source{' '}
+              <span className="niuu:font-semibold niuu:text-brand">
+                {learningSourceLine(dashboard, learning)}
+              </span>
+            </div>
+
+            <div className="niuu:mt-4 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3 niuu:text-sm niuu:text-text-muted">
+              <span>confidence</span>
+              <span className="niuu:h-1 niuu:w-20 niuu:overflow-hidden niuu:rounded-full niuu:bg-bg-tertiary">
+                <span
+                  className="niuu:block niuu:h-full niuu:bg-text-muted"
+                  style={{ width: `${Math.round(learning.confidence * 100)}%` }}
+                />
+              </span>
+              <span>{percent(learning.confidence)}</span>
+              <span
+                className={`niuu:rounded-md niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:font-semibold ${transferRiskClass(
+                  learning.negativeTransferRisk,
+                )}`}
+              >
+                transfer risk {learning.negativeTransferRisk}
+              </span>
+              <span className="niuu:rounded-md niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-primary">
+                redaction {learning.redaction}
+              </span>
+            </div>
+
+            {learning.promotedTool ? (
+              <div className="niuu:mt-4 niuu:flex niuu:flex-wrap niuu:gap-2">
+                <span className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-muted">
+                  <Wrench size={14} aria-hidden="true" />
+                  {learning.promotedTool}
+                </span>
+                <span className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-primary">
+                  artifact {artifactLabel(learning)}
+                </span>
+                <span className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
+                  learning.artifactContent
+                    ? 'niuu:bg-brand/12 niuu:text-brand'
+                    : 'niuu:bg-bg-tertiary niuu:text-text-muted'
+                }`}
+                >
+                  {learning.artifactContent ? 'content attached' : 'content missing'}
+                </span>
+                <span className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
+                  learning.commandDelivery?.published
+                    ? 'niuu:bg-brand/12 niuu:text-brand'
+                    : 'niuu:bg-bg-tertiary niuu:text-text-muted'
+                }`}
+                >
+                  {learning.commandDelivery?.published ? 'command published' : 'command local'}
+                </span>
+              </div>
+            ) : null}
+
+            <p className="niuu:mt-3 niuu:text-sm niuu:text-text-muted">
+              {artifactRuntimeEffect(learning)}
+            </p>
+            <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
+              {commandDeliveryText(learning)}
+            </p>
+
+            {learning.status === 'canary' ? (
+              <p className="niuu:mt-4 niuu:text-sm niuu:text-text-muted">
+                canarying on <span className="niuu:text-brand">{learning.sourceEnvironmentId}</span>
+              </p>
+            ) : null}
+
+            <div className="niuu:mt-5 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+              <div className="niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-text-muted">
+                Evaluation
+              </div>
+              <p className="niuu:mt-2 niuu:text-base niuu:text-text-primary">
+                {learning.evaluation || 'Awaiting replay evidence.'}
+              </p>
+            </div>
+
+            <div className="niuu:mt-5 niuu:border-0 niuu:border-t niuu:border-solid niuu:border-border niuu:pt-4 niuu:grid niuu:gap-3 niuu:md:grid-cols-[1fr_auto] niuu:md:items-center">
+              <span className="niuu:text-sm niuu:text-text-muted">
+                {formatShortTime(learning.createdAt)}
+              </span>
+              <div className="niuu:flex niuu:flex-wrap niuu:justify-end niuu:gap-2">
+                <button
+                  type="button"
+                  className={BUTTON}
+                  onClick={() => setSelectedLearningId(learning.id)}
+                >
+                  <ListChecks size={15} aria-hidden="true" />
+                  review
+                </button>
+                <LearningDecisionButtons learning={learning} />
+              </div>
+            </div>
+          </article>
+        ))}
+        {visible.length === 0 ? <EmptyState label="No learning records in this filter" /> : null}
+      </div>
+      {selectedLearning ? (
+        <LearningReviewDrawer
+          dashboard={dashboard}
+          learning={selectedLearning}
+          onClose={() => setSelectedLearningId(null)}
+        />
+      ) : null}
+    </section>
   );
 }
 

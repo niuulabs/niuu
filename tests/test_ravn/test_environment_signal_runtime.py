@@ -96,6 +96,8 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert telemetry[0].payload["duplicate_count"] == 0
     assert telemetry[0].payload["published_count"] == 1
     assert telemetry[0].payload["enqueued_task_count"] == 1
+    assert telemetry[0].payload["resident_learning_checked_count"] == 0
+    assert telemetry[0].payload["resident_learning_used_count"] == 0
     assert telemetry[0].payload["drive_loop_enabled"] is True
     assert telemetry[0].payload["severity_counts"] == {"critical": 1}
     assert telemetry[0].payload["nats_subject"] == (
@@ -117,6 +119,47 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert "environment_id: host-jozef" in enqueued[0].initiative_context
     assert "valkyrie_id: valkyrie-host-jozef" in enqueued[0].initiative_context
     assert "correlation_ids:" in enqueued[0].initiative_context
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    processed: list[SleipnirEvent] = []
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    async def _resident_process(event: SleipnirEvent) -> dict:
+        processed.append(event)
+        return {
+            "usedAdoptedLearning": True,
+            "decision": "inspect_with_adopted_learning",
+            "skillName": "valkyrie-inspect-host-host-disk-pressure",
+            "capabilityName": "inspect.host.host.disk-pressure",
+        }
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(),
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=_resident_process,
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert len(processed) == 1
+    assert processed[0].event_type == "signal.host.event"
+    assert len(enqueued) == 1
+    assert "Resident learning matched this signal before task enqueue" in (
+        enqueued[0].initiative_context
+    )
+    assert "skill: valkyrie-inspect-host-host-disk-pressure" in (
+        enqueued[0].initiative_context
+    )
+    assert telemetry[0].payload["resident_learning_checked_count"] == 1
+    assert telemetry[0].payload["resident_learning_used_count"] == 1
 
 
 @pytest.mark.asyncio

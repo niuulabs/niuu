@@ -45,9 +45,34 @@ describe('buildValkyrieHttpAdapter', () => {
     const adapter = buildValkyrieHttpAdapter(client);
 
     await adapter.adoptLearning({ learningId: 'learn a/b', reason: 'test' });
+    await adapter.promoteLearning({
+      learningId: 'learn a/b',
+      reason: 'test',
+      targetScope: 'flock',
+    });
+    await adapter.demoteLearning({
+      learningId: 'learn a/b',
+      reason: 'test',
+      targetScope: 'domain',
+    });
+    await adapter.rollbackLearning({ learningId: 'learn a/b', reason: 'test' });
     await adapter.sendHuddleMessage({ huddleId: 'huddle a/b', body: 'hi' });
 
     expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/adopt', {
+      learningId: 'learn a/b',
+      reason: 'test',
+    });
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/promote', {
+      learningId: 'learn a/b',
+      reason: 'test',
+      targetScope: 'flock',
+    });
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/demote', {
+      learningId: 'learn a/b',
+      reason: 'test',
+      targetScope: 'domain',
+    });
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/rollback', {
       learningId: 'learn a/b',
       reason: 'test',
     });

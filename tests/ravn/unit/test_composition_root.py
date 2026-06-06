@@ -126,6 +126,14 @@ class TestBuildExecutor:
 
 
 class TestBuildMemory:
+    def test_none_backend_returns_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_memory
+
+        settings.memory.backend = "none"
+
+        mem = _build_memory(settings)
+        assert mem is None
+
     def test_sqlite_backend_returns_adapter(self, settings: Settings) -> None:
         from ravn.cli.commands import _build_memory
 

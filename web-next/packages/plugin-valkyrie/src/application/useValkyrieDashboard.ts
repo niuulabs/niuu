@@ -80,6 +80,42 @@ export function useValkyrieActions() {
     },
   });
 
+  const canaryLearning = useMutation({
+    mutationFn: (request: LearningDecisionRequest) => service.canaryLearning(request),
+    onSuccess: (learning) => {
+      queryClient.setQueryData<ValkyrieDashboard>(VALKYRIE_DASHBOARD_QUERY_KEY, (dashboard) =>
+        replaceDashboardLearning(dashboard, learning),
+      );
+    },
+  });
+
+  const promoteLearning = useMutation({
+    mutationFn: (request: LearningDecisionRequest) => service.promoteLearning(request),
+    onSuccess: (learning) => {
+      queryClient.setQueryData<ValkyrieDashboard>(VALKYRIE_DASHBOARD_QUERY_KEY, (dashboard) =>
+        replaceDashboardLearning(dashboard, learning),
+      );
+    },
+  });
+
+  const demoteLearning = useMutation({
+    mutationFn: (request: LearningDecisionRequest) => service.demoteLearning(request),
+    onSuccess: (learning) => {
+      queryClient.setQueryData<ValkyrieDashboard>(VALKYRIE_DASHBOARD_QUERY_KEY, (dashboard) =>
+        replaceDashboardLearning(dashboard, learning),
+      );
+    },
+  });
+
+  const rollbackLearning = useMutation({
+    mutationFn: (request: LearningDecisionRequest) => service.rollbackLearning(request),
+    onSuccess: (learning) => {
+      queryClient.setQueryData<ValkyrieDashboard>(VALKYRIE_DASHBOARD_QUERY_KEY, (dashboard) =>
+        replaceDashboardLearning(dashboard, learning),
+      );
+    },
+  });
+
   const joinHuddle = useMutation({
     mutationFn: (huddleId: string) => service.joinHuddle(huddleId),
     onSuccess: (huddle) => {
@@ -142,8 +178,12 @@ export function useValkyrieActions() {
   return useMemo(
     () => ({
       adoptLearning,
+      canaryLearning,
       rejectLearning,
       overrideLearning,
+      promoteLearning,
+      demoteLearning,
+      rollbackLearning,
       joinHuddle,
       leaveHuddle,
       sendHuddleMessage,
@@ -151,10 +191,14 @@ export function useValkyrieActions() {
     }),
     [
       adoptLearning,
+      canaryLearning,
+      demoteLearning,
       joinHuddle,
       leaveHuddle,
       overrideLearning,
+      promoteLearning,
       rejectLearning,
+      rollbackLearning,
       sendHuddleMessage,
       updateAutonomy,
     ],

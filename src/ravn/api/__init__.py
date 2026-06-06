@@ -57,6 +57,7 @@ from ravn.api.runtime_data import (
 )
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
+    build_nats_learning_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
     create_valkyrie_router,
 )
@@ -625,6 +626,7 @@ def create_app(
 
     valkyrie_projection = ValkyrieDashboardProjection()
     valkyrie_telemetry = build_nats_telemetry_subscription_from_env(valkyrie_projection)
+    valkyrie_learning_commands = build_nats_learning_command_publisher_from_env()
     if valkyrie_telemetry is not None:
 
         @app.on_event("startup")
@@ -638,6 +640,22 @@ def create_app(
         async def stop_valkyrie_telemetry() -> None:
             await valkyrie_telemetry.stop()
 
-    app.include_router(create_valkyrie_router(valkyrie_projection))
+    @app.on_event("startup")
+    async def start_valkyrie_learning_commands() -> None:
+        try:
+            await valkyrie_learning_commands.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valkyrie learning command publisher did not start: %s", exc)
+
+    @app.on_event("shutdown")
+    async def stop_valkyrie_learning_commands() -> None:
+        await valkyrie_learning_commands.stop()
+
+    app.include_router(
+        create_valkyrie_router(
+            valkyrie_projection,
+            learning_command_publisher=valkyrie_learning_commands,
+        )
+    )
 
     return app

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ValkyriePage } from './ValkyriePage';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
@@ -105,12 +105,14 @@ describe('ValkyriePage', () => {
     );
 
     rerender(<ValkyriePage defaultView="learning" />);
-    expect(await screen.findByTestId('valkyrie-learning-ops')).toHaveTextContent(
-      'learning.dream.completed',
+    expect(await screen.findByTestId('valkyrie-learning-exchange')).toHaveTextContent(
+      'Flock learning exchange',
     );
-    expect(screen.getByTestId('valkyrie-tool-needs')).toHaveTextContent(
-      'prepare_rollout_remediation',
+    expect(screen.getByTestId('valkyrie-learning-exchange')).toHaveTextContent(
+      'OOMKilled with rising queue depth',
     );
+    expect(screen.getByTestId('valkyrie-learning-exchange')).toHaveTextContent('rolled back');
+    expect(screen.getAllByRole('button', { name: /adopt/i }).length).toBeGreaterThan(0);
 
     rerender(<ValkyriePage defaultView="huddles" />);
     expect(await screen.findByTestId('valkyrie-huddles-view')).toHaveTextContent(
@@ -132,6 +134,80 @@ describe('ValkyriePage', () => {
       screen.getByRole('heading', { level: 1, name: 'Kubernetes Valkyries' }),
     ).toBeInTheDocument();
     expect(screen.getByText('OOMKilled with rising queue depth')).toBeInTheDocument();
+  });
+
+  it('lets an operator approve learning exchange artifacts', async () => {
+    const user = userEvent.setup();
+    const service = createMockValkyrieService();
+    const adoptLearning = vi.spyOn(service, 'adoptLearning');
+    render(<ValkyriePage defaultView="learning" />, {
+      wrapper: wrapWithValkyrie({ valkyrie: service }),
+    });
+
+    expect(await screen.findByTestId('valkyrie-learning-exchange')).toHaveTextContent(
+      'Vendor deadline language',
+    );
+    await user.click(screen.getByRole('button', { name: 'candidate 1' }));
+    expect(screen.getByTestId('valkyrie-learning-exchange')).toHaveTextContent(
+      'Vendor deadline language',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'adopt' }));
+
+    await waitFor(() =>
+      expect(adoptLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ learningId: 'learn-email-vendor-escalation' }),
+      ),
+    );
+  });
+
+  it('opens a learning review drawer with real lifecycle controls', async () => {
+    const user = userEvent.setup();
+    const service = createMockValkyrieService();
+    const promoteLearning = vi.spyOn(service, 'promoteLearning');
+    const demoteLearning = vi.spyOn(service, 'demoteLearning');
+    const rollbackLearning = vi.spyOn(service, 'rollbackLearning');
+    render(<ValkyriePage defaultView="learning" />, {
+      wrapper: wrapWithValkyrie({ valkyrie: service }),
+    });
+
+    const reviewButtons = await screen.findAllByRole('button', { name: 'review' });
+    await user.click(reviewButtons[0]!);
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Review OOMKilled with rising queue depth',
+    });
+
+    expect(within(dialog).getByText('Generated artifact')).toBeInTheDocument();
+    expect(within(dialog).getByText(/capability: inspect.kubernetes.pod.oomkilled/)).toBeInTheDocument();
+    expect(within(dialog).getByText('Odin review')).toBeInTheDocument();
+    expect(within(dialog).getByText('active in runtime')).toBeInTheDocument();
+    expect(within(dialog).getByText('artifact ravn skill tool')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'promote' }));
+    await user.click(within(dialog).getByRole('button', { name: 'demote' }));
+    await user.click(within(dialog).getByRole('button', { name: 'rollback' }));
+
+    await waitFor(() =>
+      expect(promoteLearning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          learningId: 'learn-k8s-oom-canary',
+          targetScope: 'shared',
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(demoteLearning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          learningId: 'learn-k8s-oom-canary',
+          targetScope: 'domain',
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(rollbackLearning).toHaveBeenCalledWith(
+        expect.objectContaining({ learningId: 'learn-k8s-oom-canary' }),
+      ),
+    );
   });
 
   it('lets an operator join and speak in a huddle', async () => {

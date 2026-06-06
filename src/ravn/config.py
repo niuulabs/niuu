@@ -395,11 +395,11 @@ class SkillConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Conversation memory / persistence backend configuration."""
 
-    backend: Literal["sqlite", "postgres"] | str = Field(
+    backend: Literal["none", "sqlite", "postgres"] | str = Field(
         default="sqlite",
         description=(
-            "Backend to use: 'sqlite', 'postgres', or a fully-qualified class path "
-            "for a custom backend adapter."
+            "Backend to use: 'none', 'sqlite', 'postgres', or a fully-qualified "
+            "class path for a custom backend adapter."
         ),
     )
     path: str = Field(
@@ -1559,6 +1559,19 @@ class MeshSleipnirConfig(BaseModel):
     )
 
 
+class MeshNatsExtraSubscriptionConfig(BaseModel):
+    """Additional NATS JetStream filter subject for an existing stream."""
+
+    subject: str = Field(
+        default="",
+        description="Raw NATS filter subject to subscribe to in addition to the prefixed subject.",
+    )
+    stream_name: str = Field(
+        default="",
+        description="JetStream stream that owns the raw filter subject.",
+    )
+
+
 class MeshNatsConfig(BaseModel):
     """NATS JetStream mesh settings for environment-resident Valkyries."""
 
@@ -1569,6 +1582,13 @@ class MeshNatsConfig(BaseModel):
     stream_name: str = Field(
         default="ravn_environment",
         description="JetStream stream used for Ravn environment/flock events.",
+    )
+    jetstream_domain: str = Field(
+        default="",
+        description=(
+            "Optional JetStream domain to use when the connected NATS account exposes "
+            "JetStream through a domain. Empty uses the server/account default."
+        ),
     )
     subject_prefix: str = Field(
         default="ravn.environment",
@@ -1657,6 +1677,13 @@ class MeshNatsConfig(BaseModel):
     nkeys_seed_env: str = Field(
         default="",
         description="Optional env var containing an NKey seed string.",
+    )
+    extra_subscriptions: list[MeshNatsExtraSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional raw NATS subject filters, with stream names, consumed in addition "
+            "to subject_prefix-derived Sleipnir subjects."
+        ),
     )
 
 

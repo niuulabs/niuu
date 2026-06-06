@@ -6,7 +6,14 @@ export type SignalSeverity = 'info' | 'notice' | 'warning' | 'critical';
 export type SignalStatus = 'new' | 'triaged' | 'acting' | 'resolved' | 'ignored';
 export type ActionStatus = 'planned' | 'running' | 'succeeded' | 'failed' | 'rolled_back';
 export type LearningScope = 'private' | 'environment' | 'domain' | 'flock' | 'shared';
-export type LearningStatus = 'candidate' | 'canary' | 'adopted' | 'rejected' | 'rolled_back';
+export type LearningStatus =
+  | 'requested'
+  | 'candidate'
+  | 'canary'
+  | 'adopted'
+  | 'rejected'
+  | 'rolled_back'
+  | 'completed';
 
 export interface EnvironmentSummary {
   id: string;
@@ -134,6 +141,41 @@ export interface LearningRecord {
   redaction: 'none' | 'partial' | 'required';
   promotedTool?: string;
   createdAt: string;
+  active?: boolean;
+  currentScope?: LearningScope;
+  targetScope?: LearningScope;
+  availableScopes?: LearningScope[];
+  artifactContent?: string;
+  artifactPath?: string;
+  artifactType?: string;
+  sourceSignalIds?: string[];
+  sourceEvidence?: Record<string, unknown>;
+  dreamRationale?: string;
+  odinReview?: {
+    outcome?: string;
+    approved?: boolean;
+    rationale?: string;
+    reviewer?: string;
+    findings?: string[];
+    requiredForActivation?: boolean;
+  };
+  history?: Array<{
+    eventType: string;
+    status: string;
+    summary: string;
+    observedAt: string;
+    operatorId?: string;
+    reason?: string;
+  }>;
+  commandDelivery?: {
+    published?: boolean;
+    eventType?: string;
+    eventId?: string;
+    message?: string;
+    observedAt?: string;
+  };
+  canaryEnvironmentId?: string;
+  override?: boolean;
 }
 
 export interface FlockSummary {

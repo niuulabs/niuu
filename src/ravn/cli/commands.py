@@ -103,6 +103,16 @@ def _resolve_workspace(settings: Settings) -> Path:
     return Path(ws).resolve() if ws else Path.cwd()
 
 
+def _resident_ravn_state_dir(workspace: Path) -> Path:
+    """Return the writable resident Ravn state directory for skills/metadata."""
+    override = os.environ.get("RAVN_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.access(workspace, os.W_OK):
+        return workspace / ".ravn"
+    return Path.home() / ".ravn"
+
+
 def _warden_store():
     from ravn.warden import build_warden_store
 
@@ -527,6 +537,9 @@ def _uses_cli_transport_executor(persona_config: Any | None = None) -> bool:
 def _build_memory(settings: Settings, llm: Any = None) -> Any:
     """Build the memory adapter (SQLite or Postgres), or None."""
     backend = settings.memory.backend
+
+    if backend in {"", "none", "disabled", "off"}:
+        return None
 
     embedding_port = None
     if settings.embedding.enabled:
@@ -1813,6 +1826,136 @@ def _print_usage(usage: TokenUsage) -> None:
     typer.echo(f"[tokens] {', '.join(parts)}")
 
 
+@app.command("valkyrie-evolution-proof")
+def valkyrie_evolution_proof(
+    out_dir: str = typer.Option(
+        "/tmp/valkyrie-evolution-proof",
+        "--out-dir",
+        help="Directory for proof events, generated skills, and reports.",
+    ),
+    builder_adapter: str = typer.Option(
+        "ravn.valkyrie_evolution.adapters.LocalSkillBuilderAdapter",
+        "--builder-adapter",
+        help="Fully-qualified EvolutionBuilderPort adapter class.",
+    ),
+    builder_arg: list[str] = typer.Option(
+        [],
+        "--builder-arg",
+        help="Builder adapter kwarg as key=value. May be repeated.",
+    ),
+    review_adapter: str = typer.Option(
+        "ravn.valkyrie_evolution.adapters.LocalOdinReviewAdapter",
+        "--review-adapter",
+        help="Fully-qualified EvolutionReviewPort adapter class.",
+    ),
+    review_arg: list[str] = typer.Option(
+        [],
+        "--review-arg",
+        help="Review adapter kwarg as key=value. May be repeated.",
+    ),
+    environment_id: str = typer.Option(
+        "local-proof",
+        "--environment-id",
+        help="Environment id used in proof events and skill metadata.",
+    ),
+    autonomy_mode: str = typer.Option(
+        "yolo",
+        "--autonomy-mode",
+        help="Autonomy mode recorded for dream-cycle evolution requests.",
+    ),
+    publish_dashboard_url: str = typer.Option(
+        "",
+        "--publish-dashboard-url",
+        help=(
+            "Optional Valkyrie API base URL to receive proof telemetry, "
+            "for example http://localhost:8080/api/v1/ravn/valkyrie."
+        ),
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print full JSON report."),
+) -> None:
+    """Run a local end-to-end Valkyrie self-improvement proof.
+
+    The proof receives signals, records first-pass judgments, detects generic
+    capability gaps, runs a dream cycle, builds Ravn skills through the selected
+    builder adapter, then replays the signals and proves those skills are used.
+    """
+    builder_cls = _import_class(builder_adapter)
+    builder = builder_cls(**_parse_deployment_kwargs(builder_arg))
+    reviewer_cls = _import_class(review_adapter)
+    reviewer = reviewer_cls(**_parse_deployment_kwargs(review_arg))
+
+    from ravn.valkyrie_evolution import ValkyrieEvolutionProofRunner
+
+    report = asyncio.run(
+        ValkyrieEvolutionProofRunner(
+            out_dir=out_dir,
+            builder=builder,
+            reviewer=reviewer,
+            environment_id=environment_id,
+            autonomy_mode=autonomy_mode,
+        ).run()
+    )
+
+    published_count = 0
+    if publish_dashboard_url.strip():
+        published_count = _publish_valkyrie_proof_events_to_dashboard(
+            report.artifacts["events"],
+            publish_dashboard_url.strip(),
+        )
+
+    if json_output:
+        payload = report.to_dict()
+        payload["dashboard_events_published"] = published_count
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    summary = report.summary
+    typer.echo("Valkyrie evolution proof complete")
+    typer.echo(f"  signals received       : {summary['signals_received']}")
+    typer.echo(f"  capability gaps        : {summary['capability_gaps_detected']}")
+    typer.echo(f"  dream cycles completed : {summary['dream_cycles_completed']}")
+    typer.echo(f"  skills built           : {summary['skills_built']}")
+    typer.echo(f"  odin reviews           : {summary['odin_reviews']}")
+    typer.echo(f"  skills activated       : {summary['skills_activated']}")
+    typer.echo(f"  replay skills used     : {summary['skills_used_on_replay']}")
+    typer.echo(f"  flock proposals        : {summary['flock_learnings_proposed']}")
+    typer.echo(f"  resident installs      : {summary['resident_skills_installed']}")
+    typer.echo(f"  resident adopted       : {summary['resident_learnings_adopted']}")
+    typer.echo(f"  resident rejected      : {summary['resident_learnings_rejected']}")
+    typer.echo(f"  resident skill uses    : {summary['resident_adopted_skills_used']}")
+    typer.echo(f"  resident odin decisions: {summary['resident_odin_decisions']}")
+    if publish_dashboard_url.strip():
+        typer.echo(f"  dashboard events sent  : {published_count}")
+    typer.echo(f"  events                 : {report.artifacts['events']}")
+    typer.echo(f"  report                 : {report.artifacts['report_markdown']}")
+
+
+def _publish_valkyrie_proof_events_to_dashboard(events_path: str, dashboard_url: str) -> int:
+    import urllib.error
+    import urllib.request
+
+    target = dashboard_url.rstrip("/") + "/telemetry/events"
+    count = 0
+    with open(events_path, encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            request = urllib.request.Request(
+                target,
+                data=line.encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=3):
+                    count += 1
+            except urllib.error.URLError as exc:
+                raise typer.BadParameter(
+                    f"could not publish Valkyrie proof event to {target}: {exc}"
+                ) from exc
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Approvals CLI
 # ---------------------------------------------------------------------------
@@ -2570,6 +2713,8 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
+    resident_learning_runtime: Any | None = None
+    resident_learning_owns_publisher = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
@@ -2648,12 +2793,26 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
+    resident_learning_runtime = _build_resident_learning_runtime(
+        settings,
+        publisher=environment_signal_publisher,
+        workspace=_resolve_workspace(settings),
+    )
+    if resident_learning_runtime is not None:
+        if hasattr(environment_signal_publisher, "start"):
+            await environment_signal_publisher.start()
+            resident_learning_owns_publisher = True
+        await resident_learning_runtime.start()
+        tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
+        typer.echo("  Resident learning: subscribed")
+
     environment_signal_runtime = _build_environment_signal_runtime(
         settings,
         drive_loop=drive_loop,
         persona_config=persona_config,
         publisher=environment_signal_publisher,
-        owns_publisher=True,
+        resident_learning_runtime=resident_learning_runtime,
+        owns_publisher=not resident_learning_owns_publisher,
     )
     if environment_signal_runtime is not None:
         await environment_signal_runtime.start()
@@ -2747,6 +2906,10 @@ async def _run_daemon(
             await sleipnir_catalog_publisher.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
+        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
         return
 
     try:
@@ -2761,8 +2924,12 @@ async def _run_daemon(
         await asyncio.gather(*tasks, return_exceptions=True)
         if _cascade_participant is not None:
             await _cascade_participant.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
+        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
@@ -2781,6 +2948,7 @@ def _build_environment_signal_runtime(
     drive_loop: Any | None = None,
     persona_config: Any | None = None,
     publisher: Any | None = None,
+    resident_learning_runtime: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -2813,16 +2981,76 @@ def _build_environment_signal_runtime(
         settings=settings,
         publisher=publisher,
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
+        resident_signal_processor=(
+            resident_learning_runtime.process_signal
+            if resident_learning_runtime is not None
+            else None
+        ),
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,
     )
 
 
+def _build_resident_learning_runtime(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    workspace: Path,
+) -> Any | None:
+    """Build the resident learning subscriber/installer for environment Valkyries."""
+    if not settings.environment.flocks:
+        return None
+    if publisher is None or not hasattr(publisher, "subscribe"):
+        logger.warning(
+            "resident_learning: shared mesh transport is unavailable; "
+            "learning adoption will not run"
+        )
+        return None
+    if settings.skill.backend == "sqlite":
+        logger.warning("resident_learning: sqlite skill backend is forbidden for Valkyries")
+        return None
+
+    from ravn.adapters.skill.file_registry import FileSkillRegistry  # noqa: PLC0415
+    from ravn.skills.management import SkillManagementRegistry  # noqa: PLC0415
+    from ravn.valkyrie_evolution import (  # noqa: PLC0415
+        ResidentLearningIdentity,
+        ResidentLearningRuntime,
+    )
+
+    resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
+    local_ravn_dir = _resident_ravn_state_dir(workspace)
+    skill_port = FileSkillRegistry(
+        skill_dirs=settings.skill.skill_dirs or None,
+        write_dir=local_ravn_dir / "skills",
+        include_builtin=settings.skill.include_builtin,
+        cwd=workspace,
+    )
+    skills = SkillManagementRegistry(
+        skill_port,
+        metadata_path=local_ravn_dir / "skill_management.json",
+    )
+    identity = ResidentLearningIdentity(
+        environment_id=settings.environment.id,
+        environment_type=settings.environment.type,
+        valkyrie_id=resident_id,
+        domain=settings.environment.type,
+        flock_ids=list(settings.environment.flocks),
+        autonomy_mode=settings.dream_cycle.autonomy_mode,
+    )
+    return ResidentLearningRuntime(
+        identity=identity,
+        skills=skills,
+        publisher=publisher,
+        subscriber=publisher,
+        source=resident_id,
+    )
+
+
 def _build_environment_signal_publisher(settings: Settings) -> Any | None:
     """Build the shared publisher used by resident Valkyrie signal and task telemetry."""
     enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
-    if not enabled_sources:
+    if not enabled_sources and not settings.environment.flocks:
         return None
     if not settings.mesh.enabled:
         logger.warning("environment_signals: mesh is disabled; signal sources will not start")
@@ -3835,6 +4063,7 @@ def _resolve_transport_kwargs(
         kwargs: dict[str, Any] = {
             "servers": servers or ["nats://localhost:4222"],
             "stream_name": nats_cfg.stream_name,
+            "jetstream_domain": nats_cfg.jetstream_domain,
             "subject_prefix": nats_cfg.subject_prefix,
             "retention": nats_cfg.retention,
             "max_age_seconds": nats_cfg.max_age_seconds,
@@ -3860,6 +4089,14 @@ def _resolve_transport_kwargs(
             "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")
             if nats_cfg.nkeys_seed_env
             else "",
+            "extra_subscriptions": [
+                {
+                    "subject": entry.subject,
+                    "stream_name": entry.stream_name,
+                }
+                for entry in nats_cfg.extra_subscriptions
+                if entry.subject
+            ],
         }
         if nats_cfg.consumer_group:
             kwargs["consumer_group"] = nats_cfg.consumer_group

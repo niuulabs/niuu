@@ -30,6 +30,11 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
         `/flocks/${encodeURIComponent(flockId)}`,
       );
     },
+    getLearning(learningId) {
+      return client.get<ValkyrieDashboard['learnings'][number]>(
+        `/learnings/${encodeURIComponent(learningId)}`,
+      );
+    },
     joinHuddle(huddleId) {
       return client.post<ValkyrieDashboard['huddles'][number]>(
         `/huddles/${encodeURIComponent(huddleId)}/join`,
@@ -65,6 +70,33 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
         `/learnings/${encodeURIComponent(request.learningId)}/override`,
         request,
       );
+    },
+    canaryLearning(request: LearningDecisionRequest) {
+      return client.post<ValkyrieDashboard['learnings'][number]>(
+        `/learnings/${encodeURIComponent(request.learningId)}/canary`,
+        request,
+      );
+    },
+    promoteLearning(request: LearningDecisionRequest) {
+      return client.post<ValkyrieDashboard['learnings'][number]>(
+        `/learnings/${encodeURIComponent(request.learningId)}/promote`,
+        request,
+      );
+    },
+    demoteLearning(request: LearningDecisionRequest) {
+      return client.post<ValkyrieDashboard['learnings'][number]>(
+        `/learnings/${encodeURIComponent(request.learningId)}/demote`,
+        request,
+      );
+    },
+    rollbackLearning(request: LearningDecisionRequest) {
+      return client.post<ValkyrieDashboard['learnings'][number]>(
+        `/learnings/${encodeURIComponent(request.learningId)}/rollback`,
+        request,
+      );
+    },
+    replaySignal(request) {
+      return client.post('/proof/replay-signal', request);
     },
     updateAutonomy(request: AutonomyUpdateRequest) {
       return client.post<ValkyrieDashboard>('/autonomy', request);
