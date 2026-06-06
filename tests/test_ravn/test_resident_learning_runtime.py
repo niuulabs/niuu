@@ -171,6 +171,11 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
                         "subject": "flock.k8s.>",
                     }
                 ],
+                "core_subscriptions": [
+                    {
+                        "subject": "obs.cmd.valhalla.>",
+                    }
+                ],
             },
         },
         environment={"id": "valhalla", "type": "k8s", "flocks": ["k8s-valkyries"]},
@@ -183,6 +188,7 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
     assert kwargs["extra_subscriptions"] == [
         {"stream_name": "flock-k8s-events", "subject": "flock.k8s.>"}
     ]
+    assert kwargs["core_subscriptions"] == [{"subject": "obs.cmd.valhalla.>"}]
 
 
 @pytest.mark.asyncio

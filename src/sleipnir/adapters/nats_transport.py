@@ -5,6 +5,7 @@ Multi-node, production event transport using NATS JetStream (nats-py client).
 Architecture
 ------------
 - :class:`NatsPublisher` — connects to NATS and publishes events to JetStream.
+- :class:`NatsCorePublisher` — publishes live control events over core NATS.
 - :class:`NatsSubscriber` — connects to NATS and subscribes from JetStream,
   with consumer group support and replay from offset.
 - :class:`NatsTransport` — combined publisher + subscriber (two connections).
@@ -483,6 +484,101 @@ class NatsPublisher(SleipnirPublisher):
 
 
 # ---------------------------------------------------------------------------
+# NatsCorePublisher
+# ---------------------------------------------------------------------------
+
+
+class NatsCorePublisher(SleipnirPublisher):
+    """Core NATS publisher for live control subjects."""
+
+    def __init__(
+        self,
+        servers: list[str] | None = None,
+        subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
+    ) -> None:
+        _require_nats()
+        self._servers = servers or DEFAULT_SERVERS
+        self._subject_prefix = subject_prefix
+        self._connect_timeout_s = connect_timeout_s
+        self._max_reconnect_attempts = max_reconnect_attempts
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
+        self._client: Any = None
+
+    async def start(self) -> None:
+        self._client = await nats.connect(
+            servers=self._servers,
+            connect_timeout=self._connect_timeout_s,
+            max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
+        )
+        logger.debug(
+            "NatsCorePublisher: connected to %s, subject_prefix=%r",
+            self._servers,
+            self._subject_prefix,
+        )
+
+    async def stop(self) -> None:
+        if self._client is not None:
+            with suppress(Exception):
+                await self._client.drain()
+            with suppress(Exception):
+                await self._client.close()
+            self._client = None
+            logger.debug("NatsCorePublisher: closed")
+
+    async def __aenter__(self) -> NatsCorePublisher:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.stop()
+
+    async def publish(self, event: SleipnirEvent) -> None:
+        if event.ttl is not None and event.ttl <= 0:
+            logger.debug(
+                "Dropping expired event %s (%s): ttl=%d",
+                event.event_id,
+                event.event_type,
+                event.ttl,
+            )
+            return
+        if self._client is None:
+            raise RuntimeError("NatsCorePublisher is not started. Call start() first.")
+        subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
+        await self._client.publish(subject, serialize(event))
+        await self._client.flush()
+
+    async def publish_batch(self, events: list[SleipnirEvent]) -> None:
+        for event in events:
+            await self.publish(event)
+
+
+# ---------------------------------------------------------------------------
 # NatsSubscriber
 # ---------------------------------------------------------------------------
 
@@ -538,6 +634,7 @@ class NatsSubscriber(SleipnirSubscriber):
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
+        core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         if ring_buffer_depth < 1:
@@ -578,6 +675,11 @@ class NatsSubscriber(SleipnirSubscriber):
             }
             for entry in extra_subscriptions or []
             if str(entry.get("subject") or "").strip()
+        ]
+        self._core_subscriptions = [
+            str(entry.get("subject") if isinstance(entry, dict) else entry).strip()
+            for entry in core_subscriptions or []
+            if str(entry.get("subject") if isinstance(entry, dict) else entry).strip()
         ]
         self._client: Any = None
         self._js: Any = None
@@ -678,7 +780,33 @@ class NatsSubscriber(SleipnirSubscriber):
             )
             self._nats_subs.append(nats_sub)
 
+        for subject in self._core_subscriptions:
+            nats_sub = await self._create_core_subscription(subject, event_types, sub)
+            self._nats_subs.append(nats_sub)
+
         return sub
+
+    async def _create_core_subscription(
+        self,
+        subject: str,
+        patterns: list[str],
+        sub: _BaseSubscription,
+    ) -> Any:
+        """Create a core NATS subscription for live control subjects."""
+
+        async def _on_message(msg: Any) -> None:
+            if not self._running:
+                return
+            event = _decode_nats_message(msg.data)
+            if event is None:
+                return
+            if event.ttl is not None and event.ttl <= 0:
+                return
+            if not any(match_event_type(p, event.event_type) for p in patterns):
+                return
+            await enqueue_with_overflow(sub._queue, event, self._ring_buffer_depth, logger)
+
+        return await self._client.subscribe(subject, cb=_on_message)
 
     async def _create_nats_subscription(
         self,
@@ -791,6 +919,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
+        core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
@@ -843,6 +972,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             nkeys_seed_file=nkeys_seed_file,
             nkeys_seed=nkeys_seed,
             extra_subscriptions=extra_subscriptions,
+            core_subscriptions=core_subscriptions,
         )
 
     async def start(self) -> None:

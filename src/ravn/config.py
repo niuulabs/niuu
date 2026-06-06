@@ -1572,6 +1572,15 @@ class MeshNatsExtraSubscriptionConfig(BaseModel):
     )
 
 
+class MeshNatsCoreSubscriptionConfig(BaseModel):
+    """Additional core NATS filter subject for live control messages."""
+
+    subject: str = Field(
+        default="",
+        description="Core NATS filter subject to subscribe to in addition to JetStream.",
+    )
+
+
 class MeshNatsConfig(BaseModel):
     """NATS JetStream mesh settings for environment-resident Valkyries."""
 
@@ -1683,6 +1692,13 @@ class MeshNatsConfig(BaseModel):
         description=(
             "Optional raw NATS subject filters, with stream names, consumed in addition "
             "to subject_prefix-derived Sleipnir subjects."
+        ),
+    )
+    core_subscriptions: list[MeshNatsCoreSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional core NATS subject filters for live controls such as resident "
+            "Valkyrie commands routed over leafnodes."
         ),
     )
 

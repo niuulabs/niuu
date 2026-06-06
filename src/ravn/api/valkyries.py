@@ -2670,7 +2670,12 @@ def _command_stream_specs() -> list[dict[str, str]]:
                 "subject_prefix": subject_prefix,
                 "user": user,
                 "password_env": password_env,
-                "label": f"{stream_name}/{subject_prefix}",
+                "mode": "core" if stream_name.lower() == "core" else "jetstream",
+                "label": (
+                    f"core/{subject_prefix}"
+                    if stream_name.lower() == "core"
+                    else f"{stream_name}/{subject_prefix}"
+                ),
             }
         )
     return specs
@@ -2783,7 +2788,7 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
     if not servers_raw:
         return ValkyrieLearningCommandPublisher()
 
-    from sleipnir.adapters.nats_transport import NatsPublisher  # noqa: PLC0415
+    from sleipnir.adapters.nats_transport import NatsCorePublisher, NatsPublisher  # noqa: PLC0415
 
     command_inherits_telemetry = not os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_URL", "").strip()
     servers = [entry.strip() for entry in servers_raw.split(",") if entry.strip()]
@@ -2851,15 +2856,29 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
         "nkeys_seed": os.environ.get("RAVN_VALKYRIE_COMMAND_NKEYS_SEED", ""),
     }
     if stream_specs:
+        core_options = {
+            key: value
+            for key, value in shared_options.items()
+            if key not in {"jetstream_domain", "ensure_stream"}
+        }
         targets = [
             _CommandTarget(
                 label=spec["label"],
-                publisher=NatsPublisher(
-                    **shared_options,
-                    stream_name=spec["stream_name"],
-                    subject_prefix=spec["subject_prefix"],
-                    user=spec["user"],
-                    password=os.environ.get(spec["password_env"], ""),
+                publisher=(
+                    NatsCorePublisher(
+                        **core_options,
+                        subject_prefix=spec["subject_prefix"],
+                        user=spec["user"],
+                        password=os.environ.get(spec["password_env"], ""),
+                    )
+                    if spec.get("mode") == "core"
+                    else NatsPublisher(
+                        **shared_options,
+                        stream_name=spec["stream_name"],
+                        subject_prefix=spec["subject_prefix"],
+                        user=spec["user"],
+                        password=os.environ.get(spec["password_env"], ""),
+                    )
                 ),
             )
             for spec in stream_specs

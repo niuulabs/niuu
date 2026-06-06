@@ -33,6 +33,7 @@ from sleipnir.adapters.nats_transport import (
     DEFAULT_STREAM_NAME,
     DEFAULT_SUBJECT_PREFIX,
     NatsBridgeAdapter,
+    NatsCorePublisher,
     NatsPublisher,
     NatsSubscriber,
     NatsTransport,
@@ -76,6 +77,9 @@ def _make_mock_client() -> tuple[AsyncMock, AsyncMock, AsyncMock]:
 
     mock_client = AsyncMock()
     mock_client.jetstream = MagicMock(return_value=mock_js)
+    mock_client.publish = AsyncMock()
+    mock_client.flush = AsyncMock()
+    mock_client.subscribe = AsyncMock(return_value=mock_sub)
     mock_client.drain = AsyncMock()
     mock_client.close = AsyncMock()
 
@@ -447,6 +451,35 @@ async def test_publisher_custom_subject_prefix(mock_nats):
 
 
 # ---------------------------------------------------------------------------
+# NatsCorePublisher tests
+# ---------------------------------------------------------------------------
+
+
+async def test_core_publisher_publish_sends_core_subject(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsCorePublisher(subject_prefix="obs.cmd.valhalla")
+
+    await pub.start()
+    event = make_event(event_type="learning.adoption.recorded")
+    await pub.publish(event)
+
+    client.jetstream.assert_not_called()
+    client.publish.assert_called_once()
+    subject, payload = client.publish.call_args.args
+    assert subject == "obs.cmd.valhalla.learning.adoption.recorded"
+    assert _decode_nats_message(payload).event_id == event.event_id
+    client.flush.assert_called_once()
+    await pub.stop()
+
+
+async def test_core_publisher_publish_before_start_raises():
+    pub = NatsCorePublisher()
+
+    with pytest.raises(RuntimeError, match="not started"):
+        await pub.publish(make_event())
+
+
+# ---------------------------------------------------------------------------
 # NatsSubscriber tests
 # ---------------------------------------------------------------------------
 
@@ -537,6 +570,22 @@ async def test_subscriber_adds_extra_stream_subjects(mock_nats):
         "obs-valhalla-events",
         "flock-k8s-events",
     ]
+    await sub.stop()
+
+
+async def test_subscriber_adds_core_subscriptions(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        core_subscriptions=[{"subject": "obs.cmd.valhalla.>"}],
+    )
+    await sub.start()
+    await sub.subscribe(["learning.adoption.recorded"], AsyncMock())
+
+    js.subscribe.assert_called_once()
+    client.subscribe.assert_called_once()
+    assert client.subscribe.call_args.args[0] == "obs.cmd.valhalla.>"
     await sub.stop()
 
 

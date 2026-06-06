@@ -1161,6 +1161,89 @@ def test_valkyrie_learning_command_publisher_fans_out_to_command_streams(monkeyp
     assert created[0].events[0].payload["artifact_content_present"] is True
 
 
+def test_valkyrie_learning_command_publisher_supports_core_command_targets(monkeypatch):
+    import sleipnir.adapters.nats_transport as nats_transport
+
+    created_core: list[FakeNatsPublisher] = []
+    created_stream: list[FakeNatsPublisher] = []
+
+    class FakeNatsPublisher:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.events: list[SleipnirEvent] = []
+            created_stream.append(self)
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def publish(self, event: SleipnirEvent) -> None:
+            self.events.append(event)
+
+    class FakeNatsCorePublisher(FakeNatsPublisher):
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.events: list[SleipnirEvent] = []
+            created_core.append(self)
+
+    monkeypatch.setattr(nats_transport, "NatsPublisher", FakeNatsPublisher)
+    monkeypatch.setattr(nats_transport, "NatsCorePublisher", FakeNatsCorePublisher)
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
+    monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "nats.internal")
+    monkeypatch.setenv(
+        "RAVN_VALKYRIE_COMMAND_NATS_STREAMS",
+        "core:obs.cmd.noatun:valkyrie-dashboard-noatun:RAVN_NOATUN_PASSWORD",
+    )
+    monkeypatch.setenv("RAVN_NOATUN_PASSWORD", "noatun-pass")
+
+    publisher = build_nats_learning_command_publisher_from_env()
+
+    assert created_stream == []
+    assert len(created_core) == 1
+    assert created_core[0].kwargs["subject_prefix"] == "obs.cmd.noatun"
+    assert created_core[0].kwargs["user"] == "valkyrie-dashboard-noatun"
+    assert created_core[0].kwargs["password"] == "noatun-pass"
+    assert "stream_name" not in created_core[0].kwargs
+    assert "jetstream_domain" not in created_core[0].kwargs
+
+    request = LearningDecisionRequest(
+        learningId="live-learning-1",
+        operatorId="operator",
+        reason="prove core command fanout",
+    )
+
+    async def publish_command() -> dict:
+        await publisher.start()
+        delivery, _ = await publisher.publish(
+            action="adopt",
+            before={"scope": "environment", "sourceEnvironmentId": "ymir"},
+            learning={
+                "id": "live-learning-1",
+                "status": "adopted",
+                "scope": "flock",
+                "sourceEnvironmentId": "ymir",
+                "title": "skill-one",
+                "artifactType": "ravn_skill_tool",
+                "artifactContent": "metadata:\n  capability: inspect.test\n",
+                "redaction": "redacted",
+                "targetFlockId": "k8s-valkyries",
+            },
+            request=request,
+        )
+        await publisher.stop()
+        return delivery
+
+    delivery = asyncio.run(publish_command())
+
+    assert delivery["published"] is True
+    assert delivery["targets"] == [
+        {"label": "core/obs.cmd.noatun", "published": True, "message": "published"}
+    ]
+    assert created_core[0].events[0].event_type == "learning.adoption.recorded"
+
+
 def test_valkyrie_learning_command_publisher_reports_partial_fanout_failure():
     class PartialFanout:
         async def publish_with_results(self, event: SleipnirEvent) -> list[dict]:

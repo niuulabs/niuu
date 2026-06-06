@@ -4097,6 +4097,11 @@ def _resolve_transport_kwargs(
                 for entry in nats_cfg.extra_subscriptions
                 if entry.subject
             ],
+            "core_subscriptions": [
+                {"subject": entry.subject}
+                for entry in nats_cfg.core_subscriptions
+                if entry.subject
+            ],
         }
         if nats_cfg.consumer_group:
             kwargs["consumer_group"] = nats_cfg.consumer_group
