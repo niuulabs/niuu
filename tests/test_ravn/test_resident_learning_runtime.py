@@ -370,6 +370,136 @@ async def test_resident_micro_dream_builds_and_proposes_missing_capability(
 
 
 @pytest.mark.asyncio
+async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_irrelevant_peer(
+    tmp_path,
+) -> None:
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await _subscribe_recorder(
+        bus,
+        [
+            "flock.learning.*",
+            "learning.*",
+            "valkyrie.dream.*",
+            "valkyrie.evolution.*",
+            "odin.*",
+            "valkyrie.judgment.*",
+        ],
+        events,
+    )
+    source_skills = _manager(tmp_path, "source")
+    relevant_peer_skills = _manager(tmp_path, "relevant-peer")
+    irrelevant_peer_skills = _manager(tmp_path, "irrelevant-peer")
+    source = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=source_skills,
+        publisher=bus,
+        subscriber=bus,
+    )
+    relevant_peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-b",
+            valkyrie_id="valkyrie:k8s-b",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=relevant_peer_skills,
+        publisher=bus,
+        subscriber=bus,
+    )
+    irrelevant_peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="printer-pi",
+            valkyrie_id="valkyrie:printer",
+            domain="home",
+            flock_ids=["printer-operators"],
+            autonomy_mode="yolo",
+        ),
+        skills=irrelevant_peer_skills,
+        publisher=bus,
+        subscriber=bus,
+    )
+    await relevant_peer.start()
+    await irrelevant_peer.start()
+
+    first = await source.process_signal(
+        OperationalSignal(
+            signal_id="sig-failed-mount",
+            event_type=registry.SIGNAL_KUBERNETES_EVENT,
+            environment_id="cluster-a",
+            domain="k8s",
+            severity="warning",
+            summary="Pod volume mount failed",
+            payload={"kind": "pod", "reason": "FailedMount", "namespace": "checkout"},
+        )
+    )
+    await bus.flush()
+    await bus.flush()
+
+    assert first["decision"] == "built_capability_for_next_signal"
+    proposal = next(event for event in events if event.event_type == "flock.learning.proposed")
+    assert proposal.payload["flock_id"] == "flock:k8s-valkyries"
+    assert "capability: inspect.kubernetes.pod.failedmount" in proposal.payload["content"]
+
+    installed = await relevant_peer_skills.show(
+        "valkyrie-inspect-kubernetes-pod-failedmount"
+    )
+    assert installed["metadata"]["scope"] == "flock"
+    assert installed["metadata"]["environment_id"] == "cluster-b"
+    assert installed["metadata"]["source"] == (
+        "flock-learning:resident:cluster-a:inspect-kubernetes-pod-failedmount"
+    )
+    assert await irrelevant_peer_skills.get_runnable_skill(
+        "valkyrie-inspect-kubernetes-pod-failedmount"
+    ) is None
+    assert [decision.action for decision in relevant_peer.decisions()] == ["adopted"]
+    assert [decision.action for decision in irrelevant_peer.decisions()] == ["rejected"]
+    assert any(
+        event.event_type == registry.LEARNING_ADOPTION_RECORDED
+        and event.payload["action"] == "adopted"
+        and event.payload["resident_valkyrie_id"] == "valkyrie:k8s-b"
+        for event in events
+    )
+    assert any(
+        event.event_type == registry.LEARNING_ADOPTION_RECORDED
+        and event.payload["action"] == "rejected"
+        and event.payload["resident_valkyrie_id"] == "valkyrie:printer"
+        and event.payload["relevant"] is False
+        for event in events
+    )
+
+    replay = await relevant_peer.process_signal(
+        OperationalSignal(
+            signal_id="sig-failed-mount-next",
+            event_type=registry.SIGNAL_KUBERNETES_EVENT,
+            environment_id="cluster-b",
+            domain="k8s",
+            severity="warning",
+            summary="Pod volume mount failed again",
+            payload={"kind": "pod", "reason": "FailedMount", "namespace": "checkout"},
+        )
+    )
+    await bus.flush()
+
+    assert replay["usedAdoptedLearning"] is True
+    assert replay["skillName"] == "valkyrie-inspect-kubernetes-pod-failedmount"
+    refreshed = await relevant_peer_skills.show(
+        "valkyrie-inspect-kubernetes-pod-failedmount"
+    )
+    assert refreshed["metadata"]["run_count"] == 1
+
+    await relevant_peer.stop()
+    await irrelevant_peer.stop()
+
+
+@pytest.mark.asyncio
 async def test_irrelevant_peer_rejects_learning_without_installing(tmp_path) -> None:
     bus = InProcessBus()
     events: list[SleipnirEvent] = []
