@@ -379,6 +379,62 @@ async def test_guarded_peer_waits_for_human_when_odin_blocks_flock_scope(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_yolo_peer_rejects_unusable_kubectl_only_learning(tmp_path) -> None:
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await _subscribe_recorder(bus, ["learning.*", "odin.*", "valkyrie.evolution.*"], events)
+    peer_skills = _manager(tmp_path, "cluster-yolo")
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-yolo",
+            valkyrie_id="valkyrie:k8s-yolo",
+            domain="k8s",
+            flock_ids=["k8s-valkyries"],
+            autonomy_mode="yolo",
+        ),
+        skills=peer_skills,
+        publisher=bus,
+        subscriber=bus,
+    )
+
+    decision = await peer.evaluate_and_apply(
+        ResidentLearningArtifact(
+            learning_id="learn-kubectl-only",
+            title="valkyrie-kubectl-only",
+            summary="Inspect pod warnings with kubectl.",
+            content=(
+                "# skill: valkyrie-kubectl-only\n\n"
+                "metadata:\n"
+                "  capability: inspect.kubernetes.pod.backoff\n"
+                "  safety_class: read_only\n\n"
+                "Use `kubectl describe pod` and `kubectl logs` to inspect the pod."
+            ),
+            artifact_type="ravn_skill_tool",
+            scope="flock",
+            confidence=0.8,
+            source_environment_id="cluster-a",
+            source_valkyrie_id="valkyrie:k8s-a",
+            promotion_id="promo-kubectl-only",
+            flock_id="k8s-valkyries",
+            domain="k8s",
+            redaction_status="redacted",
+        )
+    )
+
+    assert decision.action == "rejected"
+    assert "Odin review blocked" in decision.rationale
+    assert await peer_skills.get_runnable_skill("valkyrie-kubectl-only") is None
+    odin = next(event for event in events if event.event_type == registry.ODIN_COURT_DECIDED)
+    assert odin.payload["decision"] == "learning_adoption_blocked"
+    assert any(
+        str(finding).startswith("unavailable runtime dependency")
+        for item in odin.payload["dissent"]
+        for finding in item.get("findings", [])
+    )
+    assert not any(event.event_type == "valkyrie.evolution.activated" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_operator_adoption_command_installs_and_acknowledges_skill(tmp_path) -> None:
     bus = InProcessBus()
     events: list[SleipnirEvent] = []

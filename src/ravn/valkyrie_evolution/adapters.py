@@ -140,6 +140,8 @@ def _review_findings(request: EvolutionRequest, build: BuildResult) -> list[str]
     for blocked in ["rm -rf", "kubectl delete", "send email", "delete secret"]:
         if blocked in lower:
             findings.append(f"blocked operation mentioned: {blocked}")
+    if "kubectl" in lower and "kubernetes_inspect" not in lower:
+        findings.append("unavailable runtime dependency: kubectl; use kubernetes_inspect")
     return findings
 
 
@@ -201,6 +203,7 @@ Use this skill when an incoming Environment signal matches capability `{capabili
 
 1. Re-read the current signal payload and compare it with the learned fields above.
 2. Gather read-only context that explains `{gap_reason}` before proposing action.
+   For Kubernetes signals, use `kubernetes_inspect`; do not assume `kubectl` exists.
 3. Produce a structured judgment with confidence, evidence, and escalation need.
 4. If the signal is still ambiguous, declare the missing context as a new capability gap.
 """

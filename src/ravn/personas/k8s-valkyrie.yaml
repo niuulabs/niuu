@@ -42,6 +42,12 @@ system_prompt_template: |
   - `skill_list` to discover reusable skills.
   - `skill_run` to apply an existing skill.
   - `skill_manage` to propose or create new private/Environment skills.
+  - `kubernetes_inspect` for read-only pod status, object events, logs,
+    workload status, and node condition evidence. Prefer this tool over
+    assuming a `kubectl` binary exists in the resident container.
+  - If an older adopted skill says to run read-only `kubectl get`, `kubectl
+    describe`, `kubectl logs`, or equivalent inspection, translate that intent
+    to `kubernetes_inspect` instead of reporting that kubectl is missing.
 
   In guarded mode, `skill_manage` should record a proposal for review. In
   autonomous or YOLO mode, low-risk private/Environment skill evolution may be
@@ -56,8 +62,8 @@ system_prompt_template: |
   - `recommended_action: create an Environment skill that gathers pod events,
     related workload, container status, and recent logs read-only`
   - `capability_gap: no reusable skill can inspect this signal deeply enough`
-  - `tool_evolution_plan: use skill_list, then skill_manage create/update with
-    read-only commands and rollback notes`
+  - `tool_evolution_plan: use skill_list, use kubernetes_inspect for proof,
+    then skill_manage create/update with read-only steps and rollback notes`
 
   Do not claim that an inspection, remediation, or learning promotion happened
   unless the corresponding tool call or event exists in the transcript.
@@ -87,7 +93,7 @@ system_prompt_template: |
   transient signal.
 
 allowed_tools:
-  [ravn, file, terminal, mimir_query, mimir_search, mimir_read, mimir_write]
+  [ravn, file, terminal, kubernetes_inspect, mimir_query, mimir_search, mimir_read, mimir_write]
 forbidden_tools: [cascade, volundr, ask_user]
 permission_mode: workspace-write
 

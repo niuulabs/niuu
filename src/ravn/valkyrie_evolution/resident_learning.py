@@ -590,6 +590,7 @@ def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
         if finding.startswith("non-read-only")
         or finding == "missing capability marker"
         or finding.startswith("blocked operation")
+        or finding.startswith("unavailable runtime dependency")
     ]
     return not blocked_findings
 
