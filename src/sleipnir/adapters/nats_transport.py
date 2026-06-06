@@ -233,6 +233,22 @@ def _additional_nats_subjects(event: SleipnirEvent) -> list[str]:
     return subjects
 
 
+def _extra_subscription_matches(
+    extra_subscription: dict[str, Any],
+    event_types: list[str],
+) -> bool:
+    """Return whether an extra stream subscription belongs to this logical subscriber."""
+
+    scoped_event_types = extra_subscription.get("event_types")
+    if not scoped_event_types:
+        return True
+    return any(
+        match_event_type(scoped_pattern, event_type)
+        for scoped_pattern in scoped_event_types
+        for event_type in event_types
+    )
+
+
 def _nats_subjects_for_patterns(patterns: list[str], prefix: str) -> list[str]:
     """Translate Sleipnir fnmatch patterns to NATS subject filter strings.
 
@@ -693,6 +709,16 @@ class NatsSubscriber(SleipnirSubscriber):
                 "stream_name": str(
                     entry.get("stream_name") or entry.get("streamName") or ""
                 ).strip(),
+                "event_types": [
+                    str(event_type).strip()
+                    for event_type in (
+                        entry.get("event_types")
+                        or entry.get("eventTypes")
+                        or entry.get("patterns")
+                        or []
+                    )
+                    if str(event_type).strip()
+                ],
             }
             for entry in extra_subscriptions or []
             if str(entry.get("subject") or "").strip()
@@ -782,7 +808,11 @@ class NatsSubscriber(SleipnirSubscriber):
             {"subject": subject, "stream_name": self._stream_name}
             for subject in _nats_subjects_for_patterns(event_types, self._subject_prefix)
         ]
-        subscriptions.extend(self._extra_subscriptions)
+        subscriptions.extend(
+            extra_subscription
+            for extra_subscription in self._extra_subscriptions
+            if _extra_subscription_matches(extra_subscription, event_types)
+        )
 
         seen: set[tuple[str, str]] = set()
         for subscription in subscriptions:

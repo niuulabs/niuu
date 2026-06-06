@@ -599,6 +599,39 @@ async def test_subscriber_adds_extra_stream_subjects(mock_nats):
     await sub.stop()
 
 
+async def test_subscriber_scopes_extra_stream_subjects_to_event_types(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        extra_subscriptions=[
+            {
+                "subject": "flock.k8s.>",
+                "stream_name": "flock-k8s-events",
+                "event_types": ["flock.learning.*", "learning.adoption.recorded"],
+            },
+        ],
+    )
+    await sub.start()
+
+    await sub.subscribe(["signal.kubernetes.event"], AsyncMock())
+    assert [call.args[0] for call in js.subscribe.call_args_list] == [
+        "obs.valhalla.signal.kubernetes.event"
+    ]
+
+    js.subscribe.reset_mock()
+    await sub.subscribe(["flock.learning.proposed"], AsyncMock())
+    assert [call.args[0] for call in js.subscribe.call_args_list] == [
+        "obs.valhalla.flock.learning.proposed",
+        "flock.k8s.>",
+    ]
+    assert [call.kwargs["stream"] for call in js.subscribe.call_args_list] == [
+        "obs-valhalla-events",
+        "flock-k8s-events",
+    ]
+    await sub.stop()
+
+
 async def test_subscriber_adds_core_subscriptions(mock_nats):
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber(
