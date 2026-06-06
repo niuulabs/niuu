@@ -249,7 +249,13 @@ async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tm
     assert installed["metadata"]["environment_id"] == "cluster-b"
     assert installed["metadata"]["source"] == "flock-learning:learn-k8s-oom"
     assert [decision.action for decision in peer.decisions()] == ["adopted"]
-    assert any(event.event_type == registry.ODIN_COURT_DECIDED for event in events)
+    assert "YOLO override installed after non-blocking Odin findings" in peer.decisions()[
+        0
+    ].rationale
+    odin = next(event for event in events if event.event_type == registry.ODIN_COURT_DECIDED)
+    assert odin.payload["decision"] == "learning_adoption_allowed"
+    assert odin.payload["install_authorization"] == "yolo_override"
+    assert "YOLO override" in odin.payload["install_authorization_rationale"]
     assert any(
         event.event_type == registry.LEARNING_ADOPTION_RECORDED
         and event.payload["action"] == "adopted"

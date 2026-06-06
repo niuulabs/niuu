@@ -421,9 +421,13 @@ class ResidentLearningRuntime:
             return decision
 
         skill_name = await self._install_skill(artifact, build)
+        authorization_rationale = _install_authorization_rationale(
+            review,
+            self.identity.autonomy_mode,
+        )
         decision = ResidentLearningDecision(
             "adopted",
-            f"Installed {skill_name}: {review.rationale}",
+            f"Installed {skill_name}: {authorization_rationale}",
             installed_skill_name=skill_name,
             review=review,
             relevant=True,
@@ -549,6 +553,14 @@ class ResidentLearningRuntime:
         )
         event.payload["learning_id"] = artifact.learning_id
         event.payload["artifact_name"] = artifact.title
+        event.payload["install_authorization"] = _install_authorization(
+            review,
+            self.identity.autonomy_mode,
+        )
+        event.payload["install_authorization_rationale"] = _install_authorization_rationale(
+            review,
+            self.identity.autonomy_mode,
+        )
         await self._publisher.publish(event)
 
     async def _publish_activation(
@@ -858,6 +870,27 @@ def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
         or finding.startswith("unavailable runtime dependency")
     ]
     return not blocked_findings
+
+
+def _install_authorization(review: ReviewResult, autonomy_mode: str) -> str:
+    if review.approved:
+        return "odin_approved"
+    if _review_allows_install(review, autonomy_mode):
+        return "yolo_override"
+    return "blocked"
+
+
+def _install_authorization_rationale(review: ReviewResult, autonomy_mode: str) -> str:
+    authorization = _install_authorization(review, autonomy_mode)
+    if authorization == "odin_approved":
+        return review.rationale
+    if authorization == "yolo_override":
+        findings = "; ".join(review.findings) if review.findings else review.rationale
+        return (
+            "YOLO override installed after non-blocking Odin findings; "
+            f"review outcome={review.outcome}; findings={findings}"
+        )
+    return review.rationale
 
 
 def _is_resident_ack(event: SleipnirEvent) -> bool:
