@@ -20,6 +20,7 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
     return {
         "servers": servers or ["nats://localhost:4222"],
         "stream_name": "ravn_environment",
+        "jetstream_domain": "",
         "subject_prefix": "ravn.environment",
         "retention": "limits",
         "max_age_seconds": 604800,
@@ -39,6 +40,8 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "token": "",
         "nkeys_seed_file": "",
         "nkeys_seed": "",
+        "extra_subscriptions": [],
+        "core_subscriptions": [],
     }
 
 

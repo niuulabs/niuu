@@ -4095,6 +4095,7 @@ def _resolve_transport_kwargs(
                 {
                     "subject": entry.subject,
                     "stream_name": entry.stream_name,
+                    "event_types": list(entry.event_types),
                 }
                 for entry in nats_cfg.extra_subscriptions
                 if entry.subject

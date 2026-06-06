@@ -1570,6 +1570,13 @@ class MeshNatsExtraSubscriptionConfig(BaseModel):
         default="",
         description="JetStream stream that owns the raw filter subject.",
     )
+    event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Logical Sleipnir event types allowed to attach this raw NATS subject. "
+            "When empty, the raw subject is attached to every logical subscription."
+        ),
+    )
 
 
 class MeshNatsCoreSubscriptionConfig(BaseModel):

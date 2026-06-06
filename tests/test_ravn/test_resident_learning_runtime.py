@@ -169,6 +169,10 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
                     {
                         "stream_name": "flock-k8s-events",
                         "subject": "flock.k8s.>",
+                        "event_types": [
+                            "flock.learning.*",
+                            "learning.adoption.recorded",
+                        ],
                     }
                 ],
                 "core_subscriptions": [
@@ -186,7 +190,14 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
     assert kwargs["stream_name"] == "obs-valhalla-events"
     assert kwargs["subject_prefix"] == "obs.valhalla"
     assert kwargs["extra_subscriptions"] == [
-        {"stream_name": "flock-k8s-events", "subject": "flock.k8s.>"}
+        {
+            "stream_name": "flock-k8s-events",
+            "subject": "flock.k8s.>",
+            "event_types": [
+                "flock.learning.*",
+                "learning.adoption.recorded",
+            ],
+        }
     ]
     assert kwargs["core_subscriptions"] == [{"subject": "obs.cmd.valhalla.>"}]
 
