@@ -1899,7 +1899,7 @@ class ValkyrieDashboardProjection:
         self,
         event: SleipnirEvent | dict[str, Any],
         *,
-        refresh: bool = True,
+        refresh: bool = False,
     ) -> None:
         event_data = _event_dict(event)
         event_id = str(event_data.get("event_id") or "")
@@ -3155,7 +3155,7 @@ def create_valkyrie_router(
 
     @router.post("/telemetry/events")
     async def record_telemetry_event(event: dict[str, Any], minimal: bool = False) -> Dashboard:
-        store.record_event(event, refresh=not minimal)
+        store.record_event(event)
         if minimal:
             return {
                 "accepted": True,
