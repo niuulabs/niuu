@@ -26,13 +26,17 @@ from sleipnir.domain.catalog import (
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
-LearningAction = Literal["adopted", "rejected", "ignored"]
+LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored"]
 
 _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
     registry.LEARNING_PROMOTED,
+    registry.LEARNING_ADOPTION_RECORDED,
     "flock.learning.proposed",
+    "flock.learning.adopted",
+    "flock.learning.rejected",
+    "flock.learning.rolled_back",
 ]
 
 
@@ -68,6 +72,8 @@ class ResidentLearningArtifact:
     artifact_path: str = ""
     causation_id: str = ""
     correlation_id: str = ""
+    operator_command: bool = False
+    command_action: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,7 +95,7 @@ class ResidentLearningPolicy:
         artifact: ResidentLearningArtifact,
         identity: ResidentLearningIdentity,
     ) -> tuple[bool, str]:
-        if artifact.source_valkyrie_id == identity.valkyrie_id:
+        if artifact.source_valkyrie_id == identity.valkyrie_id and not artifact.operator_command:
             return False, "source Valkyrie already owns this learning"
         if artifact.artifact_type not in _SKILL_ARTIFACT_TYPES:
             return False, f"unsupported artifact type: {artifact.artifact_type or 'unknown'}"
@@ -215,8 +221,13 @@ class ResidentLearningRuntime:
         }
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
+        if _is_resident_ack(event):
+            return
         artifact = _artifact_from_event(event)
-        decision = await self.evaluate_and_apply(artifact)
+        if _is_retraction_event(event):
+            decision = await self.retract(artifact)
+        else:
+            decision = await self.evaluate_and_apply(artifact)
         self._decisions.append(decision)
 
     async def evaluate_and_apply(
@@ -259,6 +270,37 @@ class ResidentLearningRuntime:
         await self._publish_adoption(artifact, decision)
         return decision
 
+    async def retract(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> ResidentLearningDecision:
+        """Remove or reject a learning in response to an operator/flock control event."""
+
+        relevant, reason = self._policy.evaluate(artifact, self.identity)
+        skill_name = await self._archive_learning_skill(artifact)
+        if skill_name:
+            decision = ResidentLearningDecision(
+                "rolled_back",
+                f"Archived {skill_name}: {artifact.command_action or 'retraction'}",
+                installed_skill_name=skill_name,
+                relevant=True,
+            )
+            await self._publish_retraction(artifact, decision)
+            await self._publish_adoption(artifact, decision)
+            return decision
+
+        decision = ResidentLearningDecision(
+            "rejected",
+            (
+                f"No installed learning to retract: {reason}"
+                if relevant
+                else f"Retraction ignored because learning is not relevant: {reason}"
+            ),
+            relevant=relevant,
+        )
+        await self._publish_adoption(artifact, decision)
+        return decision
+
     async def _install_skill(
         self,
         artifact: ResidentLearningArtifact,
@@ -289,6 +331,24 @@ class ResidentLearningRuntime:
                 domain=self.identity.domain or artifact.domain,
             )
         return build.skill_name
+
+    async def _archive_learning_skill(self, artifact: ResidentLearningArtifact) -> str:
+        rows = await self._skills.list_skills(include_archived=True)
+        artifact_skill_name = _normalise_skill_name(artifact.title)
+        capability = _capability_from_content(artifact.content)
+        for row in rows:
+            skill = row["skill"]
+            metadata = row["metadata"]
+            name = str(skill.get("name") or "")
+            source = str(metadata.get("source") or "")
+            if (
+                source == f"flock-learning:{artifact.learning_id}"
+                or name == artifact_skill_name
+                or (capability and f"capability: {capability}" in str(skill.get("content", "")))
+            ):
+                await self._skills.archive(name)
+                return name
+        return ""
 
     async def _find_installed_skill_by_capability(self, capability: str) -> Any | None:
         rows = await self._skills.list_skills()
@@ -361,6 +421,40 @@ class ResidentLearningRuntime:
             )
         )
 
+    async def _publish_retraction(
+        self,
+        artifact: ResidentLearningArtifact,
+        decision: ResidentLearningDecision,
+    ) -> None:
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type="valkyrie.evolution.rolled_back",
+                source=self._source,
+                payload={
+                    "environment_id": self.identity.environment_id,
+                    "valkyrie_id": self.identity.valkyrie_id,
+                    "learning_id": artifact.learning_id,
+                    "promotion_id": artifact.promotion_id,
+                    "skill_name": decision.installed_skill_name,
+                    "artifact_type": artifact.artifact_type,
+                    "scope": _normalise_scope(artifact.scope),
+                    "source_environment_id": artifact.source_environment_id,
+                    "source_valkyrie_id": artifact.source_valkyrie_id,
+                    "command_action": artifact.command_action,
+                    "rationale": decision.rationale,
+                },
+                summary=(
+                    f"{self.identity.valkyrie_id} archived learning skill "
+                    f"{decision.installed_skill_name}"
+                ),
+                urgency=0.45,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=artifact.correlation_id or artifact.learning_id,
+                causation_id=artifact.causation_id,
+            )
+        )
+
     async def _publish_adoption(
         self,
         artifact: ResidentLearningArtifact,
@@ -370,7 +464,7 @@ class ResidentLearningRuntime:
             environment_id=self.identity.environment_id,
             learning_id=artifact.learning_id,
             promotion_id=artifact.promotion_id or artifact.learning_id,
-            action=decision.action if decision.action != "ignored" else "rejected",
+            action=_adoption_event_action(decision.action),
             rationale=decision.rationale,
             canary_passed=decision.action == "adopted",
             local_override_path="",
@@ -385,6 +479,10 @@ class ResidentLearningRuntime:
                 "relevant": decision.relevant,
                 "artifact_type": artifact.artifact_type,
                 "scope": _normalise_scope(artifact.scope),
+                "ack_kind": "resident_learning",
+                "source_environment_id": artifact.source_environment_id,
+                "source_valkyrie_id": artifact.source_valkyrie_id,
+                "command_action": artifact.command_action,
             }
         )
         await self._publisher.publish(event)
@@ -396,6 +494,15 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
     if event_type == "flock.learning.proposed":
         title = str(payload.get("title") or payload.get("artifact_name") or payload["learning_id"])
         scope = "flock"
+    elif event_type == registry.LEARNING_ADOPTION_RECORDED:
+        title = str(
+            payload.get("artifact_name")
+            or payload.get("promoted_tool")
+            or payload.get("title")
+            or payload.get("learning_id")
+            or ""
+        )
+        scope = str(payload.get("target_scope") or payload.get("scope") or "flock")
     else:
         title = str(
             payload.get("artifact_name")
@@ -423,6 +530,8 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
         artifact_path=str(payload.get("artifact_path") or payload.get("promoted_path") or ""),
         causation_id=event.event_id,
         correlation_id=event.correlation_id or event.event_id,
+        operator_command=bool(payload.get("operator_id") or payload.get("action_kind")),
+        command_action=str(payload.get("action_kind") or payload.get("action") or ""),
     )
 
 
@@ -485,6 +594,40 @@ def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
     return not blocked_findings
 
 
+def _is_resident_ack(event: SleipnirEvent) -> bool:
+    payload = event.payload
+    if event.event_type != registry.LEARNING_ADOPTION_RECORDED:
+        return False
+    return bool(payload.get("resident_valkyrie_id") or payload.get("ack_kind"))
+
+
+def _is_retraction_event(event: SleipnirEvent) -> bool:
+    event_type = event.event_type
+    payload = event.payload
+    if event_type in {"flock.learning.rejected", "flock.learning.rolled_back"}:
+        return True
+    if event_type == registry.LEARNING_ADOPTION_RECORDED:
+        action = str(payload.get("action_kind") or payload.get("action") or "").lower()
+        return action in {"reject", "rejected", "rollback", "rolled_back", "regressed"}
+    if event_type == registry.LEARNING_PROMOTED:
+        action = str(payload.get("action_kind") or "").lower()
+        if action != "demote":
+            return False
+        return _normalise_scope(str(payload.get("to_scope") or payload.get("scope") or "")) in {
+            "private",
+            "environment",
+        }
+    return False
+
+
+def _adoption_event_action(action: LearningAction) -> str:
+    if action == "ignored":
+        return "rejected"
+    if action == "rolled_back":
+        return "regressed"
+    return action
+
+
 def _to_operational_signal(
     signal: OperationalSignal | SleipnirEvent,
     identity: ResidentLearningIdentity,
@@ -536,6 +679,10 @@ def _normalise_flock_id(flock_id: str) -> str:
     if not value:
         return ""
     return value if value.startswith("flock:") else f"flock:{value}"
+
+
+def _normalise_skill_name(name: str) -> str:
+    return name.strip()
 
 
 def _flock_matches(candidate_flock_id: str, resident_flock_ids: list[str]) -> bool:
