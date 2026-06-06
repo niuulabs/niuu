@@ -2312,12 +2312,43 @@ class ValkyrieDashboardProjection:
     def events(self) -> list[dict[str, Any]]:
         return _signal_events(self._dashboard)
 
-    def telemetry_events(self) -> list[dict[str, Any]]:
+    def telemetry_events(
+        self,
+        *,
+        limit: int = 200,
+        event_type: str = "",
+        environment_id: str = "",
+        valkyrie_id: str = "",
+        contains: str = "",
+    ) -> list[dict[str, Any]]:
         telemetry = self.dashboard().get("telemetry", {})
         if not isinstance(telemetry, dict):
             return []
         events = telemetry.get("recentEvents", [])
-        return deepcopy(events if isinstance(events, list) else [])
+        if not isinstance(events, list):
+            return []
+        filtered = list(events)
+        if event_type:
+            filtered = [
+                event for event in filtered if str(event.get("eventType") or "") == event_type
+            ]
+        if environment_id:
+            filtered = [
+                event
+                for event in filtered
+                if str(event.get("environmentId") or "") == environment_id
+            ]
+        if valkyrie_id:
+            filtered = [
+                event for event in filtered if str(event.get("valkyrieId") or "") == valkyrie_id
+            ]
+        if contains:
+            needle = contains.lower()
+            filtered = [
+                event for event in filtered if needle in json.dumps(event).lower()
+            ]
+        bounded_limit = max(1, min(int(limit or 200), 1_000))
+        return deepcopy(filtered[:bounded_limit])
 
     def logs(self) -> list[dict[str, Any]]:
         telemetry = self.dashboard().get("telemetry", {})
@@ -3085,8 +3116,20 @@ def create_valkyrie_router(
         return store.update_autonomy(request)
 
     @router.get("/telemetry/events")
-    async def list_telemetry_events() -> list[dict[str, Any]]:
-        return store.telemetry_events()
+    async def list_telemetry_events(
+        limit: int = 200,
+        event_type: str = "",
+        environment_id: str = "",
+        valkyrie_id: str = "",
+        contains: str = "",
+    ) -> list[dict[str, Any]]:
+        return store.telemetry_events(
+            limit=limit,
+            event_type=event_type,
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            contains=contains,
+        )
 
     @router.post("/telemetry/events")
     async def record_telemetry_event(event: dict[str, Any]) -> Dashboard:

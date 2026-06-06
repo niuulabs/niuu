@@ -550,6 +550,51 @@ def test_valkyrie_api_ingests_local_proof_telemetry(client: TestClient):
     assert data["learnings"][0]["status"] == "candidate"
 
 
+def test_valkyrie_telemetry_events_can_be_filtered_and_limited(client: TestClient):
+    for index, event_type in enumerate(
+        [
+            "valkyrie.signal_poll.completed",
+            "learning.adoption.recorded",
+            "learning.adoption.recorded",
+        ],
+        start=1,
+    ):
+        client.post(
+            "/api/v1/ravn/valkyrie/telemetry/events",
+            json={
+                "event_id": f"telemetry-filter-{index}",
+                "event_type": event_type,
+                "source": "ravn:test",
+                "payload": {
+                    "environment_id": "ymir" if index != 3 else "valhalla",
+                    "valkyrie_id": f"valkyrie-{index}",
+                    "learning_id": f"learning-{index}",
+                },
+                "summary": f"bounded query proof {index}",
+                "urgency": 0.1,
+                "domain": "infrastructure",
+                "timestamp": f"2026-06-04T20:0{index}:00+00:00",
+            },
+        )
+
+    response = client.get(
+        "/api/v1/ravn/valkyrie/telemetry/events",
+        params={
+            "event_type": "learning.adoption.recorded",
+            "environment_id": "ymir",
+            "contains": "learning-2",
+            "limit": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert len(events) == 1
+    assert events[0]["eventType"] == "learning.adoption.recorded"
+    assert events[0]["environmentId"] == "ymir"
+    assert events[0]["details"]["learning_id"] == "learning-2"
+
+
 def test_valkyrie_learning_lifecycle_changes_replay_behavior(client: TestClient):
     skill_content = "\n".join(
         [
