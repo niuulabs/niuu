@@ -550,6 +550,36 @@ def test_valkyrie_api_ingests_local_proof_telemetry(client: TestClient):
     assert data["learnings"][0]["status"] == "candidate"
 
 
+def test_valkyrie_api_can_ack_bulk_proof_telemetry_without_dashboard(client: TestClient):
+    event = {
+        "event_id": "proof-built-minimal-1",
+        "event_type": "valkyrie.evolution.built",
+        "source": "ravn:valkyrie-evolution-proof",
+        "payload": {
+            "environment_id": "valhalla",
+            "request_id": "evolve-gap-minimal-1",
+            "skill_name": "valkyrie-inspect-host-disk-pressure",
+        },
+        "summary": "Built skill valkyrie-inspect-host-disk-pressure",
+        "urgency": 0.4,
+        "domain": "infrastructure",
+        "timestamp": "2026-06-04T20:09:00+00:00",
+    }
+
+    response = client.post("/api/v1/ravn/valkyrie/telemetry/events?minimal=true", json=event)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data == {
+        "accepted": True,
+        "eventType": "valkyrie.evolution.built",
+        "eventId": "proof-built-minimal-1",
+        "observedAt": data["observedAt"],
+    }
+    dashboard = client.get("/api/v1/ravn/valkyrie/dashboard").json()
+    assert dashboard["telemetry"]["verified"] is True
+
+
 def test_valkyrie_telemetry_events_can_be_filtered_and_limited(client: TestClient):
     for index, event_type in enumerate(
         [

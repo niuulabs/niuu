@@ -1931,10 +1931,12 @@ def valkyrie_evolution_proof(
 
 
 def _publish_valkyrie_proof_events_to_dashboard(events_path: str, dashboard_url: str) -> int:
+    import os
     import urllib.error
     import urllib.request
 
-    target = dashboard_url.rstrip("/") + "/telemetry/events"
+    target = dashboard_url.rstrip("/") + "/telemetry/events?minimal=true"
+    timeout = float(os.environ.get("RAVN_VALKYRIE_PROOF_PUBLISH_TIMEOUT_SECONDS", "15"))
     count = 0
     with open(events_path, encoding="utf-8") as handle:
         for line in handle:
@@ -1947,7 +1949,7 @@ def _publish_valkyrie_proof_events_to_dashboard(events_path: str, dashboard_url:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(request, timeout=3):
+                with urllib.request.urlopen(request, timeout=timeout):
                     count += 1
             except urllib.error.URLError as exc:
                 raise typer.BadParameter(

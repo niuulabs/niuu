@@ -3132,8 +3132,15 @@ def create_valkyrie_router(
         )
 
     @router.post("/telemetry/events")
-    async def record_telemetry_event(event: dict[str, Any]) -> Dashboard:
+    async def record_telemetry_event(event: dict[str, Any], minimal: bool = False) -> Dashboard:
         store.record_event(event)
+        if minimal:
+            return {
+                "accepted": True,
+                "eventType": str(event.get("event_type") or event.get("eventType") or ""),
+                "eventId": str(event.get("event_id") or event.get("eventId") or ""),
+                "observedAt": _now(),
+            }
         return store.dashboard()
 
     @router.get("/logs")
