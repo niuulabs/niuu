@@ -48,6 +48,7 @@ from volundr.domain.models import (
     SessionCommunicationTarget,
     SessionEvent,
     SessionEventType,
+    SessionLogEntry,
     SessionSpan,
     SessionSpec,
     SessionStatus,
@@ -514,6 +515,37 @@ class SessionEventRepository(ABC):
     @abstractmethod
     async def delete_by_session(self, session_id: UUID) -> int:
         """Delete all events for a session. Returns count deleted."""
+
+
+class SessionEventLogRepository(ABC):
+    """Read/write port for the durable, append-only, full-fidelity event log.
+
+    This is the transcript source of truth (see :class:`SessionLogEntry`).
+    Writes are idempotent on (session_id, seq) so the producer can retry
+    at-least-once without creating duplicates, and reads are cursor-based so any
+    client can resume a full replay from the last seq it saw.
+    """
+
+    @abstractmethod
+    async def append(self, entries: list[SessionLogEntry]) -> int:
+        """Append entries idempotently (by session_id+seq).
+
+        Returns the number of entries submitted. Existing (session_id, seq)
+        rows are left untouched (ON CONFLICT DO NOTHING).
+        """
+
+    @abstractmethod
+    async def read_after(
+        self,
+        session_id: UUID,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> list[SessionLogEntry]:
+        """Return entries with seq > after_seq, ordered by seq ascending."""
+
+    @abstractmethod
+    async def latest_seq(self, session_id: UUID) -> int:
+        """Return the highest seq stored for a session, or 0 if none."""
 
 
 class SessionSpanRepository(ABC):

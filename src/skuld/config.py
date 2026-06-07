@@ -266,6 +266,13 @@ class SkuldSettings(BaseSettings):
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     chronicle_watcher_enabled: bool = Field(default=True)
     chronicle_watcher_debounce_ms: int = Field(default=500)
+    # Durable full-fidelity event log: every CLI frame is appended to the
+    # Volundr session_event_log so any client can replay the full transcript
+    # (including the in-flight turn) regardless of whether a socket is attached.
+    event_log_enabled: bool = Field(default=True)
+    event_log_batch_size: int = Field(default=100)
+    event_log_flush_interval_ms: int = Field(default=500)
+    event_log_max_buffer: int = Field(default=50_000)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)

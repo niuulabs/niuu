@@ -987,6 +987,15 @@ class Broker:
         self._flock_completion_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
+        # Durable full-fidelity event log (session_event_log). Every CLI frame is
+        # buffered here and flushed to Volundr by a background worker, independent
+        # of any attached channel — so nothing is dropped when no client is
+        # connected, and any client can replay the full transcript from a cursor.
+        self._event_log_seq = 0
+        self._event_log_buffer: list[dict] = []
+        self._event_log_lock = asyncio.Lock()
+        self._event_log_task: asyncio.Task[None] | None = None
+        self._event_log_stopping = False
         self._activity_state: str = "idle"
         self._last_activity_report: float = 0.0
         self._conversation_turns: list[ConversationTurn] = []
@@ -1597,6 +1606,9 @@ class Broker:
             asyncio.create_task(self._chronicle_watcher.start())
             logger.info("Chronicle watcher started for %s", watch_dir)
 
+        # Start the durable event-log worker (full-fidelity transcript capture)
+        await self._init_event_log()
+
         # Auto-start transport when an initial prompt is configured
         # (dispatched sessions should begin work immediately, not wait
         # for a browser to connect). Run as a background task so the
@@ -1649,6 +1661,9 @@ class Broker:
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:
             await self._chronicle_watcher.stop()
+
+        # Drain and stop the durable event-log worker so the last turn persists
+        await self._stop_event_log()
 
         if self._peer_watchdog_task is not None:
             self._peer_watchdog_task.cancel()
@@ -2813,6 +2828,11 @@ class Broker:
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+
+        # Durably capture EVERY frame first — before any channel/broadcast logic —
+        # so agent output is never lost when no client is attached.
+        self._enqueue_event_log(data)
+
         if event_type == "control_request":
             self._track_pending_permission_request(data)
 
@@ -3895,6 +3915,130 @@ class Broker:
                 "workflow_enabled": bool(self._has_workflow_trigger()),
             },
         )
+
+    # -- Durable event log (full-fidelity transcript capture) -----------------
+
+    FORGE_LOG_PATH_TEMPLATE = "/api/v1/forge/sessions/{sid}/log"
+
+    @staticmethod
+    def _extract_request_id(data: dict) -> str | None:
+        """Best-effort turn correlation id from a raw CLI frame."""
+        rid = data.get("request_id")
+        if isinstance(rid, str) and rid:
+            return rid
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            inner = msg.get("request_id")
+            if isinstance(inner, str) and inner:
+                return inner
+        return None
+
+    def _enqueue_event_log(self, data: dict) -> None:
+        """Buffer a raw CLI frame for durable persistence. Never raises.
+
+        Runs for every frame regardless of attached channels — this is what
+        guarantees no agent output is dropped when no client is connected.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        self._event_log_seq += 1
+        entry = {
+            "seq": self._event_log_seq,
+            "kind": str(data.get("type", "unknown"))[:64],
+            "payload": data,
+            "request_id": self._extract_request_id(data),
+        }
+        role = data.get("role")
+        if isinstance(role, str):
+            entry["role"] = role[:32]
+        self._event_log_buffer.append(entry)
+        # Safety valve: cap memory if the backend is unreachable for a long time.
+        # Dropping the oldest is the least-bad option vs OOM-killing the broker,
+        # and is logged loudly so the loss is visible.
+        overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
+        if overflow > 0:
+            del self._event_log_buffer[:overflow]
+            logger.warning(
+                "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
+                overflow,
+            )
+
+    async def _event_log_flush_loop(self) -> None:
+        """Background worker: drain the event-log buffer to Volundr with retry."""
+        interval = self._settings.event_log_flush_interval_ms / 1000.0
+        while not self._event_log_stopping:
+            await asyncio.sleep(interval)
+            try:
+                await self._flush_event_log()
+            except Exception:
+                logger.debug("event log flush iteration failed", exc_info=True)
+
+    async def _flush_event_log(self) -> None:
+        """Send one batch from the front of the buffer. Removes only on success."""
+        if not self.volundr_api_url:
+            return
+        async with self._event_log_lock:
+            batch = self._event_log_buffer[: self._settings.event_log_batch_size]
+        if not batch:
+            return
+
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
+        try:
+            response = await client.post(path, json={"entries": batch})
+        except Exception:
+            logger.debug("event log POST failed — will retry", exc_info=True)
+            return
+        if response.status_code >= 300:
+            logger.debug(
+                "event log POST rejected (%d): %s — will retry",
+                response.status_code,
+                response.text[:200],
+            )
+            return
+        # Idempotent on (session_id, seq), so removing exactly the sent count is
+        # safe even if newer frames were appended during the POST.
+        async with self._event_log_lock:
+            del self._event_log_buffer[: len(batch)]
+
+    async def _init_event_log(self) -> None:
+        """Resume the seq counter from the backend so restarts don't collide.
+
+        The PK is (session_id, seq); if a restarted broker reset seq to 0 its
+        appends would hit ON CONFLICT DO NOTHING and silently vanish. Seeding
+        from the stored head keeps the sequence monotonic across restarts.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        try:
+            response = await client.get(path)
+            if response.status_code < 300:
+                self._event_log_seq = int(response.json().get("latest_seq", 0))
+        except Exception:
+            logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
+        logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _stop_event_log(self) -> None:
+        """Drain remaining frames and stop the worker on shutdown."""
+        self._event_log_stopping = True
+        if self._event_log_task is not None:
+            self._event_log_task.cancel()
+            await asyncio.gather(self._event_log_task, return_exceptions=True)
+            self._event_log_task = None
+        # Final best-effort drain so the last turn isn't lost on shutdown.
+        for _ in range(self._settings.event_log_max_buffer):
+            async with self._event_log_lock:
+                remaining = len(self._event_log_buffer)
+            if remaining == 0:
+                return
+            before = remaining
+            await self._flush_event_log()
+            async with self._event_log_lock:
+                if len(self._event_log_buffer) >= before:
+                    return  # made no progress (backend down) — give up
 
     async def _emit_pipeline_event(
         self,
