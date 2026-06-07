@@ -389,6 +389,31 @@ async def _broadcast_periodic_updates(
             logger.exception("SSE periodic broadcast failed")
 
 
+async def _reconcile_liveness_loop(
+    session_service: SessionService,
+    *,
+    interval_seconds: int,
+    stale_after_seconds: int,
+) -> None:
+    """Periodically mark running sessions whose broker has gone silent as stopped."""
+    logger.info(
+        "Liveness reconciliation started, interval=%ds stale_after=%ds",
+        interval_seconds,
+        stale_after_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            count = await session_service.reconcile_liveness(stale_after_seconds)
+            if count:
+                logger.info("Liveness: reconciled %d stale running session(s)", count)
+        except asyncio.CancelledError:
+            logger.info("Liveness reconciliation task cancelled")
+            break
+        except Exception:
+            logger.exception("Liveness reconciliation iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -1016,6 +1041,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
+
+            # Start liveness reconciliation: expire running sessions whose broker
+            # has gone silent so clients stop dialing dead chat endpoints.
+            liveness_task: asyncio.Task | None = None
+            if settings.session_liveness.enabled:
+                liveness_task = asyncio.create_task(
+                    _reconcile_liveness_loop(
+                        session_service,
+                        interval_seconds=settings.session_liveness.check_interval_seconds,
+                        stale_after_seconds=settings.session_liveness.stale_after_seconds,
+                    )
+                )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1039,6 +1076,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await background_task
                 except asyncio.CancelledError:
                     pass  # Expected: task cancellation during shutdown
+                if liveness_task is not None:
+                    liveness_task.cancel()
+                    try:
+                        await liveness_task
+                    except asyncio.CancelledError:
+                        pass  # Expected: task cancellation during shutdown
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()

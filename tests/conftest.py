@@ -76,6 +76,13 @@ class InMemorySessionRepository(SessionRepository):
         self._sessions[session.id] = session
         return session
 
+    async def list_stale_running(self, older_than):
+        return [
+            s
+            for s in self._sessions.values()
+            if s.status == SessionStatus.RUNNING and (s.last_active or s.created_at) <= older_than
+        ]
+
     async def delete(self, session_id: UUID) -> bool:
         if session_id in self._sessions:
             del self._sessions[session_id]

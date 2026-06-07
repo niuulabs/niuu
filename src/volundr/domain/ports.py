@@ -115,6 +115,14 @@ class SessionRepository(ABC):
         """Update an existing session."""
 
     @abstractmethod
+    async def list_stale_running(self, older_than: datetime) -> list[Session]:
+        """Return RUNNING sessions whose last_active is at/before older_than.
+
+        Used by liveness reconciliation to find sessions whose broker has gone
+        silent (no activity heartbeat) and should be marked stopped.
+        """
+
+    @abstractmethod
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session. Returns True if deleted, False if not found."""
 

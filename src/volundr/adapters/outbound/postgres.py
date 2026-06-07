@@ -1,7 +1,7 @@
 """PostgreSQL adapter for session repository."""
 
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
@@ -152,6 +152,18 @@ class PostgresSessionRepository(SessionRepository):
             session.cli_session_id,
         )
         return session
+
+    async def list_stale_running(self, older_than: datetime) -> "list[Session]":
+        """Return RUNNING sessions whose last_active is at/before older_than."""
+        rows = await self._pool.fetch(
+            """SELECT * FROM sessions
+               WHERE status = $1
+                 AND COALESCE(last_active, created_at) <= $2
+               ORDER BY last_active ASC""",
+            SessionStatus.RUNNING.value,
+            older_than,
+        )
+        return [self._row_to_session(row) for row in rows]
 
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session by ID."""

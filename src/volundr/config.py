@@ -545,6 +545,23 @@ class EventPipelineConfig(BaseModel):
     otel: OtelConfig = Field(default_factory=OtelConfig)
 
 
+class SessionLivenessConfig(BaseModel):
+    """Liveness reconciliation for running sessions.
+
+    A session whose broker has died can otherwise sit in ``running`` forever
+    with a stale ``chat_endpoint`` (clients then open a socket to a tombstone and
+    see nothing). The reconciler marks running sessions that have gone silent —
+    no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
+    their endpoints, so the list reflects reality and clients stop dialing dead
+    brokers. The threshold is generous: an idle-but-alive broker still reports
+    activity periodically.
+    """
+
+    enabled: bool = Field(default=True)
+    stale_after_seconds: int = Field(default=600, ge=30)
+    check_interval_seconds: int = Field(default=120, ge=10)
+
+
 class SleipnirConfig(BaseModel):
     """Sleipnir platform event bus integration (optional).
 
@@ -1446,6 +1463,7 @@ class Settings(BaseSettings):
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
+    session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
