@@ -1549,6 +1549,9 @@ class Broker:
         ):
             turn_id = str(uuid.uuid4())
             self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
+            # The initial prompt is a human turn too — persist it to the durable
+            # log so log-only replay opens with the operator's first message.
+            self._enqueue_human_turn_event(prompt, turn_id)
             try:
                 await self._channels.broadcast(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
@@ -3367,6 +3370,9 @@ class Broker:
                         content=content_str,
                     )
                 )
+                # Mirror the human turn into the durable event log so log-only
+                # transcript replay (web/iOS) includes it.
+                self._enqueue_human_turn_event(content_str, msg_id)
                 now = datetime.now(UTC)
                 await self._complete_trace_span(
                     kind="turn.user",
@@ -3967,6 +3973,28 @@ class Broker:
                 "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
                 overflow,
             )
+
+    def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
+        """Persist a HUMAN message to the durable event log as a user frame.
+
+        The CLI never echoes the operator's own prompt as a text frame — only
+        tool_results arrive with role=user — so a transcript replayed purely
+        from the durable log (web Code tab, iOS) omitted every human turn ("the
+        transcript doesn't show my message"). Synthesize a string-content user
+        frame, which the replay reducers render directly as a user turn (and
+        string content distinguishes it from the CLI's block-list tool_result
+        user frames).
+        """
+        if not content:
+            return
+        self._enqueue_event_log(
+            {
+                "type": "user",
+                "role": "user",
+                "uuid": turn_id,
+                "message": {"role": "user", "content": content},
+            }
+        )
 
     async def _event_log_flush_loop(self) -> None:
         """Background worker: drain the event-log buffer to Volundr with retry."""
