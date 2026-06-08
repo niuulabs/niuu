@@ -524,19 +524,17 @@ class TestWorkspaceProvisioning:
         assert workspace.exists()
         assert workspace == tmp_workspaces / str(git_session.id)
 
-    async def test_writes_claude_md(
+    async def test_does_not_write_claude_md(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
         default_spec: SessionSpec,
     ) -> None:
-        """CLAUDE.md is written with system prompt."""
+        """Prompts are delivered via the transport — CLAUDE.md is never written
+        (it used to clobber real project files and bleed into later sessions)."""
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, default_spec)
-        claude_md = workspace / "CLAUDE.md"
-        assert claude_md.exists()
-        content = claude_md.read_text()
-        assert "You are a helpful assistant." in content
+        assert not (workspace / "CLAUDE.md").exists()
 
     async def test_local_mount_path_outside_allowed_prefixes_is_rejected(
         self,
@@ -610,14 +608,16 @@ class TestWorkspaceProvisioning:
         clone_repo.assert_not_called()
         assert workspace == project.resolve()
         assert not (manager._workspaces_dir / str(session.id)).exists()
-        assert "You are a helpful assistant." in (project / "CLAUDE.md").read_text()
+        # The user's real project directory is left untouched.
+        assert not (project / "CLAUDE.md").exists()
 
-    async def test_writes_claude_md_with_initial_prompt(
+    async def test_does_not_write_claude_md_with_initial_prompt(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
     ) -> None:
-        """CLAUDE.md includes initial prompt when provided."""
+        """Even with prompts configured, CLAUDE.md is not written — prompts go
+        through the transport (system_prompt option / send_message)."""
         spec = SessionSpec(
             values={
                 "session": {
@@ -629,9 +629,7 @@ class TestWorkspaceProvisioning:
         )
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, spec)
-        content = (workspace / "CLAUDE.md").read_text()
-        assert "Initial Task" in content
-        assert "Do the thing." in content
+        assert not (workspace / "CLAUDE.md").exists()
 
     async def test_no_claude_md_when_no_prompts(
         self,

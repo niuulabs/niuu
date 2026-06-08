@@ -841,21 +841,18 @@ class LocalProcessPodManager(PodManager):
         )
 
     @staticmethod
-    def _write_claude_md(workspace: Path, spec: SessionSpec) -> None:
-        """Write CLAUDE.md with system prompt and session config."""
-        session_vals = spec.values.get("session", {})
-        system_prompt = session_vals.get("systemPrompt", "")
-        initial_prompt = session_vals.get("initialPrompt", "")
+    def _write_claude_md(_workspace: Path, _spec: SessionSpec) -> None:
+        """No-op (deactivated in our pipeline).
 
-        parts: list[str] = []
-        if system_prompt:
-            parts.append(system_prompt)
-        if initial_prompt:
-            parts.append(f"\n## Initial Task\n\n{initial_prompt}")
-
-        if parts:
-            claude_md = workspace / "CLAUDE.md"
-            claude_md.write_text("\n".join(parts), encoding="utf-8")
+        The system prompt AND the initial task are both delivered to the agent
+        through the transport — the Claude SDK ``system_prompt`` option and
+        ``--append-system-prompt`` for the subprocess transports, plus
+        ``send_message`` for the initial prompt. The previous behavior wrote them
+        into the workspace ``CLAUDE.md``, which CLOBBERED any real project
+        CLAUDE.md and left a stale ``## Initial Task`` that bled into every later
+        session — and any other Claude Code agent — that ran in the same folder.
+        """
+        return
 
     # ------------------------------------------------------------------
     # Process spawning & monitoring
