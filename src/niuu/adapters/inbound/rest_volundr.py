@@ -1010,4 +1010,106 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return response.json()
 
+    # --- Skuld broker telemetry ingestion -----------------------------------
+    # The in-instance Skuld broker POSTs trace spans, session events, and
+    # chronicle-timeline entries back to the Forge API. These were missing
+    # from the aggregate (same gap class as the activity/usage routes above),
+    # so every session logged 404/405 noise. Session-keyed routes resolve the
+    # owning instance; span/event telemetry carries no session id in the
+    # path, so it forwards to the default backing instance (correct for
+    # single-instance/mini deployments — the only place a broker reports to).
+
+    async def _forward_to_default(
+        request: Request,
+        principal: Principal,
+        *,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        instance = await _resolve_target_instance(service, principal, None)
+        return await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=path,
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+
+    @router.post("/chronicles/{session_id}/timeline", status_code=status.HTTP_201_CREATED)
+    async def post_chronicle_timeline(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/chronicles/{session_id}/timeline",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/start", status_code=status.HTTP_201_CREATED)
+    async def span_start(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/spans/start", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/complete", status_code=status.HTTP_201_CREATED)
+    async def span_complete(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/spans/complete", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/{span_id}/finish")
+    async def span_finish(
+        request: Request,
+        span_id: str = Path(description="Trace span identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path=f"/spans/{span_id}/finish", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/events", status_code=status.HTTP_201_CREATED)
+    async def post_event(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/events", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
     return router

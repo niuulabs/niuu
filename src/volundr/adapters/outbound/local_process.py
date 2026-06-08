@@ -55,7 +55,10 @@ logger = logging.getLogger(__name__)
 # Default configuration values
 DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 DEFAULT_CLAUDE_BINARY = "claude"
-DEFAULT_MAX_CONCURRENT = 4
+# Capable hosts run many sessions comfortably (each ~0.5 GB); the practical
+# ceiling is the Claude/Codex *subscription* concurrency, not the box. Deployments
+# override this via pod_manager.max_concurrent in config.yaml.
+DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_SDK_PORT_START = 9100
 DEFAULT_STOP_TIMEOUT = 10
 DEFAULT_STATE_FILE = "~/.niuu/forge-state.json"
@@ -479,8 +482,26 @@ class LocalProcessPodManager(PodManager):
         """Provision workspace, spawn Claude process, return endpoints."""
         session_id = str(session.id)
 
-        if len(self._active_sessions()) >= self._max_concurrent:
+        active = self._reconcile_active()
+        if len(active) >= self._max_concurrent:
+            detail = ", ".join(
+                f"{sid[:8]}:{self._processes[sid].state.value}(pid={self._processes[sid].pid})"
+                for sid in active
+            )
+            logger.warning(
+                "Max concurrent reached: %d/%d slots in use [%s] — rejecting new session %s",
+                len(active),
+                self._max_concurrent,
+                detail,
+                session_id[:8],
+            )
             raise RuntimeError(f"Max concurrent sessions ({self._max_concurrent}) reached")
+        logger.info(
+            "Provisioning session %s (%d/%d concurrent slots in use)",
+            session_id[:8],
+            len(active),
+            self._max_concurrent,
+        )
 
         workspace = await self._provision_workspace(session, spec)
         port = self._port_allocator.allocate()
@@ -1635,3 +1656,34 @@ class LocalProcessPodManager(PodManager):
             for sid, info in self._processes.items()
             if info.state in (ProcessState.RUNNING, ProcessState.STARTING)
         ]
+
+    def _reconcile_active(self) -> list[str]:
+        """Active session IDs, after reaping entries whose process is dead.
+
+        ``_monitor_process`` only reaps a session when its broker exits while the
+        monitor task is alive. Brokers orphaned by a hard kill (or a dead monitor)
+        keep their RUNNING/STARTING slot forever, which eventually trips the
+        concurrent-session cap with *phantom* sessions ("Max concurrent reached"
+        with nothing really running). Verify pid liveness here so the cap reflects
+        real in-flight work. A STARTING entry with no pid yet is mid-spawn — left
+        alone.
+        """
+        reaped: list[str] = []
+        for sid, info in self._processes.items():
+            if info.state not in (ProcessState.RUNNING, ProcessState.STARTING):
+                continue
+            if info.pid is not None and not self._is_process_alive(info.pid):
+                info.state = ProcessState.STOPPED
+                if info.port is not None:
+                    self._port_allocator.release(info.port)
+                if info.flock_base_port is not None:
+                    self._allocated_flock_base_ports.discard(info.flock_base_port)
+                reaped.append(sid)
+        if reaped:
+            self._persist_state()
+            logger.warning(
+                "Reaped %d phantom session(s) holding concurrent slots (process dead): %s",
+                len(reaped),
+                ", ".join(s[:8] for s in reaped),
+            )
+        return self._active_sessions()

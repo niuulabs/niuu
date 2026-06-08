@@ -1611,6 +1611,16 @@ class Broker:
             else:
                 logger.info("Initial prompt configured — auto-starting transport in background")
                 asyncio.create_task(self._auto_start_transport())
+        elif self._conversation_turns:
+            # Resumed/restarted session (no new initial prompt, but prior history
+            # was loaded). Warm the transport eagerly so it is already alive when
+            # the next user message arrives. The message-delivery path connects a
+            # WebSocket and closes immediately after sending; a cold transport's
+            # ~280ms lazy-start outlasts that connection and the first message is
+            # dropped (no reply). Warming here makes a restarted session behave
+            # like a never-stopped one, where steering works.
+            logger.info("Resumed session with prior history — warming transport in background")
+            asyncio.create_task(self._auto_start_transport())
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
