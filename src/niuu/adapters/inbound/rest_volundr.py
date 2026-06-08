@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -336,6 +338,64 @@ def create_volundr_router(
             reverse=True,
         )
         return sessions
+
+    @router.get("/sessions/stream")
+    async def stream_sessions(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> StreamingResponse:
+        """Proxy the backing instance's Server-Sent Events session stream.
+
+        MUST be declared before GET /sessions/{session_id} — otherwise the
+        literal path "stream" is captured as a session id, the request falls
+        through to a session lookup, and the frontend's FleetStream hangs on a
+        connection that never emits an event (status frozen until a manual
+        reload). Single-instance/mini deployments stream the default backing
+        instance; fleet-wide fan-in across instances is a separate feature.
+        """
+        instance = await _resolve_target_instance(service, principal, None)
+        headers = _forward_headers(request)
+        embedded = _uses_embedded_transport(instance)
+
+        # For the in-process instance, subscribe to its event bus directly.
+        # httpx's ASGITransport buffers the entire response and never returns for
+        # an infinite stream, so it cannot proxy SSE — but the embedded volundr
+        # app shares this process, so we read its broadcaster. If it is somehow
+        # unavailable, fail fast with 503 so the frontend degrades to polling
+        # (a hung 200 stream would freeze status until a manual reload).
+        broadcaster = None
+        if embedded:
+            broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
+            if broadcaster is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Session event stream unavailable",
+                )
+
+        async def _proxy() -> Any:
+            if embedded:
+                async for event in broadcaster.subscribe():
+                    if await request.is_disconnected():
+                        break
+                    yield (
+                        f"event: {event.type.value}\ndata: {json.dumps(event.data)}\n\n"
+                    ).encode()
+                return
+            url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    async for chunk in resp.aiter_raw():
+                        yield chunk
+
+        return StreamingResponse(
+            _proxy(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.get("/sessions/{session_id}")
     async def get_session(
