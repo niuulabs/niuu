@@ -264,7 +264,10 @@ class SkuldSettings(BaseSettings):
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
-    chronicle_watcher_enabled: bool = Field(default=True)
+    # OFF by default in our pipeline: the watcher tails session JSONL and POSTs
+    # chronicle timeline events we don't use (and which 405 through the guild
+    # aggregate). Opt in with SKULD__CHRONICLE_WATCHER_ENABLED=true.
+    chronicle_watcher_enabled: bool = Field(default=False)
     chronicle_watcher_debounce_ms: int = Field(default=500)
     # Generate + report a Chronicle SUMMARY (an LLM pass) when a session stops.
     # OFF by default in our pipeline: stopping a session must NOT trigger an
