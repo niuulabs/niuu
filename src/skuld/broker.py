@@ -4726,6 +4726,12 @@ class Broker:
         await self._emit_session_ended_event()
         await self._publish_mesh_outcome()
 
+        # The chronicle SUMMARY (an LLM pass on stop) is opt-in — OFF by default
+        # in our pipeline. The session-ended signals above (Ting run tracking,
+        # mesh outcome) still fire; only the extra summarization is gated.
+        if not self._settings.chronicle_on_stop_enabled:
+            return
+
         if not self.volundr_api_url:
             return
 

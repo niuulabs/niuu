@@ -266,6 +266,11 @@ class SkuldSettings(BaseSettings):
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     chronicle_watcher_enabled: bool = Field(default=True)
     chronicle_watcher_debounce_ms: int = Field(default=500)
+    # Generate + report a Chronicle SUMMARY (an LLM pass) when a session stops.
+    # OFF by default in our pipeline: stopping a session must NOT trigger an
+    # extra summarization (cost / latency / unwanted behavior). Opt in with
+    # SKULD__CHRONICLE_ON_STOP_ENABLED=true.
+    chronicle_on_stop_enabled: bool = Field(default=False)
     # Durable full-fidelity event log: every CLI frame is appended to the
     # Volundr session_event_log so any client can replay the full transcript
     # (including the in-flight turn) regardless of whether a socket is attached.
