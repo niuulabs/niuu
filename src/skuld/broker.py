@@ -1637,6 +1637,13 @@ class Broker:
             # like a never-stopped one, where steering works.
             logger.info("Resumed session with prior history — warming transport in background")
             asyncio.create_task(self._auto_start_transport())
+        elif "RemoteControl" in (self._settings.transport_adapter or ""):
+            # Remote-control sessions take no initial prompt (the native app
+            # drives them), so neither branch above fires — but we still want the
+            # RC server launched immediately so the pairing URL is ready without
+            # waiting for a browser to connect.
+            logger.info("Remote-control session — launching the RC server in background")
+            asyncio.create_task(self._auto_start_transport())
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
@@ -2836,6 +2843,16 @@ class Broker:
         # so agent output is never lost when no client is attached.
         self._enqueue_event_log(data)
 
+        if event_type == "remote_control":
+            # A remote-control transport reporting its pairing URL. Surface it as
+            # a real assistant turn (conversation history + durable-log replay +
+            # live channels) so every client shows the link to hand off to the
+            # native app.
+            url = str(data.get("url") or "").strip()
+            if url:
+                await self._surface_remote_control_url(url)
+            return
+
         if event_type == "control_request":
             self._track_pending_permission_request(data)
 
@@ -3995,6 +4012,34 @@ class Broker:
                 "message": {"role": "user", "content": content},
             }
         )
+
+    async def _surface_remote_control_url(self, url: str) -> None:
+        """Surface a remote-control pairing URL as an assistant turn everywhere.
+
+        Appends it to conversation history (the conversation endpoint), enqueues a
+        renderable assistant frame to the durable log (log-only replay), and
+        broadcasts to any live channels — so whichever surface a client uses, the
+        hand-off link to the native app is visible.
+        """
+        notice = (
+            "🔗 **Remote control ready.** Drive this session from the Claude app "
+            f"or claude.ai/code:\n\n{url}\n\n"
+            "Open the link (or scan the QR in the host terminal) to attach the "
+            "native app. This session is controlled remotely — messages typed "
+            "here are not sent to the agent."
+        )
+        turn_id = str(uuid.uuid4())
+        self._append_turn(ConversationTurn(id=turn_id, role="assistant", content=notice))
+        frame = {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": notice}]},
+        }
+        self._enqueue_event_log(frame)
+        try:
+            await self._channels.broadcast(frame)
+        except Exception:
+            logger.debug("remote-control URL broadcast failed", exc_info=True)
+        logger.info("Remote control pairing URL surfaced for session %s: %s", self.session_id, url)
 
     async def _event_log_flush_loop(self) -> None:
         """Background worker: drain the event-log buffer to Volundr with retry."""
