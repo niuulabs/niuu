@@ -10,13 +10,13 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "pyyaml>=6.0.3",
-    "claude-agent-sdk==0.2.89",
+    "claude-agent-sdk==0.2.94",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "idna>=3.18",
     "fastapi>=0.136.3",
     "starlette>=1.2.1",
-    "python-multipart>=0.0.30",
+    "python-multipart>=0.0.32",
     "PyJWT>=2.13.0",
     "urllib3>=2.7.0",
     "uvicorn>=0.49.0",
@@ -33,7 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nats = [
-    "nats-py>=2.14.0",
+    "nats-py>=2.15.0",
 ]
 test = [
     "pytest>=9.0.3",
@@ -48,7 +48,7 @@ redis = [
     "redis[hiredis]>=8.0.0",
 ]
 k8s = [
-    "kubernetes-asyncio>=35.0.1",
+    "kubernetes-asyncio>=36.1.0",
 ]
 otel = [
     "opentelemetry-api>=1.42.1",
@@ -78,12 +78,12 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.15,<0.16",
+    "ruff>=0.15.16,<0.16",
     "respx>=0.23.1",
     "cryptography>=48.0.0",
     "textual>=8.2.7",
     "typer>=0.26.7",
-    "nats-py>=2.14.0",
+    "nats-py>=2.15.0",
 ]
 
 [project.scripts]
@@ -196,5 +196,5 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.15,<0.16",
+    "ruff>=0.15.16,<0.16",
 ]
