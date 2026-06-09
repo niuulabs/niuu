@@ -343,3 +343,107 @@ async def test_failing_tool_surfaces_failure_judgment(tmp_path) -> None:
     replay = await runtime.process_signal(_signal())
     assert replay["decision"] == "adopted_learning_failed"
     assert "error" in replay["toolResult"]
+
+
+# ---------------------------------------------------------------------------
+# Canary before ACK (NIU-1038)
+# ---------------------------------------------------------------------------
+
+
+async def test_broken_proposed_tool_is_rejected_by_canary(tmp_path) -> None:
+    peer = _runtime(tmp_path, "k8s-canary")
+    artifact = ResidentLearningArtifact(
+        learning_id="learn-broken",
+        title="valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Broken probe",
+        content=_skill_content_for("valkyrie-inspect-kubernetes-pod-oomkilled"),
+        artifact_type="ravn_skill_tool",
+        scope="flock",
+        confidence=0.9,
+        source_environment_id="env-k8s-x",
+        source_valkyrie_id="valkyrie:k8s-x",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+        tool_code="def run(signal):\n    raise RuntimeError('does not work here')\n",
+        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
+    )
+    decision = await peer.evaluate_and_apply(artifact)
+    assert decision.action == "rejected"
+    assert decision.canary_passed is False
+    assert "Canary execution failed" in decision.rationale
+    tool_path = tool_path_for_skill(
+        tmp_path / "k8s-canary" / "tools", "valkyrie-inspect-kubernetes-pod-oomkilled"
+    )
+    assert not tool_path.is_file()
+
+
+async def test_healthy_proposed_tool_passes_canary_and_is_adopted(tmp_path) -> None:
+    peer = _runtime(tmp_path, "k8s-canary-ok")
+    artifact = ResidentLearningArtifact(
+        learning_id="learn-ok",
+        title="valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Healthy probe",
+        content=_skill_content_for("valkyrie-inspect-kubernetes-pod-oomkilled"),
+        artifact_type="ravn_skill_tool",
+        scope="flock",
+        confidence=0.9,
+        source_environment_id="env-k8s-x",
+        source_valkyrie_id="valkyrie:k8s-x",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+        tool_code=(
+            "def run(signal):\n"
+            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
+        ),
+        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
+    )
+    decision = await peer.evaluate_and_apply(artifact)
+    assert decision.action == "adopted"
+    assert decision.canary_passed is True
+
+
+async def test_micro_dream_holds_tool_that_fails_its_own_canary(tmp_path) -> None:
+    class RuntimeBrokenBuilder:
+        async def build(self, request):
+            from ravn.valkyrie_evolution.models import BuildResult
+
+            name = "valkyrie-broken"
+            return BuildResult(
+                request_id=request.request_id,
+                skill_name=name,
+                skill_content=_skill_content_for(name).replace(
+                    "inspect.kubernetes.pod.oomkilled", request.gap.capability_name
+                ),
+                description="Parses fine, fails at runtime.",
+                artifact_type="ravn_skill_tool",
+                tool_code="def run(signal):\n    raise RuntimeError('boom')\n",
+            )
+
+    skill_dir = tmp_path / "broken" / "skills"
+    registry_port = FileSkillRegistry(
+        skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False
+    )
+    skills = SkillManagementRegistry(
+        registry_port, metadata_path=tmp_path / "broken" / "skill_management.json"
+    )
+    bus = InProcessBus()
+    runtime = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="env-broken",
+            valkyrie_id="valkyrie:broken",
+            domain="k8s",
+            flock_ids=["flock:k8s-valkyries"],
+            autonomy_mode="yolo",
+            environment_type="k8s",
+        ),
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+        builder=RuntimeBrokenBuilder(),
+        tools_dir=tmp_path / "broken" / "tools",
+    )
+    result = await runtime.process_signal(_signal())
+    assert result["decision"] == "capability_build_held"
+    assert result["skillName"] == ""

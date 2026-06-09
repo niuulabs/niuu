@@ -80,6 +80,7 @@ class ResidentLearningArtifact:
     artifact_path: str = ""
     tool_code: str = ""
     tool_entry_point: str = "run"
+    canary_sample: dict[str, Any] = field(default_factory=dict)
     causation_id: str = ""
     correlation_id: str = ""
     operator_command: bool = False
@@ -95,6 +96,8 @@ class ResidentLearningDecision:
     installed_skill_name: str = ""
     review: ReviewResult | None = None
     relevant: bool = False
+    canary_passed: bool = False
+    canary_error: str = ""
 
 
 class ResidentLearningPolicy:
@@ -377,6 +380,9 @@ class ResidentLearningRuntime:
             domain=gap.domain,
             redaction_status="redacted",
             artifact_path=build.artifact_path,
+            tool_code=build.tool_code,
+            tool_entry_point=build.tool_entry_point,
+            canary_sample=dict(signal.payload),
             causation_id="",
             correlation_id=signal.signal_id,
             operator_command=False,
@@ -385,24 +391,7 @@ class ResidentLearningRuntime:
         await self._publish_odin_decision(artifact, review)
 
         installed_skill_name = ""
-        if _review_allows_install(review, self.identity.autonomy_mode):
-            installed_skill_name = await self._install_skill(artifact, build)
-            await self._publish_activation(artifact, installed_skill_name, review)
-            await self._publish_adoption(
-                artifact,
-                ResidentLearningDecision(
-                    "adopted",
-                    (
-                        f"Installed {installed_skill_name}: "
-                        f"{_install_authorization_rationale(review, self.identity.autonomy_mode)}"
-                    ),
-                    installed_skill_name=installed_skill_name,
-                    review=review,
-                    relevant=True,
-                ),
-            )
-            await self._publish_flock_learning_proposal(artifact, build, review)
-        else:
+        if not _review_allows_install(review, self.identity.autonomy_mode):
             await self._publish_evolution_event(
                 "valkyrie.evolution.held",
                 f"Held resident skill {build.skill_name}",
@@ -414,6 +403,40 @@ class ResidentLearningRuntime:
                 signal.signal_id,
                 urgency=0.6,
             )
+        else:
+            canary = await self._canary_artifact(build, dict(signal.payload))
+            if not canary.ok:
+                await self._publish_evolution_event(
+                    "valkyrie.evolution.held",
+                    f"Held resident skill {build.skill_name}: canary failed",
+                    {
+                        "skill_name": build.skill_name,
+                        "review_outcome": review.outcome,
+                        "canary_passed": False,
+                        "canary_error": canary.error,
+                    },
+                    signal.signal_id,
+                    urgency=0.6,
+                )
+            else:
+                installed_skill_name = await self._install_skill(artifact, build)
+                authorization_rationale = _install_authorization_rationale(
+                    review,
+                    self.identity.autonomy_mode,
+                )
+                await self._publish_activation(artifact, installed_skill_name, review)
+                await self._publish_adoption(
+                    artifact,
+                    ResidentLearningDecision(
+                        "adopted",
+                        f"Installed {installed_skill_name}: {authorization_rationale}",
+                        installed_skill_name=installed_skill_name,
+                        review=review,
+                        relevant=True,
+                        canary_passed=True,
+                    ),
+                )
+                await self._publish_flock_learning_proposal(artifact, build, review)
 
         await self._publish_dream_event(
             "valkyrie.dream.completed",
@@ -499,6 +522,19 @@ class ResidentLearningRuntime:
             await self._publish_adoption(artifact, decision)
             return decision
 
+        canary = await self._canary_artifact(build, artifact.canary_sample)
+        if not canary.ok:
+            decision = ResidentLearningDecision(
+                "rejected",
+                f"Canary execution failed before install: {canary.error}",
+                review=review,
+                relevant=True,
+                canary_passed=False,
+                canary_error=canary.error,
+            )
+            await self._publish_adoption(artifact, decision)
+            return decision
+
         skill_name = await self._install_skill(artifact, build)
         authorization_rationale = _install_authorization_rationale(
             review,
@@ -510,10 +546,39 @@ class ResidentLearningRuntime:
             installed_skill_name=skill_name,
             review=review,
             relevant=True,
+            canary_passed=True,
         )
         await self._publish_activation(artifact, skill_name, review)
         await self._publish_adoption(artifact, decision)
         return decision
+
+    async def _canary_artifact(
+        self,
+        build: BuildResult,
+        sample_payload: dict[str, Any],
+    ) -> ToolRunResult:
+        """Exercise an artifact's tool implementation before ACKing adoption.
+
+        Instruction-only skills were already validated structurally by the
+        reviewer, so they canary as a pass.  Tool implementations execute once
+        in the sandbox against the sample payload carried in the proposal.
+        """
+        if not build.has_tool_implementation:
+            return ToolRunResult(ok=True)
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory(prefix="valkyrie-canary-") as canary_dir:
+            tool_path = write_tool(
+                tools_dir=canary_dir,
+                skill_name=build.skill_name or "canary",
+                tool_code=build.tool_code,
+            )
+            return await run_tool(
+                tool_path,
+                {"payload": sample_payload},
+                entry_point=build.tool_entry_point or "run",
+                timeout_seconds=self._tool_timeout_seconds,
+            )
 
     async def retract(
         self,
@@ -802,6 +867,7 @@ class ResidentLearningRuntime:
                     "artifact_path": artifact.artifact_path,
                     "tool_code": build.tool_code,
                     "tool_entry_point": build.tool_entry_point,
+                    "canary_sample": dict(artifact.canary_sample),
                     "review_outcome": review.outcome,
                     "builder_evidence": dict(build.evidence),
                     "nats_subject": "ravn.environment.flock.learning.proposed",
@@ -829,7 +895,7 @@ class ResidentLearningRuntime:
             promotion_id=artifact.promotion_id or artifact.learning_id,
             action=_adoption_event_action(decision.action),
             rationale=decision.rationale,
-            canary_passed=decision.action == "adopted",
+            canary_passed=decision.canary_passed,
             local_override_path="",
             source=self._source,
             correlation_id=artifact.correlation_id or artifact.learning_id,
@@ -840,6 +906,7 @@ class ResidentLearningRuntime:
                 "resident_valkyrie_id": self.identity.valkyrie_id,
                 "installed_skill_name": decision.installed_skill_name,
                 "relevant": decision.relevant,
+                "canary_error": decision.canary_error,
                 "artifact_type": artifact.artifact_type,
                 "scope": _normalise_scope(artifact.scope),
                 "ack_kind": "resident_learning",
@@ -896,6 +963,9 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
         artifact_path=str(payload.get("artifact_path") or payload.get("promoted_path") or ""),
         tool_code=str(payload.get("tool_code") or ""),
         tool_entry_point=str(payload.get("tool_entry_point") or "run"),
+        canary_sample=(
+            dict(payload["canary_sample"]) if isinstance(payload.get("canary_sample"), dict) else {}
+        ),
         causation_id=event.event_id,
         correlation_id=event.correlation_id or event.event_id,
         operator_command=bool(payload.get("operator_id") or payload.get("action_kind")),
