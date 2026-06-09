@@ -5299,6 +5299,51 @@ async def upload_files(
     return {"entries": uploaded}
 
 
+@app.put("/api/files/upload")
+async def upload_file_raw(
+    request: Request,
+    path: str,
+    root: str = "workspace",
+) -> dict:
+    """Write raw request-body bytes to a single workspace-relative file.
+
+    Raw-body mirror of ``download_file``: ``path`` is the destination *file*
+    (not a directory), confined identically (reject absolute/.. + realpath guard).
+    """
+    _validate_root(root)
+    base = _resolve_root(root)
+    sanitized = _sanitize_relative(path)
+    base_real = os.path.realpath(str(base))
+    target_real = os.path.realpath(os.path.join(base_real, sanitized))
+    _check_within_base(base_real, target_real)
+    if sanitized in ("", ".") or os.path.isdir(target_real):
+        raise HTTPException(400, "path must name a file, not a directory")
+
+    body = await request.body()
+    max_size = broker._settings.max_upload_size_bytes
+    if len(body) > max_size:
+        raise HTTPException(
+            413,
+            f"File exceeds maximum upload size ({max_size} bytes)",
+        )
+
+    parent_real = os.path.realpath(os.path.dirname(target_real))
+    _check_within_base(base_real, parent_real)
+    os.makedirs(parent_real, exist_ok=True)
+
+    with open(target_real, "wb") as f:
+        f.write(body)
+
+    stat = os.stat(target_real)
+    return {
+        "name": os.path.basename(target_real),
+        "path": os.path.relpath(target_real, base_real),
+        "type": "file",
+        "size": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+    }
+
+
 class MkdirRequest(BaseModel):
     path: str
     root: str = "workspace"
