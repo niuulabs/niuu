@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -2665,6 +2665,28 @@ class SignalSourceConfig(BaseModel):
     )
 
 
+class EnvironmentVocabularyConfig(BaseModel):
+    """Deployment-defined vocabulary extensions for Environment models.
+
+    Values listed here are registered into the domain vocabulary registry on
+    settings load, so new environment types, signal kinds, and health states
+    are a config change, not a code change.
+    """
+
+    environment_types: list[str] = Field(
+        default_factory=list,
+        description="Extra environment types beyond the platform defaults.",
+    )
+    signal_source_kinds: list[str] = Field(
+        default_factory=list,
+        description="Extra signal source kinds beyond the platform defaults.",
+    )
+    operational_health_states: list[str] = Field(
+        default_factory=list,
+        description="Extra operational health states beyond the platform defaults.",
+    )
+
+
 class EnvironmentConfig(BaseModel):
     """Runtime environment identity for long-running resident Valkyries."""
 
@@ -2687,8 +2709,7 @@ class EnvironmentConfig(BaseModel):
     resident_personality: str = Field(
         default="",
         description=(
-            "Optional lightweight resident guidance injected into autonomous "
-            "Valkyrie tasks."
+            "Optional lightweight resident guidance injected into autonomous Valkyrie tasks."
         ),
     )
     flocks: list[str] = Field(
@@ -2718,6 +2739,21 @@ class EnvironmentConfig(BaseModel):
             "transport adapters derive subscriptions from enabled sources."
         ),
     )
+    vocabulary: EnvironmentVocabularyConfig = Field(
+        default_factory=EnvironmentVocabularyConfig,
+        description="Deployment-defined extensions to the Environment vocabularies.",
+    )
+
+    @model_validator(mode="after")
+    def _register_vocabulary(self) -> EnvironmentConfig:
+        from ravn.domain.environment import extend_environment_vocabulary  # noqa: PLC0415
+
+        extend_environment_vocabulary(
+            environment_types=self.vocabulary.environment_types,
+            signal_source_kinds=self.vocabulary.signal_source_kinds,
+            operational_health_states=self.vocabulary.operational_health_states,
+        )
+        return self
 
 
 class Settings(BaseSettings):

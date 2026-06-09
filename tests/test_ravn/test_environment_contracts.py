@@ -188,3 +188,52 @@ def test_environment_projects_into_existing_observatory_topology_types() -> None
                 "kind": "soft",
             }
         ]
+
+
+def test_environment_vocabulary_rejects_unknown_values_with_known_list() -> None:
+    import pytest
+
+    from ravn.domain.environment import environment_vocabulary
+
+    vocabulary = environment_vocabulary()
+    try:
+        with pytest.raises(ValueError, match="unknown environment type 'submarine'"):
+            Environment(
+                id="env-x",
+                name="X",
+                type="submarine",
+                topology=k8s_environment_fixture().topology,
+            )
+        with pytest.raises(ValueError, match="must not be empty"):
+            vocabulary.validate_signal_source_kind("")
+    finally:
+        vocabulary.reset()
+
+
+def test_environment_vocabulary_extends_from_config() -> None:
+    from ravn.domain.environment import SignalSource, environment_vocabulary
+
+    vocabulary = environment_vocabulary()
+    try:
+        EnvironmentConfig(
+            id="cnc-cell-1",
+            name="CNC Cell",
+            type="local",
+            vocabulary={
+                "environment_types": ["cnc.cell"],
+                "signal_source_kinds": ["cnc_telemetry"],
+                "operational_health_states": ["calibrating"],
+            },
+        )
+        environment = Environment(
+            id="cnc-cell-1",
+            name="CNC Cell",
+            type="CNC.Cell",
+            topology=k8s_environment_fixture().topology,
+            signal_sources=[SignalSource(id="cnc", name="CNC Telemetry", kind="cnc_telemetry")],
+        )
+        assert environment.type == "cnc.cell"
+        assert environment.signal_sources[0].kind == "cnc_telemetry"
+        assert "calibrating" in vocabulary.operational_health_states
+    finally:
+        vocabulary.reset()
