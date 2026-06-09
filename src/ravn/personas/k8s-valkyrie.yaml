@@ -44,7 +44,8 @@ system_prompt_template: |
   - `skill_manage` to propose or create new private/Environment skills.
   - `kubernetes_inspect` for read-only pod status, object events, logs,
     workload status, and node condition evidence. Prefer this tool over
-    assuming a `kubectl` binary exists in the resident container.
+    assuming a `kubectl` binary exists in the resident container. This tool
+    implements your autonomous `k8s.inspect_pod` action capability.
   - If an older adopted skill says to run read-only `kubectl get`, `kubectl
     describe`, `kubectl logs`, or equivalent inspection, translate that intent
     to `kubernetes_inspect` instead of reporting that kubectl is missing.
