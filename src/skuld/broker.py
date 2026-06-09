@@ -3947,6 +3947,11 @@ class Broker:
             "kind": str(data.get("type", "unknown"))[:64],
             "payload": data,
             "request_id": self._extract_request_id(data),
+            # Emission time, captured HERE — without it the ingest stamps
+            # arrival time, which skews replayed timelines whenever the POST
+            # batch lags (rate-limit stalls, backend hiccups). Clients replay
+            # these ts so an old session shows when things actually happened.
+            "ts": datetime.now(UTC).isoformat(),
         }
         role = data.get("role")
         if isinstance(role, str):
