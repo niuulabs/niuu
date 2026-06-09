@@ -671,6 +671,34 @@ def test_proxy_routes_forward_to_session_owner(
 
 
 @respx.mock
+def test_update_session_proxies_put_rename_to_owner_with_body() -> None:
+    # PUT /sessions/{id} (rename/update, contract §2.1) — the aggregate only
+    # registered GET/DELETE on this path, so web + iOS renames 405'd.
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "old-name"})
+    )
+    route = respx.put("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "new-name"})
+    )
+
+    response = client.put(
+        "/api/v1/forge/sessions/s2",
+        headers=_headers(),
+        json={"name": "new-name"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "new-name"
+    assert payload["instance_id"] == "beta"
+    assert route.called
+    import json as _json
+
+    assert _json.loads(route.calls.last.request.content) == {"name": "new-name"}
+
+
+@respx.mock
 def test_proxy_routes_fall_back_to_empty_payloads_when_remote_returns_non_dict_content() -> None:
     client = _client([_instance("beta", base_url="http://beta")])
     respx.get("http://beta/api/v1/forge/sessions/s2").mock(

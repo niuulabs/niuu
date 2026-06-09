@@ -773,6 +773,35 @@ def create_volundr_router(
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
+    @router.put("/sessions/{session_id}")
+    async def update_session(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # Rename/update (contract §2.1: PUT /sessions/{id} with {name|model|…}).
+        # The aggregate owns /api/v1/forge but only registered GET/DELETE on this
+        # path, so web + iOS renames 405'd — same gap class as activity/log/start.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="PUT",
+            path=f"/sessions/{session_id}",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
     @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_session(
         request: Request,
