@@ -3022,9 +3022,19 @@ def _build_resident_learning_runtime(
 
     resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
     local_ravn_dir = _resident_ravn_state_dir(workspace)
+    resident_skills_dir = local_ravn_dir / "skills"
+    # The resident's own write dir must be searchable, or skills installed by
+    # the learning loop are invisible to capability lookup when RAVN_STATE_DIR
+    # diverges from the workspace defaults.
+    skill_dirs = [
+        str(resident_skills_dir),
+        *settings.skill.skill_dirs,
+        str(workspace / ".ravn" / "skills"),
+        str(Path.home() / ".ravn" / "skills"),
+    ]
     skill_port = FileSkillRegistry(
-        skill_dirs=settings.skill.skill_dirs or None,
-        write_dir=local_ravn_dir / "skills",
+        skill_dirs=list(dict.fromkeys(skill_dirs)),
+        write_dir=resident_skills_dir,
         include_builtin=settings.skill.include_builtin,
         cwd=workspace,
     )
