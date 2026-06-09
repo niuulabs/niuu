@@ -1219,3 +1219,22 @@ def test_defaults_are_sane():
     assert DEFAULT_MAX_BYTES == 1024 * 1024 * 1024
     assert DEFAULT_RING_BUFFER_DEPTH == 1000
     assert DEFAULT_DEDUP_CACHE_SIZE == 10_000
+
+
+async def test_each_js_subscription_gets_a_fresh_consumer_config(mock_nats):
+    """Sharing one ConsumerConfig across push subscriptions makes nats-py
+    stamp the same deliver_subject onto every consumer, so each message fans
+    out to every callback (observed as N duplicate deliveries for N subjects).
+    Every JetStream subscription must receive its own config instance."""
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    handler = AsyncMock()
+    await sub.subscribe(
+        ["learning.promoted", "flock.learning.proposed", "flock.learning.adopted"],
+        handler,
+    )
+    configs = [call.kwargs["config"] for call in js.subscribe.call_args_list]
+    assert len(configs) == 3
+    assert len({id(config) for config in configs}) == 3
+    await sub.stop()
