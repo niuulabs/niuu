@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from observatory.contracts import ObservatoryFragment
@@ -109,12 +111,14 @@ class _IterableSignalAdapter(SignalAdapter):
         environment: Environment,
         source_id: str,
         raw_items: Iterable[Any] | None = None,
+        raw_items_file: str = "",
         provider: RawProvider | None = None,
         **_: Any,
     ) -> None:
         self.environment = environment
         self._source_id = source_id
         self._raw_items = list(raw_items or [])
+        self._raw_items_file = raw_items_file
         self._provider = provider
 
     @property
@@ -122,12 +126,28 @@ class _IterableSignalAdapter(SignalAdapter):
         return self._source_id
 
     async def _raw(self) -> list[Any]:
+        if self._raw_items_file:
+            return self._raw_from_file()
         if self._provider is None:
             return list(self._raw_items)
         provided = self._provider()
         if inspect.isawaitable(provided):
             provided = await provided
         return list(provided)
+
+    def _raw_from_file(self) -> list[Any]:
+        """Read raw items from a JSON file that may appear after startup.
+
+        A missing file means no signals yet — deterministic injection for
+        demos and end-to-end proofs.  A present-but-invalid file is an error.
+        """
+        path = Path(self._raw_items_file).expanduser()
+        if not path.is_file():
+            return []
+        items = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(items, list):
+            raise ValueError(f"raw_items_file must contain a JSON array: {path}")
+        return items
 
 
 class KubernetesSignalAdapter(_IterableSignalAdapter):
@@ -141,6 +161,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         environment: Environment,
         source_id: str = "kubernetes-events",
         raw_items: Iterable[Any] | None = None,
+        raw_items_file: str = "",
         provider: RawProvider | None = None,
         core_v1: Any | None = None,
         in_cluster: bool = False,
@@ -165,12 +186,13 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         self._limit = limit
         self._client_loaded = core_v1 is not None
         selected_provider = provider
-        if selected_provider is None and raw_items is None:
+        if selected_provider is None and raw_items is None and not raw_items_file:
             selected_provider = self._provider_from_kubernetes
         super().__init__(
             environment=environment,
             source_id=source_id,
             raw_items=raw_items,
+            raw_items_file=raw_items_file,
             provider=selected_provider,
         )
 
@@ -180,8 +202,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             signals = [
                 signal
                 for signal in signals
-                if _text(signal.normalized_payload.get("reason")).lower()
-                in self._include_reasons
+                if _text(signal.normalized_payload.get("reason")).lower() in self._include_reasons
             ]
         if self._exclude_reasons:
             signals = [
