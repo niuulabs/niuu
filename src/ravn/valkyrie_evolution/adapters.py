@@ -196,11 +196,26 @@ class WorkflowToolBuilder(EvolutionBuilderPort):
         )
 
 
-class LocalOdinReviewAdapter(EvolutionReviewPort):
-    """Local Odin-court style review gate for generated evolution artifacts."""
+class PolicyCourtReviewer(EvolutionReviewPort):
+    """Court-backed review gate for built and adopted evolution artifacts.
 
-    def __init__(self, *, reviewer: str = "odin:local-court") -> None:
+    The install/approve decision delegates to the shared
+    :class:`~ravn.context.autonomy.AutonomyPolicy` — the same authority model
+    that gates every other resident self-improvement — and the artifact itself
+    is validated structurally (AST import/entry-point analysis for tool
+    implementations, declared metadata for skills) instead of by prose
+    pattern matching.  Every decision can be recorded through the court audit
+    machinery via an optional :class:`~ravn.odin.court.CourtAuditSink`.
+    """
+
+    def __init__(
+        self,
+        *,
+        reviewer: str = "odin:policy-court",
+        audit_sink: Any | None = None,
+    ) -> None:
         self.reviewer = reviewer
+        self._audit_sink = audit_sink
 
     async def review(
         self,
@@ -209,24 +224,89 @@ class LocalOdinReviewAdapter(EvolutionReviewPort):
         build: BuildResult,
         autonomy_mode: str,
     ) -> ReviewResult:
-        required = autonomy_mode.lower() != "yolo"
-        findings = _review_findings(request, build)
-        approved = not findings
-        if approved:
-            outcome = "approved"
-            rationale = "Artifact is scoped, read-only, and declares a capability marker."
+        from ravn.context.autonomy import (  # noqa: PLC0415
+            AutonomyPolicy,
+            SelfImprovementProposal,
+        )
+
+        blocking = _structural_findings(request, build)
+        proposal = SelfImprovementProposal(
+            proposal_id=request.request_id,
+            title=build.skill_name,
+            artifact_type="skill",
+            action="create",
+            content=build.skill_content,
+            scope=_local_install_scope(request.target_scope),
+            environment_id=request.gap.environment_id,
+            domain=request.gap.domain,
+            mode=_policy_mode(autonomy_mode),
+            risk_class=_risk_class(request.gap.safety_class),
+        )
+        decision = AutonomyPolicy().decide(proposal)
+
+        findings = list(blocking)
+        if decision.decision != "allow":
+            findings.append(f"policy: {decision.reason}")
+
+        if blocking:
+            approved = False
+            outcome = "rejected"
+            rationale = "Artifact failed structural court review: " + "; ".join(blocking)
+        elif decision.decision == "allow":
+            approved = True
+            outcome = "yolo_approved" if autonomy_mode.lower() == "yolo" else "approved"
+            rationale = decision.reason
         else:
-            outcome = "rejected" if required else "observed"
-            rationale = "Artifact failed local Odin activation checks."
-        return ReviewResult(
+            approved = False
+            outcome = "needs_approval"
+            rationale = decision.reason
+
+        review = ReviewResult(
             request_id=request.request_id,
             artifact_name=build.skill_name,
             approved=approved,
             outcome=outcome,
             rationale=rationale,
             reviewer=self.reviewer,
-            required_for_activation=required,
+            required_for_activation=autonomy_mode.lower() != "yolo",
             findings=findings,
+            blocking_findings=list(blocking),
+        )
+        await self._record_audit(request, review)
+        return review
+
+    async def _record_audit(self, request: EvolutionRequest, review: ReviewResult) -> None:
+        if self._audit_sink is None:
+            return
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from ravn.odin.court import CourtDecisionRecord  # noqa: PLC0415
+
+        await self._audit_sink.record_decision(
+            CourtDecisionRecord(
+                audit_ref=f"evolution-review:{request.request_id}",
+                environment_id=request.gap.environment_id,
+                root_correlation_id=request.request_id,
+                decision=review.outcome,
+                tier="silent",
+                action_authorization="autonomous" if review.approved else "human_review_required",
+                escalation_path="review_queue" if not review.approved else "action_executor",
+                huddle_id="",
+                judgment_refs=[],
+                action_refs=[],
+                rejected_refs=[],
+                dissent=[],
+                evidence=[
+                    {
+                        "artifact_name": review.artifact_name,
+                        "findings": list(review.findings),
+                        "blocking_findings": list(review.blocking_findings),
+                    }
+                ],
+                rationale=review.rationale,
+                created_at=datetime.now(UTC),
+                raw_event_ids=[],
+            )
         )
 
 
@@ -296,23 +376,41 @@ def _parse_builder_response(content: str, *, skill_name: str) -> dict[str, str]:
 
 
 def _validate_tool_code(tool_code: str, *, entry_point: str, safety_class: str) -> None:
+    findings = tool_implementation_findings(
+        tool_code,
+        entry_point=entry_point,
+        safety_class=safety_class,
+    )
+    if findings:
+        raise ToolBuildError("; ".join(findings))
+
+
+def tool_implementation_findings(
+    tool_code: str,
+    *,
+    entry_point: str = "run",
+    safety_class: str = "read_only",
+) -> list[str]:
+    """Structurally validate a tool implementation; return blocking findings."""
     try:
         tree = ast.parse(tool_code)
     except SyntaxError as exc:
-        raise ToolBuildError(f"tool implementation has a syntax error: {exc}") from exc
+        return [f"tool implementation has a syntax error: {exc}"]
 
+    findings: list[str] = []
     entry_points = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == entry_point
     ]
     if not entry_points:
-        raise ToolBuildError(f"tool implementation does not define {entry_point}()")
+        findings.append(f"tool implementation does not define {entry_point}()")
 
     if safety_class == "read_only":
         blocked = sorted(_blocked_imports(tree))
         if blocked:
-            raise ToolBuildError(f"read-only tool imports forbidden modules: {', '.join(blocked)}")
+            findings.append(f"read-only tool imports forbidden modules: {', '.join(blocked)}")
+    return findings
 
 
 def _blocked_imports(tree: ast.AST) -> set[str]:
@@ -355,24 +453,81 @@ def _skill_name_from_capability(capability_name: str) -> str:
     return f"valkyrie-{safe}"
 
 
-def _review_findings(request: EvolutionRequest, build: BuildResult) -> list[str]:
+# Operations a self-built or peer-taught artifact may never instruct, in any
+# autonomy mode. Content lint only — authority decisions live in AutonomyPolicy.
+_BLOCKED_INSTRUCTIONS = (
+    "rm -rf",
+    "kubectl delete",
+    "send email",
+    "delete secret",
+)
+
+
+def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[str]:
+    """Blocking structural findings for a built or adopted artifact."""
     findings: list[str] = []
     if build.artifact_type != "ravn_skill_tool":
         findings.append(f"unexpected artifact type: {build.artifact_type}")
-    if request.target_scope not in {"private", "environment", "domain"}:
-        findings.append(f"scope requires human review: {request.target_scope}")
-    if request.gap.safety_class != "read_only":
-        findings.append(f"non-read-only safety class: {request.gap.safety_class}")
     capability_marker = f"capability: {request.gap.capability_name}"
     if capability_marker not in build.skill_content:
         findings.append("missing capability marker")
     lower = build.skill_content.lower()
-    for blocked in ["rm -rf", "kubectl delete", "send email", "delete secret"]:
+    for blocked in _BLOCKED_INSTRUCTIONS:
         if blocked in lower:
             findings.append(f"blocked operation mentioned: {blocked}")
     if "kubectl" in lower and "kubernetes_inspect" not in lower:
         findings.append("unavailable runtime dependency: kubectl; use kubernetes_inspect")
+    if build.has_tool_implementation:
+        findings.extend(
+            tool_implementation_findings(
+                build.tool_code,
+                entry_point=build.tool_entry_point or "run",
+                safety_class=request.gap.safety_class,
+            )
+        )
     return findings
+
+
+def _policy_mode(autonomy_mode: str) -> str:
+    """Map runtime mode strings onto the shared AutonomyPolicy modes.
+
+    ``supervised`` is the proof-runner's legacy name for autonomous-with-review.
+    Unknown modes degrade to guarded — the conservative default.
+    """
+    mode = autonomy_mode.lower()
+    if mode in {"guarded", "autonomous", "yolo"}:
+        return mode
+    if mode == "supervised":
+        return "autonomous"
+    return "guarded"
+
+
+def _risk_class(safety_class: str) -> str:
+    mapping = {
+        "read_only": "low",
+        "low": "low",
+        "mutating": "medium",
+        "write": "medium",
+        "medium": "medium",
+        "high": "high",
+        "destructive": "critical",
+    }
+    return mapping.get(safety_class.lower(), "medium")
+
+
+def _local_install_scope(target_scope: str) -> str:
+    """Scope of the local mutation a review gates.
+
+    Installing a flock- or shared-promoted learning only changes this
+    resident's own registry, so the authority decision is evaluated at
+    environment scope; the lifecycle scope label is preserved elsewhere.
+    """
+    scope = target_scope.lower()
+    if scope in {"flock", "shared"}:
+        return "environment"
+    if scope in {"private", "environment", "domain"}:
+        return scope
+    return "environment"
 
 
 def _interesting_fields(evidence: dict[str, Any]) -> dict[str, Any]:

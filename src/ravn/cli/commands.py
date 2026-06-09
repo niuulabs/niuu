@@ -1844,7 +1844,7 @@ def valkyrie_evolution_proof(
         help="Builder adapter kwarg as key=value. May be repeated.",
     ),
     review_adapter: str = typer.Option(
-        "ravn.valkyrie_evolution.adapters.LocalOdinReviewAdapter",
+        "ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
         "--review-adapter",
         help="Fully-qualified EvolutionReviewPort adapter class.",
     ),

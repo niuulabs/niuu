@@ -16,7 +16,7 @@ from ravn.adapters.reflection.flock_learning import (
 )
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.adapters import JsonlEventLedger, LocalOdinReviewAdapter
+from ravn.valkyrie_evolution.adapters import JsonlEventLedger, PolicyCourtReviewer
 from ravn.valkyrie_evolution.models import (
     BuildResult,
     CapabilityGap,
@@ -63,7 +63,7 @@ class ValkyrieEvolutionProofRunner:
             _reset_managed_artifacts(self.out_dir)
         self.ledger = ledger or JsonlEventLedger(self.out_dir / "events.jsonl")
         self.builder = builder
-        self.reviewer = reviewer or LocalOdinReviewAdapter()
+        self.reviewer = reviewer or PolicyCourtReviewer()
         skill_port = FileSkillRegistry(
             skill_dirs=[str(self.skills_dir)],
             write_dir=self.skills_dir,
@@ -132,7 +132,7 @@ class ValkyrieEvolutionProofRunner:
                 asdict(review),
                 urgency=0.5 if review.required_for_activation else 0.25,
             )
-            if review.approved or self.autonomy_mode.lower() == "yolo":
+            if review.approved and not review.blocking_findings:
                 await self.skills.create(
                     name=build.skill_name,
                     content=build.skill_content,
@@ -219,7 +219,7 @@ class ValkyrieEvolutionProofRunner:
             build
             for build, review in zip(build_results, review_results, strict=False)
             if build.artifact_type == "ravn_skill_tool"
-            and (review.approved or self.autonomy_mode.lower() == "yolo")
+            and (review.approved and not review.blocking_findings)
             and "capability:" in build.skill_content
         ]
         if not shareable:

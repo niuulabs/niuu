@@ -78,6 +78,7 @@ class ReviewResult:
     reviewer: str
     required_for_activation: bool
     findings: list[str] = field(default_factory=list)
+    blocking_findings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

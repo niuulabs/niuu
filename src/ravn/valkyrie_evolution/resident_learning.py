@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.adapters import LocalOdinReviewAdapter, TemplateToolBuilder
+from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
 from ravn.valkyrie_evolution.models import (
     BuildResult,
     CapabilityGap,
@@ -154,7 +154,7 @@ class ResidentLearningRuntime:
         self._publisher = publisher
         self._subscriber = subscriber
         self._builder = builder or TemplateToolBuilder()
-        self._reviewer = reviewer or LocalOdinReviewAdapter(reviewer="odin:resident-learning")
+        self._reviewer = reviewer or PolicyCourtReviewer(reviewer="odin:resident-learning")
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
         self._tools_dir = Path(tools_dir) if tools_dir else None
@@ -950,33 +950,24 @@ def _review_inputs(
 
 
 def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
-    if review.approved:
-        return True
-    if autonomy_mode.lower() != "yolo":
-        return False
-    blocked_findings = [
-        finding
-        for finding in review.findings
-        if finding.startswith("non-read-only")
-        or finding == "missing capability marker"
-        or finding.startswith("blocked operation")
-        or finding.startswith("unavailable runtime dependency")
-    ]
-    return not blocked_findings
+    """The reviewer is the authority: install only what it approved.
+
+    YOLO semantics live inside the policy reviewer (which approves with the
+    ``yolo_approved`` outcome); blocking findings are never overridable.
+    """
+    return review.approved and not review.blocking_findings
 
 
 def _install_authorization(review: ReviewResult, autonomy_mode: str) -> str:
-    if review.approved:
-        return "odin_approved"
-    if _review_allows_install(review, autonomy_mode):
+    if not _review_allows_install(review, autonomy_mode):
+        return "blocked"
+    if review.outcome == "yolo_approved":
         return "yolo_override"
-    return "blocked"
+    return "odin_approved"
 
 
 def _install_authorization_rationale(review: ReviewResult, autonomy_mode: str) -> str:
     authorization = _install_authorization(review, autonomy_mode)
-    if authorization == "odin_approved":
-        return review.rationale
     if authorization == "yolo_override":
         findings = "; ".join(review.findings) if review.findings else review.rationale
         return (

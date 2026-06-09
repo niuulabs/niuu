@@ -2330,7 +2330,7 @@ class DreamCycleTriggerConfig(BaseModel):
         description="Constructor kwargs for the builder adapter.",
     )
     reviewer_adapter: str = Field(
-        default="ravn.valkyrie_evolution.adapters.LocalOdinReviewAdapter",
+        default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
         description=(
             "Fully-qualified EvolutionReviewPort class gating built and "
             "adopted learnings before install."

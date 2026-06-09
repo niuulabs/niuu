@@ -62,7 +62,7 @@ async def test_evolution_proof_builds_skills_and_uses_them_on_replay(tmp_path: P
     assert all(decision["capability_gap"] for decision in report.first_pass_decisions)
     assert all(decision["skill_name"] for decision in report.replay_decisions)
     assert {build["artifact_type"] for build in report.build_results} == {"ravn_skill_tool"}
-    assert {review["outcome"] for review in report.review_results} == {"approved"}
+    assert {review["outcome"] for review in report.review_results} == {"yolo_approved"}
 
     skill_files = sorted((tmp_path / "skills").glob("*.md"))
     assert len(skill_files) == 3
