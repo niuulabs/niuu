@@ -196,8 +196,8 @@ class ValkyrieEvolutionProofRunner:
                         "skill_name": decision.skill_name,
                         "capability_name": decision.capability_name,
                     },
-                        urgency=0.3,
-                    )
+                    urgency=0.3,
+                )
 
         await self._run_flock_resident_proof(signals, build_results, review_results)
         return await self._write_report(
@@ -462,14 +462,12 @@ class ValkyrieEvolutionProofRunner:
             "local_skills_activated": sum(
                 1
                 for e in events
-                if e.event_type == "valkyrie.evolution.activated"
-                and "learning_id" not in e.payload
+                if e.event_type == "valkyrie.evolution.activated" and "learning_id" not in e.payload
             ),
             "resident_skills_installed": sum(
                 1
                 for e in events
-                if e.event_type == "valkyrie.evolution.activated"
-                and "learning_id" in e.payload
+                if e.event_type == "valkyrie.evolution.activated" and "learning_id" in e.payload
             ),
             "skills_held": sum(1 for e in events if e.event_type == "valkyrie.evolution.held"),
             "replay_decisions": len(replay),

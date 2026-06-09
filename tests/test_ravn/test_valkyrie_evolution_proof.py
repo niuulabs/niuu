@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from ravn.cli.commands import app
 from ravn.valkyrie_evolution import ValkyrieEvolutionProofRunner
-from ravn.valkyrie_evolution.adapters import LocalSkillBuilderAdapter
+from ravn.valkyrie_evolution.adapters import TemplateToolBuilder
 from ravn.valkyrie_evolution.models import BuildResult, EvolutionRequest
 
 
@@ -34,7 +34,7 @@ class UnsafeBuilder:
 async def test_evolution_proof_builds_skills_and_uses_them_on_replay(tmp_path: Path) -> None:
     report = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
-        builder=LocalSkillBuilderAdapter(),
+        builder=TemplateToolBuilder(),
         environment_id="test-env",
         autonomy_mode="yolo",
     ).run()
@@ -126,11 +126,11 @@ def test_valkyrie_evolution_proof_cli_writes_artifacts(tmp_path: Path) -> None:
 async def test_evolution_proof_is_repeatable_in_same_output_dir(tmp_path: Path) -> None:
     first = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
-        builder=LocalSkillBuilderAdapter(),
+        builder=TemplateToolBuilder(),
     ).run()
     second = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
-        builder=LocalSkillBuilderAdapter(),
+        builder=TemplateToolBuilder(),
     ).run()
 
     assert first.summary["capability_gaps_detected"] == 3
@@ -143,7 +143,7 @@ async def test_evolution_proof_is_repeatable_in_same_output_dir(tmp_path: Path) 
 async def test_supervised_mode_requires_odin_review_before_activation(tmp_path: Path) -> None:
     report = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
-        builder=LocalSkillBuilderAdapter(),
+        builder=TemplateToolBuilder(),
         autonomy_mode="supervised",
     ).run()
 

@@ -58,7 +58,14 @@ class BuildResult:
     description: str
     artifact_type: str
     artifact_path: str = ""
+    tool_code: str = ""
+    tool_entry_point: str = "run"
+    tool_path: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_tool_implementation(self) -> bool:
+        return bool(self.tool_code.strip())
 
 
 @dataclass(frozen=True)

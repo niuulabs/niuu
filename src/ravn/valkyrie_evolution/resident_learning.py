@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.adapters import LocalOdinReviewAdapter, LocalSkillBuilderAdapter
+from ravn.valkyrie_evolution.adapters import LocalOdinReviewAdapter, TemplateToolBuilder
 from ravn.valkyrie_evolution.models import (
     BuildResult,
     CapabilityGap,
@@ -17,6 +18,13 @@ from ravn.valkyrie_evolution.models import (
     ReviewResult,
 )
 from ravn.valkyrie_evolution.ports import EvolutionBuilderPort, EvolutionReviewPort
+from ravn.valkyrie_evolution.tool_runtime import (
+    DEFAULT_TOOL_TIMEOUT_SECONDS,
+    ToolRunResult,
+    run_tool,
+    tool_path_for_skill,
+    write_tool,
+)
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     learning_adoption_recorded,
@@ -70,6 +78,8 @@ class ResidentLearningArtifact:
     domain: str = ""
     redaction_status: str = ""
     artifact_path: str = ""
+    tool_code: str = ""
+    tool_entry_point: str = "run"
     causation_id: str = ""
     correlation_id: str = ""
     operator_command: bool = False
@@ -113,8 +123,10 @@ class ResidentLearningPolicy:
             return False, "domain does not match resident domain"
         if scope == "flock" and not _flock_matches(artifact.flock_id, identity.flock_ids):
             return False, "resident is not a member of the target flock"
-        if scope == "shared" and artifact.domain and not _domain_matches(
-            artifact.domain, identity.domain
+        if (
+            scope == "shared"
+            and artifact.domain
+            and not _domain_matches(artifact.domain, identity.domain)
         ):
             return False, "shared learning is for a different domain"
         return True, f"learning is relevant to {identity.environment_id}"
@@ -134,15 +146,19 @@ class ResidentLearningRuntime:
         reviewer: EvolutionReviewPort | None = None,
         policy: ResidentLearningPolicy | None = None,
         source: str = "",
+        tools_dir: str | Path | None = None,
+        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     ) -> None:
         self.identity = identity
         self._skills = skills
         self._publisher = publisher
         self._subscriber = subscriber
-        self._builder = builder or LocalSkillBuilderAdapter()
+        self._builder = builder or TemplateToolBuilder()
         self._reviewer = reviewer or LocalOdinReviewAdapter(reviewer="odin:resident-learning")
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
+        self._tools_dir = Path(tools_dir) if tools_dir else None
+        self._tool_timeout_seconds = tool_timeout_seconds
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
         self._local_evolved_capabilities: set[str] = set()
@@ -186,45 +202,95 @@ class ResidentLearningRuntime:
                 "skillName": "",
             }
 
+        tool_run = await self._run_skill_tool(skill, operational_signal)
+        tool_succeeded = tool_run is None or tool_run.ok
         await self._skills.record_usage(
             skill.name,
-            success=True,
+            success=tool_succeeded,
             environment_id=self.identity.environment_id,
             domain=operational_signal.domain,
             action_safety_class=_safety_class_from_content(skill.content),
         )
+        evidence: list[dict[str, Any]] = [
+            {
+                "skill_name": skill.name,
+                "capability_name": capability,
+                "learning_source": "resident_skill_registry",
+            }
+        ]
+        if tool_run is not None:
+            evidence.append(
+                {
+                    "tool_executed": True,
+                    "tool_ok": tool_run.ok,
+                    "tool_result": tool_run.result,
+                    "tool_error": tool_run.error,
+                }
+            )
+        if tool_succeeded:
+            attention_tier = "ambient"
+            recommended_action = "inspect_with_adopted_learning"
+            rationale = f"Installed learning skill {skill.name} matches capability {capability}."
+            decision_name = "inspect_with_adopted_learning"
+        else:
+            attention_tier = "present"
+            recommended_action = "review_adopted_learning_failure"
+            rationale = (
+                f"Installed learning skill {skill.name} failed its implementation run: "
+                f"{tool_run.error}"
+            )
+            decision_name = "adopted_learning_failed"
         judgment = valkyrie_judgment_proposed(
             environment_id=self.identity.environment_id,
             valkyrie_id=self.identity.valkyrie_id,
-            attention_tier="ambient",
-            recommended_action="inspect_with_adopted_learning",
+            attention_tier=attention_tier,
+            recommended_action=recommended_action,
             authority_boundary=_authority_boundary(self.identity.autonomy_mode),
-            confidence=0.86,
+            confidence=0.86 if tool_succeeded else 0.4,
             operational_state="using_adopted_learning",
-            rationale=(
-                f"Installed learning skill {skill.name} matches capability {capability}."
-            ),
+            rationale=rationale,
             signal_refs=[operational_signal.signal_id],
-            evidence=[
-                {
-                    "skill_name": skill.name,
-                    "capability_name": capability,
-                    "learning_source": "resident_skill_registry",
-                }
-            ],
+            evidence=evidence,
             correlation_ids={"root": operational_signal.signal_id},
             source=self._source,
             correlation_id=operational_signal.signal_id,
         )
         await self._publisher.publish(judgment)
-        return {
+        result: dict[str, Any] = {
             "signalId": operational_signal.signal_id,
             "capabilityName": capability,
-            "decision": "inspect_with_adopted_learning",
+            "decision": decision_name,
             "usedAdoptedLearning": True,
             "skillName": skill.name,
             "judgmentEventId": judgment.event_id,
         }
+        if tool_run is not None:
+            result["toolResult"] = tool_run.result if tool_run.ok else {"error": tool_run.error}
+        return result
+
+    async def _run_skill_tool(
+        self,
+        skill: Any,
+        signal: OperationalSignal,
+    ) -> ToolRunResult | None:
+        """Execute the skill's installed tool implementation, if one exists."""
+        if self._tools_dir is None:
+            return None
+        tool_path = tool_path_for_skill(self._tools_dir, str(skill.name))
+        if not tool_path.is_file():
+            return None
+        return await run_tool(
+            tool_path,
+            {
+                "signal_id": signal.signal_id,
+                "event_type": signal.event_type,
+                "severity": signal.severity,
+                "summary": signal.summary,
+                "payload": signal.payload,
+            },
+            entry_point=_tool_entry_point_from_content(str(skill.content)),
+            timeout_seconds=self._tool_timeout_seconds,
+        )
 
     async def _evolve_missing_capability(
         self,
@@ -509,6 +575,12 @@ class ResidentLearningRuntime:
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
             )
+        if build.has_tool_implementation and self._tools_dir is not None:
+            write_tool(
+                tools_dir=self._tools_dir,
+                skill_name=build.skill_name,
+                tool_code=build.tool_code,
+            )
         return build.skill_name
 
     async def _archive_learning_skill(self, artifact: ResidentLearningArtifact) -> str:
@@ -543,9 +615,11 @@ class ResidentLearningRuntime:
         artifact: ResidentLearningArtifact,
         review: ReviewResult,
     ) -> None:
-        decision = "learning_adoption_allowed" if _review_allows_install(
-            review, self.identity.autonomy_mode
-        ) else "learning_adoption_blocked"
+        decision = (
+            "learning_adoption_allowed"
+            if _review_allows_install(review, self.identity.autonomy_mode)
+            else "learning_adoption_blocked"
+        )
         event = odin_court_decided(
             environment_id=self.identity.environment_id,
             court_id=f"odin-learning:{artifact.learning_id}:{self.identity.environment_id}",
@@ -726,6 +800,8 @@ class ResidentLearningRuntime:
                     "redaction_status": artifact.redaction_status,
                     "promotion_id": artifact.promotion_id,
                     "artifact_path": artifact.artifact_path,
+                    "tool_code": build.tool_code,
+                    "tool_entry_point": build.tool_entry_point,
                     "review_outcome": review.outcome,
                     "builder_evidence": dict(build.evidence),
                     "nats_subject": "ravn.environment.flock.learning.proposed",
@@ -818,6 +894,8 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
         domain=str(payload.get("domain") or payload.get("domain_scope") or event.domain or ""),
         redaction_status=str(payload.get("redaction_status") or ""),
         artifact_path=str(payload.get("artifact_path") or payload.get("promoted_path") or ""),
+        tool_code=str(payload.get("tool_code") or ""),
+        tool_entry_point=str(payload.get("tool_entry_point") or "run"),
         causation_id=event.event_id,
         correlation_id=event.correlation_id or event.event_id,
         operator_command=bool(payload.get("operator_id") or payload.get("action_kind")),
@@ -859,6 +937,8 @@ def _review_inputs(
         description=artifact.summary,
         artifact_type=artifact_type,
         artifact_path=artifact.artifact_path,
+        tool_code=artifact.tool_code,
+        tool_entry_point=artifact.tool_entry_point,
         evidence={
             "learning_id": artifact.learning_id,
             "promotion_id": artifact.promotion_id,
@@ -975,6 +1055,11 @@ def _capability_from_content(content: str) -> str:
 def _safety_class_from_content(content: str) -> str:
     match = re.search(r"^metadata:\n(?:.*\n)*?\s*safety_class:\s*([^\n]+)", content, re.M)
     return match.group(1).strip() if match else "read_only"
+
+
+def _tool_entry_point_from_content(content: str) -> str:
+    match = re.search(r"^metadata:\n(?:.*\n)*?\s*tool_entry_point:\s*([^\n]+)", content, re.M)
+    return match.group(1).strip() if match else "run"
 
 
 def _authority_boundary(autonomy_mode: str) -> str:

@@ -1834,7 +1834,7 @@ def valkyrie_evolution_proof(
         help="Directory for proof events, generated skills, and reports.",
     ),
     builder_adapter: str = typer.Option(
-        "ravn.valkyrie_evolution.adapters.LocalSkillBuilderAdapter",
+        "ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
         "--builder-adapter",
         help="Fully-qualified EvolutionBuilderPort adapter class.",
     ),
@@ -3040,13 +3040,49 @@ def _build_resident_learning_runtime(
         flock_ids=list(settings.environment.flocks),
         autonomy_mode=settings.dream_cycle.autonomy_mode,
     )
+    builder = _build_evolution_adapter(
+        settings,
+        adapter_path=settings.dream_cycle.builder_adapter,
+        kwargs=settings.dream_cycle.builder_kwargs,
+    )
+    reviewer = _build_evolution_adapter(
+        settings,
+        adapter_path=settings.dream_cycle.reviewer_adapter,
+        kwargs=settings.dream_cycle.reviewer_kwargs,
+    )
     return ResidentLearningRuntime(
         identity=identity,
         skills=skills,
         publisher=publisher,
         subscriber=publisher,
         source=resident_id,
+        builder=builder,
+        reviewer=reviewer,
+        tools_dir=local_ravn_dir / "tools",
+        tool_timeout_seconds=settings.dream_cycle.tool_timeout_seconds,
     )
+
+
+def _build_evolution_adapter(
+    settings: Settings,
+    *,
+    adapter_path: str,
+    kwargs: dict[str, Any],
+) -> Any:
+    """Instantiate a dream-cycle builder/reviewer adapter from config.
+
+    Plain kwargs come straight from YAML.  Adapters whose constructor declares
+    an ``llm`` parameter (for example ``AgentToolBuilder``) receive the
+    configured LLM adapter — composition-root injection, not a YAML value.
+    """
+    import inspect  # noqa: PLC0415
+
+    cls = _import_class(adapter_path)
+    resolved = dict(kwargs)
+    parameters = inspect.signature(cls.__init__).parameters
+    if "llm" in parameters and "llm" not in resolved:
+        resolved["llm"] = _build_llm(settings)
+    return cls(**resolved)
 
 
 def _build_environment_signal_publisher(settings: Settings) -> Any | None:
@@ -4083,9 +4119,7 @@ def _resolve_transport_kwargs(
             "user": os.environ.get(nats_cfg.user_env, nats_cfg.user)
             if nats_cfg.user_env
             else nats_cfg.user,
-            "password": os.environ.get(nats_cfg.password_env, "")
-            if nats_cfg.password_env
-            else "",
+            "password": os.environ.get(nats_cfg.password_env, "") if nats_cfg.password_env else "",
             "token": os.environ.get(nats_cfg.token_env, "") if nats_cfg.token_env else "",
             "nkeys_seed_file": nats_cfg.nkeys_seed_file,
             "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")
@@ -4101,9 +4135,7 @@ def _resolve_transport_kwargs(
                 if entry.subject
             ],
             "core_subscriptions": [
-                {"subject": entry.subject}
-                for entry in nats_cfg.core_subscriptions
-                if entry.subject
+                {"subject": entry.subject} for entry in nats_cfg.core_subscriptions if entry.subject
             ],
         }
         if nats_cfg.consumer_group:

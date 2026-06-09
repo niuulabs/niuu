@@ -2316,6 +2316,34 @@ class DreamCycleTriggerConfig(BaseModel):
         default="~/.ravn/autonomy_proposals.json",
         description="JSON proposal store used for dream-cycle self-improvement audit trails.",
     )
+    builder_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
+        description=(
+            "Fully-qualified EvolutionBuilderPort class used by resident "
+            "micro-dreams to author skills and tool implementations. "
+            "Constructors declaring an ``llm`` parameter receive the "
+            "configured LLM adapter automatically."
+        ),
+    )
+    builder_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the builder adapter.",
+    )
+    reviewer_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.LocalOdinReviewAdapter",
+        description=(
+            "Fully-qualified EvolutionReviewPort class gating built and "
+            "adopted learnings before install."
+        ),
+    )
+    reviewer_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the reviewer adapter.",
+    )
+    tool_timeout_seconds: float = Field(
+        default=10.0,
+        description="Hard timeout for one sandboxed resident tool execution.",
+    )
 
 
 # ---------------------------------------------------------------------------
