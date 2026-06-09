@@ -466,6 +466,28 @@ LEARNING_PROMOTED: str = "learning.promoted"
 LEARNING_ADOPTION_RECORDED: str = "learning.adoption.recorded"
 
 # ---------------------------------------------------------------------------
+# flock — learning exchange between related Valkyries across Environments
+# ---------------------------------------------------------------------------
+
+#: A resident proposed a vetted learning/tool to its flock.
+FLOCK_LEARNING_PROPOSED: str = "flock.learning.proposed"
+
+#: A peer Environment started canarying a proposed flock learning.
+FLOCK_LEARNING_CANARY_STARTED: str = "flock.learning.canary_started"
+
+#: A peer Environment adopted a flock learning after canary.
+FLOCK_LEARNING_ADOPTED: str = "flock.learning.adopted"
+
+#: A peer Environment rejected a flock learning.
+FLOCK_LEARNING_REJECTED: str = "flock.learning.rejected"
+
+#: A flock learning became active across the cohort.
+FLOCK_LEARNING_ACTIVATED: str = "flock.learning.activated"
+
+#: A flock learning was rolled back after regression or negative transfer.
+FLOCK_LEARNING_ROLLED_BACK: str = "flock.learning.rolled_back"
+
+# ---------------------------------------------------------------------------
 # participant — humans, agents, tools, and surfaces in an Environment
 # ---------------------------------------------------------------------------
 

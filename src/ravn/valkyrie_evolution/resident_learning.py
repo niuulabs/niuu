@@ -41,10 +41,10 @@ _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
     registry.LEARNING_PROMOTED,
     registry.LEARNING_ADOPTION_RECORDED,
-    "flock.learning.proposed",
-    "flock.learning.adopted",
-    "flock.learning.rejected",
-    "flock.learning.rolled_back",
+    registry.FLOCK_LEARNING_PROPOSED,
+    registry.FLOCK_LEARNING_ADOPTED,
+    registry.FLOCK_LEARNING_REJECTED,
+    registry.FLOCK_LEARNING_ROLLED_BACK,
 ]
 
 
@@ -847,7 +847,7 @@ class ResidentLearningRuntime:
             return
         await self._publisher.publish(
             SleipnirEvent(
-                event_type="flock.learning.proposed",
+                event_type=registry.FLOCK_LEARNING_PROPOSED,
                 source=self._source,
                 payload={
                     "learning_id": artifact.learning_id,
@@ -872,7 +872,7 @@ class ResidentLearningRuntime:
                     "builder_evidence": dict(build.evidence),
                     "nats_subject": "ravn.environment.flock.learning.proposed",
                     "additional_nats_subjects": [
-                        _flock_nats_subject(self.identity, "flock.learning.proposed")
+                        _flock_nats_subject(self.identity, registry.FLOCK_LEARNING_PROPOSED)
                     ],
                 },
                 summary=f"flock.learning.proposed: {artifact.title}",
@@ -924,7 +924,7 @@ class ResidentLearningRuntime:
 def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
     payload = event.payload
     event_type = event.event_type
-    if event_type == "flock.learning.proposed":
+    if event_type == registry.FLOCK_LEARNING_PROPOSED:
         title = str(payload.get("title") or payload.get("artifact_name") or payload["learning_id"])
         scope = "flock"
     elif event_type == registry.LEARNING_ADOPTION_RECORDED:
@@ -1057,7 +1057,7 @@ def _is_resident_ack(event: SleipnirEvent) -> bool:
 def _is_retraction_event(event: SleipnirEvent) -> bool:
     event_type = event.event_type
     payload = event.payload
-    if event_type in {"flock.learning.rejected", "flock.learning.rolled_back"}:
+    if event_type in {registry.FLOCK_LEARNING_REJECTED, registry.FLOCK_LEARNING_ROLLED_BACK}:
         return True
     if event_type == registry.LEARNING_ADOPTION_RECORDED:
         action = str(payload.get("action_kind") or payload.get("action") or "").lower()
