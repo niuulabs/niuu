@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from dataclasses import asdict
 from typing import Any
@@ -40,6 +39,7 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_sdk_mcp_servers
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
@@ -502,7 +502,7 @@ class SDKTransport(CLITransport):
             return
 
     async def _connect_client(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(

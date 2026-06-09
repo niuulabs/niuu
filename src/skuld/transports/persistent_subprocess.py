@@ -41,6 +41,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
@@ -203,7 +204,7 @@ class PersistentSubprocessTransport(CLITransport):
 
     async def _spawn(self) -> None:
         cmd = self._build_command()
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(

@@ -8,7 +8,6 @@ overrides, but it should not be the default Claude path.
 import asyncio
 import json
 import logging
-import os
 import uuid
 
 from fastapi import WebSocket
@@ -23,6 +22,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
@@ -130,7 +130,7 @@ class SdkWebSocketTransport(CLITransport):
             resume_id,
         )
 
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(
@@ -140,12 +140,9 @@ class SdkWebSocketTransport(CLITransport):
         if shim_env:
             env.update(shim_env)
 
-        if "ANTHROPIC_API_KEY" not in env:
-            logger.warning(
-                "ANTHROPIC_API_KEY not found in environment — "
-                "CLI may fail to authenticate with the API"
-            )
-
+        # No ANTHROPIC_API_KEY check here: subscription mode strips it on
+        # purpose (the CLI authenticates with the host's claude.ai login);
+        # claude_spawn_env warns if the login credentials are missing.
         logger.debug("CLI spawn command: %s", " ".join(cmd))
         logger.debug("CLI spawn env: CLAUDECODE unset, AGENT_TEAMS=%s", self._agent_teams)
 
