@@ -5316,8 +5316,13 @@ async def upload_file_raw(
     base_real = os.path.realpath(str(base))
     # Containment checks are inlined (not _check_within_base) so the
     # realpath + startswith barrier is visible to CodeQL's path-injection
-    # query in the same dataflow scope as the filesystem sinks below.
+    # query in the same dataflow scope as the filesystem sinks below. The
+    # bare startswith(base_real) is the shape the query recognises; the
+    # separator-anchored check after it rules out /base vs /base-evil
+    # prefix collisions.
     target_real = os.path.realpath(os.path.join(base_real, sanitized))
+    if not target_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
     if target_real != base_real and not target_real.startswith(base_real + os.sep):
         raise HTTPException(400, "Path traversal not allowed")
     if sanitized in ("", ".") or os.path.isdir(target_real):
@@ -5332,6 +5337,8 @@ async def upload_file_raw(
         )
 
     parent_real = os.path.realpath(os.path.dirname(target_real))
+    if not parent_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
     if parent_real != base_real and not parent_real.startswith(base_real + os.sep):
         raise HTTPException(400, "Path traversal not allowed")
     os.makedirs(parent_real, exist_ok=True)
