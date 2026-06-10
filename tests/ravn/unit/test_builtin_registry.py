@@ -48,7 +48,7 @@ class TestRegistryStructure:
             assert val.groups, f"{key!r} has no groups"
 
     def test_known_groups_only(self) -> None:
-        valid_groups = {"core", "extended", "skill", "platform", "ravn"}
+        valid_groups = {"core", "extended", "skill", "platform", "ravn", "kubernetes"}
         for key, val in BUILTIN_TOOLS.items():
             unknown = val.groups - valid_groups
             assert not unknown, f"{key!r} has unknown groups: {unknown}"
