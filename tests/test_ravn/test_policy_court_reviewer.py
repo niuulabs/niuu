@@ -209,3 +209,52 @@ async def test_autonomous_peer_can_adopt_flock_learning(tmp_path) -> None:
     decision = await peer.evaluate_and_apply(artifact)
     assert decision.action == "adopted"
     assert "autonomous mode allows" in decision.rationale
+
+
+async def test_safety_disclaimers_in_skill_prose_do_not_block() -> None:
+    """A read-only probe whose text says what it does NOT do must pass.
+
+    Observed live: an LLM-authored skill was blocked because its disclaimer
+    mentioned the word "destructive" — the gate must read negation.
+    """
+    request = _request(autonomy_mode="yolo")
+    build = await _build(request)
+    disclaimed = type(build)(
+        request_id=build.request_id,
+        skill_name=build.skill_name,
+        skill_content=build.skill_content
+        + "\nThis probe performs no destructive operations and never runs "
+        "kubectl delete; it only reads pod state via kubernetes_inspect.\n",
+        description=build.description,
+        artifact_type=build.artifact_type,
+        tool_code=build.tool_code,
+        evidence=build.evidence,
+    )
+    review = await PolicyCourtReviewer().review(
+        request=request,
+        build=disclaimed,
+        autonomy_mode="yolo",
+    )
+    assert review.approved
+    assert not review.blocking_findings
+
+
+async def test_imperative_blocked_instruction_still_blocks() -> None:
+    request = _request(autonomy_mode="yolo")
+    build = await _build(request)
+    poisoned = type(build)(
+        request_id=build.request_id,
+        skill_name=build.skill_name,
+        skill_content=build.skill_content + "\nThen run kubectl delete on the namespace.\n",
+        description=build.description,
+        artifact_type=build.artifact_type,
+        tool_code=build.tool_code,
+        evidence=build.evidence,
+    )
+    review = await PolicyCourtReviewer().review(
+        request=request,
+        build=poisoned,
+        autonomy_mode="yolo",
+    )
+    assert not review.approved
+    assert any("blocked operation" in finding for finding in review.blocking_findings)

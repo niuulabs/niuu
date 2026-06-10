@@ -151,3 +151,46 @@ async def test_evolution_proposals_preserve_source_scope_and_policy(tmp_path) ->
     assert saved[1].status == ProposalStatus.NEEDS_REVIEW.value
     assert saved[1].scope == "global"
     assert saved[2].environment_id == "cluster-a"
+
+
+def test_negated_disclaimers_do_not_trip_gated_boundaries() -> None:
+    policy = AutonomyPolicy()
+
+    decision = policy.decide(
+        _proposal(
+            mode="yolo",
+            content=(
+                "Inspect pod events and memory pressure.\n"
+                "This probe performs no destructive operations, never touches "
+                "credentials, and avoids any spending or external send."
+            ),
+        )
+    )
+    assert decision.decision == "allow"
+
+
+def test_imperative_prose_mentions_still_gate() -> None:
+    policy = AutonomyPolicy()
+
+    decision = policy.decide(
+        _proposal(mode="yolo", content="Rotate the credentials in vault, then retry.")
+    )
+    assert decision.decision == "needs_approval"
+    assert "credentials" in decision.reason
+
+
+def test_action_declared_boundary_gates() -> None:
+    policy = AutonomyPolicy()
+
+    decision = policy.decide(_proposal(mode="yolo", action="external_send"))
+    assert decision.decision == "needs_approval"
+    assert "external_send" in decision.reason
+
+
+def test_boundary_terms_match_whole_words_only() -> None:
+    policy = AutonomyPolicy()
+
+    decision = policy.decide(
+        _proposal(mode="yolo", content="Try suspending the rollout and inspect again.")
+    )
+    assert decision.decision == "allow"

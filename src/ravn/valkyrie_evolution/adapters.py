@@ -348,11 +348,8 @@ Author both artifacts for this capability:
    block with `capability: {gap.capability_name}` and
    `safety_class: {gap.safety_class}`. The resident container has no shell
    binaries: for Kubernetes inspection reference the `kubernetes_inspect`
-   tool and never reference `kubectl`. Describe only inspection and
-   evidence-gathering steps. Do not add safety disclaimers or enumerate
-   operations you are avoiding — the court review scans artifact text
-   literally and rejects artifacts that name gated operations even in
-   negation.
+   tool rather than `kubectl`. Describe only inspection and
+   evidence-gathering steps; never instruct state-changing operations.
 2. `tool_code` — one self-contained Python module implementing
    `def run(signal: dict) -> dict`. It receives the raw signal payload and
    returns a JSON-serializable judgment dict with at least the keys
@@ -478,6 +475,8 @@ _BLOCKED_INSTRUCTIONS = (
 
 def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[str]:
     """Blocking structural findings for a built or adopted artifact."""
+    from ravn.context.autonomy import unnegated_prose_mentions  # noqa: PLC0415
+
     findings: list[str] = []
     if build.artifact_type != "ravn_skill_tool":
         findings.append(f"unexpected artifact type: {build.artifact_type}")
@@ -485,10 +484,11 @@ def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[
     if capability_marker not in build.skill_content:
         findings.append("missing capability marker")
     lower = build.skill_content.lower()
-    for blocked in _BLOCKED_INSTRUCTIONS:
-        if blocked in lower:
-            findings.append(f"blocked operation mentioned: {blocked}")
-    if "kubectl" in lower and "kubernetes_inspect" not in lower:
+    # Negation-aware: "never run kubectl delete" is a disclaimer, not an
+    # instruction, and must not block an otherwise safe artifact.
+    for blocked in sorted(unnegated_prose_mentions(lower, _BLOCKED_INSTRUCTIONS)):
+        findings.append(f"blocked operation mentioned: {blocked}")
+    if unnegated_prose_mentions(lower, ("kubectl",)) and "kubernetes_inspect" not in lower:
         findings.append("unavailable runtime dependency: kubectl; use kubernetes_inspect")
     if build.has_tool_implementation:
         findings.extend(
