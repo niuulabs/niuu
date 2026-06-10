@@ -13,7 +13,7 @@ from ravn.valkyrie_evolution.resident_learning import (
 from ravn.valkyrie_evolution.tool_runtime import tool_path_for_skill
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
-from sleipnir.domain.events import SleipnirEvent
+from tests.ravn.fixtures.fakes import BusRecorder
 
 SKILL_NAME = "valkyrie-inspect-kubernetes-pod-oomkilled"
 CAPABILITY = "inspect.kubernetes.pod.oomkilled"
@@ -78,27 +78,14 @@ def _signal(n: int = 1) -> OperationalSignal:
     )
 
 
-class _Recorder:
-    def __init__(self, bus: InProcessBus) -> None:
-        self._bus = bus
-        self.events: list[SleipnirEvent] = []
-
-    async def __call__(self, event: SleipnirEvent) -> None:
-        self.events.append(event)
-
-    async def of_type(self, event_type: str) -> list[SleipnirEvent]:
-        await self._bus.flush()
-        return [event for event in self.events if event.event_type == event_type]
-
-
-async def _peer(tmp_path, *, threshold: int = 3) -> tuple[ResidentLearningRuntime, _Recorder]:
+async def _peer(tmp_path, *, threshold: int = 3) -> tuple[ResidentLearningRuntime, BusRecorder]:
     skill_dir = tmp_path / "skills"
     skills = SkillManagementRegistry(
         FileSkillRegistry(skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False),
         metadata_path=tmp_path / "skill_management.json",
     )
     bus = InProcessBus()
-    recorder = _Recorder(bus)
+    recorder = BusRecorder(bus)
     await bus.subscribe(["*"], recorder)
     runtime = ResidentLearningRuntime(
         identity=ResidentLearningIdentity(

@@ -182,3 +182,31 @@ class SequentialTool(ToolPort):
     async def execute(self, input: dict) -> ToolResult:
         self.order.append(self._name)
         return ToolResult(tool_call_id="", content=self._name)
+
+
+class ManualClock:
+    """Deterministic monotonic clock for time-travel in tests."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class BusRecorder:
+    """Capture Sleipnir events from an in-process bus and filter by type."""
+
+    def __init__(self, bus) -> None:
+        self._bus = bus
+        self.events: list = []
+
+    async def __call__(self, event) -> None:
+        self.events.append(event)
+
+    async def of_type(self, event_type: str) -> list:
+        await self._bus.flush()
+        return [event for event in self.events if event.event_type == event_type]

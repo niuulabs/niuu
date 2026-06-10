@@ -533,53 +533,7 @@ class ResidentLearningRuntime:
         )
         await self._publish_odin_decision(artifact, review)
 
-        installed_skill_name = ""
-        if not _review_allows_install(review, self.identity.autonomy_mode):
-            await self._publish_evolution_event(
-                "valkyrie.evolution.held",
-                f"Held resident skill {build.skill_name}",
-                {
-                    "skill_name": build.skill_name,
-                    "review_outcome": review.outcome,
-                    "findings": list(review.findings),
-                },
-                signal.signal_id,
-                urgency=0.6,
-            )
-        else:
-            canary = await self._canary_artifact(build, dict(signal.payload))
-            if not canary.ok:
-                await self._publish_evolution_event(
-                    "valkyrie.evolution.held",
-                    f"Held resident skill {build.skill_name}: canary failed",
-                    {
-                        "skill_name": build.skill_name,
-                        "review_outcome": review.outcome,
-                        "canary_passed": False,
-                        "canary_error": canary.error,
-                    },
-                    signal.signal_id,
-                    urgency=0.6,
-                )
-            else:
-                installed_skill_name = await self._install_skill(artifact, build)
-                authorization_rationale = _install_authorization_rationale(
-                    review,
-                    self.identity.autonomy_mode,
-                )
-                await self._publish_activation(artifact, installed_skill_name, review)
-                await self._publish_adoption(
-                    artifact,
-                    ResidentLearningDecision(
-                        "adopted",
-                        f"Installed {installed_skill_name}: {authorization_rationale}",
-                        installed_skill_name=installed_skill_name,
-                        review=review,
-                        relevant=True,
-                        canary_passed=True,
-                    ),
-                )
-                await self._publish_flock_learning_proposal(artifact, build, review)
+        installed_skill_name = await self._gate_and_install_build(artifact, build, review, signal)
 
         await self._publish_dream_event(
             "valkyrie.dream.completed",
@@ -606,6 +560,67 @@ class ResidentLearningRuntime:
             "skillName": installed_skill_name,
             "dreamId": dream_id,
         }
+
+    async def _gate_and_install_build(
+        self,
+        artifact: ResidentLearningArtifact,
+        build: BuildResult,
+        review: ReviewResult,
+        signal: OperationalSignal,
+    ) -> str:
+        """Review-gate, canary, install, and announce a self-built skill.
+
+        Returns the installed skill name, or '' when the build was held.
+        """
+        if not _review_allows_install(review, self.identity.autonomy_mode):
+            await self._publish_evolution_event(
+                "valkyrie.evolution.held",
+                f"Held resident skill {build.skill_name}",
+                {
+                    "skill_name": build.skill_name,
+                    "review_outcome": review.outcome,
+                    "findings": list(review.findings),
+                },
+                signal.signal_id,
+                urgency=0.6,
+            )
+            return ""
+
+        canary = await self._canary_artifact(build, dict(signal.payload))
+        if not canary.ok:
+            await self._publish_evolution_event(
+                "valkyrie.evolution.held",
+                f"Held resident skill {build.skill_name}: canary failed",
+                {
+                    "skill_name": build.skill_name,
+                    "review_outcome": review.outcome,
+                    "canary_passed": False,
+                    "canary_error": canary.error,
+                },
+                signal.signal_id,
+                urgency=0.6,
+            )
+            return ""
+
+        installed_skill_name = await self._install_skill(artifact, build)
+        authorization_rationale = _install_authorization_rationale(
+            review,
+            self.identity.autonomy_mode,
+        )
+        await self._publish_activation(artifact, installed_skill_name, review)
+        await self._publish_adoption(
+            artifact,
+            ResidentLearningDecision(
+                "adopted",
+                f"Installed {installed_skill_name}: {authorization_rationale}",
+                installed_skill_name=installed_skill_name,
+                review=review,
+                relevant=True,
+                canary_passed=True,
+            ),
+        )
+        await self._publish_flock_learning_proposal(artifact, build, review)
+        return installed_skill_name
 
     async def _publish_capability_gap(
         self,

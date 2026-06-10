@@ -56,6 +56,24 @@ class JsonlEventLedger(EventLedgerPort):
         return list(self._events)
 
 
+def _write_build_artifacts(
+    artifact_dir: Path | None,
+    *,
+    skill_name: str,
+    skill_content: str,
+    tool_code: str,
+) -> tuple[str, str]:
+    """Persist a built skill + tool pair; return their paths ('' when not written)."""
+    if artifact_dir is None:
+        return "", ""
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact = artifact_dir / f"{skill_name}.md"
+    artifact.write_text(skill_content, encoding="utf-8")
+    tool_artifact = artifact_dir / f"{skill_name}.py"
+    tool_artifact.write_text(tool_code, encoding="utf-8")
+    return str(artifact), str(tool_artifact)
+
+
 class TemplateToolBuilder(EvolutionBuilderPort):
     """Render a deterministic skill and read-only probe from gap evidence."""
 
@@ -77,26 +95,20 @@ class TemplateToolBuilder(EvolutionBuilderPort):
             capability_name=gap.capability_name,
             fields=interesting_fields,
         )
-        description = f"Inspect signals requiring {gap.capability_name}."
-        artifact_path = ""
-        tool_path = ""
-        if self.artifact_dir is not None:
-            self.artifact_dir.mkdir(parents=True, exist_ok=True)
-            artifact = self.artifact_dir / f"{skill_name}.md"
-            artifact.write_text(content, encoding="utf-8")
-            artifact_path = str(artifact)
-            tool_artifact = self.artifact_dir / f"{skill_name}.py"
-            tool_artifact.write_text(tool_code, encoding="utf-8")
-            tool_path = str(tool_artifact)
+        artifact_path, tool_path = _write_build_artifacts(
+            self.artifact_dir,
+            skill_name=skill_name,
+            skill_content=content,
+            tool_code=tool_code,
+        )
         return BuildResult(
             request_id=request.request_id,
             skill_name=skill_name,
             skill_content=content,
-            description=description,
+            description=f"Inspect signals requiring {gap.capability_name}.",
             artifact_type="ravn_skill_tool",
             artifact_path=artifact_path,
             tool_code=tool_code,
-            tool_entry_point="run",
             tool_path=tool_path,
             evidence={
                 "capability_name": gap.capability_name,
@@ -150,16 +162,12 @@ class AgentToolBuilder(EvolutionBuilderPort):
             safety_class=gap.safety_class,
         )
 
-        artifact_path = ""
-        tool_path = ""
-        if self.artifact_dir is not None:
-            self.artifact_dir.mkdir(parents=True, exist_ok=True)
-            artifact = self.artifact_dir / f"{skill_name}.md"
-            artifact.write_text(skill_content, encoding="utf-8")
-            artifact_path = str(artifact)
-            tool_artifact = self.artifact_dir / f"{skill_name}.py"
-            tool_artifact.write_text(tool_code, encoding="utf-8")
-            tool_path = str(tool_artifact)
+        artifact_path, tool_path = _write_build_artifacts(
+            self.artifact_dir,
+            skill_name=skill_name,
+            skill_content=skill_content,
+            tool_code=tool_code,
+        )
         return BuildResult(
             request_id=request.request_id,
             skill_name=skill_name,
@@ -168,7 +176,6 @@ class AgentToolBuilder(EvolutionBuilderPort):
             artifact_type="ravn_skill_tool",
             artifact_path=artifact_path,
             tool_code=tool_code,
-            tool_entry_point="run",
             tool_path=tool_path,
             evidence={
                 "capability_name": gap.capability_name,
@@ -214,8 +221,11 @@ class PolicyCourtReviewer(EvolutionReviewPort):
         reviewer: str = "odin:policy-court",
         audit_sink: Any | None = None,
     ) -> None:
+        from ravn.context.autonomy import AutonomyPolicy  # noqa: PLC0415
+
         self.reviewer = reviewer
         self._audit_sink = audit_sink
+        self._policy = AutonomyPolicy()
 
     async def review(
         self,
@@ -224,10 +234,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
         build: BuildResult,
         autonomy_mode: str,
     ) -> ReviewResult:
-        from ravn.context.autonomy import (  # noqa: PLC0415
-            AutonomyPolicy,
-            SelfImprovementProposal,
-        )
+        from ravn.context.autonomy import SelfImprovementProposal  # noqa: PLC0415
 
         blocking = _structural_findings(request, build)
         proposal = SelfImprovementProposal(
@@ -242,7 +249,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
             mode=_policy_mode(autonomy_mode),
             risk_class=_risk_class(request.gap.safety_class),
         )
-        decision = AutonomyPolicy().decide(proposal)
+        decision = self._policy.decide(proposal)
 
         findings = list(blocking)
         if decision.decision != "allow":

@@ -11,31 +11,7 @@ from ravn.valkyrie_evolution.resident_learning import (
 from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
-from sleipnir.domain.events import SleipnirEvent
-
-
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class _Recorder:
-    def __init__(self, bus: InProcessBus) -> None:
-        self._bus = bus
-        self.events: list[SleipnirEvent] = []
-
-    async def __call__(self, event: SleipnirEvent) -> None:
-        self.events.append(event)
-
-    async def of_type(self, event_type: str) -> list[SleipnirEvent]:
-        await self._bus.flush()
-        return [event for event in self.events if event.event_type == event_type]
+from tests.ravn.fixtures.fakes import BusRecorder, ManualClock
 
 
 def _identity(autonomy_mode: str = "autonomous") -> ResidentLearningIdentity:
@@ -63,11 +39,11 @@ async def _machine(
     autonomy_mode: str = "autonomous",
     skills: SkillManagementRegistry | None = None,
     resident_learning: ResidentLearningRuntime | None = None,
-) -> tuple[ResidentWakefulness, _Recorder, _Clock]:
+) -> tuple[ResidentWakefulness, BusRecorder, ManualClock]:
     bus = InProcessBus()
-    recorder = _Recorder(bus)
+    recorder = BusRecorder(bus)
     await bus.subscribe(["*"], recorder)
-    clock = _Clock()
+    clock = ManualClock()
     machine = ResidentWakefulness(
         identity=_identity(autonomy_mode),
         skills=skills or _skills(tmp_path),
@@ -84,7 +60,7 @@ async def _machine(
     return machine, recorder, clock
 
 
-async def _transitions(recorder: _Recorder) -> list[tuple[str, str]]:
+async def _transitions(recorder: BusRecorder) -> list[tuple[str, str]]:
     events = await recorder.of_type(registry.VALKYRIE_STATE_CHANGED)
     return [(e.payload["previous_state"], e.payload["new_state"]) for e in events]
 
