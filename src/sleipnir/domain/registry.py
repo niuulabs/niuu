@@ -315,6 +315,9 @@ SYSTEM_ERROR: str = "system.error"
 #: A metric snapshot was emitted for observability.
 SYSTEM_METRIC: str = "system.metric"
 
+#: A message that could not be processed was dead-lettered with its raw bytes.
+SYSTEM_DLQ_MESSAGE: str = "system.dlq.message"
+
 # ---------------------------------------------------------------------------
 # mimir — Mimir knowledge-base events
 # ---------------------------------------------------------------------------

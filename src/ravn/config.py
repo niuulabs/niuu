@@ -1614,6 +1614,10 @@ class MeshNatsConfig(BaseModel):
         default="",
         description="Optional durable consumer group for load-sharing resident agents.",
     )
+    publish_timeout_s: float = Field(
+        default=10.0,
+        description="Hard deadline for one JetStream publish before raising.",
+    )
     replay_from_sequence: int | None = Field(
         default=None,
         description="Optional JetStream sequence to replay from on startup.",

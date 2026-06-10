@@ -29,6 +29,7 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "connect_timeout_s": 10.0,
         "max_reconnect_attempts": 60,
         "ensure_stream": True,
+        "publish_timeout_s": 10.0,
         "tls_ca_file": "",
         "tls_cert_file": "",
         "tls_key_file": "",

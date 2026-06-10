@@ -71,7 +71,7 @@ import logging
 import ssl
 from collections import deque
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,7 @@ from sleipnir.adapters._subscriber_support import (
     enqueue_with_overflow,
 )
 from sleipnir.adapters.serialization import deserialize, serialize
+from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent, match_event_type
 from sleipnir.ports.events import EventHandler, SleipnirPublisher, SleipnirSubscriber, Subscription
 
@@ -118,6 +119,9 @@ DEFAULT_CONNECT_TIMEOUT_S = 10.0
 #: Maximum reconnect attempts before giving up (-1 = unlimited).
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 60
 
+#: Hard deadline for one JetStream publish (seconds).
+DEFAULT_PUBLISH_TIMEOUT_S = 10.0
+
 
 def _build_tls_context(
     *,
@@ -131,6 +135,11 @@ def _build_tls_context(
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
     if tls_insecure_skip_verify:
+        logger.warning(
+            "NATS TLS certificate verification is DISABLED "
+            "(tls_insecure_skip_verify=true) — connections are vulnerable to "
+            "man-in-the-middle attacks; never use this outside development"
+        )
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
     if tls_cert_file or tls_key_file:
@@ -341,12 +350,18 @@ async def _ensure_stream(
         try:
             await js.add_stream(config=config)
             logger.info("NATS stream %r created", stream_name)
-        except Exception:
-            logger.warning(
-                "NATS stream %r could not be created; it may already exist",
-                stream_name,
-                exc_info=True,
-            )
+        except Exception as create_exc:
+            # add_stream may legitimately lose a creation race; only continue
+            # when the stream verifiably exists. Anything else fails loudly at
+            # the cause instead of cryptically at first publish.
+            try:
+                await js.stream_info(stream_name)
+                logger.debug("NATS stream %r created concurrently", stream_name)
+            except Exception as info_exc:
+                raise RuntimeError(
+                    f"NATS stream {stream_name!r} does not exist and could not "
+                    f"be created: {create_exc}"
+                ) from info_exc
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +425,7 @@ class NatsPublisher(SleipnirPublisher):
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         ensure_stream: bool = True,
+        publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
@@ -433,6 +449,7 @@ class NatsPublisher(SleipnirPublisher):
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
         self._ensure_stream = ensure_stream
+        self._publish_timeout_s = publish_timeout_s
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
             tls_cert_file=tls_cert_file,
@@ -506,10 +523,22 @@ class NatsPublisher(SleipnirPublisher):
             raise RuntimeError("NatsPublisher is not started. Call start() first.")
         subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
         payload = serialize(event)
-        await self._js.publish(subject, payload)
+        await self._publish_with_timeout(subject, payload)
         for additional_subject in _additional_nats_subjects(event):
             if additional_subject != subject:
-                await self._js.publish(additional_subject, payload)
+                await self._publish_with_timeout(additional_subject, payload)
+
+    async def _publish_with_timeout(self, subject: str, payload: bytes) -> None:
+        """Publish with a hard deadline so a slow broker cannot hang callers."""
+        try:
+            await asyncio.wait_for(
+                self._js.publish(subject, payload),
+                timeout=self._publish_timeout_s,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"NATS publish to {subject!r} timed out after {self._publish_timeout_s}s"
+            ) from exc
 
     async def publish_batch(self, events: list[SleipnirEvent]) -> None:
         for event in events:
@@ -729,6 +758,17 @@ class NatsSubscriber(SleipnirSubscriber):
         self._nats_subs: list[Any] = []
         self._subscriptions: list[_BaseSubscription] = []
         self._running = False
+        self._stats: dict[str, int] = {
+            "ack_failures": 0,
+            "decode_failures": 0,
+            "dlq_published": 0,
+            "dlq_publish_failures": 0,
+            "ring_buffer_overflows": 0,
+        }
+
+    def stats(self) -> dict[str, int]:
+        """Counters for the failure paths this subscriber has survived."""
+        return dict(self._stats)
 
     async def start(self) -> None:
         """Connect to NATS and ensure the JetStream stream exists."""
@@ -849,12 +889,17 @@ class NatsSubscriber(SleipnirSubscriber):
                 return
             event = _decode_nats_message(msg.data)
             if event is None:
+                self._stats["decode_failures"] += 1
                 return
             if event.ttl is not None and event.ttl <= 0:
                 return
             if not any(match_event_type(p, event.event_type) for p in patterns):
                 return
-            await enqueue_with_overflow(sub._queue, event, self._ring_buffer_depth, logger)
+            overflowed = await enqueue_with_overflow(
+                sub._queue, event, self._ring_buffer_depth, logger
+            )
+            if overflowed:
+                self._stats["ring_buffer_overflows"] += 1
 
         return await self._client.subscribe(subject, cb=_on_message)
 
@@ -874,15 +919,30 @@ class NatsSubscriber(SleipnirSubscriber):
                     return
                 event = _decode_nats_message(msg.data)
                 if event is None:
+                    self._stats["decode_failures"] += 1
+                    await self._publish_dlq(msg, reason="deserialization failed")
                     return
                 if event.ttl is not None and event.ttl <= 0:
                     return
                 if not any(match_event_type(p, event.event_type) for p in patterns):
                     return
-                await enqueue_with_overflow(sub._queue, event, self._ring_buffer_depth, logger)
+                overflowed = await enqueue_with_overflow(
+                    sub._queue, event, self._ring_buffer_depth, logger
+                )
+                if overflowed:
+                    self._stats["ring_buffer_overflows"] += 1
             finally:
-                with suppress(Exception):
+                try:
                     await msg.ack()
+                except Exception:
+                    self._stats["ack_failures"] += 1
+                    logger.warning(
+                        "NatsSubscriber: ack failed for subject=%s "
+                        "(message will be redelivered); ack_failures=%d",
+                        getattr(msg, "subject", "?"),
+                        self._stats["ack_failures"],
+                        exc_info=True,
+                    )
 
         kwargs: dict[str, Any] = {"stream": stream_name or self._stream_name, "config": config}
         if self._consumer_group is not None:
@@ -891,6 +951,50 @@ class NatsSubscriber(SleipnirSubscriber):
             kwargs["queue"] = durable
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)
+
+    async def _publish_dlq(self, msg: Any, *, reason: str) -> None:
+        """Dead-letter an unprocessable message instead of dropping it.
+
+        The record is itself a valid Sleipnir event (``system.dlq.message``)
+        carrying the raw bytes base64-encoded, published under the configured
+        prefix so the main stream retains it. DLQ records are never
+        dead-lettered again — a poison DLQ entry is dropped with an error log.
+        """
+        subject = str(getattr(msg, "subject", "") or "")
+        dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, self._subject_prefix)
+        if subject == dlq_subject:
+            logger.error(
+                "NatsSubscriber: DLQ record on %s is itself unprocessable; dropping",
+                subject,
+            )
+            return
+        import base64  # noqa: PLC0415
+
+        record = SleipnirEvent(
+            event_type=registry.SYSTEM_DLQ_MESSAGE,
+            source="sleipnir:nats-subscriber",
+            payload={
+                "reason": reason,
+                "original_subject": subject,
+                "stream": self._stream_name,
+                "raw_base64": base64.b64encode(bytes(msg.data)).decode("ascii"),
+                "raw_bytes": len(msg.data),
+            },
+            summary=f"Dead-lettered message from {subject or 'unknown subject'}: {reason}",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+        )
+        try:
+            await self._js.publish(dlq_subject, serialize(record))
+            self._stats["dlq_published"] += 1
+        except Exception:
+            self._stats["dlq_publish_failures"] += 1
+            logger.exception(
+                "NatsSubscriber: failed to dead-letter message from %s; "
+                "raw payload is lost after ack",
+                subject,
+            )
 
     def _build_consumer_config(self) -> Any:
         """Build the :class:`~nats.js.api.ConsumerConfig` for this subscriber.
@@ -957,6 +1061,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         ensure_stream: bool = True,
+        publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
@@ -983,6 +1088,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             connect_timeout_s=connect_timeout_s,
             max_reconnect_attempts=max_reconnect_attempts,
             ensure_stream=ensure_stream,
+            publish_timeout_s=publish_timeout_s,
             tls_ca_file=tls_ca_file,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
@@ -1034,6 +1140,10 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         """Graceful shutdown: stop subscriber first, then publisher."""
         await self._subscriber.stop()
         await self._publisher.stop()
+
+    def stats(self) -> dict[str, int]:
+        """Failure-path counters from the subscriber side of the transport."""
+        return self._subscriber.stats()
 
     async def __aenter__(self) -> NatsTransport:
         await self.start()

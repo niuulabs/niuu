@@ -4179,6 +4179,7 @@ def _resolve_transport_kwargs(
             "connect_timeout_s": nats_cfg.connect_timeout_s,
             "max_reconnect_attempts": nats_cfg.max_reconnect_attempts,
             "ensure_stream": nats_cfg.ensure_stream,
+            "publish_timeout_s": nats_cfg.publish_timeout_s,
             "tls_ca_file": nats_cfg.tls_ca_file,
             "tls_cert_file": nats_cfg.tls_cert_file,
             "tls_key_file": nats_cfg.tls_key_file,
