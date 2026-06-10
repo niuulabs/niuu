@@ -279,3 +279,28 @@ async def test_capabilities() -> None:
     assert caps.session_resume is True
     assert caps.interrupt is False
     assert caps.cli_websocket is False
+
+
+def test_seeded_resume_id_makes_first_spawn_resume() -> None:
+    """An imported session id is passed as ``--resume`` on the very first spawn."""
+    transport = PersistentSubprocessTransport(
+        "/tmp",
+        system_prompt="ignored when resuming",
+        resume_session_id="2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+    )
+
+    cmd = transport._build_command()
+
+    resume_index = cmd.index("--resume")
+    assert cmd[resume_index + 1] == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
+    assert "--append-system-prompt" not in cmd
+    assert transport.session_id == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
+
+
+def test_no_resume_flag_without_seed() -> None:
+    transport = PersistentSubprocessTransport("/tmp", system_prompt="be helpful")
+
+    cmd = transport._build_command()
+
+    assert "--resume" not in cmd
+    assert "--append-system-prompt" in cmd
