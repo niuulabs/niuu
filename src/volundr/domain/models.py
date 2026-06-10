@@ -416,6 +416,16 @@ class Session(BaseModel):
         default="session",
         description="Workload type used to launch the session",
     )
+    origin: str = Field(
+        default="volundr",
+        max_length=50,
+        description="Where the session originated (volundr, claude, codex)",
+    )
+    external_session_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Native CLI session/thread id for imported sessions",
+    )
 
     model_config = {"frozen": False}
 
@@ -503,6 +513,52 @@ class Session(BaseModel):
                 "updated_at": now,
             }
         )
+
+
+class ExternalSessionRecord(BaseModel):
+    """A CLI session discovered outside Volundr (Claude Code, Codex, ...).
+
+    External sessions live in the harness's own on-disk store (e.g.
+    ``~/.claude/projects`` or ``~/.codex/sessions``). They can be imported
+    into Volundr, which creates a stopped Session that resumes the native
+    session when started.
+    """
+
+    provider: str = Field(description="Provider key that discovered the session")
+    harness: str = Field(description="CLI harness that owns the session (claude, codex)")
+    external_id: str = Field(description="Native session/thread identifier")
+    workspace_path: str = Field(
+        default="",
+        description="Working directory the session ran in",
+    )
+    title: str = Field(
+        default="",
+        description="Short human-readable summary (first prompt or similar)",
+    )
+    model: str = Field(
+        default="",
+        description="Model the session used, when known",
+    )
+    created_at: datetime | None = Field(
+        default=None,
+        description="When the session started, when known",
+    )
+    updated_at: datetime | None = Field(
+        default=None,
+        description="Last activity in the session store",
+    )
+    live: bool = Field(
+        default=False,
+        description="Whether the session appears to be actively running",
+    )
+    workspace_exists: bool = Field(
+        default=False,
+        description="Whether the workspace directory still exists on disk",
+    )
+    imported_session_id: UUID | None = Field(
+        default=None,
+        description="Volundr session id when this session was already imported",
+    )
 
 
 @dataclass(frozen=True)

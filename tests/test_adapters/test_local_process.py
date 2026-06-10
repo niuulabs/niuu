@@ -255,6 +255,34 @@ class TestSkuldEnv:
         assert env["SKULD__TELEGRAM__TOPIC_MODE"] == "fixed_topic"
         assert env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] == "77"
 
+    def test_build_env_includes_resume_session_id(self) -> None:
+        """Imported sessions thread their native CLI session id to Skuld."""
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "claude",
+                    "resumeSessionId": "2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert env["SKULD__SESSION__RESUME_SESSION_ID"] == (
+            "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
+        )
+
+    def test_build_env_omits_resume_session_id_when_absent(self) -> None:
+        spec = SessionSpec(
+            values={"broker": {"cliType": "claude"}},
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__SESSION__RESUME_SESSION_ID" not in env
+
     def test_build_env_includes_localized_mcp_servers(self) -> None:
         spec = SessionSpec(
             values={
