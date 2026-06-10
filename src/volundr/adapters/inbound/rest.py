@@ -47,6 +47,7 @@ from volundr.domain.services import (
     ChronicleService,
     ExternalSessionAlreadyImportedError,
     ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
     ExternalSessionProviderNotFoundError,
     ExternalSessionService,
     ExternalSessionWorkspaceError,
@@ -456,6 +457,9 @@ class ExternalSessionResponse(BaseModel):
     updated_at: str | None = Field(description="ISO 8601 last-activity timestamp")
     live: bool = Field(description="Whether the session appears to be actively running")
     workspace_exists: bool = Field(description="Whether the workspace still exists on disk")
+    workspace_allowed: bool = Field(
+        description="Whether the workspace passes the allowed mount prefix policy",
+    )
     imported_session_id: UUID | None = Field(
         description="Volundr session id when already imported",
     )
@@ -474,6 +478,7 @@ class ExternalSessionResponse(BaseModel):
             updated_at=record.updated_at.isoformat() if record.updated_at else None,
             live=record.live,
             workspace_exists=record.workspace_exists,
+            workspace_allowed=record.workspace_allowed,
             imported_session_id=record.imported_session_id,
         )
 
@@ -1141,6 +1146,7 @@ def create_router(
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
             "mini_mode": settings.local_mounts.mini_mode,
+            "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
         }
 
     @router.get("/repos/branches", response_model=list[str], tags=["Repositories"])
@@ -1356,6 +1362,11 @@ def create_router(
         except ExternalSessionAlreadyImportedError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
+        except ExternalSessionPathNotAllowedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail=str(e),
             )
         except ExternalSessionWorkspaceError as e:

@@ -749,6 +749,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     external_session_providers,
                     repository,
                     session_service,
+                    allowed_workspace_prefixes=settings.local_mounts.allowed_prefixes,
+                    allow_root_workspace=settings.local_mounts.allow_root_mount,
                 )
 
             # Create and include routers

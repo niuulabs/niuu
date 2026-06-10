@@ -652,6 +652,10 @@ class LocalProcessPodManager(PodManager):
             workspace = Path(session.source.local_path)
             if not workspace.is_dir():
                 raise RuntimeError(f"local path {workspace!r} is not a directory")
+            if not self._is_allowed_mount(workspace):
+                raise RuntimeError(
+                    f"local path {workspace!r} is not under any allowed mount prefix"
+                )
             self._write_claude_md(workspace, spec)
             return workspace
         if isinstance(session.source, GitSource) and session.source.repo:

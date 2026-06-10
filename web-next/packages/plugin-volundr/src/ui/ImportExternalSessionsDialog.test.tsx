@@ -24,6 +24,7 @@ function makeExternalSession(overrides: Partial<ExternalSession> = {}): External
     updatedAt: '2026-06-01T09:00:00Z',
     live: false,
     workspaceExists: true,
+    workspaceAllowed: true,
     importedSessionId: null,
     ...overrides,
   };
@@ -142,6 +143,26 @@ describe('ImportExternalSessionsDialog', () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute('title', 'Cannot import: workspace directory no longer exists');
     expect(screen.getByTestId('external-session-missing-workspace-ext-1')).toBeInTheDocument();
+  });
+
+  it('disables the import button when the workspace violates the mount policy', async () => {
+    const volundr = createMockVolundrService();
+    volundr.listExternalSessions = vi
+      .fn()
+      .mockResolvedValue([makeExternalSession({ workspaceAllowed: false })]);
+
+    wrap(volundr);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('external-session-import-ext-1')).toBeInTheDocument(),
+    );
+    const button = screen.getByTestId('external-session-import-ext-1');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Cannot import: workspace is outside the allowed mount prefixes',
+    );
+    expect(screen.getByTestId('external-session-workspace-not-allowed-ext-1')).toBeInTheDocument();
   });
 
   it('shows an imported state instead of the button when already imported', async () => {

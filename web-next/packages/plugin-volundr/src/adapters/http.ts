@@ -151,6 +151,7 @@ type ExternalSessionPayload = {
   updated_at?: string | null;
   live?: boolean;
   workspace_exists?: boolean;
+  workspace_allowed?: boolean;
   imported_session_id?: string | null;
 };
 
@@ -519,6 +520,7 @@ function normalizeExternalSession(payload: ExternalSessionPayload): ExternalSess
     updatedAt: payload.updated_at ?? null,
     live: Boolean(payload.live),
     workspaceExists: Boolean(payload.workspace_exists),
+    workspaceAllowed: payload.workspace_allowed ?? true,
     importedSessionId: payload.imported_session_id ?? null,
   };
 }

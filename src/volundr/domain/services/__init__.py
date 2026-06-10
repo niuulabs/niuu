@@ -10,6 +10,7 @@ from .chronicle import ChronicleNotFoundError, ChronicleService
 from .external_sessions import (
     ExternalSessionAlreadyImportedError,
     ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
     ExternalSessionProviderNotFoundError,
     ExternalSessionService,
     ExternalSessionWorkspaceError,
@@ -43,6 +44,7 @@ __all__ = [
     "ChronicleNotFoundError",
     "ExternalSessionAlreadyImportedError",
     "ExternalSessionNotFoundError",
+    "ExternalSessionPathNotAllowedError",
     "ExternalSessionProviderNotFoundError",
     "ExternalSessionWorkspaceError",
     "LaunchSpecDuplicateNameError",

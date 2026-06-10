@@ -16,6 +16,7 @@ from volundr.domain.services import SessionService
 from volundr.domain.services.external_sessions import (
     ExternalSessionAlreadyImportedError,
     ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
     ExternalSessionProviderNotFoundError,
     ExternalSessionService,
     ExternalSessionWorkspaceError,
@@ -238,6 +239,94 @@ class TestImportSession:
 
         with pytest.raises(ExternalSessionWorkspaceError):
             await service.import_session("claude-code", "claude-1")
+
+
+class TestMountPrefixPolicy:
+    async def test_import_outside_allowed_prefixes_raises(
+        self, repository, session_service, tmp_path: Path
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        provider = FakeProvider(
+            "claude-code",
+            "claude",
+            [_record("claude-code", "claude", "claude-1", outside)],
+        )
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            allowed_workspace_prefixes=[str(allowed)],
+        )
+
+        with pytest.raises(ExternalSessionPathNotAllowedError):
+            await service.import_session("claude-code", "claude-1")
+
+    async def test_import_under_allowed_prefix_succeeds(
+        self, repository, session_service, tmp_path: Path
+    ) -> None:
+        workspace = tmp_path / "allowed" / "ws"
+        workspace.mkdir(parents=True)
+        provider = FakeProvider(
+            "claude-code",
+            "claude",
+            [_record("claude-code", "claude", "claude-1", workspace)],
+        )
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            allowed_workspace_prefixes=[str(tmp_path / "allowed")],
+        )
+
+        session = await service.import_session("claude-code", "claude-1")
+
+        assert session.external_session_id == "claude-1"
+
+    async def test_listing_annotates_workspace_allowed(
+        self, repository, session_service, tmp_path: Path
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        provider = FakeProvider(
+            "claude-code",
+            "claude",
+            [
+                _record("claude-code", "claude", "claude-ok", allowed),
+                _record("claude-code", "claude", "claude-denied", outside),
+            ],
+        )
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            allowed_workspace_prefixes=[str(allowed)],
+        )
+
+        records = await service.list_external_sessions()
+
+        allowed_map = {r.external_id: r.workspace_allowed for r in records}
+        assert allowed_map == {"claude-ok": True, "claude-denied": False}
+
+    async def test_empty_prefixes_allow_all(
+        self, repository, session_service, tmp_path: Path
+    ) -> None:
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        provider = FakeProvider(
+            "claude-code",
+            "claude",
+            [_record("claude-code", "claude", "claude-1", workspace)],
+        )
+        service = ExternalSessionService([provider], repository, session_service)
+
+        records = await service.list_external_sessions()
+
+        assert records[0].workspace_allowed is True
 
 
 class TestExternalResumeOverlay:

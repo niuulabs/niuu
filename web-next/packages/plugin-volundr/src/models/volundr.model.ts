@@ -185,6 +185,8 @@ export interface ExternalSession {
   updatedAt: string | null;
   live: boolean;
   workspaceExists: boolean;
+  /** Whether the workspace passes the server's allowed mount prefix policy. */
+  workspaceAllowed: boolean;
   /** Volundr session id when the session has already been imported. */
   importedSessionId: string | null;
 }

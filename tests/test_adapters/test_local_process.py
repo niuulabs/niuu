@@ -538,6 +538,57 @@ class TestWorkspaceProvisioning:
         content = claude_md.read_text()
         assert "You are a helpful assistant." in content
 
+    async def test_local_mount_path_outside_allowed_prefixes_is_rejected(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        """Mini-mode local_path workspaces obey the allowed mount prefix policy."""
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="denied-local-mount",
+            source=LocalMountSource(local_path=str(outside)),
+        )
+
+        with pytest.raises(RuntimeError, match="allowed mount prefix"):
+            await manager._provision_workspace(session, default_spec)
+
+    async def test_local_mount_path_under_allowed_prefix_is_used(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        workspace_dir = allowed / "project"
+        workspace_dir.mkdir(parents=True)
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="allowed-local-mount",
+            source=LocalMountSource(local_path=str(workspace_dir)),
+        )
+
+        workspace = await manager._provision_workspace(session, default_spec)
+
+        assert workspace == workspace_dir
+
     async def test_git_source_local_path_uses_directory_directly(
         self,
         manager: LocalProcessPodManager,

@@ -169,6 +169,41 @@ class TestImportSession:
         response = client.post("/api/v1/forge/sessions/import", json=body)
         assert response.status_code == 409
 
+    def test_disallowed_workspace_returns_403(
+        self, repository, session_service, claude_record, tmp_path
+    ) -> None:
+        allowed_dir = tmp_path / "only-this"
+        allowed_dir.mkdir()
+        provider = FakeProvider("claude-code", "claude", [claude_record])
+        external_service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            allowed_workspace_prefixes=[str(allowed_dir)],
+        )
+        app = FastAPI()
+        app.include_router(
+            create_router(
+                session_service=session_service,
+                external_session_service=external_service,
+            )
+        )
+        client = TestClient(app)
+
+        listing = client.get("/api/v1/forge/external-sessions").json()
+        assert listing[0]["workspace_allowed"] is False
+
+        response = client.post(
+            "/api/v1/forge/sessions/import",
+            json={"provider": "claude-code", "external_id": claude_record.external_id},
+        )
+        assert response.status_code == 403
+        assert "allowed" in response.json()["detail"]
+
+    def test_workspace_allowed_in_listing_by_default(self, client) -> None:
+        listing = client.get("/api/v1/forge/external-sessions").json()
+        assert listing[0]["workspace_allowed"] is True
+
     def test_missing_workspace_returns_422(self, repository, session_service, tmp_path) -> None:
         record = ExternalSessionRecord(
             provider="claude-code",

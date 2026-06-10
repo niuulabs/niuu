@@ -54,6 +54,12 @@ function ExternalSessionRow({
   onImport: () => void;
 }) {
   const activityTs = externalSessionActivityTs(session);
+  const importable = session.workspaceExists && session.workspaceAllowed;
+  const importTitle = !session.workspaceExists
+    ? 'Cannot import: workspace directory no longer exists'
+    : !session.workspaceAllowed
+      ? 'Cannot import: workspace is outside the allowed mount prefixes'
+      : `Import ${externalSessionTitle(session)}`;
 
   return (
     <li
@@ -94,6 +100,14 @@ function ExternalSessionRow({
             workspace directory no longer exists
           </span>
         ) : null}
+        {session.workspaceExists && !session.workspaceAllowed ? (
+          <span
+            className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint"
+            data-testid={`external-session-workspace-not-allowed-${session.externalId}`}
+          >
+            workspace is outside the allowed mount prefixes
+          </span>
+        ) : null}
         {error ? (
           <span
             className="niuu:font-mono niuu:text-[10px] niuu:text-critical"
@@ -114,15 +128,11 @@ function ExternalSessionRow({
         <button
           type="button"
           onClick={onImport}
-          disabled={busy || !session.workspaceExists}
-          title={
-            session.workspaceExists
-              ? `Import ${externalSessionTitle(session)}`
-              : 'Cannot import: workspace directory no longer exists'
-          }
+          disabled={busy || !importable}
+          title={importTitle}
           className={cn(
             'niuu:mt-0.5 niuu:flex-shrink-0 niuu:rounded-md niuu:border niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:transition-colors',
-            session.workspaceExists
+            importable
               ? 'niuu:border-brand/40 niuu:bg-brand/10 niuu:text-brand niuu:hover:bg-brand/15'
               : 'niuu:border-border-subtle niuu:text-text-faint',
             'niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50',

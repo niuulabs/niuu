@@ -289,6 +289,7 @@ describe('__testables', () => {
       updatedAt: '2026-06-01T09:00:00Z',
       live: true,
       workspaceExists: true,
+      workspaceAllowed: true,
       importedSessionId: 'sess-9',
     });
 
@@ -310,8 +311,20 @@ describe('__testables', () => {
       updatedAt: null,
       live: false,
       workspaceExists: false,
+      workspaceAllowed: true,
       importedSessionId: null,
     });
+
+    expect(
+      normalizeExternalSession({
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-3',
+        workspace_path: '/etc/forbidden',
+        workspace_exists: true,
+        workspace_allowed: false,
+      }).workspaceAllowed,
+    ).toBe(false);
   });
 
   it('derives canonical base paths from forge, shared, niuu, and credentials variants', () => {

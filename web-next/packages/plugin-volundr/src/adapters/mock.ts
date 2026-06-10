@@ -1080,6 +1080,7 @@ const SEED_EXTERNAL_SESSIONS: ExternalSession[] = [
     updatedAt: '2026-06-01T09:30:00Z',
     live: true,
     workspaceExists: true,
+    workspaceAllowed: true,
     importedSessionId: null,
   },
   {
@@ -1093,6 +1094,21 @@ const SEED_EXTERNAL_SESSIONS: ExternalSession[] = [
     updatedAt: '2026-05-20T12:00:00Z',
     live: false,
     workspaceExists: false,
+    workspaceAllowed: true,
+    importedSessionId: null,
+  },
+  {
+    provider: 'claude-code',
+    harness: 'claude',
+    externalId: 'ext-claude-denied',
+    workspacePath: '/etc/forbidden',
+    title: 'session outside the mount allowlist',
+    model: 'claude-sonnet',
+    createdAt: '2026-05-28T10:00:00Z',
+    updatedAt: '2026-05-28T11:00:00Z',
+    live: false,
+    workspaceExists: true,
+    workspaceAllowed: false,
     importedSessionId: null,
   },
 ];
@@ -1245,6 +1261,9 @@ export function createMockVolundrService(): IVolundrService {
       }
       if (!external.workspaceExists) {
         throw new Error(`Workspace directory missing for ${externalId}`);
+      }
+      if (!external.workspaceAllowed) {
+        throw new Error(`Workspace for ${externalId} is outside the allowed mount prefixes`);
       }
       if (external.importedSessionId) {
         throw new Error(`External session ${externalId} already imported`);

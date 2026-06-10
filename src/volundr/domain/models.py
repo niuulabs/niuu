@@ -555,6 +555,10 @@ class ExternalSessionRecord(BaseModel):
         default=False,
         description="Whether the workspace directory still exists on disk",
     )
+    workspace_allowed: bool = Field(
+        default=True,
+        description="Whether the workspace passes the allowed mount prefix policy",
+    )
     imported_session_id: UUID | None = Field(
         default=None,
         description="Volundr session id when this session was already imported",

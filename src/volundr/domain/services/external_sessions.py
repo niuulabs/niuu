@@ -15,6 +15,7 @@ from volundr.domain.models import (
     Principal,
     Session,
 )
+from volundr.domain.mount_policy import is_host_path_allowed
 from volundr.domain.ports import ExternalSessionProvider, SessionRepository
 from volundr.domain.services.session import SessionService
 
@@ -58,6 +59,18 @@ class ExternalSessionWorkspaceError(Exception):
         )
 
 
+class ExternalSessionPathNotAllowedError(Exception):
+    """Raised when the external session's workspace violates the mount prefix policy."""
+
+    def __init__(self, external_id: str, workspace_path: str):
+        self.external_id = external_id
+        self.workspace_path = workspace_path
+        super().__init__(
+            f"Workspace for external session {external_id} is outside the allowed "
+            f"mount prefixes: {workspace_path!r}"
+        )
+
+
 class ExternalSessionService:
     """Lists external CLI sessions and imports them as Volundr sessions."""
 
@@ -66,10 +79,14 @@ class ExternalSessionService:
         providers: list[ExternalSessionProvider],
         repository: SessionRepository,
         session_service: SessionService,
+        allowed_workspace_prefixes: list[str] | None = None,
+        allow_root_workspace: bool = False,
     ):
         self._providers = {provider.name: provider for provider in providers}
         self._repository = repository
         self._session_service = session_service
+        self._allowed_workspace_prefixes = allowed_workspace_prefixes or []
+        self._allow_root_workspace = allow_root_workspace
 
     @property
     def provider_names(self) -> list[str]:
@@ -97,7 +114,12 @@ class ExternalSessionService:
 
         imported = await self._imported_index()
         annotated = [
-            record.model_copy(update={"imported_session_id": imported.get(record.external_id)})
+            record.model_copy(
+                update={
+                    "imported_session_id": imported.get(record.external_id),
+                    "workspace_allowed": self._workspace_allowed(record),
+                }
+            )
             for record in records
         ]
         annotated.sort(
@@ -136,6 +158,9 @@ class ExternalSessionService:
         if not record.workspace_exists:
             raise ExternalSessionWorkspaceError(record.external_id, record.workspace_path)
 
+        if not self._workspace_allowed(record):
+            raise ExternalSessionPathNotAllowedError(record.external_id, record.workspace_path)
+
         session_name = name or self._default_name(record)
         session = await self._session_service.create_session(
             name=session_name,
@@ -152,6 +177,16 @@ class ExternalSessionService:
             session.id,
         )
         return session
+
+    def _workspace_allowed(self, record: ExternalSessionRecord) -> bool:
+        """Apply the allowed mount prefix policy to the record's workspace."""
+        if not record.workspace_path:
+            return False
+        return is_host_path_allowed(
+            record.workspace_path,
+            self._allowed_workspace_prefixes,
+            allow_root_mount=self._allow_root_workspace,
+        )
 
     async def _imported_index(self) -> dict[str, UUID]:
         """Map external session id → Volundr session id for imported sessions."""
