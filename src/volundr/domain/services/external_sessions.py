@@ -17,7 +17,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.mount_policy import is_host_path_allowed
 from volundr.domain.ports import ExternalSessionProvider, SessionRepository
-from volundr.domain.services.session import SessionService
+from volundr.domain.services.session import SessionService, _sanitize_log
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,8 @@ class ExternalSessionService:
         )
         logger.info(
             "Imported external session %s/%s as Volundr session %s",
-            provider,
-            record.external_id,
+            _sanitize_log(provider),
+            _sanitize_log(record.external_id),
             session.id,
         )
         return session
