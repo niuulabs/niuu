@@ -103,6 +103,7 @@ class TestListExternalSessions:
         assert data[0]["external_id"] == claude_record.external_id
         assert data[0]["title"] == "Fix the login bug"
         assert data[0]["imported_session_id"] is None
+        assert data[0]["importable"] is True
 
     def test_unknown_provider_returns_404(self, client) -> None:
         response = client.get("/api/v1/forge/external-sessions", params={"provider": "nope"})
@@ -154,6 +155,7 @@ class TestImportSession:
 
         external = client.get("/api/v1/forge/external-sessions").json()
         assert external[0]["imported_session_id"] == sessions[0]["id"]
+        assert external[0]["importable"] is False
 
     def test_unknown_external_session_returns_404(self, client) -> None:
         response = client.post(
@@ -192,6 +194,7 @@ class TestImportSession:
 
         listing = client.get("/api/v1/forge/external-sessions").json()
         assert listing[0]["workspace_allowed"] is False
+        assert listing[0]["importable"] is False
 
         response = client.post(
             "/api/v1/forge/sessions/import",

@@ -463,6 +463,12 @@ class ExternalSessionResponse(BaseModel):
     imported_session_id: UUID | None = Field(
         description="Volundr session id when already imported",
     )
+    importable: bool = Field(
+        description=(
+            "Whether the session can be imported right now (workspace present, "
+            "allowed by policy, and not already imported)"
+        ),
+    )
 
     @classmethod
     def from_record(cls, record: ExternalSessionRecord) -> "ExternalSessionResponse":
@@ -480,6 +486,11 @@ class ExternalSessionResponse(BaseModel):
             workspace_exists=record.workspace_exists,
             workspace_allowed=record.workspace_allowed,
             imported_session_id=record.imported_session_id,
+            importable=(
+                record.workspace_exists
+                and record.workspace_allowed
+                and record.imported_session_id is None
+            ),
         )
 
 
