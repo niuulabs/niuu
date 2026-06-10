@@ -977,3 +977,25 @@ class TestTokenEstimationFallback:
         done_events = [e for e in events if e.type == StreamEventType.MESSAGE_DONE]
         assert len(done_events) == 1
         assert done_events[0].usage.input_tokens == 10
+
+
+class TestMaxTokensParam:
+    """Reasoning-era OpenAI models require max_completion_tokens."""
+
+    def test_legacy_models_use_max_tokens(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k")
+        for model in ("gpt-4o", "gpt-4.1-mini", "Qwen/Qwen3.6-35B-A3B-FP8", "gemma-4"):
+            body = adapter._build_request(
+                _MESSAGES, tools=[], system="s", model=model, max_tokens=100, stream=False
+            )
+            assert body["max_tokens"] == 100, model
+            assert "max_completion_tokens" not in body, model
+
+    def test_reasoning_models_use_max_completion_tokens(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k")
+        for model in ("gpt-5.2", "gpt-5.1-codex", "o4-mini", "o3", "O1-preview"):
+            body = adapter._build_request(
+                _MESSAGES, tools=[], system="s", model=model, max_tokens=100, stream=False
+            )
+            assert body["max_completion_tokens"] == 100, model
+            assert "max_tokens" not in body, model
