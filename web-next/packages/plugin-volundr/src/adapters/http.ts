@@ -65,6 +65,7 @@ import type {
   VolundrSessionTraceLane,
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
+  ExternalSession,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -111,6 +112,8 @@ type SessionPayload = {
   pod_name?: string | null;
   error?: string | null;
   origin?: VolundrSession['origin'];
+  externalSessionId?: string | null;
+  external_session_id?: string | null;
   hostname?: string;
   chatEndpoint?: string | null;
   chat_endpoint?: string | null;
@@ -135,6 +138,20 @@ type SessionPayload = {
   instance_id?: string | null;
   instanceName?: string | null;
   instance_name?: string | null;
+};
+
+type ExternalSessionPayload = {
+  provider: string;
+  harness: ExternalSession['harness'];
+  external_id: string;
+  workspace_path: string;
+  title?: string | null;
+  model?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  live?: boolean;
+  workspace_exists?: boolean;
+  imported_session_id?: string | null;
 };
 
 type StatsPayload = {
@@ -475,6 +492,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     podName: session.podName ?? session.pod_name ?? undefined,
     error: session.error ?? undefined,
     origin: session.origin,
+    externalSessionId: session.externalSessionId ?? session.external_session_id ?? null,
     hostname: session.hostname,
     chatEndpoint: session.chatEndpoint ?? session.chat_endpoint ?? undefined,
     codeEndpoint: session.codeEndpoint ?? session.code_endpoint ?? undefined,
@@ -486,6 +504,22 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
     instanceName: session.instanceName ?? session.instance_name ?? undefined,
+  };
+}
+
+function normalizeExternalSession(payload: ExternalSessionPayload): ExternalSession {
+  return {
+    provider: payload.provider,
+    harness: payload.harness,
+    externalId: payload.external_id,
+    workspacePath: payload.workspace_path,
+    title: payload.title ?? '',
+    model: payload.model ?? '',
+    createdAt: payload.created_at ?? null,
+    updatedAt: payload.updated_at ?? null,
+    live: Boolean(payload.live),
+    workspaceExists: Boolean(payload.workspace_exists),
+    importedSessionId: payload.imported_session_id ?? null,
   };
 }
 
@@ -970,6 +1004,7 @@ export const __testables = {
   toEpochMs,
   toDate,
   normalizeSession,
+  normalizeExternalSession,
   normalizeTarget,
   normalizeStats,
   normalizeMessageRole,
@@ -1498,6 +1533,19 @@ export function buildVolundrHttpAdapter(
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
         .then((sessions) => sessions.map(normalizeSession)),
+
+    listExternalSessions: () =>
+      forgeClient
+        .get<ExternalSessionPayload[]>('/external-sessions')
+        .then((sessions) => sessions.map(normalizeExternalSession)),
+    importExternalSession: async (provider, externalId, name) =>
+      normalizeSession(
+        await forgeClient.post<SessionPayload>('/sessions/import', {
+          provider,
+          external_id: externalId,
+          ...(name ? { name } : {}),
+        }),
+      ),
 
     getConversationHistory: (sessionId) =>
       forgeClient

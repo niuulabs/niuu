@@ -23,6 +23,7 @@ import type {
   TrackerIssue,
   VolundrWorkspace,
   VolundrWorkflowGate,
+  ExternalSession,
 } from '../models/volundr.model';
 import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
@@ -1067,8 +1068,38 @@ const SYSTEM_LAUNCH_SPECS: VolundrLaunchSpec[] = [
   },
 ];
 
+const SEED_EXTERNAL_SESSIONS: ExternalSession[] = [
+  {
+    provider: 'claude-code',
+    harness: 'claude',
+    externalId: 'ext-claude-1',
+    workspacePath: '~/code/niuu/volundr',
+    title: 'refactor session imports',
+    model: 'claude-sonnet',
+    createdAt: '2026-06-01T08:00:00Z',
+    updatedAt: '2026-06-01T09:30:00Z',
+    live: true,
+    workspaceExists: true,
+    importedSessionId: null,
+  },
+  {
+    provider: 'codex',
+    harness: 'codex',
+    externalId: 'ext-codex-1',
+    workspacePath: '~/code/scratch/old-spike',
+    title: '',
+    model: 'gpt-5-codex',
+    createdAt: null,
+    updatedAt: '2026-05-20T12:00:00Z',
+    live: false,
+    workspaceExists: false,
+    importedSessionId: null,
+  },
+];
+
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
+  const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
   const workflowGates = new Map<string, VolundrWorkflowGate[]>();
@@ -1203,6 +1234,37 @@ export function createMockVolundrService(): IVolundrService {
     archiveStoppedSessions: async () => [],
     restoreSession: async () => {},
     listArchivedSessions: async () => [],
+
+    listExternalSessions: async () => externalSessions.map((session) => ({ ...session })),
+    importExternalSession: async (provider, externalId, name) => {
+      const external = externalSessions.find(
+        (session) => session.provider === provider && session.externalId === externalId,
+      );
+      if (!external) {
+        throw new Error(`Unknown external session: ${provider}/${externalId}`);
+      }
+      if (!external.workspaceExists) {
+        throw new Error(`Workspace directory missing for ${externalId}`);
+      }
+      if (external.importedSessionId) {
+        throw new Error(`External session ${externalId} already imported`);
+      }
+      const imported: VolundrSession = {
+        id: `sess-imported-${externalId}`,
+        name: name ?? (external.title.trim() || external.externalId),
+        source: { type: 'git', repo: external.workspacePath, branch: 'main' },
+        status: 'stopped',
+        model: external.model,
+        lastActive: Date.now(),
+        messageCount: 0,
+        tokensUsed: 0,
+        origin: external.harness,
+        externalSessionId: external.externalId,
+      };
+      external.importedSessionId = imported.id;
+      sessions.push(imported);
+      return imported;
+    },
 
     getConversationHistory: async () => ({ turns: [] }),
     getWorkflowGates: async (sessionId) => workflowGates.get(sessionId) ?? [],

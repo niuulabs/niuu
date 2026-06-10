@@ -66,7 +66,7 @@ export interface ClusterResourceInfo {
 
 export type ModelTier = 'frontier' | 'balanced' | 'execution' | 'reasoning';
 export type ModelProvider = 'cloud' | 'local';
-export type SessionOrigin = 'managed' | 'manual';
+export type SessionOrigin = 'managed' | 'manual' | 'volundr' | 'claude' | 'codex';
 
 export interface VolundrModel {
   name: string;
@@ -154,6 +154,7 @@ export interface VolundrSession {
   podName?: string;
   error?: string;
   origin?: SessionOrigin;
+  externalSessionId?: string | null;
   hostname?: string;
   chatEndpoint?: string;
   codeEndpoint?: string;
@@ -165,6 +166,27 @@ export interface VolundrSession {
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
+}
+
+// ---------------------------------------------------------------------------
+// External CLI sessions (Claude Code / Codex discovered on the host)
+// ---------------------------------------------------------------------------
+
+export type ExternalSessionHarness = 'claude' | 'codex';
+
+export interface ExternalSession {
+  provider: string;
+  harness: ExternalSessionHarness;
+  externalId: string;
+  workspacePath: string;
+  title: string;
+  model: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  live: boolean;
+  workspaceExists: boolean;
+  /** Volundr session id when the session has already been imported. */
+  importedSessionId: string | null;
 }
 
 export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';

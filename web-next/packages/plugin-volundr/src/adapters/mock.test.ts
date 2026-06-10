@@ -41,6 +41,58 @@ describe('createMockVolundrService', () => {
     expect(session).toBeNull();
   });
 
+  it('listExternalSessions returns seeded external sessions', async () => {
+    const svc = createMockVolundrService();
+    const sessions = await svc.listExternalSessions();
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions[0]).toHaveProperty('provider');
+    expect(sessions[0]).toHaveProperty('externalId');
+    expect(sessions[0]).toHaveProperty('workspaceExists');
+  });
+
+  it('importExternalSession imports a known session and marks it imported', async () => {
+    const svc = createMockVolundrService();
+    const [importable] = (await svc.listExternalSessions()).filter(
+      (session) => session.workspaceExists && !session.importedSessionId,
+    );
+    expect(importable).toBeDefined();
+
+    const imported = await svc.importExternalSession(
+      importable!.provider,
+      importable!.externalId,
+      'renamed',
+    );
+    expect(imported.name).toBe('renamed');
+    expect(imported.origin).toBe(importable!.harness);
+    expect(imported.externalSessionId).toBe(importable!.externalId);
+
+    const refreshed = await svc.listExternalSessions();
+    const row = refreshed.find((session) => session.externalId === importable!.externalId);
+    expect(row?.importedSessionId).toBe(imported.id);
+
+    const sessions = await svc.getSessions();
+    expect(sessions.some((session) => session.id === imported.id)).toBe(true);
+
+    await expect(
+      svc.importExternalSession(importable!.provider, importable!.externalId),
+    ).rejects.toThrow(/already imported/);
+  });
+
+  it('importExternalSession rejects unknown sessions and missing workspaces', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.importExternalSession('claude-code', 'nope')).rejects.toThrow(
+      /Unknown external session/,
+    );
+
+    const missingWorkspace = (await svc.listExternalSessions()).find(
+      (session) => !session.workspaceExists,
+    );
+    expect(missingWorkspace).toBeDefined();
+    await expect(
+      svc.importExternalSession(missingWorkspace!.provider, missingWorkspace!.externalId),
+    ).rejects.toThrow(/Workspace directory missing/);
+  });
+
   it('getActiveSessions returns only active statuses', async () => {
     const svc = createMockVolundrService();
     const active = await svc.getActiveSessions();

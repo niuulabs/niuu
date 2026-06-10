@@ -719,6 +719,7 @@ function toDomainSession(session: VolundrSession): Session {
     tokensOut: 0,
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
+    origin: session.origin,
   };
 }
 
@@ -755,6 +756,9 @@ function buildSplitVolundrService(
     archiveStoppedSessions: () => forge.archiveStoppedSessions(),
     restoreSession: (sessionId) => forge.restoreSession(sessionId),
     listArchivedSessions: () => forge.listArchivedSessions(),
+    listExternalSessions: () => forge.listExternalSessions(),
+    importExternalSession: (provider, externalId, name) =>
+      forge.importExternalSession(provider, externalId, name),
     getMessages: (sessionId) => forge.getMessages(sessionId),
     sendMessage: (sessionId, content) => forge.sendMessage(sessionId, content),
     subscribeMessages: (sessionId, callback) => forge.subscribeMessages(sessionId, callback),

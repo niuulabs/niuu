@@ -81,6 +81,7 @@ const {
   toEpochMs,
   toDate,
   normalizeSession,
+  normalizeExternalSession,
   normalizeTarget,
   normalizeStats,
   normalizeMessageRole,
@@ -230,6 +231,87 @@ describe('__testables', () => {
     });
     expect(normalizeMessageRole('user')).toBe('user');
     expect(normalizeMessageRole('system')).toBe('assistant');
+  });
+
+  it('normalizes session origin and external session id across fallback forms', () => {
+    const base = {
+      id: 'sess-1',
+      name: 'alpha',
+      source: { type: 'git' as const, repo: 'r', branch: 'main' },
+      status: 'running' as const,
+      model: 'sonnet',
+    };
+
+    expect(
+      normalizeSession({
+        ...base,
+        origin: 'claude',
+        external_session_id: 'ext-1',
+      }),
+    ).toMatchObject({ origin: 'claude', externalSessionId: 'ext-1' });
+
+    expect(
+      normalizeSession({
+        ...base,
+        origin: 'codex',
+        externalSessionId: 'ext-camel',
+      }),
+    ).toMatchObject({ origin: 'codex', externalSessionId: 'ext-camel' });
+
+    const plain = normalizeSession(base);
+    expect(plain.origin).toBeUndefined();
+    expect(plain.externalSessionId).toBeNull();
+  });
+
+  it('normalizes external session payloads with fallback defaults', () => {
+    expect(
+      normalizeExternalSession({
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-1',
+        workspace_path: '/Users/dev/code/volundr',
+        title: 'fix import flow',
+        model: 'claude-sonnet',
+        created_at: '2026-06-01T08:00:00Z',
+        updated_at: '2026-06-01T09:00:00Z',
+        live: true,
+        workspace_exists: true,
+        imported_session_id: 'sess-9',
+      }),
+    ).toEqual({
+      provider: 'claude-code',
+      harness: 'claude',
+      externalId: 'ext-1',
+      workspacePath: '/Users/dev/code/volundr',
+      title: 'fix import flow',
+      model: 'claude-sonnet',
+      createdAt: '2026-06-01T08:00:00Z',
+      updatedAt: '2026-06-01T09:00:00Z',
+      live: true,
+      workspaceExists: true,
+      importedSessionId: 'sess-9',
+    });
+
+    expect(
+      normalizeExternalSession({
+        provider: 'codex',
+        harness: 'codex',
+        external_id: 'ext-2',
+        workspace_path: '/tmp/scratch',
+      }),
+    ).toEqual({
+      provider: 'codex',
+      harness: 'codex',
+      externalId: 'ext-2',
+      workspacePath: '/tmp/scratch',
+      title: '',
+      model: '',
+      createdAt: null,
+      updatedAt: null,
+      live: false,
+      workspaceExists: false,
+      importedSessionId: null,
+    });
   });
 
   it('derives canonical base paths from forge, shared, niuu, and credentials variants', () => {
@@ -1587,6 +1669,99 @@ describe('buildVolundrHttpAdapter', () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).listArchivedSessions();
     expect(client.get).toHaveBeenCalledWith('/sessions?status=archived');
+  });
+
+  it('listExternalSessions calls GET /external-sessions and normalizes payloads', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([
+      {
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-1',
+        workspace_path: '/Users/dev/code/volundr',
+        title: 'fix import flow',
+        model: 'claude-sonnet',
+        created_at: '2026-06-01T08:00:00Z',
+        updated_at: '2026-06-01T09:00:00Z',
+        live: true,
+        workspace_exists: true,
+        imported_session_id: null,
+      },
+    ]);
+
+    const sessions = await buildVolundrHttpAdapter(client).listExternalSessions();
+
+    expect(client.get).toHaveBeenCalledWith('/external-sessions');
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        provider: 'claude-code',
+        harness: 'claude',
+        externalId: 'ext-1',
+        workspacePath: '/Users/dev/code/volundr',
+        live: true,
+        workspaceExists: true,
+        importedSessionId: null,
+      }),
+    ]);
+  });
+
+  it('listExternalSessions propagates 503 errors so callers can hide the affordance', async () => {
+    const client = makeClient();
+    const unavailable = Object.assign(new Error('External session discovery not available'), {
+      status: 503,
+    });
+    client.get.mockRejectedValueOnce(unavailable);
+
+    await expect(buildVolundrHttpAdapter(client).listExternalSessions()).rejects.toMatchObject({
+      status: 503,
+    });
+  });
+
+  it('importExternalSession posts snake_case body and normalizes the created session', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'sess-imported',
+      name: 'fix import flow',
+      source: { type: 'local_mount', paths: [] },
+      status: 'stopped',
+      model: 'claude-sonnet',
+      origin: 'claude',
+      external_session_id: 'ext-1',
+    });
+
+    const session = await buildVolundrHttpAdapter(client).importExternalSession(
+      'claude-code',
+      'ext-1',
+    );
+
+    expect(client.post).toHaveBeenCalledWith('/sessions/import', {
+      provider: 'claude-code',
+      external_id: 'ext-1',
+    });
+    expect(session).toMatchObject({
+      id: 'sess-imported',
+      origin: 'claude',
+      externalSessionId: 'ext-1',
+    });
+  });
+
+  it('importExternalSession includes the optional name in the request body', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'sess-imported',
+      name: 'renamed',
+      source: { type: 'local_mount', paths: [] },
+      status: 'stopped',
+      model: 'gpt-5-codex',
+    });
+
+    await buildVolundrHttpAdapter(client).importExternalSession('codex', 'ext-2', 'renamed');
+
+    expect(client.post).toHaveBeenCalledWith('/sessions/import', {
+      provider: 'codex',
+      external_id: 'ext-2',
+      name: 'renamed',
+    });
   });
 
   it('createCredential targets the canonical shared credentials route', async () => {
