@@ -74,7 +74,7 @@ const valkyries: ValkyrieResident[] = [
     flockId: 'flock-k8s',
     persona: 'cluster-guardian',
     specialty: 'k8s event triage',
-    wakefulness: 'awake',
+    wakefulness: 'wakeful',
     autonomyMode: 'delegated',
     status: 'busy',
     confidence: 0.86,
@@ -119,7 +119,7 @@ const valkyries: ValkyrieResident[] = [
     flockId: 'flock-printers',
     persona: 'printer-operator',
     specialty: 'resin printer operations',
-    wakefulness: 'awake',
+    wakefulness: 'wakeful',
     autonomyMode: 'delegated',
     status: 'blocked',
     confidence: 0.69,
@@ -319,6 +319,7 @@ const huddles: HuddleSummary[] = [
   {
     id: 'huddle-valhalla-now',
     environmentId: 'env-k8s-valhalla',
+    targetFlockId: 'flock-k8s',
     title: 'Valhalla memory and registry huddle',
     status: 'open',
     participantIds: ['valkyrie-valhalla-sigrun', 'valkyrie-valhalla-runa'],
@@ -338,6 +339,7 @@ const huddles: HuddleSummary[] = [
   {
     id: 'huddle-printer-pause',
     environmentId: 'env-printer-forge',
+    targetFlockId: 'flock-printers',
     title: 'Printer resin pause',
     status: 'quiet',
     participantIds: ['valkyrie-printer-eir'],
@@ -713,11 +715,11 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
       recentLearning: [
         {
           id: 'dream-env-k8s-valhalla-1',
-          eventType: 'learning.dream.completed',
+          eventType: 'valkyrie.dream.completed',
           environmentId: 'env-k8s-valhalla',
           valkyrieId: 'valkyrie-valhalla-runa',
           dreamId: 'dream-env-k8s-valhalla-1',
-          title: 'learning.dream.completed for valkyrie-valhalla-runa',
+          title: 'valkyrie.dream.completed for valkyrie-valhalla-runa',
           status: 'completed',
           proposalsCreated: 1,
           proposalsApplied: 0,
@@ -825,20 +827,35 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
       if (!learning) throw new Error(`Learning not found: ${learningId}`);
       return learning;
     },
-    async joinHuddle(huddleId) {
-      const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
-      if (!huddle) throw new Error(`Huddle not found: ${huddleId}`);
+    async joinHuddle(request) {
+      const huddle = dashboard.huddles.find((entry) => entry.id === request.huddleId);
+      if (!huddle) throw new Error(`Huddle not found: ${request.huddleId}`);
+      if (huddle.targetFlockId && request.targetFlockId !== huddle.targetFlockId) {
+        throw new Error(`Huddle belongs to ${huddle.targetFlockId}`);
+      }
       huddle.joined = true;
+      huddle.joinedParticipantId = request.participantId;
+      huddle.joinedDisplayName = request.displayName ?? request.participantId;
+      huddle.joinedAction = request.action;
+      if (!huddle.participantIds.includes(request.participantId)) {
+        huddle.participantIds = [...huddle.participantIds, request.participantId];
+      }
       return huddle;
     },
     async sendHuddleMessage(request: HuddleSendRequest) {
       const huddle = dashboard.huddles.find((entry) => entry.id === request.huddleId);
       if (!huddle) throw new Error(`Huddle not found: ${request.huddleId}`);
+      if (!huddle.joined || !huddle.joinedParticipantId) {
+        throw new Error(`Join huddle before sending messages: ${request.huddleId}`);
+      }
+      if (request.authorId !== huddle.joinedParticipantId) {
+        throw new Error(`Huddle is joined as ${huddle.joinedParticipantId}, not ${request.authorId}`);
+      }
       const message: HuddleMessage = {
         id: `msg-${request.huddleId}-${huddle.messages.length + 1}`,
         huddleId: request.huddleId,
-        authorId: request.authorId ?? 'operator',
-        authorName: request.authorId ?? 'Operator',
+        authorId: huddle.joinedParticipantId,
+        authorName: huddle.joinedDisplayName ?? huddle.joinedParticipantId,
         body: request.body,
         createdAt: new Date().toISOString(),
         directedTo: request.directedTo,
@@ -851,6 +868,12 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
       const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
       if (!huddle) throw new Error(`Huddle not found: ${huddleId}`);
       huddle.joined = false;
+      huddle.participantIds = huddle.participantIds.filter(
+        (participant) => participant !== huddle.joinedParticipantId,
+      );
+      huddle.joinedParticipantId = undefined;
+      huddle.joinedDisplayName = undefined;
+      huddle.joinedAction = undefined;
       return huddle;
     },
     async adoptLearning(request: LearningDecisionRequest) {

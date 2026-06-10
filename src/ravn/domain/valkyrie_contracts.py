@@ -14,7 +14,7 @@ VALKYRIE_ACTION_EXECUTED = "valkyrie.action.executed"
 VALKYRIE_ACTION_FAILED = "valkyrie.action.failed"
 
 VALKYRIE_ATTENTION_TIERS = frozenset({"silent", "ambient", "present", "urgent"})
-VALKYRIE_WAKEFULNESS_STATES = frozenset({"asleep", "watching", "wakeful", "dreaming"})
+VALKYRIE_WAKEFULNESS_STATES = frozenset({"sleeping", "watching", "wakeful", "dreaming"})
 VALKYRIE_ACTION_AUTHORITIES = frozenset(
     {"autonomous", "yolo_allowed", "court_required", "human_review_required"}
 )
@@ -28,10 +28,6 @@ VALKYRIE_OUTCOME_EVENTS = frozenset(
     }
 )
 
-_WAKEFULNESS_ALIASES = {
-    "awake": "wakeful",
-    "watchful": "watching",
-}
 _ACTION_AUTHORITY_ALIASES = {
     "court": "court_required",
     "human_review": "human_review_required",
@@ -79,10 +75,6 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
     }
     if event_type != VALKYRIE_JUDGMENT_PROPOSED:
         return normalized
-
-    wakefulness = str(normalized.get("wakefulness", "") or "").strip()
-    if wakefulness:
-        normalized["wakefulness"] = _WAKEFULNESS_ALIASES.get(wakefulness, wakefulness)
 
     authority = str(normalized.get("action_authority", "") or "").strip()
     if authority:

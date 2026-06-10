@@ -21,7 +21,7 @@ system_prompt_template: |
   Maintain these state fields in your reasoning and outcome:
   - `operational_state`: nominal, watching, printing, needs_material, needs_cleanup,
     faulted, blocked, dreaming
-  - `wakefulness`: asleep, watching, wakeful, dreaming
+  - `wakefulness`: sleeping, watching, wakeful, dreaming
   - `print_state`: idle, printing, done, failed, paused, unknown
   - `material_state`: ok, low, empty, unknown
   - `tier`: silent, ambient, present, urgent
@@ -121,7 +121,7 @@ produces:
       description: current operational state after processing the signal
     wakefulness:
       type: enum
-      values: [asleep, watching, wakeful, dreaming]
+      values: [sleeping, watching, wakeful, dreaming]
       description: current wakefulness state
     tier:
       type: enum

@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import learning_adoption_recorded, learning_promoted
@@ -33,6 +34,17 @@ DASHBOARD_ENVIRONMENTS_FILE_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE"
 class HuddleSendRequest(BaseModel):
     huddleId: str  # noqa: N815
     body: str
+    directedTo: list[str] = Field(default_factory=list)  # noqa: N815
+    authorId: str  # noqa: N815
+
+
+class HuddleJoinRequest(BaseModel):
+    huddleId: str  # noqa: N815
+    participantId: str  # noqa: N815
+    displayName: str = ""  # noqa: N815
+    action: str = "observe"
+    targetFlockId: str = ""  # noqa: N815
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class LearningDecisionRequest(BaseModel):
@@ -307,7 +319,12 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
         "valkyrie.runtime.started",
         "valkyrie.presence.announced",
         "valkyrie.presence.heartbeat",
+        "valkyrie.state.changed",
         "valkyrie.state.updated",
+        "valkyrie.dream.started",
+        "valkyrie.dream.completed",
+        "valkyrie.dream.failed",
+        "valkyrie.dream.noop",
     }
 
 
@@ -377,7 +394,7 @@ def _event_kind(event_type: str) -> str:
         return "presence"
     if event_type in {"valkyrie.runtime.started", "valkyrie.state.updated"}:
         return "runtime"
-    if event_type == "valkyrie.wakefulness.changed":
+    if event_type in {"valkyrie.state.changed"} or event_type.startswith("valkyrie.dream."):
         return "wakefulness"
     return "event"
 
@@ -940,6 +957,12 @@ def _runtime_entry(
     payload: dict[str, Any],
     timestamp: str,
 ) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "")
+    wakefulness = ""
+    if event_type == "valkyrie.state.changed":
+        wakefulness = str(payload.get("new_state") or "")
+    elif event_type == "valkyrie.dream.started":
+        wakefulness = "dreaming"
     return {
         "environmentId": _event_environment_id(event, payload),
         "valkyrieId": _event_valkyrie_id(payload),
@@ -949,8 +972,214 @@ def _runtime_entry(
         "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
         "initiativeEnabled": bool(payload.get("initiative_enabled")),
         "pollIntervalSeconds": payload.get("poll_interval_seconds", 0),
+        "wakefulness": wakefulness,
+        "lastDreamAt": timestamp
+        if event_type in {"valkyrie.dream.completed", "valkyrie.dream.noop"}
+        else "",
         "observedAt": timestamp,
     }
+
+
+def _merge_runtime_entry(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    if existing is None:
+        return dict(incoming)
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key == "observedAt":
+            merged[key] = max(str(merged.get(key) or ""), str(value or ""))
+        elif value not in ("", 0, False, None, []):
+            merged[key] = value
+    return merged
+
+
+def _runtime_event_key(event: dict[str, Any]) -> str:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    env_id = str(payload.get("environment_id") or payload.get("environmentId") or "unknown")
+    valkyrie_id = str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "unknown")
+    return f"{env_id}:{valkyrie_id}"
+
+
+class ValkyrieRoomClient:
+    """Call Skuld's real room endpoints for dashboard huddle operations."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout_seconds = timeout_seconds
+
+    async def join_huddle(
+        self,
+        huddle: dict[str, Any],
+        request: HuddleJoinRequest,
+    ) -> dict[str, Any]:
+        environment_id = str(huddle.get("environmentId") or huddle.get("environment_id") or "")
+        if not environment_id:
+            raise HTTPException(status_code=422, detail="Huddle has no environment id")
+        participant_id = request.participantId.strip()
+        if not participant_id:
+            raise HTTPException(status_code=422, detail="participantId is required")
+        payload = {
+            "participant_id": participant_id,
+            "display_name": request.displayName or participant_id,
+            "environment_id": environment_id,
+            "role": _huddle_role_for_action(request.action),
+            "room_id": str(huddle.get("id") or ""),
+            "capabilities": request.capabilities,
+            "surfaces": ["skuld.room", "ravn.valkyrie.dashboard"],
+        }
+        authorities = _as_string_list(
+            huddle.get("environmentActionAuthorities")
+            or huddle.get("environment_action_authorities")
+            or []
+        )
+        if authorities:
+            payload["environment_action_authorities"] = authorities
+        return await self._post("/api/room/join", payload)
+
+    async def leave_huddle(self, huddle: dict[str, Any]) -> dict[str, Any]:
+        participant_id = str(huddle.get("joinedParticipantId") or "").strip()
+        if not participant_id:
+            raise HTTPException(status_code=422, detail="Huddle has no joined participant id")
+        return await self._post(
+            "/api/room/leave",
+            {"participant_id": participant_id, "reason": f"left {huddle.get('id') or ''}"},
+        )
+
+    async def send_huddle_message(
+        self,
+        huddle: dict[str, Any],
+        request: HuddleSendRequest,
+    ) -> dict[str, Any]:
+        participant_id, _ = _resolve_huddle_message_author(huddle, request)
+        metadata = {
+            "room_id": str(huddle.get("id") or request.huddleId),
+            "huddle_id": request.huddleId,
+            "environment_id": str(huddle.get("environmentId") or ""),
+        }
+        action = str(huddle.get("joinedAction") or "").strip()
+        if action:
+            metadata["action"] = action
+        target_flock_id = str(huddle.get("targetFlockId") or huddle.get("target_flock_id") or "").strip()
+        if target_flock_id:
+            metadata["target_flock_id"] = target_flock_id
+        directed_to = [target for target in request.directedTo if str(target).strip()]
+        if directed_to:
+            result = None
+            for target in directed_to:
+                result = await self._post(
+                    "/api/room/direct",
+                    {
+                        "target_peer_id": target,
+                        "content": request.body,
+                        "source": "ravn.valkyrie.dashboard",
+                        "participant_id": participant_id,
+                        "metadata": metadata,
+                    },
+                )
+            return result or {"status": "sent"}
+        return await self._post(
+            "/api/room/message",
+            {
+                "content": request.body,
+                "source": "ravn.valkyrie.dashboard",
+                "participant_id": participant_id,
+                "metadata": metadata,
+            },
+        )
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout_seconds,
+            ) as client:
+                response = await client.post(path, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {"status": "ok", "data": data}
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=exc.response.text[:500],
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"Skuld room request failed: {exc}") from exc
+
+
+def build_skuld_room_client_from_env() -> ValkyrieRoomClient | None:
+    base_url = os.environ.get("RAVN_VALKYRIE_SKULD_ROOM_URL", "").strip()
+    if not base_url:
+        return None
+    return ValkyrieRoomClient(
+        base_url,
+        timeout_seconds=_env_float(os.environ.get("RAVN_VALKYRIE_SKULD_ROOM_TIMEOUT_SECONDS"), 5.0),
+    )
+
+
+def _huddle_role_for_action(action: str) -> str:
+    normalized = action.strip().lower().replace("-", "_")
+    roles = {
+        "observe": "observer",
+        "reply": "observer",
+        "message": "observer",
+        "teach": "teacher",
+        "correct": "teacher",
+        "approve": "approver",
+        "authorize": "approver",
+        "debug": "debugger",
+        "own": "owner",
+        "change_autonomy": "owner",
+    }
+    if normalized not in roles:
+        raise HTTPException(status_code=422, detail=f"Unsupported huddle action: {action}")
+    return roles[normalized]
+
+
+def _validate_huddle_join_scope(huddle: dict[str, Any], request: HuddleJoinRequest) -> None:
+    if request.huddleId != str(huddle.get("id") or ""):
+        raise HTTPException(status_code=422, detail="Huddle id mismatch")
+    if not request.participantId.strip():
+        raise HTTPException(status_code=422, detail="participantId is required")
+    huddle_flock = str(huddle.get("targetFlockId") or huddle.get("target_flock_id") or "").strip()
+    requested_flock = request.targetFlockId.strip()
+    if huddle_flock and not requested_flock:
+        raise HTTPException(status_code=422, detail="targetFlockId is required for flock huddles")
+    if huddle_flock and requested_flock and huddle_flock != requested_flock:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Huddle belongs to flock {huddle_flock}, not {requested_flock}",
+        )
+    _huddle_role_for_action(request.action)
+
+
+def _resolve_huddle_message_author(
+    huddle: dict[str, Any],
+    request: HuddleSendRequest,
+) -> tuple[str, str]:
+    if request.huddleId != str(huddle.get("id") or ""):
+        raise HTTPException(status_code=422, detail="Huddle id mismatch")
+    if not request.body.strip():
+        raise HTTPException(status_code=422, detail="Message body is required")
+    participant_id = str(huddle.get("joinedParticipantId") or "").strip()
+    if not huddle.get("joined") or not participant_id:
+        raise HTTPException(status_code=422, detail="Join huddle before sending messages")
+    requested_author_id = request.authorId.strip()
+    if not requested_author_id:
+        raise HTTPException(status_code=422, detail="authorId is required")
+    if requested_author_id and requested_author_id != participant_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Huddle is joined as {participant_id}, not {requested_author_id}",
+        )
+    display_name = str(huddle.get("joinedDisplayName") or participant_id).strip() or participant_id
+    return participant_id, display_name
 
 
 class ValkyrieLearningCommandPublisher:
@@ -1224,6 +1453,10 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
         valkyrie["identitySource"] = "observed"
         valkyrie["status"] = "online"
         valkyrie["lastObservedAt"] = str(observed.get("observedAt") or "")
+        if observed.get("wakefulness"):
+            valkyrie["wakefulness"] = str(observed["wakefulness"])
+        if observed.get("lastDreamAt"):
+            valkyrie["lastDreamAt"] = str(observed["lastDreamAt"])
 
     for valkyrie_id, observed in observed_by_id.items():
         if valkyrie_id in known_valkyrie_ids:
@@ -1236,13 +1469,13 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
                 "flockId": "",
                 "persona": "observed-valkyrie",
                 "specialty": str(observed.get("residentPersonality") or "observed resident"),
-                "wakefulness": "watching",
+                "wakefulness": str(observed.get("wakefulness") or "watching"),
                 "autonomyMode": "delegated" if observed.get("driveLoopEnabled") else "manual",
                 "status": "online",
                 "confidence": 0.0,
                 "inboxSubjects": [],
                 "toolCount": 0,
-                "lastDreamAt": "",
+                "lastDreamAt": str(observed.get("lastDreamAt") or ""),
                 "lastActionAt": "",
                 "identitySource": "observed",
                 "lastObservedAt": str(observed.get("observedAt") or ""),
@@ -1384,16 +1617,48 @@ def _aggregate_telemetry(
             runtime_key = (
                 f"{runtime_entry['environmentId']}:{runtime_entry['valkyrieId'] or 'unknown'}"
             )
-            runtime_by_key[runtime_key] = runtime_entry
-            llm = {
-                "status": "configured",
-                "model": str(payload.get("llm_model") or ""),
-                "reflectionModel": str(payload.get("reflection_model") or ""),
-                "postSessionReflectionEnabled": bool(
-                    payload.get("post_session_reflection_enabled")
-                ),
-                "lastObservedAt": timestamp,
-            }
+            runtime_by_key[runtime_key] = _merge_runtime_entry(
+                runtime_by_key.get(runtime_key),
+                runtime_entry,
+            )
+            if (
+                event_type == "valkyrie.runtime.started"
+                or payload.get("llm_model")
+                or payload.get("reflection_model")
+            ):
+                llm = {
+                    "status": "configured",
+                    "model": str(payload.get("llm_model") or llm.get("model") or ""),
+                    "reflectionModel": str(
+                        payload.get("reflection_model") or llm.get("reflectionModel") or ""
+                    ),
+                    "postSessionReflectionEnabled": bool(
+                        payload.get(
+                            "post_session_reflection_enabled",
+                            llm.get("postSessionReflectionEnabled"),
+                        )
+                    ),
+                    "lastObservedAt": timestamp,
+                }
+            if event_type == "valkyrie.state.changed":
+                totals["wakefulnessChanges"] += 1
+                recent_learning.append(_learning_entry(event, payload, status="wakefulness"))
+            elif event_type.startswith("valkyrie.dream."):
+                totals["learningEvents"] += 1
+                entry["learningEvents"] += 1
+                recent_learning.append(
+                    _learning_entry(event, payload, status=event_type.rsplit(".", 1)[-1])
+                )
+                if event_type == "valkyrie.dream.started":
+                    totals["dreamCyclesStarted"] += 1
+                    entry["dreamCycles"] += 1
+                elif event_type == "valkyrie.dream.completed":
+                    totals["dreamCyclesCompleted"] += 1
+                elif event_type == "valkyrie.dream.noop":
+                    totals["dreamCyclesNoop"] += 1
+                    totals["dreamCyclesCompleted"] += 1
+                elif event_type == "valkyrie.dream.failed":
+                    totals["dreamCyclesFailed"] += 1
         elif event_type.startswith("signal."):
             totals["rawSignalEvents"] += 1
         elif event_type == "ravn.task.started":
@@ -1540,34 +1805,10 @@ def _aggregate_telemetry(
                 totals["dreamCyclesCompleted"] += 1
             elif event_type == "learning.dream.failed":
                 totals["dreamCyclesFailed"] += 1
-        elif event_type == "valkyrie.wakefulness.changed":
-            totals["wakefulnessChanges"] += 1
-            recent_learning.append(_learning_entry(event, payload, status="wakefulness"))
         elif event_type == "valkyrie.capability_gap.detected":
             capability = str(payload.get("capability_name") or event.get("summary") or "unknown")
             append_tool_need(capability=capability, status="needed")
             recent_learning.append(_learning_entry(event, payload, status="candidate"))
-        elif event_type in {
-            "valkyrie.dream.started",
-            "valkyrie.dream.completed",
-            "valkyrie.dream.failed",
-            "valkyrie.dream.noop",
-        }:
-            totals["learningEvents"] += 1
-            entry["learningEvents"] += 1
-            recent_learning.append(
-                _learning_entry(event, payload, status=event_type.rsplit(".", 1)[-1])
-            )
-            if event_type == "valkyrie.dream.started":
-                totals["dreamCyclesStarted"] += 1
-                entry["dreamCycles"] += 1
-            elif event_type == "valkyrie.dream.completed":
-                totals["dreamCyclesCompleted"] += 1
-            elif event_type == "valkyrie.dream.noop":
-                totals["dreamCyclesNoop"] += 1
-                totals["dreamCyclesCompleted"] += 1
-            elif event_type == "valkyrie.dream.failed":
-                totals["dreamCyclesFailed"] += 1
         elif event_type.startswith("valkyrie.evolution."):
             status = _learning_status_for_event(event_type, payload)
             totals["skillProposals"] += 1
@@ -1735,6 +1976,9 @@ def _configured_environment_entries(
                     _field(record, "dreamingCount", "dreaming_count", default=0)
                 ),
                 "lastSignalAt": str(_field(record, "lastSignalAt", "last_signal_at", default="")),
+                "actionAuthorities": _as_string_list(
+                    _field(record, "actionAuthorities", "action_authorities", default=[])
+                ),
                 "transport": _field(record, "transport", default={}),
             },
         )
@@ -1914,17 +2158,29 @@ class ValkyrieDashboardProjection:
                     ]
                 )
         if _is_runtime_event(event_data):
-            raw_payload = event_data.get("payload")
-            payload = raw_payload if isinstance(raw_payload, dict) else {}
-            env_id = str(
-                payload.get("environment_id")
-                or payload.get("environmentId")
-                or "unknown"
-            )
-            valkyrie_id = str(
-                payload.get("valkyrie_id") or payload.get("valkyrieId") or "unknown"
-            )
-            self._runtime_events[f"{env_id}:{valkyrie_id}"] = event_data
+            runtime_key = _runtime_event_key(event_data)
+            existing = self._runtime_events.get(runtime_key)
+            if existing is None:
+                self._runtime_events[runtime_key] = event_data
+            else:
+                existing_payload = (
+                    existing.get("payload") if isinstance(existing.get("payload"), dict) else {}
+                )
+                incoming_payload = (
+                    event_data.get("payload") if isinstance(event_data.get("payload"), dict) else {}
+                )
+                merged_payload = {
+                    **existing_payload,
+                    **{
+                        key: value
+                        for key, value in incoming_payload.items()
+                        if value not in ("", 0, False, None, [])
+                    },
+                }
+                merged_event = {**existing, **event_data, "payload": merged_payload}
+                if str(existing.get("timestamp") or "") > str(event_data.get("timestamp") or ""):
+                    merged_event["timestamp"] = existing.get("timestamp")
+                self._runtime_events[runtime_key] = merged_event
         if _is_raw_signal_event(event_data):
             self._raw_signal_events.append(event_data)
             self._raw_signal_events = self._raw_signal_events[-RAW_SIGNAL_TELEMETRY_LIMIT:]
@@ -1964,39 +2220,67 @@ class ValkyrieDashboardProjection:
             raise HTTPException(status_code=404, detail="Flock not found")
         return deepcopy(flock)
 
-    def join_huddle(self, huddle_id: str) -> dict[str, Any]:
+    def huddle_for_room(self, huddle_id: str) -> dict[str, Any]:
+        huddle = deepcopy(self._require_huddle(huddle_id))
+        environment = next(
+            (
+                entry
+                for entry in self._dashboard["environments"]
+                if entry["id"] == huddle.get("environmentId")
+            ),
+            {},
+        )
+        if isinstance(environment, dict):
+            huddle.setdefault("environmentActionAuthorities", environment.get("actionAuthorities", []))
+        return huddle
+
+    def join_huddle(self, request: HuddleJoinRequest) -> dict[str, Any]:
+        huddle_id = request.huddleId
         huddle = self._require_huddle(huddle_id)
+        _validate_huddle_join_scope(huddle, request)
         huddle["joined"] = True
-        if "operator" not in huddle["participantIds"]:
-            huddle["participantIds"].append("operator")
+        participant_id = request.participantId.strip()
+        huddle["joinedParticipantId"] = participant_id
+        huddle["joinedDisplayName"] = request.displayName.strip() or participant_id
+        huddle["joinedAction"] = request.action
+        if request.targetFlockId:
+            huddle["targetFlockId"] = request.targetFlockId
+        if participant_id not in huddle["participantIds"]:
+            huddle["participantIds"].append(participant_id)
         huddle["lastActivityAt"] = _now()
         self._touch()
         return deepcopy(huddle)
 
     def leave_huddle(self, huddle_id: str) -> dict[str, Any]:
         huddle = self._require_huddle(huddle_id)
+        participant_id = str(huddle.get("joinedParticipantId") or "").strip()
         huddle["joined"] = False
         huddle["participantIds"] = [
-            entry for entry in huddle["participantIds"] if entry != "operator"
+            entry for entry in huddle["participantIds"] if entry != participant_id
         ]
+        huddle["joinedParticipantId"] = ""
+        huddle["joinedDisplayName"] = ""
+        huddle["joinedAction"] = ""
         huddle["lastActivityAt"] = _now()
         self._touch()
         return deepcopy(huddle)
 
     def send_huddle_message(self, request: HuddleSendRequest) -> dict[str, Any]:
         huddle = self._require_huddle(request.huddleId)
+        participant_id, display_name = _resolve_huddle_message_author(huddle, request)
         message = {
-            "id": f"message-operator-{len(huddle['messages']) + 1}",
+            "id": f"message-{len(huddle['messages']) + 1}",
             "huddleId": request.huddleId,
-            "authorId": "operator",
-            "authorName": "Operator",
+            "authorId": participant_id,
+            "authorName": display_name,
             "body": request.body,
             "createdAt": _now(),
         }
         huddle["messages"].append(message)
         huddle["joined"] = True
-        if "operator" not in huddle["participantIds"]:
-            huddle["participantIds"].append("operator")
+        author_id = str(message["authorId"] or "").strip()
+        if author_id and author_id not in huddle["participantIds"]:
+            huddle["participantIds"].append(author_id)
         huddle["lastActivityAt"] = message["createdAt"]
         self._touch()
         return deepcopy(message)
@@ -2331,9 +2615,15 @@ class ValkyrieDashboardProjection:
     ) -> list[dict[str, Any]]:
         self._refresh_live_report()
         telemetry_events = [*self._raw_signal_events, *self._control_events]
-        retained_event_ids = {id(event) for event in telemetry_events}
+        retained_event_ids = {
+            str(event.get("event_id") or "")
+            for event in telemetry_events
+            if isinstance(event, dict) and str(event.get("event_id") or "")
+        }
         telemetry_events.extend(
-            event for event in self._runtime_events.values() if id(event) not in retained_event_ids
+            event
+            for event in self._runtime_events.values()
+            if str(event.get("event_id") or "") not in retained_event_ids
         )
         filtered = []
         for event in telemetry_events:
@@ -2387,9 +2677,15 @@ class ValkyrieDashboardProjection:
         self._poll_count += 1
         observed_at = _now()
         telemetry_events = [*self._raw_signal_events, *self._control_events]
-        retained_event_ids = {id(event) for event in telemetry_events}
+        retained_event_ids = {
+            str(event.get("event_id") or "")
+            for event in telemetry_events
+            if isinstance(event, dict) and str(event.get("event_id") or "")
+        }
         telemetry_events.extend(
-            event for event in self._runtime_events.values() if id(event) not in retained_event_ids
+            event
+            for event in self._runtime_events.values()
+            if str(event.get("event_id") or "") not in retained_event_ids
         )
         self._dashboard["liveReport"] = _live_report(
             observed_at,
@@ -2979,10 +3275,12 @@ def _env_bool(value: str | None) -> bool:
 def create_valkyrie_router(
     projection: ValkyrieDashboardProjection | None = None,
     learning_command_publisher: ValkyrieLearningCommandPublisher | None = None,
+    room_client: ValkyrieRoomClient | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/ravn/valkyrie", tags=["Ravn Valkyries"])
     store = projection or ValkyrieDashboardProjection()
     command_publisher = learning_command_publisher or ValkyrieLearningCommandPublisher()
+    skuld_room = room_client or build_skuld_room_client_from_env()
 
     async def finish_learning_action(
         action: str,
@@ -3032,11 +3330,21 @@ def create_valkyrie_router(
         return store.flock(flock_id)
 
     @router.post("/huddles/{huddle_id}/join")
-    async def join_huddle(huddle_id: str) -> dict[str, Any]:
-        return store.join_huddle(huddle_id)
+    async def join_huddle(huddle_id: str, request: HuddleJoinRequest) -> dict[str, Any]:
+        if request.huddleId != huddle_id:
+            raise HTTPException(status_code=422, detail="Huddle id mismatch")
+        huddle = store.huddle_for_room(huddle_id)
+        _validate_huddle_join_scope(huddle, request)
+        if skuld_room is None:
+            raise HTTPException(status_code=503, detail="Skuld room bridge is not configured")
+        if skuld_room is not None:
+            await skuld_room.join_huddle(huddle, request)
+        return store.join_huddle(request)
 
     @router.post("/huddles/{huddle_id}/leave")
     async def leave_huddle(huddle_id: str) -> dict[str, Any]:
+        if skuld_room is not None:
+            await skuld_room.leave_huddle(store.huddle_for_room(huddle_id))
         return store.leave_huddle(huddle_id)
 
     @router.post("/huddles/{huddle_id}/messages")
@@ -3046,6 +3354,10 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.huddleId != huddle_id:
             raise HTTPException(status_code=422, detail="Huddle id mismatch")
+        huddle = store.huddle_for_room(huddle_id)
+        _resolve_huddle_message_author(huddle, request)
+        if skuld_room is not None:
+            await skuld_room.send_huddle_message(huddle, request)
         return store.send_huddle_message(request)
 
     @router.get("/learnings/{learning_id}")

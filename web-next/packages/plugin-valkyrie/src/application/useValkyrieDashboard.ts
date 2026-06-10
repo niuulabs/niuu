@@ -5,6 +5,7 @@ import type { ValkyrieDashboard, ValkyrieSignalEvent } from '../domain';
 import type {
   AutonomyUpdateRequest,
   HuddleSendRequest,
+  HuddleJoinRequest,
   IValkyrieService,
   IValkyrieSignalStream,
   LearningDecisionRequest,
@@ -117,7 +118,7 @@ export function useValkyrieActions() {
   });
 
   const joinHuddle = useMutation({
-    mutationFn: (huddleId: string) => service.joinHuddle(huddleId),
+    mutationFn: (request: HuddleJoinRequest) => service.joinHuddle(request),
     onSuccess: (huddle) => {
       queryClient.setQueryData<ValkyrieDashboard>(VALKYRIE_DASHBOARD_QUERY_KEY, (dashboard) =>
         dashboard

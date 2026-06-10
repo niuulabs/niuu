@@ -1,6 +1,6 @@
 export type EnvironmentKind = 'kubernetes' | 'host' | 'printer' | 'generic';
 export type EnvironmentHealth = 'healthy' | 'watch' | 'degraded' | 'critical';
-export type WakefulnessState = 'awake' | 'watching' | 'dreaming' | 'resting';
+export type WakefulnessState = 'sleeping' | 'watching' | 'wakeful' | 'dreaming';
 export type AutonomyMode = 'manual' | 'supervised' | 'delegated' | 'yolo';
 export type SignalSeverity = 'info' | 'notice' | 'warning' | 'critical';
 export type SignalStatus = 'new' | 'triaged' | 'acting' | 'resolved' | 'ignored';
@@ -118,10 +118,14 @@ export interface HuddleMessage {
 export interface HuddleSummary {
   id: string;
   environmentId: string;
+  targetFlockId?: string;
   title: string;
   status: 'open' | 'quiet' | 'closed';
   participantIds: string[];
   joined: boolean;
+  joinedParticipantId?: string;
+  joinedDisplayName?: string;
+  joinedAction?: string;
   messages: HuddleMessage[];
   lastActivityAt: string;
 }

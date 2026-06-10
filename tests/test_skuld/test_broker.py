@@ -3940,6 +3940,25 @@ class TestBrokerRoomBridge:
         await captured.stop()
 
     @pytest.mark.asyncio
+    async def test_join_human_environment_binds_capabilities_to_environment_authorities(
+        self,
+        room_settings,
+    ):
+        b = Broker(settings=room_settings)
+
+        joined = await b.join_human_environment(
+            participant_id="human:approver",
+            display_name="Approver",
+            environment_id="cluster-a",
+            role="approver",
+            environment_action_authorities=["autonomous"],
+        )
+
+        assert "approve" not in joined["capabilities"]
+        assert "authorize_action" not in joined["capabilities"]
+        assert joined["capabilities"] == ("view", "reply")
+
+    @pytest.mark.asyncio
     async def test_human_room_message_preserves_participant_thread_metadata(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()

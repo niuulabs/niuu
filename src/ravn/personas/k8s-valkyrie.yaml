@@ -22,7 +22,7 @@ system_prompt_template: |
   Maintain these state fields in your reasoning and outcome:
   - `operational_state`: nominal, watching, investigating, degraded, remediating,
     blocked, dreaming
-  - `wakefulness`: asleep, watching, wakeful, dreaming
+  - `wakefulness`: sleeping, watching, wakeful, dreaming
   - `confidence`: 0.0-1.0 confidence in the current judgment
   - `tier`: silent, ambient, present, urgent
   - `evidence`: concise structured references to the signals, objects, logs, or metrics
@@ -151,7 +151,7 @@ produces:
       description: current operational state after processing the signal
     wakefulness:
       type: enum
-      values: [asleep, watching, wakeful, dreaming]
+      values: [sleeping, watching, wakeful, dreaming]
       description: current wakefulness state
     tier:
       type: enum

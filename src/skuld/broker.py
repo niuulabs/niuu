@@ -3509,6 +3509,7 @@ class Broker:
         room_id: str = "",
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
+        environment_action_authorities: list[str] | None = None,
     ) -> dict[str, Any]:
         """Join a human participant to the live Environment room state."""
         if self._room_bridge is None:
@@ -3521,6 +3522,7 @@ class Broker:
             room_id=room_id,
             capabilities=capabilities,
             surfaces=surfaces,
+            environment_action_authorities=environment_action_authorities,
         )
         return asdict(meta)
 
@@ -5559,6 +5561,7 @@ class _RoomJoinRequest(BaseModel):
     room_id: str = ""
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
+    environment_action_authorities: list[str] = Field(default_factory=list)
 
 
 class _RoomHeartbeatRequest(BaseModel):
@@ -5662,6 +5665,7 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             room_id=body.room_id,
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
+            environment_action_authorities=body.environment_action_authorities,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

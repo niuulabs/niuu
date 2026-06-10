@@ -430,7 +430,7 @@ signal_refs: evt-k8s-1
 tier: ambient
 confidence: "0.84"
 operational_state: investigating
-wakefulness: watchful
+wakefulness: wakeful
 rationale: pod restart signal needs inspection
 evidence:
   event_id: evt-k8s-1
@@ -453,7 +453,7 @@ correlation_ids:
         assert canonical_event.payload["valid"] is True
         assert outcome["signal_refs"] == ["evt-k8s-1"]
         assert outcome["confidence"] == 0.84
-        assert outcome["wakefulness"] == "watching"
+        assert outcome["wakefulness"] == "wakeful"
         assert outcome["action_authority"] == "yolo_allowed"
         assert outcome["evidence"] == [{"event_id": "evt-k8s-1", "kind": "kubernetes"}]
         assert outcome["target_surfaces"] == ["surface:ops"]

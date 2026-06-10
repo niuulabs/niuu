@@ -2,6 +2,7 @@ import { openEventStream, type ApiClient, type EventStreamHandle } from '@niuula
 import { normalizeValkyrieSignalEvent, type ValkyrieDashboard } from '../domain';
 import type {
   HuddleSendRequest,
+  HuddleJoinRequest,
   IValkyrieService,
   IValkyrieSignalStream,
   LearningDecisionRequest,
@@ -35,10 +36,10 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
         `/learnings/${encodeURIComponent(learningId)}`,
       );
     },
-    joinHuddle(huddleId) {
+    joinHuddle(request: HuddleJoinRequest) {
       return client.post<ValkyrieDashboard['huddles'][number]>(
-        `/huddles/${encodeURIComponent(huddleId)}/join`,
-        {},
+        `/huddles/${encodeURIComponent(request.huddleId)}/join`,
+        request,
       );
     },
     sendHuddleMessage(request: HuddleSendRequest) {

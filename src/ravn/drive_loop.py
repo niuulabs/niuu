@@ -339,7 +339,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "confidence: <number from 0.0 to 1.0>\n"
         "operational_state: nominal | watching | investigating | degraded | "
         "remediating | blocked | dreaming\n"
-        "wakefulness: asleep | watching | wakeful | dreaming\n"
+        "wakefulness: sleeping | watching | wakeful | dreaming\n"
         "rationale: <concise reason grounded in evidence>\n"
         "evidence: [{event_id: <id>, source_id: <source>, severity: <severity>}]\n"
         "recommended_action: <specific next step, or none>\n"

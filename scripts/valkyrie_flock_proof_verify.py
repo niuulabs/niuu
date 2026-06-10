@@ -31,6 +31,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--student-id", default="valkyrie-k8s-b")
     parser.add_argument("--control-id", default="valkyrie-printer")
     parser.add_argument("--transport", choices=["nng", "nats"], required=True)
+    parser.add_argument("--expect-student-restart", action="store_true")
+    parser.add_argument("--student-restart-marker", default="")
     return parser.parse_args()
 
 
@@ -121,6 +123,11 @@ def main() -> int:
         and event.get("payload", {}).get("action") == "adopted"
     ]
     check("student adopted the learning", bool(student_adoptions))
+    check(
+        "student adoption recorded exactly once",
+        len(student_adoptions) == 1,
+        f"student adoptions={len(student_adoptions)}",
+    )
     if student_adoptions:
         payload = student_adoptions[0]["payload"]
         check("student canary actually passed", payload.get("canary_passed") is True)
@@ -201,6 +208,9 @@ def main() -> int:
             bool(scoped),
             f"scoped events={len(scoped)}",
         )
+        if args.expect_student_restart:
+            marker = Path(args.student_restart_marker)
+            check("student restarted during NATS proof", marker.is_file(), str(marker))
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

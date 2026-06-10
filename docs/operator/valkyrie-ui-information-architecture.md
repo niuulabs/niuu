@@ -104,7 +104,7 @@ Primary fields:
 - `valkyrie_id`
 - `persona`
 - `environment_id`
-- `wakefulness`: asleep, watching, wakeful, dreaming
+- `wakefulness`: sleeping, watching, wakeful, dreaming
 - `operational_state`
 - `autonomy_mode`: guarded, autonomous, yolo
 - `authority_boundary`
@@ -155,7 +155,7 @@ Sources and fallbacks:
 | --- | --- | --- |
 | topology | Observatory `/api/v1/observatory/topology/stream` | last snapshot or empty topology |
 | signals | Sleipnir/NATS `signal.*` replay/SSE adapter | filtered recent log |
-| Valkyrie roster | `valkyrie.state.updated`, room participants | stale roster with timestamp |
+| Valkyrie roster | `valkyrie.state.changed`, room participants | stale roster with timestamp |
 | huddles | Skuld room APIs and `room.*` events | read-only transcript list |
 | actions | `valkyrie.action.*`, `odin.court.decided` | audit-only timeline |
 | learning | Mimir `learnings/*`, promotion store | no promoted learnings |
@@ -213,12 +213,25 @@ Reuse:
 
 UI behavior:
 
-- join Environment
+- join Environment with a per-request participant id, action intent, and
+  target Flock id; never rely on a global operator role
 - send message to huddle
 - direct message to a specific Valkyrie
 - view context snapshots
 - replay transcript
 - leave Environment
+
+Join contract:
+
+- `participantId` identifies the human or service user for this huddle action.
+- `action` maps to Skuld authority roles (`observe`, `teach`, `approve`,
+  `debug`, `own`) and is validated by the server before Skuld join.
+- `targetFlockId` must match the huddle's Flock when the huddle is
+  Flock-scoped, so k8s/printer/inbox authority cannot bleed across Flocks.
+- Environment action authorities are passed to Skuld on join; approval powers
+  are stripped when the Environment has no reviewable actions.
+- `RAVN_VALKYRIE_SKULD_ROOM_URL` is deployment plumbing only. It selects the
+  Skuld room service, not the user, role, action, or Flock authority.
 
 The huddle is a side panel or tab, not the primary product metaphor.
 

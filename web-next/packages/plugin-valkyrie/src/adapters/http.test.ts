@@ -33,10 +33,20 @@ describe('buildValkyrieHttpAdapter', () => {
     const adapter = buildValkyrieHttpAdapter(client);
 
     await adapter.getDashboard();
-    await adapter.joinHuddle('huddle-1');
+    await adapter.joinHuddle({
+      huddleId: 'huddle-1',
+      participantId: 'human:jozef',
+      action: 'approve',
+      targetFlockId: 'flock-k8s',
+    });
 
     expect(client.get).toHaveBeenCalledWith('/dashboard');
-    expect(client.post).toHaveBeenCalledWith('/huddles/huddle-1/join', {});
+    expect(client.post).toHaveBeenCalledWith('/huddles/huddle-1/join', {
+      huddleId: 'huddle-1',
+      participantId: 'human:jozef',
+      action: 'approve',
+      targetFlockId: 'flock-k8s',
+    });
   });
 
   it('URL encodes learning and huddle ids', async () => {
@@ -56,7 +66,7 @@ describe('buildValkyrieHttpAdapter', () => {
       targetScope: 'domain',
     });
     await adapter.rollbackLearning({ learningId: 'learn a/b', reason: 'test' });
-    await adapter.sendHuddleMessage({ huddleId: 'huddle a/b', body: 'hi' });
+    await adapter.sendHuddleMessage({ huddleId: 'huddle a/b', body: 'hi', authorId: 'human:jozef' });
 
     expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/adopt', {
       learningId: 'learn a/b',
@@ -79,6 +89,7 @@ describe('buildValkyrieHttpAdapter', () => {
     expect(client.post).toHaveBeenCalledWith('/huddles/huddle%20a%2Fb/messages', {
       huddleId: 'huddle a/b',
       body: 'hi',
+      authorId: 'human:jozef',
     });
   });
 });

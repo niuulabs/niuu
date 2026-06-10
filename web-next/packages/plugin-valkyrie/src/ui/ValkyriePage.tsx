@@ -2678,6 +2678,10 @@ function HuddlePanel({
   const slice = selectEnvironmentSlice(dashboard, environmentId);
   const actions = useValkyrieActions();
   const [draftByHuddle, setDraftByHuddle] = useState<Record<string, string>>({});
+  const [participantByHuddle, setParticipantByHuddle] = useState<Record<string, string>>({});
+  const [actionByHuddle, setActionByHuddle] = useState<
+    Record<string, 'observe' | 'teach' | 'approve' | 'debug' | 'own'>
+  >({});
   return (
     <section className={PANEL_PAD} data-testid="huddle-panel">
       <div className="niuu:mb-3 niuu:flex niuu:items-center niuu:justify-between">
@@ -2702,14 +2706,60 @@ function HuddlePanel({
               <button
                 type="button"
                 className={BUTTON}
+                disabled={!huddle.joined && !participantByHuddle[huddle.id]?.trim()}
                 onClick={() => {
                   if (huddle.joined) actions.leaveHuddle.mutate(huddle.id);
-                  else actions.joinHuddle.mutate(huddle.id);
+                  else {
+                    const participantId = participantByHuddle[huddle.id]?.trim();
+                    if (!participantId) return;
+                    const action = actionByHuddle[huddle.id] ?? 'observe';
+                    actions.joinHuddle.mutate({
+                      huddleId: huddle.id,
+                      participantId,
+                      displayName: participantId,
+                      action,
+                      targetFlockId: huddle.targetFlockId,
+                    });
+                  }
                 }}
               >
                 {huddle.joined ? 'Leave' : 'Join'}
               </button>
             </div>
+            {!huddle.joined ? (
+              <div className="niuu:mt-3 niuu:grid niuu:gap-2 niuu:md:grid-cols-[1fr_auto]">
+                <input
+                  aria-label={`Participant for ${huddle.title}`}
+                  value={participantByHuddle[huddle.id] ?? ''}
+                  placeholder={`human:${environmentId}`}
+                  onChange={(event) => {
+                    const nextValue = event.currentTarget.value;
+                    setParticipantByHuddle((prev) => ({ ...prev, [huddle.id]: nextValue }));
+                  }}
+                  className="niuu:min-w-0 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+                />
+                <select
+                  aria-label={`Action for ${huddle.title}`}
+                  value={actionByHuddle[huddle.id] ?? 'observe'}
+                  onChange={(event) => {
+                    const nextValue = event.currentTarget.value as
+                      | 'observe'
+                      | 'teach'
+                      | 'approve'
+                      | 'debug'
+                      | 'own';
+                    setActionByHuddle((prev) => ({ ...prev, [huddle.id]: nextValue }));
+                  }}
+                  className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+                >
+                  <option value="observe">observe</option>
+                  <option value="teach">teach</option>
+                  <option value="approve">approve</option>
+                  <option value="debug">debug</option>
+                  <option value="own">own</option>
+                </select>
+              </div>
+            ) : null}
             <div className="niuu:mt-3 niuu:flex niuu:flex-col niuu:gap-2">
               {huddle.messages.map((message) => (
                 <div key={message.id} className="niuu:rounded-md niuu:bg-bg-secondary niuu:p-2">
@@ -2723,8 +2773,9 @@ function HuddlePanel({
               onSubmit={(event) => {
                 event.preventDefault();
                 const body = draftByHuddle[huddle.id]?.trim();
-                if (!body) return;
-                actions.sendHuddleMessage.mutate({ huddleId: huddle.id, body });
+                const authorId = huddle.joinedParticipantId?.trim();
+                if (!body || !authorId) return;
+                actions.sendHuddleMessage.mutate({ huddleId: huddle.id, body, authorId });
                 setDraftByHuddle((prev) => ({ ...prev, [huddle.id]: '' }));
               }}
             >
@@ -2737,7 +2788,7 @@ function HuddlePanel({
                 }}
                 className="niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
-              <button type="submit" className={BUTTON}>
+              <button type="submit" className={BUTTON} disabled={!huddle.joinedParticipantId?.trim()}>
                 Send
               </button>
             </form>

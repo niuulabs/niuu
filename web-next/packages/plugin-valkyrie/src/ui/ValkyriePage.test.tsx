@@ -218,6 +218,7 @@ describe('ValkyriePage', () => {
       }),
     });
 
+    await user.type(await screen.findByLabelText(/participant for valhalla memory/i), 'human:jozef');
     await user.click(await screen.findByRole('button', { name: 'Join' }));
     await user.type(screen.getByLabelText(/message valhalla memory/i), 'What is blocked?');
     await user.click(screen.getByRole('button', { name: 'Send' }));

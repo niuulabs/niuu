@@ -8,14 +8,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import httpx
+import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ravn.api import create_app
 from ravn.api.valkyries import (
+    HuddleJoinRequest,
+    HuddleSendRequest,
     LearningDecisionRequest,
     ValkyrieDashboardProjection,
     ValkyrieLearningCommandPublisher,
+    ValkyrieRoomClient,
     ValkyrieTelemetrySubscription,
     build_nats_learning_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
@@ -238,7 +243,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     )
     projection.record_event(
         SleipnirEvent(
-            event_type="learning.dream.completed",
+            event_type="valkyrie.dream.completed",
             source="ravn:valkyrie:ymir",
             payload={"environment_id": "ymir", "dream_id": "dream:ymir:1"},
             summary="dream complete",
@@ -249,7 +254,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     )
     projection.record_event(
         SleipnirEvent(
-            event_type="learning.dream.noop",
+            event_type="valkyrie.dream.noop",
             source="valkyrie:valkyrie-ymir-k8s",
             payload={
                 "environment_id": "ymir",
@@ -358,12 +363,12 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     )
     projection.record_event(
         SleipnirEvent(
-            event_type="valkyrie.wakefulness.changed",
+            event_type="valkyrie.state.changed",
             source="valkyrie:valkyrie-ymir-k8s",
             payload={
                 "environment_id": "ymir",
                 "valkyrie_id": "valkyrie-ymir-k8s",
-                "previous_state": "watchful",
+                "previous_state": "watching",
                 "new_state": "dreaming",
                 "reason": "dream cycle started",
             },
@@ -413,9 +418,303 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["runtime"][0]["driveLoopEnabled"] is True
     assert telemetry["runtime"][0]["valkyrieName"] == "Sigrun"
     assert telemetry["runtime"][0]["residentPersonality"] == "Evidence-first cluster guardian."
+    assert telemetry["runtime"][0]["wakefulness"] == "dreaming"
+    live_valkyrie = next(
+        entry
+        for entry in projection.dashboard()["valkyries"]
+        if entry["id"] == "valkyrie-ymir-k8s"
+    )
+    assert live_valkyrie["wakefulness"] == "dreaming"
+    assert live_valkyrie["lastDreamAt"] == "2026-06-04T20:02:30+00:00"
     assert any(event.get("valkyrieName") == "Sigrun" for event in telemetry["recentEvents"])
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert projection.logs()[0]["component"] == "drive_loop"
+
+
+def test_valkyrie_huddle_endpoints_call_skuld_room_client_before_projecting():
+    class FakeRoomClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def join_huddle(self, huddle: dict, request: HuddleJoinRequest) -> dict:
+            self.calls.append(("join", {"huddle": huddle, "request": request}))
+            return {"status": "joined"}
+
+        async def leave_huddle(self, huddle: dict) -> dict:
+            self.calls.append(("leave", huddle))
+            return {"status": "left"}
+
+        async def send_huddle_message(self, huddle: dict, request: HuddleSendRequest) -> dict:
+            self.calls.append(
+                (
+                    "message",
+                    {
+                        "huddle": huddle,
+                        "body": request.body,
+                        "author_id": request.authorId,
+                    },
+                )
+            )
+            return {"status": "sent", "message_id": "room-message-1"}
+
+    projection = ValkyrieDashboardProjection()
+    projection._dashboard["huddles"].append(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "participantIds": ["valkyrie:k8s-a"],
+            "messages": [],
+            "joined": False,
+            "lastActivityAt": "",
+        }
+    )
+    room_client = FakeRoomClient()
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=room_client))
+    client = TestClient(app)
+
+    joined = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/join",
+        json={
+            "huddleId": "huddle-k8s-1",
+            "participantId": "human:jozef",
+            "displayName": "Jozef",
+            "action": "approve",
+            "targetFlockId": "flock:k8s",
+        },
+    )
+    sent = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/messages",
+        json={"huddleId": "huddle-k8s-1", "body": "Approved.", "authorId": "human:jozef"},
+    )
+    left = client.post("/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/leave")
+
+    assert joined.status_code == 200
+    assert sent.status_code == 200
+    assert left.status_code == 200
+    assert [call[0] for call in room_client.calls] == ["join", "message", "leave"]
+    assert room_client.calls[0][1]["huddle"]["environmentId"] == "cluster-a"
+    assert room_client.calls[0][1]["request"].participantId == "human:jozef"
+    assert joined.json()["joinedParticipantId"] == "human:jozef"
+    assert joined.json()["joinedDisplayName"] == "Jozef"
+    assert joined.json()["joinedAction"] == "approve"
+    assert room_client.calls[1][1]["huddle"]["joinedParticipantId"] == "human:jozef"
+    assert room_client.calls[1][1]["huddle"]["joinedAction"] == "approve"
+    assert sent.json()["body"] == "Approved."
+    assert sent.json()["authorId"] == "human:jozef"
+    assert sent.json()["authorName"] == "Jozef"
+    assert left.json()["joined"] is False
+
+
+def test_valkyrie_huddle_message_requires_joined_participant_before_skuld_call():
+    class FakeRoomClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def send_huddle_message(self, huddle: dict, request: HuddleSendRequest) -> dict:
+            self.calls.append(("message", {"huddle": huddle, "request": request}))
+            return {"status": "sent"}
+
+    projection = ValkyrieDashboardProjection()
+    projection._dashboard["huddles"].append(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "participantIds": ["valkyrie:k8s-a"],
+            "messages": [],
+            "joined": False,
+            "lastActivityAt": "",
+        }
+    )
+    room_client = FakeRoomClient()
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=room_client))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/messages",
+        json={"huddleId": "huddle-k8s-1", "body": "Approved.", "authorId": "operator"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Join huddle before sending messages"
+    assert room_client.calls == []
+
+
+def test_valkyrie_huddle_message_rejects_mismatched_author_before_skuld_call():
+    class FakeRoomClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def join_huddle(self, huddle: dict, request: HuddleJoinRequest) -> dict:
+            self.calls.append(("join", {"huddle": huddle, "request": request}))
+            return {"status": "joined"}
+
+        async def send_huddle_message(self, huddle: dict, request: HuddleSendRequest) -> dict:
+            self.calls.append(("message", {"huddle": huddle, "request": request}))
+            return {"status": "sent"}
+
+    projection = ValkyrieDashboardProjection()
+    projection._dashboard["huddles"].append(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "participantIds": ["valkyrie:k8s-a"],
+            "messages": [],
+            "joined": False,
+            "lastActivityAt": "",
+        }
+    )
+    room_client = FakeRoomClient()
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=room_client))
+    client = TestClient(app)
+
+    joined = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/join",
+        json={
+            "huddleId": "huddle-k8s-1",
+            "participantId": "human:jozef",
+            "action": "approve",
+            "targetFlockId": "flock:k8s",
+        },
+    )
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/messages",
+        json={"huddleId": "huddle-k8s-1", "body": "Approved.", "authorId": "operator"},
+    )
+
+    assert joined.status_code == 200
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Huddle is joined as human:jozef, not operator"
+    assert [call[0] for call in room_client.calls] == ["join"]
+
+
+def test_valkyrie_huddle_join_rejects_wrong_flock():
+    class FakeRoomClient:
+        async def join_huddle(self, huddle: dict, request: HuddleJoinRequest) -> dict:
+            raise AssertionError("wrong-flock joins must be rejected before Skuld")
+
+    projection = ValkyrieDashboardProjection()
+    projection._dashboard["huddles"].append(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "participantIds": [],
+            "messages": [],
+            "joined": False,
+            "lastActivityAt": "",
+        }
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=FakeRoomClient()))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/join",
+        json={
+            "huddleId": "huddle-k8s-1",
+            "participantId": "human:jozef",
+            "action": "approve",
+            "targetFlockId": "flock:printer",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_valkyrie_huddle_join_requires_skuld_by_default():
+    projection = ValkyrieDashboardProjection()
+    projection._dashboard["huddles"].append(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "participantIds": [],
+            "messages": [],
+            "joined": False,
+            "lastActivityAt": "",
+        }
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-k8s-1/join",
+        json={
+            "huddleId": "huddle-k8s-1",
+            "participantId": "human:jozef",
+            "action": "observe",
+        },
+    )
+
+    assert response.status_code == 503
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_valkyrie_room_client_maps_user_action_and_flock_to_skuld_join():
+    route = respx.post("http://skuld.test/api/room/join").mock(
+        return_value=httpx.Response(200, json={"status": "joined"})
+    )
+    client = ValkyrieRoomClient("http://skuld.test")
+
+    await client.join_huddle(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "environmentActionAuthorities": ["human_review_required"],
+        },
+        HuddleJoinRequest(
+            huddleId="huddle-k8s-1",
+            participantId="human:jozef",
+            displayName="Jozef",
+            action="approve",
+            targetFlockId="flock:k8s",
+            capabilities=["approve"],
+        ),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["participant_id"] == "human:jozef"
+    assert payload["display_name"] == "Jozef"
+    assert payload["role"] == "approver"
+    assert payload["room_id"] == "huddle-k8s-1"
+    assert payload["capabilities"] == ["approve"]
+    assert payload["environment_action_authorities"] == ["human_review_required"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_valkyrie_room_client_sends_messages_as_joined_participant_with_action_scope():
+    route = respx.post("http://skuld.test/api/room/message").mock(
+        return_value=httpx.Response(200, json={"status": "sent"})
+    )
+    client = ValkyrieRoomClient("http://skuld.test")
+
+    await client.send_huddle_message(
+        {
+            "id": "huddle-k8s-1",
+            "environmentId": "cluster-a",
+            "targetFlockId": "flock:k8s",
+            "joined": True,
+            "joinedParticipantId": "human:jozef",
+            "joinedDisplayName": "Jozef",
+            "joinedAction": "approve",
+        },
+        HuddleSendRequest(huddleId="huddle-k8s-1", body="Approved.", authorId="human:jozef"),
+    )
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["participant_id"] == "human:jozef"
+    assert payload["content"] == "Approved."
+    assert payload["metadata"]["action"] == "approve"
+    assert payload["metadata"]["target_flock_id"] == "flock:k8s"
 
 
 def test_valkyrie_dashboard_surfaces_judgment_capability_gap(monkeypatch):

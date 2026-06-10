@@ -327,7 +327,7 @@ class EnvironmentSignalRuntime:
             f"Severity: {signal.severity}\n"
             f"Object: {signal.object_ref}\n"
             f"Payload: {signal.normalized_payload}\n\n"
-            "Decide whether this is noise, needs watchful state, or requires action. "
+            "Decide whether this is noise, needs watching state, or requires action. "
             "Use existing tools and memory before proposing any new tooling. "
             "Always finish with a valkyrie.judgment.proposed outcome block for this signal, "
             "including when the decision is ignore or watch.\n\n"

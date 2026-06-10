@@ -131,6 +131,7 @@ export type {
 export type {
   AutonomyUpdateRequest,
   HuddleSendRequest,
+  HuddleJoinRequest,
   IValkyrieService,
   IValkyrieSignalStream,
   LearningDecisionRequest,

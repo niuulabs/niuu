@@ -11,6 +11,7 @@
 #   signal -> micro-dream -> skill + executable probe on disk
 #          -> flock.learning.proposed (tool code + canary sample)
 #          -> student canaries, installs, ACKs adoption
+#          -> NATS student restart keeps adoption exactly once
 #          -> printer rejects (flock mismatch)
 #          -> replayed signal handled by the built tool
 #
@@ -297,8 +298,24 @@ start_daemon() {
     NATS_URL="${NATS_URL}" \
         _ravn daemon > "${OUT_DIR}/logs/${node}.log" 2>&1 &
     local pid=$!
+    echo "${pid}" > "${OUT_DIR}/${node}.pid"
     echo "${pid}" >> "${PIDS_FILE}"
     echo "  ${node}: pid=${pid} config=${config}"
+}
+
+stop_daemon() {
+    local node="$1"
+    local pid_file="${OUT_DIR}/${node}.pid"
+    if [[ ! -f "${pid_file}" ]]; then
+        return
+    fi
+    local pid
+    pid="$(cat "${pid_file}")"
+    if [[ -n "${pid}" ]]; then
+        kill "${pid}" 2>/dev/null || true
+        wait "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${pid_file}"
 }
 
 echo "Starting Valkyrie flock (transport=${TRANSPORT}, builder=${BUILDER})..."
@@ -336,6 +353,15 @@ JSON
 echo "Signal injected. Letting the learning loop run for ${WAIT_SECONDS}s..."
 sleep "${WAIT_SECONDS}"
 
+if [[ "${TRANSPORT}" == "nats" ]]; then
+    echo "Restarting student Valkyrie to prove durable adoption remains exactly once..."
+    stop_daemon k8s-b
+    sleep 2
+    start_daemon k8s-b "${CONFIG_B}"
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUT_DIR}/student-restarted"
+    sleep 8
+fi
+
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
@@ -348,7 +374,8 @@ uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_verif
     --teacher-id valkyrie-k8s-a \
     --student-id valkyrie-k8s-b \
     --control-id valkyrie-printer \
-    --transport "${TRANSPORT}"
+    --transport "${TRANSPORT}" \
+    $([[ "${TRANSPORT}" == "nats" ]] && printf '%s' "--expect-student-restart --student-restart-marker ${OUT_DIR}/student-restarted")
 VERIFY_EXIT=$?
 
 echo ""

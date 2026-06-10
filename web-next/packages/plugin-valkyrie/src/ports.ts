@@ -38,7 +38,16 @@ export interface HuddleSendRequest {
   huddleId: string;
   body: string;
   directedTo?: string[];
-  authorId?: string;
+  authorId: string;
+}
+
+export interface HuddleJoinRequest {
+  huddleId: string;
+  participantId: string;
+  displayName?: string;
+  action: 'observe' | 'teach' | 'approve' | 'debug' | 'own';
+  targetFlockId?: string;
+  capabilities?: string[];
 }
 
 export interface AutonomyUpdateRequest {
@@ -54,7 +63,7 @@ export interface IValkyrieService {
   listFlocks(): Promise<FlockSummary[]>;
   getFlock(flockId: string): Promise<FlockSummary | null>;
   getLearning(learningId: string): Promise<LearningRecord>;
-  joinHuddle(huddleId: string): Promise<HuddleSummary>;
+  joinHuddle(request: HuddleJoinRequest): Promise<HuddleSummary>;
   sendHuddleMessage(request: HuddleSendRequest): Promise<HuddleMessage>;
   leaveHuddle(huddleId: string): Promise<HuddleSummary>;
   adoptLearning(request: LearningDecisionRequest): Promise<LearningRecord>;
