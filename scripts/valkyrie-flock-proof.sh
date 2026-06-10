@@ -26,8 +26,21 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TRANSPORT="nng"
 KEEP_RUNNING=0
-BUILDER="template"   # template | agent (agent needs a reachable LLM)
-WAIT_SECONDS="${VALKYRIE_PROOF_WAIT_SECONDS:-25}"
+BUILDER="template"   # template | agent (agent authors the tool with a real LLM)
+WAIT_SECONDS="${VALKYRIE_PROOF_WAIT_SECONDS:-}"
+
+# LLM used by --builder agent (any OpenAI-compatible endpoint).
+# When OPENAI_API_KEY is set the proof defaults to the OpenAI API; otherwise
+# it uses the local vLLM. Override with VALKYRIE_PROOF_LLM_* env vars.
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    PROOF_LLM_BASE_URL="${VALKYRIE_PROOF_LLM_BASE_URL:-https://api.openai.com}"
+    PROOF_LLM_MODEL="${VALKYRIE_PROOF_LLM_MODEL:-gpt-5.2}"
+    PROOF_LLM_API_KEY_ENV="${VALKYRIE_PROOF_LLM_API_KEY_ENV:-OPENAI_API_KEY}"
+else
+    PROOF_LLM_BASE_URL="${VALKYRIE_PROOF_LLM_BASE_URL:-https://qwen36-coder-llmd.valaskjalf.asgard.niuu.world}"
+    PROOF_LLM_MODEL="${VALKYRIE_PROOF_LLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}"
+    PROOF_LLM_API_KEY_ENV="${VALKYRIE_PROOF_LLM_API_KEY_ENV:-}"
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,6 +50,15 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# Real LLM generation needs more time than the deterministic template.
+if [[ -z "${WAIT_SECONDS}" ]]; then
+    if [[ "${BUILDER}" == "agent" ]]; then
+        WAIT_SECONDS=150
+    else
+        WAIT_SECONDS=25
+    fi
+fi
 
 OUT_DIR="/tmp/valkyrie-flock-proof-${TRANSPORT}"
 PIDS_FILE="${OUT_DIR}/pids"
@@ -115,8 +137,21 @@ fi
 # ---------------------------------------------------------------------------
 
 BUILDER_ADAPTER="ravn.valkyrie_evolution.adapters.TemplateToolBuilder"
+BUILDER_KWARGS=""
+LLM_MODEL="proof-disabled"
+LLM_BASE_URL="http://127.0.0.1:1"
+LLM_SECRET_BLOCK=""
 if [[ "${BUILDER}" == "agent" ]]; then
     BUILDER_ADAPTER="ravn.valkyrie_evolution.adapters.AgentToolBuilder"
+    # Thinking models burn output budget on hidden reasoning before any
+    # visible JSON appears; 4096 truncates mid-think and yields empty content.
+    BUILDER_KWARGS=$'\n  builder_kwargs:\n    max_tokens: 16384'
+    LLM_MODEL="${PROOF_LLM_MODEL}"
+    LLM_BASE_URL="${PROOF_LLM_BASE_URL}"
+    if [[ -n "${PROOF_LLM_API_KEY_ENV}" ]]; then
+        LLM_SECRET_BLOCK=$'\n    secret_kwargs_env:\n      api_key: '"${PROOF_LLM_API_KEY_ENV}"
+    fi
+    echo "Agent builder LLM: ${LLM_MODEL} @ ${LLM_BASE_URL}"
 fi
 
 write_config() {
@@ -173,7 +208,7 @@ ${sources}
 
 dream_cycle:
   autonomy_mode: ${autonomy}
-  builder_adapter: ${BUILDER_ADAPTER}
+  builder_adapter: ${BUILDER_ADAPTER}${BUILDER_KWARGS}
 
 skill:
   backend: file
@@ -194,12 +229,12 @@ memory:
     path: "${OUT_DIR}/${node}.db"
 
 llm:
-  model: proof-disabled
+  model: "${LLM_MODEL}"
   provider:
     adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
     kwargs:
-      base_url: "http://127.0.0.1:1"
-      api_key: ""
+      base_url: "${LLM_BASE_URL}"
+      api_key: ""${LLM_SECRET_BLOCK}
 
 permission:
   workspace_root: ${OUT_DIR}/${node}-workspace

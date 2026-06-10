@@ -339,7 +339,13 @@ Author both artifacts for this capability:
 1. `skill_markdown` — operator instructions for handling future signals of
    this kind. Start with `# skill: {skill_name}` and include a `metadata:`
    block with `capability: {gap.capability_name}` and
-   `safety_class: {gap.safety_class}`.
+   `safety_class: {gap.safety_class}`. The resident container has no shell
+   binaries: for Kubernetes inspection reference the `kubernetes_inspect`
+   tool and never reference `kubectl`. Describe only inspection and
+   evidence-gathering steps. Do not add safety disclaimers or enumerate
+   operations you are avoiding — the court review scans artifact text
+   literally and rejects artifacts that name gated operations even in
+   negation.
 2. `tool_code` — one self-contained Python module implementing
    `def run(signal: dict) -> dict`. It receives the raw signal payload and
    returns a JSON-serializable judgment dict with at least the keys
