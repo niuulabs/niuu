@@ -1069,9 +1069,7 @@ class Settings(BaseSettings):
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
-    shared_integrations: SharedIntegrationsConfig = Field(
-        default_factory=SharedIntegrationsConfig
-    )
+    shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)

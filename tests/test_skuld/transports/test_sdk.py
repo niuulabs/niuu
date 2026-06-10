@@ -283,8 +283,9 @@ async def test_send_message_recovers_once_after_turn_timeout(monkeypatch, tmp_pa
     assert factory.client is not None
     assert factory.client.query.await_count == 2
     assert factory.client.query.await_args_list[0].args == ("review the change",)
-    assert "Time budget reached. Stop exploring and conclude immediately" in (
-        factory.client.query.await_args_list[1].args[0]
+    assert (
+        "Time budget reached. Stop exploring and conclude immediately"
+        in (factory.client.query.await_args_list[1].args[0])
     )
     factory.client.interrupt.assert_awaited_once()
     assert [event["type"] for event in received] == ["assistant", "result"]
@@ -1030,28 +1031,41 @@ def test_pending_steers_and_visibility_helpers() -> None:
     assert transport._consume_pending_steers() is None
 
     assert (
+        transport._is_visible_output_event({"type": "assistant", "message": {"content": []}})
+        is False
+    )
+    assert (
         transport._is_visible_output_event(
-            {"type": "assistant", "message": {"content": []}}
+            {"type": "content_block_start", "content_block": {"type": "thinking"}}
+        )
+        is True
+    )
+    assert (
+        transport._is_visible_output_event(
+            {"type": "content_block_delta", "delta": {"thinking": "plan"}}
+        )
+        is True
+    )
+    assert (
+        transport._should_retry_transient_result(
+            _result_message(result="provider status page says overloaded", is_error=True),
+            {"type": "result", "result": "provider status page says overloaded"},
+        )
+        is True
+    )
+    assert (
+        transport._should_retry_transient_result(
+            _result_message(result="hard failure", is_error=False),
+            {"type": "result", "result": "hard failure"},
         )
         is False
     )
-    assert transport._is_visible_output_event(
-        {"type": "content_block_start", "content_block": {"type": "thinking"}}
-    ) is True
-    assert transport._is_visible_output_event(
-        {"type": "content_block_delta", "delta": {"thinking": "plan"}}
-    ) is True
-    assert transport._should_retry_transient_result(
-        _result_message(result="provider status page says overloaded", is_error=True),
-        {"type": "result", "result": "provider status page says overloaded"},
-    ) is True
-    assert transport._should_retry_transient_result(
-        _result_message(result="hard failure", is_error=False),
-        {"type": "result", "result": "hard failure"},
-    ) is False
-    assert transport._should_retry_transient_result(
-        _result_message(result="", is_error=True),
-        {"type": "result", "result": ""},
-    ) is False
+    assert (
+        transport._should_retry_transient_result(
+            _result_message(result="", is_error=True),
+            {"type": "result", "result": ""},
+        )
+        is False
+    )
     assert transport._is_visible_output_event({"type": "assistant", "message": "bad"}) is False
     assert transport._is_visible_output_event({"type": "content_block_delta", "delta": []}) is False

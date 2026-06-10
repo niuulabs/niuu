@@ -284,11 +284,9 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"
         assert env_names["SKULD__WORKFLOW__WORKFLOW_ID"] == "wf-1"
         assert env_names["SKULD__WORKFLOW__NAME"] == "Code"
-        assert "\"trigger-1\"" in env_names["SKULD__WORKFLOW__GRAPH"]
+        assert '"trigger-1"' in env_names["SKULD__WORKFLOW__GRAPH"]
 
-    async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(
-        self, session
-    ):
+    async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(self, session):
         template = LaunchSpec(
             name="plain-flock",
             workload_type="ravn_flock",
@@ -1490,9 +1488,7 @@ class TestPerPersonaLLMOverrides:
 
         reviewer_cfg = _extract_mounted_config(result.pod_spec, "reviewer")
         reviewer_parsed = yaml.safe_load(reviewer_cfg)
-        assert reviewer_parsed["persona_overrides"]["consumes_event_types"] == [
-            "review.requested"
-        ]
+        assert reviewer_parsed["persona_overrides"]["consumes_event_types"] == ["review.requested"]
 
     async def test_per_persona_max_concurrent_tasks(self, session):
         """max_concurrent_tasks from persona override replaces global value in initiative."""

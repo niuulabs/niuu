@@ -141,8 +141,7 @@ async def test_ensure_schema_executes_bootstrap_statements() -> None:
 
     assert pool.execute_calls
     assert any(
-        "CREATE TABLE IF NOT EXISTS niuu_instances" in query
-        for query, _ in pool.execute_calls
+        "CREATE TABLE IF NOT EXISTS niuu_instances" in query for query, _ in pool.execute_calls
     )
 
 

@@ -947,9 +947,7 @@ class TestBroker:
         assert kwargs["extra_metadata"]["structured_outcome"]["verdict"] == "approve"
 
     @pytest.mark.asyncio
-    async def test_parallel_terminal_node_emits_completion_without_finisher_persona(
-        self, tmp_path
-    ):
+    async def test_parallel_terminal_node_emits_completion_without_finisher_persona(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "sess-1", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
@@ -2373,9 +2371,7 @@ class TestHandleCliEventTraceSpans:
         assert mock_start.await_args.kwargs["kind"] == "tool.call"
         assert mock_start.await_args.kwargs["parent_span_id"] == assistant_span_id
         assert mock_start.await_args.kwargs["attributes"]["tool_use_id"] == "tool-123"
-        assert (
-            mock_start.await_args.kwargs["attributes"]["tool_input"]["command"] == "npm test"
-        )
+        assert mock_start.await_args.kwargs["attributes"]["tool_input"]["command"] == "npm test"
         assert test_broker._trace_assistant_tool_spans["tool-123"] == tool_span_id
 
     @pytest.mark.asyncio

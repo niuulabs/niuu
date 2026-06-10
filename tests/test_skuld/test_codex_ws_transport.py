@@ -351,15 +351,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {"PATH": "/tmp/shims:/usr/bin"}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {"PATH": "/tmp/shims:/usr/bin"}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -374,9 +378,7 @@ class TestSpawnAppServer:
             assert t._codex_socket_path is not None
             assert call_args[3] == f"unix://{t._codex_socket_path}"
             assert "-c" in call_args
-            assert any(
-                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
-            )
+            assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
             assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
 
     @pytest.mark.asyncio
@@ -391,15 +393,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -417,15 +423,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()

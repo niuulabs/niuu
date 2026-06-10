@@ -269,9 +269,7 @@ class TestSkuldEnv:
 
         env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
 
-        assert env["SKULD__SESSION__RESUME_SESSION_ID"] == (
-            "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
-        )
+        assert env["SKULD__SESSION__RESUME_SESSION_ID"] == ("2e877b9f-4b8a-4d46-8f00-03f6163addd5")
 
     def test_build_env_omits_resume_session_id_when_absent(self) -> None:
         spec = SessionSpec(
@@ -1184,9 +1182,7 @@ class TestProcessSpawning:
                     {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
                     {"name": "MESH_PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1245,12 +1241,8 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1305,9 +1297,7 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-claude-mimir-researcher"},
                     {"name": "ravn-codex-mimir-researcher"},
@@ -1337,12 +1327,8 @@ class TestProcessSpawning:
             )
 
         persona_dir = workspace / ".ravn" / "personas"
-        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
-        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
+        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(encoding="utf-8")
+        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(encoding="utf-8")
         assert claude_yaml.startswith("name: claude-mimir-researcher")
         assert codex_yaml.startswith("name: codex-mimir-researcher")
         assert mock_run.call_args_list[0].kwargs["cwd"] == str(workspace)
@@ -1376,12 +1362,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1445,12 +1427,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1543,12 +1521,8 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-coder"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-coder"},),
             ),
         )
 
@@ -1670,9 +1644,7 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-coder"},
                     {"name": "ravn-reviewer"},
@@ -2343,9 +2315,7 @@ class TestLocalFlockMeshMode:
                     {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
                     {"name": "MESH_PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2403,12 +2373,8 @@ class TestLocalFlockMeshMode:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2471,12 +2437,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2533,12 +2495,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 

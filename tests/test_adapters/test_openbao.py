@@ -126,7 +126,9 @@ class TestConfigureJwtAuth:
         respx.post(f"{BAO_URL}/v1/auth/jwt/config").respond(status_code=500, text="boom")
 
         with pytest.raises(OpenBaoApiError):
-            await client.configure_jwt_auth(OpenBaoJWTAuthConfig(oidc_discovery_url="https://issuer"))
+            await client.configure_jwt_auth(
+                OpenBaoJWTAuthConfig(oidc_discovery_url="https://issuer")
+            )
 
 
 class TestEnsurePolicy:

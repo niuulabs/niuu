@@ -180,8 +180,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             signals = [
                 signal
                 for signal in signals
-                if _text(signal.normalized_payload.get("reason")).lower()
-                in self._include_reasons
+                if _text(signal.normalized_payload.get("reason")).lower() in self._include_reasons
             ]
         if self._exclude_reasons:
             signals = [

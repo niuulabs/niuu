@@ -84,8 +84,7 @@ def _assistant_line(text: str) -> bytes:
 
 def _system_line(session_id: str) -> bytes:
     return (
-        json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode()
-        + b"\n"
+        json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode() + b"\n"
     )
 
 
@@ -177,9 +176,7 @@ async def test_start_sends_initial_prompt(tmp_path) -> None:
             _result_line("ack"),
         ]
     )
-    transport = PersistentSubprocessTransport(
-        str(tmp_path), initial_prompt="run setup"
-    )
+    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="run setup")
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         await transport.start()

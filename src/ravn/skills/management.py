@@ -112,14 +112,10 @@ class SkillManagementRegistry:
             name=skill.name,
             description=description if description is not None else skill.description,
             content=(
-                _ensure_skill_header(skill.name, content)
-                if content is not None
-                else skill.content
+                _ensure_skill_header(skill.name, content) if content is not None else skill.content
             ),
             requires_tools=(
-                _tools_from_content(content)
-                if content is not None
-                else skill.requires_tools
+                _tools_from_content(content) if content is not None else skill.requires_tools
             ),
             fallback_for_tools=skill.fallback_for_tools,
             source_episodes=skill.source_episodes,
@@ -310,9 +306,7 @@ class SkillManagementRegistry:
         except (OSError, json.JSONDecodeError):
             return
         self._metadata = {
-            key: SkillLifecycle(**value)
-            for key, value in data.items()
-            if isinstance(value, dict)
+            key: SkillLifecycle(**value) for key, value in data.items() if isinstance(value, dict)
         }
 
     def _save(self) -> None:

@@ -53,6 +53,7 @@ def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
+
 # MCP protocol version negotiated during initialize
 _PROTOCOL_VERSION = "2024-11-05"
 

@@ -139,8 +139,10 @@ def _trace_bounds(spans: list[SessionSpan]) -> tuple[datetime | None, datetime |
     root = next((span for span in spans if span.kind == "session.lifecycle"), None)
     started_at = root.started_at if root is not None else min(span.started_at for span in spans)
     ended_candidates = [span.ended_at for span in spans if span.ended_at is not None]
-    ended_at = root.ended_at if root is not None and root.ended_at is not None else (
-        max(ended_candidates) if ended_candidates else None
+    ended_at = (
+        root.ended_at
+        if root is not None and root.ended_at is not None
+        else (max(ended_candidates) if ended_candidates else None)
     )
     duration_ms = None
     if root is not None and root.duration_ms is not None:
@@ -163,13 +165,13 @@ def _build_summary(spans: list[SessionSpan]) -> SessionTraceSummaryResponse:
             spans, lambda span: span.kind == "session.provisioning"
         ),
         setup_duration_ms=_sum_durations(spans, lambda span: span.kind == "session.setup"),
-        workflow_duration_ms=_sum_durations(
-            spans, lambda span: span.kind == "session.workflow"
-        ),
+        workflow_duration_ms=_sum_durations(spans, lambda span: span.kind == "session.workflow"),
         publish_duration_ms=_sum_durations(
             spans,
-            lambda span: span.kind == "session.publish"
-            or (span.kind == "session.workflow" and "publish" in span.name.lower()),
+            lambda span: (
+                span.kind == "session.publish"
+                or (span.kind == "session.workflow" and "publish" in span.name.lower())
+            ),
         ),
         cleanup_duration_ms=_sum_durations(spans, lambda span: span.kind == "session.cleanup"),
         active_execution_duration_ms=_sum_durations(

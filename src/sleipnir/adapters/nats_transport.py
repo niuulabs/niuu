@@ -124,12 +124,7 @@ def _build_tls_context(
     tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
-    if (
-        not tls_ca_file
-        and not tls_cert_file
-        and not tls_key_file
-        and not tls_insecure_skip_verify
-    ):
+    if not tls_ca_file and not tls_cert_file and not tls_key_file and not tls_insecure_skip_verify:
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
     if tls_insecure_skip_verify:
@@ -184,6 +179,7 @@ def _connect_options(
     elif nkeys_seed:
         options["nkeys_seed_str"] = nkeys_seed
     return options
+
 
 #: Maximum number of event IDs held in the deduplication cache.
 DEFAULT_DEDUP_CACHE_SIZE = 10_000

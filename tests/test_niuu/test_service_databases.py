@@ -44,6 +44,5 @@ def test_bootstrap_sql_is_defined_for_split_services() -> None:
     assert bootstrap_sql_for_service("observatory")
     assert bootstrap_sql_for_service("volundr") == ()
     assert all(
-        "CREATE EXTENSION IF NOT EXISTS pgcrypto" not in statement
-        for statement in guild_sql
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto" not in statement for statement in guild_sql
     )

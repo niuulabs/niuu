@@ -84,8 +84,7 @@ class TestOpenBaoAgentInjectionAdapter:
         assert result.service_account == "openbao-session-session-123"
         assert result.annotations["vault.hashicorp.com/agent-inject"] == "true"
         assert (
-            result.annotations["vault.hashicorp.com/agent-configmap"]
-            == "openbao-agent-session-123"
+            result.annotations["vault.hashicorp.com/agent-configmap"] == "openbao-agent-session-123"
         )
         assert result.annotations["vault.hashicorp.com/agent-pre-populate-only"] == "true"
         assert result.annotations["vault.hashicorp.com/auth-type"] == "jwt"
@@ -205,7 +204,7 @@ class TestOpenBaoAgentInjectionAdapter:
         assert 'destination = "/run/secrets/env.sh"' in config_hcl
         assert 'destination = "/home/volundr/.git-credentials"' in config_hcl
         assert 'secret "volundr/data/users/alice/github"' in config_hcl
-        assert "{{ with secret \"volundr/data/users/alice/github\" }}" in config_hcl
+        assert '{{ with secret "volundr/data/users/alice/github" }}' in config_hcl
         assert "{{ end }}" in config_hcl
 
     def test_build_configmap_data_separates_env_exports_with_newlines(self, adapter):
@@ -229,7 +228,7 @@ class TestOpenBaoAgentInjectionAdapter:
         expected_linear = (
             "export LINEAR_API_KEY='{{ index .Data.data \"api_key\" }}'\n"
             "{{ end }}\n"
-            "{{ with secret \"volundr/data/users/alice/github\" }}"
+            '{{ with secret "volundr/data/users/alice/github" }}'
         )
         assert expected_linear in env_block
         assert "export GITHUB_TOKEN='{{ index .Data.data \"token\" }}'\n{{ end }}" in env_block
@@ -246,10 +245,7 @@ class TestOpenBaoAgentInjectionAdapter:
 
     def test_helper_paths_and_names(self, adapter):
         assert adapter._auth_mount_path() == "auth/jwt-valhalla"
-        assert (
-            adapter._credential_path("alice", "github")
-            == "volundr/data/users/alice/github"
-        )
+        assert adapter._credential_path("alice", "github") == "volundr/data/users/alice/github"
         assert adapter._sanitize_name("Session_ABC/123") == "session-abc-123"
         assert adapter._k8s_name("openbao/session", "A" * 80).startswith("openbao-session-")
 

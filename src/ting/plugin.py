@@ -115,8 +115,7 @@ class TingPlugin(ServicePlugin):
                 name="ting-channel-api",
                 prefixes=("/api/v1/ting/telegram",),
                 description=(
-                    "Ting operator-channel routes for Telegram setup and "
-                    "webhook ingress."
+                    "Ting operator-channel routes for Telegram setup and webhook ingress."
                 ),
             ),
             APIRouteDomain(

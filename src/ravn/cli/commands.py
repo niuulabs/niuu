@@ -3833,9 +3833,7 @@ def _resolve_transport_kwargs(
             "user": os.environ.get(nats_cfg.user_env, nats_cfg.user)
             if nats_cfg.user_env
             else nats_cfg.user,
-            "password": os.environ.get(nats_cfg.password_env, "")
-            if nats_cfg.password_env
-            else "",
+            "password": os.environ.get(nats_cfg.password_env, "") if nats_cfg.password_env else "",
             "token": os.environ.get(nats_cfg.token_env, "") if nats_cfg.token_env else "",
             "nkeys_seed_file": nats_cfg.nkeys_seed_file,
             "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")

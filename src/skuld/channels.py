@@ -42,6 +42,7 @@ def _is_expected_ws_disconnect(exc: Exception) -> bool:
         )
     return False
 
+
 try:
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
