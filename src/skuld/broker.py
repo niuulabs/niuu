@@ -183,9 +183,7 @@ def _normalize_browser_message_content(content: object) -> str:
             f"{count} {label}" if count != 1 else f"1 {label}"
             for label, count in sorted(counts.items())
         )
-        lines.append(
-            f"[User attached {attachment_summary}. This transport forwards text only.]"
-        )
+        lines.append(f"[User attached {attachment_summary}. This transport forwards text only.]")
     return "\n\n".join(lines).strip()
 
 
@@ -206,6 +204,8 @@ _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 
 # Matches git commit output like: [main e4f7a21] fix: some message
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
+
+
 def _is_git_commit(cmd: str) -> bool:
     """Return True if a Bash command is a git commit invocation."""
     stripped = cmd.lstrip()
@@ -697,9 +697,12 @@ def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]
                 else "gate.changes_requested",
             ),
         )
-        pending_behavior = str(
-            node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
-        ).strip() or "help_needed"
+        pending_behavior = (
+            str(
+                node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
+            ).strip()
+            or "help_needed"
+        )
         mode = str(node.get("mode") or "human_approval").strip() or "human_approval"
         instructions = str(node.get("instructions") or "").strip()
 
@@ -1348,9 +1351,7 @@ class Broker:
 
         deadline = time.monotonic() + max(0.0, timeout_s)
         missing = {
-            peer_id
-            for peer_id in required_peers
-            if not self._room_bridge.is_connected(peer_id)
+            peer_id for peer_id in required_peers if not self._room_bridge.is_connected(peer_id)
         }
         if missing:
             logger.info(
@@ -1363,9 +1364,7 @@ class Broker:
         while missing and time.monotonic() < deadline:
             await asyncio.sleep(poll_interval_s)
             missing = {
-                peer_id
-                for peer_id in required_peers
-                if not self._room_bridge.is_connected(peer_id)
+                peer_id for peer_id in required_peers if not self._room_bridge.is_connected(peer_id)
             }
 
         if missing:
@@ -1405,9 +1404,7 @@ class Broker:
             wait_timeout_s,
         )
         if not consumers_ready:
-            raise RuntimeError(
-                f"workflow trigger consumers for {cfg.event_type} did not connect"
-            )
+            raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
 
         delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
         if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
@@ -1569,6 +1566,10 @@ class Broker:
         # Load conversation history from disk
         self._load_conversation_history()
 
+        # Evict participants whose heartbeats lapse (room mode only)
+        if self._room_bridge is not None:
+            self._room_bridge.start_presence_sweep()
+
         # Initialize transport
         self._transport = self._create_transport()
         self._transport.on_event(self._handle_cli_event)
@@ -1616,9 +1617,7 @@ class Broker:
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                self._workflow_trigger_task = asyncio.create_task(
-                    self._run_workflow_trigger_task()
-                )
+                self._workflow_trigger_task = asyncio.create_task(self._run_workflow_trigger_task())
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
@@ -1636,6 +1635,9 @@ class Broker:
         transport, so the CLI process is still alive for summary generation.
         """
         logger.info("Broker shutting down")
+
+        if self._room_bridge is not None:
+            await self._room_bridge.stop_presence_sweep()
 
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:
@@ -2093,10 +2095,7 @@ class Broker:
             or f"{state.label} is waiting for human approval before the workflow can continue.",
             "reason": "needs_human_approval",
             "recommendation": state.condition
-            or (
-                "Review the pending gate and decide whether to approve "
-                "or request changes."
-            ),
+            or ("Review the pending gate and decide whether to approve or request changes."),
             "context": {
                 "gate_id": state.id,
                 "gate_label": state.label,
@@ -2810,8 +2809,8 @@ class Broker:
         if event_type == "control_request":
             self._track_pending_permission_request(data)
 
-        tool_result_only_user_event = (
-            event_type == "user" and self._is_tool_result_only_user_event(data)
+        tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
+            data
         )
         suppress_channel_broadcast = (
             event_type in {"user", "assistant", "content_block_delta", "result"}
@@ -4092,9 +4091,7 @@ class Broker:
     ) -> tuple[uuid.UUID | None, str]:
         """Pop a pending assistant tool span by id, falling back to FIFO order."""
         tool_key = (
-            tool_use_id
-            if tool_use_id and tool_use_id in self._trace_assistant_tool_spans
-            else ""
+            tool_use_id if tool_use_id and tool_use_id in self._trace_assistant_tool_spans else ""
         )
         if not tool_key and self._trace_assistant_tool_order:
             tool_key = self._trace_assistant_tool_order[0]
