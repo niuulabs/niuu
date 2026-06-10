@@ -428,7 +428,8 @@ def test_capabilities() -> None:
     assert caps.interrupt is True
     assert caps.steer is True
     assert caps.steering_mode == "interrupt_resume"
-    assert caps.session_resume is False
+    # SDKTransport supports resume via ClaudeAgentOptions.resume.
+    assert caps.session_resume is True
     assert caps.set_model is True
     assert caps.set_permission_mode is True
 
@@ -1069,3 +1070,35 @@ def test_pending_steers_and_visibility_helpers() -> None:
     )
     assert transport._is_visible_output_event({"type": "assistant", "message": "bad"}) is False
     assert transport._is_visible_output_event({"type": "content_block_delta", "delta": []}) is False
+
+
+@pytest.mark.asyncio
+async def test_resume_session_id_sets_resume_option_and_skips_initial_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    """A seeded resume id reloads the prior conversation: ClaudeAgentOptions.resume
+    is set and the initial prompt is NOT replayed (it is already in history)."""
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        initial_prompt="Warm up.",
+        resume_session_id="sess-resume-1",
+    )
+
+    await transport.start()
+
+    assert factory.options.resume == "sess-resume-1"
+    assert factory.client.query.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_no_resume_option_without_seed(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+
+    assert factory.options.resume is None

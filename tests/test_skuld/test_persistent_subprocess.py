@@ -301,3 +301,21 @@ def test_no_resume_flag_without_seed() -> None:
 
     assert "--resume" not in cmd
     assert "--append-system-prompt" in cmd
+
+
+@pytest.mark.asyncio
+async def test_seeded_resume_skips_initial_prompt(tmp_path) -> None:
+    """On resume the prior conversation already contains the initial prompt —
+    replaying it would double-seed history."""
+    proc = _make_proc([])
+    transport = PersistentSubprocessTransport(
+        str(tmp_path),
+        initial_prompt="kick off the task",
+        resume_session_id="sess-resume-1",
+    )
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        await transport.start()
+
+    assert proc.stdin.buf == bytearray()
+    await transport.stop()

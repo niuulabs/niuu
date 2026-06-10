@@ -426,6 +426,15 @@ class Session(BaseModel):
         max_length=255,
         description="Native CLI session/thread id for imported sessions",
     )
+    cli_session_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "CLI/agent conversation id (Claude session UUID or Codex thread id) "
+            "captured at runtime, used to resume the prior conversation when the "
+            "session is restarted."
+        ),
+    )
 
     model_config = {"frozen": False}
 

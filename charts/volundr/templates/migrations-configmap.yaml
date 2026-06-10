@@ -1196,4 +1196,14 @@ data:
 
     ALTER TABLE sessions DROP COLUMN IF EXISTS external_session_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS origin;
+
+  000046_session_cli_session_id.up.sql: |
+    -- Capture the CLI/agent conversation id (Claude session UUID or Codex thread
+    -- id) reported by the broker at runtime, so a stopped session can be resumed
+    -- with its prior conversation on restart.
+
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cli_session_id VARCHAR(255);
+
+  000046_session_cli_session_id.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS cli_session_id;
 {{- end }}

@@ -4186,6 +4186,13 @@ class Broker:
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
         }
+        # Ride the CLI/agent conversation id upward so Volundr can persist it
+        # and resume the conversation when the session is restarted. Works for
+        # both Claude (session UUID) and Codex (thread id) — every
+        # resume-capable transport implements .session_id.
+        cli_session_id = self._transport.session_id if self._transport else None
+        if cli_session_id:
+            metadata["cli_session_id"] = cli_session_id
         if extra_metadata:
             metadata.update(extra_metadata)
 

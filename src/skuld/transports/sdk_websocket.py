@@ -48,6 +48,7 @@ class SdkWebSocketTransport(CLITransport):
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
+        resume_session_id: str | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -58,6 +59,7 @@ class SdkWebSocketTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._resume_session_id = (resume_session_id or "").strip() or None
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
@@ -81,7 +83,10 @@ class SdkWebSocketTransport(CLITransport):
         if self._spawning:
             logger.info("start() called but already spawning, skipping")
             return
-        await self._spawn()
+        # On a cold start that carries a prior conversation id, resume it so
+        # the CLI reloads history (the existing --resume path plus the
+        # initial-prompt suppression then fire).
+        await self._spawn(resume_session_id=self._resume_session_id)
 
     async def _spawn(self, resume_session_id: str | None = None) -> None:
         """Spawn the CLI process with --sdk-url."""

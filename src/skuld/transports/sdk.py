@@ -5,8 +5,6 @@ converting typed SDK messages back into the dict events Skuld already emits.
 
 Known gaps versus ``PersistentSubprocessTransport``:
 
-- No session resume after process death; the Python SDK does not expose
-  ``--resume`` recovery.
 - No slash-command transport surface such as ``/clear`` or ``/compact``.
 - Mid-turn injection still requires ``interrupt()`` followed by a new query,
   which drops the in-flight partial assistant turn per SDK semantics.
@@ -252,6 +250,7 @@ class SDKTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
+        resume_session_id: str | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -260,6 +259,7 @@ class SDKTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._resume_session_id = (resume_session_id or "").strip() or None
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
         self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
@@ -276,7 +276,7 @@ class SDKTransport(CLITransport):
     @property
     def capabilities(self) -> TransportCapabilities:
         return TransportCapabilities(
-            session_resume=False,
+            session_resume=True,
             interrupt=True,
             steer=True,
             steering_mode="interrupt_resume",
@@ -304,6 +304,10 @@ class SDKTransport(CLITransport):
         """Connect the SDK client and optionally send the initial prompt."""
         if not self.is_alive:
             await self._connect_client()
+        # On resume the prior conversation (including its initial prompt) is
+        # reloaded, so replaying the initial prompt would double-seed history.
+        if self._resume_session_id:
+            self._initial_prompt_sent = True
         if not self._initial_prompt or self._initial_prompt_sent:
             return
         self._initial_prompt_sent = True
@@ -523,6 +527,10 @@ class SDKTransport(CLITransport):
         }
         if self._skip_permissions:
             option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE
+        if self._resume_session_id:
+            # Reload the prior conversation so the agent continues where it
+            # left off. ClaudeAgentOptions.resume is supported by the pinned SDK.
+            option_kwargs["resume"] = self._resume_session_id
         options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options)
         self._client = await client.__aenter__()

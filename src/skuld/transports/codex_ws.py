@@ -220,7 +220,9 @@ class CodexWebSocketTransport(CLITransport):
             await self._start_fallback_transport(exc)
             return
 
-        if self._initial_prompt:
+        # On resume the prior thread's history is reloaded, so don't replay
+        # the initial prompt (it was already part of that conversation).
+        if self._initial_prompt and not self._resume_session_id:
             await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:

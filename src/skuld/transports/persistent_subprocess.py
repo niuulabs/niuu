@@ -115,6 +115,10 @@ class PersistentSubprocessTransport(CLITransport):
         """Spawn Claude (if not already running) and send the initial prompt."""
         if not self.is_alive:
             await self._spawn()
+        # On resume the prior conversation (including its initial prompt) is
+        # reloaded, so replaying the initial prompt would double-seed history.
+        if self._session_id:
+            self._initial_prompt_sent = True
         if not self._initial_prompt or self._initial_prompt_sent:
             return
         self._initial_prompt_sent = True

@@ -579,6 +579,10 @@ class SessionResponse(BaseModel):
         default=None,
         description="Native CLI session id for imported sessions",
     )
+    cli_session_id: str | None = Field(
+        default=None,
+        description="Captured CLI/agent conversation id; present once the session is resumable",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -638,6 +642,7 @@ class SessionResponse(BaseModel):
             workload_type=session.workload_type,
             origin=session.origin,
             external_session_id=session.external_session_id,
+            cli_session_id=session.cli_session_id,
         )
 
 

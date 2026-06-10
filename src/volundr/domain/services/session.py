@@ -354,6 +354,13 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
+        # The broker rides the CLI/agent conversation id on activity reports.
+        # Persist it as a first-class field (so the session can be resumed after
+        # a stop) and keep it OUT of activity_metadata, which is clobbered below.
+        cli_session_id = metadata.pop("cli_session_id", None)
+        if cli_session_id and cli_session_id != session.cli_session_id:
+            session.cli_session_id = cli_session_id
+
         session.activity_state = state
         session.activity_metadata = metadata
         # Treat each activity report as a liveness heartbeat so the reconciler can
@@ -801,32 +808,37 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
-        self._overlay_external_resume(session, spec)
+        self._overlay_resume_session(session, spec)
         return await self._pod_manager.start(session, spec=spec)
 
     @staticmethod
-    def _overlay_external_resume(session: Session, spec: SessionSpec) -> None:
-        """Force broker config to resume the native CLI session when imported.
+    def _overlay_resume_session(session: Session, spec: SessionSpec) -> None:
+        """Seed the broker with a conversation id to resume, when one exists.
 
-        Imported sessions carry the harness's own session/thread id. The
-        broker must use a resume-capable transport: Claude's default SDK
-        transport cannot resume, so imported Claude sessions are pinned to
-        the persistent subprocess transport (``claude --resume``); Codex
-        resumes through the WebSocket transport's ``thread/resume`` RPC.
+        Imported sessions carry the harness's own session/thread id
+        (``external_session_id``) and must be pinned to a resume-capable
+        transport for their origin. Volundr-born sessions carry the
+        ``cli_session_id`` captured from broker activity reports — restarting
+        them reloads the prior conversation on whatever transport their
+        definition selects (SDK, persistent subprocess, and Codex WebSocket
+        all support resume).
         """
-        if not session.external_session_id:
+        if session.external_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker["resumeSessionId"] = session.external_session_id
+            if session.origin == "claude":
+                broker["cliType"] = "claude"
+                broker["transportAdapter"] = (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                )
+            if session.origin == "codex":
+                broker["cliType"] = "codex-ws"
+                broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
             return
 
-        broker = spec.values.setdefault("broker", {})
-        broker["resumeSessionId"] = session.external_session_id
-        if session.origin == "claude":
-            broker["cliType"] = "claude"
-            broker["transportAdapter"] = (
-                "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-            )
-        if session.origin == "codex":
-            broker["cliType"] = "codex-ws"
-            broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
+        if session.cli_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker.setdefault("resumeSessionId", session.cli_session_id)
 
     async def _run_cleanup(
         self,

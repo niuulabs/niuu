@@ -334,7 +334,7 @@ class TestExternalResumeOverlay:
         session = Session(name="normal")
         spec = SessionSpec(values={}, pod_spec=None)
 
-        SessionService._overlay_external_resume(session, spec)
+        SessionService._overlay_resume_session(session, spec)
 
         assert "broker" not in spec.values
 
@@ -349,7 +349,7 @@ class TestExternalResumeOverlay:
             pod_spec=None,
         )
 
-        SessionService._overlay_external_resume(session, spec)
+        SessionService._overlay_resume_session(session, spec)
 
         broker = spec.values["broker"]
         assert broker["resumeSessionId"] == "claude-1"
@@ -366,12 +366,37 @@ class TestExternalResumeOverlay:
         )
         spec = SessionSpec(values={}, pod_spec=None)
 
-        SessionService._overlay_external_resume(session, spec)
+        SessionService._overlay_resume_session(session, spec)
 
         broker = spec.values["broker"]
         assert broker["resumeSessionId"] == "thread-1"
         assert broker["cliType"] == "codex-ws"
         assert broker["transportAdapter"] == "skuld.transports.codex_ws.CodexWebSocketTransport"
+
+    def test_cli_session_id_seeds_resume_for_volundr_sessions(self) -> None:
+        """A volundr-born session resumes its own captured conversation —
+        no transport pinning, the definition's transport handles it."""
+        session = Session(name="own-session", cli_session_id="sess-own-1")
+        spec = SessionSpec(values={}, pod_spec=None)
+
+        SessionService._overlay_resume_session(session, spec)
+
+        broker = spec.values["broker"]
+        assert broker["resumeSessionId"] == "sess-own-1"
+        assert "transportAdapter" not in broker
+
+    def test_external_session_id_wins_over_cli_session_id(self) -> None:
+        session = Session(
+            name="imported",
+            origin="claude",
+            external_session_id="ext-1",
+            cli_session_id="own-1",
+        )
+        spec = SessionSpec(values={}, pod_spec=None)
+
+        SessionService._overlay_resume_session(session, spec)
+
+        assert spec.values["broker"]["resumeSessionId"] == "ext-1"
 
     async def test_pipeline_start_passes_resume_to_pod_manager(
         self, repository, pod_manager
