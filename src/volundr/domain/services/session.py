@@ -356,6 +356,14 @@ class SessionService:
 
         session.activity_state = state
         session.activity_metadata = metadata
+        # Treat each activity report as a liveness heartbeat so the reconciler can
+        # tell a live-but-idle session from one whose broker has died.
+        session.last_active = datetime.now(UTC)
+        # A heartbeat is PROOF OF LIFE — a lingering liveness verdict is now
+        # demonstrably false, so clear it (only liveness errors: real failure
+        # records from other paths must stay visible).
+        if session.error and session.error.startswith("liveness:"):
+            session.error = None
         updated = await self._repository.update(session)
 
         if self._broadcaster is not None:
@@ -645,6 +653,11 @@ class SessionService:
                 "status": SessionStatus.STARTING,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
+                # A restart is an explicit "bring it back": stale failure
+                # detail (e.g. the liveness reaper's "broker presumed dead")
+                # must not survive onto the healthy relaunched session — the
+                # clients render `error` as a Session-error banner verbatim.
+                "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
             }

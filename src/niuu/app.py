@@ -659,6 +659,12 @@ def build_root_app(
             try:
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/session",
+                    # The broker replays the FULL conversation history as one
+                    # frame on connect; long sessions exceed the websockets
+                    # client's 1 MiB default, which killed the broker leg with
+                    # 1009 ("message too big") and trapped browsers in an
+                    # infinite reconnect loop. 64 MiB headroom.
+                    max_size=2**26,
                     additional_headers={
                         **{
                             k.decode(): v.decode()

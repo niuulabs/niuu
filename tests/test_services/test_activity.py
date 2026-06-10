@@ -56,6 +56,39 @@ class TestUpdateActivity:
         assert updated.activity_metadata == metadata
 
     @pytest.mark.asyncio
+    async def test_update_activity_clears_stale_liveness_error(self, service, repository):
+        """A heartbeat is proof of life — a lingering liveness verdict is
+        demonstrably false and must clear (the clients render `error` as a
+        Session-error banner on an otherwise healthy running session)."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        stamped = session.model_copy(
+            update={"error": "liveness: no activity heartbeat — broker presumed dead"}
+        )
+        await repository.update(stamped)
+
+        updated = await service.update_activity(session.id, SessionActivityState.ACTIVE, {})
+        assert updated.error is None
+
+    @pytest.mark.asyncio
+    async def test_update_activity_keeps_non_liveness_errors(self, service, repository):
+        """Only liveness verdicts clear on heartbeat — real failure detail from
+        other paths stays visible."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        stamped = session.model_copy(update={"error": "provisioning failed: no disk"})
+        await repository.update(stamped)
+
+        updated = await service.update_activity(session.id, SessionActivityState.ACTIVE, {})
+        assert updated.error == "provisioning failed: no disk"
+
+    @pytest.mark.asyncio
     async def test_update_activity_broadcasts_event(self, service, broadcaster):
         """update_activity should broadcast a SESSION_ACTIVITY event."""
         session = await service.create_session(
