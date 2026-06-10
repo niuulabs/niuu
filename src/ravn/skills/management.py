@@ -38,6 +38,7 @@ class SkillLifecycle:
     run_count: int = 0
     success_count: int = 0
     failure_count: int = 0
+    consecutive_failures: int = 0
     last_used_at: str = ""
 
 
@@ -112,14 +113,10 @@ class SkillManagementRegistry:
             name=skill.name,
             description=description if description is not None else skill.description,
             content=(
-                _ensure_skill_header(skill.name, content)
-                if content is not None
-                else skill.content
+                _ensure_skill_header(skill.name, content) if content is not None else skill.content
             ),
             requires_tools=(
-                _tools_from_content(content)
-                if content is not None
-                else skill.requires_tools
+                _tools_from_content(content) if content is not None else skill.requires_tools
             ),
             fallback_for_tools=skill.fallback_for_tools,
             source_episodes=skill.source_episodes,
@@ -219,8 +216,10 @@ class SkillManagementRegistry:
         meta.run_count += 1
         if success:
             meta.success_count += 1
+            meta.consecutive_failures = 0
         else:
             meta.failure_count += 1
+            meta.consecutive_failures += 1
         if environment_id:
             meta.environment_id = environment_id
         if domain:
@@ -310,9 +309,7 @@ class SkillManagementRegistry:
         except (OSError, json.JSONDecodeError):
             return
         self._metadata = {
-            key: SkillLifecycle(**value)
-            for key, value in data.items()
-            if isinstance(value, dict)
+            key: SkillLifecycle(**value) for key, value in data.items() if isinstance(value, dict)
         }
 
     def _save(self) -> None:

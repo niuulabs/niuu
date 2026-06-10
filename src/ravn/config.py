@@ -2344,6 +2344,13 @@ class DreamCycleTriggerConfig(BaseModel):
         default=10.0,
         description="Hard timeout for one sandboxed resident tool execution.",
     )
+    rollback_consecutive_failures: int = Field(
+        default=3,
+        description=(
+            "Consecutive implementation failures before an installed skill is "
+            "auto-rolled-back (archived, regression published to the flock)."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

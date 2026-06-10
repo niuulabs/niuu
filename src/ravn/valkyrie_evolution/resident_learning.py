@@ -36,6 +36,14 @@ from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscri
 
 LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored"]
 
+#: Consecutive implementation failures before a skill is auto-rolled-back.
+#: A regressed tool must fail repeatedly, never once — transient failures
+#: (timeouts, odd payloads) must not destroy adopted learning.
+DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES = 3
+
+#: Tail of the failing tool's stderr carried in rollback judgment evidence.
+DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS = 500
+
 _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
@@ -151,6 +159,7 @@ class ResidentLearningRuntime:
         source: str = "",
         tools_dir: str | Path | None = None,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -162,6 +171,7 @@ class ResidentLearningRuntime:
         self._source = source or identity.valkyrie_id
         self._tools_dir = Path(tools_dir) if tools_dir else None
         self._tool_timeout_seconds = tool_timeout_seconds
+        self._rollback_consecutive_failures = rollback_consecutive_failures
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
         self._local_evolved_capabilities: set[str] = set()
@@ -207,13 +217,24 @@ class ResidentLearningRuntime:
 
         tool_run = await self._run_skill_tool(skill, operational_signal)
         tool_succeeded = tool_run is None or tool_run.ok
-        await self._skills.record_usage(
+        lifecycle = await self._skills.record_usage(
             skill.name,
             success=tool_succeeded,
             environment_id=self.identity.environment_id,
             domain=operational_signal.domain,
             action_safety_class=_safety_class_from_content(skill.content),
         )
+        if (
+            not tool_succeeded
+            and lifecycle.consecutive_failures >= self._rollback_consecutive_failures
+        ):
+            return await self._rollback_regressed_skill(
+                skill,
+                capability,
+                lifecycle,
+                tool_run,
+                operational_signal,
+            )
         evidence: list[dict[str, Any]] = [
             {
                 "skill_name": skill.name,
@@ -270,6 +291,106 @@ class ResidentLearningRuntime:
         if tool_run is not None:
             result["toolResult"] = tool_run.result if tool_run.ok else {"error": tool_run.error}
         return result
+
+    async def _rollback_regressed_skill(
+        self,
+        skill: Any,
+        capability: str,
+        lifecycle: Any,
+        tool_run: ToolRunResult,
+        signal: OperationalSignal,
+    ) -> dict[str, Any]:
+        """Archive a skill whose implementation keeps failing and tell the flock.
+
+        The YOLO invariant: rollback is automatic on regression.  The skill is
+        archived with full provenance, the regression travels to the flock so
+        the teacher and peers record negative transfer, and the capability gap
+        reopens so the resident may rebuild a better implementation.
+        """
+        skill_name = str(skill.name)
+        shown = await self._skills.show(skill_name, include_archived=True)
+        metadata = shown.get("metadata", {})
+        source = str(metadata.get("source") or "")
+        learning_id = (
+            source.removeprefix("flock-learning:")
+            if source.startswith("flock-learning:")
+            else skill_name
+        )
+
+        await self._skills.archive(skill_name)
+        self._local_evolved_capabilities.discard(capability)
+
+        artifact = ResidentLearningArtifact(
+            learning_id=learning_id,
+            title=skill_name,
+            summary=f"Auto-rolled-back after {lifecycle.consecutive_failures} "
+            "consecutive implementation failures",
+            content=str(skill.content or ""),
+            artifact_type="ravn_skill_tool",
+            scope=str(metadata.get("scope") or "environment"),
+            confidence=0.0,
+            source_environment_id=self.identity.environment_id,
+            source_valkyrie_id=self.identity.valkyrie_id,
+            promotion_id=learning_id,
+            flock_id=_normalise_flock_id(self.identity.flock_ids[0])
+            if self.identity.flock_ids
+            else "",
+            domain=str(metadata.get("domain") or self.identity.domain),
+            redaction_status="redacted",
+            correlation_id=signal.signal_id,
+            command_action="auto_rollback_regression",
+        )
+        decision = ResidentLearningDecision(
+            "rolled_back",
+            (
+                f"Auto-rolled-back {skill_name} after "
+                f"{lifecycle.consecutive_failures} consecutive failures: {tool_run.error}"
+            ),
+            installed_skill_name=skill_name,
+            relevant=True,
+            canary_passed=False,
+            canary_error=tool_run.error,
+        )
+        self._decisions.append(decision)
+        await self._publish_retraction(artifact, decision)
+        await self._publish_adoption(artifact, decision)
+        judgment = valkyrie_judgment_proposed(
+            environment_id=self.identity.environment_id,
+            valkyrie_id=self.identity.valkyrie_id,
+            attention_tier="present",
+            recommended_action="rebuild_rolled_back_capability",
+            authority_boundary=_authority_boundary(self.identity.autonomy_mode),
+            confidence=0.3,
+            operational_state="adopted_learning_regressed",
+            rationale=decision.rationale,
+            signal_refs=[signal.signal_id],
+            evidence=[
+                {
+                    "skill_name": skill_name,
+                    "capability_name": capability,
+                    "consecutive_failures": lifecycle.consecutive_failures,
+                    "failure_count": lifecycle.failure_count,
+                    "run_count": lifecycle.run_count,
+                    "tool_error": tool_run.error,
+                    "tool_stderr": tool_run.stderr[-DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS:],
+                    "learning_source": source or "resident_skill_registry",
+                }
+            ],
+            correlation_ids={"root": signal.signal_id},
+            source=self._source,
+            correlation_id=signal.signal_id,
+        )
+        await self._publisher.publish(judgment)
+        return {
+            "signalId": signal.signal_id,
+            "capabilityName": capability,
+            "decision": "adopted_learning_rolled_back",
+            "usedAdoptedLearning": True,
+            "skillName": skill_name,
+            "judgmentEventId": judgment.event_id,
+            "toolResult": {"error": tool_run.error},
+            "consecutiveFailures": lifecycle.consecutive_failures,
+        }
 
     async def _run_skill_tool(
         self,

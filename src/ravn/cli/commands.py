@@ -3070,6 +3070,7 @@ def _build_resident_learning_runtime(
         reviewer=reviewer,
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.dream_cycle.tool_timeout_seconds,
+        rollback_consecutive_failures=settings.dream_cycle.rollback_consecutive_failures,
     )
 
 
