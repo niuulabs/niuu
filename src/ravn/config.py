@@ -2353,7 +2353,7 @@ class DreamCycleTriggerConfig(BaseModel):
     )
 
 
-class WakefulnessConfig(BaseModel):
+class ResidentWakefulnessConfig(BaseModel):
     """Resident wakefulness state machine and scheduled consolidation dreams.
 
     Drives ``watching``/``wakeful``/``dreaming`` transitions for resident
@@ -2902,7 +2902,9 @@ class Settings(BaseSettings):
     dream_cycle: DreamCycleTriggerConfig = Field(default_factory=DreamCycleTriggerConfig)
 
     # NIU-1040: resident wakefulness state machine + scheduled consolidation dreams
-    wakefulness: WakefulnessConfig = Field(default_factory=WakefulnessConfig)
+    resident_wakefulness: ResidentWakefulnessConfig = Field(
+        default_factory=ResidentWakefulnessConfig
+    )
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

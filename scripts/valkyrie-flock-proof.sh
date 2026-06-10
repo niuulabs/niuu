@@ -210,7 +210,7 @@ dream_cycle:
   autonomy_mode: ${autonomy}
   builder_adapter: ${BUILDER_ADAPTER}${BUILDER_KWARGS}
 
-wakefulness:
+resident_wakefulness:
   enabled: true
   tick_interval_seconds: 1.0
   wakeful_window_seconds: 5.0

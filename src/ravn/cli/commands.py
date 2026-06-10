@@ -3106,7 +3106,7 @@ def _build_resident_wakefulness(
     publisher: Any | None,
 ) -> Any | None:
     """Build the wakefulness state machine for a resident daemon."""
-    if not settings.wakefulness.enabled:
+    if not settings.resident_wakefulness.enabled:
         return None
     if resident_learning_runtime is None or publisher is None:
         logger.warning(
@@ -3117,7 +3117,7 @@ def _build_resident_wakefulness(
 
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
 
-    cfg = settings.wakefulness
+    cfg = settings.resident_wakefulness
     return ResidentWakefulness(
         identity=resident_learning_runtime.identity,
         skills=resident_learning_runtime.skills,
@@ -3283,7 +3283,7 @@ def _wire_mimir_triggers(
             )
 
     # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
-    if settings.wakefulness.enabled and llm is not None:
+    if settings.resident_wakefulness.enabled and llm is not None:
         if _uses_cli_transport_runtime():
             logger.info(
                 "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
