@@ -341,11 +341,7 @@ async def launch_workflow_execution(
                 "workflow": workflow_snapshot,
                 **({"mimir": workflow_mimir} if workflow_mimir else {}),
                 **(
-                    {
-                        "sleipnir_publish_urls": list(
-                            settings.dispatch.flock.sleipnir_publish_urls
-                        )
-                    }
+                    {"sleipnir_publish_urls": list(settings.dispatch.flock.sleipnir_publish_urls)}
                     if settings.dispatch.flock.sleipnir_publish_urls
                     else {}
                 ),

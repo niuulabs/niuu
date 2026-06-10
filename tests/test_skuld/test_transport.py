@@ -1571,12 +1571,15 @@ class TestCodexSubprocessTransport:
 
         transport.on_event(AsyncMock())
 
-        with patch(
-            "skuld.transports.codex.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        with (
+            patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
         ):
             mock_exec.return_value = mock_process
             await transport.send_message("refactor the auth module")
@@ -1624,9 +1627,7 @@ class TestCodexSubprocessTransport:
 
             call_args = mock_exec.call_args[0]
             assert "-c" in call_args
-            assert any(
-                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
-            )
+            assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
 
     @pytest.mark.asyncio
     async def test_send_message_emits_text_delta_for_json_events(self, transport):

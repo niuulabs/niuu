@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -81,6 +82,10 @@ def _normalize_timestamp(value: Any) -> float:
         return 0.0
     try:
         return float(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
 
@@ -546,6 +551,155 @@ def create_volundr_router(
             if isinstance(payload, list):
                 archived.extend(str(item) for item in payload)
         return archived
+
+    @router.get("/feature-flags")
+    async def get_feature_flags(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance = await _resolve_target_instance(service, principal, None)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/feature-flags",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/external-sessions")
+    async def list_external_sessions(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        """Aggregate discoverable external CLI sessions across instances.
+
+        Returns 503 only when every visible instance reports discovery as
+        unavailable, so the UI can hide the import affordance.
+        """
+        instances = await _visible_instances(service, principal)
+        params = _query_params(request)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/external-sessions",
+                    params=params,
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+
+        merged: list[dict[str, Any]] = []
+        succeeded = False
+        for instance, result in zip(instances, results, strict=False):
+            if isinstance(result, Exception):
+                continue
+            if result.status_code >= 400:
+                continue
+            payload = result.json()
+            if not isinstance(payload, list):
+                continue
+            succeeded = True
+            merged.extend(
+                _with_instance(item, instance) for item in payload if isinstance(item, dict)
+            )
+
+        if not succeeded:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External session discovery not available",
+            )
+
+        merged.sort(
+            key=lambda item: _normalize_timestamp(item.get("updated_at") or item.get("updatedAt")),
+            reverse=True,
+        )
+        return merged
+
+    @router.post("/sessions/import", status_code=status.HTTP_201_CREATED)
+    async def import_external_session(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        requested_instance_id = body.get("instance_id") or body.get("instanceId")
+        target_tags = body.get("target_tags") or body.get("targetTags")
+        target_match = body.get("target_match") or body.get("targetMatch") or "all"
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            str(requested_instance_id) if requested_instance_id else None,
+            tags=list(target_tags) if target_tags else None,
+            match=str(target_match),
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/sessions/import",
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected response from target Volundr instance",
+            )
+        return _with_instance(payload, instance)
+
+    async def _start_session_on_owner(
+        request: Request,
+        session_id: str,
+        principal: Principal,
+        path_suffix: str,
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        try:
+            json_body = await request.json()
+        except Exception:
+            json_body = None
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/{path_suffix}",
+            json_body=json_body if isinstance(json_body, dict) else None,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
+    @router.post("/sessions/{session_id}/start")
+    async def start_session(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _start_session_on_owner(request, session_id, principal, "start")
+
+    @router.post("/sessions/{session_id}/resume")
+    async def resume_session(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _start_session_on_owner(request, session_id, principal, "resume")
 
     @router.post("/sessions/{session_id}/stop")
     async def stop_session(

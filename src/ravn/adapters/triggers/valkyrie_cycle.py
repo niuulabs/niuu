@@ -70,9 +70,7 @@ class ValkyrieCycleStatus:
             "last_dream_completed_at": (
                 self.last_dream_completed_at.isoformat() if self.last_dream_completed_at else ""
             ),
-            "next_dream_after": self.next_dream_after.isoformat()
-            if self.next_dream_after
-            else "",
+            "next_dream_after": self.next_dream_after.isoformat() if self.next_dream_after else "",
             "last_error": self.last_error,
             "proposals_created": self.proposals_created,
             "proposals_applied": self.proposals_applied,
@@ -165,9 +163,7 @@ class ValkyrieCycleScheduler:
             saved = await evaluate_and_store_proposals(proposals, store=self._store)
             applied = await self._apply_allowed(saved)
             deferred = [
-                proposal
-                for proposal in saved
-                if proposal.status != ProposalStatus.APPLIED.value
+                proposal for proposal in saved if proposal.status != ProposalStatus.APPLIED.value
             ]
             completed_at = self._clock()
             result.completed_at = completed_at

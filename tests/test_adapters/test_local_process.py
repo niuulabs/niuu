@@ -255,6 +255,32 @@ class TestSkuldEnv:
         assert env["SKULD__TELEGRAM__TOPIC_MODE"] == "fixed_topic"
         assert env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] == "77"
 
+    def test_build_env_includes_resume_session_id(self) -> None:
+        """Imported sessions thread their native CLI session id to Skuld."""
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "claude",
+                    "resumeSessionId": "2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert env["SKULD__SESSION__RESUME_SESSION_ID"] == ("2e877b9f-4b8a-4d46-8f00-03f6163addd5")
+
+    def test_build_env_omits_resume_session_id_when_absent(self) -> None:
+        spec = SessionSpec(
+            values={"broker": {"cliType": "claude"}},
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__SESSION__RESUME_SESSION_ID" not in env
+
     def test_build_env_includes_localized_mcp_servers(self) -> None:
         spec = SessionSpec(
             values={
@@ -511,6 +537,57 @@ class TestWorkspaceProvisioning:
         assert claude_md.exists()
         content = claude_md.read_text()
         assert "You are a helpful assistant." in content
+
+    async def test_local_mount_path_outside_allowed_prefixes_is_rejected(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        """Mini-mode local_path workspaces obey the allowed mount prefix policy."""
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="denied-local-mount",
+            source=LocalMountSource(local_path=str(outside)),
+        )
+
+        with pytest.raises(RuntimeError, match="allowed mount prefix"):
+            await manager._provision_workspace(session, default_spec)
+
+    async def test_local_mount_path_under_allowed_prefix_is_used(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        workspace_dir = allowed / "project"
+        workspace_dir.mkdir(parents=True)
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="allowed-local-mount",
+            source=LocalMountSource(local_path=str(workspace_dir)),
+        )
+
+        workspace = await manager._provision_workspace(session, default_spec)
+
+        assert workspace == workspace_dir
 
     async def test_git_source_local_path_uses_directory_directly(
         self,
@@ -1156,9 +1233,7 @@ class TestProcessSpawning:
                     {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
                     {"name": "MESH_PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1217,12 +1292,8 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1277,9 +1348,7 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-claude-mimir-researcher"},
                     {"name": "ravn-codex-mimir-researcher"},
@@ -1309,12 +1378,8 @@ class TestProcessSpawning:
             )
 
         persona_dir = workspace / ".ravn" / "personas"
-        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
-        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
+        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(encoding="utf-8")
+        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(encoding="utf-8")
         assert claude_yaml.startswith("name: claude-mimir-researcher")
         assert codex_yaml.startswith("name: codex-mimir-researcher")
         assert mock_run.call_args_list[0].kwargs["cwd"] == str(workspace)
@@ -1348,12 +1413,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1417,12 +1478,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1515,12 +1572,8 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-coder"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-coder"},),
             ),
         )
 
@@ -1642,9 +1695,7 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-coder"},
                     {"name": "ravn-reviewer"},
@@ -2315,9 +2366,7 @@ class TestLocalFlockMeshMode:
                     {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
                     {"name": "MESH_PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2375,12 +2424,8 @@ class TestLocalFlockMeshMode:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2443,12 +2488,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2505,12 +2546,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 

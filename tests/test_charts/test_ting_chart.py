@@ -33,7 +33,7 @@ class TestDeploymentTemplate:
 
     def test_uses_unified_niuu_image_command(self, template_yaml):
         assert ".Values.command" in template_yaml
-        assert 'name: {{ .Chart.Name }}' in template_yaml
+        assert "name: {{ .Chart.Name }}" in template_yaml
 
     def test_has_process_runtime_env_vars(self, template_yaml):
         assert "HOST" in template_yaml

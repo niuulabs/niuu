@@ -42,7 +42,7 @@ def _extract_platform_config() -> tuple[str, float, str]:
         payload = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     except Exception:
         return base_url, timeout, pat_token
-    platform = ((payload.get("gateway") or {}).get("platform") or {})
+    platform = (payload.get("gateway") or {}).get("platform") or {}
     if isinstance(platform.get("base_url"), str) and platform["base_url"].strip():
         base_url = platform["base_url"].strip()
     if isinstance(platform.get("timeout"), (int, float)):
@@ -156,9 +156,7 @@ def ensure_codex_tool_shims(
         _tracker_issue_script(platform_base_url, platform_timeout, platform_pat),
         encoding="utf-8",
     )
-    tracker_target.chmod(
-        tracker_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
+    tracker_target.chmod(tracker_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     commands: dict[str, tuple[str, str]] = {}
     if mount is not None:

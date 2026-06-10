@@ -202,6 +202,13 @@ class SkuldSessionConfig(BaseModel):
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
+    resume_session_id: str = Field(
+        default="",
+        description=(
+            "Native CLI session/thread id to resume on first start. Set by "
+            "Volundr for sessions imported from an external harness."
+        ),
+    )
 
 
 class ArchiveStoreConfig(BaseModel):

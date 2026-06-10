@@ -86,8 +86,7 @@ class VolundrPlugin(ServicePlugin):
                     "/api/v1/volundr/prompts",
                 ),
                 description=(
-                    "Launch specs, session definitions, prompts, "
-                    "and resource catalog routes."
+                    "Launch specs, session definitions, prompts, and resource catalog routes."
                 ),
             ),
         )

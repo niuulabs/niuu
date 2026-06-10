@@ -93,9 +93,7 @@ class TelegramIngressService:
                 for binding in bindings:
                     if binding.bot_token in self._bot_tasks:
                         continue
-                    self._bot_tasks[binding.bot_token] = asyncio.create_task(
-                        self._run_bot(binding)
-                    )
+                    self._bot_tasks[binding.bot_token] = asyncio.create_task(self._run_bot(binding))
 
                 stale = [token for token in self._bot_tasks if token not in active_tokens]
                 for token in stale:

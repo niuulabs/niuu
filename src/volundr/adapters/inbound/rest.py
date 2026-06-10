@@ -22,6 +22,7 @@ from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
     CleanupTarget,
+    ExternalSessionRecord,
     GitProviderType,
     GitSource,
     LocalMountSource,
@@ -44,6 +45,12 @@ from volundr.domain.ports import (
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
+    ExternalSessionAlreadyImportedError,
+    ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
+    ExternalSessionProviderNotFoundError,
+    ExternalSessionService,
+    ExternalSessionWorkspaceError,
     ForgeService,
     ProviderInfo,
     RepoService,
@@ -407,6 +414,86 @@ class SessionStart(BaseModel):
     }
 
 
+class SessionImportRequest(BaseModel):
+    """Request model for importing an external CLI session."""
+
+    provider: str = Field(
+        min_length=1,
+        max_length=100,
+        description="External session provider key (e.g. 'claude-code', 'codex')",
+    )
+    external_id: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Native session/thread identifier to import",
+    )
+    name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional session name; derived from the harness when omitted",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "provider": "claude-code",
+                "external_id": "2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+                "name": "imported-debug-session",
+            },
+        },
+    }
+
+
+class ExternalSessionResponse(BaseModel):
+    """Response model for a discoverable external CLI session."""
+
+    provider: str = Field(description="Provider key that discovered the session")
+    harness: str = Field(description="CLI harness owning the session (claude, codex)")
+    external_id: str = Field(description="Native session/thread identifier")
+    workspace_path: str = Field(description="Working directory the session ran in")
+    title: str = Field(description="Short human-readable summary")
+    model: str = Field(description="Model the session used, when known")
+    created_at: str | None = Field(description="ISO 8601 start timestamp, when known")
+    updated_at: str | None = Field(description="ISO 8601 last-activity timestamp")
+    live: bool = Field(description="Whether the session appears to be actively running")
+    workspace_exists: bool = Field(description="Whether the workspace still exists on disk")
+    workspace_allowed: bool = Field(
+        description="Whether the workspace passes the allowed mount prefix policy",
+    )
+    imported_session_id: UUID | None = Field(
+        description="Volundr session id when already imported",
+    )
+    importable: bool = Field(
+        description=(
+            "Whether the session can be imported right now (workspace present, "
+            "allowed by policy, and not already imported)"
+        ),
+    )
+
+    @classmethod
+    def from_record(cls, record: ExternalSessionRecord) -> "ExternalSessionResponse":
+        """Create response from domain model."""
+        return cls(
+            provider=record.provider,
+            harness=record.harness,
+            external_id=record.external_id,
+            workspace_path=record.workspace_path,
+            title=record.title,
+            model=record.model,
+            created_at=record.created_at.isoformat() if record.created_at else None,
+            updated_at=record.updated_at.isoformat() if record.updated_at else None,
+            live=record.live,
+            workspace_exists=record.workspace_exists,
+            workspace_allowed=record.workspace_allowed,
+            imported_session_id=record.imported_session_id,
+            importable=(
+                record.workspace_exists
+                and record.workspace_allowed
+                and record.imported_session_id is None
+            ),
+        )
+
+
 class DeleteSessionBody(BaseModel):
     """Optional request body for session deletion with cleanup targets."""
 
@@ -484,6 +571,14 @@ class SessionResponse(BaseModel):
         default="session",
         description="Workload type used to launch the session",
     )
+    origin: str = Field(
+        default="volundr",
+        description="Where the session originated (volundr, claude, codex)",
+    )
+    external_session_id: str | None = Field(
+        default=None,
+        description="Native CLI session id for imported sessions",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -541,6 +636,8 @@ class SessionResponse(BaseModel):
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_metadata=session.activity_metadata,
             workload_type=session.workload_type,
+            origin=session.origin,
+            external_session_id=session.external_session_id,
         )
 
 
@@ -997,6 +1094,7 @@ def create_router(
     chronicle_service: ChronicleService | None = None,
     archive_service=None,
     *,
+    external_session_service: ExternalSessionService | None = None,
     prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
@@ -1059,6 +1157,7 @@ def create_router(
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
             "mini_mode": settings.local_mounts.mini_mode,
+            "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
         }
 
     @router.get("/repos/branches", response_model=list[str], tags=["Repositories"])
@@ -1196,6 +1295,97 @@ def create_router(
         """Bulk archive all stopped sessions."""
         archived_ids = await forge.archive_stopped_sessions()
         return [str(uid) for uid in archived_ids]
+
+    @router.get(
+        "/external-sessions",
+        response_model=list[ExternalSessionResponse],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
+    async def list_external_sessions(
+        provider: str | None = Query(
+            default=None,
+            description="Restrict discovery to a single provider key",
+        ),
+    ) -> list[ExternalSessionResponse]:
+        """List CLI sessions discoverable on the host (Claude Code, Codex).
+
+        Sessions already imported into Volundr carry their Volundr session
+        id in ``imported_session_id``. Live sessions are flagged via a
+        recent-activity heuristic on the harness's session store.
+        """
+        if external_session_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External session discovery not available",
+            )
+        try:
+            records = await external_session_service.list_external_sessions(provider=provider)
+        except ExternalSessionProviderNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        return [ExternalSessionResponse.from_record(record) for record in records]
+
+    @router.post(
+        "/sessions/import",
+        response_model=SessionResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
+    async def import_external_session(
+        request: Request,
+        data: SessionImportRequest,
+    ) -> SessionResponse:
+        """Import an external CLI session as a stopped Volundr session.
+
+        The imported session keeps pointing at its original working
+        directory and resumes the native CLI session when started.
+        """
+        if external_session_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External session discovery not available",
+            )
+        principal = await _optional_principal(request)
+        try:
+            session = await external_session_service.import_session(
+                provider=data.provider,
+                external_id=data.external_id,
+                name=data.name,
+                principal=principal,
+            )
+        except (ExternalSessionProviderNotFoundError, ExternalSessionNotFoundError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except ExternalSessionAlreadyImportedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
+        except ExternalSessionPathNotAllowedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e),
+            )
+        except ExternalSessionWorkspaceError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(e),
+            )
+        return SessionResponse.from_session(session)
 
     @router.post(
         "/sessions",
@@ -1377,6 +1567,15 @@ def create_router(
         },
         tags=["Sessions"],
     )
+    @router.post(
+        "/sessions/{session_id}/resume",
+        response_model=SessionResponse,
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
     async def start_session(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
@@ -1386,6 +1585,8 @@ def create_router(
 
         Used to relaunch a stopped or failed session. An optional
         launch_spec in the body overrides the default launch spec.
+        ``/resume`` is an alias for ``/start``; imported sessions resume
+        their native CLI session via the recorded external session id.
         """
         launch_spec = data.launch_spec if data else None
         principal = await _optional_principal(request)

@@ -121,6 +121,7 @@ class TestListTenants:
         assert resp.status_code == 200
         svc.list_tenants.assert_called_once_with("root")
 
+
 class _ProvisioningResult:
     def __init__(self, *, success: bool, user_id: str, home_pvc: str | None, errors: list[str]):
         self.success = success
@@ -365,6 +366,7 @@ class TestUpdateTenant:
             max_storage_gb=None,
             tier=None,
         )
+
 
 class TestMembers:
     """Tests for member management endpoints."""

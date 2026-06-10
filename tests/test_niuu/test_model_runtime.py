@@ -197,8 +197,7 @@ def test_resolve_session_definition_for_models_handles_success_and_errors() -> N
     )
     assert definition is None
     assert (
-        error
-        == "Workflow stages mix multiple model providers; use a single provider per workflow."
+        error == "Workflow stages mix multiple model providers; use a single provider per workflow."
     )
 
     definition, error = resolve_session_definition_for_models(
@@ -287,17 +286,14 @@ def test_validate_session_definition_for_models_covers_all_validation_branches()
         is None
     )
 
-    assert (
-        validate_session_definition_for_models(
-            "skuldClaude",
-            ["gpt-5.5"],
-            session_definitions=definitions,
-            configured_models=_configured_models(),
-        )
-        == (
-            "Session definition 'skuldClaude' does not accept provider 'openai'. "
-            "Compatible providers: anthropic"
-        )
+    assert validate_session_definition_for_models(
+        "skuldClaude",
+        ["gpt-5.5"],
+        session_definitions=definitions,
+        configured_models=_configured_models(),
+    ) == (
+        "Session definition 'skuldClaude' does not accept provider 'openai'. "
+        "Compatible providers: anthropic"
     )
 
 
@@ -316,8 +312,7 @@ def test_transport_adapter_for_session_definition_handles_missing_shapes() -> No
         == ""
     )
     assert (
-        transport_adapter_for_session_definition("badBroker", session_definitions=definitions)
-        == ""
+        transport_adapter_for_session_definition("badBroker", session_definitions=definitions) == ""
     )
     assert (
         transport_adapter_for_session_definition("good", session_definitions=definitions)

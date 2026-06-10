@@ -1225,13 +1225,7 @@ summary: post-mortem source captured
         )
 
         counts = _extract_mimir_dream_counts(
-            (
-                "---outcome---\n"
-                "pages_updated: 3\n"
-                "entities_created: 2\n"
-                "lint_fixes: 1\n"
-                "---end---"
-            ),
+            ("---outcome---\npages_updated: 3\nentities_created: 2\nlint_fixes: 1\n---end---"),
             persona,
         )
         assert counts == {"pages_updated": 3, "entities_created": 2, "lint_fixes": 1}

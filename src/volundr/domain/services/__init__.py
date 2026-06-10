@@ -7,6 +7,14 @@ Re-exports all public names for backward compatibility so that
 from __future__ import annotations
 
 from .chronicle import ChronicleNotFoundError, ChronicleService
+from .external_sessions import (
+    ExternalSessionAlreadyImportedError,
+    ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
+    ExternalSessionProviderNotFoundError,
+    ExternalSessionService,
+    ExternalSessionWorkspaceError,
+)
 from .feature import FeatureModule, FeatureService, UserFeaturePreference
 from .forge import ForgeService
 from .git_workflow import ConfidenceScorer, GitWorkflowService
@@ -34,6 +42,11 @@ from .workspace import WorkspaceService
 __all__ = [
     # Exceptions
     "ChronicleNotFoundError",
+    "ExternalSessionAlreadyImportedError",
+    "ExternalSessionNotFoundError",
+    "ExternalSessionPathNotAllowedError",
+    "ExternalSessionProviderNotFoundError",
+    "ExternalSessionWorkspaceError",
     "LaunchSpecDuplicateNameError",
     "LaunchSpecNotFoundError",
     "PromptNotFoundError",
@@ -47,6 +60,7 @@ __all__ = [
     "TrackerIssueNotFoundError",
     "TrackerMappingNotFoundError",
     # Services
+    "ExternalSessionService",
     "FeatureService",
     "ForgeService",
     "ChronicleService",

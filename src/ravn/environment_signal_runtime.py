@@ -82,8 +82,7 @@ def build_runtime_environment(settings: Settings) -> Environment:
             for source in cfg.signal_sources
         ],
         flock_memberships=[
-            FlockMembership(flock_id=flock_id, role="resident")
-            for flock_id in cfg.flocks
+            FlockMembership(flock_id=flock_id, role="resident") for flock_id in cfg.flocks
         ],
     )
 
@@ -291,8 +290,7 @@ class EnvironmentSignalRuntime:
         obj = signal.object_ref or {}
         if obj.get("kind") and obj.get("name"):
             title = (
-                f"{obj['kind']} {obj.get('namespace', 'default')}/{obj['name']}: "
-                f"{signal.severity}"
+                f"{obj['kind']} {obj.get('namespace', 'default')}/{obj['name']}: {signal.severity}"
             )
         resident_name = self._resident_name()
         resident_personality = self._resident_personality()

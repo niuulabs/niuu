@@ -27,6 +27,7 @@ from volundr.domain.models import (
     ClusterResourceInfo,
     CommunicationRoute,
     CredentialMapping,
+    ExternalSessionRecord,
     IntegrationConnection,
     LaunchSpec,
     MCPServerConfig,
@@ -115,6 +116,38 @@ class SessionRepository(ABC):
     @abstractmethod
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session. Returns True if deleted, False if not found."""
+
+
+class ExternalSessionProvider(ABC):
+    """Port for discovering CLI sessions that live outside Volundr.
+
+    Implementations scan a harness's native session store (e.g. Claude
+    Code's ``~/.claude/projects`` or Codex's ``~/.codex/sessions``) so
+    stopped or live sessions can be listed and imported as Volundr
+    sessions.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Unique provider key (e.g. 'claude-code', 'codex')."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def harness(self) -> str:
+        """CLI harness the sessions belong to ('claude' or 'codex')."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_sessions(self) -> list[ExternalSessionRecord]:
+        """Discover sessions in the harness's store, newest first."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_session(self, external_id: str) -> ExternalSessionRecord | None:
+        """Look up a single session by its native identifier."""
+        raise NotImplementedError
 
 
 class CommunicationRouteRepository(ABC):

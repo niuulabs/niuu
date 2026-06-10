@@ -1492,6 +1492,7 @@ class Broker:
                 "" if self._has_workflow_trigger() else self._settings.session.initial_prompt
             ),
             "mcp_servers": self._settings.mcp_servers,
+            "resume_session_id": self._settings.session.resume_session_id,
         }
 
     def _create_transport(self) -> CLITransport:

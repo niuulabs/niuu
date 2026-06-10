@@ -13,9 +13,23 @@ import {
   DialogContent,
 } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
-import { Check, Clock3, FolderGit2, Search, SquareTerminal, Ticket, Trash2 } from 'lucide-react';
+import {
+  Check,
+  Clock3,
+  Download,
+  FolderGit2,
+  Search,
+  SquareTerminal,
+  Ticket,
+  Trash2,
+} from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
+import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
+import {
+  isExternalSessionsUnavailableError,
+  useExternalSessions,
+} from './hooks/useExternalSessions';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import type { Session, SessionState } from '../domain/session';
@@ -95,6 +109,15 @@ export function toGroupTestId(label: string): string {
 
 export function sessionActivityTs(session: Session): number {
   return new Date(session.lastActivityAt ?? session.startedAt).getTime();
+}
+
+const EXTERNAL_ORIGINS = new Set(['claude', 'codex']);
+
+/** External origins ('claude' / 'codex') get a badge; volundr-native rows do not. */
+export function sessionOriginBadge(session: Pick<Session, 'origin'>): string | null {
+  if (!session.origin) return null;
+  if (!EXTERNAL_ORIGINS.has(session.origin)) return null;
+  return session.origin;
 }
 
 export function compareSessionsByActivity(a: Session, b: Session): number {
@@ -186,6 +209,7 @@ function PodEntry({
     previewLabel && looksLikeRepoLabel(previewLabel) ? compactSourceParts(previewLabel) : null;
   const showPreviewFallback = previewLabel && !sourceParts;
   const forgeLabel = session.clusterName ?? session.clusterId;
+  const originBadge = sessionOriginBadge(session);
   return (
     <button
       type="button"
@@ -251,6 +275,17 @@ function PodEntry({
                     forge
                   </span>
                   <span className="niuu:truncate niuu:text-brand">{forgeLabel}</span>
+                </span>
+              ) : null}
+              {originBadge ? (
+                <span
+                  className="niuu:inline-flex niuu:flex-shrink-0 niuu:items-center niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5"
+                  title={`Imported from ${originBadge}`}
+                  data-testid={`session-origin-badge-${session.id}`}
+                >
+                  <span className="niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-secondary">
+                    {originBadge}
+                  </span>
                 </span>
               ) : null}
               {sourceParts ? (
@@ -363,10 +398,13 @@ export function SessionsPage() {
   const [selectedStoppedIds, setSelectedStoppedIds] = useState<Set<string>>(new Set());
   const [deleteStoppedOpen, setDeleteStoppedOpen] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
 
   const sessionsQuery = useSessionList();
+  const externalSessionsQuery = useExternalSessions();
+  const importUnavailable = isExternalSessionsUnavailableError(externalSessionsQuery.error);
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
@@ -630,6 +668,18 @@ export function SessionsPage() {
                   >
                     +
                   </button>
+                  {!importUnavailable ? (
+                    <button
+                      type="button"
+                      onClick={() => setImportOpen(true)}
+                      className="niuu:flex niuu:h-7 niuu:w-7 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
+                      data-testid="pod-import-button"
+                      aria-label="Import external CLI sessions"
+                      title="Import external CLI sessions"
+                    >
+                      <Download className="niuu:h-3.5 niuu:w-3.5" />
+                    </button>
+                  ) : null}
                   <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
                     <Search
                       className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:text-text-muted"
@@ -828,6 +878,13 @@ export function SessionsPage() {
         </DialogContent>
       </Dialog>
       <LaunchWizard open={launchOpen} onOpenChange={setLaunchOpen} />
+      <ImportExternalSessionsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={async () => {
+          await sessionsQuery.refetch();
+        }}
+      />
     </>
   );
 }

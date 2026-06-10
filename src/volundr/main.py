@@ -81,6 +81,7 @@ from volundr.catalog import build_catalog
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
     ChronicleService,
+    ExternalSessionService,
     GitWorkflowService,
     PromptService,
     RepoService,
@@ -226,6 +227,29 @@ def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F8
     instance = cls(**kwargs)
     logger.info("Archive store: %s", as_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def _create_external_session_providers(
+    settings: Settings,
+) -> list["ExternalSessionProvider"]:  # noqa: F821
+    """Create external session provider adapters from dynamic config.
+
+    Disabled unless ``external_sessions.enabled`` is true, or unset while
+    running in mini/local mode — host session stores are only reachable
+    when Volundr runs on the host.
+    """
+    es_cfg = settings.external_sessions
+    enabled = es_cfg.enabled if es_cfg.enabled is not None else settings.local_mounts.mini_mode
+    if not enabled:
+        return []
+
+    providers = []
+    for provider_cfg in es_cfg.providers:
+        cls = import_class(provider_cfg.adapter)
+        instance = cls(**provider_cfg.kwargs)
+        providers.append(instance)
+        logger.info("External session provider: %s", provider_cfg.adapter.rsplit(".", 1)[-1])
+    return providers
 
 
 def _create_contributors(
@@ -717,6 +741,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 workflow_config=settings.git.workflow,
             )
 
+            # External session discovery (Claude Code / Codex on the host)
+            external_session_providers = _create_external_session_providers(settings)
+            external_session_service = None
+            if external_session_providers:
+                external_session_service = ExternalSessionService(
+                    external_session_providers,
+                    repository,
+                    session_service,
+                    allowed_workspace_prefixes=settings.local_mounts.allowed_prefixes,
+                    allow_root_workspace=settings.local_mounts.allow_root_mount,
+                )
+
             # Create and include routers
             forge_router = create_router(
                 session_service,
@@ -727,6 +763,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repo_service=repo_service,
                 chronicle_service=chronicle_service,
                 archive_service=archive_service,
+                external_session_service=external_session_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)

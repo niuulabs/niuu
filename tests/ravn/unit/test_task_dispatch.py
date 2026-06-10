@@ -719,6 +719,7 @@ class TestConnectAndConsume:
     async def test_no_amqp_url_sleeps_and_returns(self) -> None:
         """_connect_and_consume returns early when AMQP URL is not set."""
         import os
+
         event_mod = sys.modules["ravn.adapters.channels.event"]
         ch = TaskDispatchChannel(_config())
         enqueued: list = []
@@ -737,6 +738,7 @@ class TestConnectAndConsume:
     async def test_messages_are_consumed(self) -> None:
         """_connect_and_consume delivers messages via _handle_message."""
         import os
+
         event_mod = sys.modules["ravn.adapters.channels.event"]
         loader = _fake_persona_loader(["autonomous-agent"])
         ch = TaskDispatchChannel(_config(reconnect_delay_s=0.0), persona_loader=loader)

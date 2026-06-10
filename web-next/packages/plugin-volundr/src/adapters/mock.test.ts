@@ -41,6 +41,58 @@ describe('createMockVolundrService', () => {
     expect(session).toBeNull();
   });
 
+  it('listExternalSessions returns seeded external sessions', async () => {
+    const svc = createMockVolundrService();
+    const sessions = await svc.listExternalSessions();
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions[0]).toHaveProperty('provider');
+    expect(sessions[0]).toHaveProperty('externalId');
+    expect(sessions[0]).toHaveProperty('workspaceExists');
+  });
+
+  it('importExternalSession imports a known session and marks it imported', async () => {
+    const svc = createMockVolundrService();
+    const [importable] = (await svc.listExternalSessions()).filter(
+      (session) => session.workspaceExists && !session.importedSessionId,
+    );
+    expect(importable).toBeDefined();
+
+    const imported = await svc.importExternalSession(
+      importable!.provider,
+      importable!.externalId,
+      'renamed',
+    );
+    expect(imported.name).toBe('renamed');
+    expect(imported.origin).toBe(importable!.harness);
+    expect(imported.externalSessionId).toBe(importable!.externalId);
+
+    const refreshed = await svc.listExternalSessions();
+    const row = refreshed.find((session) => session.externalId === importable!.externalId);
+    expect(row?.importedSessionId).toBe(imported.id);
+
+    const sessions = await svc.getSessions();
+    expect(sessions.some((session) => session.id === imported.id)).toBe(true);
+
+    await expect(
+      svc.importExternalSession(importable!.provider, importable!.externalId),
+    ).rejects.toThrow(/already imported/);
+  });
+
+  it('importExternalSession rejects unknown sessions and missing workspaces', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.importExternalSession('claude-code', 'nope')).rejects.toThrow(
+      /Unknown external session/,
+    );
+
+    const missingWorkspace = (await svc.listExternalSessions()).find(
+      (session) => !session.workspaceExists,
+    );
+    expect(missingWorkspace).toBeDefined();
+    await expect(
+      svc.importExternalSession(missingWorkspace!.provider, missingWorkspace!.externalId),
+    ).rejects.toThrow(/Workspace directory missing/);
+  });
+
   it('getActiveSessions returns only active statuses', async () => {
     const svc = createMockVolundrService();
     const active = await svc.getActiveSessions();
@@ -198,6 +250,193 @@ describe('createMockVolundrService', () => {
     expect(preset.name).toBe('fast');
   });
 
+  it('saveLaunchSpec replaces an existing spec with the same id', async () => {
+    const svc = createMockVolundrService();
+    const base = {
+      name: 'original',
+      description: '',
+      isDefault: false,
+      cliTool: 'claude',
+      workloadType: 'default',
+      model: null,
+      systemPrompt: null,
+      resourceConfig: {},
+      mcpServers: [],
+      terminalSidecar: { enabled: false, allowedCommands: [] },
+      skills: [],
+      rules: [],
+      envVars: {},
+      envSecretRefs: [],
+      source: null,
+      integrationIds: [],
+      setupScripts: [],
+      workloadConfig: {},
+    } as const;
+
+    const first = await svc.saveLaunchSpec({ ...base, id: 'spec-dup' });
+    expect(first.name).toBe('original');
+
+    const second = await svc.saveLaunchSpec({ ...base, id: 'spec-dup', name: 'replaced' });
+    expect(second.name).toBe('replaced');
+
+    const userSpecs = await svc.getLaunchSpecs('user');
+    const matching = userSpecs.filter((spec) => spec.id === 'spec-dup');
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.name).toBe('replaced');
+  });
+
+  it('startSession honours an explicit instance id', async () => {
+    const svc = createMockVolundrService();
+    const session = await svc.startSession({
+      name: 'pinned',
+      source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+      model: 'claude-sonnet',
+      instanceId: 'inst-custom',
+    });
+    expect(session.instanceId).toBe('inst-custom');
+    expect(session.instanceName).toBe('Selected Mock Volundr');
+  });
+
+  it('startSession routes gpu-tagged sessions to the gpu instance', async () => {
+    const svc = createMockVolundrService();
+    const session = await svc.startSession({
+      name: 'gpu-job',
+      source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+      model: 'claude-sonnet',
+      targetTags: ['gpu'],
+    });
+    expect(session.instanceId).toBe('mock-volundr-gpu');
+    expect(session.instanceName).toBe('Mock Volundr GPU');
+  });
+
+  it('startSession defaults to the default instance for non-gpu tags', async () => {
+    const svc = createMockVolundrService();
+    const session = await svc.startSession({
+      name: 'cpu-job',
+      source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+      model: 'claude-sonnet',
+      targetTags: ['batch'],
+    });
+    expect(session.instanceId).toBe('mock-volundr-default');
+    expect(session.instanceName).toBe('Mock Volundr');
+  });
+
+  it('evaluatePermissionAutoApproval approves allowlisted commands', async () => {
+    const svc = createMockVolundrService();
+    const decision = await svc.evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-1',
+      toolName: 'Bash',
+      description: 'start dev server',
+      command: './start-dev --port 3000',
+    });
+    expect(decision.canAutoApprove).toBe(true);
+    expect(decision.reason).toBe('allowed');
+    expect(decision.command).toBe('./start-dev --port 3000');
+    expect(decision.matchedPattern).toBe('^\\s*\\./start-dev');
+  });
+
+  it('evaluatePermissionAutoApproval rejects other commands', async () => {
+    const svc = createMockVolundrService();
+    const decision = await svc.evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-2',
+      toolName: 'Bash',
+      description: 'delete everything',
+      command: 'rm -rf /',
+    });
+    expect(decision.canAutoApprove).toBe(false);
+    expect(decision.reason).toBe('no_allowlist_match');
+    expect(decision.matchedPattern).toBeNull();
+  });
+
+  it('evaluatePermissionAutoApproval handles a missing command', async () => {
+    const svc = createMockVolundrService();
+    const decision = await svc.evaluatePermissionAutoApproval('sess-1', {
+      requestId: 'perm-3',
+      toolName: 'WebFetch',
+      description: 'fetch a page',
+    });
+    expect(decision.canAutoApprove).toBe(false);
+    expect(decision.command).toBeNull();
+  });
+
+  it('importExternalSession rejects sessions outside the allowed mounts', async () => {
+    const svc = createMockVolundrService();
+    const denied = (await svc.listExternalSessions()).find(
+      (session) => session.workspaceExists && !session.workspaceAllowed,
+    );
+    expect(denied).toBeDefined();
+    await expect(svc.importExternalSession(denied!.provider, denied!.externalId)).rejects.toThrow(
+      /outside the allowed mount prefixes/,
+    );
+  });
+
+  it('importExternalSession falls back to the external title when no name is given', async () => {
+    const svc = createMockVolundrService();
+    const importable = (await svc.listExternalSessions()).find(
+      (session) =>
+        session.workspaceExists && session.workspaceAllowed && !session.importedSessionId,
+    );
+    expect(importable).toBeDefined();
+    const imported = await svc.importExternalSession(importable!.provider, importable!.externalId);
+    expect(imported.name).toBe(importable!.title.trim());
+  });
+
+  it('getWorkflowGates returns an empty list for sessions without gates', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.getWorkflowGates('sess-1')).toEqual([]);
+  });
+
+  it('resolveWorkflowGate fabricates and stores an approved gate', async () => {
+    const svc = createMockVolundrService();
+    const resolved = await svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' });
+    expect(resolved.id).toBe('gate-1');
+    expect(resolved.status).toBe('approved');
+    expect(resolved.decision).toBe('APPROVE');
+    expect(resolved.notes).toBe('');
+    expect(resolved.source).toBe('human');
+
+    const gates = await svc.getWorkflowGates('sess-1');
+    expect(gates).toHaveLength(1);
+    expect(gates[0]?.id).toBe('gate-1');
+  });
+
+  it('resolveWorkflowGate updates an existing gate with changes requested', async () => {
+    const svc = createMockVolundrService();
+    await svc.resolveWorkflowGate('sess-1', 'gate-1', { decision: 'APPROVE' });
+    const resolved = await svc.resolveWorkflowGate('sess-1', 'gate-1', {
+      decision: 'CHANGES_REQUESTED',
+      notes: 'needs tests',
+      source: 'reviewer',
+    });
+    expect(resolved.status).toBe('changes_requested');
+    expect(resolved.notes).toBe('needs tests');
+    expect(resolved.source).toBe('reviewer');
+
+    const gates = await svc.getWorkflowGates('sess-1');
+    expect(gates).toHaveLength(1);
+    expect(gates[0]?.status).toBe('changes_requested');
+  });
+
+  it('updateTenant falls back to default quota fields', async () => {
+    const svc = createMockVolundrService();
+    const tenant = await svc.updateTenant('t1', {});
+    expect(tenant.tier).toBe('free');
+    expect(tenant.maxSessions).toBe(5);
+    expect(tenant.maxStorageGb).toBe(10);
+  });
+
+  it('updateTenant keeps explicitly provided quota fields', async () => {
+    const svc = createMockVolundrService();
+    const tenant = await svc.updateTenant('t1', {
+      tier: 'pro',
+      maxSessions: 20,
+      maxStorageGb: 100,
+    });
+    expect(tenant.tier).toBe('pro');
+    expect(tenant.maxSessions).toBe(20);
+    expect(tenant.maxStorageGb).toBe(100);
+  });
+
   it('getSessionDefinitions returns seeded session definitions', async () => {
     const svc = createMockVolundrService();
     const definitions = await svc.getSessionDefinitions();
@@ -337,6 +576,41 @@ describe('createMockSessionStore', () => {
     await store.deleteSession('ds-1');
     expect(cb).not.toHaveBeenCalled();
   });
+
+  it('listSessions filters by clusterId', async () => {
+    const store = createMockSessionStore();
+    const sessions = await store.listSessions({ clusterId: 'Eitri' });
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((s) => s.clusterId === 'Eitri')).toBe(true);
+  });
+
+  it('listSessions filters by ravnId', async () => {
+    const store = createMockSessionStore();
+    const sessions = await store.listSessions({ ravnId: 'r-local' });
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((s) => s.ravnId === 'r-local')).toBe(true);
+  });
+
+  it('listSessions combines filters and returns [] when nothing matches', async () => {
+    const store = createMockSessionStore();
+    const sessions = await store.listSessions({ clusterId: 'Eitri', ravnId: 'r-does-not-exist' });
+    expect(sessions).toEqual([]);
+  });
+
+  it('unsubscribing twice is a no-op', async () => {
+    const store = createMockSessionStore();
+    const stable = vi.fn();
+    const cb = vi.fn();
+    store.subscribe(stable);
+    const unsub = store.subscribe(cb);
+    unsub();
+    unsub();
+    stable.mockClear();
+    cb.mockClear();
+    await store.deleteSession('ds-1');
+    expect(stable).toHaveBeenCalledOnce();
+    expect(cb).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -408,6 +682,51 @@ describe('createMockPtyStream', () => {
     const pty = createMockPtyStream();
     expect(() => pty.send('sess-nobody', 'ls\n')).not.toThrow();
   });
+
+  it('seeds a git transcript for the local session main terminal', () => {
+    vi.useFakeTimers();
+    const pty = createMockPtyStream();
+    const cb = vi.fn();
+    const unsub = pty.subscribe('laptop-volundr-local', cb);
+    vi.advanceTimersByTime(100);
+    expect(cb).toHaveBeenCalledOnce();
+    expect(cb.mock.calls[0]?.[0]).toContain('git log --oneline -5');
+    unsub();
+    vi.useRealTimers();
+  });
+
+  it('seeds a test-run transcript for the tests terminal', () => {
+    vi.useFakeTimers();
+    const pty = createMockPtyStream();
+    const cb = vi.fn();
+    const unsub = pty.subscribe('laptop-volundr-local::tests', cb);
+    vi.advanceTimersByTime(100);
+    expect(cb.mock.calls[0]?.[0]).toContain('pnpm test observatory.perf.test.ts');
+    unsub();
+    vi.useRealTimers();
+  });
+
+  it('seeds a metrics transcript for the view-io terminal', () => {
+    vi.useFakeTimers();
+    const pty = createMockPtyStream();
+    const cb = vi.fn();
+    const unsub = pty.subscribe('laptop-volundr-local::view-io', cb);
+    vi.advanceTimersByTime(100);
+    expect(cb.mock.calls[0]?.[0]).toContain('jq . metrics/render.json');
+    unsub();
+    vi.useRealTimers();
+  });
+
+  it('seeds a bare prompt for unknown local terminals', () => {
+    vi.useFakeTimers();
+    const pty = createMockPtyStream();
+    const cb = vi.fn();
+    const unsub = pty.subscribe('laptop-volundr-local::scratch', cb);
+    vi.advanceTimersByTime(100);
+    expect(cb.mock.calls[0]?.[0]).toBe('scratch $ ');
+    unsub();
+    vi.useRealTimers();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -469,6 +788,53 @@ describe('createMockFileSystemPort', () => {
     await fs.writeFile('sess-1', '/workspace/temp.txt', 'bye');
     await fs.deletePaths('sess-1', ['/workspace/temp.txt']);
     await expect(fs.readFile('sess-1', '/workspace/temp.txt')).rejects.toThrow('File not found');
+  });
+
+  it('writeFile updates the size of an existing file in place', async () => {
+    const fs = createMockFileSystemPort();
+    await fs.writeFile('sess-1', '/workspace/README.md', 'short');
+    await expect(fs.readFile('sess-1', '/workspace/README.md')).resolves.toBe('short');
+    const tree = await fs.listTree('sess-1');
+    const readme = tree.find((node) => node.path === '/workspace/README.md');
+    expect(readme?.size).toBe(5);
+  });
+
+  it('writeFile inserts a new file under its parent directory sorted by name', async () => {
+    const fs = createMockFileSystemPort();
+    await fs.writeFile('sess-1', '/workspace/src/aaa.ts', 'export {};');
+    const children = await fs.expandDirectory('sess-1', '/workspace/src');
+    expect(children.map((child) => child.name)).toEqual(['aaa.ts', 'app.tsx', 'index.ts']);
+    await expect(fs.readFile('sess-1', '/workspace/src/aaa.ts')).resolves.toBe('export {};');
+  });
+
+  it('deletePaths removes a nested file from its parent directory', async () => {
+    const fs = createMockFileSystemPort();
+    await fs.deletePaths('sess-1', ['/workspace/src/index.ts']);
+    const children = await fs.expandDirectory('sess-1', '/workspace/src');
+    expect(children.some((child) => child.path === '/workspace/src/index.ts')).toBe(false);
+    expect(children.some((child) => child.path === '/workspace/src/app.tsx')).toBe(true);
+  });
+
+  it('deletePaths removes a top-level node from the tree root', async () => {
+    const fs = createMockFileSystemPort();
+    await fs.deletePaths('sess-1', ['/workspace/package.json']);
+    const tree = await fs.listTree('sess-1');
+    expect(tree.some((node) => node.path === '/workspace/package.json')).toBe(false);
+  });
+
+  it('deletePaths removes a file inside the secret mount', async () => {
+    const fs = createMockFileSystemPort();
+    await fs.deletePaths('sess-1', ['/mnt/secrets/API_KEY']);
+    const children = await fs.expandDirectory('sess-1', '/mnt/secrets');
+    expect(children).toEqual([]);
+  });
+
+  it('deletePaths ignores unknown paths', async () => {
+    const fs = createMockFileSystemPort();
+    const before = await fs.listTree('sess-1');
+    await fs.deletePaths('sess-1', ['/does/not/exist']);
+    const after = await fs.listTree('sess-1');
+    expect(after.length).toBe(before.length);
   });
 });
 

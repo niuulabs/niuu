@@ -159,6 +159,8 @@ class SessionService:
         workspace_id: UUID | None = None,
         tracker_issue_id: str | None = None,
         issue_tracker_url: str | None = None,
+        origin: str = "volundr",
+        external_session_id: str | None = None,
     ) -> Session:
         """Create a new session.
 
@@ -172,6 +174,8 @@ class SessionService:
             launch_spec_id: Optional user launch spec id to associate with the session.
             principal: Authenticated identity. When provided, sets owner_id
                 and tenant_id on the session.
+            origin: Where the session originated (volundr, claude, codex).
+            external_session_id: Native CLI session id for imported sessions.
 
         Returns:
             Created session.
@@ -231,6 +235,8 @@ class SessionService:
             workspace_id=workspace_id,
             tracker_issue_id=tracker_issue_id,
             issue_tracker_url=issue_tracker_url,
+            origin=origin,
+            external_session_id=external_session_id,
         )
         created = await self._repository.create(session)
 
@@ -782,7 +788,32 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
+        self._overlay_external_resume(session, spec)
         return await self._pod_manager.start(session, spec=spec)
+
+    @staticmethod
+    def _overlay_external_resume(session: Session, spec: SessionSpec) -> None:
+        """Force broker config to resume the native CLI session when imported.
+
+        Imported sessions carry the harness's own session/thread id. The
+        broker must use a resume-capable transport: Claude's default SDK
+        transport cannot resume, so imported Claude sessions are pinned to
+        the persistent subprocess transport (``claude --resume``); Codex
+        resumes through the WebSocket transport's ``thread/resume`` RPC.
+        """
+        if not session.external_session_id:
+            return
+
+        broker = spec.values.setdefault("broker", {})
+        broker["resumeSessionId"] = session.external_session_id
+        if session.origin == "claude":
+            broker["cliType"] = "claude"
+            broker["transportAdapter"] = (
+                "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+            )
+        if session.origin == "codex":
+            broker["cliType"] = "codex-ws"
+            broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
 
     async def _run_cleanup(
         self,
@@ -1167,7 +1198,6 @@ def _communication_route_id(
 ) -> UUID:
     """Return a stable route UUID for a session communication target."""
     value = (
-        f"volundr:communication-route:{session_id}:{platform}:"
-        f"{conversation_id}:{thread_id or ''}"
+        f"volundr:communication-route:{session_id}:{platform}:{conversation_id}:{thread_id or ''}"
     )
     return uuid5(NAMESPACE_URL, value)

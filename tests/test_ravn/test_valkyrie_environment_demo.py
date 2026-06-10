@@ -96,9 +96,10 @@ def test_huddle_flow_includes_human_join_respond_leave_and_replay_snapshot() -> 
     assert events["demo-k8s-a-room-snapshot"].payload["signal_refs"] == [
         "demo-k8s-a-pod-failure-signal"
     ]
-    assert "Proceed within delegated boundary" in events["demo-k8s-a-room-message-human"].payload[
-        "content"
-    ]
+    assert (
+        "Proceed within delegated boundary"
+        in events["demo-k8s-a-room-message-human"].payload["content"]
+    )
     assert events["demo-k8s-a-human-left"].payload["reason"] == "remediation confirmed"
 
 

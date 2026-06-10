@@ -61,15 +61,11 @@ class PostgresLaunchSpecRepository(LaunchSpecRepository):
         return spec
 
     async def get(self, spec_id: UUID) -> LaunchSpec | None:
-        row = await self._pool.fetchrow(
-            "SELECT * FROM volundr_launch_specs WHERE id = $1", spec_id
-        )
+        row = await self._pool.fetchrow("SELECT * FROM volundr_launch_specs WHERE id = $1", spec_id)
         return self._row_to_spec(row) if row is not None else None
 
     async def get_by_name(self, name: str) -> LaunchSpec | None:
-        row = await self._pool.fetchrow(
-            "SELECT * FROM volundr_launch_specs WHERE name = $1", name
-        )
+        row = await self._pool.fetchrow("SELECT * FROM volundr_launch_specs WHERE name = $1", name)
         return self._row_to_spec(row) if row is not None else None
 
     async def list(
@@ -133,9 +129,7 @@ class PostgresLaunchSpecRepository(LaunchSpecRepository):
         return spec
 
     async def delete(self, spec_id: UUID) -> bool:
-        result = await self._pool.execute(
-            "DELETE FROM volundr_launch_specs WHERE id = $1", spec_id
-        )
+        result = await self._pool.execute("DELETE FROM volundr_launch_specs WHERE id = $1", spec_id)
         return result == "DELETE 1"
 
     async def clear_default(self, cli_tool: str) -> None:

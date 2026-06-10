@@ -84,8 +84,7 @@ def _assistant_line(text: str) -> bytes:
 
 def _system_line(session_id: str) -> bytes:
     return (
-        json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode()
-        + b"\n"
+        json.dumps({"type": "system", "subtype": "init", "session_id": session_id}).encode() + b"\n"
     )
 
 
@@ -177,9 +176,7 @@ async def test_start_sends_initial_prompt(tmp_path) -> None:
             _result_line("ack"),
         ]
     )
-    transport = PersistentSubprocessTransport(
-        str(tmp_path), initial_prompt="run setup"
-    )
+    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="run setup")
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         await transport.start()
@@ -279,3 +276,28 @@ async def test_capabilities() -> None:
     assert caps.session_resume is True
     assert caps.interrupt is False
     assert caps.cli_websocket is False
+
+
+def test_seeded_resume_id_makes_first_spawn_resume() -> None:
+    """An imported session id is passed as ``--resume`` on the very first spawn."""
+    transport = PersistentSubprocessTransport(
+        "/tmp",
+        system_prompt="ignored when resuming",
+        resume_session_id="2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+    )
+
+    cmd = transport._build_command()
+
+    resume_index = cmd.index("--resume")
+    assert cmd[resume_index + 1] == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
+    assert "--append-system-prompt" not in cmd
+    assert transport.session_id == "2e877b9f-4b8a-4d46-8f00-03f6163addd5"
+
+
+def test_no_resume_flag_without_seed() -> None:
+    transport = PersistentSubprocessTransport("/tmp", system_prompt="be helpful")
+
+    cmd = transport._build_command()
+
+    assert "--resume" not in cmd
+    assert "--append-system-prompt" in cmd
