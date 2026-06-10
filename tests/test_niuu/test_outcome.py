@@ -381,10 +381,7 @@ inion-b.md
     assert result.valid is True
     assert result.fields["verdict"] == "opinion_submitted"
     assert result.fields["summary"].startswith("Wrote Opinion B recommending Qwen3. 6-35B-A3B")
-    assert (
-        result.fields["page_path"]
-        == "council/niu-929-local-model-eval/opinions/opinion-b.md"
-    )
+    assert result.fields["page_path"] == "council/niu-929-local-model-eval/opinions/opinion-b.md"
 
 
 def test_validate_boolean_field() -> None:

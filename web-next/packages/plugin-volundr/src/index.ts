@@ -164,4 +164,7 @@ export type {
   SecretType,
   SessionSource,
   SessionDefinition,
+  SessionOrigin,
+  ExternalSession,
+  ExternalSessionHarness,
 } from './models/volundr.model';

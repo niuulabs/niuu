@@ -82,6 +82,8 @@ export interface Session {
   files?: SessionFileStats;
   /** Linked tracker issue when the session was launched from a ticket. */
   trackerIssue?: TrackerIssue;
+  /** Where the session originated ('volundr' | 'claude' | 'codex'); absent means volundr-native. */
+  origin?: string;
 }
 
 /** Legal transitions in the session lifecycle state machine. */

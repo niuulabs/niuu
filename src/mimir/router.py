@@ -97,12 +97,15 @@ class PageResponse(BaseModel):
     updated_by: str = "mimir"
     size: int = 0
     related: list[str] = []
-    zones: list[
-        KeyFactsZoneResponse
-        | RelationshipsZoneResponse
-        | AssessmentZoneResponse
-        | TimelineZoneResponse
-    ] | None = None
+    zones: (
+        list[
+            KeyFactsZoneResponse
+            | RelationshipsZoneResponse
+            | AssessmentZoneResponse
+            | TimelineZoneResponse
+        ]
+        | None
+    ) = None
 
 
 class KeyFactsZoneResponse(BaseModel):
@@ -836,12 +839,15 @@ def _extract_relationships(compiled_truth: str) -> list[RelationshipZoneItemResp
 
 def _decorate_page_zones(
     parsed: CompiledTruthPage,
-) -> list[
-    KeyFactsZoneResponse
-    | RelationshipsZoneResponse
-    | AssessmentZoneResponse
-    | TimelineZoneResponse
-] | None:
+) -> (
+    list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ]
+    | None
+):
     zones: list[
         KeyFactsZoneResponse
         | RelationshipsZoneResponse
@@ -1084,10 +1090,7 @@ class MimirRouter:
                     for mount in mounts
                 ]
 
-            return [
-                _registry_to_response(entry)
-                for entry in self._registry_store.list_entries()
-            ]
+            return [_registry_to_response(entry) for entry in self._registry_store.list_entries()]
 
         @router.post("/registry/mounts", response_model=RegistryMountResponse)
         async def create_registry_mount(

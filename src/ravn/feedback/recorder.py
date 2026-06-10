@@ -99,18 +99,16 @@ class EnvironmentFeedbackRecorder:
         effective_until = _text(delivery_effect.get("effective_until"))
         user_id = _text(payload.get("user_id"))
 
-        self._delivery_state[(environment_id, target_event_id, surface_id)] = (
-            DeliveryFeedbackState(
-                environment_id=environment_id,
-                target_event_id=target_event_id,
-                feedback_type=feedback_type,
-                delivery_state=state,
-                surface_id=surface_id,
-                user_id=user_id,
-                effective_until=effective_until,
-                source_feedback_id=event.event_id,
-                updated_at=datetime.now(UTC),
-            )
+        self._delivery_state[(environment_id, target_event_id, surface_id)] = DeliveryFeedbackState(
+            environment_id=environment_id,
+            target_event_id=target_event_id,
+            feedback_type=feedback_type,
+            delivery_state=state,
+            surface_id=surface_id,
+            user_id=user_id,
+            effective_until=effective_until,
+            source_feedback_id=event.event_id,
+            updated_at=datetime.now(UTC),
         )
 
         if self._publisher is not None:
@@ -194,8 +192,7 @@ def feedback_event_to_episode(event: SleipnirEvent) -> Episode:
         f"in {environment_id}: {notes or rating}"
     )
     task_description = (
-        f"Capture resident Valkyrie feedback for {environment_id} "
-        f"targeting {target_event_id}"
+        f"Capture resident Valkyrie feedback for {environment_id} targeting {target_event_id}"
     )
     return Episode(
         episode_id=f"feedback:{event.event_id}",

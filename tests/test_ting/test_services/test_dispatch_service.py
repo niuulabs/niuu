@@ -1371,9 +1371,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
                     },
                 },
             }
@@ -1424,9 +1422,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
                     },
                 },
             },
@@ -1438,9 +1434,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
                     },
                 },
             },
@@ -1452,9 +1446,7 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
                     },
                 },
             },

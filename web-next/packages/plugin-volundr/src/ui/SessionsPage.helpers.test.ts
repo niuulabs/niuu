@@ -9,6 +9,7 @@ import {
   looksLikeRepoLabel,
   repoGroupLabel,
   sessionActivityTs,
+  sessionOriginBadge,
   shortenRepoLabel,
   toGroupTestId,
 } from './SessionsPage';
@@ -115,5 +116,13 @@ describe('SessionsPage helpers', () => {
 
     const forgeGroups = groupByForge(sessions);
     expect(forgeGroups.map((group) => group.label)).toEqual(['Forge Z', 'forge-a']);
+  });
+
+  it('derives origin badges only for external CLI origins', () => {
+    expect(sessionOriginBadge({ origin: 'claude' })).toBe('claude');
+    expect(sessionOriginBadge({ origin: 'codex' })).toBe('codex');
+    expect(sessionOriginBadge({ origin: 'volundr' })).toBeNull();
+    expect(sessionOriginBadge({ origin: 'manual' })).toBeNull();
+    expect(sessionOriginBadge({ origin: undefined })).toBeNull();
   });
 });

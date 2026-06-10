@@ -259,9 +259,7 @@ class Environment(BaseModel):
     @property
     def mimir_mount_names(self) -> list[str]:
         """Flattened Mimir mount list for Warden/Ravn runtime config."""
-        return _dedupe(
-            mount for scope in self.learning_scopes for mount in scope.mimir_mounts
-        )
+        return _dedupe(mount for scope in self.learning_scopes for mount in scope.mimir_mounts)
 
     def signal_subjects(self) -> list[str]:
         """NATS subjects resident Valkyries should subscribe to for signals."""

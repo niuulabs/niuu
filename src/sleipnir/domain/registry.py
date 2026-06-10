@@ -466,6 +466,28 @@ LEARNING_PROMOTED: str = "learning.promoted"
 LEARNING_ADOPTION_RECORDED: str = "learning.adoption.recorded"
 
 # ---------------------------------------------------------------------------
+# flock — membership, learning exchange, canary, and adoption events
+# ---------------------------------------------------------------------------
+
+#: A peer proposed a learning to its flock.
+FLOCK_LEARNING_PROPOSED: str = "flock.learning.proposed"
+
+#: A canary trial started for a proposed flock learning.
+FLOCK_LEARNING_CANARY_STARTED: str = "flock.learning.canary_started"
+
+#: A flock learning was adopted after its canary trial.
+FLOCK_LEARNING_ADOPTED: str = "flock.learning.adopted"
+
+#: A flock learning was rejected.
+FLOCK_LEARNING_REJECTED: str = "flock.learning.rejected"
+
+#: A flock learning was activated on a peer.
+FLOCK_LEARNING_ACTIVATED: str = "flock.learning.activated"
+
+#: A flock learning was rolled back after adoption.
+FLOCK_LEARNING_ROLLED_BACK: str = "flock.learning.rolled_back"
+
+# ---------------------------------------------------------------------------
 # participant — humans, agents, tools, and surfaces in an Environment
 # ---------------------------------------------------------------------------
 

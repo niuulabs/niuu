@@ -89,6 +89,58 @@ class LocalMountsConfig(BaseModel):
     )
 
 
+class ExternalSessionProviderConfig(BaseModel):
+    """Configuration for a single external session provider.
+
+    The ``adapter`` key is a fully-qualified class path. All other
+    fields are forwarded as **kwargs to the adapter constructor.
+
+    Example YAML::
+
+        external_sessions:
+          enabled: true
+          providers:
+            - adapter: "volundr.adapters.outbound.external_sessions.ClaudeCodeSessionProvider"
+              projects_dir: "~/.claude/projects"
+            - adapter: "volundr.adapters.outbound.external_sessions.CodexSessionProvider"
+              sessions_dir: "~/.codex/sessions"
+    """
+
+    adapter: str
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+def _default_external_session_providers() -> list[ExternalSessionProviderConfig]:
+    """Built-in providers: Claude Code and Codex local stores."""
+    return [
+        ExternalSessionProviderConfig(
+            adapter="volundr.adapters.outbound.external_sessions.ClaudeCodeSessionProvider",
+        ),
+        ExternalSessionProviderConfig(
+            adapter="volundr.adapters.outbound.external_sessions.CodexSessionProvider",
+        ),
+    ]
+
+
+class ExternalSessionsConfig(BaseModel):
+    """Configuration for discovering and importing external CLI sessions.
+
+    When ``enabled`` is left unset, discovery follows ``local_mounts.mini_mode``
+    — host session stores are only reachable when Volundr runs on the host.
+    """
+
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Enable external session discovery. None (default) follows local_mounts.mini_mode."
+        ),
+    )
+    providers: list[ExternalSessionProviderConfig] = Field(
+        default_factory=_default_external_session_providers,
+        description="External session provider adapters (dynamic adapter pattern).",
+    )
+
+
 class ProvisioningConfig(BaseModel):
     """Configuration for the session provisioning readiness polling."""
 
@@ -1415,6 +1467,7 @@ class Settings(BaseSettings):
     )
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
+    external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(

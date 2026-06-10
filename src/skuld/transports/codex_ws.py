@@ -138,6 +138,7 @@ class CodexWebSocketTransport(CLITransport):
         initial_prompt: str = "",
         codex_port: int = 0,
         mcp_servers: list[dict] | None = None,
+        resume_session_id: str = "",
         **_kwargs: object,
     ) -> None:
         super().__init__()
@@ -151,6 +152,7 @@ class CodexWebSocketTransport(CLITransport):
         self._codex_port = codex_port or _pick_free_port()
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
+        self._resume_session_id = resume_session_id
         self._env = dict(os.environ)
 
         self._process: asyncio.subprocess.Process | None = None
@@ -408,27 +410,43 @@ class CodexWebSocketTransport(CLITransport):
 
         await self._send_notification("initialized")
 
-        thread_params: dict = {
-            "experimentalRawEvents": False,
-            "persistExtendedHistory": True,
-            "cwd": self.workspace_dir,
-        }
-        if self._model:
-            thread_params["model"] = self._model
-        thread_params.update(self._permission_thread_params())
-        if self._system_prompt:
-            # baseInstructions = role/persona ("you are a service developer…")
-            # developerInstructions = per-session task instructions
-            # Skuld provides a single system_prompt that combines both,
-            # so we set it as baseInstructions (persistent identity).
-            thread_params["baseInstructions"] = self._system_prompt
+        if self._resume_session_id:
+            # Imported/external session — reattach to the existing thread
+            # instead of starting a fresh one.
+            resume_params: dict = {
+                "threadId": self._resume_session_id,
+                "persistExtendedHistory": True,
+            }
+            if self._model:
+                resume_params["model"] = self._model
+            resume_params.update(self._permission_thread_params())
 
-        result = await self._send_rpc("thread/start", thread_params)
-        # The response triggers a thread/started notification with the thread info.
-        # But the RPC response itself may contain the thread_id.
-        thread = result.get("thread", {})
-        self._thread_id = thread.get("id") or result.get("threadId")
-        logger.info("Codex thread started: %s", self._thread_id)
+            result = await self._send_rpc("thread/resume", resume_params)
+            thread = result.get("thread", {})
+            self._thread_id = thread.get("id") or self._resume_session_id
+            logger.info("Codex thread resumed: %s", self._thread_id)
+        else:
+            thread_params: dict = {
+                "experimentalRawEvents": False,
+                "persistExtendedHistory": True,
+                "cwd": self.workspace_dir,
+            }
+            if self._model:
+                thread_params["model"] = self._model
+            thread_params.update(self._permission_thread_params())
+            if self._system_prompt:
+                # baseInstructions = role/persona ("you are a service developer…")
+                # developerInstructions = per-session task instructions
+                # Skuld provides a single system_prompt that combines both,
+                # so we set it as baseInstructions (persistent identity).
+                thread_params["baseInstructions"] = self._system_prompt
+
+            result = await self._send_rpc("thread/start", thread_params)
+            # The response triggers a thread/started notification with the thread info.
+            # But the RPC response itself may contain the thread_id.
+            thread = result.get("thread", {})
+            self._thread_id = thread.get("id") or result.get("threadId")
+            logger.info("Codex thread started: %s", self._thread_id)
 
         # Emit a synthetic init event so the broker knows we're ready.
         await self._emit(
@@ -670,8 +688,7 @@ class CodexWebSocketTransport(CLITransport):
                 payload.get("call_id"),
             )
             task_name = (
-                "codex-response-function-"
-                f"{payload.get('call_id') or payload.get('name') or 'call'}"
+                f"codex-response-function-{payload.get('call_id') or payload.get('name') or 'call'}"
             )
             task = asyncio.create_task(
                 self._handle_raw_function_call_item(payload),
@@ -892,8 +909,7 @@ class CodexWebSocketTransport(CLITransport):
         env = args.get("env")
         if isinstance(env, dict):
             exec_params["env"] = {
-                str(key): (str(value) if value is not None else None)
-                for key, value in env.items()
+                str(key): (str(value) if value is not None else None) for key, value in env.items()
             }
 
         result = await self._send_rpc("command/exec", exec_params)

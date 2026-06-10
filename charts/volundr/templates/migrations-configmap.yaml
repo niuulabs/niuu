@@ -1179,4 +1179,21 @@ data:
     ALTER TABLE volundr_launch_specs DROP COLUMN IF EXISTS session_definition;
 
     ALTER TABLE volundr_launch_specs RENAME TO volundr_presets;
+
+  000045_session_origin.up.sql: |
+    -- Track where a session originated (volundr, claude, codex) and the native
+    -- CLI session/thread id for sessions imported from an external harness.
+
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS origin VARCHAR(50) NOT NULL DEFAULT 'volundr';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS external_session_id VARCHAR(255);
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_external_session_id
+        ON sessions (external_session_id)
+        WHERE external_session_id IS NOT NULL;
+
+  000045_session_origin.down.sql: |
+    DROP INDEX IF EXISTS idx_sessions_external_session_id;
+
+    ALTER TABLE sessions DROP COLUMN IF EXISTS external_session_id;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS origin;
 {{- end }}

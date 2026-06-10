@@ -437,9 +437,7 @@ class LocalProcessPodManager(PodManager):
         self._state_file = Path(str(state_file)).expanduser()
         if isinstance(allowed_mount_prefixes, str):
             allowed_mount_prefixes = [
-                prefix.strip()
-                for prefix in allowed_mount_prefixes.split(",")
-                if prefix.strip()
+                prefix.strip() for prefix in allowed_mount_prefixes.split(",") if prefix.strip()
             ]
         self._allowed_mount_prefixes = allowed_mount_prefixes or DEFAULT_ALLOWED_MOUNT_PREFIXES
 
@@ -494,9 +492,7 @@ class LocalProcessPodManager(PodManager):
                 if container.get("name", "").startswith("ravn-")
             )
             if persona_count > 0:
-                flock_plan = self._flock_port_plan(
-                    self._pick_flock_base_port(persona_count)
-                )
+                flock_plan = self._flock_port_plan(self._pick_flock_base_port(persona_count))
 
         info = ProcessInfo(
             session_id=session_id,
@@ -656,15 +652,17 @@ class LocalProcessPodManager(PodManager):
             workspace = Path(session.source.local_path)
             if not workspace.is_dir():
                 raise RuntimeError(f"local path {workspace!r} is not a directory")
+            if not self._is_allowed_mount(workspace):
+                raise RuntimeError(
+                    f"local path {workspace!r} is not under any allowed mount prefix"
+                )
             self._write_claude_md(workspace, spec)
             return workspace
         if isinstance(session.source, GitSource) and session.source.repo:
             local_workspace = _local_workspace_from_repo(session.source.repo)
             if local_workspace is not None:
                 if not local_workspace.is_dir():
-                    raise RuntimeError(
-                        f"local repo path {local_workspace!r} is not a directory"
-                    )
+                    raise RuntimeError(f"local repo path {local_workspace!r} is not a directory")
                 workspace = local_workspace.resolve()
                 self._write_claude_md(workspace, spec)
                 return workspace
@@ -1440,6 +1438,10 @@ class LocalProcessPodManager(PodManager):
             transport_adapter = broker.get("transportAdapter")
             if transport_adapter:
                 env["SKULD__TRANSPORT_ADAPTER"] = str(transport_adapter)
+
+            resume_session_id = broker.get("resumeSessionId")
+            if resume_session_id:
+                env["SKULD__SESSION__RESUME_SESSION_ID"] = str(resume_session_id)
 
             if "skipPermissions" in broker:
                 env["SKULD__SKIP_PERMISSIONS"] = str(bool(broker["skipPermissions"])).lower()

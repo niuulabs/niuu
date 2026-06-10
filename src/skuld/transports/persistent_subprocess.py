@@ -66,6 +66,7 @@ class PersistentSubprocessTransport(CLITransport):
         system_prompt: str = "",
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
+        resume_session_id: str = "",
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -84,7 +85,9 @@ class PersistentSubprocessTransport(CLITransport):
         # Set when the current turn's ``result`` event arrives. ``None``
         # when no turn is awaiting completion.
         self._turn_done: asyncio.Event | None = None
-        self._session_id: str | None = None
+        # Seeding the session id makes the FIRST spawn pass ``--resume``,
+        # which reattaches to an imported/external Claude session.
+        self._session_id: str | None = resume_session_id or None
         self._last_result: dict | None = None
 
     # ------------------------------------------------------------------
@@ -186,8 +189,9 @@ class PersistentSubprocessTransport(CLITransport):
             cmd.extend(["--model", self._model])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
-        # ``--resume`` only applies when re-spawning after a crash; the
-        # first spawn has no session yet. Claude assigns one in its first
+        # ``--resume`` applies when re-spawning after a crash or when a
+        # resume id was seeded for an imported session. Otherwise the first
+        # spawn has no session yet — Claude assigns one in its first
         # ``system`` event, which we capture in the stdout reader.
         if self._session_id:
             cmd.extend(["--resume", self._session_id])

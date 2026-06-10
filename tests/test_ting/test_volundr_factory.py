@@ -85,9 +85,7 @@ class StubInstanceRepo(InstanceRepository):
     def __init__(self, instances: list[RegisteredInstance]) -> None:
         self._instances = list(instances)
 
-    async def list_instances(
-        self, kind: InstanceKind | None = None
-    ) -> list[RegisteredInstance]:
+    async def list_instances(self, kind: InstanceKind | None = None) -> list[RegisteredInstance]:
         if kind is None:
             return list(self._instances)
         return [instance for instance in self._instances if instance.kind == kind]

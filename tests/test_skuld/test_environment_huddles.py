@@ -112,9 +112,7 @@ async def test_late_join_replay_orders_human_and_mesh_messages() -> None:
         "valkyrie:k8s",
     ]
     assert [event["threadId"] for event in messages] == ["thread-2", "thread-2"]
-    assert all(
-        event.event_type != event_registry.PARTICIPANT_JOINED for event in published[:2]
-    )
+    assert all(event.event_type != event_registry.PARTICIPANT_JOINED for event in published[:2])
     assert published[-2].event_type == event_registry.ROOM_MESSAGE_RECORDED
     assert published[-1].event_type == event_registry.ROOM_MESSAGE_RECORDED
 

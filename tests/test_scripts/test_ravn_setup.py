@@ -39,7 +39,7 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
 
     config = generated.read_text(encoding="utf-8")
     assert "environment:" in config
-    assert "signal_subjects:" in config
+    assert "signal_sources:" in config
     assert "adapter: nats" in config
     assert "servers_env: NATS_URL" in config
     assert "stream_name: ravn_environment" in config
@@ -48,11 +48,11 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     settings = Settings.model_validate(yaml.safe_load(config))
     assert settings.environment.id == "local-dev"
     assert settings.environment.type == "local"
-    assert settings.environment.signal_subjects == [
-        "signal.kubernetes.>",
-        "signal.host.>",
-        "signal.printer.>",
-        "signal.operator.>",
+    assert [source.id for source in settings.environment.signal_sources] == [
+        "kubernetes-events",
+        "host-events",
+        "printer-telemetry",
+        "operator-events",
     ]
     assert settings.mesh.adapter == "nats"
     assert settings.mesh.nats.servers_env == "NATS_URL"

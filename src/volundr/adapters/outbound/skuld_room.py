@@ -80,7 +80,7 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
                     participant_type=str(participant.get("participant_type") or "ravn"),
                     status=str(participant.get("status") or "idle"),
                 )
-        )
+            )
         return [participant for participant in result if participant.peer_id]
 
     async def list_communication_targets(

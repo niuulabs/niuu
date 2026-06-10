@@ -1130,9 +1130,7 @@ class DriveLoop:
                 name=f"initiative:{task.task_id}",
             )
             self._active_tasks[task.task_id] = asyncio_task
-            asyncio_task.add_done_callback(
-                lambda _t, tid=task.task_id: self._on_task_done(tid, _t)
-            )
+            asyncio_task.add_done_callback(lambda _t, tid=task.task_id: self._on_task_done(tid, _t))
             self._queue.task_done()
 
     def _on_task_done(self, task_id: str, finished_task: asyncio.Task[Any]) -> None:

@@ -78,9 +78,7 @@ class InMemoryCourtAuditSink:
     def records(self) -> list[CourtDecisionRecord]:
         return list(self._records)
 
-    def find(
-        self, *, environment_id: str, root_correlation_id: str
-    ) -> CourtDecisionRecord | None:
+    def find(self, *, environment_id: str, root_correlation_id: str) -> CourtDecisionRecord | None:
         for record in reversed(self._records):
             if (
                 record.environment_id == environment_id

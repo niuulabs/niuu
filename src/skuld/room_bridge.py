@@ -291,17 +291,13 @@ class RoomBridge:
         requested_capabilities = tuple(capabilities or role_capabilities)
         disallowed = sorted(set(requested_capabilities) - set(role_capabilities))
         if disallowed:
-            raise PermissionError(
-                f"Role {role} cannot claim capabilities: {', '.join(disallowed)}"
-            )
+            raise PermissionError(f"Role {role} cannot claim capabilities: {', '.join(disallowed)}")
 
         room_membership = tuple(room_id for room_id in [room_id] if room_id)
         if participant_id in self._participants:
             old = self._participants[participant_id]
             color = old.color
-            existing_rooms = tuple(
-                dict.fromkeys([*old.room_ids, *room_membership])
-            )
+            existing_rooms = tuple(dict.fromkeys([*old.room_ids, *room_membership]))
         else:
             color = next(self._color_cycle)
             existing_rooms = room_membership
@@ -356,9 +352,7 @@ class RoomBridge:
         if meta is None:
             raise LookupError(f"Unknown room participant: {participant_id}")
         if capability not in meta.capabilities:
-            raise PermissionError(
-                f"Participant {participant_id} lacks capability: {capability}"
-            )
+            raise PermissionError(f"Participant {participant_id} lacks capability: {capability}")
 
     # ------------------------------------------------------------------
     # Environment huddles and replay

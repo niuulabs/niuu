@@ -544,6 +544,22 @@ def test_get_mcp_server_proxies_to_credentials_surface() -> None:
     [
         ("post", "/sessions/s2/stop", "/sessions/s2/stop", {"ok": True}, 200, {"ok": True}),
         (
+            "post",
+            "/sessions/s2/start",
+            "/sessions/s2/start",
+            {"status": "starting"},
+            200,
+            {"status": "starting"},
+        ),
+        (
+            "post",
+            "/sessions/s2/resume",
+            "/sessions/s2/resume",
+            {"status": "starting"},
+            200,
+            {"status": "starting"},
+        ),
+        (
             "patch",
             "/sessions/s2/archive",
             "/sessions/s2/archive",
@@ -689,3 +705,99 @@ def test_proxy_routes_fall_back_to_empty_payloads_when_remote_returns_non_dict_c
         ).json()
         == {}
     )
+
+
+@respx.mock
+def test_external_sessions_aggregates_visible_instances() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get("http://alpha/api/v1/forge/external-sessions").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "provider": "claude-code",
+                    "external_id": "ext-old",
+                    "updated_at": "2026-06-01T10:00:00Z",
+                }
+            ],
+        )
+    )
+    respx.get("http://beta/api/v1/forge/external-sessions").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "provider": "codex",
+                    "external_id": "ext-new",
+                    "updated_at": "2026-06-09T10:00:00Z",
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/forge/external-sessions", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["external_id"] for item in payload] == ["ext-new", "ext-old"]
+    assert payload[0]["instance_id"] == "beta"
+    assert payload[1]["instance_id"] == "alpha"
+
+
+@respx.mock
+def test_external_sessions_returns_503_when_no_instance_supports_discovery() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/external-sessions").mock(return_value=Response(503))
+
+    response = client.get("/api/v1/forge/external-sessions", headers=_headers())
+
+    assert response.status_code == 503
+
+
+@respx.mock
+def test_import_session_routes_to_default_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    route = respx.post("http://alpha/api/v1/forge/sessions/import").mock(
+        return_value=Response(
+            201,
+            json={"id": "imported-1", "origin": "claude"},
+        )
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/import",
+        headers=_headers(),
+        json={"provider": "claude-code", "external_id": "ext-1"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["id"] == "imported-1"
+    assert payload["instance_id"] == "alpha"
+    assert route.called
+
+
+@respx.mock
+def test_feature_flags_proxies_to_default_instance() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    respx.get("http://alpha/api/v1/forge/feature-flags").mock(
+        return_value=Response(
+            200,
+            json={"mini_mode": True, "local_mounts_allowed_prefixes": []},
+        )
+    )
+
+    response = client.get("/api/v1/forge/feature-flags", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["mini_mode"] is True

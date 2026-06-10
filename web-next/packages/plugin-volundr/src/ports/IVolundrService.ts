@@ -53,6 +53,7 @@ import type {
   VolundrWorkflowGate,
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
+  ExternalSession,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -178,6 +179,16 @@ export interface IVolundrService {
   archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(): Promise<VolundrSession[]>;
+
+  // External CLI sessions (Claude Code / Codex discovered on the host).
+  // listExternalSessions rejects with a 503-status error when discovery is
+  // not enabled on the server — callers treat that as "feature unavailable".
+  listExternalSessions(): Promise<ExternalSession[]>;
+  importExternalSession(
+    provider: string,
+    externalId: string,
+    name?: string,
+  ): Promise<VolundrSession>;
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;

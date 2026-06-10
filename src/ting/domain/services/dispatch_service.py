@@ -906,12 +906,15 @@ class DispatchService:
                 logger.info("Auto-continue skipped for owner %s: no Volundr adapter", owner_id[:8])
                 return []
 
-            state, active_sessions, running_runs, available_slots = (
-                await self._dispatch_capacity_snapshot(
-                    owner_id,
-                    volundr=volundr,
-                    trackers=adapters,
-                )
+            (
+                state,
+                active_sessions,
+                running_runs,
+                available_slots,
+            ) = await self._dispatch_capacity_snapshot(
+                owner_id,
+                volundr=volundr,
+                trackers=adapters,
             )
             if available_slots <= 0:
                 logger.info(
@@ -1126,12 +1129,15 @@ class DispatchService:
             owner_id,
         )
         trackers = await self._tracker_factory.for_owner(owner_id)
-        state, active_sessions, running_runs, available_slots = (
-            await self._dispatch_capacity_snapshot(
-                owner_id,
-                volundr=volundr,
-                trackers=trackers,
-            )
+        (
+            state,
+            active_sessions,
+            running_runs,
+            available_slots,
+        ) = await self._dispatch_capacity_snapshot(
+            owner_id,
+            volundr=volundr,
+            trackers=trackers,
         )
         if available_slots < len(runs):
             logger.info(
@@ -1448,9 +1454,7 @@ class DispatchService:
                 configured_models=self._config.configured_models,
             ):
                 workflow_definition = None
-            workflow_definition = (
-                workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
-            )
+            workflow_definition = workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
             (
                 resolved_effective_model,
                 resolved_session_definition,

@@ -27,9 +27,7 @@ class _InMemoryPersonaRegistry:
     async def list_personas(self, owner_id: str, *, source: str = "all") -> list[PersonaView]:
         active_builtin_names = set(self._builtin_loader.list_builtin_names())
         custom_override_names = {
-            name
-            for name in self._overrides[owner_id]
-            if not self._builtin_loader.is_builtin(name)
+            name for name in self._overrides[owner_id] if not self._builtin_loader.is_builtin(name)
         }
         names = active_builtin_names | custom_override_names
         views: list[PersonaView] = []

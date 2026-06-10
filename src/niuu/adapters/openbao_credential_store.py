@@ -89,9 +89,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
             return ""
 
         if self._auth_method != "approle":
-            raise RuntimeError(
-                "OpenBao credential store requires a token or approle credentials"
-            )
+            raise RuntimeError("OpenBao credential store requires a token or approle credentials")
         if not self._role_id or not self._secret_id:
             raise RuntimeError("AppRole auth requires role_id and secret_id")
 
@@ -129,9 +127,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
         return str(PurePosixPath(self._mount_path, "data", f"{owner_type}s", owner_id, name))
 
     def _metadata_path(self, owner_type: str, owner_id: str, name: str) -> str:
-        return str(
-            PurePosixPath(self._mount_path, "metadata", f"{owner_type}s", owner_id, name)
-        )
+        return str(PurePosixPath(self._mount_path, "metadata", f"{owner_type}s", owner_id, name))
 
     def _list_path(self, owner_type: str, owner_id: str) -> str:
         return str(PurePosixPath(self._mount_path, "metadata", f"{owner_type}s", owner_id))
@@ -188,9 +184,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
             json={"data": payload},
         )
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"OpenBao store error ({response.status_code}): {response.text}"
-            )
+            raise RuntimeError(f"OpenBao store error ({response.status_code}): {response.text}")
 
         return StoredCredential(
             id=cred_id,

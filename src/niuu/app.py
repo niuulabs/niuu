@@ -138,9 +138,7 @@ def _create_plugin_api_app_with_context(plugin: Service, **context: Any) -> Any:
     )
     if accepts_kwargs:
         return factory(**context)
-    accepted_context = {
-        key: value for key, value in context.items() if key in signature.parameters
-    }
+    accepted_context = {key: value for key, value in context.items() if key in signature.parameters}
     return factory(**accepted_context)
 
 

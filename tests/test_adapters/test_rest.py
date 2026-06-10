@@ -968,6 +968,14 @@ class TestFeatureFlags:
         assert "local_mounts_enabled" in data
         assert isinstance(data["local_mounts_enabled"], bool)
 
+    def test_feature_flags_lists_allowed_mount_prefixes(self, client: TestClient):
+        """Exposes the configured mount prefix allowlist for UI/automation."""
+        response = client.get("/api/v1/forge/feature-flags")
+        assert response.status_code == 200
+        data = response.json()
+        assert "local_mounts_allowed_prefixes" in data
+        assert isinstance(data["local_mounts_allowed_prefixes"], list)
+
 
 class TestStatsResponse:
     """Tests for StatsResponse model."""

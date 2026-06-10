@@ -232,12 +232,7 @@ class TestValidateMimirOutcomeForPersona:
     async def test_research_outcome_invalid_when_page_has_no_source_ids(self) -> None:
         persona = _research_persona()
         parsed = _parse_outcome_block_for_persona(
-            (
-                "---outcome---\n"
-                "summary: done\n"
-                "page_path: research/example.md\n"
-                "---end---\n"
-            ),
+            ("---outcome---\nsummary: done\npage_path: research/example.md\n---end---\n"),
             persona,
         )
         assert parsed is not None
@@ -267,12 +262,7 @@ class TestValidateMimirOutcomeForPersona:
     async def test_research_outcome_invalid_when_sources_are_self_ingested_page(self) -> None:
         persona = _research_persona()
         parsed = _parse_outcome_block_for_persona(
-            (
-                "---outcome---\n"
-                "summary: done\n"
-                "page_path: research/example.md\n"
-                "---end---\n"
-            ),
+            ("---outcome---\nsummary: done\npage_path: research/example.md\n---end---\n"),
             persona,
         )
         assert parsed is not None

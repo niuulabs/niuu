@@ -6,6 +6,9 @@ import {
   createMockTrackerService,
   createMockTingSettingsService,
   createMockAuditLogService,
+  createMockDispatchBus,
+  createMockWorkflowService,
+  createMockResearchService,
 } from './mock';
 
 // ---------------------------------------------------------------------------
@@ -82,6 +85,108 @@ describe('createMockTingService', () => {
     expect(result.structure).not.toBeNull();
     expect(result.structure?.phases.length).toBeGreaterThan(0);
   });
+
+  it('decompose returns two phases with one run each', async () => {
+    const svc = createMockTingService();
+    const phases = await svc.decompose('spec', 'repo');
+    expect(phases).toHaveLength(2);
+    expect(phases[0]?.runs).toHaveLength(1);
+    expect(phases[1]?.name).toBe('Phase 2: API layer');
+  });
+
+  it('listRunMessages returns empty for a run without messages', async () => {
+    const svc = createMockTingService();
+    const messages = await svc.listRunMessages('run-without-messages');
+    expect(messages).toEqual([]);
+  });
+
+  it('sendRunMessage attaches the run session id for known runs', async () => {
+    const svc = createMockTingService();
+    const message = await svc.sendRunMessage('00000000-0000-0000-0000-000000000010', 'status?');
+    expect(message.sessionId).toBe('sess-001');
+    expect(message.content).toBe('status?');
+    expect(message.sender).toBe('user');
+
+    const messages = await svc.listRunMessages('00000000-0000-0000-0000-000000000010');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.id).toBe(message.id);
+  });
+
+  it('sendRunMessage falls back to a mock session for unknown runs', async () => {
+    const svc = createMockTingService();
+    const message = await svc.sendRunMessage('run-unknown', 'hello');
+    expect(message.sessionId).toBe('mock-session');
+  });
+
+  it('sendRunMessage appends to an existing message list', async () => {
+    const svc = createMockTingService();
+    await svc.sendRunMessage('run-unknown', 'first');
+    await svc.sendRunMessage('run-unknown', 'second');
+    const messages = await svc.listRunMessages('run-unknown');
+    expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
+  });
+
+  it('assignWorkflow throws for an unknown saga', async () => {
+    const svc = createMockTingService();
+    await expect(svc.assignWorkflow('nope', 'wf-1')).rejects.toThrow('Saga not found: nope');
+  });
+
+  it('assignWorkflow sets workflow fields when an id is given', async () => {
+    const svc = createMockTingService();
+    const saga = await svc.assignWorkflow('00000000-0000-0000-0000-000000000001', 'wf-1');
+    expect(saga.workflowId).toBe('wf-1');
+    expect(saga.workflow).toBe('custom-workflow');
+    expect(saga.workflowVersion).toBe('1.0.0');
+  });
+
+  it('assignWorkflow clears workflow fields when id is null', async () => {
+    const svc = createMockTingService();
+    await svc.assignWorkflow('00000000-0000-0000-0000-000000000001', 'wf-1');
+    const cleared = await svc.assignWorkflow('00000000-0000-0000-0000-000000000001', null);
+    expect(cleared.workflowId).toBeUndefined();
+    expect(cleared.workflow).toBeUndefined();
+    expect(cleared.workflowVersion).toBeUndefined();
+  });
+
+  it('assignTarget throws for an unknown saga', async () => {
+    const svc = createMockTingService();
+    await expect(svc.assignTarget('nope', { mode: 'default' })).rejects.toThrow(
+      'Saga not found: nope',
+    );
+  });
+
+  it('assignTarget pins the saga to an instance', async () => {
+    const svc = createMockTingService();
+    const saga = await svc.assignTarget('00000000-0000-0000-0000-000000000001', {
+      mode: 'instance',
+      instanceId: 'inst-9',
+    });
+    expect(saga.instanceId).toBe('inst-9');
+    expect(saga.instanceName).toBe('Assigned target');
+    expect(saga.targetTags).toBeUndefined();
+    expect(saga.targetMatch).toBeUndefined();
+  });
+
+  it('assignTarget stores tags with an explicit match mode', async () => {
+    const svc = createMockTingService();
+    const saga = await svc.assignTarget('00000000-0000-0000-0000-000000000001', {
+      mode: 'tags',
+      tags: ['gpu'],
+      match: 'any',
+    });
+    expect(saga.targetTags).toEqual(['gpu']);
+    expect(saga.targetMatch).toBe('any');
+    expect(saga.instanceId).toBeUndefined();
+  });
+
+  it('assignTarget defaults the tag match mode to all', async () => {
+    const svc = createMockTingService();
+    const saga = await svc.assignTarget('00000000-0000-0000-0000-000000000001', {
+      mode: 'tags',
+      tags: ['gpu', 'batch'],
+    });
+    expect(saga.targetMatch).toBe('all');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -129,6 +234,19 @@ describe('createMockDispatcherService', () => {
     await svc.setRunning(false);
     const log = await svc.getLog();
     expect(log.some((l) => l.includes('running'))).toBe(true);
+  });
+
+  it('getActivityLog returns all seed events by default', async () => {
+    const svc = createMockDispatcherService();
+    const events = await svc.getActivityLog();
+    expect(events).toHaveLength(4);
+    expect(events[0]?.event).toBe('run.state_changed');
+  });
+
+  it('getActivityLog applies an explicit limit', async () => {
+    const svc = createMockDispatcherService();
+    const events = await svc.getActivityLog(2);
+    expect(events).toHaveLength(2);
   });
 });
 
@@ -210,6 +328,369 @@ describe('createMockTrackerService', () => {
     expect(saga.name).toBe('Niuu Core');
     expect(saga.repos).toEqual(['niuulabs/volundr']);
     expect(saga.status).toBe('active');
+  });
+
+  it('listIssues narrows by milestone id', async () => {
+    const svc = createMockTrackerService();
+    const filtered = await svc.listIssues('proj-niuu-core', 'ms-auth');
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.every((issue) => issue.milestoneId === 'ms-auth')).toBe(true);
+    expect(await svc.listIssues('proj-niuu-core', 'ms-observatory')).toEqual([]);
+  });
+
+  it('importProject falls back to the project id when the project is unknown', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-unknown', ['niuulabs/volundr']);
+    expect(saga.name).toBe('proj-unknown');
+    expect(saga.slug).toBe('proj-unknown');
+  });
+
+  it('importProject uses the base branch for derived repo refs', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', ['niuulabs/volundr'], 'dev');
+    expect(saga.baseBranch).toBe('dev');
+    expect(saga.repoRefs).toEqual([{ repo: 'niuulabs/volundr', branch: 'dev' }]);
+  });
+
+  it('importProject prefers explicit repo refs from options', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', [], undefined, null, {
+      repoRefs: [
+        { repo: 'niuulabs/ting', branch: 'feat/x' },
+        { repo: 'niuulabs/volundr', branch: 'main' },
+      ],
+    });
+    expect(saga.repos).toEqual(['niuulabs/ting', 'niuulabs/volundr']);
+    expect(saga.baseBranch).toBe('feat/x');
+  });
+
+  it('importProject pins to an instance target', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', ['niuulabs/volundr'], 'main', null, {
+      target: { mode: 'instance', instanceId: 'inst-7' },
+    });
+    expect(saga.instanceId).toBe('inst-7');
+    expect(saga.targetTags).toBeUndefined();
+  });
+
+  it('importProject stores tag targets and defaults match to all', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', ['niuulabs/volundr'], 'main', null, {
+      target: { mode: 'tags', tags: ['gpu'] },
+    });
+    expect(saga.targetTags).toEqual(['gpu']);
+    expect(saga.targetMatch).toBe('all');
+    expect(saga.instanceId).toBeUndefined();
+  });
+
+  it('importProject keeps an explicit tag match mode', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', ['niuulabs/volundr'], 'main', null, {
+      target: { mode: 'tags', tags: ['gpu', 'batch'], match: 'any' },
+    });
+    expect(saga.targetMatch).toBe('any');
+  });
+
+  it('importProject falls back to the legacy instanceId argument', async () => {
+    const svc = createMockTrackerService();
+    const saga = await svc.importProject('proj-niuu-core', ['niuulabs/volundr'], 'main', 'inst-3');
+    expect(saga.instanceId).toBe('inst-3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createMockDispatchBus
+// ---------------------------------------------------------------------------
+
+describe('createMockDispatchBus', () => {
+  it('getQueue returns an empty queue', async () => {
+    const bus = createMockDispatchBus();
+    expect(await bus.getQueue()).toEqual([]);
+  });
+
+  it('getClusters returns copies of the seed clusters', async () => {
+    const bus = createMockDispatchBus();
+    const clusters = await bus.getClusters();
+    expect(clusters.length).toBeGreaterThan(0);
+    expect(clusters[0]).toHaveProperty('connectionId');
+    expect(clusters[0]).toHaveProperty('name');
+  });
+
+  it('approve uses the item connection id when present', async () => {
+    const bus = createMockDispatchBus();
+    const [result] = await bus.approve(
+      [{ sagaId: 's1', issueId: 'NIU-1', repo: 'niuulabs/volundr', connectionId: 'conn-item' }],
+      { connectionId: 'conn-options' },
+    );
+    expect(result?.clusterName).toBe('conn-item');
+    expect(result?.sessionId).toBe('sess-NIU-1');
+    expect(result?.status).toBe('spawned');
+  });
+
+  it('approve falls back to the options connection id', async () => {
+    const bus = createMockDispatchBus();
+    const [result] = await bus.approve(
+      [{ sagaId: 's1', issueId: 'NIU-2', repo: 'niuulabs/volundr' }],
+      { connectionId: 'conn-options' },
+    );
+    expect(result?.clusterName).toBe('conn-options');
+  });
+
+  it('approve defaults the cluster to local', async () => {
+    const bus = createMockDispatchBus();
+    const [result] = await bus.approve([
+      { sagaId: 's1', issueId: 'NIU-3', repo: 'niuulabs/volundr' },
+    ]);
+    expect(result?.clusterName).toBe('local');
+  });
+
+  it('dispatch resolves without error', async () => {
+    const bus = createMockDispatchBus();
+    await expect(bus.dispatch('run-1')).resolves.toBeUndefined();
+  });
+
+  it('dispatchBatch reports all runs as dispatched', async () => {
+    const bus = createMockDispatchBus();
+    const result = await bus.dispatchBatch(['run-1', 'run-2']);
+    expect(result.dispatched).toEqual(['run-1', 'run-2']);
+    expect(result.failed).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createMockWorkflowService
+// ---------------------------------------------------------------------------
+
+describe('createMockWorkflowService', () => {
+  it('listWorkflows returns the seed workflows', async () => {
+    const svc = createMockWorkflowService();
+    const workflows = await svc.listWorkflows();
+    expect(workflows.length).toBeGreaterThan(0);
+    expect(workflows[0]?.nodes.length).toBeGreaterThan(0);
+  });
+
+  it('getWorkflow returns a workflow by id', async () => {
+    const svc = createMockWorkflowService();
+    const workflow = await svc.getWorkflow('00000000-0000-0000-0000-000000000a01');
+    expect(workflow?.name).toContain('ship');
+  });
+
+  it('getWorkflow returns null for an unknown id', async () => {
+    const svc = createMockWorkflowService();
+    expect(await svc.getWorkflow('nope')).toBeNull();
+  });
+
+  it('saveWorkflow upserts and deleteWorkflow removes', async () => {
+    const svc = createMockWorkflowService();
+    const existing = await svc.getWorkflow('00000000-0000-0000-0000-000000000a01');
+    const saved = await svc.saveWorkflow({ ...existing!, id: 'wf-new', name: 'fresh workflow' });
+    expect(saved.id).toBe('wf-new');
+    expect((await svc.getWorkflow('wf-new'))?.name).toBe('fresh workflow');
+
+    await svc.deleteWorkflow('wf-new');
+    expect(await svc.getWorkflow('wf-new')).toBeNull();
+  });
+
+  it('launchWorkflow throws for an unknown workflow', async () => {
+    const svc = createMockWorkflowService();
+    await expect(svc.launchWorkflow('nope', { prompt: 'go' })).rejects.toThrow(
+      'Workflow nope not found',
+    );
+  });
+
+  it('launchWorkflow slugifies the prompt', async () => {
+    const svc = createMockWorkflowService();
+    const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
+      prompt: 'Ship The Release!',
+    });
+    expect(result.slug).toBe('ship-the-release');
+    expect(result.status).toBe('starting');
+    expect(result.clusterName).toBe('mock');
+    expect(result.sessionName).toContain('ship-the-release');
+  });
+
+  it('launchWorkflow falls back to the workflow name when prompt is empty', async () => {
+    const svc = createMockWorkflowService();
+    const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
+      prompt: '',
+    });
+    expect(result.slug).toContain('ship');
+  });
+
+  it('launchWorkflow defaults the slug when the prompt has no characters to keep', async () => {
+    const svc = createMockWorkflowService();
+    const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
+      prompt: '!!!',
+    });
+    expect(result.slug).toBe('workflow');
+    expect(result.sessionName).toContain('workflow');
+  });
+
+  it('launchWorkflow honours an explicit session name', async () => {
+    const svc = createMockWorkflowService();
+    const result = await svc.launchWorkflow('00000000-0000-0000-0000-000000000a01', {
+      prompt: 'go',
+      sessionName: 'my-session',
+    });
+    expect(result.sessionName).toBe('my-session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createMockResearchService
+// ---------------------------------------------------------------------------
+
+describe('createMockResearchService', () => {
+  it('listCampaigns returns the seed campaign', async () => {
+    const svc = createMockResearchService();
+    const campaigns = await svc.listCampaigns();
+    expect(campaigns).toHaveLength(1);
+    expect(campaigns[0]?.slug).toBe('rag-landscape');
+  });
+
+  it('getCampaign returns the seed campaign detail', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.getCampaign('rag-landscape');
+    expect(campaign?.status).toBe('running');
+    expect(campaign?.artifacts).toHaveLength(2);
+  });
+
+  it('getCampaign returns null for an unknown slug', async () => {
+    const svc = createMockResearchService();
+    expect(await svc.getCampaign('nope')).toBeNull();
+  });
+
+  it('createCampaign derives the name and slug from the question', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({ question: 'How do agents fail?' });
+    expect(campaign.name).toBe('How do agents fail?');
+    expect(campaign.slug).toBe('how-do-agents-fail');
+    expect(campaign.status).toBe('running');
+    expect(campaign.activeStageId).toBe('frame');
+  });
+
+  it('createCampaign uses an explicit workflow id when known', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({
+      question: 'q',
+      name: 'Pinned workflow',
+      workflowId: '00000000-0000-0000-0000-000000000a02',
+    });
+    expect(campaign.workflowId).toBe('00000000-0000-0000-0000-000000000a02');
+    expect(campaign.workflowName).toContain('deep-review');
+  });
+
+  it('createCampaign falls back to a seed workflow for unknown workflow ids', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({
+      question: 'q',
+      name: 'Fallback workflow',
+      workflowId: 'wf-missing',
+    });
+    expect(campaign.workflowId).toBe('00000000-0000-0000-0000-000000000a01');
+  });
+
+  it('createCampaign generates a placeholder slug for symbol-only names', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({ question: '???', name: '###' });
+    expect(campaign.slug).toBe('campaign-2');
+  });
+
+  it('createCampaign records metadata with defaults for omitted fields', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({ question: 'metadata defaults' });
+    const detail = await svc.getCampaign(campaign.slug);
+    expect(detail?.metadata).toMatchObject({
+      question: 'metadata defaults',
+      mode: 'exploratory',
+      audience: '',
+      deliverable: '',
+      success: '',
+      constraints: [],
+      repo: '',
+      branch: '',
+    });
+  });
+
+  it('createCampaign keeps explicit metadata fields', async () => {
+    const svc = createMockResearchService();
+    const campaign = await svc.createCampaign({
+      question: 'explicit metadata',
+      mode: 'focused',
+      audience: 'execs',
+      deliverable: 'memo',
+      success: 'decision made',
+      constraints: ['cited sources'],
+      repo: 'niuulabs/volundr',
+      branch: 'main',
+    });
+    const detail = await svc.getCampaign(campaign.slug);
+    expect(detail?.metadata).toMatchObject({
+      mode: 'focused',
+      audience: 'execs',
+      deliverable: 'memo',
+      success: 'decision made',
+      constraints: ['cited sources'],
+      repo: 'niuulabs/volundr',
+      branch: 'main',
+    });
+  });
+
+  it('updateCampaign throws for an unknown slug', async () => {
+    const svc = createMockResearchService();
+    await expect(svc.updateCampaign('nope', { name: 'x' })).rejects.toThrow(
+      'Campaign nope not found',
+    );
+  });
+
+  it('updateCampaign patches name, status and metadata', async () => {
+    const svc = createMockResearchService();
+    const updated = await svc.updateCampaign('rag-landscape', {
+      name: 'RAG landscape v2',
+      status: 'paused',
+      metadata: { audience: 'engineering' },
+    });
+    expect(updated.name).toBe('RAG landscape v2');
+    expect(updated.status).toBe('paused');
+    const detail = await svc.getCampaign('rag-landscape');
+    expect(detail?.metadata.audience).toBe('engineering');
+    expect(detail?.metadata.question).toBe('What does the RAG tooling landscape look like?');
+  });
+
+  it('updateCampaign keeps current values when the patch is empty', async () => {
+    const svc = createMockResearchService();
+    const updated = await svc.updateCampaign('rag-landscape', {});
+    expect(updated.name).toBe('RAG landscape');
+    expect(updated.status).toBe('running');
+  });
+
+  it('deleteCampaign removes the campaign', async () => {
+    const svc = createMockResearchService();
+    await svc.deleteCampaign('rag-landscape');
+    expect(await svc.getCampaign('rag-landscape')).toBeNull();
+    expect(await svc.listCampaigns()).toHaveLength(0);
+  });
+
+  it('listArtifacts returns artifacts or an empty list for unknown slugs', async () => {
+    const svc = createMockResearchService();
+    expect(await svc.listArtifacts('rag-landscape')).toHaveLength(2);
+    expect(await svc.listArtifacts('nope')).toEqual([]);
+  });
+
+  it('getArtifact returns content for a known artifact', async () => {
+    const svc = createMockResearchService();
+    const artifact = await svc.getArtifact(
+      'rag-landscape',
+      'research/campaigns/rag-landscape/brief.md',
+    );
+    expect(artifact?.title).toBe('Brief');
+    expect(artifact?.content).toContain('Mock content');
+  });
+
+  it('getArtifact returns null for unknown paths', async () => {
+    const svc = createMockResearchService();
+    expect(await svc.getArtifact('rag-landscape', 'missing.md')).toBeNull();
+    expect(await svc.getArtifact('nope', 'missing.md')).toBeNull();
   });
 });
 
