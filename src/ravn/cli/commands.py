@@ -2716,6 +2716,7 @@ async def _run_daemon(
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
     resident_learning_runtime: Any | None = None
+    resident_wakefulness: Any | None = None
     resident_learning_owns_publisher = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
@@ -2808,12 +2809,22 @@ async def _run_daemon(
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
 
+    resident_wakefulness = _build_resident_wakefulness(
+        settings,
+        resident_learning_runtime=resident_learning_runtime,
+        publisher=environment_signal_publisher,
+    )
+    if resident_wakefulness is not None:
+        await resident_wakefulness.start()
+        typer.echo("  Resident wakefulness: started")
+
     environment_signal_runtime = _build_environment_signal_runtime(
         settings,
         drive_loop=drive_loop,
         persona_config=persona_config,
         publisher=environment_signal_publisher,
         resident_learning_runtime=resident_learning_runtime,
+        resident_wakefulness=resident_wakefulness,
         owns_publisher=not resident_learning_owns_publisher,
     )
     if environment_signal_runtime is not None:
@@ -2908,6 +2919,8 @@ async def _run_daemon(
             await sleipnir_catalog_publisher.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
         if resident_learning_owns_publisher and environment_signal_publisher is not None:
@@ -2926,6 +2939,8 @@ async def _run_daemon(
         await asyncio.gather(*tasks, return_exceptions=True)
         if _cascade_participant is not None:
             await _cascade_participant.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
@@ -2951,6 +2966,7 @@ def _build_environment_signal_runtime(
     persona_config: Any | None = None,
     publisher: Any | None = None,
     resident_learning_runtime: Any | None = None,
+    resident_wakefulness: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -2979,15 +2995,24 @@ def _build_environment_signal_runtime(
     if not persona:
         persona = settings.initiative.default_persona or None
 
+    resident_signal_processor = None
+    if resident_learning_runtime is not None:
+        process_signal = resident_learning_runtime.process_signal
+        if resident_wakefulness is not None:
+
+            async def _process_with_wakefulness(event: Any) -> Any:
+                resident_wakefulness.notify_activity()
+                return await process_signal(event)
+
+            resident_signal_processor = _process_with_wakefulness
+        else:
+            resident_signal_processor = process_signal
+
     return EnvironmentSignalRuntime(
         settings=settings,
         publisher=publisher,
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
-        resident_signal_processor=(
-            resident_learning_runtime.process_signal
-            if resident_learning_runtime is not None
-            else None
-        ),
+        resident_signal_processor=resident_signal_processor,
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,
@@ -3071,6 +3096,39 @@ def _build_resident_learning_runtime(
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.dream_cycle.tool_timeout_seconds,
         rollback_consecutive_failures=settings.dream_cycle.rollback_consecutive_failures,
+    )
+
+
+def _build_resident_wakefulness(
+    settings: Settings,
+    *,
+    resident_learning_runtime: Any | None,
+    publisher: Any | None,
+) -> Any | None:
+    """Build the wakefulness state machine for a resident daemon."""
+    if not settings.wakefulness.enabled:
+        return None
+    if resident_learning_runtime is None or publisher is None:
+        logger.warning(
+            "wakefulness: enabled but resident learning runtime or mesh "
+            "publisher is unavailable; state machine will not run"
+        )
+        return None
+
+    from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
+
+    cfg = settings.wakefulness
+    return ResidentWakefulness(
+        identity=resident_learning_runtime.identity,
+        skills=resident_learning_runtime.skills,
+        publisher=publisher,
+        resident_learning=resident_learning_runtime,
+        tick_interval_seconds=cfg.tick_interval_seconds,
+        wakeful_window_seconds=cfg.wakeful_window_seconds,
+        dream_interval_seconds=cfg.dream_interval_seconds,
+        dream_min_idle_seconds=cfg.dream_min_idle_seconds,
+        stale_skill_age_seconds=cfg.stale_skill_age_seconds,
+        promote_min_successes=cfg.promote_min_successes,
     )
 
 

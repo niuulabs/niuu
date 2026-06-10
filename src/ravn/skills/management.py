@@ -150,6 +150,15 @@ class SkillManagementRegistry:
         self._save()
         return meta
 
+    async def mark_stale(self, name: str) -> SkillLifecycle:
+        """Flag a long-unused skill; it stays runnable but is surfaced for review."""
+        await self._require_skill(name, include_archived=True)
+        meta = self._metadata_for_name(name)
+        meta.status = "stale"
+        meta.updated_at = datetime.now(UTC).isoformat()
+        self._save()
+        return meta
+
     async def pin(self, name: str, *, pinned: bool) -> SkillLifecycle:
         await self._require_skill(name, include_archived=True)
         meta = self._metadata_for_name(name)

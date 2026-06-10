@@ -2353,6 +2353,47 @@ class DreamCycleTriggerConfig(BaseModel):
     )
 
 
+class WakefulnessConfig(BaseModel):
+    """Resident wakefulness state machine and scheduled consolidation dreams.
+
+    Drives ``watching``/``wakeful``/``dreaming`` transitions for resident
+    Valkyrie daemons and runs the reflective consolidation dream (skill
+    telemetry review, stale marking, promotion, gap reopening) on a schedule.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the wakefulness state machine for resident daemons.",
+    )
+    tick_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the state machine evaluates transitions.",
+    )
+    wakeful_window_seconds: float = Field(
+        default=30.0,
+        description="Recency window of signal activity that keeps the resident wakeful.",
+    )
+    dream_interval_seconds: float = Field(
+        default=3600.0,
+        description="Seconds between scheduled consolidation dreams.",
+    )
+    dream_min_idle_seconds: float = Field(
+        default=60.0,
+        description="Minimum idle time before a due dream may start (no mid-incident dreams).",
+    )
+    stale_skill_age_seconds: float = Field(
+        default=7 * 24 * 3600.0,
+        description="Unused-for-this-long skills are marked stale during dreams.",
+    )
+    promote_min_successes: int = Field(
+        default=3,
+        description=(
+            "Successful runs (with zero failures) before a private skill is "
+            "promoted to environment scope during a dream, policy permitting."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -2859,6 +2900,9 @@ class Settings(BaseSettings):
 
     # NIU-587: dream cycle trigger — nightly Mímir enrichment
     dream_cycle: DreamCycleTriggerConfig = Field(default_factory=DreamCycleTriggerConfig)
+
+    # NIU-1040: resident wakefulness state machine + scheduled consolidation dreams
+    wakefulness: WakefulnessConfig = Field(default_factory=WakefulnessConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

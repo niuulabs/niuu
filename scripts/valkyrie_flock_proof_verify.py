@@ -164,7 +164,31 @@ def main() -> int:
     )
     check("replayed signal exercised the built tool", tool_executed, f"judgments={len(judgments)}")
 
-    # 7. NATS only: scoped flock subject fan-out observed.
+    # 7. Wakefulness: the teacher transitioned through wakeful states and ran
+    #    a scheduled consolidation dream (NIU-1040).
+    state_changes = [
+        event
+        for event in _of_type(events, "valkyrie.state.changed")
+        if event.get("payload", {}).get("valkyrie_id") == args.teacher_id
+    ]
+    observed_states = {event["payload"].get("new_state") for event in state_changes}
+    check(
+        "teacher wakefulness transitions observed",
+        "watching" in observed_states and "wakeful" in observed_states,
+        f"states={sorted(s for s in observed_states if s)}",
+    )
+    consolidations = [
+        event
+        for event in _of_type(events, "valkyrie.dream.completed")
+        if event.get("payload", {}).get("dream_kind") == "consolidation"
+    ]
+    check(
+        "scheduled consolidation dream completed",
+        bool(consolidations),
+        f"consolidation dreams={len(consolidations)}",
+    )
+
+    # 8. NATS only: scoped flock subject fan-out observed.
     if args.transport == "nats":
         scoped = [
             event

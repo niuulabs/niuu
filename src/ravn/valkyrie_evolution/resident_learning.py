@@ -180,6 +180,11 @@ class ResidentLearningRuntime:
     def is_running(self) -> bool:
         return self._subscription is not None
 
+    @property
+    def skills(self) -> SkillManagementRegistry:
+        """The resident's skill registry, shared with co-located runtimes."""
+        return self._skills
+
     def decisions(self) -> list[ResidentLearningDecision]:
         return list(self._decisions)
 
@@ -196,6 +201,23 @@ class ResidentLearningRuntime:
             return
         await self._subscription.unsubscribe()
         self._subscription = None
+
+    async def reopen_unresolved_capabilities(self) -> int:
+        """Forget capability gaps that never produced an installed skill.
+
+        Guarded-mode deferrals and held builds park their capability in the
+        evolved set so a resident does not re-dream on every signal.  The
+        scheduled consolidation dream calls this so those gaps get another
+        chance on the next matching signal.
+        """
+        if not self._local_evolved_capabilities:
+            return 0
+        reopened = 0
+        for capability in list(self._local_evolved_capabilities):
+            if await self._find_installed_skill_by_capability(capability) is None:
+                self._local_evolved_capabilities.discard(capability)
+                reopened += 1
+        return reopened
 
     async def process_signal(self, signal: OperationalSignal | SleipnirEvent) -> dict[str, Any]:
         """Use an installed adopted skill when a later signal matches its capability."""
