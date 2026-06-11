@@ -624,9 +624,59 @@ def create_app(
 
         app.include_router(create_personas_router(persona_loader))
 
+    import contextlib  # noqa: PLC0415
+
+    from ravn.api.odin_reviews import (  # noqa: PLC0415
+        build_review_queue_store_from_env,
+        build_review_ttls_from_env,
+        create_odin_review_router,
+        review_sweep_interval_from_env,
+    )
+    from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
+    from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
+
     valkyrie_projection = ValkyrieDashboardProjection()
-    valkyrie_telemetry = build_nats_telemetry_subscription_from_env(valkyrie_projection)
     valkyrie_learning_commands = build_nats_review_command_publisher_from_env()
+    review_ttls, review_default_ttl = build_review_ttls_from_env()
+    odin_review_service = OdinReviewService(
+        build_review_queue_store_from_env(),
+        publisher=valkyrie_learning_commands,
+        ttl_seconds_by_kind=review_ttls,
+        default_ttl_seconds=review_default_ttl,
+    )
+    valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
+        valkyrie_projection,
+        review_ingest=odin_review_service.ingest_event,
+    )
+    review_sweep_interval = review_sweep_interval_from_env()
+    review_sweep_task: dict[str, asyncio.Task | None] = {"task": None}
+
+    async def _run_review_sweep() -> None:
+        while True:
+            await asyncio.sleep(review_sweep_interval)
+            try:
+                await odin_review_service.sweep_expired()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("odin review: expiry sweep failed")
+
+    @app.on_event("startup")
+    async def start_review_sweep() -> None:
+        review_sweep_task["task"] = asyncio.create_task(
+            _run_review_sweep(),
+            name="odin_review_sweep",
+        )
+
+    @app.on_event("shutdown")
+    async def stop_review_sweep() -> None:
+        task = review_sweep_task["task"]
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            review_sweep_task["task"] = None
+
     if valkyrie_telemetry is not None:
 
         @app.on_event("startup")
@@ -655,6 +705,13 @@ def create_app(
         create_valkyrie_router(
             valkyrie_projection,
             review_command_publisher=valkyrie_learning_commands,
+            review_service=odin_review_service,
+        )
+    )
+    app.include_router(
+        create_odin_review_router(
+            odin_review_service,
+            room_client=build_skuld_room_client_from_env(),
         )
     )
 

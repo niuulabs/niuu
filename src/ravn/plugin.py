@@ -92,6 +92,11 @@ class RavnPlugin(ServicePlugin):
                 description="Resident Valkyrie dashboard, huddle, learning, and signal routes.",
             ),
             APIRouteDomain(
+                name="ravn-odin-api",
+                prefixes=("/api/v1/ravn/odin",),
+                description="Central ODIN review queue: every decision awaiting an operator.",
+            ),
+            APIRouteDomain(
                 name="ravn-session-api",
                 prefixes=(
                     "/api/v1/ravn/status",

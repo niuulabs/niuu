@@ -2824,8 +2824,10 @@ class ValkyrieTelemetrySubscription:
         retry_interval_seconds: int = 30,
         startup_delay_seconds: float = 5.0,
         subscriber_start_timeout_seconds: float = 5.0,
+        review_ingest: Any | None = None,
     ) -> None:
         self._projection = projection
+        self._review_ingest = review_ingest
         self._subscribers = subscribers
         self._event_types = event_types
         self._subscriptions: list[tuple[str, Any]] = []
@@ -2884,6 +2886,15 @@ class ValkyrieTelemetrySubscription:
 
     async def _handle(self, event: SleipnirEvent) -> None:
         self._projection.record_event(event)
+        if self._review_ingest is None:
+            return
+        try:
+            await self._review_ingest(event)
+        except Exception:
+            logger.exception(
+                "valkyrie_dashboard: review queue ingest failed for %s",
+                event.event_type,
+            )
 
     async def _start_subscriber(self, label: str, subscriber: Any) -> bool:
         if label in self._started_labels:
@@ -3048,6 +3059,7 @@ def _command_stream_specs() -> list[dict[str, str]]:
 
 def build_nats_telemetry_subscription_from_env(
     projection: ValkyrieDashboardProjection,
+    review_ingest: Any | None = None,
 ) -> ValkyrieTelemetrySubscription | None:
     """Build the optional dashboard telemetry NATS consumer from environment vars."""
     servers_raw = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
@@ -3133,6 +3145,7 @@ def build_nats_telemetry_subscription_from_env(
 
     return ValkyrieTelemetrySubscription(
         projection=projection,
+        review_ingest=review_ingest,
         subscribers=subscribers,
         retry_interval_seconds=retry_interval_seconds,
         startup_delay_seconds=startup_delay_seconds,
@@ -3292,11 +3305,21 @@ def create_valkyrie_router(
     projection: ValkyrieDashboardProjection | None = None,
     review_command_publisher: OdinReviewCommandPublisher | None = None,
     room_client: ValkyrieRoomClient | None = None,
+    review_service: Any | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/ravn/valkyrie", tags=["Ravn Valkyries"])
     store = projection or ValkyrieDashboardProjection()
     command_publisher = review_command_publisher or OdinReviewCommandPublisher()
     skuld_room = room_client or build_skuld_room_client_from_env()
+
+    async def _record_in_review_ledger(item: ReviewItem) -> None:
+        """Operator-initiated decisions land in the same central ledger."""
+        if review_service is None:
+            return
+        try:
+            await review_service.record_decided(item)
+        except Exception:
+            logger.exception("valkyrie controls: review ledger record failed")
 
     async def finish_learning_action(
         action: str,
@@ -3325,6 +3348,7 @@ def create_valkyrie_router(
             event = None
         if event is not None:
             store.record_event(event)
+        await _record_in_review_ledger(item)
         return store.record_learning_command_delivery(str(learning["id"]), delivery)
 
     @router.get("/dashboard")
@@ -3534,6 +3558,7 @@ def create_valkyrie_router(
             event = None
         if event is not None:
             store.record_event(event)
+        await _record_in_review_ledger(item)
         return store.dashboard()
 
     @router.get("/telemetry/events")
@@ -3555,6 +3580,11 @@ def create_valkyrie_router(
     @router.post("/telemetry/events")
     async def record_telemetry_event(event: dict[str, Any], minimal: bool = False) -> Dashboard:
         store.record_event(event)
+        if review_service is not None:
+            try:
+                await review_service.ingest_event(event)
+            except Exception:
+                logger.exception("valkyrie telemetry: review queue ingest failed")
         if minimal:
             return {
                 "accepted": True,

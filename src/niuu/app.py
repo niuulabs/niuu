@@ -176,6 +176,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "persona-api": "personas",
     "ravn-api": "ravn",
     "ravn-budget-api": "ravn",
+    "ravn-odin-api": "ravn",
     "ravn-runtime-api": "ravn",
     "ravn-session-api": "ravn",
     "ravn-trigger-api": "ravn",
