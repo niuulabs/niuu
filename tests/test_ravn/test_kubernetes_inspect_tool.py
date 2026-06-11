@@ -87,9 +87,7 @@ class FakeCoreV1:
         return SimpleNamespace(
             metadata=SimpleNamespace(name=name, uid="node-uid"),
             status=SimpleNamespace(
-                conditions=[
-                    SimpleNamespace(type="Ready", status="True", reason="KubeletReady")
-                ]
+                conditions=[SimpleNamespace(type="Ready", status="True", reason="KubeletReady")]
             ),
         )
 

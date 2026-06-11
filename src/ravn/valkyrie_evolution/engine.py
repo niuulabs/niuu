@@ -487,6 +487,12 @@ class ValkyrieEvolutionProofRunner:
                 if e.event_type == registry.LEARNING_ADOPTION_RECORDED
                 and e.payload.get("action") == "rejected"
             ),
+            "resident_learnings_held": sum(
+                1
+                for e in events
+                if e.event_type == "valkyrie.evolution.held"
+                and e.payload.get("held_kind") == "peer_adoption"
+            ),
             "resident_adopted_skills_used": sum(
                 1
                 for e in events

@@ -87,18 +87,22 @@ async def test_adoption_is_recorded_in_the_durable_ledger(tmp_path) -> None:
     assert peer_decision.canary_passed is True
 
 
+#: A tool implementation the reviewer must reject outright (forbidden import).
+_BLOCKED_TOOL = "import subprocess\n\ndef run(signal):\n    return {}\n"
+
+
 async def test_rejection_survives_restart_and_is_not_reevaluated(tmp_path) -> None:
     """NIU-1034: rejected learnings do not keep reappearing — even after restart."""
     store_path = tmp_path / "flock_learning.json"
-    guarded = _runtime(tmp_path, autonomy_mode="guarded", store=FlockLearningStore(store_path))
+    peer = _runtime(tmp_path, store=FlockLearningStore(store_path))
 
-    first = await guarded.evaluate_and_apply(_artifact())
+    first = await peer.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
     assert first.action == "rejected"
     assert first.relevant
 
     # Fresh runtime + fresh store instance over the same file = restart.
-    restarted = _runtime(tmp_path, autonomy_mode="guarded", store=FlockLearningStore(store_path))
-    second = await restarted.evaluate_and_apply(_artifact())
+    restarted = _runtime(tmp_path, store=FlockLearningStore(store_path))
+    second = await restarted.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
     assert second.action == "ignored"
     assert "previously declined" in second.rationale
 
@@ -106,10 +110,26 @@ async def test_rejection_survives_restart_and_is_not_reevaluated(tmp_path) -> No
     assert len([d for d in record.peer_decisions if d.action == "rejected"]) == 1
 
 
-async def test_operator_command_bypasses_the_declined_ledger(tmp_path) -> None:
+async def test_guarded_hold_is_not_a_durable_decline(tmp_path) -> None:
+    """A guarded peer waits for the operator; holding must not poison the ledger."""
     store_path = tmp_path / "flock_learning.json"
     guarded = _runtime(tmp_path, autonomy_mode="guarded", store=FlockLearningStore(store_path))
-    assert (await guarded.evaluate_and_apply(_artifact())).action == "rejected"
+
+    held = await guarded.evaluate_and_apply(_artifact())
+    assert held.action == "held"
+    assert FlockLearningStore(store_path).list() == []
+
+    # After an operator flips the resident to yolo, the same learning installs.
+    operator = _runtime(tmp_path, autonomy_mode="yolo", store=FlockLearningStore(store_path))
+    adopted = await operator.evaluate_and_apply(_artifact())
+    assert adopted.action == "adopted"
+
+
+async def test_operator_command_bypasses_the_declined_ledger(tmp_path) -> None:
+    store_path = tmp_path / "flock_learning.json"
+    peer = _runtime(tmp_path, store=FlockLearningStore(store_path))
+    declined = await peer.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
+    assert declined.action == "rejected"
 
     operator = _runtime(tmp_path, autonomy_mode="yolo", store=FlockLearningStore(store_path))
     forced = await operator.evaluate_and_apply(

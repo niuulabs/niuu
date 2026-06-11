@@ -36,7 +36,23 @@ exists so nobody re-merges them or mistakes one for another.
 
 `guarded | autonomous | yolo` — everywhere: the autonomy policy
 (`src/ravn/context/autonomy.py`), the Environment domain model, the dashboard
-API, and the UI. Operators change a resident's mode through
-`POST /api/v1/ravn/valkyrie/autonomy`, which publishes
-`valkyrie.autonomy.changed`; the resident applies it and confirms with
-`valkyrie.state.updated`.
+API, and the UI. Every mode builds when it sees a capability gap; the modes
+differ only in what happens to the finished artifact. Guarded residents hold
+the install behind an ODIN review request, autonomous residents install
+low-risk builds, and YOLO residents install anything without blocking
+findings.
+
+## The unified ODIN review path
+
+Everything that needs a human decision rides one envelope
+(`src/ravn/odin/review.py`): a `ReviewItem` published as
+`odin.review.requested`, decided by an operator as `odin.review.decided`,
+applied by the target resident, and confirmed as `odin.review.resolved`.
+Held builds, guarded skill promotions, peer-learning verdicts, court
+draft-for-review escalations, and operator autonomy changes are all kinds of
+the same item — there is no separate command channel per type. Operators
+change a resident's mode through `POST /api/v1/ravn/valkyrie/autonomy`, which
+publishes an already-decided `autonomy_change` ReviewItem; the resident
+applies it and confirms with `valkyrie.state.updated`. Residents persist
+pending requests in `.ravn/review_outbox.json` and re-announce them on
+restart.

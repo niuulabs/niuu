@@ -1922,6 +1922,7 @@ def valkyrie_evolution_proof(
     typer.echo(f"  resident installs      : {summary['resident_skills_installed']}")
     typer.echo(f"  resident adopted       : {summary['resident_learnings_adopted']}")
     typer.echo(f"  resident rejected      : {summary['resident_learnings_rejected']}")
+    typer.echo(f"  resident held          : {summary['resident_learnings_held']}")
     typer.echo(f"  resident skill uses    : {summary['resident_adopted_skills_used']}")
     typer.echo(f"  resident odin decisions: {summary['resident_odin_decisions']}")
     if publish_dashboard_url.strip():
@@ -2826,6 +2827,11 @@ async def _run_daemon(
         settings,
         publisher=environment_signal_publisher,
         memory=memory,
+        review_requester=(
+            resident_learning_runtime.review_requester
+            if resident_learning_runtime is not None
+            else None
+        ),
     )
     if odin_court is not None:
         await odin_court.start()
@@ -3144,7 +3150,13 @@ def _build_resident_learning_runtime(
         kwargs=settings.resident_evolution.reviewer_kwargs,
     )
     from ravn.adapters.reflection.flock_learning import FlockLearningStore  # noqa: PLC0415
+    from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
 
+    review_requester = ReviewRequester(
+        publisher=publisher,
+        store=JsonReviewStore(local_ravn_dir / "review_outbox.json"),
+        source=resident_id,
+    )
     return ResidentLearningRuntime(
         identity=identity,
         skills=skills,
@@ -3157,6 +3169,7 @@ def _build_resident_learning_runtime(
         tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
+        review_requester=review_requester,
     )
 
 
@@ -3177,21 +3190,16 @@ def _build_resident_wakefulness(
         )
         return None
 
-    from ravn.context.autonomy import JsonProposalStore  # noqa: PLC0415
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
 
     cfg = settings.resident_wakefulness
-    workspace = _resolve_workspace(settings)
-    proposal_store = JsonProposalStore(
-        _resident_ravn_state_dir(workspace) / "autonomy_proposals.json"
-    )
     return ResidentWakefulness(
         identity=resident_learning_runtime.identity,
         skills=resident_learning_runtime.skills,
         publisher=publisher,
         resident_learning=resident_learning_runtime,
         memory=memory,
-        proposal_store=proposal_store,
+        review_requester=resident_learning_runtime.review_requester,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,
@@ -3206,6 +3214,7 @@ def _build_odin_court(
     *,
     publisher: Any | None,
     memory: Any | None,
+    review_requester: Any | None = None,
 ) -> Any | None:
     """Build the ODIN court resolver for an active resident environment."""
     if not settings.odin_court.enabled:
@@ -3223,6 +3232,7 @@ def _build_odin_court(
         publisher=publisher,
         subscriber=publisher,
         audit_sink=audit_sink,
+        review_requester=review_requester,
         court_id=f"odin-court:{settings.environment.id}",
         quorum_size=settings.odin_court.quorum_size,
         timeout_s=settings.odin_court.timeout_seconds,

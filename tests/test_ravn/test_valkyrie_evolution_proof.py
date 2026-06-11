@@ -53,7 +53,8 @@ async def test_evolution_proof_builds_skills_and_uses_them_on_replay(tmp_path: P
     assert report.summary["skills_used_on_replay"] == 3
     assert report.summary["flock_learnings_proposed"] == 1
     assert report.summary["resident_learnings_adopted"] == 1
-    assert report.summary["resident_learnings_rejected"] == 2
+    assert report.summary["resident_learnings_rejected"] == 1
+    assert report.summary["resident_learnings_held"] == 1
     assert report.summary["resident_adopted_skills_used"] == 1
     assert report.summary["resident_odin_decisions"] == 2
     assert report.summary["container_safe_artifacts"] is True
@@ -109,7 +110,8 @@ def test_valkyrie_evolution_proof_cli_writes_artifacts(tmp_path: Path) -> None:
     assert "flock proposals        : 1" in result.output
     assert "resident installs      : 1" in result.output
     assert "resident adopted       : 1" in result.output
-    assert "resident rejected      : 2" in result.output
+    assert "resident rejected      : 1" in result.output
+    assert "resident held          : 1" in result.output
     assert "resident skill uses    : 1" in result.output
 
     report = json.loads((out_dir / "proof-report.json").read_text(encoding="utf-8"))

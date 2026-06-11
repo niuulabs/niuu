@@ -301,3 +301,59 @@ async def test_environment_fixture_decisions_for_k8s_inbox_and_printer() -> None
     assert "human:operator" in rooms[0].payload["participants"]
 
     await court.stop()
+
+
+async def test_draft_for_review_files_a_review_item(tmp_path) -> None:
+    """The 'review_queue' escalation path is the unified ODIN review path."""
+    from ravn.odin.review import JsonReviewStore, ReviewRequester
+
+    bus = InProcessBus()
+    store = JsonReviewStore(tmp_path / "outbox.json")
+    court = OdinCourt(
+        publisher=bus,
+        subscriber=bus,
+        review_requester=ReviewRequester(publisher=bus, store=store, source="odin-court"),
+        quorum_size=2,
+    )
+    await court.start()
+    requested = await _collect(bus, [registry.ODIN_REVIEW_REQUESTED])
+
+    await bus.publish(_judgment(tier="present", authority="human_review_required"))
+    await bus.publish(_action(authority="human_review_required"))
+    await bus.flush()
+    await bus.flush()
+
+    assert len(requested) == 1
+    payload = requested[0].payload
+    assert payload["kind"] == "court_escalation"
+    assert payload["requested_action"] == "execute_action"
+    assert payload["environment_id"] == "cluster-a"
+    assert payload["evidence"]["action"]["capability"] == "k8s.inspect_pod"
+    assert payload["evidence"]["tier"] == "present"
+    assert payload["evidence"]["judgment_refs"]
+    pending = store.list(status="pending", kind="court_escalation")
+    assert len(pending) == 1
+
+    await court.stop()
+
+
+async def test_autonomous_decisions_do_not_file_review_items(tmp_path) -> None:
+    from ravn.odin.review import JsonReviewStore, ReviewRequester
+
+    bus = InProcessBus()
+    store = JsonReviewStore(tmp_path / "outbox.json")
+    court = OdinCourt(
+        publisher=bus,
+        subscriber=bus,
+        review_requester=ReviewRequester(publisher=bus, store=store, source="odin-court"),
+        quorum_size=2,
+    )
+    await court.start()
+
+    await bus.publish(_judgment(authority="autonomous"))
+    await bus.publish(_action(authority="autonomous"))
+    await bus.flush()
+    await bus.flush()
+
+    assert store.list() == []
+    await court.stop()

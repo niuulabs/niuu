@@ -1,14 +1,13 @@
-"""Operator autonomy commands actually change resident behavior (F7/F8)."""
+"""Operator autonomy decisions ride the unified ODIN review path (F7/F8)."""
 
 from __future__ import annotations
-
-from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.api.valkyries import create_valkyrie_router
+from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningIdentity,
@@ -21,22 +20,24 @@ from sleipnir.domain.events import SleipnirEvent
 from tests.ravn.fixtures.fakes import BusRecorder, ManualClock
 
 
-def _autonomy_event(mode: str, *, valkyrie_id: str = "valkyrie:k8s-b") -> SleipnirEvent:
-    return SleipnirEvent(
-        event_type=registry.VALKYRIE_AUTONOMY_CHANGED,
-        source="test-operator",
-        payload={
-            "valkyrie_id": valkyrie_id,
-            "environment_id": "cluster-b",
-            "mode": mode,
-            "operator_id": "human:jozef",
-            "reason": "test",
-        },
-        summary="autonomy change",
-        urgency=0.4,
-        domain="infrastructure",
-        timestamp=datetime.now(UTC),
+def _autonomy_decided_event(
+    mode: str,
+    *,
+    valkyrie_id: str = "valkyrie:k8s-b",
+    decision: str = "approved",
+) -> SleipnirEvent:
+    item = ReviewItem.new(
+        kind=ReviewKind.AUTONOMY_CHANGE.value,
+        requested_action="set_autonomy_mode",
+        environment_id="cluster-b",
+        valkyrie_id=valkyrie_id,
+        title=f"Set {valkyrie_id} autonomy to {mode}",
+        summary="test",
+        evidence={"mode": mode},
+        requested_by="human:jozef",
     )
+    item.decide(decision=decision, operator_id="human:jozef", reason="test")
+    return review_decided_event(item, source="test-operator")
 
 
 async def _runtime(tmp_path) -> tuple[ResidentLearningRuntime, BusRecorder, InProcessBus]:
@@ -65,11 +66,11 @@ async def _runtime(tmp_path) -> tuple[ResidentLearningRuntime, BusRecorder, InPr
     return runtime, recorder, bus
 
 
-async def test_autonomy_command_changes_resident_mode_and_confirms(tmp_path) -> None:
+async def test_autonomy_decision_changes_resident_mode_and_confirms(tmp_path) -> None:
     runtime, recorder, bus = await _runtime(tmp_path)
     assert runtime.identity.autonomy_mode == "guarded"
 
-    await bus.publish(_autonomy_event("autonomous"))
+    await bus.publish(_autonomy_decided_event("autonomous"))
     await bus.flush()
 
     assert runtime.identity.autonomy_mode == "autonomous"
@@ -79,17 +80,40 @@ async def test_autonomy_command_changes_resident_mode_and_confirms(tmp_path) -> 
     )
     assert confirmation.payload["previous_autonomy_mode"] == "guarded"
     assert confirmation.payload["operator_id"] == "human:jozef"
+
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert len(resolved) == 1
+    assert resolved[0].payload["apply_outcome"] == "applied"
+    assert resolved[0].payload["status"] == "applied"
     await runtime.stop()
 
 
-async def test_unknown_mode_and_wrong_target_are_ignored(tmp_path) -> None:
-    runtime, _recorder, bus = await _runtime(tmp_path)
+async def test_rejected_autonomy_decision_keeps_mode(tmp_path) -> None:
+    runtime, recorder, bus = await _runtime(tmp_path)
 
-    await bus.publish(_autonomy_event("delegated"))  # not canonical
-    await bus.publish(_autonomy_event("yolo", valkyrie_id="valkyrie:someone-else"))
+    await bus.publish(_autonomy_decided_event("yolo", decision="rejected"))
     await bus.flush()
 
     assert runtime.identity.autonomy_mode == "guarded"
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert len(resolved) == 1
+    assert resolved[0].payload["apply_outcome"] == "applied"
+    assert resolved[0].payload["status"] == "rejected"
+    await runtime.stop()
+
+
+async def test_unknown_mode_and_wrong_target_are_not_applied(tmp_path) -> None:
+    runtime, recorder, bus = await _runtime(tmp_path)
+
+    await bus.publish(_autonomy_decided_event("delegated"))  # not canonical
+    await bus.publish(_autonomy_decided_event("yolo", valkyrie_id="valkyrie:someone-else"))
+    await bus.flush()
+
+    assert runtime.identity.autonomy_mode == "guarded"
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    # The non-canonical mode fails loudly; the wrong-target item is ignored.
+    assert len(resolved) == 1
+    assert resolved[0].payload["apply_outcome"] == "apply_failed"
     await runtime.stop()
 
 
@@ -104,7 +128,7 @@ async def test_wakefulness_follows_live_identity_after_autonomy_change(tmp_path)
     )
     assert machine.identity.autonomy_mode == "guarded"
 
-    await bus.publish(_autonomy_event("yolo"))
+    await bus.publish(_autonomy_decided_event("yolo"))
     await bus.flush()
 
     assert machine.identity.autonomy_mode == "yolo"
@@ -139,17 +163,17 @@ def _client(monkeypatch_env=None, **router_kwargs) -> TestClient:
         os.environ.pop("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", None)
 
 
-def test_autonomy_endpoint_publishes_real_command() -> None:
+def test_autonomy_endpoint_publishes_decided_review_item() -> None:
     published: list[SleipnirEvent] = []
 
     class _Publisher:
         async def publish(self, event: SleipnirEvent) -> None:
             published.append(event)
 
-    from ravn.api.valkyries import ValkyrieLearningCommandPublisher
+    from ravn.api.valkyries import OdinReviewCommandPublisher
 
     client = _client(
-        learning_command_publisher=ValkyrieLearningCommandPublisher(_Publisher()),
+        review_command_publisher=OdinReviewCommandPublisher(_Publisher()),
     )
     valkyrie_id = client.get("/api/v1/ravn/valkyrie/dashboard").json()["valkyries"][0]["id"]
     response = client.post(
@@ -157,10 +181,14 @@ def test_autonomy_endpoint_publishes_real_command() -> None:
         json={"valkyrieId": valkyrie_id, "mode": "yolo", "reason": "ship it"},
     )
     assert response.status_code == 200
-    commands = [e for e in published if e.event_type == registry.VALKYRIE_AUTONOMY_CHANGED]
+    commands = [e for e in published if e.event_type == registry.ODIN_REVIEW_DECIDED]
     assert len(commands) == 1
-    assert commands[0].payload["mode"] == "yolo"
-    assert commands[0].payload["valkyrie_id"] == valkyrie_id
+    payload = commands[0].payload
+    assert payload["kind"] == ReviewKind.AUTONOMY_CHANGE.value
+    assert payload["status"] == "approved"
+    assert payload["evidence"]["mode"] == "yolo"
+    assert payload["valkyrie_id"] == valkyrie_id
+    assert payload["requested_capability"] == "change_autonomy"
 
 
 def test_autonomy_endpoint_rejects_legacy_modes() -> None:

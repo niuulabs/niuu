@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from ravn.adapters.reflection.flock_learning import (
@@ -19,6 +17,7 @@ from ravn.cli.commands import (
     _resolve_transport_kwargs,
 )
 from ravn.config import Settings
+from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.models import OperationalSignal
 from ravn.valkyrie_evolution.resident_learning import (
@@ -249,9 +248,9 @@ async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tm
     assert installed["metadata"]["environment_id"] == "cluster-b"
     assert installed["metadata"]["source"] == "flock-learning:learn-k8s-oom"
     assert [decision.action for decision in peer.decisions()] == ["adopted"]
-    assert "YOLO override installed after non-blocking Odin findings" in peer.decisions()[
-        0
-    ].rationale
+    assert (
+        "YOLO override installed after non-blocking Odin findings" in peer.decisions()[0].rationale
+    )
     odin = next(event for event in events if event.event_type == registry.ODIN_COURT_DECIDED)
     assert odin.payload["decision"] == "learning_adoption_allowed"
     assert odin.payload["install_authorization"] == "yolo_override"
@@ -288,11 +287,7 @@ async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tm
     for event in events:
         projection.record_event(event)
     dashboard = projection.dashboard()
-    learning = next(
-        item
-        for item in dashboard["learnings"]
-        if item["id"] == "live-learn-k8s-oom"
-    )
+    learning = next(item for item in dashboard["learnings"] if item["id"] == "live-learn-k8s-oom")
     assert learning["status"] == "adopted"
     assert learning["artifactType"] == "tool_skill"
     assert "capability: inspect.kubernetes.pod.oomkilled" in learning["artifactContent"]
@@ -364,16 +359,12 @@ async def test_resident_micro_dream_builds_and_proposes_missing_capability(
     assert registry.LEARNING_ADOPTION_RECORDED in event_types
     assert "valkyrie.dream.completed" in event_types
     adoption = next(
-        event
-        for event in events
-        if event.event_type == registry.LEARNING_ADOPTION_RECORDED
+        event for event in events if event.event_type == registry.LEARNING_ADOPTION_RECORDED
     )
     assert adoption.payload["action"] == "adopted"
     assert adoption.payload["ack_kind"] == "resident_learning"
     assert adoption.payload["resident_valkyrie_id"] == "valkyrie:k8s-b"
-    assert adoption.payload["installed_skill_name"] == (
-        "valkyrie-inspect-kubernetes-pod-unhealthy"
-    )
+    assert adoption.payload["installed_skill_name"] == ("valkyrie-inspect-kubernetes-pod-unhealthy")
     assert adoption.payload["additional_nats_subjects"] == [
         "flock.k8s.cluster-b.learning.adoption.recorded"
     ]
@@ -486,17 +477,18 @@ async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_
         "flock.k8s.cluster-a.flock.learning.proposed"
     ]
 
-    installed = await relevant_peer_skills.show(
-        "valkyrie-inspect-kubernetes-pod-failedmount"
-    )
+    installed = await relevant_peer_skills.show("valkyrie-inspect-kubernetes-pod-failedmount")
     assert installed["metadata"]["scope"] == "flock"
     assert installed["metadata"]["environment_id"] == "cluster-b"
     assert installed["metadata"]["source"] == (
         "flock-learning:resident:cluster-a:inspect-kubernetes-pod-failedmount"
     )
-    assert await irrelevant_peer_skills.get_runnable_skill(
-        "valkyrie-inspect-kubernetes-pod-failedmount"
-    ) is None
+    assert (
+        await irrelevant_peer_skills.get_runnable_skill(
+            "valkyrie-inspect-kubernetes-pod-failedmount"
+        )
+        is None
+    )
     assert [decision.action for decision in relevant_peer.decisions()] == ["adopted"]
     assert [decision.action for decision in irrelevant_peer.decisions()] == ["rejected"]
     assert any(
@@ -530,9 +522,7 @@ async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_
 
     assert replay["usedAdoptedLearning"] is True
     assert replay["skillName"] == "valkyrie-inspect-kubernetes-pod-failedmount"
-    refreshed = await relevant_peer_skills.show(
-        "valkyrie-inspect-kubernetes-pod-failedmount"
-    )
+    refreshed = await relevant_peer_skills.show("valkyrie-inspect-kubernetes-pod-failedmount")
     assert refreshed["metadata"]["run_count"] == 1
 
     await relevant_peer.stop()
@@ -569,9 +559,9 @@ async def test_irrelevant_peer_rejects_learning_without_installing(tmp_path) -> 
 
     assert [decision.action for decision in printer_peer.decisions()] == ["rejected"]
     assert "not a member" in printer_peer.decisions()[0].rationale
-    assert await printer_skills.get_runnable_skill(
-        "valkyrie-inspect-kubernetes-pod-oomkilled"
-    ) is None
+    assert (
+        await printer_skills.get_runnable_skill("valkyrie-inspect-kubernetes-pod-oomkilled") is None
+    )
     assert any(
         event.event_type == registry.LEARNING_ADOPTION_RECORDED
         and event.payload["action"] == "rejected"
@@ -584,7 +574,9 @@ async def test_irrelevant_peer_rejects_learning_without_installing(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_guarded_peer_waits_for_human_when_odin_blocks_flock_scope(tmp_path) -> None:
+async def test_guarded_peer_holds_for_operator_when_odin_needs_approval(tmp_path) -> None:
+    from ravn.odin.review import JsonReviewStore, ReviewRequester
+
     bus = InProcessBus()
     events: list[SleipnirEvent] = []
     await _subscribe_recorder(bus, ["learning.*", "odin.*", "valkyrie.evolution.*"], events)
@@ -604,6 +596,11 @@ async def test_guarded_peer_waits_for_human_when_odin_blocks_flock_scope(tmp_pat
         skills=guarded_skills,
         publisher=bus,
         subscriber=bus,
+        review_requester=ReviewRequester(
+            publisher=bus,
+            store=JsonReviewStore(tmp_path / "review_outbox.json"),
+            source="valkyrie:k8s-guarded",
+        ),
     )
     await guarded_peer.start()
 
@@ -611,20 +608,20 @@ async def test_guarded_peer_waits_for_human_when_odin_blocks_flock_scope(tmp_pat
     await bus.flush()
     await bus.flush()
 
-    assert [decision.action for decision in guarded_peer.decisions()] == ["rejected"]
-    assert "Odin review blocked" in guarded_peer.decisions()[0].rationale
-    assert await guarded_skills.get_runnable_skill(
-        "valkyrie-inspect-kubernetes-pod-oomkilled"
-    ) is None
+    assert [decision.action for decision in guarded_peer.decisions()] == ["held"]
+    assert "Held for operator review" in guarded_peer.decisions()[0].rationale
+    assert (
+        await guarded_skills.get_runnable_skill("valkyrie-inspect-kubernetes-pod-oomkilled") is None
+    )
     odin = next(event for event in events if event.event_type == registry.ODIN_COURT_DECIDED)
     assert odin.payload["decision"] == "learning_adoption_blocked"
     assert odin.payload["authority_boundary"] == "human_review_required"
-    assert any(
-        event.event_type == registry.LEARNING_ADOPTION_RECORDED
-        and event.payload["action"] == "rejected"
-        and event.payload["relevant"] is True
-        for event in events
+    requested = next(
+        event for event in events if event.event_type == registry.ODIN_REVIEW_REQUESTED
     )
+    assert requested.payload["kind"] == "flock_learning"
+    assert requested.payload["requested_action"] == "adopt"
+    assert requested.payload["evidence"]["artifact"]["content"]
     assert not any(event.event_type == "valkyrie.evolution.activated" for event in events)
 
     await guarded_peer.stop()
@@ -710,34 +707,37 @@ async def test_operator_adoption_command_installs_and_acknowledges_skill(tmp_pat
     )
     await peer.start()
 
-    await bus.publish(
-        SleipnirEvent(
-            event_type=registry.LEARNING_ADOPTION_RECORDED,
-            source="ravn:valkyrie-dashboard",
-            summary="Operator adopted k8s OOM learning",
-            urgency=0.3,
-            domain="infrastructure",
-            timestamp=datetime.now(UTC),
-            payload={
+    item = ReviewItem.new(
+        kind=ReviewKind.FLOCK_LEARNING.value,
+        requested_action="adopt",
+        environment_id="cluster-a",
+        valkyrie_id="",
+        title="valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Operator adopted k8s OOM learning",
+        audience="flock",
+        flock_id="k8s-valkyries",
+        domain="k8s",
+        evidence={
+            "artifact": {
                 "learning_id": "learn-k8s-oom-command",
-                "promotion_id": "promo-k8s-oom-command",
-                "environment_id": "cluster-a",
-                "action": "adopted",
-                "action_kind": "adopt",
-                "operator_id": "operator",
-                "artifact_name": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "title": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "summary": "Operator adopted k8s OOM learning",
+                "content": _skill_content(),
                 "artifact_type": "ravn_skill_tool",
-                "artifact_content": _skill_content(),
                 "scope": "flock",
-                "flock_id": "k8s-valkyries",
+                "confidence": 0.91,
                 "source_environment_id": "cluster-a",
                 "source_valkyrie_id": "valkyrie:k8s-a",
-                "redaction_status": "redacted",
-                "confidence": 0.91,
+                "promotion_id": "promo-k8s-oom-command",
+                "flock_id": "k8s-valkyries",
                 "domain": "k8s",
-            },
-        )
+                "redaction_status": "redacted",
+            }
+        },
+        requested_by="operator",
     )
+    item.decide(decision="approved", operator_id="operator", reason="adopt now")
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
     await bus.flush()
     await bus.flush()
 
@@ -752,6 +752,9 @@ async def test_operator_adoption_command_installs_and_acknowledges_skill(tmp_pat
         for event in events
     )
     assert any(event.event_type == "valkyrie.evolution.activated" for event in events)
+    resolved = next(event for event in events if event.event_type == registry.ODIN_REVIEW_RESOLVED)
+    assert resolved.payload["apply_outcome"] == "applied"
+    assert resolved.payload["item_id"] == item.item_id
 
     await peer.stop()
 
@@ -798,39 +801,40 @@ async def test_operator_rollback_command_archives_installed_skill(tmp_path) -> N
         )
     )
 
-    await bus.publish(
-        SleipnirEvent(
-            event_type=registry.LEARNING_ADOPTION_RECORDED,
-            source="ravn:valkyrie-dashboard",
-            summary="Operator rolled back k8s OOM learning",
-            urgency=0.5,
-            domain="infrastructure",
-            timestamp=datetime.now(UTC),
-            payload={
+    rollback_item = ReviewItem.new(
+        kind=ReviewKind.FLOCK_LEARNING.value,
+        requested_action="retract",
+        environment_id="cluster-a",
+        valkyrie_id="",
+        title="valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Operator rolled back k8s OOM learning",
+        audience="flock",
+        flock_id="k8s-valkyries",
+        domain="k8s",
+        evidence={
+            "artifact": {
                 "learning_id": "learn-k8s-oom-rollback",
-                "promotion_id": "learn-k8s-oom-rollback",
-                "environment_id": "cluster-a",
-                "action": "regressed",
-                "action_kind": "rollback",
-                "operator_id": "operator",
-                "artifact_name": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "title": "valkyrie-inspect-kubernetes-pod-oomkilled",
+                "summary": "Operator rolled back k8s OOM learning",
+                "content": _skill_content(),
                 "artifact_type": "ravn_skill_tool",
-                "artifact_content": _skill_content(),
                 "scope": "flock",
-                "flock_id": "k8s-valkyries",
                 "source_environment_id": "cluster-a",
                 "source_valkyrie_id": "valkyrie:k8s-a",
-                "redaction_status": "redacted",
+                "promotion_id": "learn-k8s-oom-rollback",
+                "flock_id": "k8s-valkyries",
                 "domain": "k8s",
-            },
-        )
+                "redaction_status": "redacted",
+            }
+        },
+        requested_by="operator",
     )
+    rollback_item.decide(decision="approved", operator_id="operator", reason="roll it back")
+    await bus.publish(review_decided_event(rollback_item, source="ravn:odin-review"))
     await bus.flush()
     await bus.flush()
 
-    assert await peer_skills.get_runnable_skill(
-        "valkyrie-inspect-kubernetes-pod-oomkilled"
-    ) is None
+    assert await peer_skills.get_runnable_skill("valkyrie-inspect-kubernetes-pod-oomkilled") is None
     archived = await peer_skills.show(
         "valkyrie-inspect-kubernetes-pod-oomkilled",
         include_archived=True,

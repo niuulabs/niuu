@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     attention_decision_made,
@@ -112,6 +113,7 @@ class OdinCourt:
         publisher: SleipnirPublisher,
         subscriber: SleipnirSubscriber,
         audit_sink: CourtAuditSink | None = None,
+        review_requester: ReviewRequester | None = None,
         court_id: str = "odin-court",
         quorum_size: int = 2,
         timeout_s: float = 30.0,
@@ -123,6 +125,7 @@ class OdinCourt:
         self._publisher = publisher
         self._subscriber = subscriber
         self._audit_sink = audit_sink or InMemoryCourtAuditSink()
+        self._review_requester = review_requester
         self._court_id = court_id
         self._quorum_size = quorum_size
         self._timeout = timedelta(seconds=timeout_s)
@@ -284,6 +287,55 @@ class OdinCourt:
             await self._publish_action_request(case)
         elif decision == "open_huddle":
             await self._publish_huddle_opened(case, huddle_id)
+        elif decision == "draft_for_review":
+            await self._file_escalation_review(case, record)
+
+    async def _file_escalation_review(
+        self,
+        case: _CourtCase,
+        record: CourtDecisionRecord,
+    ) -> None:
+        """File a draft-for-review action as a ReviewItem — the review queue
+        the escalation path names is the unified ODIN review path."""
+        if self._review_requester is None:
+            return
+        action_fields: dict = {}
+        if case.actions:
+            action_fields = _extract_fields(case.actions[0])
+        valkyrie_ids = _valkyrie_ids(case)
+        capability = _non_empty_str(action_fields.get("capability")) or "unknown"
+        target = action_fields.get("target")
+        item = ReviewItem.new(
+            kind=ReviewKind.COURT_ESCALATION.value,
+            requested_action="execute_action",
+            environment_id=case.environment_id,
+            valkyrie_id=valkyrie_ids[0] if valkyrie_ids else "",
+            title=f"Action draft: {capability}",
+            summary=record.rationale,
+            urgency={"urgent": 0.9, "present": 0.7}.get(record.tier, 0.5),
+            risk_class="high" if record.tier == "urgent" else "medium",
+            dedupe_key=f"{ReviewKind.COURT_ESCALATION.value}:{record.audit_ref}",
+            evidence={
+                "audit_ref": record.audit_ref,
+                "tier": record.tier,
+                "action_authorization": record.action_authorization,
+                "judgment_refs": list(record.judgment_refs),
+                "action_refs": list(record.action_refs),
+                "rationale": record.rationale,
+                "court_evidence": list(record.evidence),
+                "dissent": list(record.dissent),
+                "action": {
+                    "action_id": _non_empty_str(action_fields.get("action_id")),
+                    "capability": capability,
+                    "valkyrie_id": _non_empty_str(action_fields.get("valkyrie_id")),
+                    "target": target if isinstance(target, dict) else {},
+                    "dry_run": bool(action_fields.get("dry_run", True)),
+                },
+            },
+            requested_by=self._court_id,
+            correlation_id=case.root_correlation_id,
+        )
+        await self._review_requester.request(item)
 
     async def _publish_action_request(self, case: _CourtCase) -> None:
         if not case.actions:

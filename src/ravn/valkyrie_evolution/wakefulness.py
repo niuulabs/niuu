@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.resident_learning import ResidentLearningIdentity
 from sleipnir.domain.catalog import learning_promoted, valkyrie_state_changed
@@ -64,7 +65,7 @@ class ResidentWakefulness:
         publisher: SleipnirPublisher,
         resident_learning: Any | None = None,
         memory: Any | None = None,
-        proposal_store: Any | None = None,
+        review_requester: ReviewRequester | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -79,7 +80,7 @@ class ResidentWakefulness:
         self._publisher = publisher
         self._resident_learning = resident_learning
         self._memory = memory
-        self._proposal_store = proposal_store
+        self._review_requester = review_requester
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -207,11 +208,7 @@ class ResidentWakefulness:
 
             if not self._is_promotion_candidate(metadata):
                 continue
-            if name in feedback["implicated_skills"]:
-                # Negative feedback names this skill — hold the promotion and
-                # surface it as a candidate needing review instead.
-                promotion_candidates.append(name)
-                continue
+            implicated = name in feedback["implicated_skills"]
             proposal = SelfImprovementProposal(
                 proposal_id=f"dream-promote:{self.identity.environment_id}:{name}",
                 title=name,
@@ -225,12 +222,19 @@ class ResidentWakefulness:
                 risk_class="low",
             )
             decision = policy.decide(proposal)
-            if decision.decision != "allow":
+            if implicated or decision.decision != "allow":
+                # Held promotions go to the operator through the one review
+                # path instead of evaporating with the dream summary.
                 promotion_candidates.append(name)
-                if self._proposal_store is not None:
-                    # Guarded candidates become durable needs-review proposals
-                    # instead of evaporating with the dream summary (NIU-1026).
-                    self._proposal_store.record_decision(proposal, decision)
+                await self._file_promotion_review(
+                    name,
+                    metadata,
+                    policy_decision=decision.decision,
+                    policy_reason=(
+                        "negative feedback names this skill" if implicated else decision.reason
+                    ),
+                    implicated_by_feedback=implicated,
+                )
                 continue
             await self._skills.promote(
                 name,
@@ -271,6 +275,50 @@ class ResidentWakefulness:
             },
             "capability_gaps_reopened": reopened,
         }
+
+    async def _file_promotion_review(
+        self,
+        name: str,
+        metadata: dict[str, Any],
+        *,
+        policy_decision: str,
+        policy_reason: str,
+        implicated_by_feedback: bool,
+    ) -> None:
+        """File a held promotion as a ReviewItem on the unified ODIN path."""
+        if self._review_requester is None:
+            return
+        success_count = int(metadata.get("success_count") or 0)
+        item = ReviewItem.new(
+            kind=ReviewKind.SKILL_PROMOTION.value,
+            requested_action="promote",
+            environment_id=self.identity.environment_id,
+            valkyrie_id=self.identity.valkyrie_id,
+            title=name,
+            summary=(
+                f"Promote {name} from private to environment scope after "
+                f"{success_count} successful run(s)"
+            ),
+            domain=self.identity.domain,
+            urgency=0.4,
+            dedupe_key=(
+                f"{ReviewKind.SKILL_PROMOTION.value}:{self.identity.environment_id}:{name}"
+            ),
+            evidence={
+                "skill_name": name,
+                "from_scope": str(metadata.get("scope") or "private"),
+                "to_scope": "environment",
+                "success_count": success_count,
+                "failure_count": int(metadata.get("failure_count") or 0),
+                "run_count": int(metadata.get("run_count") or 0),
+                "confidence": self._confidence(metadata),
+                "policy_decision": policy_decision,
+                "policy_reason": policy_reason,
+                "implicated_by_feedback": implicated_by_feedback,
+            },
+            requested_by=self.identity.valkyrie_id,
+        )
+        await self._review_requester.request(item)
 
     async def _recent_feedback(self) -> dict[str, Any]:
         """Summarize recorded resident feedback for this environment.

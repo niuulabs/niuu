@@ -18,11 +18,12 @@ from ravn.api.valkyries import (
     HuddleJoinRequest,
     HuddleSendRequest,
     LearningDecisionRequest,
+    OdinReviewCommandPublisher,
     ValkyrieDashboardProjection,
-    ValkyrieLearningCommandPublisher,
     ValkyrieRoomClient,
     ValkyrieTelemetrySubscription,
-    build_nats_learning_command_publisher_from_env,
+    _review_item_for_learning_action,
+    build_nats_review_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
     create_valkyrie_router,
 )
@@ -420,9 +421,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["runtime"][0]["residentPersonality"] == "Evidence-first cluster guardian."
     assert telemetry["runtime"][0]["wakefulness"] == "dreaming"
     live_valkyrie = next(
-        entry
-        for entry in projection.dashboard()["valkyries"]
-        if entry["id"] == "valkyrie-ymir-k8s"
+        entry for entry in projection.dashboard()["valkyries"] if entry["id"] == "valkyrie-ymir-k8s"
     )
     assert live_valkyrie["wakefulness"] == "dreaming"
     assert live_valkyrie["lastDreamAt"] == "2026-06-04T20:02:30+00:00"
@@ -1069,21 +1068,11 @@ def test_valkyrie_learning_lifecycle_changes_replay_behavior(client: TestClient)
     assert final["usedAdoptedLearning"] is False
     assert refreshed["status"] == "rolled_back"
     assert refreshed["scope"] == "environment"
+    assert any(entry["eventType"] == "valkyrie.learning.adopt" for entry in refreshed["history"])
+    assert any(entry["eventType"] == "valkyrie.learning.promoted" for entry in refreshed["history"])
+    assert any(entry["eventType"] == "valkyrie.learning.demoted" for entry in refreshed["history"])
     assert any(
-        entry["eventType"] == "valkyrie.learning.adopt"
-        for entry in refreshed["history"]
-    )
-    assert any(
-        entry["eventType"] == "valkyrie.learning.promoted"
-        for entry in refreshed["history"]
-    )
-    assert any(
-        entry["eventType"] == "valkyrie.learning.demoted"
-        for entry in refreshed["history"]
-    )
-    assert any(
-        entry["eventType"] == "valkyrie.learning.rolled_back"
-        for entry in refreshed["history"]
+        entry["eventType"] == "valkyrie.learning.rolled_back" for entry in refreshed["history"]
     )
 
 
@@ -1094,7 +1083,7 @@ def test_valkyrie_learning_actions_publish_sleipnir_commands():
     app.include_router(
         create_valkyrie_router(
             projection,
-            learning_command_publisher=ValkyrieLearningCommandPublisher(fake_publisher),
+            review_command_publisher=OdinReviewCommandPublisher(fake_publisher),
         )
     )
     client = TestClient(app)
@@ -1160,24 +1149,27 @@ def test_valkyrie_learning_actions_publish_sleipnir_commands():
     ).json()
 
     assert adopted["commandDelivery"]["published"] is True
-    assert adopted["commandDelivery"]["eventType"] == "learning.adoption.recorded"
+    assert adopted["commandDelivery"]["eventType"] == "odin.review.decided"
     assert promoted["commandDelivery"]["published"] is True
-    assert promoted["commandDelivery"]["eventType"] == "learning.promoted"
+    assert promoted["commandDelivery"]["eventType"] == "odin.review.decided"
     assert demoted["commandDelivery"]["published"] is True
-    assert demoted["commandDelivery"]["eventType"] == "learning.promoted"
-    assert [event.event_type for event in fake_publisher.events] == [
-        "learning.adoption.recorded",
-        "learning.promoted",
-        "learning.promoted",
-    ]
+    assert demoted["commandDelivery"]["eventType"] == "odin.review.decided"
+    assert [event.event_type for event in fake_publisher.events] == ["odin.review.decided"] * 3
     adoption_event = fake_publisher.events[0]
-    assert adoption_event.payload["learning_id"] == "valkyrie-inspect-printer-printer-resin-low"
-    assert adoption_event.payload["action"] == "adopted"
-    assert adoption_event.payload["operator_id"] == "test-operator"
+    assert adoption_event.payload["kind"] == "flock_learning"
+    assert adoption_event.payload["requested_action"] == "adopt"
+    assert adoption_event.payload["status"] == "approved"
+    assert adoption_event.payload["decided_by"] == "test-operator"
+    adopted_artifact = adoption_event.payload["evidence"]["artifact"]
+    assert adopted_artifact["learning_id"] == "valkyrie-inspect-printer-printer-resin-low"
+    assert adopted_artifact["content"]
+    promotion_event = fake_publisher.events[1]
+    assert promotion_event.payload["kind"] == "skill_promotion"
+    assert promotion_event.payload["evidence"]["to_scope"] == "shared"
     demotion_event = fake_publisher.events[-1]
-    assert demotion_event.payload["from_scope"] == "shared"
-    assert demotion_event.payload["to_scope"] == "flock"
-    assert demotion_event.payload["artifact_content_present"] is True
+    assert demotion_event.payload["kind"] == "skill_promotion"
+    assert demotion_event.payload["evidence"]["from_scope"] == "shared"
+    assert demotion_event.payload["evidence"]["to_scope"] == "flock"
 
 
 def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
@@ -1488,7 +1480,7 @@ def test_valkyrie_learning_command_publisher_inherits_telemetry_tls(monkeypatch)
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", "secret")
     monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS", "2")
 
-    publisher = build_nats_learning_command_publisher_from_env()
+    publisher = build_nats_review_command_publisher_from_env()
 
     assert len(created) == 1
     assert created[0].kwargs["servers"] == ["tls://nats:4222"]
@@ -1526,14 +1518,19 @@ def test_valkyrie_learning_command_publisher_fans_out_to_command_streams(monkeyp
     monkeypatch.setattr(nats_transport, "NatsPublisher", FakeNatsPublisher)
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
     monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME", "nats.internal")
-    monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_STREAMS", "\n".join([
-        "flock-k8s-ymir-events:flock.k8s.ymir:valkyrie-dashboard-ymir:RAVN_YMIR_PASSWORD",
-        "flock-k8s-noatun-events:flock.k8s.noatun:valkyrie-dashboard-noatun:RAVN_NOATUN_PASSWORD",
-    ]))
+    monkeypatch.setenv(
+        "RAVN_VALKYRIE_COMMAND_NATS_STREAMS",
+        "\n".join(
+            [
+                "flock-k8s-ymir-events:flock.k8s.ymir:valkyrie-dashboard-ymir:RAVN_YMIR_PASSWORD",
+                "flock-k8s-noatun-events:flock.k8s.noatun:valkyrie-dashboard-noatun:RAVN_NOATUN_PASSWORD",
+            ]
+        ),
+    )
     monkeypatch.setenv("RAVN_YMIR_PASSWORD", "ymir-pass")
     monkeypatch.setenv("RAVN_NOATUN_PASSWORD", "noatun-pass")
 
-    publisher = build_nats_learning_command_publisher_from_env()
+    publisher = build_nats_review_command_publisher_from_env()
 
     assert len(created) == 2
     assert created[0].kwargs["stream_name"] == "flock-k8s-ymir-events"
@@ -1567,12 +1564,10 @@ def test_valkyrie_learning_command_publisher_fans_out_to_command_streams(monkeyp
 
     async def publish_command() -> dict:
         await publisher.start()
-        delivery, _ = await publisher.publish(
-            action="adopt",
-            before=before,
-            learning=learning,
-            request=request,
+        item = _review_item_for_learning_action(
+            "adopt", before, learning, request, operator_id=request.operatorId
         )
+        delivery, _ = await publisher.publish_review_decision(item)
         await publisher.stop()
         return delivery
 
@@ -1581,9 +1576,9 @@ def test_valkyrie_learning_command_publisher_fans_out_to_command_streams(monkeyp
     assert delivery["published"] is True
     assert delivery["targetCount"] == 2
     assert delivery["publishedTargets"] == 2
-    assert [event.event_type for event in created[0].events] == ["learning.adoption.recorded"]
-    assert [event.event_type for event in created[1].events] == ["learning.adoption.recorded"]
-    assert created[0].events[0].payload["artifact_content_present"] is True
+    assert [event.event_type for event in created[0].events] == ["odin.review.decided"]
+    assert [event.event_type for event in created[1].events] == ["odin.review.decided"]
+    assert created[0].events[0].payload["evidence"]["artifact"]["content"]
 
 
 def test_valkyrie_learning_command_publisher_supports_core_command_targets(monkeypatch):
@@ -1623,7 +1618,7 @@ def test_valkyrie_learning_command_publisher_supports_core_command_targets(monke
     )
     monkeypatch.setenv("RAVN_NOATUN_PASSWORD", "noatun-pass")
 
-    publisher = build_nats_learning_command_publisher_from_env()
+    publisher = build_nats_review_command_publisher_from_env()
 
     assert created_stream == []
     assert len(created_core) == 1
@@ -1641,10 +1636,10 @@ def test_valkyrie_learning_command_publisher_supports_core_command_targets(monke
 
     async def publish_command() -> dict:
         await publisher.start()
-        delivery, _ = await publisher.publish(
-            action="adopt",
-            before={"scope": "environment", "sourceEnvironmentId": "ymir"},
-            learning={
+        item = _review_item_for_learning_action(
+            "adopt",
+            {"scope": "environment", "sourceEnvironmentId": "ymir"},
+            {
                 "id": "live-learning-1",
                 "status": "adopted",
                 "scope": "flock",
@@ -1655,8 +1650,10 @@ def test_valkyrie_learning_command_publisher_supports_core_command_targets(monke
                 "redaction": "redacted",
                 "targetFlockId": "k8s-valkyries",
             },
-            request=request,
+            request,
+            operator_id=request.operatorId,
         )
+        delivery, _ = await publisher.publish_review_decision(item)
         await publisher.stop()
         return delivery
 
@@ -1666,13 +1663,13 @@ def test_valkyrie_learning_command_publisher_supports_core_command_targets(monke
     assert delivery["targets"] == [
         {"label": "core/obs.cmd.noatun", "published": True, "message": "published"}
     ]
-    assert created_core[0].events[0].event_type == "learning.adoption.recorded"
+    assert created_core[0].events[0].event_type == "odin.review.decided"
 
 
 def test_valkyrie_learning_command_publisher_reports_partial_fanout_failure():
     class PartialFanout:
         async def publish_with_results(self, event: SleipnirEvent) -> list[dict]:
-            assert event.event_type == "learning.adoption.recorded"
+            assert event.event_type == "odin.review.decided"
             return [
                 {"label": "flock-k8s-ymir-events/flock.k8s.ymir", "published": True},
                 {
@@ -1682,29 +1679,29 @@ def test_valkyrie_learning_command_publisher_reports_partial_fanout_failure():
                 },
             ]
 
-    publisher = ValkyrieLearningCommandPublisher(PartialFanout())
+    publisher = OdinReviewCommandPublisher(PartialFanout())
     request = LearningDecisionRequest(
         learningId="learning-1",
         operatorId="operator",
         reason="prove partial visibility",
     )
 
-    delivery, event = asyncio.run(
-        publisher.publish(
-            action="adopt",
-            before={"scope": "environment", "sourceEnvironmentId": "ymir"},
-            learning={
-                "id": "learning-1",
-                "status": "adopted",
-                "scope": "flock",
-                "sourceEnvironmentId": "ymir",
-                "title": "skill-one",
-                "artifactType": "ravn_skill_tool",
-                "artifactContent": "metadata:\n  capability: inspect.test\n",
-            },
-            request=request,
-        )
+    item = _review_item_for_learning_action(
+        "adopt",
+        {"scope": "environment", "sourceEnvironmentId": "ymir"},
+        {
+            "id": "learning-1",
+            "status": "adopted",
+            "scope": "flock",
+            "sourceEnvironmentId": "ymir",
+            "title": "skill-one",
+            "artifactType": "ravn_skill_tool",
+            "artifactContent": "metadata:\n  capability: inspect.test\n",
+        },
+        request,
+        operator_id=request.operatorId,
     )
+    delivery, event = asyncio.run(publisher.publish_review_decision(item))
 
     assert event is not None
     assert delivery["published"] is False
@@ -1777,9 +1774,7 @@ def test_valkyrie_dashboard_mutations(client: TestClient):
     )
     assert autonomy.status_code == 200
     valhalla = next(
-        entry
-        for entry in autonomy.json()["valkyries"]
-        if entry["id"] == "valkyrie-valhalla-k8s"
+        entry for entry in autonomy.json()["valkyries"] if entry["id"] == "valkyrie-valhalla-k8s"
     )
     assert valhalla["autonomyMode"] == "yolo"
 

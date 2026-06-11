@@ -155,9 +155,7 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert "Resident learning matched this signal before task enqueue" in (
         enqueued[0].initiative_context
     )
-    assert "skill: valkyrie-inspect-host-host-disk-pressure" in (
-        enqueued[0].initiative_context
-    )
+    assert "skill: valkyrie-inspect-host-host-disk-pressure" in (enqueued[0].initiative_context)
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
 

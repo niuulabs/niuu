@@ -202,10 +202,11 @@ async def test_dream_reopens_unresolved_capability_gaps(tmp_path) -> None:
         subscriber=bus,
         tools_dir=tmp_path / "tools",
     )
-    # Guarded mode defers the gap and parks the capability.
+    # Guarded mode builds, holds the install for review, and parks the
+    # capability so the resident does not re-dream on every signal.
     from ravn.valkyrie_evolution.models import OperationalSignal
 
-    deferred = await learner.process_signal(
+    held = await learner.process_signal(
         OperationalSignal(
             signal_id="sig-1",
             event_type="signal.kubernetes.event",
@@ -216,7 +217,7 @@ async def test_dream_reopens_unresolved_capability_gaps(tmp_path) -> None:
             payload={"kind": "Pod", "reason": "OOMKilled"},
         )
     )
-    assert deferred["decision"] == "defer_and_request_capability"
+    assert held["decision"] == "capability_build_held"
 
     machine, _recorder, _clock = await _machine(tmp_path, skills=skills, resident_learning=learner)
     summary = await machine.dream()
@@ -279,9 +280,9 @@ async def test_dream_holds_promotion_for_skills_implicated_by_feedback(tmp_path)
     assert (await skills.show("suspect-probe"))["metadata"]["scope"] == "private"
 
 
-async def test_guarded_promotion_candidates_become_durable_proposals(tmp_path) -> None:
-    """Held promotions persist as needs-review proposals (F9/NIU-1026)."""
-    from ravn.context.autonomy import JsonProposalStore
+async def test_guarded_promotion_candidates_become_review_items(tmp_path) -> None:
+    """Held promotions go to the operator on the unified review path."""
+    from ravn.odin.review import JsonReviewStore, ReviewRequester
 
     skills = _skills(tmp_path)
     await skills.create(
@@ -292,21 +293,37 @@ async def test_guarded_promotion_candidates_become_durable_proposals(tmp_path) -
     for _ in range(2):
         await skills.record_usage("proven-probe", success=True)
 
-    store = JsonProposalStore(tmp_path / "autonomy_proposals.json")
     bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    requester = ReviewRequester(
+        publisher=bus,
+        store=JsonReviewStore(tmp_path / "review_outbox.json"),
+        source="valkyrie:k8s-a",
+    )
     machine = ResidentWakefulness(
         identity=_identity("guarded"),
         skills=skills,
         publisher=bus,
-        proposal_store=store,
+        review_requester=requester,
         promote_min_successes=2,
         clock=ManualClock(),
     )
     summary = await machine.dream()
     assert summary["promotion_candidates"] == ["proven-probe"]
 
-    reloaded = JsonProposalStore(tmp_path / "autonomy_proposals.json")
-    proposals = reloaded.list(status="needs_review")
-    assert len(proposals) == 1
-    assert proposals[0].title == "proven-probe"
-    assert proposals[0].environment_id == "cluster-a"
+    requested = await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)
+    assert len(requested) == 1
+    assert requested[0].payload["kind"] == "skill_promotion"
+    assert requested[0].payload["evidence"]["skill_name"] == "proven-probe"
+
+    reloaded = JsonReviewStore(tmp_path / "review_outbox.json")
+    pending = reloaded.list(status="pending", kind="skill_promotion")
+    assert len(pending) == 1
+    assert pending[0].title == "proven-probe"
+    assert pending[0].environment_id == "cluster-a"
+
+    # A second dream must not file a duplicate while the first is pending.
+    await machine.dream()
+    assert len(reloaded.list(kind="skill_promotion")) == 1
+    assert len(await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)) == 1

@@ -70,9 +70,7 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     )
     assert settings.environment.signal_sources[0].kwargs["kubeconfig_env"] == "KUBECONFIG"
     assert settings.environment.signal_sources[2].enabled is False
-    assert settings.environment.signal_sources[2].kwargs == {
-        "moonraker_url_env": "MOONRAKER_URL"
-    }
+    assert settings.environment.signal_sources[2].kwargs == {"moonraker_url_env": "MOONRAKER_URL"}
     assert settings.environment.signal_subjects == []
     assert settings.mesh.adapter == "nats"
     assert settings.mesh.nats.servers_env == "NATS_URL"

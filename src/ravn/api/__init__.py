@@ -57,7 +57,7 @@ from ravn.api.runtime_data import (
 )
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
-    build_nats_learning_command_publisher_from_env,
+    build_nats_review_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
     create_valkyrie_router,
 )
@@ -626,7 +626,7 @@ def create_app(
 
     valkyrie_projection = ValkyrieDashboardProjection()
     valkyrie_telemetry = build_nats_telemetry_subscription_from_env(valkyrie_projection)
-    valkyrie_learning_commands = build_nats_learning_command_publisher_from_env()
+    valkyrie_learning_commands = build_nats_review_command_publisher_from_env()
     if valkyrie_telemetry is not None:
 
         @app.on_event("startup")
@@ -654,7 +654,7 @@ def create_app(
     app.include_router(
         create_valkyrie_router(
             valkyrie_projection,
-            learning_command_publisher=valkyrie_learning_commands,
+            review_command_publisher=valkyrie_learning_commands,
         )
     )
 

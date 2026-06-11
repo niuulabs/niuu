@@ -18,8 +18,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from sleipnir.domain import registry
-from sleipnir.domain.catalog import learning_adoption_recorded, learning_promoted
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
 
@@ -1189,14 +1189,18 @@ def _resolve_huddle_message_author(
     return participant_id, display_name
 
 
-class ValkyrieLearningCommandPublisher:
-    """Publish operator learning controls onto the existing Sleipnir bus."""
+class OdinReviewCommandPublisher:
+    """Publish operator review decisions onto the existing Sleipnir bus.
+
+    Every operator intervention — learning verdicts, autonomy changes,
+    inbox approvals — rides the same ``odin.review.decided`` envelope.
+    """
 
     def __init__(
         self,
         publisher: SleipnirPublisher | None = None,
         *,
-        source: str = "ravn:valkyrie-dashboard",
+        source: str = "ravn:odin-review",
         start_timeout_seconds: float = 5.0,
     ) -> None:
         self._publisher = publisher
@@ -1214,46 +1218,11 @@ class ValkyrieLearningCommandPublisher:
         if self._publisher is not None and hasattr(self._publisher, "stop"):
             await self._publisher.stop()  # type: ignore[attr-defined]
 
-    async def publish(
+    async def publish_review_decision(
         self,
-        *,
-        action: str,
-        before: dict[str, Any],
-        learning: dict[str, Any],
-        request: LearningDecisionRequest,
+        item: ReviewItem,
     ) -> tuple[dict[str, Any], SleipnirEvent | None]:
-        event = self._event_for_action(
-            action=action,
-            before=before,
-            learning=learning,
-            request=request,
-        )
-        return await self.publish_event(event)
-
-    async def publish_autonomy_change(
-        self,
-        *,
-        request: AutonomyUpdateRequest,
-        valkyrie: dict[str, Any],
-    ) -> tuple[dict[str, Any], SleipnirEvent | None]:
-        """Publish an operator autonomy command the resident actually applies."""
-        event = SleipnirEvent(
-            event_type=registry.VALKYRIE_AUTONOMY_CHANGED,
-            source=self._source,
-            payload={
-                "valkyrie_id": str(valkyrie.get("id") or request.valkyrieId),
-                "environment_id": str(valkyrie.get("environmentId") or ""),
-                "mode": request.mode,
-                "operator_id": request.participantId or "operator",
-                "reason": request.reason,
-            },
-            summary=(f"Operator set {request.valkyrieId} autonomy to {request.mode}"),
-            urgency=0.4,
-            domain="infrastructure",
-            timestamp=datetime.now(UTC),
-            correlation_id=f"valkyrie-autonomy:{request.valkyrieId}",
-        )
-        return await self.publish_event(event)
+        return await self.publish_event(review_decided_event(item, source=self._source))
 
     async def publish_event(
         self,
@@ -1307,72 +1276,110 @@ class ValkyrieLearningCommandPublisher:
             event,
         )
 
-    def _event_for_action(
-        self,
-        *,
-        action: str,
-        before: dict[str, Any],
-        learning: dict[str, Any],
-        request: LearningDecisionRequest,
-    ) -> SleipnirEvent:
-        raw_learning_id = _raw_learning_id(str(learning.get("id") or request.learningId))
-        environment_id = str(
-            learning.get("sourceEnvironmentId") or before.get("sourceEnvironmentId") or "unknown"
+
+def _review_item_for_learning_action(
+    action: str,
+    before: dict[str, Any],
+    learning: dict[str, Any],
+    request: LearningDecisionRequest,
+    *,
+    operator_id: str,
+) -> ReviewItem:
+    """Project a dashboard learning action onto the unified review envelope.
+
+    The action vocabulary maps to one of two kinds: scope changes are
+    ``skill_promotion`` items applied by the learning's source resident;
+    everything else is a ``flock_learning`` item broadcast to the flock and
+    relevance-filtered by each resident.
+    """
+    raw_learning_id = _raw_learning_id(str(learning.get("id") or request.learningId))
+    source_environment_id = str(
+        learning.get("sourceEnvironmentId") or before.get("sourceEnvironmentId") or ""
+    )
+    title = str(learning.get("promotedTool") or learning.get("title") or raw_learning_id)
+    summary = request.reason or str(learning.get("summary") or title)
+    correlation_id = f"valkyrie-learning:{raw_learning_id}:{action}"
+
+    if action in {"promote", "demote"}:
+        from_scope = str(before.get("scope") or before.get("currentScope") or "private")
+        to_scope = str(
+            request.targetScope
+            or learning.get("scope")
+            or learning.get("currentScope")
+            or "private"
         )
-        correlation_id = f"valkyrie-learning:{raw_learning_id}:{action}"
-        if action in {"promote", "demote"}:
-            event = learning_promoted(
-                environment_id=environment_id,
-                learning_id=raw_learning_id,
-                from_scope=str(before.get("scope") or before.get("currentScope") or "private"),
-                to_scope=str(learning.get("scope") or learning.get("currentScope") or "private"),
-                summary=(
-                    request.reason or str(learning.get("summary") or learning.get("title") or "")
-                ),
-                confidence=_as_float(learning.get("confidence"), 0.0),
-                source=self._source,
-                correlation_id=correlation_id,
-            )
-        else:
-            adoption_action = {
-                "adopt": "adopted",
-                "reject": "rejected",
-                "override": "overridden",
-                "canary": "canary",
-                "rollback": "regressed",
-            }.get(action, action)
-            event = learning_adoption_recorded(
-                environment_id=environment_id,
-                learning_id=raw_learning_id,
-                promotion_id=raw_learning_id,
-                action=adoption_action,
-                rationale=request.reason,
-                canary_passed=action == "adopt",
-                local_override_path=str(learning.get("artifactPath") or ""),
-                source=self._source,
-                correlation_id=correlation_id,
-            )
-        event.payload.update(
-            {
-                "ui_learning_id": str(learning.get("id") or request.learningId),
-                "operator_id": request.operatorId,
-                "action_kind": action,
-                "status": str(learning.get("status") or ""),
-                "scope": str(learning.get("scope") or ""),
-                "target_scope": request.targetScope,
-                "canary_environment_id": request.canaryEnvironmentId,
-                "artifact_type": str(learning.get("artifactType") or ""),
-                "artifact_name": str(learning.get("promotedTool") or learning.get("title") or ""),
-                "artifact_path": str(learning.get("artifactPath") or ""),
-                "artifact_content": str(learning.get("artifactContent") or ""),
-                "artifact_content_present": bool(learning.get("artifactContent")),
+        item = ReviewItem.new(
+            kind=ReviewKind.SKILL_PROMOTION.value,
+            requested_action=action,
+            environment_id=source_environment_id or "unknown",
+            valkyrie_id=str(learning.get("sourceValkyrieId") or ""),
+            title=title,
+            summary=summary,
+            audience="environment" if not learning.get("sourceValkyrieId") else "valkyrie",
+            domain=str(learning.get("domain") or learning.get("domainScope") or ""),
+            evidence={
+                "skill_name": title,
+                "learning_id": raw_learning_id,
+                "from_scope": from_scope,
+                "to_scope": to_scope,
+                "confidence": _as_float(learning.get("confidence"), 0.0),
+            },
+            requested_by=operator_id,
+            correlation_id=correlation_id,
+        )
+        item.decide(decision="approved", operator_id=operator_id, reason=request.reason)
+        return item
+
+    requested_action = {
+        "adopt": "adopt",
+        "override": "adopt",
+        "reject": "adopt",
+        "canary": "canary",
+        "rollback": "retract",
+    }.get(action, action)
+    canary_environment = str(request.canaryEnvironmentId or "")
+    audience = "environment" if (action == "canary" and canary_environment) else "flock"
+    item = ReviewItem.new(
+        kind=ReviewKind.FLOCK_LEARNING.value,
+        requested_action=requested_action,
+        environment_id=(
+            canary_environment if audience == "environment" else source_environment_id or "unknown"
+        ),
+        valkyrie_id="",
+        title=title,
+        summary=summary,
+        audience=audience,
+        flock_id=str(learning.get("targetFlockId") or ""),
+        domain=str(learning.get("domain") or learning.get("domainScope") or ""),
+        evidence={
+            "artifact": {
+                "learning_id": raw_learning_id,
+                "title": title,
+                "summary": str(learning.get("summary") or title),
+                "content": str(learning.get("artifactContent") or ""),
+                "artifact_type": str(learning.get("artifactType") or "ravn_skill_tool"),
+                "scope": str(request.targetScope or learning.get("scope") or "flock"),
+                "confidence": _as_float(learning.get("confidence"), 0.0),
+                "source_environment_id": source_environment_id,
                 "source_valkyrie_id": str(learning.get("sourceValkyrieId") or ""),
+                "promotion_id": raw_learning_id,
                 "flock_id": str(learning.get("targetFlockId") or ""),
                 "domain": str(learning.get("domain") or learning.get("domainScope") or ""),
-                "redaction_status": str(learning.get("redaction") or ""),
-            }
-        )
-        return event
+                "redaction_status": str(learning.get("redaction") or "redacted"),
+                "artifact_path": str(learning.get("artifactPath") or ""),
+            },
+            "ui_learning_id": str(learning.get("id") or request.learningId),
+            "status_before": str(before.get("status") or ""),
+        },
+        requested_by=operator_id,
+        correlation_id=correlation_id,
+    )
+    item.decide(
+        decision="rejected" if action == "reject" else "approved",
+        operator_id=operator_id,
+        reason=request.reason,
+    )
+    return item
 
 
 @dataclass(frozen=True)
@@ -3137,14 +3144,14 @@ def build_nats_telemetry_subscription_from_env(
     )
 
 
-def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandPublisher:
+def build_nats_review_command_publisher_from_env() -> OdinReviewCommandPublisher:
     """Build the optional learning-command publisher from environment vars."""
     servers_raw = (
         os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_URL", "").strip()
         or os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
     )
     if not servers_raw:
-        return ValkyrieLearningCommandPublisher()
+        return OdinReviewCommandPublisher()
 
     from sleipnir.adapters.nats_transport import NatsCorePublisher, NatsPublisher  # noqa: PLC0415
 
@@ -3241,7 +3248,7 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
             )
             for spec in stream_specs
         ]
-        return ValkyrieLearningCommandPublisher(
+        return OdinReviewCommandPublisher(
             _FanoutSleipnirPublisher(targets),
             start_timeout_seconds=_env_float(
                 os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS"),
@@ -3268,7 +3275,7 @@ def build_nats_learning_command_publisher_from_env() -> ValkyrieLearningCommandP
             os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD", ""),
         ),
     )
-    return ValkyrieLearningCommandPublisher(
+    return OdinReviewCommandPublisher(
         publisher,
         start_timeout_seconds=_env_float(
             os.environ.get("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS"),
@@ -3283,12 +3290,12 @@ def _env_bool(value: str | None) -> bool:
 
 def create_valkyrie_router(
     projection: ValkyrieDashboardProjection | None = None,
-    learning_command_publisher: ValkyrieLearningCommandPublisher | None = None,
+    review_command_publisher: OdinReviewCommandPublisher | None = None,
     room_client: ValkyrieRoomClient | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/ravn/valkyrie", tags=["Ravn Valkyries"])
     store = projection or ValkyrieDashboardProjection()
-    command_publisher = learning_command_publisher or ValkyrieLearningCommandPublisher()
+    command_publisher = review_command_publisher or OdinReviewCommandPublisher()
     skuld_room = room_client or build_skuld_room_client_from_env()
 
     async def finish_learning_action(
@@ -3297,15 +3304,17 @@ def create_valkyrie_router(
         learning: dict[str, Any],
         request: LearningDecisionRequest,
     ) -> dict[str, Any]:
+        item = _review_item_for_learning_action(
+            action,
+            before,
+            learning,
+            request,
+            operator_id=request.operatorId,
+        )
         try:
-            delivery, event = await command_publisher.publish(
-                action=action,
-                before=before,
-                learning=learning,
-                request=request,
-            )
+            delivery, event = await command_publisher.publish_review_decision(item)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("valkyrie learning command publish failed: %s", exc)
+            logger.warning("valkyrie review command publish failed: %s", exc)
             delivery = {
                 "published": False,
                 "eventType": "",
@@ -3486,6 +3495,15 @@ def create_valkyrie_router(
     @router.post("/autonomy")
     async def update_autonomy(request: AutonomyUpdateRequest) -> Dashboard:
         await _require_operator_capability(request.participantId, "change_autonomy")
+        before = store.dashboard()
+        previous_mode = next(
+            (
+                str(entry.get("autonomyMode") or "")
+                for entry in before.get("valkyries", [])
+                if entry.get("id") == request.valkyrieId
+            ),
+            "",
+        )
         dashboard = store.update_autonomy(request)
         valkyrie = next(
             (
@@ -3495,11 +3513,22 @@ def create_valkyrie_router(
             ),
             {"id": request.valkyrieId},
         )
+        operator_id = request.participantId or "operator"
+        item = ReviewItem.new(
+            kind=ReviewKind.AUTONOMY_CHANGE.value,
+            requested_action="set_autonomy_mode",
+            environment_id=str(valkyrie.get("environmentId") or ""),
+            valkyrie_id=str(valkyrie.get("id") or request.valkyrieId),
+            title=f"Set {request.valkyrieId} autonomy to {request.mode}",
+            summary=request.reason or f"Operator set autonomy to {request.mode}",
+            urgency=0.4,
+            evidence={"mode": request.mode, "previous_mode": previous_mode},
+            requested_by=operator_id,
+            correlation_id=f"valkyrie-autonomy:{request.valkyrieId}",
+        )
+        item.decide(decision="approved", operator_id=operator_id, reason=request.reason)
         try:
-            _delivery, event = await command_publisher.publish_autonomy_change(
-                request=request,
-                valkyrie=valkyrie,
-            )
+            _delivery, event = await command_publisher.publish_review_decision(item)
         except Exception as exc:  # noqa: BLE001
             logger.warning("valkyrie autonomy command publish failed: %s", exc)
             event = None

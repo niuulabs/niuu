@@ -389,9 +389,6 @@ SIGNAL_PRINTER_EVENT: str = "signal.printer.event"
 #: A Valkyrie's wake/sleep/dream/health state changed.
 VALKYRIE_STATE_CHANGED: str = "valkyrie.state.changed"
 
-#: An operator changed a resident Valkyrie's autonomy mode.
-VALKYRIE_AUTONOMY_CHANGED: str = "valkyrie.autonomy.changed"
-
 #: A Valkyrie published its current operational/wakefulness state.
 VALKYRIE_STATE_UPDATED: str = "valkyrie.state.updated"
 
@@ -431,6 +428,15 @@ ODIN_COURT_DECIDED: str = "odin.court.decided"
 
 #: ODIN court recorded dissenting or minority context.
 ODIN_COURT_DISSENT_RECORDED: str = "odin.court.dissent.recorded"
+
+#: A valkyrie (or operator) filed a ReviewItem for human decision.
+ODIN_REVIEW_REQUESTED: str = "odin.review.requested"
+
+#: An operator decided a ReviewItem; the target resident applies it.
+ODIN_REVIEW_DECIDED: str = "odin.review.decided"
+
+#: A resident applied (or failed to apply) a decided ReviewItem.
+ODIN_REVIEW_RESOLVED: str = "odin.review.resolved"
 
 # ---------------------------------------------------------------------------
 # attention — routing, escalation, and notification decisions

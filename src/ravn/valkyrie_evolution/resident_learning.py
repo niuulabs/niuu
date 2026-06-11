@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +14,14 @@ from ravn.adapters.reflection.flock_learning import (
     FlockLearningRecord,
     FlockLearningStore,
     FlockPeerDecision,
+)
+from ravn.odin.review import (
+    ReviewItem,
+    ReviewKind,
+    ReviewRequester,
+    ReviewStatus,
+    item_targets,
+    review_resolved_event,
 )
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
@@ -35,7 +43,9 @@ from ravn.valkyrie_evolution.tool_runtime import (
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     learning_adoption_recorded,
+    learning_promoted,
     odin_court_decided,
+    valkyrie_action_requested,
     valkyrie_judgment_proposed,
 )
 from sleipnir.domain.events import SleipnirEvent
@@ -43,7 +53,7 @@ from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscri
 
 logger = logging.getLogger(__name__)
 
-LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored"]
+LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored", "held"]
 
 #: Consecutive implementation failures before a skill is auto-rolled-back.
 #: A regressed tool must fail repeatedly, never once — transient failures
@@ -57,12 +67,11 @@ _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
     registry.LEARNING_PROMOTED,
-    registry.LEARNING_ADOPTION_RECORDED,
     registry.FLOCK_LEARNING_PROPOSED,
     registry.FLOCK_LEARNING_ADOPTED,
     registry.FLOCK_LEARNING_REJECTED,
     registry.FLOCK_LEARNING_ROLLED_BACK,
-    registry.VALKYRIE_AUTONOMY_CHANGED,
+    registry.ODIN_REVIEW_DECIDED,
 ]
 
 #: The only autonomy modes a resident accepts (shared with AutonomyPolicy).
@@ -174,6 +183,7 @@ class ResidentLearningRuntime:
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
         learning_store: FlockLearningStore | None = None,
+        review_requester: ReviewRequester | None = None,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -187,6 +197,7 @@ class ResidentLearningRuntime:
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
         self._learning_store = learning_store
+        self._review_requester = review_requester
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
         self._local_evolved_capabilities: set[str] = set()
@@ -200,6 +211,11 @@ class ResidentLearningRuntime:
         """The resident's skill registry, shared with co-located runtimes."""
         return self._skills
 
+    @property
+    def review_requester(self) -> ReviewRequester | None:
+        """The resident's review requester, shared with co-located runtimes."""
+        return self._review_requester
+
     def decisions(self) -> list[ResidentLearningDecision]:
         return list(self._decisions)
 
@@ -210,6 +226,14 @@ class ResidentLearningRuntime:
             _SUBSCRIBED_EVENT_TYPES,
             self._handle_learning_event,
         )
+        if self._review_requester is not None:
+            reannounced = await self._review_requester.reannounce()
+            if reannounced:
+                logger.info(
+                    "resident_learning: re-announced %d pending review item(s) for %s",
+                    reannounced,
+                    self.identity.valkyrie_id,
+                )
 
     async def stop(self) -> None:
         if self._subscription is None:
@@ -220,19 +244,28 @@ class ResidentLearningRuntime:
     async def reopen_unresolved_capabilities(self) -> int:
         """Forget capability gaps that never produced an installed skill.
 
-        Guarded-mode deferrals and held builds park their capability in the
-        evolved set so a resident does not re-dream on every signal.  The
-        scheduled consolidation dream calls this so those gaps get another
-        chance on the next matching signal.
+        Held builds park their capability in the evolved set so a resident
+        does not re-dream on every signal.  The scheduled consolidation dream
+        calls this so those gaps get another chance on the next matching
+        signal — unless the build is sitting in the review queue awaiting an
+        operator, in which case re-dreaming would only file duplicates.
         """
         if not self._local_evolved_capabilities:
             return 0
         reopened = 0
         for capability in list(self._local_evolved_capabilities):
-            if await self._find_installed_skill_by_capability(capability) is None:
-                self._local_evolved_capabilities.discard(capability)
-                reopened += 1
+            if await self._find_installed_skill_by_capability(capability) is not None:
+                continue
+            if self._review_requester is not None and self._review_requester.has_pending(
+                self._evolution_dedupe_key(capability)
+            ):
+                continue
+            self._local_evolved_capabilities.discard(capability)
+            reopened += 1
         return reopened
+
+    def _evolution_dedupe_key(self, capability: str) -> str:
+        return f"{ReviewKind.EVOLUTION_BUILD.value}:{self.identity.environment_id}:{capability}"
 
     async def process_signal(self, signal: OperationalSignal | SleipnirEvent) -> dict[str, Any]:
         """Use an installed adopted skill when a later signal matches its capability."""
@@ -458,16 +491,22 @@ class ResidentLearningRuntime:
         signal: OperationalSignal,
         capability: str,
     ) -> dict[str, Any] | None:
-        """Build a resident-local skill for a repeated capability gap."""
+        """Build a resident-local skill for a repeated capability gap.
+
+        Every autonomy mode builds; the modes differ only in what happens to
+        the finished artifact. Guarded residents hold the install behind an
+        ODIN review request, autonomous residents install low-risk builds,
+        and YOLO residents install anything without blocking findings.
+        """
 
         if capability in self._local_evolved_capabilities:
             return None
-        if self.identity.autonomy_mode.lower() not in {"autonomous", "yolo"}:
-            await self._publish_capability_gap(signal, capability)
-            self._local_evolved_capabilities.add(capability)
-            return None
-
         self._local_evolved_capabilities.add(capability)
+        learning_id = f"resident:{self.identity.environment_id}:{_slug(capability)}"
+        if self._is_declined(learning_id):
+            # An operator durably rejected this build; do not rebuild or
+            # re-file it — only an operator command reopens the capability.
+            return None
         dream_id = f"dream:{self.identity.environment_id}:{_slug(capability)}:{signal.signal_id}"
         gap = CapabilityGap(
             gap_id=f"gap:{self.identity.environment_id}:{_slug(capability)}",
@@ -516,13 +555,8 @@ class ResidentLearningRuntime:
             asdict(build),
             signal.signal_id,
         )
-        review = await self._reviewer.review(
-            request=request,
-            build=build,
-            autonomy_mode=self.identity.autonomy_mode,
-        )
         artifact = ResidentLearningArtifact(
-            learning_id=f"resident:{self.identity.environment_id}:{_slug(capability)}",
+            learning_id=learning_id,
             title=build.skill_name,
             summary=build.description,
             content=build.skill_content,
@@ -531,7 +565,7 @@ class ResidentLearningRuntime:
             confidence=0.74,
             source_environment_id=self.identity.environment_id,
             source_valkyrie_id=self.identity.valkyrie_id,
-            promotion_id=f"resident:{self.identity.environment_id}:{_slug(capability)}",
+            promotion_id=learning_id,
             flock_id=_normalise_flock_id(self.identity.flock_ids[0])
             if self.identity.flock_ids
             else "",
@@ -546,9 +580,14 @@ class ResidentLearningRuntime:
             operator_command=False,
             command_action="resident_evolve",
         )
-        await self._publish_odin_decision(artifact, review)
-
-        installed_skill_name = await self._gate_and_install_build(artifact, build, review, signal)
+        decision = await self._review_canary_install(
+            artifact,
+            build=build,
+            request=request,
+            signal=signal,
+        )
+        installed_skill_name = decision.installed_skill_name
+        review_outcome = decision.review.outcome if decision.review else ""
 
         await self._publish_dream_event(
             "valkyrie.dream.completed",
@@ -558,7 +597,7 @@ class ResidentLearningRuntime:
                 "signal_id": signal.signal_id,
                 "skills_built": [build.skill_name],
                 "skills_activated": [installed_skill_name] if installed_skill_name else [],
-                "odin_review_outcome": review.outcome,
+                "odin_review_outcome": review_outcome,
                 "flock_proposed": bool(installed_skill_name and artifact.flock_id),
             },
             summary=f"{self.identity.valkyrie_id} completed dream for {capability}",
@@ -576,92 +615,9 @@ class ResidentLearningRuntime:
             "dreamId": dream_id,
         }
 
-    async def _gate_and_install_build(
-        self,
-        artifact: ResidentLearningArtifact,
-        build: BuildResult,
-        review: ReviewResult,
-        signal: OperationalSignal,
-    ) -> str:
-        """Review-gate, canary, install, and announce a self-built skill.
-
-        Returns the installed skill name, or '' when the build was held.
-        """
-        if not _review_allows_install(review, self.identity.autonomy_mode):
-            await self._publish_evolution_event(
-                "valkyrie.evolution.held",
-                f"Held resident skill {build.skill_name}",
-                {
-                    "skill_name": build.skill_name,
-                    "review_outcome": review.outcome,
-                    "findings": list(review.findings),
-                },
-                signal.signal_id,
-                urgency=0.6,
-            )
-            return ""
-
-        canary = await self._canary_artifact(build, dict(signal.payload))
-        if not canary.ok:
-            await self._publish_evolution_event(
-                "valkyrie.evolution.held",
-                f"Held resident skill {build.skill_name}: canary failed",
-                {
-                    "skill_name": build.skill_name,
-                    "review_outcome": review.outcome,
-                    "canary_passed": False,
-                    "canary_error": canary.error,
-                },
-                signal.signal_id,
-                urgency=0.6,
-            )
-            return ""
-
-        installed_skill_name = await self._install_skill(artifact, build)
-        authorization_rationale = _install_authorization_rationale(
-            review,
-            self.identity.autonomy_mode,
-        )
-        await self._publish_activation(artifact, installed_skill_name, review)
-        await self._publish_adoption(
-            artifact,
-            ResidentLearningDecision(
-                "adopted",
-                f"Installed {installed_skill_name}: {authorization_rationale}",
-                installed_skill_name=installed_skill_name,
-                review=review,
-                relevant=True,
-                canary_passed=True,
-            ),
-        )
-        await self._publish_flock_learning_proposal(artifact, build, review)
-        return installed_skill_name
-
-    async def _publish_capability_gap(
-        self,
-        signal: OperationalSignal,
-        capability: str,
-    ) -> None:
-        await self._publish_evolution_event(
-            "valkyrie.evolution.requested",
-            f"Capability gap observed for {capability}",
-            {
-                "environment_id": self.identity.environment_id,
-                "valkyrie_id": self.identity.valkyrie_id,
-                "capability_name": capability,
-                "signal_id": signal.signal_id,
-                "autonomy_mode": self.identity.autonomy_mode,
-                "status": "deferred",
-            },
-            signal.signal_id,
-            urgency=0.45,
-        )
-
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
-        if event.event_type == registry.VALKYRIE_AUTONOMY_CHANGED:
-            await self._apply_autonomy_change(event)
-            return
-        if _is_resident_ack(event):
+        if event.event_type == registry.ODIN_REVIEW_DECIDED:
+            await self._handle_review_decision(event)
             return
         artifact = _artifact_from_event(event)
         if _is_retraction_event(event):
@@ -670,29 +626,87 @@ class ResidentLearningRuntime:
             decision = await self.evaluate_and_apply(artifact)
         self._decisions.append(decision)
 
-    async def _apply_autonomy_change(self, event: SleipnirEvent) -> None:
-        """Apply an operator autonomy command addressed to this resident.
+    async def _handle_review_decision(self, event: SleipnirEvent) -> None:
+        """Apply one decided ReviewItem — the only operator command channel.
 
-        The dashboard's autonomy toggle is a real command, not a cosmetic
-        field: the resident validates the mode, swaps its identity, and
-        confirms with a ``valkyrie.state.updated`` event so the change is
-        auditable end to end.
+        Every kind of human decision arrives here: autonomy changes, held
+        build approvals, skill promotions, flock-learning verdicts, and
+        court escalations. The resident applies it, syncs its outbox, and
+        confirms with ``odin.review.resolved``.
         """
-        payload = event.payload
-        target = str(payload.get("valkyrie_id") or "")
-        environment_id = str(payload.get("environment_id") or "")
-        if target and target != self.identity.valkyrie_id:
+        try:
+            item = ReviewItem.from_payload(event.payload)
+        except (ValueError, TypeError) as exc:
+            logger.warning("resident_learning: ignoring malformed review decision: %s", exc)
             return
-        if not target and environment_id != self.identity.environment_id:
+        if not item_targets(
+            item,
+            valkyrie_id=self.identity.valkyrie_id,
+            environment_id=self.identity.environment_id,
+            flock_ids=self.identity.flock_ids,
+        ):
             return
-        mode = str(payload.get("mode") or "").lower()
-        if mode not in CANONICAL_AUTONOMY_MODES:
+        if item.status not in {ReviewStatus.APPROVED.value, ReviewStatus.REJECTED.value}:
             logger.warning(
-                "resident_learning: ignoring autonomy change to unknown mode %r (known: %s)",
-                mode,
-                sorted(CANONICAL_AUTONOMY_MODES),
+                "resident_learning: review decision for %s has undecided status %r",
+                item.item_id,
+                item.status,
             )
             return
+        store = self._review_requester.store if self._review_requester is not None else None
+        if store is not None:
+            try:
+                local = store.get(item.item_id)
+            except ValueError:
+                local = None
+            if local is not None and local.apply_outcome:
+                return
+        item.causation_id = event.event_id
+        if not item.correlation_id:
+            item.correlation_id = event.correlation_id or event.event_id
+
+        try:
+            outcome, detail, decision = await self._apply_review_decision(item)
+        except Exception as exc:  # noqa: BLE001 — the operator must see the failure
+            logger.exception("resident_learning: review apply failed for %s", item.item_id)
+            outcome, detail, decision = "apply_failed", f"{type(exc).__name__}: {exc}", None
+        if outcome == "ignored":
+            return
+        if decision is not None:
+            self._decisions.append(decision)
+        item.resolve(outcome=outcome, detail=detail)
+        if self._review_requester is not None:
+            self._review_requester.record_decision(item)
+        await self._publisher.publish(review_resolved_event(item, source=self._source))
+
+    async def _apply_review_decision(
+        self,
+        item: ReviewItem,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        kind = item.kind
+        if kind == ReviewKind.AUTONOMY_CHANGE.value:
+            return await self._apply_autonomy_review(item)
+        if kind == ReviewKind.SKILL_PROMOTION.value:
+            return await self._apply_promotion_review(item)
+        if kind == ReviewKind.COURT_ESCALATION.value:
+            return await self._apply_court_review(item)
+        if kind in {ReviewKind.EVOLUTION_BUILD.value, ReviewKind.FLOCK_LEARNING.value}:
+            return await self._apply_learning_review(item)
+        return "apply_failed", f"unknown review kind: {kind!r}", None
+
+    async def _apply_autonomy_review(
+        self,
+        item: ReviewItem,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        mode = str(item.evidence.get("mode") or "").lower()
+        if item.status == ReviewStatus.REJECTED.value:
+            return "applied", f"autonomy change to {mode!r} was rejected", None
+        if mode not in CANONICAL_AUTONOMY_MODES:
+            return (
+                "apply_failed",
+                f"unknown autonomy mode {mode!r} (known: {sorted(CANONICAL_AUTONOMY_MODES)})",
+                None,
+            )
         previous = self.identity.autonomy_mode
         self.identity = replace(self.identity, autonomy_mode=mode)
         await self._publisher.publish(
@@ -704,31 +718,166 @@ class ResidentLearningRuntime:
                     "valkyrie_id": self.identity.valkyrie_id,
                     "autonomy_mode": mode,
                     "previous_autonomy_mode": previous,
-                    "operator_id": str(payload.get("operator_id") or ""),
-                    "reason": str(payload.get("reason") or ""),
+                    "operator_id": item.decided_by,
+                    "reason": item.decision_reason,
+                    "review_item_id": item.item_id,
                 },
                 summary=(f"{self.identity.valkyrie_id} autonomy changed {previous} -> {mode}"),
                 urgency=0.4,
                 domain="infrastructure",
                 timestamp=datetime.now(UTC),
-                correlation_id=event.correlation_id or event.event_id,
-                causation_id=event.event_id,
+                correlation_id=item.correlation_id or item.item_id,
+                causation_id=item.causation_id or None,
             )
         )
+        return "applied", f"autonomy {previous} -> {mode}", None
+
+    async def _apply_promotion_review(
+        self,
+        item: ReviewItem,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        name = str(item.evidence.get("skill_name") or item.title)
+        if item.status == ReviewStatus.REJECTED.value:
+            return "applied", f"promotion of {name} declined by {item.decided_by}", None
+        to_scope = _normalise_scope(str(item.evidence.get("to_scope") or "environment"))
+        await self._skills.promote(
+            name,
+            scope=to_scope,
+            environment_id=self.identity.environment_id,
+            domain=self.identity.domain,
+        )
+        event = learning_promoted(
+            environment_id=self.identity.environment_id,
+            learning_id=str(item.evidence.get("learning_id") or f"skill:{name}"),
+            from_scope=str(item.evidence.get("from_scope") or "private"),
+            to_scope=to_scope,
+            summary=f"Operator {item.decided_by} approved {item.requested_action} of {name}",
+            source=self._source,
+            confidence=float(item.evidence.get("confidence") or 0.0),
+            correlation_id=item.correlation_id or item.item_id,
+        )
+        # Peers treat a demotion out of their scope as a retraction; the
+        # action_kind marker is what _is_retraction_event keys on.
+        event.payload["action_kind"] = item.requested_action
+        await self._publisher.publish(event)
+        return "applied", f"{item.requested_action}d {name} to {to_scope}", None
+
+    async def _apply_court_review(
+        self,
+        item: ReviewItem,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        action = item.evidence.get("action")
+        action = dict(action) if isinstance(action, dict) else {}
+        if item.status == ReviewStatus.REJECTED.value:
+            await self._publisher.publish(
+                SleipnirEvent(
+                    event_type=registry.ATTENTION_SUPPRESSED,
+                    source=self._source,
+                    payload={
+                        "environment_id": self.identity.environment_id,
+                        "valkyrie_id": self.identity.valkyrie_id,
+                        "audit_ref": str(item.evidence.get("audit_ref") or ""),
+                        "review_item_id": item.item_id,
+                        "operator_id": item.decided_by,
+                        "reason": item.decision_reason or "operator rejected court escalation",
+                    },
+                    summary=f"operator suppressed court escalation {item.title}",
+                    urgency=0.3,
+                    domain="infrastructure",
+                    timestamp=datetime.now(UTC),
+                    correlation_id=item.correlation_id or item.item_id,
+                    causation_id=item.causation_id or None,
+                )
+            )
+            return "applied", "court escalation suppressed", None
+        target = action.get("target")
+        await self._publisher.publish(
+            valkyrie_action_requested(
+                environment_id=item.environment_id or self.identity.environment_id,
+                valkyrie_id=str(
+                    action.get("valkyrie_id") or item.valkyrie_id or self.identity.valkyrie_id
+                ),
+                action_id=str(action.get("action_id") or item.item_id),
+                capability=str(action.get("capability") or "unknown"),
+                authority_boundary="operator_approved",
+                target=target if isinstance(target, dict) else {},
+                dry_run=bool(action.get("dry_run", False)),
+                source=self._source,
+                correlation_id=item.correlation_id or item.item_id,
+                causation_id=item.causation_id or None,
+            )
+        )
+        return "applied", "operator-approved action requested", None
+
+    async def _apply_learning_review(
+        self,
+        item: ReviewItem,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        artifact = self._artifact_from_review_item(item)
+        relevant, reason = self._policy.evaluate(artifact, self.identity)
+        if not relevant and item.audience != "valkyrie":
+            # Flock-broadcast commands reach every resident; the irrelevant
+            # ones stay quiet instead of flooding the bus with rejections.
+            return "ignored", reason, None
+        if item.status == ReviewStatus.REJECTED.value:
+            decision = ResidentLearningDecision(
+                "rejected",
+                f"operator {item.decided_by} rejected {item.item_id}: "
+                f"{item.decision_reason or 'no reason given'}",
+                relevant=True,
+            )
+            await self._publish_adoption(artifact, decision)
+            return "applied", decision.rationale, decision
+        if item.requested_action in {"retract", "rollback"}:
+            decision = await self.retract(artifact)
+            return "applied", decision.rationale, decision
+        if item.requested_action == "canary":
+            _request, build = _review_inputs(artifact, self.identity)
+            canary = await self._canary_artifact(build, artifact.canary_sample)
+            if canary.ok:
+                return "applied", "canary passed", None
+            return "apply_failed", f"canary failed: {canary.error}", None
+        decision = await self.evaluate_and_apply(artifact, operator_item=item)
+        outcome = "applied" if decision.action == "adopted" else "apply_failed"
+        return outcome, decision.rationale, decision
+
+    def _artifact_from_review_item(self, item: ReviewItem) -> ResidentLearningArtifact:
+        data = item.evidence.get("artifact")
+        data = dict(data) if isinstance(data, dict) else {}
+        known = {f.name for f in fields(ResidentLearningArtifact)}
+        kwargs = {key: value for key, value in data.items() if key in known}
+        kwargs.setdefault("learning_id", item.item_id)
+        kwargs.setdefault("title", item.title)
+        kwargs.setdefault("summary", item.summary)
+        kwargs.setdefault("content", "")
+        kwargs.setdefault("artifact_type", "ravn_skill_tool")
+        kwargs.setdefault(
+            "scope",
+            "flock" if item.kind == ReviewKind.FLOCK_LEARNING.value else "environment",
+        )
+        kwargs["confidence"] = float(kwargs.get("confidence") or 0.0)
+        canary_sample = kwargs.get("canary_sample")
+        kwargs["canary_sample"] = dict(canary_sample) if isinstance(canary_sample, dict) else {}
+        kwargs["operator_command"] = True
+        kwargs["command_action"] = item.requested_action
+        if not kwargs.get("correlation_id"):
+            kwargs["correlation_id"] = item.correlation_id or item.item_id
+        kwargs["causation_id"] = item.causation_id or ""
+        return ResidentLearningArtifact(**kwargs)
 
     async def evaluate_and_apply(
         self,
         artifact: ResidentLearningArtifact,
+        *,
+        operator_item: ReviewItem | None = None,
     ) -> ResidentLearningDecision:
         if self._previously_declined(artifact):
-            decision = ResidentLearningDecision(
+            return ResidentLearningDecision(
                 "ignored",
                 f"learning {artifact.learning_id} was previously declined here; "
                 "an operator command is required to re-evaluate it",
                 relevant=True,
             )
-            self._decisions.append(decision)
-            return decision
 
         relevant, reason = self._policy.evaluate(artifact, self.identity)
         if not relevant:
@@ -736,7 +885,27 @@ class ResidentLearningRuntime:
             await self._publish_adoption(artifact, decision)
             return decision
 
-        request, build = _review_inputs(artifact, self.identity)
+        return await self._review_canary_install(artifact, operator_item=operator_item)
+
+    async def _review_canary_install(
+        self,
+        artifact: ResidentLearningArtifact,
+        *,
+        build: BuildResult | None = None,
+        request: EvolutionRequest | None = None,
+        signal: OperationalSignal | None = None,
+        operator_item: ReviewItem | None = None,
+    ) -> ResidentLearningDecision:
+        """The one install pipeline: review, gate, canary, install, announce.
+
+        Self-built artifacts, peer flock learnings, and operator-approved
+        review items all flow through here. Blocking findings always reject;
+        a ``needs_approval`` outcome holds the build behind a review request
+        unless an operator decision is what brought us here.
+        """
+        if request is None or build is None:
+            request, build = _review_inputs(artifact, self.identity)
+        self_built = artifact.source_valkyrie_id == self.identity.valkyrie_id
         review = await self._reviewer.review(
             request=request,
             build=build,
@@ -744,7 +913,8 @@ class ResidentLearningRuntime:
         )
         await self._publish_odin_decision(artifact, review)
 
-        if not _review_allows_install(review, self.identity.autonomy_mode):
+        allowed = _review_allows_install(review, self.identity.autonomy_mode)
+        if not allowed and review.blocking_findings:
             decision = ResidentLearningDecision(
                 "rejected",
                 f"Odin review blocked install: {review.rationale}",
@@ -753,9 +923,57 @@ class ResidentLearningRuntime:
             )
             await self._publish_adoption(artifact, decision)
             return decision
+        if not allowed and operator_item is None:
+            decision = ResidentLearningDecision(
+                "held",
+                f"Held for operator review: {review.rationale}",
+                review=review,
+                relevant=True,
+            )
+            await self._publish_evolution_event(
+                "valkyrie.evolution.held",
+                f"Held resident skill {build.skill_name}",
+                {
+                    "skill_name": build.skill_name,
+                    "learning_id": artifact.learning_id,
+                    "held_kind": "self_build" if self_built else "peer_adoption",
+                    "review_outcome": review.outcome,
+                    "findings": list(review.findings),
+                },
+                artifact.correlation_id or artifact.learning_id,
+                urgency=0.6,
+            )
+            await self._file_install_review(artifact, build, review, signal)
+            return decision
 
-        canary = await self._canary_artifact(build, artifact.canary_sample)
+        canary_payload = artifact.canary_sample or (
+            dict(signal.payload) if signal is not None else {}
+        )
+        canary = await self._canary_artifact(build, canary_payload)
         if not canary.ok:
+            if self_built and operator_item is None:
+                await self._publish_evolution_event(
+                    "valkyrie.evolution.held",
+                    f"Held resident skill {build.skill_name}: canary failed",
+                    {
+                        "skill_name": build.skill_name,
+                        "learning_id": artifact.learning_id,
+                        "held_kind": "self_build",
+                        "review_outcome": review.outcome,
+                        "canary_passed": False,
+                        "canary_error": canary.error,
+                    },
+                    artifact.correlation_id or artifact.learning_id,
+                    urgency=0.6,
+                )
+                return ResidentLearningDecision(
+                    "held",
+                    f"Canary execution failed before install: {canary.error}",
+                    review=review,
+                    relevant=True,
+                    canary_passed=False,
+                    canary_error=canary.error,
+                )
             decision = ResidentLearningDecision(
                 "rejected",
                 f"Canary execution failed before install: {canary.error}",
@@ -768,10 +986,16 @@ class ResidentLearningRuntime:
             return decision
 
         skill_name = await self._install_skill(artifact, build)
-        authorization_rationale = _install_authorization_rationale(
-            review,
-            self.identity.autonomy_mode,
-        )
+        if operator_item is not None:
+            authorization_rationale = (
+                f"operator {operator_item.decided_by} approved "
+                f"{operator_item.item_id}: {review.rationale}"
+            )
+        else:
+            authorization_rationale = _install_authorization_rationale(
+                review,
+                self.identity.autonomy_mode,
+            )
         decision = ResidentLearningDecision(
             "adopted",
             f"Installed {skill_name}: {authorization_rationale}",
@@ -782,7 +1006,62 @@ class ResidentLearningRuntime:
         )
         await self._publish_activation(artifact, skill_name, review)
         await self._publish_adoption(artifact, decision)
+        if self_built and artifact.flock_id:
+            await self._publish_flock_learning_proposal(artifact, build, review)
         return decision
+
+    async def _file_install_review(
+        self,
+        artifact: ResidentLearningArtifact,
+        build: BuildResult,
+        review: ReviewResult,
+        signal: OperationalSignal | None,
+    ) -> None:
+        """File the held build/adoption as a ReviewItem for the operator."""
+        if self._review_requester is None:
+            logger.warning(
+                "resident_learning: %s needs operator approval but no review "
+                "requester is configured; the build stays held locally",
+                build.skill_name,
+            )
+            return
+        self_built = artifact.source_valkyrie_id == self.identity.valkyrie_id
+        kind = ReviewKind.EVOLUTION_BUILD if self_built else ReviewKind.FLOCK_LEARNING
+        capability = _capability_from_content(build.skill_content) or _slug(build.skill_name)
+        dedupe_key = (
+            self._evolution_dedupe_key(capability)
+            if self_built
+            else f"{kind.value}:{self.identity.environment_id}:{artifact.learning_id}"
+        )
+        safety_class = _safety_class_from_content(build.skill_content)
+        item = ReviewItem.new(
+            kind=kind.value,
+            requested_action="install" if self_built else "adopt",
+            environment_id=self.identity.environment_id,
+            valkyrie_id=self.identity.valkyrie_id,
+            title=build.skill_name,
+            summary=build.description or artifact.summary,
+            flock_id=artifact.flock_id,
+            domain=artifact.domain or self.identity.domain,
+            risk_class=_risk_class_for_safety(safety_class),
+            safety_class=safety_class,
+            urgency=0.6,
+            dedupe_key=dedupe_key,
+            evidence={
+                "artifact": asdict(artifact),
+                "review": {
+                    "outcome": review.outcome,
+                    "rationale": review.rationale,
+                    "findings": list(review.findings),
+                },
+                "build_evidence": dict(build.evidence),
+                "signal_ids": [signal.signal_id] if signal is not None else [],
+            },
+            requested_by=self.identity.valkyrie_id,
+            correlation_id=artifact.correlation_id or artifact.learning_id,
+            causation_id=artifact.causation_id,
+        )
+        await self._review_requester.request(item)
 
     async def _canary_artifact(
         self,
@@ -1122,10 +1401,15 @@ class ResidentLearningRuntime:
         Keeps rejected/rolled-back learnings from reappearing across restarts
         (NIU-1034). Operator commands always bypass the ledger.
         """
-        if self._learning_store is None or artifact.operator_command:
+        if artifact.operator_command:
+            return False
+        return self._is_declined(artifact.learning_id)
+
+    def _is_declined(self, learning_id: str) -> bool:
+        if self._learning_store is None:
             return False
         try:
-            record = self._learning_store.get(artifact.learning_id)
+            record = self._learning_store.get(learning_id)
         except ValueError:
             return False
         decision = record.decision_for(self.identity.environment_id)
@@ -1239,15 +1523,6 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
     if event_type == registry.FLOCK_LEARNING_PROPOSED:
         title = str(payload.get("title") or payload.get("artifact_name") or payload["learning_id"])
         scope = "flock"
-    elif event_type == registry.LEARNING_ADOPTION_RECORDED:
-        title = str(
-            payload.get("artifact_name")
-            or payload.get("promoted_tool")
-            or payload.get("title")
-            or payload.get("learning_id")
-            or ""
-        )
-        scope = str(payload.get("target_scope") or payload.get("scope") or "flock")
     else:
         title = str(
             payload.get("artifact_name")
@@ -1359,11 +1634,12 @@ def _install_authorization_rationale(review: ReviewResult, autonomy_mode: str) -
     return review.rationale
 
 
-def _is_resident_ack(event: SleipnirEvent) -> bool:
-    payload = event.payload
-    if event.event_type != registry.LEARNING_ADOPTION_RECORDED:
-        return False
-    return bool(payload.get("resident_valkyrie_id") or payload.get("ack_kind"))
+def _risk_class_for_safety(safety_class: str) -> str:
+    return {
+        "read_only": "low",
+        "mutating": "high",
+        "destructive": "critical",
+    }.get(safety_class, "medium")
 
 
 def _is_retraction_event(event: SleipnirEvent) -> bool:
@@ -1371,9 +1647,6 @@ def _is_retraction_event(event: SleipnirEvent) -> bool:
     payload = event.payload
     if event_type in {registry.FLOCK_LEARNING_REJECTED, registry.FLOCK_LEARNING_ROLLED_BACK}:
         return True
-    if event_type == registry.LEARNING_ADOPTION_RECORDED:
-        action = str(payload.get("action_kind") or payload.get("action") or "").lower()
-        return action in {"reject", "rejected", "rollback", "rolled_back", "regressed"}
     if event_type == registry.LEARNING_PROMOTED:
         action = str(payload.get("action_kind") or "").lower()
         if action != "demote":
