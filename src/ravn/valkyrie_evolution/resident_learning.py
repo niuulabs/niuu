@@ -26,6 +26,9 @@ from ravn.odin.review import (
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
 from ravn.valkyrie_evolution.learned_tools import (
+    learned_tool_storage,
+    manifest_review_boundaries,
+    manifest_safety_class,
     write_learned_tool,
     write_learned_tool_artifact,
 )
@@ -856,7 +859,7 @@ class ResidentLearningRuntime:
             decision = await self.retract(artifact)
             return "applied", decision.rationale, decision
         if item.requested_action == "canary":
-            _request, build = _review_inputs(artifact, self.identity)
+            _request, build = review_inputs(artifact, self.identity)
             canary = await self._canary_artifact(build, artifact.canary_sample)
             if canary.ok:
                 return "applied", "canary passed", None
@@ -928,7 +931,7 @@ class ResidentLearningRuntime:
         unless an operator decision is what brought us here.
         """
         if request is None or build is None:
-            request, build = _review_inputs(artifact, self.identity)
+            request, build = review_inputs(artifact, self.identity)
         self_built = artifact.source_valkyrie_id == self.identity.valkyrie_id
         review = await self._reviewer.review(
             request=request,
@@ -937,7 +940,7 @@ class ResidentLearningRuntime:
         )
         await self._publish_odin_decision(artifact, review)
 
-        allowed = _review_allows_install(review, self.identity.autonomy_mode)
+        allowed = review_allows_install(review, self.identity.autonomy_mode)
         if not allowed and review.blocking_findings:
             decision = ResidentLearningDecision(
                 "rejected",
@@ -1235,7 +1238,7 @@ class ResidentLearningRuntime:
     ) -> None:
         decision = (
             "learning_adoption_allowed"
-            if _review_allows_install(review, self.identity.autonomy_mode)
+            if review_allows_install(review, self.identity.autonomy_mode)
             else "learning_adoption_blocked"
         )
         event = odin_court_decided(
@@ -1600,10 +1603,15 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
     )
 
 
-def _review_inputs(
+def review_inputs(
     artifact: ResidentLearningArtifact,
     identity: ResidentLearningIdentity,
 ) -> tuple[EvolutionRequest, BuildResult]:
+    """Project any resident artifact into the one reviewer's (request, build).
+
+    Shared by the resident install pipeline and build_tool authoring so both
+    gate through the same PolicyCourtReviewer / AutonomyPolicy decision.
+    """
     manifest: LearnedToolManifest | None = None
     if artifact.artifact_type == "agent_tool":
         manifest = LearnedToolManifest.from_dict(artifact.learned_tool_manifest)
@@ -1613,6 +1621,7 @@ def _review_inputs(
         else _capability_from_content(artifact.content) or _slug(artifact.title)
     )
     safety_class = _artifact_safety_class(artifact, manifest)
+    risk_boundaries = manifest_review_boundaries(manifest) if manifest is not None else []
     request = EvolutionRequest(
         request_id=f"resident-adopt:{artifact.learning_id}:{identity.environment_id}",
         gap=CapabilityGap(
@@ -1631,6 +1640,7 @@ def _review_inputs(
         ),
         autonomy_mode=identity.autonomy_mode,
         target_scope=_normalise_scope(artifact.scope),
+        risk_boundaries=risk_boundaries,
     )
     artifact_type = _build_artifact_type(artifact)
     skill_content = artifact.content
@@ -1685,10 +1695,7 @@ def _artifact_safety_class(
 ) -> str:
     if manifest is None:
         return _safety_class_from_content(artifact.content)
-    for grant in manifest.declared_reach:
-        if grant.access in {"write", "read_write", "execute", "admin"}:
-            return "mutating"
-    return "read_only"
+    return manifest_safety_class(manifest)
 
 
 def _learned_tool_artifact_from_build(build: BuildResult) -> LearnedToolArtifact:
@@ -1713,12 +1720,15 @@ def _install_learned_tool_artifact(
     if tools_dir is None:
         raise ValueError("agent_tool install requires a resident tools directory")
     learned = _learned_tool_artifact_from_build(build)
-    write_learned_tool(tools_dir=tools_dir / "agent_tools", artifact=learned)
-    write_learned_tool_artifact(artifacts_dir=tools_dir / "agent_tool_artifacts", artifact=learned)
+    # The resident tools dir lives under the state dir; learned tools live in
+    # the one canonical location beside it, shared with build_tool authoring.
+    code_dir, artifacts_dir = learned_tool_storage(tools_dir.parent)
+    write_learned_tool(tools_dir=code_dir, artifact=learned)
+    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=learned)
     return learned.manifest.name
 
 
-def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
+def review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
     """The reviewer is the authority: install only what it approved.
 
     YOLO semantics live inside the policy reviewer (which approves with the
@@ -1728,7 +1738,7 @@ def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
 
 
 def _install_authorization(review: ReviewResult, autonomy_mode: str) -> str:
-    if not _review_allows_install(review, autonomy_mode):
+    if not review_allows_install(review, autonomy_mode):
         return "blocked"
     if review.outcome == "yolo_approved":
         return "yolo_override"

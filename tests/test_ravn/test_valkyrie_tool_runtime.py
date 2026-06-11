@@ -9,6 +9,7 @@ import pytest
 
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
+from ravn.odin.review import ReviewItem, ReviewKind, ReviewStatus, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import (
     AgentToolBuilder,
@@ -469,14 +470,99 @@ async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) 
 
     assert decision.action == "adopted"
     assert decision.installed_skill_name == "mimir_metric_window"
-    tool_path = tmp_path / "k8s-agent-tool" / "tools" / "agent_tools" / "mimir_metric_window.py"
+    tool_path = tmp_path / "k8s-agent-tool" / "learned_tools" / "mimir_metric_window.py"
     artifact_path = (
-        tmp_path / "k8s-agent-tool" / "tools" / "agent_tool_artifacts" / "mimir_metric_window.json"
+        tmp_path / "k8s-agent-tool" / "learned_tool_artifacts" / "mimir_metric_window.json"
     )
     assert tool_path.is_file()
     installed = read_learned_tool_artifact(artifact_path)
     assert installed.manifest.name == "mimir_metric_window"
     assert installed.manifest.declared_reach[0].kind == "network"
+
+
+async def test_review_approval_installs_self_authored_agent_tool(tmp_path) -> None:
+    bus = InProcessBus()
+    skill_dir = tmp_path / "k8s-reviewed-agent-tool" / "skills"
+    registry = FileSkillRegistry(
+        skill_dirs=[str(skill_dir)],
+        write_dir=skill_dir,
+        include_builtin=False,
+    )
+    skills = SkillManagementRegistry(
+        registry,
+        metadata_path=tmp_path / "k8s-reviewed-agent-tool" / "skill_management.json",
+    )
+    peer = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="env-k8s-reviewed-agent-tool",
+            valkyrie_id="valkyrie:k8s-reviewed-agent-tool",
+            domain="k8s",
+            flock_ids=["flock:k8s-valkyries"],
+            autonomy_mode="guarded",
+            environment_type="k8s",
+        ),
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "k8s-reviewed-agent-tool" / "tools",
+    )
+    await peer.start()
+    learned = _learned_tool_artifact()
+    item = ReviewItem.new(
+        kind=ReviewKind.EVOLUTION_BUILD.value,
+        requested_action="install",
+        environment_id=peer.identity.environment_id,
+        valkyrie_id=peer.identity.valkyrie_id,
+        title=learned.manifest.name,
+        summary=learned.manifest.description,
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        risk_class="medium",
+        safety_class="mutating",
+        dedupe_key="build_tool:env-k8s-reviewed-agent-tool:mimir_metric_window",
+        evidence={
+            "artifact": {
+                "learning_id": learned.artifact_id,
+                "title": learned.manifest.name,
+                "summary": learned.manifest.description,
+                "content": "",
+                "artifact_type": "agent_tool",
+                "scope": "environment",
+                "confidence": 0.74,
+                "source_environment_id": peer.identity.environment_id,
+                "source_valkyrie_id": peer.identity.valkyrie_id,
+                "promotion_id": learned.artifact_id,
+                "flock_id": "flock:k8s-valkyries",
+                "domain": "k8s",
+                "redaction_status": "redacted",
+                "tool_code": learned.tool_code,
+                "tool_entry_point": learned.manifest.entry_point,
+                "learned_tool_manifest": learned.manifest.to_dict(),
+                "canary_sample": {"query": "up"},
+            }
+        },
+        requested_by=peer.identity.valkyrie_id,
+        correlation_id=learned.artifact_id,
+    )
+    item.decide(
+        decision=ReviewStatus.APPROVED.value,
+        operator_id="operator:odin",
+        reason="safe enough for guarded install",
+    )
+
+    await bus.publish(review_decided_event(item, source="operator:odin"))
+    await bus.flush()
+    await bus.flush()
+
+    adopted = [decision for decision in peer.decisions() if decision.action == "adopted"]
+    assert adopted
+    assert adopted[-1].installed_skill_name == "mimir_metric_window"
+    tool_path = tmp_path / "k8s-reviewed-agent-tool" / "learned_tools" / "mimir_metric_window.py"
+    artifact_path = (
+        tmp_path / "k8s-reviewed-agent-tool" / "learned_tool_artifacts" / "mimir_metric_window.json"
+    )
+    assert tool_path.is_file()
+    assert read_learned_tool_artifact(artifact_path).manifest.name == "mimir_metric_window"
 
 
 def _skill_content_for(skill_name: str) -> str:

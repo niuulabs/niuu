@@ -49,6 +49,10 @@ class EvolutionRequest:
     gap: CapabilityGap
     autonomy_mode: str
     target_scope: str
+    #: Hard-gated autonomy boundaries the artifact's reach crosses (e.g.
+    #: credentials, spending). The reviewer feeds these to AutonomyPolicy so a
+    #: tool that reads secrets is gated by the one policy, not a parallel list.
+    risk_boundaries: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

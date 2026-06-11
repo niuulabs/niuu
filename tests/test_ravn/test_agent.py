@@ -21,6 +21,7 @@ from ravn.domain.models import (
     ToolCall,
     ToolResult,
 )
+from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.ports.llm import LLMPort
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
@@ -260,6 +261,107 @@ class TestRavnAgentToolUse:
         assert payload["source_valkyrie_id"] == "valkyrie:k8s-a"
         assert payload["learned_tool_manifest"]["name"] == "diagnose_widget"
         assert payload["tool_code"].startswith("def run")
+
+    async def test_build_tool_holds_mutating_tool_for_operator_review(self, tmp_path) -> None:
+        bus = InProcessBus()
+        events: list[SleipnirEvent] = []
+        await bus.subscribe(
+            [registry.ODIN_REVIEW_REQUESTED],
+            lambda event: _record(events, event),
+        )
+        agent, _ = make_agent(make_simple_llm("unused"))
+        requester = ReviewRequester(
+            publisher=bus,
+            store=JsonReviewStore(tmp_path / "review_outbox.json"),
+            source="valkyrie:k8s-a",
+        )
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=tmp_path / "artifacts",
+            review_requester=requester,
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+            flock_id="flock:k8s-valkyries",
+            domain="k8s",
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "restart_widget",
+                    "description": "Restart a widget safely.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "widget:write",
+                    "declared_reach": [{"kind": "kubernetes_write", "access": "write"}],
+                },
+                "tool_code": "def run(input):\n    return {'restarted': True}\n",
+                "canary_input": {"name": "canary"},
+            }
+        )
+        await bus.flush()
+
+        payload = json.loads(result.content)
+        assert not result.is_error
+        assert payload["review_required"] is True
+        assert payload["review_filed"] is True
+        assert "restart_widget" not in {item.name for item in agent.tools}
+        assert len(events) == 1
+        review = events[0].payload
+        assert review["kind"] == "evolution_build"
+        assert review["requested_action"] == "install"
+        assert review["safety_class"] == "mutating"
+        assert review["evidence"]["artifact"]["artifact_type"] == "agent_tool"
+        assert review["evidence"]["artifact"]["canary_sample"] == {"name": "canary"}
+
+    async def test_build_tool_holds_read_only_credential_tool_via_boundary(self, tmp_path) -> None:
+        """A read-only tool that reaches credentials is gated by the autonomy
+        policy's hard boundary, not by access level — the one policy stays
+        faithful where a naive risk-class would auto-install it."""
+        bus = InProcessBus()
+        events: list[SleipnirEvent] = []
+        await bus.subscribe(
+            [registry.ODIN_REVIEW_REQUESTED],
+            lambda event: _record(events, event),
+        )
+        agent, _ = make_agent(make_simple_llm("unused"))
+        requester = ReviewRequester(
+            publisher=bus,
+            store=JsonReviewStore(tmp_path / "review_outbox.json"),
+            source="valkyrie:k8s-a",
+        )
+        # yolo is the most permissive mode; even it must hold a credential read.
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=tmp_path / "artifacts",
+            review_requester=requester,
+            autonomy_mode="yolo",
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "read_vault_secret",
+                    "description": "Read a secret from the vault.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "secret:read",
+                    "declared_reach": [{"kind": "credential", "access": "read"}],
+                },
+                "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "canary_input": {},
+            }
+        )
+        await bus.flush()
+
+        payload = json.loads(result.content)
+        assert payload["review_required"] is True
+        assert payload["review_filed"] is True
+        assert "read_vault_secret" not in {item.name for item in agent.tools}
+        assert len(events) == 1
+        assert events[0].payload["safety_class"] == "read_only"
 
     async def test_build_tool_can_register_forge_sandboxed_tool(self, tmp_path) -> None:
         shell = _FakeSandboxShell()

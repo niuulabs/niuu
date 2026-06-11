@@ -271,6 +271,49 @@ class TestBuildTools:
         assert tools == []
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_build_tools_loads_persisted_resident_agent_tools(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+        from ravn.valkyrie_evolution.learned_tools import (
+            write_learned_tool,
+            write_learned_tool_artifact,
+        )
+        from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+
+        artifact = LearnedToolArtifact(
+            artifact_id="learned-tool:persisted_metric_window",
+            manifest=LearnedToolManifest(
+                name="persisted_metric_window",
+                description="Read a persisted metric window.",
+                input_schema={"type": "object"},
+                required_permission="mimir:read",
+                declared_reach=[],
+            ),
+            tool_code="def run(input):\n    return {'ok': True}\n",
+        )
+        tools_dir = tmp_path / ".ravn" / "learned_tools"
+        artifacts_dir = tmp_path / ".ravn" / "learned_tool_artifacts"
+        write_learned_tool(tools_dir=tools_dir, artifact=artifact)
+        write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        assert "persisted_metric_window" in {tool.name for tool in tools}
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_memory_tools_added_when_memory_present(
         self,
         settings: Settings,

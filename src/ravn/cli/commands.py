@@ -126,15 +126,30 @@ def _attach_signal_build_tool(
         return agent
     try:
         from ravn.adapters.tools.build_tool import attach_build_tool  # noqa: PLC0415
+        from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
+        from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
 
         state_dir = _resident_ravn_state_dir(workspace)
+        valkyrie_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
+        review_requester = (
+            ReviewRequester(
+                publisher=publisher,
+                store=JsonReviewStore(state_dir / "review_outbox.json"),
+                source=valkyrie_id,
+            )
+            if publisher is not None
+            else None
+        )
+        code_dir, artifacts_dir = learned_tool_storage(state_dir)
         attach_build_tool(
             agent,
-            tools_dir=state_dir / "learned_tools",
-            artifacts_dir=state_dir / "learned_tool_artifacts",
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
             publisher=publisher,
+            review_requester=review_requester,
+            autonomy_mode=settings.resident_evolution.autonomy_mode,
             environment_id=settings.environment.id,
-            valkyrie_id=settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}",
+            valkyrie_id=valkyrie_id,
             flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
             domain=settings.environment.type,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
@@ -874,6 +889,8 @@ def _build_tools(
         except Exception as exc:
             logger.warning("Failed to load custom tool %r: %s", ct.adapter, exc)
 
+    tools.extend(_load_resident_learned_tools(settings, workspace, tools))
+
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
 
@@ -882,6 +899,57 @@ def _build_tools(
         state_tool._tool_names = [t.name for t in tools]
 
     return tools
+
+
+def _load_resident_learned_tools(
+    settings: Settings,
+    workspace: Path,
+    existing_tools: list[Any],
+) -> list[Any]:
+    """Load approved resident-authored learned tools from local state."""
+    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
+        ForgeSandboxLearnedToolRunner,
+        learned_tool_storage,
+        load_learned_tool,
+        read_learned_tool_artifact,
+    )
+
+    state_dir = _resident_ravn_state_dir(workspace)
+    backend = settings.resident_evolution.learned_tool_execution_backend
+    if backend not in {"", "local", "forge", "devrunner"}:
+        logger.warning("Skipping learned tools: unknown execution backend %s", backend)
+        return []
+    runner = (
+        ForgeSandboxLearnedToolRunner(workspace_root=workspace)
+        if backend in {"forge", "devrunner"}
+        else None
+    )
+
+    code_dir, artifacts_dir = learned_tool_storage(state_dir)
+    if not artifacts_dir.exists():
+        return []
+    seen = {tool.name for tool in existing_tools}
+    loaded: list[Any] = []
+    for artifact_file in sorted(artifacts_dir.glob("*.json")):
+        try:
+            artifact = read_learned_tool_artifact(artifact_file)
+            if artifact.manifest.name in seen:
+                continue
+            tool_path = code_dir / f"{artifact.manifest.name}.py"
+            if not tool_path.exists():
+                continue
+            tool = load_learned_tool(
+                artifact=artifact,
+                tool_path=tool_path,
+                timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+                runner=runner,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load learned tool artifact %s: %s", artifact_file, exc)
+            continue
+        seen.add(tool.name)
+        loaded.append(tool)
+    return loaded
 
 
 def _in_groups(name: str, groups: set[str]) -> bool:

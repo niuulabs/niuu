@@ -248,6 +248,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
             domain=request.gap.domain,
             mode=_policy_mode(autonomy_mode),
             risk_class=_risk_class(request.gap.safety_class),
+            risk_boundaries=list(request.risk_boundaries),
         )
         decision = self._policy.decide(proposal)
 

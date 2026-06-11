@@ -321,6 +321,61 @@ _TOOL_NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,127}")
 _ENTRY_POINT_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]{0,63}")
 _REACH_ACCESS = frozenset({"none", "read", "write", "read_write", "execute", "admin"})
 
+#: Access levels that mutate the world — a learned tool that declares any of
+#: them is "mutating" (medium risk to the autonomy ladder).
+MUTATING_REACH_ACCESS = frozenset({"write", "read_write", "execute", "admin"})
+
+#: Map a declared reach kind to the AutonomyPolicy hard-gated boundary it
+#: crosses. A learned tool's reach is gated by the one policy (via these
+#: boundaries + its mutating access level), never a parallel allow/deny list.
+#: Reach kinds absent here are gated by access level and autonomy mode alone.
+_REACH_BOUNDARY = {
+    "credential": "credentials",
+    "credentials": "credentials",
+    "secret": "credentials",
+    "secrets": "credentials",
+    "billing": "spending",
+    "spending": "spending",
+    "destructive": "destructive",
+    "external_send": "external_send",
+    "external_write": "external_send",
+    "admin": "authority_expansion",
+}
+
+
+def learned_tool_storage(state_dir: str | Path) -> tuple[Path, Path]:
+    """Return the one canonical (code_dir, artifacts_dir) for learned tools.
+
+    Every writer (build_tool authoring, peer-adoption install) and the daemon
+    loader resolve the location here so a learned tool lives in exactly one
+    place on disk.
+    """
+    base = Path(state_dir)
+    return base / "learned_tools", base / "learned_tool_artifacts"
+
+
+def manifest_safety_class(manifest: LearnedToolManifest) -> str:
+    """Map a manifest's declared reach to a coarse safety class."""
+    if any(grant.access in MUTATING_REACH_ACCESS for grant in manifest.declared_reach):
+        return "mutating"
+    return "read_only"
+
+
+def manifest_review_boundaries(manifest: LearnedToolManifest) -> list[str]:
+    """Hard-gated autonomy boundaries a learned tool's declared reach crosses.
+
+    Fed into the one AutonomyPolicy by the reviewer so a tool that reads
+    credentials, spends, or sends outbound is gated the same way every other
+    self-improvement is — not by a build_tool-local list.
+    """
+    boundaries: set[str] = set()
+    for grant in manifest.declared_reach:
+        boundary = _REACH_BOUNDARY.get(grant.kind.lower())
+        if boundary:
+            boundaries.add(boundary)
+    return sorted(boundaries)
+
+
 _FORGE_RUNNER_SCRIPT = """
 import importlib.util
 import json

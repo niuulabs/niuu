@@ -116,8 +116,10 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert "Quietly skeptical and evidence-first" in enqueued[0].initiative_context
     assert "Use existing tools, memory" in enqueued[0].initiative_context
     assert "resident skills/runbooks" in enqueued[0].initiative_context
+    assert "skill_list and skill_run" in enqueued[0].initiative_context
     assert "call build_tool with a manifest" in enqueued[0].initiative_context
     assert "use the newly registered tool" in enqueued[0].initiative_context
+    assert "note the review item" in enqueued[0].initiative_context
     assert "Schema compliance is mandatory" in enqueued[0].initiative_context
     assert "environment_id: host-jozef" in enqueued[0].initiative_context
     assert "valkyrie_id: valkyrie-host-jozef" in enqueued[0].initiative_context
