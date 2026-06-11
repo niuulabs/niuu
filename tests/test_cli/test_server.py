@@ -239,6 +239,7 @@ class TestRouteDomainSelection:
             "persona-api",
             "ravn-api",
             "ravn-budget-api",
+            "ravn-odin-api",
             "ravn-runtime-api",
             "ravn-session-api",
             "ravn-trigger-api",
