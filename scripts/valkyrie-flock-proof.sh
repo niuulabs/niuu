@@ -80,7 +80,14 @@ FEEDBACK_INJECT_AFTER=$(( WAIT_SECONDS / 2 + 8 ))
 NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
 NATS_PID=""
 
-_ravn() { uv run --project "${REPO_ROOT}" python -m ravn "$@"; }
+# Daemons and the observer are long-lived children we must be able to kill by
+# PID. `uv run` wraps them in a launcher that orphans the python child on
+# SIGTERM, so long-lived processes use the project venv interpreter directly.
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    uv sync --project "${REPO_ROOT}" --quiet
+fi
+_ravn() { "${PYTHON_BIN}" -m ravn "$@"; }
 
 cleanup() {
     if [[ "${KEEP_RUNNING}" == "1" ]]; then
@@ -303,7 +310,7 @@ if [[ "${GUARDED_APPROVAL}" == "1" ]]; then
 fi
 
 if [[ "${TRANSPORT}" == "nng" ]]; then
-    uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
         --transport nng --out "${EVENTS_FILE}" \
         --cluster-file "${OUT_DIR}/cluster.yaml" \
         --own-address "ipc://${OUT_DIR}/observer.sock" \
@@ -312,7 +319,7 @@ if [[ "${TRANSPORT}" == "nng" ]]; then
         "${OBSERVER_EXTRA_ARGS[@]+"${OBSERVER_EXTRA_ARGS[@]}"}" \
         > "${OUT_DIR}/logs/observer.log" 2>&1 &
 else
-    uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
         --transport nats --out "${EVENTS_FILE}" --nats-url "${NATS_URL}" \
         --inject-feedback-after "${FEEDBACK_INJECT_AFTER}" \
         --feedback-environment cluster-a \
@@ -414,7 +421,7 @@ fi
 # Verify
 # ---------------------------------------------------------------------------
 
-uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_verify.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/valkyrie_flock_proof_verify.py" \
     --events "${EVENTS_FILE}" \
     --out-dir "${OUT_DIR}" \
     --teacher-state "${OUT_DIR}/k8s-a-state" \

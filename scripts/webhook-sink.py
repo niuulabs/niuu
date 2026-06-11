@@ -82,8 +82,7 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         # Cleaner one-line access log to stderr instead of stdlib's default.
         sys.stderr.write(
-            f"[{datetime.now(UTC).isoformat()}] "
-            f"{self.address_string()} {format % args}\n"
+            f"[{datetime.now(UTC).isoformat()}] {self.address_string()} {format % args}\n"
         )
 
 

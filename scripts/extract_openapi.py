@@ -83,8 +83,7 @@ def build_openapi_app() -> FastAPI:
             },
             {
                 "name": "MCP Servers",
-                "description": "MCP server catalogue — available Model Context "
-                "Protocol servers.",
+                "description": "MCP server catalogue — available Model Context Protocol servers.",
             },
             {
                 "name": "Secrets",

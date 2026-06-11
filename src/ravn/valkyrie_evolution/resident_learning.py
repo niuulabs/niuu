@@ -507,6 +507,13 @@ class ResidentLearningRuntime:
             # An operator durably rejected this build; do not rebuild or
             # re-file it — only an operator command reopens the capability.
             return None
+        if self._review_requester is not None and self._review_requester.has_pending(
+            self._evolution_dedupe_key(capability)
+        ):
+            # A build for this capability is already awaiting the operator —
+            # a restarted resident must not burn another (possibly expensive)
+            # build on it; the decision will arrive on the review path.
+            return None
         dream_id = f"dream:{self.identity.environment_id}:{_slug(capability)}:{signal.signal_id}"
         gap = CapabilityGap(
             gap_id=f"gap:{self.identity.environment_id}:{_slug(capability)}",

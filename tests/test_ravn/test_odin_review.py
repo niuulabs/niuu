@@ -370,3 +370,43 @@ async def test_promotion_of_unknown_skill_fails_loudly(tmp_path) -> None:
     assert len(resolved) == 1
     assert resolved[0].payload["apply_outcome"] == "apply_failed"
     await runtime.stop()
+
+
+async def test_restarted_resident_does_not_rebuild_a_pending_item(tmp_path) -> None:
+    """A fresh process must not burn another build on an item awaiting review."""
+    runtime, bus, store, skills = _runtime(tmp_path)
+    await runtime.start()
+    held = await runtime.process_signal(OOM_SIGNAL)
+    assert held["decision"] == "capability_build_held"
+    await runtime.stop()
+
+    class _CountingBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def build(self, request):
+            self.calls += 1
+            raise AssertionError("must not rebuild while the item is pending")
+
+    builder = _CountingBuilder()
+    from ravn.odin.review import JsonReviewStore as _Store
+    from ravn.odin.review import ReviewRequester as _Requester
+
+    restarted = ResidentLearningRuntime(
+        identity=runtime.identity,
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+        builder=builder,
+        tools_dir=tmp_path / "tools",
+        review_requester=_Requester(
+            publisher=bus,
+            store=_Store(tmp_path / "review_outbox.json"),
+            source="valkyrie:k8s-a",
+        ),
+    )
+    await restarted.start()
+    result = await restarted.process_signal(OOM_SIGNAL)
+    assert builder.calls == 0
+    assert result is None or result.get("decision") != "capability_build_held"
+    await restarted.stop()
