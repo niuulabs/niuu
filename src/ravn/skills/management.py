@@ -226,6 +226,9 @@ class SkillManagementRegistry:
         if success:
             meta.success_count += 1
             meta.consecutive_failures = 0
+            if meta.status == "stale":
+                # A skill in active use is no longer stale.
+                meta.status = "active"
         else:
             meta.failure_count += 1
             meta.consecutive_failures += 1

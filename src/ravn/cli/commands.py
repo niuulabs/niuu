@@ -3177,15 +3177,21 @@ def _build_resident_wakefulness(
         )
         return None
 
+    from ravn.context.autonomy import JsonProposalStore  # noqa: PLC0415
     from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
 
     cfg = settings.resident_wakefulness
+    workspace = _resolve_workspace(settings)
+    proposal_store = JsonProposalStore(
+        _resident_ravn_state_dir(workspace) / "autonomy_proposals.json"
+    )
     return ResidentWakefulness(
         identity=resident_learning_runtime.identity,
         skills=resident_learning_runtime.skills,
         publisher=publisher,
         resident_learning=resident_learning_runtime,
         memory=memory,
+        proposal_store=proposal_store,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,
@@ -4586,6 +4592,100 @@ def tui(
         mimir_urls=mimir_urls,
     )
     ravn_tui.run()
+
+
+@app.command()
+def room(
+    action: str = typer.Argument(
+        help="Room action: join | leave | message | heartbeat | close | participants."
+    ),
+    broker_url: str = typer.Option(
+        "http://127.0.0.1:9000",
+        "--broker-url",
+        envvar="SKULD_BROKER_URL",
+        help="Skuld broker base URL hosting the Environment room.",
+    ),
+    participant: str = typer.Option("", "--participant", help="Participant id, e.g. human:jozef."),
+    environment: str = typer.Option("", "--environment", help="Environment id to join."),
+    role: str = typer.Option(
+        "observer", "--role", help="Room role: observer|teacher|approver|debugger|owner."
+    ),
+    room_id: str = typer.Option("", "--room", help="Optional huddle room id."),
+    text: str = typer.Option("", "--text", help="Message text (message action)."),
+    reason: str = typer.Option("left", "--reason", help="Reason for leave/close."),
+) -> None:
+    """Join, talk in, and leave a live Valkyrie Environment room from the CLI.
+
+    Wraps the Skuld broker room API so a terminal operator participates in
+    the same live Environment state as the UI (NIU-1023).
+    """
+    import httpx  # noqa: PLC0415
+
+    base = broker_url.rstrip("/")
+
+    def _post(path: str, payload: dict) -> dict:
+        response = httpx.post(f"{base}{path}", json=payload, timeout=10.0)
+        if response.status_code >= 400:
+            typer.echo(f"error {response.status_code}: {response.text[:300]}", err=True)
+            raise typer.Exit(1)
+        return response.json()
+
+    if action == "join":
+        if not participant or not environment:
+            typer.echo("join requires --participant and --environment", err=True)
+            raise typer.Exit(2)
+        result = _post(
+            "/api/room/join",
+            {
+                "participant_id": participant,
+                "display_name": participant,
+                "environment_id": environment,
+                "role": role,
+                "room_id": room_id,
+            },
+        )
+        meta = result.get("participant", result)
+        typer.echo(
+            f"joined {environment} as {participant} ({role}); "
+            f"capabilities: {', '.join(meta.get('capabilities', []))}"
+        )
+        return
+    if action == "leave":
+        _post("/api/room/leave", {"participant_id": participant, "reason": reason})
+        typer.echo(f"left: {participant}")
+        return
+    if action == "message":
+        if not text:
+            typer.echo("message requires --text", err=True)
+            raise typer.Exit(2)
+        _post(
+            "/api/room/message",
+            {"participant_id": participant, "content": text, "room_id": room_id},
+        )
+        typer.echo("sent")
+        return
+    if action == "heartbeat":
+        _post("/api/room/heartbeat", {"participant_id": participant})
+        typer.echo("heartbeat recorded")
+        return
+    if action == "close":
+        result = _post(
+            "/api/room/close",
+            {"room_id": room_id, "reason": reason},
+        )
+        typer.echo(f"closed {room_id}; transcript: {result.get('transcriptRef', '-')}")
+        return
+    if action == "participants":
+        response = httpx.get(f"{base}/api/room/participants", timeout=10.0)
+        response.raise_for_status()
+        for entry in response.json().get("participants", []):
+            typer.echo(
+                f"- {entry.get('peer_id')} [{entry.get('participant_type')}] "
+                f"{entry.get('authority_role') or ''} {entry.get('status') or ''}"
+            )
+        return
+    typer.echo(f"unknown action: {action}", err=True)
+    raise typer.Exit(2)
 
 
 @app.command()

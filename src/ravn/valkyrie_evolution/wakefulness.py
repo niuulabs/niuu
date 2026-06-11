@@ -64,6 +64,7 @@ class ResidentWakefulness:
         publisher: SleipnirPublisher,
         resident_learning: Any | None = None,
         memory: Any | None = None,
+        proposal_store: Any | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -78,6 +79,7 @@ class ResidentWakefulness:
         self._publisher = publisher
         self._resident_learning = resident_learning
         self._memory = memory
+        self._proposal_store = proposal_store
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -210,22 +212,25 @@ class ResidentWakefulness:
                 # surface it as a candidate needing review instead.
                 promotion_candidates.append(name)
                 continue
-            decision = policy.decide(
-                SelfImprovementProposal(
-                    proposal_id=f"dream-promote:{name}",
-                    title=name,
-                    artifact_type="skill",
-                    action="promote",
-                    content=str(row["skill"].get("content") or ""),
-                    scope="environment",
-                    environment_id=self.identity.environment_id,
-                    domain=self.identity.domain,
-                    mode=self.identity.autonomy_mode,
-                    risk_class="low",
-                )
+            proposal = SelfImprovementProposal(
+                proposal_id=f"dream-promote:{self.identity.environment_id}:{name}",
+                title=name,
+                artifact_type="skill",
+                action="promote",
+                content=str(row["skill"].get("content") or ""),
+                scope="environment",
+                environment_id=self.identity.environment_id,
+                domain=self.identity.domain,
+                mode=self.identity.autonomy_mode,
+                risk_class="low",
             )
+            decision = policy.decide(proposal)
             if decision.decision != "allow":
                 promotion_candidates.append(name)
+                if self._proposal_store is not None:
+                    # Guarded candidates become durable needs-review proposals
+                    # instead of evaporating with the dream summary (NIU-1026).
+                    self._proposal_store.record_decision(proposal, decision)
                 continue
             await self._skills.promote(
                 name,

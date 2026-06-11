@@ -277,3 +277,36 @@ async def test_dream_holds_promotion_for_skills_implicated_by_feedback(tmp_path)
     assert summary["feedback"]["negative"] == 1
     assert summary["feedback"]["implicated_skills"] == ["suspect-probe"]
     assert (await skills.show("suspect-probe"))["metadata"]["scope"] == "private"
+
+
+async def test_guarded_promotion_candidates_become_durable_proposals(tmp_path) -> None:
+    """Held promotions persist as needs-review proposals (F9/NIU-1026)."""
+    from ravn.context.autonomy import JsonProposalStore
+
+    skills = _skills(tmp_path)
+    await skills.create(
+        name="proven-probe",
+        content="# skill: proven-probe\n\nmetadata:\n  capability: x\n",
+        scope="private",
+    )
+    for _ in range(2):
+        await skills.record_usage("proven-probe", success=True)
+
+    store = JsonProposalStore(tmp_path / "autonomy_proposals.json")
+    bus = InProcessBus()
+    machine = ResidentWakefulness(
+        identity=_identity("guarded"),
+        skills=skills,
+        publisher=bus,
+        proposal_store=store,
+        promote_min_successes=2,
+        clock=ManualClock(),
+    )
+    summary = await machine.dream()
+    assert summary["promotion_candidates"] == ["proven-probe"]
+
+    reloaded = JsonProposalStore(tmp_path / "autonomy_proposals.json")
+    proposals = reloaded.list(status="needs_review")
+    assert len(proposals) == 1
+    assert proposals[0].title == "proven-probe"
+    assert proposals[0].environment_id == "cluster-a"

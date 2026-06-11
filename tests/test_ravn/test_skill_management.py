@@ -254,3 +254,25 @@ async def test_skill_manage_yolo_gates_external_sends(tmp_path: Path) -> None:
     payload = json.loads(result.content)
     assert payload["status"] == "needs_review"
     assert "external_send" in payload["proposal"]["policy_reason"]
+
+
+async def test_successful_use_restores_stale_skill(tmp_path) -> None:
+    """A stale-marked skill that gets used successfully becomes active again."""
+    from ravn.adapters.skill.file_registry import FileSkillRegistry
+    from ravn.skills.management import SkillManagementRegistry
+
+    skill_dir = tmp_path / "skills"
+    skills = SkillManagementRegistry(
+        FileSkillRegistry(skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False),
+        metadata_path=tmp_path / "skill_management.json",
+    )
+    await skills.create(name="probe", content="# skill: probe\n\nBody.\n")
+    await skills.mark_stale("probe")
+    assert (await skills.show("probe"))["metadata"]["status"] == "stale"
+
+    await skills.record_usage("probe", success=True)
+    assert (await skills.show("probe"))["metadata"]["status"] == "active"
+
+    await skills.mark_stale("probe")
+    await skills.record_usage("probe", success=False)
+    assert (await skills.show("probe"))["metadata"]["status"] == "stale"
