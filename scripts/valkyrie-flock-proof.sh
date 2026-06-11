@@ -29,6 +29,13 @@ TRANSPORT="nng"
 KEEP_RUNNING=0
 BUILDER="template"   # template | agent (agent authors the tool with a real LLM)
 WAIT_SECONDS="${VALKYRIE_PROOF_WAIT_SECONDS:-}"
+# Guarded approval mode: the teacher runs guarded, the build is HELD behind an
+# odin.review.requested item, and the observer acts as the approving operator.
+GUARDED_APPROVAL=0
+TEACHER_AUTONOMY="${VALKYRIE_PROOF_TEACHER_AUTONOMY:-yolo}"
+# Orchestrators (the full-stack ODIN proof) set this to leave verification —
+# and the operator approval — to an outer harness.
+SKIP_VERIFY="${VALKYRIE_PROOF_SKIP_VERIFY:-0}"
 
 # LLM used by --builder agent (any OpenAI-compatible endpoint).
 # When OPENAI_API_KEY is set the proof defaults to the OpenAI API; otherwise
@@ -48,14 +55,18 @@ while [[ $# -gt 0 ]]; do
         --transport) TRANSPORT="$2"; shift 2 ;;
         --keep) KEEP_RUNNING=1; shift ;;
         --builder) BUILDER="$2"; shift 2 ;;
+        --guarded-approval) GUARDED_APPROVAL=1; TEACHER_AUTONOMY="guarded"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-# Real LLM generation needs more time than the deterministic template.
+# Real LLM generation needs more time than the deterministic template, and
+# the guarded round-trip adds a hold → approve → install leg.
 if [[ -z "${WAIT_SECONDS}" ]]; then
     if [[ "${BUILDER}" == "agent" ]]; then
         WAIT_SECONDS=150
+    elif [[ "${GUARDED_APPROVAL}" == "1" ]]; then
+        WAIT_SECONDS=35
     else
         WAIT_SECONDS=25
     fi
@@ -131,6 +142,7 @@ elif [[ "${TRANSPORT}" == "nats" ]]; then
         nats-server -js -sd "${OUT_DIR}/nats-store" -p 4222 -m 8222 \
             > "${OUT_DIR}/logs/nats-server.log" 2>&1 &
         NATS_PID=$!
+        echo "${NATS_PID}" > "${OUT_DIR}/nats.pid"
         for _ in $(seq 1 20); do
             curl -sf "http://127.0.0.1:8222/healthz" >/dev/null 2>&1 && break
             sleep 0.5
@@ -273,7 +285,7 @@ K8S_A_SOURCES=$(cat <<SRC
 SRC
 )
 
-CONFIG_A="$(write_config k8s-a valkyrie-k8s-a cluster-a k8s k8s-valkyries yolo "${K8S_A_SOURCES}")"
+CONFIG_A="$(write_config k8s-a valkyrie-k8s-a cluster-a k8s k8s-valkyries "${TEACHER_AUTONOMY}" "${K8S_A_SOURCES}")"
 CONFIG_B="$(write_config k8s-b valkyrie-k8s-b cluster-b k8s k8s-valkyries autonomous "")"
 CONFIG_P="$(write_config printer valkyrie-printer printer-cell printer.pi printer-cell-valkyries autonomous "")"
 
@@ -285,6 +297,11 @@ mkdir -p "${OUT_DIR}/k8s-a-workspace" "${OUT_DIR}/k8s-b-workspace" "${OUT_DIR}/p
 
 EVENTS_FILE="${OUT_DIR}/events.jsonl"
 
+OBSERVER_EXTRA_ARGS=()
+if [[ "${GUARDED_APPROVAL}" == "1" ]]; then
+    OBSERVER_EXTRA_ARGS+=(--approve-reviews)
+fi
+
 if [[ "${TRANSPORT}" == "nng" ]]; then
     uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
         --transport nng --out "${EVENTS_FILE}" \
@@ -292,12 +309,14 @@ if [[ "${TRANSPORT}" == "nng" ]]; then
         --own-address "ipc://${OUT_DIR}/observer.sock" \
         --inject-feedback-after "${FEEDBACK_INJECT_AFTER}" \
         --feedback-environment cluster-a \
+        "${OBSERVER_EXTRA_ARGS[@]+"${OBSERVER_EXTRA_ARGS[@]}"}" \
         > "${OUT_DIR}/logs/observer.log" 2>&1 &
 else
     uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
         --transport nats --out "${EVENTS_FILE}" --nats-url "${NATS_URL}" \
         --inject-feedback-after "${FEEDBACK_INJECT_AFTER}" \
         --feedback-environment cluster-a \
+        "${OBSERVER_EXTRA_ARGS[@]+"${OBSERVER_EXTRA_ARGS[@]}"}" \
         > "${OUT_DIR}/logs/observer.log" 2>&1 &
 fi
 OBSERVER_PID=$!
@@ -344,27 +363,43 @@ sleep 8
 # Item 1 triggers the micro-dream; item 2 replays through the built tool.
 # ---------------------------------------------------------------------------
 
-cat > "${OUT_DIR}/inject-k8s-a.json" <<'JSON'
-[
-  {
+FIRST_OOM_EVENT='{
     "metadata": {"name": "payments-api-oom.1", "uid": "oom-uid-1", "namespace": "payments"},
     "involvedObject": {"kind": "Pod", "name": "payments-api-7d9f", "namespace": "payments"},
     "reason": "OOMKilled",
     "message": "Container payments-api was OOM killed (memory limit 512Mi)",
     "type": "Warning"
-  },
-  {
+  }'
+SECOND_OOM_EVENT='{
     "metadata": {"name": "payments-api-oom.2", "uid": "oom-uid-2", "namespace": "payments"},
     "involvedObject": {"kind": "Pod", "name": "payments-api-b41c", "namespace": "payments"},
     "reason": "OOMKilled",
     "message": "Container payments-api was OOM killed again after restart",
     "type": "Warning"
-  }
-]
-JSON
+  }'
 
-echo "Signal injected. Letting the learning loop run for ${WAIT_SECONDS}s..."
-sleep "${WAIT_SECONDS}"
+if [[ "${GUARDED_APPROVAL}" == "1" ]]; then
+    # The replay event must arrive AFTER the operator approval installs the
+    # tool, or it lands while the build is still held.
+    printf '[\n  %s\n]\n' "${FIRST_OOM_EVENT}" > "${OUT_DIR}/inject-k8s-a.json"
+    echo "Signal injected (guarded). Waiting for hold -> approval -> install (${WAIT_SECONDS}s)..."
+    sleep "${WAIT_SECONDS}"
+    printf '[\n  %s,\n  %s\n]\n' "${FIRST_OOM_EVENT}" "${SECOND_OOM_EVENT}" \
+        > "${OUT_DIR}/inject-k8s-a.json"
+    echo "Replay signal injected. Letting the installed tool handle it..."
+    sleep 12
+else
+    printf '[\n  %s,\n  %s\n]\n' "${FIRST_OOM_EVENT}" "${SECOND_OOM_EVENT}" \
+        > "${OUT_DIR}/inject-k8s-a.json"
+    echo "Signal injected. Letting the learning loop run for ${WAIT_SECONDS}s..."
+    sleep "${WAIT_SECONDS}"
+fi
+
+if [[ "${SKIP_VERIFY}" == "1" ]]; then
+    echo "Skipping verification (VALKYRIE_PROOF_SKIP_VERIFY=1). Daemons stay up with --keep."
+    echo "Artifacts: ${OUT_DIR}"
+    exit 0
+fi
 
 if [[ "${TRANSPORT}" == "nats" ]]; then
     echo "Restarting student Valkyrie to prove durable adoption remains exactly once..."
@@ -388,6 +423,7 @@ uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_verif
     --student-id valkyrie-k8s-b \
     --control-id valkyrie-printer \
     --transport "${TRANSPORT}" \
+    $([[ "${GUARDED_APPROVAL}" == "1" ]] && printf '%s' "--expect-guarded-approval") \
     $([[ "${TRANSPORT}" == "nats" ]] && printf '%s' "--expect-student-restart --student-restart-marker ${OUT_DIR}/student-restarted")
 VERIFY_EXIT=$?
 

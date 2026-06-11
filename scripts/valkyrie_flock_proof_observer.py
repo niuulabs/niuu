@@ -54,7 +54,55 @@ def _parse_args() -> argparse.Namespace:
         default="cluster-a",
         help="Environment id targeted by the injected feedback",
     )
+    parser.add_argument(
+        "--approve-reviews",
+        action="store_true",
+        help=(
+            "Act as the operator: approve every odin.review.requested item by "
+            "publishing the same odin.review.decided envelope the platform's "
+            "decide endpoint publishes"
+        ),
+    )
+    parser.add_argument(
+        "--approve-delay",
+        type=float,
+        default=2.0,
+        help="Seconds between seeing a review request and approving it",
+    )
     return parser.parse_args()
+
+
+def _make_review_approver(transport, args: argparse.Namespace):
+    """Return an event handler that approves filed review items once each."""
+    from ravn.odin.review import ReviewItem, review_decided_event
+    from sleipnir.domain import registry
+
+    approved: set[str] = set()
+
+    async def _approve(item: ReviewItem) -> None:
+        await asyncio.sleep(args.approve_delay)
+        item.decide(
+            decision="approved",
+            operator_id="human:proof-operator",
+            reason="Approved by the proof operator after inspecting the artifact.",
+        )
+        await transport.publish(review_decided_event(item, source="ravn:odin-review-proof"))
+        print(f"observer: approved review item {item.item_id}", flush=True)
+
+    async def _handle(event) -> None:
+        if event.event_type != registry.ODIN_REVIEW_REQUESTED:
+            return
+        try:
+            item = ReviewItem.from_payload(dict(event.payload))
+        except (ValueError, TypeError) as exc:
+            print(f"observer: ignoring malformed review request: {exc}", flush=True)
+            return
+        if item.item_id in approved:
+            return
+        approved.add(item.item_id)
+        asyncio.create_task(_approve(item))
+
+    return _handle
 
 
 async def _inject_feedback(transport, args: argparse.Namespace) -> None:
@@ -118,6 +166,9 @@ async def _run_nng(args: argparse.Namespace, sink: _JsonlSink) -> None:
         sink.write(_event_record(event))
 
     await transport.subscribe(["*"], _handle)
+    if args.approve_reviews:
+        await transport.subscribe(["odin.review.requested"], _make_review_approver(transport, args))
+        print("observer: acting as the approving operator", flush=True)
     print(f"observer: nng subscribed to {len(peer_addresses)} peers", flush=True)
     if args.inject_feedback_after > 0:
         asyncio.create_task(_inject_feedback(transport, args))
@@ -172,6 +223,9 @@ async def _run_nats(args: argparse.Namespace, sink: _JsonlSink) -> None:
         sink.write(_event_record(event))
 
     await transport.subscribe(["*"], _handle)
+    if args.approve_reviews:
+        await transport.subscribe(["odin.review.requested"], _make_review_approver(transport, args))
+        print("observer: acting as the approving operator", flush=True)
     print("observer: nats subscribed (main + flock.> streams)", flush=True)
     if args.inject_feedback_after > 0:
         asyncio.create_task(_inject_feedback(transport, args))

@@ -33,6 +33,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--transport", choices=["nng", "nats"], required=True)
     parser.add_argument("--expect-student-restart", action="store_true")
     parser.add_argument("--student-restart-marker", default="")
+    parser.add_argument(
+        "--expect-guarded-approval",
+        action="store_true",
+        help="Assert the guarded hold -> review request -> approve -> install round-trip",
+    )
     return parser.parse_args()
 
 
@@ -250,7 +255,71 @@ def main() -> int:
         f"consolidation dreams={len(consolidations)}",
     )
 
-    # 8. NATS only: scoped flock subject fan-out observed.
+    # 10. Guarded approval round-trip: the build was held behind a ReviewItem,
+    #     the operator approved it, and the resident applied + confirmed.
+    if args.expect_guarded_approval:
+        held = [
+            event
+            for event in _of_type(events, "valkyrie.evolution.held")
+            if event.get("payload", {}).get("valkyrie_id") == args.teacher_id
+        ]
+        check("guarded teacher held the build", bool(held), f"held events={len(held)}")
+
+        requested = [
+            event
+            for event in _of_type(events, "odin.review.requested")
+            if event.get("payload", {}).get("kind") == "evolution_build"
+            and event.get("payload", {}).get("valkyrie_id") == args.teacher_id
+        ]
+        check("teacher filed an evolution_build review item", bool(requested))
+        if requested:
+            evidence = requested[0].get("payload", {}).get("evidence", {})
+            artifact = evidence.get("artifact", {}) if isinstance(evidence, dict) else {}
+            check(
+                "review item carries the full artifact",
+                bool(str(artifact.get("content", "")).strip())
+                and bool(str(artifact.get("tool_code", "")).strip()),
+            )
+
+        decided = [
+            event
+            for event in _of_type(events, "odin.review.decided")
+            if event.get("payload", {}).get("status") == "approved"
+        ]
+        check("operator approved the review item", bool(decided))
+        if decided:
+            check(
+                "approval names the operator",
+                decided[0].get("payload", {}).get("decided_by") == "human:proof-operator",
+            )
+
+        resolved = [
+            event
+            for event in _of_type(events, "odin.review.resolved")
+            if event.get("payload", {}).get("apply_outcome") == "applied"
+            and event.get("payload", {}).get("kind") == "evolution_build"
+        ]
+        check(
+            "resident confirmed the applied decision",
+            bool(resolved),
+            f"resolved events={len(resolved)}",
+        )
+
+        outbox_path = teacher_state / "review_outbox.json"
+        outbox_ok = False
+        outbox_detail = f"missing {outbox_path}"
+        if outbox_path.is_file():
+            outbox = json.loads(outbox_path.read_text(encoding="utf-8"))
+            applied_items = [
+                item
+                for item in outbox.get("items", [])
+                if item.get("kind") == "evolution_build" and item.get("status") == "applied"
+            ]
+            outbox_ok = bool(applied_items)
+            outbox_detail = f"items={len(outbox.get('items', []))} applied={len(applied_items)}"
+        check("approval persisted in the teacher's review outbox", outbox_ok, outbox_detail)
+
+    # 11. NATS only: scoped flock subject fan-out observed.
     if args.transport == "nats":
         scoped = [
             event
