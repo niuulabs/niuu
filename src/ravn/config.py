@@ -2307,9 +2307,8 @@ class DreamCycleTriggerConfig(BaseModel):
     autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
         default="guarded",
         description=(
-            "Autonomy mode for self-improvement proposals emitted by dream cycles. "
-            "guarded records proposals, autonomous applies low-risk private/Environment "
-            "changes, and yolo applies delegated private/Environment/domain changes."
+            "Autonomy mode for self-improvement proposals emitted by the "
+            "Mimir-curator dream cycle trigger."
         ),
     )
     environment_id: str = Field(
@@ -2319,41 +2318,6 @@ class DreamCycleTriggerConfig(BaseModel):
     proposal_store_path: str = Field(
         default="~/.ravn/autonomy_proposals.json",
         description="JSON proposal store used for dream-cycle self-improvement audit trails.",
-    )
-    builder_adapter: str = Field(
-        default="ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
-        description=(
-            "Fully-qualified EvolutionBuilderPort class used by resident "
-            "micro-dreams to author skills and tool implementations. "
-            "Constructors declaring an ``llm`` parameter receive the "
-            "configured LLM adapter automatically."
-        ),
-    )
-    builder_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Constructor kwargs for the builder adapter.",
-    )
-    reviewer_adapter: str = Field(
-        default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
-        description=(
-            "Fully-qualified EvolutionReviewPort class gating built and "
-            "adopted learnings before install."
-        ),
-    )
-    reviewer_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Constructor kwargs for the reviewer adapter.",
-    )
-    tool_timeout_seconds: float = Field(
-        default=10.0,
-        description="Hard timeout for one sandboxed resident tool execution.",
-    )
-    rollback_consecutive_failures: int = Field(
-        default=3,
-        description=(
-            "Consecutive implementation failures before an installed skill is "
-            "auto-rolled-back (archived, regression published to the flock)."
-        ),
     )
 
 
@@ -2424,6 +2388,59 @@ class ResidentWakefulnessConfig(BaseModel):
         description=(
             "Successful runs (with zero failures) before a private skill is "
             "promoted to environment scope during a dream, policy permitting."
+        ),
+    )
+
+
+class ResidentEvolutionConfig(BaseModel):
+    """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
+
+    Lives apart from :class:`DreamCycleTriggerConfig` (the Mimir-curator cron)
+    — these settings drive the resident micro-dream/adoption loop, not the
+    nightly knowledge-base pass.
+    """
+
+    autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
+        default="guarded",
+        description=(
+            "Resident autonomy: guarded records proposals, autonomous applies "
+            "low-risk private/Environment changes, yolo evolves within "
+            "delegated boundaries."
+        ),
+    )
+    builder_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
+        description=(
+            "Fully-qualified EvolutionBuilderPort class used by resident "
+            "micro-dreams to author skills and tool implementations. "
+            "Constructors declaring an ``llm`` parameter receive the "
+            "configured LLM adapter automatically."
+        ),
+    )
+    builder_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the builder adapter.",
+    )
+    reviewer_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
+        description=(
+            "Fully-qualified EvolutionReviewPort class gating built and "
+            "adopted learnings before install."
+        ),
+    )
+    reviewer_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the reviewer adapter.",
+    )
+    tool_timeout_seconds: float = Field(
+        default=10.0,
+        description="Hard timeout for one sandboxed resident tool execution.",
+    )
+    rollback_consecutive_failures: int = Field(
+        default=3,
+        description=(
+            "Consecutive implementation failures before an installed skill is "
+            "auto-rolled-back (archived, regression published to the flock)."
         ),
     )
 
@@ -2942,6 +2959,9 @@ class Settings(BaseSettings):
 
     # NIU-1021: ODIN court resolver for resident judgments
     odin_court: OdinCourtConfig = Field(default_factory=OdinCourtConfig)
+
+    # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
+    resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

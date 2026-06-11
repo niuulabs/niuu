@@ -215,7 +215,7 @@ environment:
   signal_task_severities: []
 ${sources}
 
-dream_cycle:
+resident_evolution:
   autonomy_mode: ${autonomy}
   builder_adapter: ${BUILDER_ADAPTER}${BUILDER_KWARGS}
 

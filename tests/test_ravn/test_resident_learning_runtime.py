@@ -106,7 +106,7 @@ def test_daemon_composition_builds_file_backed_resident_learning_runtime(tmp_pat
             "type": "k8s",
             "flocks": ["k8s-valkyries"],
         },
-        dream_cycle={"autonomy_mode": "yolo"},
+        resident_evolution={"autonomy_mode": "yolo"},
         skill={"backend": "file", "include_builtin": False},
     )
     runtime = _build_resident_learning_runtime(

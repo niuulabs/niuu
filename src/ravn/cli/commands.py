@@ -3131,17 +3131,17 @@ def _build_resident_learning_runtime(
         valkyrie_id=resident_id,
         domain=settings.environment.type,
         flock_ids=list(settings.environment.flocks),
-        autonomy_mode=settings.dream_cycle.autonomy_mode,
+        autonomy_mode=settings.resident_evolution.autonomy_mode,
     )
     builder = _build_evolution_adapter(
         settings,
-        adapter_path=settings.dream_cycle.builder_adapter,
-        kwargs=settings.dream_cycle.builder_kwargs,
+        adapter_path=settings.resident_evolution.builder_adapter,
+        kwargs=settings.resident_evolution.builder_kwargs,
     )
     reviewer = _build_evolution_adapter(
         settings,
-        adapter_path=settings.dream_cycle.reviewer_adapter,
-        kwargs=settings.dream_cycle.reviewer_kwargs,
+        adapter_path=settings.resident_evolution.reviewer_adapter,
+        kwargs=settings.resident_evolution.reviewer_kwargs,
     )
     from ravn.adapters.reflection.flock_learning import FlockLearningStore  # noqa: PLC0415
 
@@ -3154,8 +3154,8 @@ def _build_resident_learning_runtime(
         builder=builder,
         reviewer=reviewer,
         tools_dir=local_ravn_dir / "tools",
-        tool_timeout_seconds=settings.dream_cycle.tool_timeout_seconds,
-        rollback_consecutive_failures=settings.dream_cycle.rollback_consecutive_failures,
+        tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+        rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
     )
 

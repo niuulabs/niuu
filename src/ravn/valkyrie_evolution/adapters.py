@@ -11,7 +11,7 @@ probe).  Three builders exist:
 * :class:`WorkflowToolBuilder` — boundary for offloading tool builds to an
   external workflow engine (Forge/Volundr).  Explicitly unimplemented.
 
-Builder selection is config-driven (``dream_cycle.builder_adapter`` with
+Builder selection is config-driven (``resident_evolution.builder_adapter`` with
 kwargs), never hardcoded in call sites.
 """
 
@@ -189,7 +189,7 @@ class WorkflowToolBuilder(EvolutionBuilderPort):
     """Boundary for offloading tool builds to an external workflow engine.
 
     Wire this to Forge/Volundr workflow orchestration before selecting it in
-    ``dream_cycle.builder_adapter``.
+    ``resident_evolution.builder_adapter``.
     """
 
     def __init__(self, *, endpoint: str = "", workflow: str = "valkyrie-tool-build") -> None:
