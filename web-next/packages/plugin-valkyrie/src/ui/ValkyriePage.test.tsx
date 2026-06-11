@@ -59,9 +59,7 @@ describe('ValkyriePage', () => {
     expect(screen.getByTestId('valkyrie-live-scope-rail')).toHaveTextContent('All Valkyries');
     expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Open signals');
     expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('Learning in test');
-    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
-      'Live event and log tail',
-    );
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent('Live event and log tail');
     expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
       'Prepare a guarded rollout fix',
     );
@@ -70,12 +68,8 @@ describe('ValkyriePage', () => {
       'prepare_rollout_remediation',
     );
     expect(screen.getByTestId('valkyrie-work-queue')).toHaveTextContent('Pod checkout/api');
-    expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent(
-      'Qwen/Qwen3.6-35B-A3B-FP8',
-    );
-    expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
-      'Sigrun',
-    );
+    expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent('Qwen/Qwen3.6-35B-A3B-FP8');
+    expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent('Sigrun');
     expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
       'Evidence-first cluster guardian',
     );
@@ -89,15 +83,114 @@ describe('ValkyriePage', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('renders empty verified telemetry without falling back to seeded projections', async () => {
+    const user = userEvent.setup();
+    const dashboard = createSeedValkyrieDashboard();
+    const telemetry = dashboard.telemetry!;
+    const quietDashboard = {
+      ...dashboard,
+      telemetry: {
+        ...telemetry,
+        source: '',
+        verified: true,
+        lastObservedAt: 'not-a-date',
+        byEnvironment: [],
+        recentPolls: [],
+        recentTasks: [],
+        recentOutcomes: [],
+        recentEvents: [],
+        recentLogs: [],
+        recentToolNeeds: [],
+        recentLearning: [],
+        runtime: [],
+        gaps: [],
+        totals: {
+          ...telemetry.totals,
+          eventsObserved: 0,
+          rawSignalEvents: 0,
+          signalsCollected: 0,
+          signalsPublished: 0,
+          tasksEnqueued: 0,
+          tasksStarted: 0,
+          tasksCompleted: 0,
+          tasksFailed: 0,
+          tasksDropped: 0,
+          judgments: 0,
+          actions: 0,
+          learningEvents: 0,
+          dreamCyclesStarted: 0,
+          dreamCyclesCompleted: 0,
+          dreamCyclesNoop: 0,
+          dreamCyclesFailed: 0,
+          skillProposals: 0,
+          toolRequests: 0,
+          llmCalls: 0,
+          llmTokens: 0,
+        },
+        llm: {
+          ...telemetry.llm,
+          model: '',
+          reflectionModel: '',
+          status: 'idle',
+          postSessionReflectionEnabled: false,
+        },
+      },
+    };
+
+    const wrapper = wrapWithValkyrie({
+      valkyrie: createMockValkyrieService(quietDashboard),
+    });
+    const { unmount } = render(<ValkyriePage />, {
+      wrapper,
+    });
+
+    expect(await screen.findByTestId('valkyrie-live-console')).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-live-metrics')).toHaveTextContent('0');
+    expect(screen.getByTestId('valkyrie-live-runtime')).toHaveTextContent(
+      'No runtime starts observed',
+    );
+    expect(screen.getByTestId('valkyrie-work-queue')).toHaveTextContent('No task telemetry');
+    expect(screen.getByTestId('valkyrie-event-log')).toHaveTextContent(
+      'No Valkyrie events or structured logs observed',
+    );
+    expect(screen.getByTestId('valkyrie-evolution-loop')).toHaveTextContent('stalled');
+    expect(screen.getByTestId('valkyrie-evolution-loop')).toHaveTextContent(
+      'No dream cycle has been observed for this window.',
+    );
+    expect(screen.getByTestId('valkyrie-evolution-loop')).toHaveTextContent(
+      'No capability gaps in this scope',
+    );
+    expect(screen.getByTestId('valkyrie-gaps')).toHaveTextContent(
+      'No telemetry gaps in the current window',
+    );
+    expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent('unknown');
+    expect(screen.getByTestId('valkyrie-llm-status')).toHaveTextContent('reflection off');
+    expect(screen.getByTestId('valkyrie-live-scope-rail')).toHaveTextContent('0');
+
+    await user.click(screen.getByRole('button', { name: /all valkyries/i }));
+
+    expect(screen.getByRole('heading', { level: 1, name: 'All Valkyries' })).toBeInTheDocument();
+
+    unmount();
+    render(<ValkyriePage defaultView="topology" />, {
+      wrapper: wrapWithValkyrie({
+        valkyrie: createMockValkyrieService(quietDashboard),
+      }),
+    });
+
+    expect(await screen.findByTestId('valkyrie-live-console')).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent(
+      'No live environments observed',
+    );
+  });
+
   it('renders verified route views from live telemetry', async () => {
     const { rerender } = render(<ValkyriePage defaultView="topology" />, {
       wrapper: wrapWithValkyrie(),
     });
 
     expect(await screen.findByTestId('valkyrie-topology-view')).toBeInTheDocument();
-    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent(
-      'env-k8s-valhalla',
-    );
+    expect(screen.getByTestId('valkyrie-live-environments')).toHaveTextContent('env-k8s-valhalla');
 
     rerender(<ValkyriePage defaultView="lineage" />);
     expect(await screen.findByTestId('valkyrie-lineage-view')).toHaveTextContent(
@@ -178,7 +271,9 @@ describe('ValkyriePage', () => {
     });
 
     expect(within(dialog).getByText('Generated artifact')).toBeInTheDocument();
-    expect(within(dialog).getByText(/capability: inspect.kubernetes.pod.oomkilled/)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/capability: inspect.kubernetes.pod.oomkilled/),
+    ).toBeInTheDocument();
     expect(within(dialog).getByText('Odin review')).toBeInTheDocument();
     expect(within(dialog).getByText('active in runtime')).toBeInTheDocument();
     expect(within(dialog).getByText('artifact ravn skill tool')).toBeInTheDocument();
@@ -212,17 +307,40 @@ describe('ValkyriePage', () => {
 
   it('lets an operator join and speak in a huddle', async () => {
     const user = userEvent.setup();
+    const service = createMockValkyrieService(createDemoDashboard());
+    const joinHuddle = vi.spyOn(service, 'joinHuddle');
+    const sendHuddleMessage = vi.spyOn(service, 'sendHuddleMessage');
     render(<ValkyriePage />, {
       wrapper: wrapWithValkyrie({
-        valkyrie: createMockValkyrieService(createDemoDashboard()),
+        valkyrie: service,
       }),
     });
 
-    await user.type(await screen.findByLabelText(/participant for valhalla memory/i), 'human:jozef');
+    await user.type(
+      await screen.findByLabelText(/participant for valhalla memory/i),
+      'human:jozef',
+    );
+    await user.selectOptions(screen.getByLabelText(/action for valhalla memory/i), 'teach');
     await user.click(await screen.findByRole('button', { name: 'Join' }));
     await user.type(screen.getByLabelText(/message valhalla memory/i), 'What is blocked?');
     await user.click(screen.getByRole('button', { name: 'Send' }));
 
+    await waitFor(() =>
+      expect(joinHuddle).toHaveBeenCalledWith({
+        huddleId: 'huddle-valhalla-now',
+        participantId: 'human:jozef',
+        displayName: 'human:jozef',
+        action: 'teach',
+        targetFlockId: 'flock-k8s',
+      }),
+    );
+    await waitFor(() =>
+      expect(sendHuddleMessage).toHaveBeenCalledWith({
+        huddleId: 'huddle-valhalla-now',
+        body: 'What is blocked?',
+        authorId: 'human:jozef',
+      }),
+    );
     await waitFor(() => expect(screen.getAllByText('What is blocked?')).toHaveLength(1));
   });
 

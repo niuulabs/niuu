@@ -181,7 +181,12 @@ describe('Shell', () => {
   });
 
   it('marks a plugin active when the route matches a custom tab path', async () => {
-    wrap(<Shell plugins={[pluginA, pluginWithCustomTabPath]} _testHistory={memHistory('/valkyries')} />);
+    wrap(
+      <Shell
+        plugins={[pluginA, pluginWithCustomTabPath]}
+        _testHistory={memHistory('/valkyries')}
+      />,
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('valkyrie-content')).toBeInTheDocument();

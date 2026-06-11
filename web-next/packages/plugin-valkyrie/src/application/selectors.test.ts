@@ -21,4 +21,26 @@ describe('valkyrie selectors', () => {
       learnings.every((entry) => entry.scope === 'flock' || entry.targetFlockId === 'flock-k8s'),
     ).toBe(true);
   });
+
+  it('handles missing flocks while preserving source-valkyrie learning links', () => {
+    const dashboard = createSeedValkyrieDashboard();
+    const learning = dashboard.learnings.find((entry) => entry.id === 'learn-k8s-oom-canary')!;
+    const detachedDashboard = {
+      ...dashboard,
+      flocks: dashboard.flocks.filter((entry) => entry.id !== 'flock-k8s'),
+      learnings: [
+        {
+          ...learning,
+          sourceEnvironmentId: 'env-other',
+          targetFlockId: undefined,
+        },
+      ],
+    };
+
+    const slice = selectEnvironmentSlice(detachedDashboard, 'env-k8s-valhalla');
+
+    expect(slice.flock).toBeNull();
+    expect(slice.learnings.map((entry) => entry.id)).toEqual(['learn-k8s-oom-canary']);
+    expect(selectFlockLearnings(detachedDashboard, 'missing')).toEqual([]);
+  });
 });

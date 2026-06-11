@@ -25,6 +25,7 @@ describe('normalizeValkyrieSignalEvent', () => {
   });
 
   it('rejects empty payloads without a summary', () => {
+    expect(normalizeValkyrieSignalEvent(null)).toBeNull();
     expect(normalizeValkyrieSignalEvent({ id: 'event-2' })).toBeNull();
   });
 
@@ -39,6 +40,35 @@ describe('normalizeValkyrieSignalEvent', () => {
       type: 'signal',
       severity: 'info',
       summary: 'fallback event',
+    });
+  });
+
+  it.each(['judgment', 'action', 'learning', 'huddle'] as const)(
+    'preserves %s event type',
+    (type) => {
+      expect(
+        normalizeValkyrieSignalEvent({
+          type,
+          summary: `${type} event`,
+          receivedAt: '2026-06-03T14:01:00Z',
+        }),
+      ).toMatchObject({
+        id: `2026-06-03T14:01:00Z:${type} event`,
+        type,
+        timestamp: '2026-06-03T14:01:00Z',
+      });
+    },
+  );
+
+  it.each(['notice', 'critical'] as const)('preserves %s severity', (severity) => {
+    expect(
+      normalizeValkyrieSignalEvent({
+        severity,
+        summary: `${severity} event`,
+      }),
+    ).toMatchObject({
+      severity,
+      timestamp: new Date(0).toISOString(),
     });
   });
 });

@@ -66,7 +66,11 @@ describe('buildValkyrieHttpAdapter', () => {
       targetScope: 'domain',
     });
     await adapter.rollbackLearning({ learningId: 'learn a/b', reason: 'test' });
-    await adapter.sendHuddleMessage({ huddleId: 'huddle a/b', body: 'hi', authorId: 'human:jozef' });
+    await adapter.sendHuddleMessage({
+      huddleId: 'huddle a/b',
+      body: 'hi',
+      authorId: 'human:jozef',
+    });
 
     expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/adopt', {
       learningId: 'learn a/b',

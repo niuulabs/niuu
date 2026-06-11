@@ -1066,7 +1066,9 @@ class ValkyrieRoomClient:
         action = str(huddle.get("joinedAction") or "").strip()
         if action:
             metadata["action"] = action
-        target_flock_id = str(huddle.get("targetFlockId") or huddle.get("target_flock_id") or "").strip()
+        target_flock_id = str(
+            huddle.get("targetFlockId") or huddle.get("target_flock_id") or ""
+        ).strip()
         if target_flock_id:
             metadata["target_flock_id"] = target_flock_id
         directed_to = [target for target in request.directedTo if str(target).strip()]
@@ -1110,7 +1112,10 @@ class ValkyrieRoomClient:
                 detail=exc.response.text[:500],
             ) from exc
         except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"Skuld room request failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502,
+                detail=f"Skuld room request failed: {exc}",
+            ) from exc
 
 
 def build_skuld_room_client_from_env() -> ValkyrieRoomClient | None:
@@ -2231,7 +2236,10 @@ class ValkyrieDashboardProjection:
             {},
         )
         if isinstance(environment, dict):
-            huddle.setdefault("environmentActionAuthorities", environment.get("actionAuthorities", []))
+            huddle.setdefault(
+                "environmentActionAuthorities",
+                environment.get("actionAuthorities", []),
+            )
         return huddle
 
     def join_huddle(self, request: HuddleJoinRequest) -> dict[str, Any]:

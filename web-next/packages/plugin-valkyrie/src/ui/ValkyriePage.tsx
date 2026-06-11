@@ -73,7 +73,9 @@ function valueOrNone(value: string | undefined): string {
 
 function detailText(details: Record<string, unknown> | undefined): string {
   if (!details) return '';
-  const entries = Object.entries(details).filter(([, value]) => value !== '' && value !== undefined);
+  const entries = Object.entries(details).filter(
+    ([, value]) => value !== '' && value !== undefined,
+  );
   if (entries.length === 0) return '';
   return entries
     .slice(0, 5)
@@ -90,7 +92,10 @@ function environmentName(dashboard: ValkyrieDashboard, environmentId: string): s
   return seeded?.name ?? environmentId;
 }
 
-function environmentMatchesSelection(selectedEnvironmentId: string, eventEnvironmentId: string): boolean {
+function environmentMatchesSelection(
+  selectedEnvironmentId: string,
+  eventEnvironmentId: string,
+): boolean {
   return (
     selectedEnvironmentId === 'all' ||
     eventEnvironmentId === selectedEnvironmentId ||
@@ -725,7 +730,10 @@ function LiveMetricGrid({ telemetry }: { telemetry: ValkyrieTelemetry }) {
     {
       label: 'Dreams',
       value: compactNumber(
-        dreaming || totals.dreamCyclesStarted || totals.dreamCyclesNoop || totals.dreamCyclesCompleted,
+        dreaming ||
+          totals.dreamCyclesStarted ||
+          totals.dreamCyclesNoop ||
+          totals.dreamCyclesCompleted,
       ),
       icon: Moon,
     },
@@ -765,8 +773,8 @@ function WorkQueuePanel({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const tasks = (telemetry.recentTasks ?? []).filter(
-    (task) => environmentMatchesSelection(environmentId, task.environmentId),
+  const tasks = (telemetry.recentTasks ?? []).filter((task) =>
+    environmentMatchesSelection(environmentId, task.environmentId),
   );
   return (
     <section className={`${PANEL_PAD} niuu:min-h-0`} data-testid="valkyrie-work-queue">
@@ -821,8 +829,8 @@ function EventLogPanel({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const events = (telemetry.recentEvents ?? []).filter(
-    (event) => environmentMatchesSelection(environmentId, event.environmentId),
+  const events = (telemetry.recentEvents ?? []).filter((event) =>
+    environmentMatchesSelection(environmentId, event.environmentId),
   );
   const logs = (telemetry.recentLogs ?? []).filter((log) =>
     environmentMatchesSelection(environmentId, log.environmentId),
@@ -911,9 +919,12 @@ function EvolutionLoopPanel({
   );
   const totals = telemetry.totals;
   const missing = scopedNeeds.length;
-  const proposals = totals.skillProposals || scopedLearning.filter((entry) =>
-    entry.eventType.startsWith('self_improvement.') || entry.eventType.startsWith('skill.'),
-  ).length;
+  const proposals =
+    totals.skillProposals ||
+    scopedLearning.filter(
+      (entry) =>
+        entry.eventType.startsWith('self_improvement.') || entry.eventType.startsWith('skill.'),
+    ).length;
   const dreams =
     totals.dreamCyclesStarted + (totals.dreamCyclesNoop || 0) + totals.dreamCyclesFailed;
   const gapCount = missing || totals.toolRequests || 0;
@@ -1005,9 +1016,7 @@ function EvolutionLoopPanel({
             </p>
           </article>
         ))}
-        {scopedNeeds.length === 0 ? (
-          <EmptyState label="No capability gaps in this scope" />
-        ) : null}
+        {scopedNeeds.length === 0 ? <EmptyState label="No capability gaps in this scope" /> : null}
       </div>
     </section>
   );
@@ -1210,12 +1219,12 @@ function SignalsPanel({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
+  const outcomes = telemetry.recentOutcomes.filter((outcome) =>
+    environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const signals = (telemetry.recentEvents ?? []).filter(
     (event) =>
-      (environmentMatchesSelection(environmentId, event.environmentId)) &&
+      environmentMatchesSelection(environmentId, event.environmentId) &&
       (event.kind === 'signal' || event.kind === 'event'),
   );
   const rows = [
@@ -1283,8 +1292,8 @@ function CourtPanel({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
+  const outcomes = telemetry.recentOutcomes.filter((outcome) =>
+    environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const actions = outcomes.filter((outcome) => outcome.type === 'action');
   return (
@@ -1410,14 +1419,14 @@ function LineageView({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const events = (telemetry.recentEvents ?? []).filter(
-    (event) => environmentMatchesSelection(environmentId, event.environmentId),
+  const events = (telemetry.recentEvents ?? []).filter((event) =>
+    environmentMatchesSelection(environmentId, event.environmentId),
   );
-  const tasks = telemetry.recentTasks.filter(
-    (task) => environmentMatchesSelection(environmentId, task.environmentId),
+  const tasks = telemetry.recentTasks.filter((task) =>
+    environmentMatchesSelection(environmentId, task.environmentId),
   );
-  const outcomes = telemetry.recentOutcomes.filter(
-    (outcome) => environmentMatchesSelection(environmentId, outcome.environmentId),
+  const outcomes = telemetry.recentOutcomes.filter((outcome) =>
+    environmentMatchesSelection(environmentId, outcome.environmentId),
   );
   const rows = [
     ...events.map((event) => ({
@@ -1510,8 +1519,8 @@ function AutonomyPanel({
   telemetry: ValkyrieTelemetry;
   environmentId: string;
 }) {
-  const runtimes = telemetry.runtime.filter(
-    (runtime) => environmentMatchesSelection(environmentId, runtime.environmentId),
+  const runtimes = telemetry.runtime.filter((runtime) =>
+    environmentMatchesSelection(environmentId, runtime.environmentId),
   );
   const tiers = [
     { label: 'manual', tier: 'tier 0', body: 'Proposes only; every action waits.' },
@@ -1552,8 +1561,8 @@ function AutonomyPanel({
                 </h3>
                 <p className="niuu:text-xs niuu:text-text-muted">
                   {runtime.environmentId}
-                  {runtime.valkyrieId ? ` · ${runtime.valkyrieId}` : ''} ·{' '}
-                  {runtime.sourceCount} sources · poll {runtime.pollIntervalSeconds}s
+                  {runtime.valkyrieId ? ` · ${runtime.valkyrieId}` : ''} · {runtime.sourceCount}{' '}
+                  sources · poll {runtime.pollIntervalSeconds}s
                 </p>
               </div>
               <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-brand">
@@ -1581,8 +1590,8 @@ function AutonomyPanel({
 
 function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: LiveView }) {
   const telemetry = dashboard.telemetry;
-  if (!telemetry?.verified) return null;
-  const liveEnvironmentIds = telemetry.byEnvironment.map((environment) => environment.environmentId);
+  const liveEnvironmentIds =
+    telemetry?.byEnvironment.map((environment) => environment.environmentId) ?? [];
   const firstObservedEnvironmentId =
     dashboard.environments.find((environment) =>
       liveEnvironmentIds.some((environmentId) =>
@@ -1595,6 +1604,7 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState(
     () => firstObservedEnvironmentId,
   );
+  if (!telemetry?.verified) return null;
   const selectedName =
     selectedEnvironmentId === 'all'
       ? 'All Valkyries'
@@ -1643,10 +1653,7 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
           {view === 'console' ? (
             <>
               <LiveMetricGrid telemetry={telemetry} />
-              <EvolutionLoopPanel
-                telemetry={telemetry}
-                environmentId={selectedEnvironmentId}
-              />
+              <EvolutionLoopPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
               <EventLogPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
               <div className="niuu:grid niuu:gap-3 niuu:xl:grid-cols-[minmax(280px,0.9fr)_minmax(320px,1.15fr)_minmax(280px,0.85fr)]">
                 <RuntimePanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
@@ -1668,9 +1675,7 @@ function LiveConsole({ dashboard, view }: { dashboard: ValkyrieDashboard; view: 
           {view === 'lineage' ? (
             <LineageView telemetry={telemetry} environmentId={selectedEnvironmentId} />
           ) : null}
-          {view === 'learning' ? (
-            <FlockLearningExchange dashboard={dashboard} />
-          ) : null}
+          {view === 'learning' ? <FlockLearningExchange dashboard={dashboard} /> : null}
           {view === 'huddles' ? <HuddlesView telemetry={telemetry} /> : null}
           {view === 'autonomy' ? (
             <AutonomyPanel telemetry={telemetry} environmentId={selectedEnvironmentId} />
@@ -2262,19 +2267,27 @@ function LearningReviewDrawer({
         </div>
 
         <div className="niuu:mt-5 niuu:flex niuu:flex-wrap niuu:gap-2">
-          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-semibold ${learningStatusClass(learning.status)}`}>
+          <span
+            className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm niuu:font-semibold ${learningStatusClass(learning.status)}`}
+          >
             {learning.status.replace('_', ' ')}
           </span>
           <span className="niuu:rounded-full niuu:border niuu:border-solid niuu:border-brand/60 niuu:bg-brand/12 niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-brand">
             scope {learning.scope}
           </span>
-          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.active ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+          <span
+            className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.active ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}
+          >
             {learning.active ? 'active in runtime' : 'inactive in runtime'}
           </span>
-          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.artifactContent || learning.promotedTool ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+          <span
+            className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.artifactContent || learning.promotedTool ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}
+          >
             artifact {artifactLabel(learning)}
           </span>
-          <span className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.commandDelivery?.published ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}>
+          <span
+            className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-3 niuu:py-1 niuu:text-sm ${learning.commandDelivery?.published ? 'niuu:border-brand/60 niuu:text-brand' : 'niuu:border-border niuu:text-text-muted'}`}
+          >
             {learning.commandDelivery?.published ? 'command published' : 'command local'}
           </span>
         </div>
@@ -2341,9 +2354,7 @@ function LearningReviewDrawer({
           </div>
 
           <div className={PANEL_PAD}>
-            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
-              Odin review
-            </h3>
+            <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">Odin review</h3>
             <p className="niuu:mt-2 niuu:text-sm niuu:text-text-muted">
               {learning.odinReview?.outcome || 'no review recorded'} ·{' '}
               {learning.odinReview?.reviewer || 'unknown reviewer'}
@@ -2363,20 +2374,21 @@ function LearningReviewDrawer({
           <div className={PANEL_PAD}>
             <h3 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">History</h3>
             <div className="niuu:mt-3 niuu:grid niuu:gap-2">
-              {(learning.history ?? []).slice().reverse().map((entry, index) => (
-                <div
-                  key={`${entry.eventType}-${entry.observedAt}-${index}`}
-                  className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
-                >
-                  <div className="niuu:flex niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
-                    <span>{entry.eventType}</span>
-                    <span>{formatShortTime(entry.observedAt)}</span>
+              {(learning.history ?? [])
+                .slice()
+                .reverse()
+                .map((entry, index) => (
+                  <div
+                    key={`${entry.eventType}-${entry.observedAt}-${index}`}
+                    className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+                  >
+                    <div className="niuu:flex niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
+                      <span>{entry.eventType}</span>
+                      <span>{formatShortTime(entry.observedAt)}</span>
+                    </div>
+                    <p className="niuu:mt-1 niuu:text-sm niuu:text-text-primary">{entry.summary}</p>
                   </div>
-                  <p className="niuu:mt-1 niuu:text-sm niuu:text-text-primary">
-                    {entry.summary}
-                  </p>
-                </div>
-              ))}
+                ))}
               {(learning.history ?? []).length === 0 ? (
                 <p className="niuu:text-sm niuu:text-text-muted">No lifecycle history yet.</p>
               ) : null}
@@ -2392,8 +2404,7 @@ function FlockLearningExchange({ dashboard }: { dashboard: ValkyrieDashboard }) 
   const [filter, setFilter] = useState<LearningRecord['status'] | 'all'>('all');
   const [selectedLearningId, setSelectedLearningId] = useState<string | null>(null);
   const learnings = dashboard.learnings;
-  const selectedLearning =
-    learnings.find((learning) => learning.id === selectedLearningId) ?? null;
+  const selectedLearning = learnings.find((learning) => learning.id === selectedLearningId) ?? null;
   const visible =
     filter === 'all' ? learnings : learnings.filter((learning) => learning.status === filter);
   const counts = Object.fromEntries(
@@ -2418,8 +2429,8 @@ function FlockLearningExchange({ dashboard }: { dashboard: ValkyrieDashboard }) 
           </h1>
         </div>
         <p className="niuu:mt-2 niuu:text-base niuu:text-text-muted">
-          vetted learnings shared across the cohort - candidate, canary, adopted, rejected,
-          rolled back
+          vetted learnings shared across the cohort - candidate, canary, adopted, rejected, rolled
+          back
         </p>
       </header>
 
@@ -2537,19 +2548,21 @@ function FlockLearningExchange({ dashboard }: { dashboard: ValkyrieDashboard }) 
                 <span className="niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-sm niuu:text-text-primary">
                   artifact {artifactLabel(learning)}
                 </span>
-                <span className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
-                  learning.artifactContent
-                    ? 'niuu:bg-brand/12 niuu:text-brand'
-                    : 'niuu:bg-bg-tertiary niuu:text-text-muted'
-                }`}
+                <span
+                  className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
+                    learning.artifactContent
+                      ? 'niuu:bg-brand/12 niuu:text-brand'
+                      : 'niuu:bg-bg-tertiary niuu:text-text-muted'
+                  }`}
                 >
                   {learning.artifactContent ? 'content attached' : 'content missing'}
                 </span>
-                <span className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
-                  learning.commandDelivery?.published
-                    ? 'niuu:bg-brand/12 niuu:text-brand'
-                    : 'niuu:bg-bg-tertiary niuu:text-text-muted'
-                }`}
+                <span
+                  className={`niuu:inline-flex niuu:items-center niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-1 niuu:text-sm ${
+                    learning.commandDelivery?.published
+                      ? 'niuu:bg-brand/12 niuu:text-brand'
+                      : 'niuu:bg-bg-tertiary niuu:text-text-muted'
+                  }`}
                 >
                   {learning.commandDelivery?.published ? 'command published' : 'command local'}
                 </span>
@@ -2788,7 +2801,11 @@ function HuddlePanel({
                 }}
                 className="niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
               />
-              <button type="submit" className={BUTTON} disabled={!huddle.joinedParticipantId?.trim()}>
+              <button
+                type="submit"
+                className={BUTTON}
+                disabled={!huddle.joinedParticipantId?.trim()}
+              >
                 Send
               </button>
             </form>
@@ -2826,7 +2843,8 @@ function MainConsole({
       ? `${kindLabel(selectedEnvironment.kind)} · ${selectedEnvironment.health}`
       : 'No environment';
 
-  if (dashboard.telemetry?.verified) return <LiveConsole dashboard={dashboard} view={defaultView} />;
+  if (dashboard.telemetry?.verified)
+    return <LiveConsole dashboard={dashboard} view={defaultView} />;
   if (!selectedEnvironment) return <EmptyState label="No environments" />;
 
   return (

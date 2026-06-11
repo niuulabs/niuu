@@ -3,12 +3,14 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ValkyriePage } from './ui/ValkyriePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
 
-const createLegacyRedirect = (to: string) => ({ location }: { location: { search: unknown } }) => {
-  throw redirect({
-    to: to as never,
-    search: location.search as never,
-  });
-};
+const createLegacyRedirect =
+  (to: string) =>
+  ({ location }: { location: { search: unknown } }) => {
+    throw redirect({
+      to: to as never,
+      search: location.search as never,
+    });
+  };
 
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',

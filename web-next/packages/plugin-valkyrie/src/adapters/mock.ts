@@ -781,7 +781,10 @@ function replaceLearning(
     active: status === 'adopted' || status === 'canary',
     commandDelivery: {
       published: true,
-      eventType: status === 'adopted' || status === 'rejected' ? 'learning.adoption.recorded' : 'learning.promoted',
+      eventType:
+        status === 'adopted' || status === 'rejected'
+          ? 'learning.adoption.recorded'
+          : 'learning.promoted',
       eventId: `mock-${learningId}-${status}`,
       message: 'Mock Sleipnir command published.',
       observedAt: new Date().toISOString(),
@@ -849,7 +852,9 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
         throw new Error(`Join huddle before sending messages: ${request.huddleId}`);
       }
       if (request.authorId !== huddle.joinedParticipantId) {
-        throw new Error(`Huddle is joined as ${huddle.joinedParticipantId}, not ${request.authorId}`);
+        throw new Error(
+          `Huddle is joined as ${huddle.joinedParticipantId}, not ${request.authorId}`,
+        );
       }
       const message: HuddleMessage = {
         id: `msg-${request.huddleId}-${huddle.messages.length + 1}`,
