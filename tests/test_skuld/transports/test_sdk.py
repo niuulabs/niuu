@@ -1102,3 +1102,30 @@ async def test_no_resume_option_without_seed(monkeypatch, tmp_path) -> None:
     await transport.start()
 
     assert factory.options.resume is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_omits_can_use_tool_callback(monkeypatch, tmp_path) -> None:
+    """Default: no permission callback — the SDK keeps its classic behavior."""
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path), skip_permissions=True)
+    await transport.start()
+
+    assert factory.options.can_use_tool is None
+    assert factory.options.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.asyncio
+async def test_flag_on_registers_can_use_tool_callback(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        ask_user_question_enabled=True,
+    )
+    await transport.start()
+
+    assert factory.options.can_use_tool == transport._on_can_use_tool

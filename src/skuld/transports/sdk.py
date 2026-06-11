@@ -292,6 +292,7 @@ class SDKTransport(CLITransport):
         mcp_servers: list[dict] | None = None,
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
         resume_session_id: str | None = None,
+        ask_user_question_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -301,6 +302,7 @@ class SDKTransport(CLITransport):
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
+        self._ask_user_question_enabled = ask_user_question_enabled
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
         self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
@@ -651,14 +653,15 @@ class SDKTransport(CLITransport):
             # A fresh Forge session must NEVER --continue the cwd's project history.
             "continue_conversation": False,
             "env": env,
-            # Route tool permissions through our handler so AskUserQuestion can be
-            # answered by a human (blocks until a client responds); all other
-            # tools are allowed. Requires streaming mode (we use it). NOTE: when
-            # skip_permissions sets bypassPermissions below, the SDK bypasses this
-            # callback entirely — so interactive Q&A only works on the default
-            # (non-bypass) permission path.
-            "can_use_tool": self._on_can_use_tool,
         }
+        if self._ask_user_question_enabled:
+            # Route tool permissions through our handler so AskUserQuestion can
+            # be answered by a human (blocks until a client responds); all other
+            # tools are allowed. Requires streaming mode (we use it). NOTE: when
+            # skip_permissions sets bypassPermissions below, the SDK bypasses
+            # this callback entirely — so interactive Q&A only works on the
+            # default (non-bypass) permission path.
+            option_kwargs["can_use_tool"] = self._on_can_use_tool
         if self._skip_permissions:
             option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE
         if self._resume_session_id:

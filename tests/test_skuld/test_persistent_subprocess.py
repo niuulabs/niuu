@@ -319,3 +319,31 @@ async def test_seeded_resume_skips_initial_prompt(tmp_path) -> None:
 
     assert proc.stdin.buf == bytearray()
     await transport.stop()
+
+
+def test_flag_off_keeps_bypass_permissions_and_no_control_protocol() -> None:
+    """Default: classic bypassPermissions behavior, no stdio permission tool."""
+    transport = PersistentSubprocessTransport("/tmp", skip_permissions=True)
+
+    cmd = transport._build_command()
+
+    assert "--permission-mode" in cmd
+    assert "bypassPermissions" in cmd
+    assert "--permission-prompt-tool" not in cmd
+
+
+def test_flag_on_routes_permissions_over_stdio() -> None:
+    """SKULD__ASK_USER_QUESTION_ENABLED routes permissions over the control
+    protocol so AskUserQuestion reaches a human; bypassPermissions would
+    auto-dismiss it."""
+    transport = PersistentSubprocessTransport(
+        "/tmp",
+        skip_permissions=True,
+        ask_user_question_enabled=True,
+    )
+
+    cmd = transport._build_command()
+
+    assert "--permission-prompt-tool" in cmd
+    assert "stdio" in cmd
+    assert "--permission-mode" not in cmd

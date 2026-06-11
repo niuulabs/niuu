@@ -248,6 +248,15 @@ class SkuldSettings(BaseSettings):
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
     agent_teams: bool = Field(default=False)
+    ask_user_question_enabled: bool = Field(
+        default=False,
+        description=(
+            "Route Claude tool permissions over the control protocol so "
+            "AskUserQuestion reaches a human (requires a client that answers "
+            "ask_user_question events). Off by default: sessions keep the "
+            "classic bypassPermissions behavior."
+        ),
+    )
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

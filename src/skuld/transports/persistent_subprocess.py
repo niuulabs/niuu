@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import logging
+import os
 from contextlib import suppress
 from typing import Any
 
@@ -46,6 +46,8 @@ from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
+
+_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 # StreamReader buffer for Claude stdout — single JSON events (esp. tool
 # results or large file reads) routinely exceed asyncio's default 64 KB
@@ -91,6 +93,7 @@ class PersistentSubprocessTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
+        ask_user_question_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -99,6 +102,7 @@ class PersistentSubprocessTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._ask_user_question_enabled = ask_user_question_enabled
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._initial_prompt_sent = False
@@ -234,16 +238,17 @@ class PersistentSubprocessTransport(CLITransport):
         ]
         if self._model:
             cmd.extend(["--model", self._model])
-        # NOTE: we intentionally do NOT pass --permission-mode bypassPermissions
-        # even when skip_permissions is set. Bypass auto-allows every tool and
-        # gives us no way to intercept AskUserQuestion. Instead we route ALL
-        # permission requests over the stdio control protocol and answer them
-        # ourselves (allow everything except AskUserQuestion). The CLI only
-        # routes can_use_tool over stdout when --permission-prompt-tool=stdio is
-        # set (this is exactly what the Python Agent SDK does under the hood);
-        # without it the CLI auto-dismisses AskUserQuestion. See
-        # _handle_control_request.
-        cmd.extend(["--permission-prompt-tool", "stdio"])
+        if self._ask_user_question_enabled:
+            # Do NOT pass --permission-mode bypassPermissions in this mode —
+            # bypass auto-allows every tool and gives us no way to intercept
+            # AskUserQuestion. Instead route ALL permission requests over the
+            # stdio control protocol and answer them ourselves (allow everything
+            # except AskUserQuestion, which blocks for a human answer). The CLI
+            # only routes can_use_tool over stdout when
+            # --permission-prompt-tool=stdio is set; see _handle_control_request.
+            cmd.extend(["--permission-prompt-tool", "stdio"])
+        elif self._skip_permissions:
+            cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
         # ``--resume`` applies when re-spawning after a crash or when a
         # resume id was seeded for an imported session. Otherwise the first
         # spawn has no session yet — Claude assigns one in its first
@@ -290,9 +295,11 @@ class PersistentSubprocessTransport(CLITransport):
             self._read_stdout_loop(),
             name="claude-stdout-reader",
         )
-        # Register as the control-protocol peer so the CLI routes can_use_tool
-        # permission requests to us over stdout (instead of auto-handling them).
-        await self._send_initialize()
+        if self._ask_user_question_enabled:
+            # Register as the control-protocol peer so the CLI routes
+            # can_use_tool permission requests to us over stdout (instead of
+            # auto-handling them).
+            await self._send_initialize()
 
     async def _write_stdin(self, payload: dict[str, Any]) -> None:
         """Serialize one JSON line to the CLI's stdin. Locked so concurrent
