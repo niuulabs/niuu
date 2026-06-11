@@ -102,3 +102,11 @@ class TestActivityRefreshesLastActive:
         assert updated.last_active >= before
         # and a heartbeat keeps it out of the stale set
         assert await service.reconcile_liveness(stale_after_seconds=600) == 0
+
+
+def test_liveness_reaper_disabled_by_default():
+    """Brokers only report activity on state changes today, so the reaper
+    would falsely reap quiet-but-alive sessions — it must be opt-in."""
+    from volundr.config import SessionLivenessConfig
+
+    assert SessionLivenessConfig().enabled is False

@@ -553,11 +553,15 @@ class SessionLivenessConfig(BaseModel):
     see nothing). The reconciler marks running sessions that have gone silent —
     no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
     their endpoints, so the list reflects reality and clients stop dialing dead
-    brokers. The threshold is generous: an idle-but-alive broker still reports
-    activity periodically.
+    brokers.
+
+    Disabled by default: brokers currently report activity only on STATE
+    CHANGES, so a quiet-but-alive session can go silent for long stretches and
+    would be falsely reaped. Enable with a generous stale_after_seconds (or
+    once periodic broker heartbeats land).
     """
 
-    enabled: bool = Field(default=True)
+    enabled: bool = Field(default=False)
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
 
