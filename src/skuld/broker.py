@@ -3234,6 +3234,10 @@ class Broker:
         "set_permission_mode": "set_permission_mode",
         "rewind_files": "rewind_files",
         "mcp_set_servers": "mcp_set_servers",
+        "terminal_input": "terminal_input",
+        "terminal_key": "terminal_keys",
+        "terminal_resize": "terminal_resize",
+        "slash_command": "slash_commands",
     }
 
     async def _dispatch_browser_message(
@@ -3343,6 +3347,40 @@ class Broker:
                 await self._transport.send_control(
                     "mcp_set_servers",
                     servers=servers,
+                )
+
+            # Interactive terminal transports: raw input, key presses, and
+            # resize events. These are intentionally transport controls, not
+            # chat turns, so workflows can drive slash menus/history/editing.
+            case "terminal_input":
+                await self._transport.send_control(
+                    "terminal_input",
+                    data=data.get("data", data.get("text", "")),
+                    enter=bool(data.get("enter", False)),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_key":
+                await self._transport.send_control(
+                    "terminal_key",
+                    key=data.get("key", ""),
+                    keys=data.get("keys", []),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_resize":
+                await self._transport.send_control(
+                    "terminal_resize",
+                    cols=data.get("cols", data.get("columns", 0)),
+                    rows=data.get("rows", 0),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "slash_command":
+                await self._transport.send_control(
+                    "slash_command",
+                    command=data.get("command", ""),
+                    pane_id=data.get("pane_id", ""),
                 )
 
             # Room: forward a directed message to a specific Ravn participant
@@ -3480,6 +3518,39 @@ class Broker:
                 await self._channels.broadcast({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
+
+    async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
+        """Ingest a Claude Code hook payload into the normal event pipeline.
+
+        Interactive tmux sessions can configure Claude Code HTTP hooks to POST
+        here. The payload schema is owned by Claude Code, so we keep the raw
+        body intact and add only stable routing fields.
+        """
+        transport_hook = getattr(self._transport, "handle_claude_hook", None)
+        if callable(transport_hook):
+            try:
+                handled = await transport_hook(payload)
+            except Exception:
+                logger.warning("Transport Claude hook handler failed", exc_info=True)
+            else:
+                if handled:
+                    return
+
+        event_name = (
+            payload.get("hook_event_name")
+            or payload.get("hookEventName")
+            or payload.get("event")
+            or payload.get("hook_event")
+            or "unknown"
+        )
+        await self._handle_cli_event(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": str(event_name),
+                "payload": payload,
+            }
+        )
 
     async def handle_human_room_message(
         self,
@@ -5374,6 +5445,13 @@ async def get_capabilities() -> dict:
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
     return asdict(broker._transport.capabilities)
+
+
+@app.post("/api/claude/hooks")
+async def receive_claude_hook(payload: dict[str, Any]) -> dict[str, bool]:
+    """Receive Claude Code HTTP hook callbacks for interactive tmux sessions."""
+    await broker.handle_claude_hook(payload)
+    return {"ok": True}
 
 
 # --- Service Management API ---

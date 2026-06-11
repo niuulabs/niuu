@@ -1772,6 +1772,10 @@ class TestDispatchBrowserMessage:
             "set_permission_mode",
             "rewind_files",
             "mcp_set_servers",
+            "terminal_input",
+            "terminal_key",
+            "terminal_resize",
+            "slash_command",
         ]
         for msg_type in guarded:
             sender_ws = AsyncMock()
@@ -1791,6 +1795,86 @@ class TestDispatchBrowserMessage:
         await test_broker._dispatch_browser_message({"type": "interrupt"})
 
         test_broker._transport.send_control.assert_called_once_with("interrupt")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_terminal_controls(self, test_broker):
+        """Interactive terminal controls pass through when the transport supports them."""
+        test_broker._transport.capabilities = TransportCapabilities(
+            terminal_input=True,
+            terminal_keys=True,
+            terminal_resize=True,
+            slash_commands=True,
+        )
+
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_input", "data": "/help", "enter": True, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_key", "key": "Up", "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_resize", "cols": 120, "rows": 40, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "slash_command", "command": "compact", "pane_id": "%1"}
+        )
+
+        assert test_broker._transport.send_control.call_args_list[0].args == ("terminal_input",)
+        assert test_broker._transport.send_control.call_args_list[0].kwargs == {
+            "data": "/help",
+            "enter": True,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[1].args == ("terminal_key",)
+        assert test_broker._transport.send_control.call_args_list[1].kwargs == {
+            "key": "Up",
+            "keys": [],
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[2].args == ("terminal_resize",)
+        assert test_broker._transport.send_control.call_args_list[2].kwargs == {
+            "cols": 120,
+            "rows": 40,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[3].args == ("slash_command",)
+        assert test_broker._transport.send_control.call_args_list[3].kwargs == {
+            "command": "compact",
+            "pane_id": "%1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_normalizes_payload(self, test_broker):
+        """Claude HTTP hooks are routed into the normal CLI event pipeline."""
+        test_broker._transport = None
+        test_broker._handle_cli_event = AsyncMock()
+
+        await test_broker.handle_claude_hook(
+            {"hook_event_name": "PostToolUse", "tool_name": "Read"}
+        )
+
+        test_broker._handle_cli_event.assert_awaited_once_with(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": "PostToolUse",
+                "payload": {"hook_event_name": "PostToolUse", "tool_name": "Read"},
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_delegates_to_transport_handler(self, test_broker):
+        """Interactive transports can convert hook payloads before broker fallback."""
+        transport = MagicMock()
+        transport.handle_claude_hook = AsyncMock(return_value=True)
+        test_broker._transport = transport
+        test_broker._handle_cli_event = AsyncMock()
+
+        payload = {"hook_event_name": "Stop", "last_assistant_message": "done"}
+        await test_broker.handle_claude_hook(payload)
+
+        transport.handle_claude_hook.assert_awaited_once_with(payload)
+        test_broker._handle_cli_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_guard_no_sender_ws_still_blocks(self, test_broker):

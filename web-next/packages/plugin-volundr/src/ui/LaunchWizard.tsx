@@ -86,11 +86,13 @@ const STEP_LABELS: Record<string, string> = {
 /** Map definition keys to runes for visual branding. */
 const DEFINITION_RUNES: Record<string, string> = {
   skuldClaude: '\u16D7',
+  skuldClaudeInteractive: '\u16D7',
   skuldCodex: '\u16B2',
   skuldGemini: '\u16C7',
   skuldAider: '\u16A8',
   skuldOpenCode: '\u16A0',
   'skuld-claude': '\u16D7',
+  'skuld-claude-interactive': '\u16D7',
   'skuld-codex': '\u16B2',
   'skuld-gemini': '\u16C7',
   'skuld-aider': '\u16A8',
@@ -107,6 +109,14 @@ const FALLBACK_SESSION_DEFINITIONS: SessionDefinition[] = [
     displayName: 'Claude Code',
     description: '',
     labels: [],
+    defaultModel: '',
+    compatibleProviders: ['anthropic'],
+  },
+  {
+    key: 'skuldClaudeInteractive',
+    displayName: 'Claude Code Interactive',
+    description: '',
+    labels: ['interactive'],
     defaultModel: '',
     compatibleProviders: ['anthropic'],
   },
@@ -149,6 +159,7 @@ export function normalizeDefinitionKey(definitionKey: string): string {
     aider: 'skuldAider',
     opencode: 'skuldOpenCode',
     'skuld-claude': 'skuldClaude',
+    'skuld-claude-interactive': 'skuldClaudeInteractive',
     'skuld-codex': 'skuldCodex',
     'skuld-gemini': 'skuldGemini',
     'skuld-aider': 'skuldAider',
@@ -162,6 +173,7 @@ export function deriveCliTool(definitionKey: string): string {
   const normalized = normalizeDefinitionKey(definitionKey);
   const cliToolMap: Record<string, string> = {
     skuldClaude: 'claude',
+    skuldClaudeInteractive: 'claude',
     skuldCodex: 'codex',
     skuldGemini: 'gemini',
     skuldAider: 'aider',
@@ -176,6 +188,7 @@ export function definitionToTaskType(definitionKey: string): string {
   const normalized = normalizeDefinitionKey(definitionKey);
   const taskTypeMap: Record<string, string> = {
     skuldClaude: 'skuld-claude',
+    skuldClaudeInteractive: 'skuld-claude-interactive',
     skuldCodex: 'skuld-codex',
     skuldGemini: 'skuld-gemini',
     skuldAider: 'skuld-aider',

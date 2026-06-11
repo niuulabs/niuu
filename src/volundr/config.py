@@ -330,6 +330,28 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldClaudeInteractive": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Code Interactive",
+            description=(
+                "Anthropic Claude Code through a tmux-backed interactive terminal "
+                "for subscription sessions, slash commands, and terminal controls"
+            ),
+            labels=["session", "claude", "interactive"],
+            default_model="claude-sonnet-4-6",
+            compatible_providers=["anthropic"],
+            defaults={
+                "broker": {
+                    "cliType": "claude",
+                    "transport": "tmux-interactive",
+                    "transportAdapter": (
+                        "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+                    ),
+                    "skipPermissions": True,
+                    "agentTeams": False,
+                },
+            },
+        ),
         "skuldCodex": SessionDefinitionConfig(
             enabled=True,
             display_name="OpenAI Codex",

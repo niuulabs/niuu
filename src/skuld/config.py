@@ -390,6 +390,8 @@ class SkuldSettings(BaseSettings):
 
         if self.transport == "subprocess":
             self.transport_adapter = "skuld.transports.subprocess.SubprocessTransport"
+        elif self.transport == "tmux-interactive":
+            self.transport_adapter = "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
 
         return self
 

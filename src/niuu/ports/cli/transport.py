@@ -27,6 +27,11 @@ class TransportCapabilities:
     permission_requests: bool = False
     slash_commands: bool = False
     skills: bool = False
+    terminal_output: bool = False
+    terminal_input: bool = False
+    terminal_keys: bool = False
+    terminal_resize: bool = False
+    terminal_panes: bool = False
 
 
 class CLITransport(ABC):

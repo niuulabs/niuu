@@ -990,6 +990,14 @@ const SEED_SESSION_DEFINITIONS: SessionDefinition[] = [
     compatibleProviders: ['anthropic'],
   },
   {
+    key: 'skuldClaudeInteractive',
+    displayName: 'Claude Code Interactive',
+    description: 'Claude Code running in a tmux-backed interactive terminal.',
+    labels: ['anthropic', 'coding', 'interactive'],
+    defaultModel: 'claude-sonnet-4-6',
+    compatibleProviders: ['anthropic'],
+  },
+  {
     key: 'skuldCodex',
     displayName: 'Codex',
     description: 'OpenAI Codex-powered coding agent for autonomous tasks.',

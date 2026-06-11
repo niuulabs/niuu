@@ -151,6 +151,7 @@ class TestDefaultSessionDefinitions:
     def test_returns_three_definitions(self):
         defs = _default_session_definitions()
         assert "skuldClaude" in defs
+        assert "skuldClaudeInteractive" in defs
         assert "skuldCodex" in defs
         assert "skuldOpenCode" in defs
 
@@ -164,6 +165,18 @@ class TestDefaultSessionDefinitions:
         assert claude.defaults["broker"]["cliType"] == "claude"
         assert claude.defaults["broker"]["transport"] == "sdk"
         assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
+
+    def test_claude_interactive_defaults(self):
+        interactive = _default_session_definitions()["skuldClaudeInteractive"]
+        assert interactive.display_name == "Claude Code Interactive"
+        assert interactive.default_model == "claude-sonnet-4-6"
+        assert interactive.defaults["broker"]["cliType"] == "claude"
+        assert interactive.defaults["broker"]["transport"] == "tmux-interactive"
+        assert (
+            interactive.defaults["broker"]["transportAdapter"]
+            == "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+        )
+        assert interactive.defaults["broker"]["skipPermissions"] is True
 
     def test_codex_defaults(self):
         codex = _default_session_definitions()["skuldCodex"]

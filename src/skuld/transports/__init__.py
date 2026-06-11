@@ -25,6 +25,7 @@ from skuld.transports.persistent_subprocess import (  # noqa: E402
 from skuld.transports.sdk import SDKTransport  # noqa: E402
 from skuld.transports.sdk_websocket import SdkWebSocketTransport  # noqa: E402
 from skuld.transports.subprocess import SubprocessTransport  # noqa: E402
+from skuld.transports.tmux_interactive import TmuxInteractiveTransport  # noqa: E402
 
 __all__ = [
     "CLITransport",
@@ -36,6 +37,7 @@ __all__ = [
     "SDKTransport",
     "SdkWebSocketTransport",
     "SubprocessTransport",
+    "TmuxInteractiveTransport",
     "TransportCapabilities",
     "_CODEX_TOOL_MAP",
     "_drain_stream",
