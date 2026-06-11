@@ -171,6 +171,27 @@ def main() -> int:
     )
     check("replayed signal exercised the built tool", tool_executed, f"judgments={len(judgments)}")
 
+    # 6b. Durable flock-learning ledger: the student's adoption survives on
+    #     disk with provenance (F5/NIU-1034).
+    ledger_path = student_state / "flock_learning.json"
+    ledger_ok = False
+    ledger_detail = f"missing {ledger_path}"
+    if ledger_path.is_file():
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        records = ledger.get("flock_learnings", [])
+        adopted = [
+            record
+            for record in records
+            if record.get("status") == "adopted"
+            and any(
+                decision.get("action") == "adopted" and decision.get("canary_passed")
+                for decision in record.get("peer_decisions", [])
+            )
+        ]
+        ledger_ok = bool(adopted)
+        ledger_detail = f"records={len(records)} adopted={len(adopted)}"
+    check("student adoption persisted in durable ledger", ledger_ok, ledger_detail)
+
     # 7. ODIN court resolved resident judgments into attention decisions
     #    inside the live daemons (NIU-1021 / F1).
     attention_decisions = [
@@ -187,8 +208,7 @@ def main() -> int:
     check(
         "court decisions published with audit trail",
         any(
-            event.get("payload", {}).get("audit_ref")
-            or event.get("payload", {}).get("court_id")
+            event.get("payload", {}).get("audit_ref") or event.get("payload", {}).get("court_id")
             for event in court_decisions
         ),
         f"court events={len(court_decisions)}",

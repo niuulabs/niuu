@@ -3143,6 +3143,8 @@ def _build_resident_learning_runtime(
         adapter_path=settings.dream_cycle.reviewer_adapter,
         kwargs=settings.dream_cycle.reviewer_kwargs,
     )
+    from ravn.adapters.reflection.flock_learning import FlockLearningStore  # noqa: PLC0415
+
     return ResidentLearningRuntime(
         identity=identity,
         skills=skills,
@@ -3154,6 +3156,7 @@ def _build_resident_learning_runtime(
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.dream_cycle.tool_timeout_seconds,
         rollback_consecutive_failures=settings.dream_cycle.rollback_consecutive_failures,
+        learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
     )
 
 

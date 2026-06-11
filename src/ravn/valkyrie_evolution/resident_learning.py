@@ -8,6 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from ravn.adapters.reflection.flock_learning import (
+    FlockLearningCandidate,
+    FlockLearningRecord,
+    FlockLearningStore,
+    FlockPeerDecision,
+)
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
 from ravn.valkyrie_evolution.models import (
@@ -160,6 +166,7 @@ class ResidentLearningRuntime:
         tools_dir: str | Path | None = None,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
+        learning_store: FlockLearningStore | None = None,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -172,6 +179,7 @@ class ResidentLearningRuntime:
         self._tools_dir = Path(tools_dir) if tools_dir else None
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
+        self._learning_store = learning_store
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
         self._local_evolved_capabilities: set[str] = set()
@@ -656,6 +664,16 @@ class ResidentLearningRuntime:
         self,
         artifact: ResidentLearningArtifact,
     ) -> ResidentLearningDecision:
+        if self._previously_declined(artifact):
+            decision = ResidentLearningDecision(
+                "ignored",
+                f"learning {artifact.learning_id} was previously declined here; "
+                "an operator command is required to re-evaluate it",
+                relevant=True,
+            )
+            self._decisions.append(decision)
+            return decision
+
         relevant, reason = self._policy.evaluate(artifact, self.identity)
         if not relevant:
             decision = ResidentLearningDecision("rejected", reason, relevant=False)
@@ -1042,11 +1060,72 @@ class ResidentLearningRuntime:
             )
         )
 
+    def _previously_declined(self, artifact: ResidentLearningArtifact) -> bool:
+        """True when this environment durably declined the learning before.
+
+        Keeps rejected/rolled-back learnings from reappearing across restarts
+        (NIU-1034). Operator commands always bypass the ledger.
+        """
+        if self._learning_store is None or artifact.operator_command:
+            return False
+        try:
+            record = self._learning_store.get(artifact.learning_id)
+        except ValueError:
+            return False
+        decision = record.decision_for(self.identity.environment_id)
+        return decision is not None and decision.action in {
+            "rejected",
+            "overridden",
+            "rolled_back",
+        }
+
+    def _persist_learning_decision(
+        self,
+        artifact: ResidentLearningArtifact,
+        decision: ResidentLearningDecision,
+    ) -> None:
+        """Record the decision in the durable flock-learning ledger."""
+        if self._learning_store is None:
+            return
+        if decision.action not in {"adopted", "rejected", "rolled_back"}:
+            return
+        if decision.action == "rejected" and not decision.relevant:
+            # Irrelevant learnings (wrong flock/domain) stay out of the ledger;
+            # they were never candidates for this environment.
+            return
+        try:
+            record = self._learning_store.get(artifact.learning_id)
+        except ValueError:
+            record = FlockLearningRecord(
+                exchange_id=artifact.learning_id,
+                candidate=_candidate_from_artifact(artifact),
+            )
+        record.peer_decisions.append(
+            FlockPeerDecision(
+                environment_id=self.identity.environment_id,
+                action=decision.action,
+                rationale=decision.rationale,
+                canary_passed=decision.canary_passed,
+            )
+        )
+        if decision.action == "adopted":
+            record.status = "adopted"
+            if self.identity.environment_id not in record.active_environment_ids:
+                record.active_environment_ids.append(self.identity.environment_id)
+        elif decision.action == "rolled_back":
+            record.active_environment_ids = [
+                environment_id
+                for environment_id in record.active_environment_ids
+                if environment_id != self.identity.environment_id
+            ]
+        self._learning_store.save(record)
+
     async def _publish_adoption(
         self,
         artifact: ResidentLearningArtifact,
         decision: ResidentLearningDecision,
     ) -> None:
+        self._persist_learning_decision(artifact, decision)
         event = learning_adoption_recorded(
             environment_id=self.identity.environment_id,
             learning_id=artifact.learning_id,
@@ -1077,6 +1156,25 @@ class ResidentLearningRuntime:
             }
         )
         await self._publisher.publish(event)
+
+
+def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearningCandidate:
+    """Project a resident learning artifact into the durable ledger candidate."""
+    return FlockLearningCandidate(
+        learning_id=artifact.learning_id,
+        title=artifact.title,
+        # Resident artifacts are always skill+tool pairs in ledger vocabulary.
+        artifact_type="tool_skill",
+        summary=artifact.summary,
+        content=artifact.content,
+        flock_id=artifact.flock_id,
+        source_environment_id=artifact.source_environment_id,
+        source_valkyrie_id=artifact.source_valkyrie_id,
+        confidence=artifact.confidence,
+        redaction_status=artifact.redaction_status or "redacted",
+        promotion_id=artifact.promotion_id,
+        metadata={"domain": artifact.domain},
+    )
 
 
 def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
