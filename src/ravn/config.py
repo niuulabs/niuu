@@ -2461,6 +2461,47 @@ class ResidentEvolutionConfig(BaseModel):
             "inside the workspace-mounted devrunner container path."
         ),
     )
+    tool_build_backend: Literal["inline", "forge_session", "ting_workflow"] = Field(
+        default="inline",
+        description=(
+            "How build_tool produces a learned tool's code. 'inline': the "
+            "investigating agent writes it in-session. 'forge_session': commission "
+            "a Volundr Forge session to develop it. 'ting_workflow': launch a Ting "
+            "workflow (which spawns Forge sessions). The result flows through the "
+            "same review/canary/install path regardless of backend."
+        ),
+    )
+    tool_build_forge_base_url: str = Field(
+        default="",
+        description="Base URL of the Volundr/Forge API for the forge_session build backend.",
+    )
+    tool_build_ting_base_url: str = Field(
+        default="",
+        description="Base URL of the Ting API for the ting_workflow build backend.",
+    )
+    tool_build_ting_workflow_id: str = Field(
+        default="",
+        description="Ting workflow id launched by the ting_workflow build backend.",
+    )
+    tool_build_pat_env: str = Field(
+        default="",
+        description=(
+            "Env var holding the PAT bearer token used to reach Forge/Ting from "
+            "the tool build backends."
+        ),
+    )
+    tool_build_model: str = Field(
+        default="",
+        description="Optional model override for commissioned Forge build sessions.",
+    )
+    tool_build_poll_interval_seconds: float = Field(
+        default=5.0,
+        description="Seconds between status polls while a commissioned build runs.",
+    )
+    tool_build_max_poll_attempts: int = Field(
+        default=120,
+        description="Maximum status polls before a commissioned build is abandoned.",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -154,12 +154,51 @@ def _attach_signal_build_tool(
             domain=settings.environment.type,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
             workspace_root=workspace,
+            build_backend=_build_tool_build_backend(settings),
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
     except Exception as exc:
         logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
     return agent
+
+
+def _build_tool_build_backend(settings: Settings) -> Any | None:
+    """Construct the configured tool build backend, or None for inline authoring."""
+    cfg = settings.resident_evolution
+    backend = cfg.tool_build_backend
+    if backend == "inline":
+        return None
+
+    from ravn.adapters.tool_build import (  # noqa: PLC0415
+        ForgeSessionToolBuildBackend,
+        HttpxJsonClient,
+        TingWorkflowToolBuildBackend,
+    )
+
+    token = os.environ.get(cfg.tool_build_pat_env, "") if cfg.tool_build_pat_env else ""
+    client = HttpxJsonClient(token=token)
+    if backend == "forge_session":
+        if not cfg.tool_build_forge_base_url:
+            logger.warning("tool_build_backend=forge_session but no forge base url configured")
+            return None
+        return ForgeSessionToolBuildBackend(
+            client=client,
+            base_url=cfg.tool_build_forge_base_url,
+            model=cfg.tool_build_model,
+            poll_interval_seconds=cfg.tool_build_poll_interval_seconds,
+            max_poll_attempts=cfg.tool_build_max_poll_attempts,
+        )
+    if not cfg.tool_build_ting_base_url or not cfg.tool_build_ting_workflow_id:
+        logger.warning("tool_build_backend=ting_workflow but ting base url/workflow not configured")
+        return None
+    return TingWorkflowToolBuildBackend(
+        client=client,
+        base_url=cfg.tool_build_ting_base_url,
+        workflow_id=cfg.tool_build_ting_workflow_id,
+        poll_interval_seconds=cfg.tool_build_poll_interval_seconds,
+        max_poll_attempts=cfg.tool_build_max_poll_attempts,
+    )
 
 
 def _warden_store():

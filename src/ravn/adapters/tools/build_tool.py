@@ -58,6 +58,7 @@ class BuildTool(ToolPort):
         workspace_root: str | Path | None = None,
         sandbox_shell: Any | None = None,
         reviewer: Any | None = None,
+        build_backend: Any | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -76,6 +77,7 @@ class BuildTool(ToolPort):
         self._workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self._sandbox_shell = sandbox_shell
         self._reviewer = reviewer or PolicyCourtReviewer(reviewer="odin:build-tool")
+        self._build_backend = build_backend
 
     @property
     def name(self) -> str:
@@ -86,9 +88,10 @@ class BuildTool(ToolPort):
         return (
             "Author and install a reusable agent tool during the current investigation. "
             "Provide a manifest with name, description, input_schema, required_permission, "
-            "declared_reach, and Python tool_code exposing the manifest entry_point "
-            "(default run(input)). The tool is canaried, persisted, and registered so it "
-            "can be called by name on the next model iteration."
+            "declared_reach, and either Python tool_code exposing the manifest entry_point "
+            "(default run(input)) OR a build_request describing what to build when a build "
+            "backend (Forge session / Ting workflow) is configured. The tool is canaried, "
+            "persisted, and registered so it can be called by name on the next iteration."
         )
 
     @property
@@ -107,9 +110,21 @@ class BuildTool(ToolPort):
                 "tool_code": {
                     "type": "string",
                     "description": (
-                        "Python implementation. It must define the manifest entry_point "
-                        "and return a JSON object."
+                        "Python implementation (inline). Define the manifest entry_point "
+                        "and return a JSON object. Omit to commission a build_request."
                     ),
+                },
+                "build_request": {
+                    "type": "string",
+                    "description": (
+                        "Natural-language spec of the tool to build. When a build backend "
+                        "is configured, the tool is developed in a Forge session / Ting "
+                        "workflow instead of written inline."
+                    ),
+                },
+                "signal_context": {
+                    "type": "string",
+                    "description": "Optional investigation context passed to the build backend.",
                 },
                 "artifact_id": {
                     "type": "string",
@@ -128,7 +143,7 @@ class BuildTool(ToolPort):
                     "description": "Replace an existing tool of the same name.",
                 },
             },
-            "required": ["manifest", "tool_code"],
+            "required": ["manifest"],
         }
 
     @property
@@ -141,6 +156,7 @@ class BuildTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         try:
+            input = await self._maybe_commission(input)
             artifact = _artifact_from_input(input)
             artifact_path = write_learned_tool_artifact(
                 artifacts_dir=self._artifacts_dir,
@@ -217,6 +233,47 @@ class BuildTool(ToolPort):
             tool_call_id="",
             content=_summary(artifact, tool_path, artifact_path, registered=True),
         )
+
+    async def _maybe_commission(self, input: dict) -> dict:  # noqa: A002
+        """Commission a build backend when the agent asked for one.
+
+        When the agent supplies a build_request (and no inline tool_code) and a
+        backend is configured, the tool is developed in a Forge session / Ting
+        workflow; the produced manifest + code merge back into the input so the
+        rest of execute() reviews and installs it identically to an inline tool.
+        """
+        build_request = str(input.get("build_request") or "").strip()
+        tool_code = str(input.get("tool_code") or "").strip()
+        if not build_request or tool_code:
+            return input
+        if self._build_backend is None:
+            raise LearnedToolError(
+                "build_request was given but no tool build backend is configured"
+            )
+        from ravn.ports.tool_build_backend import ToolBuildRequest  # noqa: PLC0415
+
+        manifest_in = input.get("manifest") if isinstance(input.get("manifest"), dict) else {}
+        request = ToolBuildRequest(
+            name=str(manifest_in.get("name") or ""),
+            description=str(manifest_in.get("description") or ""),
+            build_request=build_request,
+            input_schema=dict(manifest_in.get("input_schema") or {"type": "object"}),
+            required_permission=str(manifest_in.get("required_permission") or "tool:run"),
+            declared_reach=list(manifest_in.get("declared_reach") or []),
+            entry_point=str(manifest_in.get("entry_point") or "run"),
+            environment_id=self._environment_id,
+            valkyrie_id=self._valkyrie_id,
+            domain=self._domain,
+            signal_context=str(input.get("signal_context") or ""),
+        )
+        result = await self._build_backend.build(request)
+        merged = dict(input)
+        merged["manifest"] = result.manifest
+        merged["tool_code"] = result.tool_code
+        provenance = dict(input.get("provenance") or {})
+        provenance.update(result.provenance)
+        merged["provenance"] = provenance
+        return merged
 
     async def _review(self, resident_artifact: ResidentLearningArtifact) -> ReviewResult:
         identity = ResidentLearningIdentity(
@@ -325,6 +382,7 @@ def attach_build_tool(
     execution_backend: str = "local",
     workspace_root: str | Path | None = None,
     sandbox_shell: Any | None = None,
+    build_backend: Any | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -345,6 +403,7 @@ def attach_build_tool(
         execution_backend=execution_backend,
         workspace_root=workspace_root,
         sandbox_shell=sandbox_shell,
+        build_backend=build_backend,
     )
     registrar(tool, replace=replace)
     return tool

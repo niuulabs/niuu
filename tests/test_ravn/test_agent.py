@@ -155,6 +155,78 @@ class TestRavnAgentToolUse:
         assert len(result.tool_results) == 1
         assert result.tool_results[0].content == "ping"
 
+    async def test_build_tool_commissions_via_build_backend_and_installs(self, tmp_path) -> None:
+        """A build_request with no inline code is developed by the build backend,
+        then flows through the same review/canary/install path."""
+        from ravn.ports.tool_build_backend import (
+            ToolBuildBackend,
+            ToolBuildRequest,
+            ToolBuildResult,
+        )
+
+        class _FakeBackend(ToolBuildBackend):
+            def __init__(self) -> None:
+                self.requests: list[ToolBuildRequest] = []
+
+            @property
+            def name(self) -> str:
+                return "fake"
+
+            async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
+                self.requests.append(request)
+                return ToolBuildResult(
+                    manifest={
+                        "name": "commissioned_probe",
+                        "description": "Built by the fake backend.",
+                        "input_schema": {"type": "object"},
+                        "required_permission": "probe:read",
+                        "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                        "entry_point": "run",
+                    },
+                    tool_code="def run(input):\n    return {'built': True}\n",
+                    provenance={"backend": "fake", "session": "sess-9"},
+                )
+
+        backend = _FakeBackend()
+        agent, _ = make_agent(make_simple_llm("unused"))
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=tmp_path / "artifacts",
+            build_backend=backend,
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {"name": "commissioned_probe", "required_permission": "probe:read"},
+                "build_request": "Build a probe that inspects widget health.",
+                "signal_context": "widget degraded",
+                "canary_input": {},
+            }
+        )
+
+        assert not result.is_error
+        assert len(backend.requests) == 1
+        assert backend.requests[0].build_request.startswith("Build a probe")
+        assert backend.requests[0].signal_context == "widget degraded"
+        registered = next(item for item in agent.tools if item.name == "commissioned_probe")
+        run = await registered.execute({})
+        assert json.loads(run.content) == {"built": True}
+
+    async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
+        agent, _ = make_agent(make_simple_llm("unused"))
+        tool = attach_build_tool(agent, tools_dir=tmp_path / "tools")
+        result = await tool.execute(
+            {
+                "manifest": {"name": "x", "required_permission": "x:read"},
+                "build_request": "build something",
+            }
+        )
+        assert result.is_error
+        assert "no tool build backend" in result.content
+
     async def test_build_tool_registers_tool_for_same_turn(self, tmp_path) -> None:
         build_call = ToolCall(
             id="tc-build",
