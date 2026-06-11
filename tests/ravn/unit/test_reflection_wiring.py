@@ -302,7 +302,13 @@ class TestRunDaemonReflectionWiring:
         settings.gateway.channels.matrix.enabled = False
         settings.gateway.channels.whatsapp.enabled = False
 
+        # This test focuses on reflection wiring; the court's perpetual sweep
+        # task would keep _run_daemon's gather alive forever.
+        settings.odin_court.enabled = False
         mock_publisher = MagicMock()
+        mock_publisher.subscribe = AsyncMock()
+        mock_publisher.start = AsyncMock()
+        mock_publisher.stop = AsyncMock()
         mock_runtime = AsyncMock()
         mock_runtime.wait = AsyncMock(return_value=None)
         mock_drive_loop = MagicMock()

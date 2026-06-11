@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -39,6 +40,8 @@ from sleipnir.domain.catalog import (
 )
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
+
+logger = logging.getLogger(__name__)
 
 LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored"]
 

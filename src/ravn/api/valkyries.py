@@ -1503,7 +1503,7 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
                 "persona": "observed-valkyrie",
                 "specialty": str(observed.get("residentPersonality") or "observed resident"),
                 "wakefulness": str(observed.get("wakefulness") or "watching"),
-                "autonomyMode": "delegated" if observed.get("driveLoopEnabled") else "manual",
+                "autonomyMode": "autonomous" if observed.get("driveLoopEnabled") else "guarded",
                 "status": "online",
                 "confidence": 0.0,
                 "inboxSubjects": [],
@@ -2033,7 +2033,7 @@ def _configured_valkyrie_entries(
                 "specialty": str(_field(combined, "specialty", default="resident operations")),
                 "wakefulness": str(_field(combined, "wakefulness", default="watching")),
                 "autonomyMode": str(
-                    _field(combined, "autonomyMode", "autonomy_mode", default="delegated")
+                    _field(combined, "autonomyMode", "autonomy_mode", default="guarded")
                 ),
                 "status": str(_field(combined, "status", default="online")),
                 "confidence": _as_float(_field(combined, "confidence", default=0.0)),
