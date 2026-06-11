@@ -109,7 +109,18 @@ class TokenService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        if session.status != SessionStatus.RUNNING:
+        # Accept usage during any *live* phase, not just RUNNING. The broker
+        # reports the first turn's tokens within ~2s of spawn — while the session
+        # is still PROVISIONING (the readiness poll flips it to RUNNING at ~5s).
+        # Rejecting those reports with 409 silently dropped the opening turn's
+        # tokens (the long-standing tokens_used=0 symptom). Only terminal/idle-
+        # before-start states should refuse usage.
+        live_statuses = (
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        )
+        if session.status not in live_statuses:
             raise SessionNotRunningError(session_id, session.status)
 
         # Use pre-calculated cost when provided, fall back to pricing table

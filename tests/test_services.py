@@ -288,6 +288,24 @@ class TestSessionProvisioningState:
         assert result.chat_endpoint is not None
 
     @pytest.mark.asyncio
+    async def test_start_session_clears_stale_error(self, service, repository):
+        """Restart is an explicit "bring it back" — a stale failure verdict
+        (e.g. the liveness reaper's "broker presumed dead") must not survive
+        onto the relaunched session, or clients banner a healthy session."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        stamped = session.model_copy(
+            update={"error": "liveness: no activity heartbeat — broker presumed dead"}
+        )
+        await repository.update(stamped)
+
+        result = await service.start_session(session.id)
+        assert result.error is None
+
+    @pytest.mark.asyncio
     async def test_poll_readiness_transitions_to_running(self, service, repository):
         """Background poller transitions PROVISIONING -> RUNNING on success."""
         session = await service.create_session(

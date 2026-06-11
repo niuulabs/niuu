@@ -987,6 +987,15 @@ class Broker:
         self._flock_completion_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
+        # Durable full-fidelity event log (session_event_log). Every CLI frame is
+        # buffered here and flushed to Volundr by a background worker, independent
+        # of any attached channel — so nothing is dropped when no client is
+        # connected, and any client can replay the full transcript from a cursor.
+        self._event_log_seq = 0
+        self._event_log_buffer: list[dict] = []
+        self._event_log_lock = asyncio.Lock()
+        self._event_log_task: asyncio.Task[None] | None = None
+        self._event_log_stopping = False
         self._activity_state: str = "idle"
         self._last_activity_report: float = 0.0
         self._conversation_turns: list[ConversationTurn] = []
@@ -1115,7 +1124,9 @@ class Broker:
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
         """Save any accumulated assistant content as a conversation turn."""
         content = self._pending_assistant_content
-        if not content:
+        # Save when there's text OR captured parts (tool_use/tool_result/reasoning)
+        # — a tool-only assistant turn (no prose) must still persist its tool cards.
+        if not content and not self._pending_assistant_parts:
             return
 
         # Flush remaining reasoning
@@ -1493,6 +1504,7 @@ class Broker:
             ),
             "mcp_servers": self._settings.mcp_servers,
             "resume_session_id": self._settings.session.resume_session_id,
+            "ask_user_question_enabled": self._settings.ask_user_question_enabled,
         }
 
     def _create_transport(self) -> CLITransport:
@@ -1537,6 +1549,9 @@ class Broker:
         ):
             turn_id = str(uuid.uuid4())
             self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
+            # The initial prompt is a human turn too — persist it to the durable
+            # log so log-only replay opens with the operator's first message.
+            self._enqueue_human_turn_event(prompt, turn_id)
             try:
                 await self._channels.broadcast(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
@@ -1594,6 +1609,9 @@ class Broker:
             asyncio.create_task(self._chronicle_watcher.start())
             logger.info("Chronicle watcher started for %s", watch_dir)
 
+        # Start the durable event-log worker (full-fidelity transcript capture)
+        await self._init_event_log()
+
         # Auto-start transport when an initial prompt is configured
         # (dispatched sessions should begin work immediately, not wait
         # for a browser to connect). Run as a background task so the
@@ -1609,6 +1627,23 @@ class Broker:
             else:
                 logger.info("Initial prompt configured — auto-starting transport in background")
                 asyncio.create_task(self._auto_start_transport())
+        elif self._conversation_turns:
+            # Resumed/restarted session (no new initial prompt, but prior history
+            # was loaded). Warm the transport eagerly so it is already alive when
+            # the next user message arrives. The message-delivery path connects a
+            # WebSocket and closes immediately after sending; a cold transport's
+            # ~280ms lazy-start outlasts that connection and the first message is
+            # dropped (no reply). Warming here makes a restarted session behave
+            # like a never-stopped one, where steering works.
+            logger.info("Resumed session with prior history — warming transport in background")
+            asyncio.create_task(self._auto_start_transport())
+        elif "RemoteControl" in (self._settings.transport_adapter or ""):
+            # Remote-control sessions take no initial prompt (the native app
+            # drives them), so neither branch above fires — but we still want the
+            # RC server launched immediately so the pairing URL is ready without
+            # waiting for a browser to connect.
+            logger.info("Remote-control session — launching the RC server in background")
+            asyncio.create_task(self._auto_start_transport())
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
@@ -1636,6 +1671,9 @@ class Broker:
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:
             await self._chronicle_watcher.stop()
+
+        # Drain and stop the durable event-log worker so the last turn persists
+        await self._stop_event_log()
 
         if self._peer_watchdog_task is not None:
             self._peer_watchdog_task.cancel()
@@ -2800,6 +2838,21 @@ class Broker:
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+
+        # Durably capture EVERY frame first — before any channel/broadcast logic —
+        # so agent output is never lost when no client is attached.
+        self._enqueue_event_log(data)
+
+        if event_type == "remote_control":
+            # A remote-control transport reporting its pairing URL. Surface it as
+            # a real assistant turn (conversation history + durable-log replay +
+            # live channels) so every client shows the link to hand off to the
+            # native app.
+            url = str(data.get("url") or "").strip()
+            if url:
+                await self._surface_remote_control_url(url)
+            return
+
         if event_type == "control_request":
             self._track_pending_permission_request(data)
 
@@ -2904,6 +2957,24 @@ class Broker:
                 )
         elif tool_result_only_user_event:
             await self._finish_assistant_tool_trace_spans_from_user_event(data)
+            # Persist tool_result blocks onto the open assistant turn so the saved
+            # conversation carries tool OUTPUT (not just the call) for read-back.
+            tr_msg = data.get("message", {})
+            tr_blocks = tr_msg.get("content", []) if isinstance(tr_msg, dict) else []
+            for tr_block in tr_blocks or []:
+                if (
+                    isinstance(tr_block, dict)
+                    and tr_block.get("type") == "tool_result"
+                    and tr_block.get("tool_use_id")
+                ):
+                    self._pending_assistant_parts.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tr_block.get("tool_use_id"),
+                            "content": tr_block.get("content"),
+                            "is_error": bool(tr_block.get("is_error")),
+                        }
+                    )
         elif event_type == "result":
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
@@ -2915,30 +2986,44 @@ class Broker:
         # We also handle the HTTP streaming format (content_block_delta, result)
         # for backward compatibility.
         if event_type == "assistant":
-            # Extract content from the assistant message
+            # Extract content and ACCUMULATE parts across the messages of one turn
+            # (a tool_use message, then the final text), so the SAVED conversation
+            # turn carries tool calls + reasoning — not just text — and reloads with
+            # its tool cards. Parts are reset on flush, not per message.
             message = data.get("message", {})
             content_blocks = message.get("content", [])
             if isinstance(content_blocks, list) and content_blocks:
                 text_parts = []
-                reasoning_parts = []
                 for block in content_blocks:
                     if not isinstance(block, dict):
                         continue
-                    if block.get("type") == "text" and block.get("text"):
+                    btype = block.get("type")
+                    if btype == "text" and block.get("text"):
                         text_parts.append(block["text"])
-                    elif block.get("type") == "thinking" and block.get("thinking"):
-                        reasoning_parts.append(block["thinking"])
+                        self._pending_assistant_parts.append(
+                            {"type": "text", "text": block["text"]}
+                        )
+                    elif btype == "thinking" and block.get("thinking"):
+                        # Keep last 500 chars per reasoning block as a summary.
+                        self._pending_assistant_parts.append(
+                            {"type": "reasoning", "text": str(block["thinking"])[-500:]}
+                        )
+                    elif btype == "tool_use" and block.get("id"):
+                        self._pending_assistant_parts.append(
+                            {
+                                "type": "tool_use",
+                                "id": block.get("id"),
+                                "name": block.get("name"),
+                                "input": block.get("input") or {},
+                            }
+                        )
                 text_content = "\n".join(text_parts)
                 if text_content:
-                    self._pending_assistant_content = text_content
-                    self._pending_assistant_parts = []
-                    if reasoning_parts:
-                        # Keep last 500 chars of reasoning as summary
-                        combined = "\n".join(reasoning_parts)
-                        self._pending_assistant_parts.append(
-                            {"type": "reasoning", "text": combined[-500:]}
-                        )
-                    self._pending_assistant_parts.append({"type": "text", "text": text_content})
+                    self._pending_assistant_content = (
+                        f"{self._pending_assistant_content}\n{text_content}"
+                        if self._pending_assistant_content
+                        else text_content
+                    )
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
@@ -3187,6 +3272,15 @@ class Broker:
                     auto_approved=False,
                 )
 
+            # AskUserQuestion: a human answered a question the agent asked.
+            # Resolves the blocking can_use_tool future in SDKTransport.
+            case "ask_user_answer":
+                await self._transport.send_control(
+                    "ask_user_answer",
+                    request_id=data.get("request_id", ""),
+                    answers=data.get("answers", []),
+                )
+
             # Phase 3: interrupt current turn
             case "interrupt":
                 await self._transport.send_control("interrupt")
@@ -3293,6 +3387,9 @@ class Broker:
                         content=content_str,
                     )
                 )
+                # Mirror the human turn into the durable event log so log-only
+                # transcript replay (web/iOS) includes it.
+                self._enqueue_human_turn_event(content_str, msg_id)
                 now = datetime.now(UTC)
                 await self._complete_trace_span(
                     kind="turn.user",
@@ -3842,6 +3939,185 @@ class Broker:
             },
         )
 
+    # -- Durable event log (full-fidelity transcript capture) -----------------
+
+    FORGE_LOG_PATH_TEMPLATE = "/api/v1/forge/sessions/{sid}/log"
+
+    @staticmethod
+    def _extract_request_id(data: dict) -> str | None:
+        """Best-effort turn correlation id from a raw CLI frame."""
+        rid = data.get("request_id")
+        if isinstance(rid, str) and rid:
+            return rid
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            inner = msg.get("request_id")
+            if isinstance(inner, str) and inner:
+                return inner
+        return None
+
+    def _enqueue_event_log(self, data: dict) -> None:
+        """Buffer a raw CLI frame for durable persistence. Never raises.
+
+        Runs for every frame regardless of attached channels — this is what
+        guarantees no agent output is dropped when no client is connected.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        self._event_log_seq += 1
+        entry = {
+            "seq": self._event_log_seq,
+            "kind": str(data.get("type", "unknown"))[:64],
+            "payload": data,
+            "request_id": self._extract_request_id(data),
+            # Emission time, captured HERE — without it the ingest stamps
+            # arrival time, which skews replayed timelines whenever the POST
+            # batch lags (rate-limit stalls, backend hiccups). Clients replay
+            # these ts so an old session shows when things actually happened.
+            "ts": datetime.now(UTC).isoformat(),
+        }
+        role = data.get("role")
+        if isinstance(role, str):
+            entry["role"] = role[:32]
+        self._event_log_buffer.append(entry)
+        # Safety valve: cap memory if the backend is unreachable for a long time.
+        # Dropping the oldest is the least-bad option vs OOM-killing the broker,
+        # and is logged loudly so the loss is visible.
+        overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
+        if overflow > 0:
+            del self._event_log_buffer[:overflow]
+            logger.warning(
+                "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
+                overflow,
+            )
+
+    def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
+        """Persist a HUMAN message to the durable event log as a user frame.
+
+        The CLI never echoes the operator's own prompt as a text frame — only
+        tool_results arrive with role=user — so a transcript replayed purely
+        from the durable log (web Code tab, iOS) omitted every human turn ("the
+        transcript doesn't show my message"). Synthesize a string-content user
+        frame, which the replay reducers render directly as a user turn (and
+        string content distinguishes it from the CLI's block-list tool_result
+        user frames).
+        """
+        if not content:
+            return
+        self._enqueue_event_log(
+            {
+                "type": "user",
+                "role": "user",
+                "uuid": turn_id,
+                "message": {"role": "user", "content": content},
+            }
+        )
+
+    async def _surface_remote_control_url(self, url: str) -> None:
+        """Surface a remote-control pairing URL as an assistant turn everywhere.
+
+        Appends it to conversation history (the conversation endpoint), enqueues a
+        renderable assistant frame to the durable log (log-only replay), and
+        broadcasts to any live channels — so whichever surface a client uses, the
+        hand-off link to the native app is visible.
+        """
+        notice = (
+            "🔗 **Remote control ready.** Drive this session from the Claude app "
+            f"or claude.ai/code:\n\n{url}\n\n"
+            "Open the link (or scan the QR in the host terminal) to attach the "
+            "native app. This session is controlled remotely — messages typed "
+            "here are not sent to the agent."
+        )
+        turn_id = str(uuid.uuid4())
+        self._append_turn(ConversationTurn(id=turn_id, role="assistant", content=notice))
+        frame = {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": notice}]},
+        }
+        self._enqueue_event_log(frame)
+        try:
+            await self._channels.broadcast(frame)
+        except Exception:
+            logger.debug("remote-control URL broadcast failed", exc_info=True)
+        logger.info("Remote control pairing URL surfaced for session %s: %s", self.session_id, url)
+
+    async def _event_log_flush_loop(self) -> None:
+        """Background worker: drain the event-log buffer to Volundr with retry."""
+        interval = self._settings.event_log_flush_interval_ms / 1000.0
+        while not self._event_log_stopping:
+            await asyncio.sleep(interval)
+            try:
+                await self._flush_event_log()
+            except Exception:
+                logger.debug("event log flush iteration failed", exc_info=True)
+
+    async def _flush_event_log(self) -> None:
+        """Send one batch from the front of the buffer. Removes only on success."""
+        if not self.volundr_api_url:
+            return
+        async with self._event_log_lock:
+            batch = self._event_log_buffer[: self._settings.event_log_batch_size]
+        if not batch:
+            return
+
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
+        try:
+            response = await client.post(path, json={"entries": batch})
+        except Exception:
+            logger.debug("event log POST failed — will retry", exc_info=True)
+            return
+        if response.status_code >= 300:
+            logger.debug(
+                "event log POST rejected (%d): %s — will retry",
+                response.status_code,
+                response.text[:200],
+            )
+            return
+        # Idempotent on (session_id, seq), so removing exactly the sent count is
+        # safe even if newer frames were appended during the POST.
+        async with self._event_log_lock:
+            del self._event_log_buffer[: len(batch)]
+
+    async def _init_event_log(self) -> None:
+        """Resume the seq counter from the backend so restarts don't collide.
+
+        The PK is (session_id, seq); if a restarted broker reset seq to 0 its
+        appends would hit ON CONFLICT DO NOTHING and silently vanish. Seeding
+        from the stored head keeps the sequence monotonic across restarts.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        try:
+            response = await client.get(path)
+            if response.status_code < 300:
+                self._event_log_seq = int(response.json().get("latest_seq", 0))
+        except Exception:
+            logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
+        logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _stop_event_log(self) -> None:
+        """Drain remaining frames and stop the worker on shutdown."""
+        self._event_log_stopping = True
+        if self._event_log_task is not None:
+            self._event_log_task.cancel()
+            await asyncio.gather(self._event_log_task, return_exceptions=True)
+            self._event_log_task = None
+        # Final best-effort drain so the last turn isn't lost on shutdown.
+        for _ in range(self._settings.event_log_max_buffer):
+            async with self._event_log_lock:
+                remaining = len(self._event_log_buffer)
+            if remaining == 0:
+                return
+            before = remaining
+            await self._flush_event_log()
+            async with self._event_log_lock:
+                if len(self._event_log_buffer) >= before:
+                    return  # made no progress (backend down) — give up
+
     async def _emit_pipeline_event(
         self,
         event_type: str,
@@ -4186,6 +4462,13 @@ class Broker:
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
         }
+        # Ride the CLI/agent conversation id upward so Volundr can persist it
+        # and resume the conversation when the session is restarted. Works for
+        # both Claude (session UUID) and Codex (thread id) — every
+        # resume-capable transport implements .session_id.
+        cli_session_id = self._transport.session_id if self._transport else None
+        if cli_session_id:
+            metadata["cli_session_id"] = cli_session_id
         if extra_metadata:
             metadata.update(extra_metadata)
 
@@ -4487,6 +4770,12 @@ class Broker:
         self._extract_and_store_outcome()
         await self._emit_session_ended_event()
         await self._publish_mesh_outcome()
+
+        # The chronicle SUMMARY (an LLM pass on stop) is opt-in — OFF by default
+        # in our pipeline. The session-ended signals above (Ting run tracking,
+        # mesh outcome) still fire; only the extra summarization is gated.
+        if not self._settings.chronicle_on_stop_enabled:
+            return
 
         if not self.volundr_api_url:
             return
@@ -5297,6 +5586,63 @@ async def upload_files(
         )
 
     return {"entries": uploaded}
+
+
+@app.put("/api/files/upload")
+async def upload_file_raw(
+    request: Request,
+    path: str,
+    root: str = "workspace",
+) -> dict:
+    """Write raw request-body bytes to a single workspace-relative file.
+
+    Raw-body mirror of ``download_file``: ``path`` is the destination *file*
+    (not a directory), confined identically (reject absolute/.. + realpath guard).
+    """
+    _validate_root(root)
+    base = _resolve_root(root)
+    sanitized = _sanitize_relative(path)
+    base_real = os.path.realpath(str(base))
+    # Containment checks are inlined (not _check_within_base) so the
+    # realpath + startswith barrier is visible to CodeQL's path-injection
+    # query in the same dataflow scope as the filesystem sinks below. The
+    # bare startswith(base_real) is the shape the query recognises; the
+    # separator-anchored check after it rules out /base vs /base-evil
+    # prefix collisions.
+    target_real = os.path.realpath(os.path.join(base_real, sanitized))
+    if not target_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if target_real != base_real and not target_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
+    if sanitized in ("", ".") or os.path.isdir(target_real):
+        raise HTTPException(400, "path must name a file, not a directory")
+
+    body = await request.body()
+    max_size = broker._settings.max_upload_size_bytes
+    if len(body) > max_size:
+        raise HTTPException(
+            413,
+            f"File exceeds maximum upload size ({max_size} bytes)",
+        )
+
+    parent_real = os.path.realpath(os.path.dirname(target_real))
+    if not parent_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if parent_real != base_real and not parent_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
+    os.makedirs(parent_real, exist_ok=True)
+
+    with open(target_real, "wb") as f:
+        f.write(body)
+
+    stat = os.stat(target_real)
+    return {
+        "name": os.path.basename(target_real),
+        "path": os.path.relpath(target_real, base_real),
+        "type": "file",
+        "size": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+    }
 
 
 class MkdirRequest(BaseModel):

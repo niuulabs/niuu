@@ -5,8 +5,6 @@ converting typed SDK messages back into the dict events Skuld already emits.
 
 Known gaps versus ``PersistentSubprocessTransport``:
 
-- No session resume after process death; the Python SDK does not expose
-  ``--resume`` recovery.
 - No slash-command transport surface such as ``/clear`` or ``/compact``.
 - Mid-turn injection still requires ``interrupt()`` followed by a new query,
   which drops the in-flight partial assistant turn per SDK semantics.
@@ -17,8 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
+import uuid
 from dataclasses import asdict
 from typing import Any
 
@@ -40,6 +38,7 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_sdk_mcp_servers
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
@@ -53,6 +52,25 @@ _TRANSIENT_ERROR_RE = re.compile(
 )
 _MAX_TRANSIENT_RETRIES = 1
 _DEFAULT_TURN_TIMEOUT_S = 0.0
+
+
+def _claude_effort_for_model(model: str) -> str:
+    """Reasoning effort to push a new Claude session to, by model.
+
+    Effort scale (Anthropic): low < medium < high < xhigh < max (default high).
+    Claude Code's "ultracode" == `xhigh` (NOT a separate level), which Anthropic
+    recommends for Opus 4.7/4.8 coding (`max` overthinks + costs more, reserved for
+    frontier problems). `xhigh` is Opus-4.7/4.8 only; `max` covers Sonnet 4.6 /
+    Opus 4.6. Unknown models fall back to the SDK default to avoid API rejection.
+    """
+    m = (model or "").lower()
+    if "opus-4-8" in m or "opus-4-7" in m:
+        return "xhigh"
+    if "opus-4-6" in m or "sonnet-4-6" in m or "opus-4-5" in m:
+        return "max"
+    return "high"
+
+
 _SDK_TIMEOUT_RECOVERY_PROMPT = (
     "Time budget reached. Stop exploring and conclude immediately using the current "
     "workspace state. Do not do more investigation. Return only the required final "
@@ -239,6 +257,27 @@ def _to_stream_json(message: object) -> dict[str, Any] | None:
     return None
 
 
+def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> str:
+    """Build the tool_result text the model reads after a human answers an
+    AskUserQuestion. `answers` is a list aligned to `questions`, each entry like
+    {"answer": str | list[str]} (optionally "header"/"question"). Tolerant of
+    shape drift from clients."""
+    answer_list = answers if isinstance(answers, list) else []
+    lines: list[str] = []
+    for i, q in enumerate(questions):
+        entry = answer_list[i] if i < len(answer_list) else {}
+        chosen: object = entry.get("answer") if isinstance(entry, dict) else entry
+        if isinstance(chosen, list):
+            chosen = ", ".join(str(c) for c in chosen)
+        header = ""
+        if isinstance(q, dict):
+            header = str(q.get("header") or q.get("question") or "")
+        label = header or f"Question {i + 1}"
+        lines.append(f"- {label}: {chosen if chosen not in (None, '') else '(no answer)'}")
+    body = "\n".join(lines) if lines else "(no answer)"
+    return f"The user answered your question(s):\n{body}\nProceed using these answers."
+
+
 class SDKTransport(CLITransport):
     """Claude SDK-backed transport that preserves existing broker event shapes."""
 
@@ -252,6 +291,8 @@ class SDKTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
+        resume_session_id: str | None = None,
+        ask_user_question_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -260,6 +301,8 @@ class SDKTransport(CLITransport):
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
+        self._resume_session_id = (resume_session_id or "").strip() or None
+        self._ask_user_question_enabled = ask_user_question_enabled
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
         self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
@@ -272,11 +315,16 @@ class SDKTransport(CLITransport):
         self._turn_active = False
         self._pending_steers: list[str] = []
         self._steer_interrupt_requested = False
+        # AskUserQuestion human-in-the-loop: request_id -> Future resolved when a
+        # client answers (via send_control "ask_user_answer"). See
+        # _handle_ask_user_question / _on_can_use_tool.
+        self._pending_questions: dict[str, asyncio.Future] = {}
+        self._question_seq = 0
 
     @property
     def capabilities(self) -> TransportCapabilities:
         return TransportCapabilities(
-            session_resume=False,
+            session_resume=True,
             interrupt=True,
             steer=True,
             steering_mode="interrupt_resume",
@@ -304,6 +352,10 @@ class SDKTransport(CLITransport):
         """Connect the SDK client and optionally send the initial prompt."""
         if not self.is_alive:
             await self._connect_client()
+        # On resume the prior conversation (including its initial prompt) is
+        # reloaded, so replaying the initial prompt would double-seed history.
+        if self._resume_session_id:
+            self._initial_prompt_sent = True
         if not self._initial_prompt or self._initial_prompt_sent:
             return
         self._initial_prompt_sent = True
@@ -444,8 +496,83 @@ class SDKTransport(CLITransport):
             return
         await client.interrupt()
 
+    async def _on_can_use_tool(
+        self, tool_name: str, tool_input: dict[str, Any], context: object
+    ) -> object:
+        """Permission callback. AskUserQuestion is routed to a human (blocks until
+        a client answers); every other tool is allowed (preserving the prior
+        default-mode behavior where the SDK ran without a permission handler).
+
+        ExitPlanMode is intentionally auto-allowed + display-only (product
+        decision): we never run formal plan mode, so there is no plan to gate.
+        """
+        from claude_agent_sdk import PermissionResultAllow
+
+        if tool_name == "AskUserQuestion":
+            return await self._handle_ask_user_question(tool_input, context)
+        return PermissionResultAllow()
+
+    async def _handle_ask_user_question(
+        self, tool_input: dict[str, Any], context: object
+    ) -> object:
+        """Surface an AskUserQuestion to connected clients and block until one
+        answers, then hand the chosen option(s) back to the agent.
+
+        Mechanism (verified live): the SDK's "allow + updated_input" path does NOT
+        deliver answers in headless mode (the CLI emits an empty "answered"
+        template). Returning a Deny whose *message* states the chosen option(s)
+        DOES reach the model as the tool_result, and it continues correctly. So we
+        deny-with-answer rather than allow.
+        """
+        from claude_agent_sdk import PermissionResultDeny
+
+        questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+        if not questions:
+            return PermissionResultDeny(message="No questions were provided.")
+
+        self._question_seq += 1
+        request_id = f"askq-{self._question_seq}-{uuid.uuid4().hex[:8]}"
+        tool_use_id = getattr(context, "tool_use_id", None)
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_questions[request_id] = fut
+
+        await self._emit_event(
+            {
+                "type": "ask_user_question",
+                "request_id": request_id,
+                "tool_use_id": tool_use_id,
+                "questions": questions,
+            }
+        )
+
+        try:
+            answers = await fut
+        except asyncio.CancelledError:
+            return PermissionResultDeny(
+                message="The question was cancelled before the user answered."
+            )
+        finally:
+            self._pending_questions.pop(request_id, None)
+
+        return PermissionResultDeny(message=_format_answer_message(questions, answers))
+
+    def resolve_question(self, request_id: str, answers: object) -> bool:
+        """Resolve a pending AskUserQuestion future with a client's answers.
+        Returns True if a matching pending question was found."""
+        fut = self._pending_questions.get(str(request_id)) if request_id else None
+        if fut is None or fut.done():
+            return False
+        fut.set_result(answers if answers is not None else [])
+        return True
+
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Handle runtime control messages against the live SDK session."""
+        if subtype == "ask_user_answer":
+            request_id = kwargs.get("request_id")
+            answers = kwargs.get("answers")
+            self.resolve_question(str(request_id or ""), answers)
+            return
+
         client = self._client
         if client is None:
             return
@@ -502,7 +629,7 @@ class SDKTransport(CLITransport):
             return
 
     async def _connect_client(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(
@@ -519,10 +646,36 @@ class SDKTransport(CLITransport):
             "mcp_servers": self._mcp_servers,
             "include_partial_messages": True,
             "thinking": {"type": "adaptive", "display": "summarized"},
+            # Push new sessions to the highest sensible reasoning effort by model
+            # (xhigh = Claude Code's "ultracode" level on Opus 4.7/4.8; max on
+            # Sonnet 4.6 / Opus 4.6). Anthropic `effort` param.
+            "effort": _claude_effort_for_model(self._model),
+            # A fresh Forge session must NEVER --continue the cwd's project history.
+            "continue_conversation": False,
             "env": env,
         }
+        if self._ask_user_question_enabled:
+            # Route tool permissions through our handler so AskUserQuestion can
+            # be answered by a human (blocks until a client responds); all other
+            # tools are allowed. Requires streaming mode (we use it). NOTE: when
+            # skip_permissions sets bypassPermissions below, the SDK bypasses
+            # this callback entirely — so interactive Q&A only works on the
+            # default (non-bypass) permission path.
+            option_kwargs["can_use_tool"] = self._on_can_use_tool
         if self._skip_permissions:
             option_kwargs["permission_mode"] = _DEFAULT_PERMISSION_MODE
+        if self._resume_session_id:
+            # Reload the prior conversation so the agent continues where it
+            # left off. ClaudeAgentOptions.resume is supported by the pinned SDK.
+            # Do NOT also set session_id — the SDK forbids session_id + resume
+            # unless fork_session is set.
+            option_kwargs["resume"] = self._resume_session_id
+        else:
+            # No explicit resume: pin a brand-new Claude session id so the CLI
+            # starts FRESH instead of attaching to the cwd's most-recent native
+            # session (~/.claude/projects/<hashed-cwd>/) — the "new session
+            # continues the folder's old history" bug. --session-id needs a UUID.
+            option_kwargs["session_id"] = str(uuid.uuid4())
         options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options)
         self._client = await client.__aenter__()

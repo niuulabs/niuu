@@ -335,20 +335,20 @@ wheels = [
 
 [[package]]
 name = "claude-agent-sdk"
-version = "0.2.87"
+version = "0.2.96"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "mcp" },
     { name = "sniffio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/26/dc/e2afd59a1dd6484b6500245fa2331a0d8c0b68e6c180bc29d8ce9540f38a/claude_agent_sdk-0.2.87.tar.gz", hash = "sha256:56f02a49a97f7be37e0cd7323494d1c09e52fb0db7ab94f53bba8a230bb4bd0e", size = 252063, upload-time = "2026-05-23T04:19:25Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/e8/ce86f503f0e1548440ae3e35dbe99da6ba76715bc135c8c9f5f7c2bdd7d6/claude_agent_sdk-0.2.96.tar.gz", hash = "sha256:1932030ab114da9398e94bcc86b177b6ff579f5740238fb5c87751f8e745f572", size = 253659, upload-time = "2026-06-10T21:14:12.703Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/4e/b83c4c6ec1e0b63e9d4d58ba9a5abfd9936c55b8ee4c06b88f5e93bdfd70/claude_agent_sdk-0.2.87-py3-none-macosx_11_0_arm64.whl", hash = "sha256:52204a9609dec3aa96032afd48c07d72e05d13311faf614978f17b61326e6e31", size = 63037960, upload-time = "2026-05-23T04:19:29.056Z" },
-    { url = "https://files.pythonhosted.org/packages/13/d7/5fb02260c5b95c66e108c35e046d4d66011921251f7896274b6b21594f14/claude_agent_sdk-0.2.87-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:1713e34e50b830ecac54386d39af14e3a2775f833f1ef715eb53566eaa1b6325", size = 65095745, upload-time = "2026-05-23T04:19:32.533Z" },
-    { url = "https://files.pythonhosted.org/packages/1d/84/1061f6580bbbc78de629467abf051cdbbabe71b982297b401e3fde65c7e0/claude_agent_sdk-0.2.87-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:e9e23119d2a02ad1ea1a2707214db98f5baf2c8809577186629843ddfcb8ec18", size = 72725120, upload-time = "2026-05-23T04:19:36.539Z" },
-    { url = "https://files.pythonhosted.org/packages/04/50/449f5044d76d9de18cf6a9f4b1c9386a74f41b4e2da5312df245d9dd23ef/claude_agent_sdk-0.2.87-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:5ac525d9ae3481296df5639d005e12ce2b6b0427426991f35da64db30be25c6e", size = 72875504, upload-time = "2026-05-23T04:19:40.839Z" },
-    { url = "https://files.pythonhosted.org/packages/80/dd/3f9d7c491d5a98138d293192b31cc9ed792d3552b3a7e276163d7fe2d43a/claude_agent_sdk-0.2.87-py3-none-win_amd64.whl", hash = "sha256:f34973669a1efaeb1543e7b22d7b22feefd8af2fae3adfd39181635077dae432", size = 73514880, upload-time = "2026-05-23T04:19:44.65Z" },
+    { url = "https://files.pythonhosted.org/packages/df/63/7651f888af06cb7524b247babc8021e9046cef457c4a9be33e8e4994e3da/claude_agent_sdk-0.2.96-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9bbf12b5b645f462e9c6e3c08c62c13fbfe156f125d25772178558b774cb3fe6", size = 65751202, upload-time = "2026-06-10T21:14:15.862Z" },
+    { url = "https://files.pythonhosted.org/packages/52/68/26150eecf5d2ad1cbad2e5c2266bd1fc4a7934429e5e2759920d61140ec8/claude_agent_sdk-0.2.96-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:56528acd1920e90df71aa29c97cd17b97943d2e5628cb9ec93ae6a61ba2da3ba", size = 67803554, upload-time = "2026-06-10T21:14:19.39Z" },
+    { url = "https://files.pythonhosted.org/packages/14/3a/919e6177126acd7b37995864110a6b3f597591e80eacac1a4b8ae8f9aeb2/claude_agent_sdk-0.2.96-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:966a3227590f419f00798cdfb2ed81159f2b578ecbdd23d8ac39fe23e7c8e0bb", size = 75342676, upload-time = "2026-06-10T21:14:22.761Z" },
+    { url = "https://files.pythonhosted.org/packages/28/ac/658381a6594176deeefa5f847bc43d99d60704ee99f9c86753d4a7655338/claude_agent_sdk-0.2.96-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:339e1589b784ed1912a7dfe567ebfdfd8d0b919717d7293ccb9272b0ac89e229", size = 75514017, upload-time = "2026-06-10T21:14:25.942Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/40/406f3498ebee470575a5166d256547a4103f4e126ff031d91f37bf012824/claude_agent_sdk-0.2.96-py3-none-win_amd64.whl", hash = "sha256:0e2674a16a26be597b5417823f38c0c488cfa79122cc87bedb442ac46f687f20", size = 76124918, upload-time = "2026-06-10T21:14:33.175Z" },
 ]
 
 [[package]]
@@ -916,11 +916,11 @@ wheels = [
 
 [[package]]
 name = "idna"
-version = "3.17"
+version = "3.18"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b9/28/99c51f664567218d824af024c0251650fb27e4ca066df188dab0769c5b91/idna-3.17.tar.gz", hash = "sha256:5eb0cb53bc467c12eadcf6de83163ad8527cec9416f44b9b61b19caedad2b87f", size = 196048, upload-time = "2026-05-28T14:32:38.55Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/63/9496c57188a2ee585e0f1db071d75089a11e98aa86eb99d9d7618fc1edce/idna-3.18.tar.gz", hash = "sha256:ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848", size = 196711, upload-time = "2026-06-02T14:34:07.794Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/a7/f76514cc40ad6234098ecdebda08732d75964776c51a42845b7da10649e2/idna-3.17-py3-none-any.whl", hash = "sha256:466e48829084efe2548012b855df21540b96f2e20e51bd124c851536556a592c", size = 65316, upload-time = "2026-05-28T14:32:37.035Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl", hash = "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2", size = 65455, upload-time = "2026-06-02T14:34:06.319Z" },
 ]
 
 [[package]]
@@ -2240,7 +2240,7 @@ wheels = [
 
 [[package]]
 name = "typer"
-version = "0.26.4"
+version = "0.26.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -2248,9 +2248,9 @@ dependencies = [
     { name = "rich" },
     { name = "shellingham" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8e/d3/90c1ee19209cb59f6ad185883fd4ccfcf72f8f0bfd549d5a8b70474611d0/typer-0.26.4.tar.gz", hash = "sha256:25b128964de66c5ea36d5ac82adc579e5e113509b17469edf9f5a4a1864ff2a9", size = 201191, upload-time = "2026-05-30T17:05:04.213Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/ed/ef06584ccdd5c410df0837951ecd7e15d9a6144ea1bd4c73cecab1a89891/typer-0.26.7.tar.gz", hash = "sha256:e314a34c617e419c091b2830dda3ea1f257134ff593061a8f5b9717ab8dddb3a", size = 201709, upload-time = "2026-06-03T07:18:06.843Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/6d/5a525c69df4a90892135e5d490b00e9e46402491f3416d4395fcb0d0201e/typer-0.26.4-py3-none-any.whl", hash = "sha256:11bfd7b43557137e373c2b10f6967a555f9678a61ed72c808968b011d95534d6", size = 122436, upload-time = "2026-05-30T17:05:05.812Z" },
+    { url = "https://files.pythonhosted.org/packages/24/25/2201973529af2c954de0bb725323c3aaed6d7f0ceee8f550dec9185df013/typer-0.26.7-py3-none-any.whl", hash = "sha256:5c87cfbc5d34491c5346ebf49c23e18d56ccb863268d3a8d592b26087c2f5e58", size = 122456, upload-time = "2026-06-03T07:18:05.732Z" },
 ]
 
 [[package]]
@@ -2294,15 +2294,15 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.48.0"
+version = "0.49.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/bf/f6544ba992ddb9a6077343a576f9844f7f8f06ab819aefd00206e9255f18/uvicorn-0.48.0.tar.gz", hash = "sha256:a5504207195d08c2511bf9125ede5ac4a4b71725d519e758d01dcf0bc2d31c37", size = 91074, upload-time = "2026-05-24T12:08:41.925Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/1f/fa18009dea8469069cca78a4e877a008ab78f08b064bfc9ab891579077ff/uvicorn-0.49.0.tar.gz", hash = "sha256:ebf4271aa580d9de97f93192d4595176df6e91f9aae919ca73e4fc07df1e66a3", size = 91284, upload-time = "2026-06-03T22:01:30.448Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/be/72532be3da7acc5fdfbccdb95215cd04f995a0886532a5b423f929cda4cc/uvicorn-0.48.0-py3-none-any.whl", hash = "sha256:48097851328b87ec36117d3d575234519eb58c2b22d79666e9bbc6c49a761dad", size = 71410, upload-time = "2026-05-24T12:08:40.258Z" },
+    { url = "https://files.pythonhosted.org/packages/88/fa/e1388bbcf24ef3274f45c0c1c7b501fd14971037c1b6ee23610553307497/uvicorn-0.49.0-py3-none-any.whl", hash = "sha256:ba3d14c3ee7e41c6c654c46c9eb489d33213cdd30aa1696eab1374337c13f68f", size = 71376, upload-time = "2026-06-03T22:01:29.037Z" },
 ]
 
 [[package]]
@@ -2401,13 +2401,13 @@ dev = [
 requires-dist = [
     { name = "aio-pika", marker = "extra == 'rabbitmq'", specifier = ">=9.6.2" },
     { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "claude-agent-sdk", specifier = "==0.2.87" },
+    { name = "claude-agent-sdk", specifier = "==0.2.96" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=48.0.0" },
     { name = "cryptography", marker = "extra == 'encryption'", specifier = ">=48.0.0" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "gitpython", specifier = ">=3.1.50" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "idna", specifier = ">=3.17" },
+    { name = "idna", specifier = ">=3.18" },
     { name = "kubernetes-asyncio", marker = "extra == 'k8s'", specifier = ">=35.0.1" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nats-py", marker = "extra == 'dev'", specifier = ">=2.14.0" },
@@ -2443,11 +2443,11 @@ requires-dist = [
     { name = "textual", marker = "extra == 'cli'", specifier = ">=8.2.7" },
     { name = "textual", marker = "extra == 'dev'", specifier = ">=8.2.7" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.2.7" },
-    { name = "typer", specifier = ">=0.26.4" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.26.4" },
-    { name = "typer", marker = "extra == 'dev'", specifier = ">=0.26.4" },
+    { name = "typer", specifier = ">=0.26.7" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.26.7" },
+    { name = "typer", marker = "extra == 'dev'", specifier = ">=0.26.7" },
     { name = "urllib3", specifier = ">=2.7.0" },
-    { name = "uvicorn", specifier = ">=0.48.0" },
+    { name = "uvicorn", specifier = ">=0.49.0" },
     { name = "websockets", specifier = ">=16.0" },
     { name = "zeroconf", specifier = ">=0.149.16" },
 ]

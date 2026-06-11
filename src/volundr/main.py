@@ -48,6 +48,7 @@ from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
@@ -57,6 +58,7 @@ from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
+from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_communication_cursors import (
@@ -385,6 +387,31 @@ async def _broadcast_periodic_updates(
             break
         except Exception:
             logger.exception("SSE periodic broadcast failed")
+
+
+async def _reconcile_liveness_loop(
+    session_service: SessionService,
+    *,
+    interval_seconds: int,
+    stale_after_seconds: int,
+) -> None:
+    """Periodically mark running sessions whose broker has gone silent as stopped."""
+    logger.info(
+        "Liveness reconciliation started, interval=%ds stale_after=%ds",
+        interval_seconds,
+        stale_after_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            count = await session_service.reconcile_liveness(stale_after_seconds)
+            if count:
+                logger.info("Liveness: reconciled %d stale running session(s)", count)
+        except asyncio.CancelledError:
+            logger.info("Liveness reconciliation task cancelled")
+            break
+        except Exception:
+            logger.exception("Liveness reconciliation iteration failed")
 
 
 def _create_otel_providers(otel_cfg):  # pragma: no cover
@@ -965,6 +992,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(events_router)
+
+            # Durable full-fidelity transcript log: ingest (skuld) + cursor replay
+            session_event_log = PostgresSessionEventLog(pool)
+            session_log_router = create_session_log_router(
+                session_event_log,
+                session_service=session_service,
+                prefix="/api/v1/forge",
+            )
+            app.include_router(session_log_router)
+
             trace_router = create_trace_router(
                 span_repository,
                 session_service=session_service,
@@ -1004,6 +1041,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
+
+            # Start liveness reconciliation: expire running sessions whose broker
+            # has gone silent so clients stop dialing dead chat endpoints.
+            liveness_task: asyncio.Task | None = None
+            if settings.session_liveness.enabled:
+                liveness_task = asyncio.create_task(
+                    _reconcile_liveness_loop(
+                        session_service,
+                        interval_seconds=settings.session_liveness.check_interval_seconds,
+                        stale_after_seconds=settings.session_liveness.stale_after_seconds,
+                    )
+                )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1027,6 +1076,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await background_task
                 except asyncio.CancelledError:
                     pass  # Expected: task cancellation during shutdown
+                if liveness_task is not None:
+                    liveness_task.cancel()
+                    try:
+                        await liveness_task
+                    except asyncio.CancelledError:
+                        pass  # Expected: task cancellation during shutdown
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()

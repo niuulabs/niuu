@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -354,8 +354,23 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
+        # The broker rides the CLI/agent conversation id on activity reports.
+        # Persist it as a first-class field (so the session can be resumed after
+        # a stop) and keep it OUT of activity_metadata, which is clobbered below.
+        cli_session_id = metadata.pop("cli_session_id", None)
+        if cli_session_id and cli_session_id != session.cli_session_id:
+            session.cli_session_id = cli_session_id
+
         session.activity_state = state
         session.activity_metadata = metadata
+        # Treat each activity report as a liveness heartbeat so the reconciler can
+        # tell a live-but-idle session from one whose broker has died.
+        session.last_active = datetime.now(UTC)
+        # A heartbeat is PROOF OF LIFE — a lingering liveness verdict is now
+        # demonstrably false, so clear it (only liveness errors: real failure
+        # records from other paths must stay visible).
+        if session.error and session.error.startswith("liveness:"):
+            session.error = None
         updated = await self._repository.update(session)
 
         if self._broadcaster is not None:
@@ -374,6 +389,40 @@ class SessionService:
         if self._should_auto_stop_after_activity(updated, state, metadata):
             self._schedule_activity_stop(updated.id)
         return updated
+
+    async def reconcile_liveness(self, stale_after_seconds: int) -> int:
+        """Mark running sessions with no recent activity heartbeat as stopped.
+
+        A session whose broker has died otherwise sits in ``running`` forever
+        with a stale ``chat_endpoint``; clients then open a socket to a tombstone
+        and see nothing. Reconciling clears the endpoint and flips the status to
+        ``stopped`` (resumable) so the list reflects reality.
+
+        Returns the number of sessions reconciled.
+        """
+        threshold = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        stale = await self._repository.list_stale_running(threshold)
+        reconciled = 0
+        for session in stale:
+            stopped = session.model_copy(
+                update={
+                    "status": SessionStatus.STOPPED,
+                    "chat_endpoint": None,
+                    "code_endpoint": None,
+                    "error": "liveness: no activity heartbeat — broker presumed dead",
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            result = await self._repository.update(stopped)
+            reconciled += 1
+            logger.warning(
+                "Liveness: marked stale running session %s as stopped (last_active=%s)",
+                session.id,
+                session.last_active,
+            )
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(result)
+        return reconciled
 
     def _should_auto_stop_after_activity(
         self,
@@ -645,6 +694,11 @@ class SessionService:
                 "status": SessionStatus.STARTING,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
+                # A restart is an explicit "bring it back": stale failure
+                # detail (e.g. the liveness reaper's "broker presumed dead")
+                # must not survive onto the healthy relaunched session — the
+                # clients render `error` as a Session-error banner verbatim.
+                "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
             }
@@ -788,32 +842,37 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
-        self._overlay_external_resume(session, spec)
+        self._overlay_resume_session(session, spec)
         return await self._pod_manager.start(session, spec=spec)
 
     @staticmethod
-    def _overlay_external_resume(session: Session, spec: SessionSpec) -> None:
-        """Force broker config to resume the native CLI session when imported.
+    def _overlay_resume_session(session: Session, spec: SessionSpec) -> None:
+        """Seed the broker with a conversation id to resume, when one exists.
 
-        Imported sessions carry the harness's own session/thread id. The
-        broker must use a resume-capable transport: Claude's default SDK
-        transport cannot resume, so imported Claude sessions are pinned to
-        the persistent subprocess transport (``claude --resume``); Codex
-        resumes through the WebSocket transport's ``thread/resume`` RPC.
+        Imported sessions carry the harness's own session/thread id
+        (``external_session_id``) and must be pinned to a resume-capable
+        transport for their origin. Volundr-born sessions carry the
+        ``cli_session_id`` captured from broker activity reports — restarting
+        them reloads the prior conversation on whatever transport their
+        definition selects (SDK, persistent subprocess, and Codex WebSocket
+        all support resume).
         """
-        if not session.external_session_id:
+        if session.external_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker["resumeSessionId"] = session.external_session_id
+            if session.origin == "claude":
+                broker["cliType"] = "claude"
+                broker["transportAdapter"] = (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                )
+            if session.origin == "codex":
+                broker["cliType"] = "codex-ws"
+                broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
             return
 
-        broker = spec.values.setdefault("broker", {})
-        broker["resumeSessionId"] = session.external_session_id
-        if session.origin == "claude":
-            broker["cliType"] = "claude"
-            broker["transportAdapter"] = (
-                "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
-            )
-        if session.origin == "codex":
-            broker["cliType"] = "codex-ws"
-            broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
+        if session.cli_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker.setdefault("resumeSessionId", session.cli_session_id)
 
     async def _run_cleanup(
         self,

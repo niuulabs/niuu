@@ -56,6 +56,61 @@ class TestUpdateActivity:
         assert updated.activity_metadata == metadata
 
     @pytest.mark.asyncio
+    async def test_update_activity_clears_stale_liveness_error(self, service, repository):
+        """A heartbeat is proof of life — a lingering liveness verdict is
+        demonstrably false and must clear (the clients render `error` as a
+        Session-error banner on an otherwise healthy running session)."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        stamped = session.model_copy(
+            update={"error": "liveness: no activity heartbeat — broker presumed dead"}
+        )
+        await repository.update(stamped)
+
+        updated = await service.update_activity(session.id, SessionActivityState.ACTIVE, {})
+        assert updated.error is None
+
+    @pytest.mark.asyncio
+    async def test_update_activity_keeps_non_liveness_errors(self, service, repository):
+        """Only liveness verdicts clear on heartbeat — real failure detail from
+        other paths stays visible."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        stamped = session.model_copy(update={"error": "provisioning failed: no disk"})
+        await repository.update(stamped)
+
+        updated = await service.update_activity(session.id, SessionActivityState.ACTIVE, {})
+        assert updated.error == "provisioning failed: no disk"
+
+    @pytest.mark.asyncio
+    async def test_update_activity_persists_cli_session_id(self, service):
+        """A cli_session_id in the report is persisted on the session and kept
+        out of activity_metadata (so it survives a stop for resume)."""
+        session = await service.create_session(
+            name="Resumable",
+            model="claude-opus-4-8",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        assert session.cli_session_id is None
+
+        updated = await service.update_activity(
+            session.id,
+            SessionActivityState.ACTIVE,
+            {"turn_count": 1, "cli_session_id": "claude-abc-123"},
+        )
+
+        assert updated.cli_session_id == "claude-abc-123"
+        assert "cli_session_id" not in updated.activity_metadata
+        reloaded = await service.get_session(session.id)
+        assert reloaded.cli_session_id == "claude-abc-123"
+
+    @pytest.mark.asyncio
     async def test_update_activity_broadcasts_event(self, service, broadcaster):
         """update_activity should broadcast a SESSION_ACTIVITY event."""
         session = await service.create_session(

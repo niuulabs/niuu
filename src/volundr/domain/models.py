@@ -426,6 +426,15 @@ class Session(BaseModel):
         max_length=255,
         description="Native CLI session/thread id for imported sessions",
     )
+    cli_session_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "CLI/agent conversation id (Claude session UUID or Codex thread id) "
+            "captured at runtime, used to resume the prior conversation when the "
+            "session is restarted."
+        ),
+    )
 
     model_config = {"frozen": False}
 
@@ -849,6 +858,32 @@ class SessionEvent:
     cost: Decimal | None = None
     duration_ms: int | None = None
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionLogEntry:
+    """One full-fidelity, append-only frame in a session's durable event log.
+
+    Unlike :class:`SessionEvent` (analytics previews), this preserves the
+    COMPLETE agent output verbatim — assistant text, thinking, tool_use,
+    tool_result, deltas — ordered by a monotonic per-session ``seq``. It is the
+    source of truth for transcript replay: any client can resume from a cursor
+    (``seq``) and reconstruct the full conversation regardless of whether a
+    socket was attached when the frames were produced.
+
+    ``kind`` is the open-vocabulary wire frame type (e.g. ``assistant``,
+    ``content_block_delta``, ``tool_use``, ``tool_result``, ``result``,
+    ``user``). ``payload`` is the raw frame, preserved without truncation.
+    ``request_id`` correlates frames to the turn that produced them.
+    """
+
+    session_id: UUID
+    seq: int
+    kind: str
+    payload: dict
+    ts: datetime
+    role: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)

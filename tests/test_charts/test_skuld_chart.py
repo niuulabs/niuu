@@ -63,9 +63,11 @@ class TestValuesDefaults:
         assert env_secrets[0]["secretName"] == "anthropic-api-key"
         assert env_secrets[0]["secretKey"] == "api-key"
 
-    def test_env_vars_defaults_to_empty_list(self, values_yaml):
-        """Test envVars defaults to an empty list."""
-        assert values_yaml["envVars"] == []
+    def test_env_vars_default_pins_api_key_auth(self, values_yaml):
+        """Cluster pods have no ~/.claude login — Claude transports must keep
+        the injected ANTHROPIC_API_KEY rather than the subscription default."""
+        env_vars = values_yaml["envVars"]
+        assert env_vars == [{"name": "SKULD__CLAUDE_AUTH", "value": "api_key"}]
 
     def test_service_exposes_single_entry_port(self, values_yaml):
         """Test service configuration has single nginx entry port."""

@@ -301,3 +301,217 @@ def test_no_resume_flag_without_seed() -> None:
 
     assert "--resume" not in cmd
     assert "--append-system-prompt" in cmd
+
+
+@pytest.mark.asyncio
+async def test_seeded_resume_skips_initial_prompt(tmp_path) -> None:
+    """On resume the prior conversation already contains the initial prompt —
+    replaying it would double-seed history."""
+    proc = _make_proc([])
+    transport = PersistentSubprocessTransport(
+        str(tmp_path),
+        initial_prompt="kick off the task",
+        resume_session_id="sess-resume-1",
+    )
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        await transport.start()
+
+    assert proc.stdin.buf == bytearray()
+    await transport.stop()
+
+
+def test_flag_off_keeps_bypass_permissions_and_no_control_protocol() -> None:
+    """Default: classic bypassPermissions behavior, no stdio permission tool."""
+    transport = PersistentSubprocessTransport("/tmp", skip_permissions=True)
+
+    cmd = transport._build_command()
+
+    assert "--permission-mode" in cmd
+    assert "bypassPermissions" in cmd
+    assert "--permission-prompt-tool" not in cmd
+
+
+def test_flag_on_routes_permissions_over_stdio() -> None:
+    """SKULD__ASK_USER_QUESTION_ENABLED routes permissions over the control
+    protocol so AskUserQuestion reaches a human; bypassPermissions would
+    auto-dismiss it."""
+    transport = PersistentSubprocessTransport(
+        "/tmp",
+        skip_permissions=True,
+        ask_user_question_enabled=True,
+    )
+
+    cmd = transport._build_command()
+
+    assert "--permission-prompt-tool" in cmd
+    assert "stdio" in cmd
+    assert "--permission-mode" not in cmd
+
+
+class TestPermissionControlProtocol:
+    """The stdio control protocol behind SKULD__ASK_USER_QUESTION_ENABLED."""
+
+    def _transport_with_stdin(self, tmp_path) -> tuple[PersistentSubprocessTransport, MagicMock]:
+        transport = PersistentSubprocessTransport(str(tmp_path), ask_user_question_enabled=True)
+        proc = _make_proc([])
+        transport._process = proc
+        return transport, proc
+
+    @pytest.mark.asyncio
+    async def test_can_use_tool_allows_ordinary_tools(self, tmp_path) -> None:
+        transport, proc = self._transport_with_stdin(tmp_path)
+
+        await transport._handle_control_request(
+            {
+                "type": "control_request",
+                "request_id": "req-1",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Write",
+                    "input": {"file_path": "/tmp/x"},
+                },
+            }
+        )
+
+        written = json.loads(bytes(proc.stdin.buf).decode())
+        assert written["response"]["subtype"] == "success"
+        assert written["response"]["response"]["behavior"] == "allow"
+        assert written["response"]["response"]["updatedInput"] == {"file_path": "/tmp/x"}
+
+    @pytest.mark.asyncio
+    async def test_unsupported_subtype_returns_error(self, tmp_path) -> None:
+        transport, proc = self._transport_with_stdin(tmp_path)
+
+        await transport._handle_control_request(
+            {"request_id": "req-2", "request": {"subtype": "hook_callback"}}
+        )
+
+        written = json.loads(bytes(proc.stdin.buf).decode())
+        assert written["response"]["subtype"] == "error"
+        assert "Unsupported" in written["response"]["error"]
+
+    @pytest.mark.asyncio
+    async def test_ask_user_question_blocks_until_answered(self, tmp_path) -> None:
+        """The full HITL loop: question emitted to clients, turn blocks, the
+        ask_user_answer control resolves it as a deny-with-message the model
+        reads."""
+        transport, proc = self._transport_with_stdin(tmp_path)
+        events: list[dict] = []
+
+        async def collect(event: dict) -> None:
+            events.append(event)
+
+        transport.on_event(collect)
+
+        task = asyncio.create_task(
+            transport._handle_control_request(
+                {
+                    "request_id": "req-3",
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "AskUserQuestion",
+                        "tool_use_id": "toolu_1",
+                        "input": {
+                            "questions": [
+                                {
+                                    "header": "Color",
+                                    "question": "Pick one",
+                                    "options": ["red", "blue"],
+                                }
+                            ]
+                        },
+                    },
+                }
+            )
+        )
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if events:
+                break
+        question = events[0]
+        assert question["type"] == "ask_user_question"
+        assert not task.done(), "the turn must block until a client answers"
+
+        await transport.send_control(
+            "ask_user_answer",
+            request_id=question["request_id"],
+            answers=[{"answer": "blue"}],
+        )
+        await asyncio.wait_for(task, timeout=2)
+
+        written = json.loads(bytes(proc.stdin.buf).decode())
+        response = written["response"]["response"]
+        assert response["behavior"] == "deny"
+        assert "Color: blue" in response["message"]
+
+    @pytest.mark.asyncio
+    async def test_ask_user_question_without_questions_denies(self, tmp_path) -> None:
+        transport, _ = self._transport_with_stdin(tmp_path)
+
+        response = await transport._answer_ask_user_question({}, "toolu_2")
+
+        assert response["behavior"] == "deny"
+        assert "No questions" in response["message"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_answer_request_id_is_ignored(self, tmp_path) -> None:
+        transport, _ = self._transport_with_stdin(tmp_path)
+        await transport.send_control("ask_user_answer", request_id="nope", answers=[])
+
+    @pytest.mark.asyncio
+    async def test_initialize_handshake_resolves_on_control_response(self, tmp_path) -> None:
+        transport, proc = self._transport_with_stdin(tmp_path)
+
+        task = asyncio.create_task(transport._send_initialize())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if proc.stdin.buf:
+                break
+        sent = json.loads(bytes(proc.stdin.buf).decode())
+        assert sent["request"]["subtype"] == "initialize"
+
+        transport._handle_control_response(
+            {
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": sent["request_id"]},
+            }
+        )
+        await asyncio.wait_for(task, timeout=2)
+
+    def test_control_response_error_sets_exception(self, tmp_path) -> None:
+        transport = PersistentSubprocessTransport(str(tmp_path))
+        loop = asyncio.new_event_loop()
+        try:
+            fut = loop.create_future()
+            transport._pending_control["req-err"] = fut
+            transport._handle_control_response(
+                {"response": {"subtype": "error", "request_id": "req-err", "error": "boom"}}
+            )
+            assert fut.done() and isinstance(fut.exception(), Exception)
+        finally:
+            loop.close()
+
+
+class TestAnswerFormatting:
+    def test_multi_question_multi_answer(self) -> None:
+        from skuld.transports.persistent_subprocess import _format_answer_message
+
+        text = _format_answer_message(
+            [
+                {"header": "Color", "question": "Pick"},
+                {"question": "Size?"},
+                {"header": "Extras"},
+            ],
+            [{"answer": "blue"}, {"answer": ["s", "m"]}],
+        )
+
+        assert "- Color: blue" in text
+        assert "- Size?: s, m" in text
+        assert "- Extras: (no answer)" in text
+
+    def test_non_list_answers_tolerated(self) -> None:
+        from skuld.transports.persistent_subprocess import _format_answer_message
+
+        text = _format_answer_message([{"header": "Q"}], "garbage")
+        assert "- Q: (no answer)" in text

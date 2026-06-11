@@ -1,7 +1,7 @@
 """PostgreSQL adapter for session repository."""
 
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
@@ -26,10 +26,10 @@ class PostgresSessionRepository(SessionRepository):
                  created_at, updated_at, last_active, message_count, tokens_used,
                  pod_name, error, tracker_issue_id, issue_tracker_url,
                  launch_spec_id, archived_at, owner_id, tenant_id, workload_type,
-                 origin, external_session_id)
+                 origin, external_session_id, cli_session_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                    $22, $23)
+                    $22, $23, $24)
             """,
             session.id,
             session.name,
@@ -54,6 +54,7 @@ class PostgresSessionRepository(SessionRepository):
             session.workload_type,
             session.origin,
             session.external_session_id,
+            session.cli_session_id,
         )
         return session
 
@@ -123,7 +124,7 @@ class PostgresSessionRepository(SessionRepository):
                 pod_name = $12, error = $13, tracker_issue_id = $14,
                 issue_tracker_url = $15, launch_spec_id = $16, archived_at = $17,
                 owner_id = $18, tenant_id = $19, workload_type = $20,
-                origin = $21, external_session_id = $22
+                origin = $21, external_session_id = $22, cli_session_id = $23
             WHERE id = $1
             """,
             session.id,
@@ -148,8 +149,21 @@ class PostgresSessionRepository(SessionRepository):
             session.workload_type,
             session.origin,
             session.external_session_id,
+            session.cli_session_id,
         )
         return session
+
+    async def list_stale_running(self, older_than: datetime) -> "list[Session]":
+        """Return RUNNING sessions whose last_active is at/before older_than."""
+        rows = await self._pool.fetch(
+            """SELECT * FROM sessions
+               WHERE status = $1
+                 AND COALESCE(last_active, created_at) <= $2
+               ORDER BY last_active ASC""",
+            SessionStatus.RUNNING.value,
+            older_than,
+        )
+        return [self._row_to_session(row) for row in rows]
 
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session by ID."""
@@ -201,6 +215,7 @@ class PostgresSessionRepository(SessionRepository):
             workload_type=row.get("workload_type") or "session",
             origin=row.get("origin") or "volundr",
             external_session_id=row.get("external_session_id"),
+            cli_session_id=row.get("cli_session_id"),
         )
 
     @staticmethod
