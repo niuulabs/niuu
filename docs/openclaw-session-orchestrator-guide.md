@@ -176,6 +176,12 @@ Volundr's Forge session-create API uses `definition` to pick the runtime, for ex
 - `skuldClaude`
 - `skuldCodex`
 - `skuldOpenCode`
+- `skuldClaudeRemote` — Claude Code Remote Control: the broker launches
+  `claude remote-control` and surfaces a pairing URL
+  (`https://claude.ai/code?environment=env_...`) as an assistant turn and as a
+  structured `remote_control` event. The NATIVE app drives the conversation —
+  the broker cannot send turns into these sessions.
+- `skuldCodexRemote` — fails fast until the standalone Codex install exists.
 
 Example:
 
@@ -252,6 +258,39 @@ local workspaces and CLI session stores. An empty
 `local_mounts_allowed_prefixes` means any host directory may be used as a
 session workspace; a non-empty list restricts workspaces (and external session
 imports) to those path prefixes.
+
+#### Defaults worth knowing (and their switches)
+
+- **Default model** is `claude-opus-4-8` platform-wide; Claude sessions run at
+  model-aware reasoning effort (`xhigh` on Opus 4.7/4.8, `max` on 4.6), Codex
+  at `high`. Pick cheaper models/efforts explicitly when cost matters.
+- **Stop summarization is OFF** by default — stopping a session no longer burns
+  an LLM pass to write a chronicle summary. Re-enable with
+  `SKULD__CHRONICLE_ON_STOP_ENABLED=true`.
+- **The chronicle watcher is OFF** by default (it tailed session JSONL and
+  posted timeline events most deployments never read). Re-enable with
+  `SKULD__CHRONICLE_WATCHER_ENABLED=true`.
+- **Liveness reconciliation is OFF** by default. When enabled, a background
+  reconciler marks `running` sessions with no activity heartbeat for
+  `stale_after_seconds` as `stopped`, clears their endpoints, and stamps a
+  `liveness:` error (which the next heartbeat or restart clears). Brokers
+  currently report activity only on STATE CHANGES, so use a generous threshold
+  or a quiet-but-alive session may be falsely reaped:
+
+  ```yaml
+  session_liveness:
+    enabled: true
+    stale_after_seconds: 7200
+    check_interval_seconds: 120
+  ```
+
+- **Human-in-the-loop AskUserQuestion is OFF** by default. When
+  `SKULD__ASK_USER_QUESTION_ENABLED=true`, Claude tool permissions route over
+  the control protocol: every tool is auto-allowed EXCEPT `AskUserQuestion`,
+  which is emitted to clients as an `ask_user_question` event and BLOCKS the
+  turn until some client sends `ask_user_answer` over the session WebSocket.
+  Only enable this when your controller (or a human UI) actually answers those
+  events — otherwise a questioning agent hangs its turn forever.
 
 #### `session_definitions` overrides are partial now
 
@@ -594,6 +633,24 @@ If needed:
 <chat_endpoint>?access_token=<token>
 ```
 
+### Human-in-the-loop question frames (optional)
+
+When the deployment runs with `SKULD__ASK_USER_QUESTION_ENABLED=true`, the
+broker may emit:
+
+```json
+{"type": "ask_user_question", "request_id": "q-1", "question": "...", "options": [...]}
+```
+
+The turn blocks until a client answers:
+
+```json
+{"type": "ask_user_answer", "request_id": "q-1", "answer": "beta"}
+```
+
+A controller that cannot meaningfully answer should surface the question to a
+human rather than auto-answering.
+
 ### What to send
 
 The simplest valid user frame is:
@@ -755,6 +812,30 @@ Expected response:
   "session_id": "<id>"
 }
 ```
+
+### Durable event-log replay (full fidelity)
+
+Every CLI frame a session produces — assistant text, thinking, tool_use,
+tool_result, deltas — is durably captured to an append-only per-session event
+log, whether or not any client socket was attached. This is the
+strongest-fidelity transcript source and the right way to reconstruct history
+after a reconnect:
+
+```http
+GET /api/v1/forge/sessions/{id}/log/head     -> {"latest_seq": 726}
+GET /api/v1/forge/sessions/{id}/log?after=0  -> [ {seq, kind, role, payload, ts}, ... ]
+```
+
+Controller rules:
+
+- Replay returns a JSON LIST ordered by `seq`; page with `after=<last seq>`
+  until you reach `latest_seq`.
+- `ts` is the EMISSION time stamped by the broker at capture, so replayed
+  timelines reflect when things actually happened.
+- Human turns are mirrored into the log too, so a pure log replay shows the
+  full dialogue.
+- History survives session deletion (no FK); there is currently NO retention
+  policy, so operators of busy deployments should plan pruning.
 
 ### Read conversation history
 
