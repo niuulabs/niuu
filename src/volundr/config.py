@@ -377,6 +377,44 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldClaudeRemote": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Remote Control",
+            description=(
+                "Claude Code in Remote Control mode — pair with the Claude app or "
+                "claude.ai/code; the native app drives the session"
+            ),
+            labels=["session", "claude", "remote-control"],
+            default_model="",
+            compatible_providers=["anthropic"],
+            defaults={
+                "broker": {
+                    "cliType": "claude",
+                    "transportAdapter": "skuld.transports.remote_control.RemoteControlTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldCodexRemote": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Codex Remote Control",
+            description=(
+                "Codex Remote Control — requires the standalone Codex install; "
+                "fails fast with guidance until it exists"
+            ),
+            labels=["session", "codex", "remote-control"],
+            default_model="",
+            compatible_providers=["openai"],
+            defaults={
+                "broker": {
+                    "cliType": "codex",
+                    "transportAdapter": (
+                        "skuld.transports.remote_control.CodexRemoteControlTransport"
+                    ),
+                    "agentTeams": False,
+                },
+            },
+        ),
     }
 
 

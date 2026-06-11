@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import signal
+import subprocess
 from contextlib import suppress
 
 from niuu.ports.cli import CLITransport, TransportCapabilities
@@ -206,6 +207,41 @@ class RemoteControlTransport(CLITransport):
                     {"type": "remote_control", "subtype": "resurface", "url": self._url}
                 )
 
+    @staticmethod
+    def _iter_processes() -> list[tuple[int, str]]:
+        """Yield (pid, command line) for every visible process.
+
+        Reads ``/proc`` where it exists (Linux); falls back to ``ps`` output on
+        macOS, where mini-mode brokers run and ``/proc`` is absent — without the
+        fallback ``stop()`` would silently leave the detached RC worker running.
+        """
+        entries: list[tuple[int, str]] = []
+        proc_paths = glob.glob("/proc/[0-9]*/cmdline")
+        if proc_paths:
+            for path in proc_paths:
+                try:
+                    raw = open(path, "rb").read()
+                except Exception:
+                    continue
+                cl = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+                entries.append((int(path.rsplit("/", 2)[1]), cl))
+            return entries
+        try:
+            out = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout
+        except Exception:
+            return entries
+        for line in out.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            entries.append((int(parts[0]), parts[1]))
+        return entries
+
     def _sweep_kill(self, sig: int) -> int:
         """Signal every ``remote-control`` process carrying our unique token.
 
@@ -217,14 +253,10 @@ class RemoteControlTransport(CLITransport):
         if not self._token:
             return 0
         killed = 0
-        for path in glob.glob("/proc/[0-9]*/cmdline"):
-            try:
-                cl = open(path, "rb").read().replace(b"\0", b" ").decode("utf-8", "replace")
-            except Exception:
-                continue
+        for pid, cl in self._iter_processes():
             if "remote-control" in cl and self._token in cl:
                 with suppress(Exception):
-                    os.kill(int(path.rsplit("/", 2)[1]), sig)
+                    os.kill(pid, sig)
                     killed += 1
         return killed
 
