@@ -111,6 +111,8 @@ _OPTIONAL_HIGH_VOLUME_HOOK_EVENTS = [
     "MessageDisplay",
 ]
 
+_SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
+
 
 @dataclass
 class _TmuxResult:
@@ -216,6 +218,10 @@ class TmuxInteractiveTransport(CLITransport):
         self._pane_sequences: dict[str, int] = {}
         self._pane_watcher_task: asyncio.Task[None] | None = None
         self._last_result: dict | None = None
+        self._slash_commands_cache = self._normalize_slash_command_items(
+            _BUILT_IN_SLASH_COMMANDS,
+            source="static",
+        )
 
         self._turn_active = False
         self._turn_started_at = 0.0
@@ -393,14 +399,45 @@ class TmuxInteractiveTransport(CLITransport):
         if subtype in {"slash_command", "terminal_slash_command"}:
             command = self._coerce_str(kwargs.get("command"))
             if command:
-                command = command if command.startswith("/") else f"/{command}"
-                await self.send_message(command)
+                await self._send_slash_command(
+                    command,
+                    arguments=(
+                        self._coerce_str(kwargs.get("arguments"))
+                        or self._coerce_str(kwargs.get("args"))
+                    ),
+                    pane_id=self._coerce_str(kwargs.get("pane_id")),
+                )
             return
 
         if subtype in {"redirect", "steer"}:
             content = self._coerce_str(kwargs.get("content"))
             if content:
                 await self._paste_text(content, enter=True)
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Discover slash commands from Claude Code's live `/` autocomplete menu."""
+        if not refresh and self._slash_commands_cache:
+            return list(self._slash_commands_cache)
+        if not self.is_alive:
+            await self.start()
+        if self._turn_active:
+            return list(self._slash_commands_cache)
+
+        async with self._send_lock:
+            if self._turn_active:
+                return list(self._slash_commands_cache)
+            commands = await self._discover_slash_commands_from_terminal()
+            if commands:
+                self._slash_commands_cache = commands
+                await self._emit(
+                    {
+                        "type": "slash_commands",
+                        "event_type": "slash.commands",
+                        "commands": commands,
+                        "source": "tmux_autocomplete",
+                    }
+                )
+            return list(self._slash_commands_cache)
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
         await self._emit(
@@ -1090,6 +1127,73 @@ class TmuxInteractiveTransport(CLITransport):
             }
         )
 
+    async def _send_slash_command(
+        self,
+        command: str,
+        *,
+        arguments: str = "",
+        pane_id: str | None = None,
+    ) -> None:
+        text = command.strip()
+        if not text:
+            return
+        if not text.startswith("/"):
+            text = f"/{text}"
+        arguments = arguments.strip()
+        if arguments:
+            text = f"{text} {arguments}"
+        await self._paste_text(text, enter=True, pane_id=pane_id)
+        await self._emit(
+            {
+                "type": "slash_command_sent",
+                "event_type": "slash.command.sent",
+                "command": text.split(maxsplit=1)[0],
+                "input": text,
+                "pane_id": self._target_pane(pane_id),
+            }
+        )
+
+    async def _discover_slash_commands_from_terminal(self) -> list[dict]:
+        target = self._target_pane(None)
+        captures: list[str] = []
+        try:
+            await self._send_key_raw("Escape", pane_id=target)
+            await asyncio.sleep(0.05)
+            await self._send_key_raw("C-u", pane_id=target)
+            await asyncio.sleep(0.05)
+            await self._send_key_raw("/", pane_id=target)
+            await asyncio.sleep(0.25)
+            for _ in range(12):
+                result = await self._run_tmux(
+                    "capture-pane",
+                    "-t",
+                    target,
+                    "-p",
+                    "-S",
+                    "-200",
+                )
+                captures.append(result.stdout)
+                for _ in range(10):
+                    await self._send_key_raw("Down", pane_id=target)
+                await asyncio.sleep(0.05)
+        finally:
+            with suppress(Exception):
+                await self._send_key_raw("Escape", pane_id=target)
+                await self._send_key_raw("C-u", pane_id=target)
+
+        commands: list[dict] = []
+        seen: set[str] = set()
+        for capture in captures:
+            for item in self._parse_slash_command_menu(capture):
+                if item["name"] in seen:
+                    continue
+                seen.add(item["name"])
+                commands.append(item)
+        return commands
+
+    async def _send_key_raw(self, key: str, *, pane_id: str | None = None) -> None:
+        await self._run_tmux("send-keys", "-t", self._target_pane(pane_id), key)
+
     async def _resize_pane(self, *, cols: int, rows: int, pane_id: str | None = None) -> None:
         target = self._target_pane(pane_id)
         await self._run_tmux("resize-pane", "-t", target, "-x", str(cols), "-y", str(rows))
@@ -1201,6 +1305,86 @@ class TmuxInteractiveTransport(CLITransport):
         cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned
+
+    @classmethod
+    def _parse_slash_command_menu(cls, text: str) -> list[dict]:
+        rows = cls._normalize_terminal_rows(text)
+        commands: list[dict] = []
+        current: dict | None = None
+        for row in rows:
+            match = _SLASH_COMMAND_ROW_RE.match(row.strip())
+            if match:
+                name = match.group(1)
+                description = match.group(2).strip()
+                current = cls._normalize_slash_command_item(
+                    {
+                        "name": name,
+                        "description": description,
+                        "kind": cls._infer_slash_command_kind(description),
+                    },
+                    source="tmux_autocomplete",
+                )
+                commands.append(current)
+                continue
+            if current is None:
+                continue
+            continuation = row.strip()
+            if (
+                not continuation
+                or continuation.startswith("/")
+                or cls._is_terminal_chrome_row(continuation)
+            ):
+                continue
+            current["description"] = f"{current['description']} {continuation}".strip()
+        return commands
+
+    @classmethod
+    def _normalize_slash_command_items(
+        cls,
+        items: list[dict] | list[str],
+        *,
+        source: str,
+    ) -> list[dict]:
+        normalized: list[dict] = []
+        seen: set[str] = set()
+        for item in items:
+            command = cls._normalize_slash_command_item(item, source=source)
+            if not command or command["name"] in seen:
+                continue
+            seen.add(command["name"])
+            normalized.append(command)
+        return normalized
+
+    @classmethod
+    def _normalize_slash_command_item(cls, item: dict | str, *, source: str) -> dict:
+        if isinstance(item, str):
+            raw_name = item
+            description = ""
+            kind = "command"
+        else:
+            raw_name = cls._coerce_str(item.get("name")) or cls._coerce_str(item.get("command"))
+            description = cls._coerce_str(item.get("description"))
+            kind = cls._coerce_str(item.get("kind")) or cls._infer_slash_command_kind(description)
+        raw_name = raw_name.strip()
+        if not raw_name:
+            return {}
+        name = raw_name if raw_name.startswith("/") else f"/{raw_name}"
+        return {
+            "name": name,
+            "command": name[1:],
+            "description": description.strip(),
+            "kind": kind or "command",
+            "source": source,
+        }
+
+    @staticmethod
+    def _infer_slash_command_kind(description: str) -> str:
+        lowered = description.lower()
+        if "dynamic workflow" in lowered:
+            return "workflow"
+        if "[skill]" in lowered:
+            return "skill"
+        return "command"
 
     @classmethod
     def _normalize_terminal_rows(cls, text: str) -> list[str]:

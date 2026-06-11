@@ -34,6 +34,7 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
             **kwargs,
         )
         self.commands: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+        self.loaded_buffers: list[str] = []
         self.session_exists = False
         self.capture_stdout = ""
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
@@ -56,6 +57,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
             return _TmuxResult(0)
         if command == "list-panes":
             return _TmuxResult(0, "\n".join(self.pane_lines) + "\n")
+        if command == "load-buffer":
+            self.loaded_buffers.append(Path(args[-1]).read_text(encoding="utf-8"))
+            return _TmuxResult(0)
         if command == "capture-pane":
             return _TmuxResult(0, self.capture_stdout)
         return _TmuxResult(0)
@@ -196,6 +200,61 @@ async def test_terminal_input_strips_carriage_returns(tmp_path: Path) -> None:
     assert not input_path.exists()
     input_event = next(event for event in events if event["type"] == "terminal_input_sent")
     assert input_event["bytes"] == len(b"first\nsecond")
+
+
+@pytest.mark.asyncio
+async def test_slash_command_control_pastes_terminal_input_without_chat_turn(
+    tmp_path: Path,
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.send_control(
+        "slash_command",
+        command="workflows",
+        arguments="--all",
+        pane_id="%1",
+    )
+    await transport.stop()
+
+    assert "/workflows --all" in transport.loaded_buffers
+    assert ("send-keys", "-t", "%1", "Enter") in [args for args, _ in transport.commands]
+    assert any(event["type"] == "slash_command_sent" for event in events)
+    assert not any(event["type"] == "assistant" for event in events)
+    assert not any(event["type"] == "result" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    transport.capture_stdout = "\n".join(
+        [
+            "❯ /",
+            "────────────────",
+            "/deep-research                [dynamic workflow] Deep research harness",
+            "                              with wrapped details",
+            "/workflows                    Browse running and completed workflows",
+            "/compact                      Free up context",
+        ]
+    )
+    await transport.start()
+
+    commands = await transport.discover_slash_commands(refresh=True)
+    await transport.stop()
+
+    assert {(command["name"], command["kind"], command["source"]) for command in commands} >= {
+        ("/deep-research", "workflow", "tmux_autocomplete"),
+        ("/workflows", "command", "tmux_autocomplete"),
+        ("/compact", "command", "tmux_autocomplete"),
+    }
+    deep_research = next(command for command in commands if command["name"] == "/deep-research")
+    assert "wrapped details" in deep_research["description"]
+    sent_keys = [args for args, _ in transport.commands if args and args[0] == "send-keys"]
+    assert ("send-keys", "-t", "%1", "/") in sent_keys
+    assert ("send-keys", "-t", "%1", "Down") in sent_keys
+    assert any(event["type"] == "slash_commands" for event in events)
 
 
 @pytest.mark.asyncio

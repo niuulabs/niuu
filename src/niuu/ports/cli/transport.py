@@ -77,6 +77,10 @@ class CLITransport(ABC):
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Send a server-initiated control message."""
 
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Return slash commands available in this transport, if discoverable."""
+        return []
+
     @property
     @abstractmethod
     def session_id(self) -> str | None:

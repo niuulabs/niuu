@@ -46,20 +46,27 @@ Manual checks:
 2. Connect to the session WebSocket and confirm capabilities include
    `terminal_output`, `terminal_input`, `terminal_keys`, `terminal_resize`,
    `terminal_panes`, `slash_commands`, and `interrupt`.
-3. Send a normal chat message and verify:
+3. Fetch `GET /api/slash-commands` and verify the response includes live
+   commands from Claude Code's `/` autocomplete menu, including custom
+   project/user commands and workflow commands such as `/workflows` when
+   available.
+4. Send `{"type":"discover_slash_commands","refresh":true}` over the session
+   WebSocket and verify the response is `{"type":"slash_commands", ...}`.
+5. Send `POST /api/slash-commands/send` with `{"command":"workflows"}` or send
+   `{"type":"slash_command","command":"workflows"}` over the WebSocket; verify
+   the command is injected as terminal input rather than as a chat turn.
+6. Send a normal chat message and verify:
    - `terminal_input_sent` is emitted.
    - `terminal_output` frames are persisted.
    - a conservative `assistant` / `content_block_delta` / `result` sequence is
      emitted after terminal output goes idle.
-4. Send `{"type":"slash_command","command":"status"}` and verify `/status`
-   runs in the interactive Claude terminal.
-5. Send `terminal_key` controls for `Up`, `Down`, `Escape`, and `C-c`; verify
+7. Send `terminal_key` controls for `Up`, `Down`, `Escape`, and `C-c`; verify
    the terminal reflects history/menu/cancel behavior.
-6. Send `terminal_resize` with a desktop and mobile-size geometry; verify tmux
+8. Send `terminal_resize` with a desktop and mobile-size geometry; verify tmux
    accepts the resize and emits `terminal_resized`.
-7. If agent teams are enabled for the session, run `/agents` and verify new tmux
+9. If agent teams are enabled for the session, run `/agents` and verify new tmux
    panes appear as `terminal_pane_opened` events with independent output logs.
-8. POST a sample payload to `/api/claude/hooks`; verify a `claude_hook` event is
+10. POST a sample payload to `/api/claude/hooks`; verify a `claude_hook` event is
    appended to the session event log.
 
 ## Known Fidelity Boundary
