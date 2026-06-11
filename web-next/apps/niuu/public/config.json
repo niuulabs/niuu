@@ -27,7 +27,7 @@
     "ravn.triggers": { "mode": "mock" },
     "ravn.budget": { "mode": "mock" },
     "valkyrie": { "mode": "mock" },
-    "valkyrie.signals": { "mode": "mock" },
+    "valkyrie.reviews": { "mode": "mock" },
     "forge": { "mode": "mock" },
     "forge.pty": { "mode": "mock" },
     "forge.metrics": { "mode": "mock" },

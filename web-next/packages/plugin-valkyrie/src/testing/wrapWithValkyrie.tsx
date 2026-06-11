@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
-import { createMockValkyrieService, createMockValkyrieSignalStream } from '../adapters/mock';
+import { createMockOdinReviewService, createMockValkyrieService } from '../adapters/mock';
 
 export function wrapWithValkyrie(services: Record<string, unknown> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -11,7 +11,7 @@ export function wrapWithValkyrie(services: Record<string, unknown> = {}) {
         <ServicesProvider
           services={{
             valkyrie: createMockValkyrieService(),
-            'valkyrie.signals': createMockValkyrieSignalStream(),
+            'valkyrie.reviews': createMockOdinReviewService(),
             ...services,
           }}
         >

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildValkyrieHttpAdapter, buildValkyrieSignalSseStream } from './http';
+import { buildOdinReviewHttpAdapter, buildValkyrieHttpAdapter } from './http';
 
 function makeClient() {
   return {
-    basePath: '/api/v1/valkyrie',
+    basePath: '/api/v1/ravn/odin',
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
@@ -11,122 +11,115 @@ function makeClient() {
   };
 }
 
-function mockSseResponse(chunks: string[]): Response {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-      controller.close();
-    },
-  });
-  return new Response(stream, {
-    status: 200,
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
+function rawItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    item_id: 'review:evolution_build:abc',
+    kind: 'evolution_build',
+    requested_action: 'install',
+    environment_id: 'cluster-a',
+    valkyrie_id: 'valkyrie:k8s-a',
+    title: 'probe',
+    summary: 'a probe',
+    status: 'pending',
+    risk_class: 'low',
+    urgency: 0.6,
+    evidence: { artifact: { content: 'skill', tool_code: 'def run(s): ...' } },
+    requested_at: '2026-06-03T13:00:00Z',
+    ...overrides,
+  };
 }
 
 describe('buildValkyrieHttpAdapter', () => {
-  it('calls dashboard and huddle endpoints', async () => {
+  it('fetches the dashboard and posts autonomy changes', async () => {
     const client = makeClient();
-    client.get.mockResolvedValue({ environments: [] });
-    client.post.mockResolvedValue({ id: 'huddle-1', joined: true });
+    client.get.mockResolvedValue({ valkyries: [] });
+    client.post.mockResolvedValue({ valkyries: [] });
     const adapter = buildValkyrieHttpAdapter(client);
 
     await adapter.getDashboard();
-    await adapter.joinHuddle({
-      huddleId: 'huddle-1',
+    await adapter.updateAutonomy({
+      valkyrieId: 'valkyrie:k8s-a',
+      mode: 'yolo',
+      reason: 'ship it',
       participantId: 'human:jozef',
-      action: 'approve',
-      targetFlockId: 'flock-k8s',
     });
 
     expect(client.get).toHaveBeenCalledWith('/dashboard');
-    expect(client.post).toHaveBeenCalledWith('/huddles/huddle-1/join', {
-      huddleId: 'huddle-1',
+    expect(client.post).toHaveBeenCalledWith('/autonomy', {
+      valkyrieId: 'valkyrie:k8s-a',
+      mode: 'yolo',
+      reason: 'ship it',
       participantId: 'human:jozef',
-      action: 'approve',
-      targetFlockId: 'flock-k8s',
-    });
-  });
-
-  it('URL encodes learning and huddle ids', async () => {
-    const client = makeClient();
-    client.post.mockResolvedValue({});
-    const adapter = buildValkyrieHttpAdapter(client);
-
-    await adapter.adoptLearning({ learningId: 'learn a/b', reason: 'test' });
-    await adapter.promoteLearning({
-      learningId: 'learn a/b',
-      reason: 'test',
-      targetScope: 'flock',
-    });
-    await adapter.demoteLearning({
-      learningId: 'learn a/b',
-      reason: 'test',
-      targetScope: 'domain',
-    });
-    await adapter.rollbackLearning({ learningId: 'learn a/b', reason: 'test' });
-    await adapter.sendHuddleMessage({
-      huddleId: 'huddle a/b',
-      body: 'hi',
-      authorId: 'human:jozef',
-    });
-
-    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/adopt', {
-      learningId: 'learn a/b',
-      reason: 'test',
-    });
-    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/promote', {
-      learningId: 'learn a/b',
-      reason: 'test',
-      targetScope: 'flock',
-    });
-    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/demote', {
-      learningId: 'learn a/b',
-      reason: 'test',
-      targetScope: 'domain',
-    });
-    expect(client.post).toHaveBeenCalledWith('/learnings/learn%20a%2Fb/rollback', {
-      learningId: 'learn a/b',
-      reason: 'test',
-    });
-    expect(client.post).toHaveBeenCalledWith('/huddles/huddle%20a%2Fb/messages', {
-      huddleId: 'huddle a/b',
-      body: 'hi',
-      authorId: 'human:jozef',
     });
   });
 });
 
-describe('buildValkyrieSignalSseStream', () => {
-  it('normalizes SSE messages through openEventStream', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        mockSseResponse([
-          'data: {"id":"event-1","summary":"OOM canary","severity":"critical"}\n\n',
-        ]),
-      );
-    vi.stubGlobal('fetch', fetchMock);
-    const stream = buildValkyrieSignalSseStream('/signals');
-    const received: unknown[] = [];
+describe('buildOdinReviewHttpAdapter', () => {
+  it('lists reviews with filters and normalizes the payload', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([rawItem()]);
+    const adapter = buildOdinReviewHttpAdapter(client);
 
-    const unsubscribe = stream.subscribe((event) => received.push(event));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    unsubscribe();
+    const items = await adapter.listReviews({ status: 'pending', kind: 'evolution_build' });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/signals',
-      expect.objectContaining({
-        headers: expect.any(Object),
-      }),
-    );
-    expect(received).toEqual([
-      expect.objectContaining({
-        id: 'event-1',
-        summary: 'OOM canary',
-        severity: 'critical',
-      }),
-    ]);
+    expect(client.get).toHaveBeenCalledWith('/reviews?status=pending&kind=evolution_build');
+    expect(items[0]?.itemId).toBe('review:evolution_build:abc');
+    expect(items[0]?.kind).toBe('evolution_build');
+    expect(items[0]?.evidence.artifact).toEqual({
+      content: 'skill',
+      tool_code: 'def run(s): ...',
+    });
+  });
+
+  it('lists without a query string when no filters are set', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+    const adapter = buildOdinReviewHttpAdapter(client);
+
+    await adapter.listReviews();
+
+    expect(client.get).toHaveBeenCalledWith('/reviews');
+  });
+
+  it('fetches one review and returns null on failure', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce(rawItem());
+    const adapter = buildOdinReviewHttpAdapter(client);
+
+    const item = await adapter.getReview('review:evolution_build:abc');
+    expect(client.get).toHaveBeenCalledWith('/reviews/review%3Aevolution_build%3Aabc');
+    expect(item?.title).toBe('probe');
+
+    client.get.mockRejectedValueOnce(new Error('404'));
+    expect(await adapter.getReview('review:none')).toBeNull();
+  });
+
+  it('posts decisions and unwraps the decided item', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ item: rawItem({ status: 'approved' }) });
+    const adapter = buildOdinReviewHttpAdapter(client);
+
+    const decided = await adapter.decideReview({
+      itemId: 'review:evolution_build:abc',
+      decision: 'approved',
+      reason: 'looks safe',
+      participantId: 'human:jozef',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/reviews/review%3Aevolution_build%3Aabc/decide', {
+      decision: 'approved',
+      reason: 'looks safe',
+      participantId: 'human:jozef',
+    });
+    expect(decided.status).toBe('approved');
+  });
+
+  it('fetches the summary', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ pendingTotal: 2 });
+    const adapter = buildOdinReviewHttpAdapter(client);
+
+    await adapter.getSummary();
+    expect(client.get).toHaveBeenCalledWith('/reviews/summary');
   });
 });

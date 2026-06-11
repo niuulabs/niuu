@@ -4,22 +4,21 @@ import type {
   EnvironmentSignal,
   EnvironmentSummary,
   FlockSummary,
-  HuddleMessage,
   HuddleSummary,
   JudgmentRecord,
   LearningRecord,
   OperationalState,
+  ReviewItem,
+  ReviewSummary,
   ValkyrieDashboard,
   ValkyrieResident,
-  ValkyrieSignalEvent,
 } from '../domain';
 import type {
   AutonomyUpdateRequest,
-  HuddleSendRequest,
+  IOdinReviewService,
   IValkyrieService,
-  IValkyrieSignalStream,
-  LearningDecisionRequest,
-  ValkyrieSignalListener,
+  ReviewDecisionRequest,
+  ReviewListFilters,
 } from '../ports';
 
 const UPDATED_AT = '2026-06-03T14:10:00Z';
@@ -767,178 +766,12 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
   };
 }
 
-function replaceLearning(
-  dashboard: ValkyrieDashboard,
-  learningId: string,
-  status: LearningRecord['status'],
-  updates: Partial<LearningRecord> = {},
-): LearningRecord {
-  const learning = dashboard.learnings.find((entry) => entry.id === learningId);
-  if (!learning) throw new Error(`Learning not found: ${learningId}`);
-  const next = {
-    ...learning,
-    status,
-    active: status === 'adopted' || status === 'canary',
-    commandDelivery: {
-      published: true,
-      eventType:
-        status === 'adopted' || status === 'rejected'
-          ? 'learning.adoption.recorded'
-          : 'learning.promoted',
-      eventId: `mock-${learningId}-${status}`,
-      message: 'Mock Sleipnir command published.',
-      observedAt: new Date().toISOString(),
-    },
-    history: [
-      ...(learning.history ?? []),
-      {
-        eventType: `mock.learning.${status}`,
-        status,
-        summary: `Mock learning changed to ${status}`,
-        observedAt: new Date().toISOString(),
-      },
-    ],
-    ...updates,
-  };
-  dashboard.learnings = dashboard.learnings.map((entry) =>
-    entry.id === learningId ? next : entry,
-  );
-  return next;
-}
-
 export function createMockValkyrieService(seed = createSeedValkyrieDashboard()): IValkyrieService {
   const dashboard: ValkyrieDashboard = seed;
 
   return {
     async getDashboard() {
       return dashboard;
-    },
-    async listEnvironments() {
-      return dashboard.environments;
-    },
-    async getEnvironment(environmentId) {
-      return dashboard.environments.find((entry) => entry.id === environmentId) ?? null;
-    },
-    async listFlocks() {
-      return dashboard.flocks;
-    },
-    async getFlock(flockId) {
-      return dashboard.flocks.find((entry) => entry.id === flockId) ?? null;
-    },
-    async getLearning(learningId) {
-      const learning = dashboard.learnings.find((entry) => entry.id === learningId);
-      if (!learning) throw new Error(`Learning not found: ${learningId}`);
-      return learning;
-    },
-    async joinHuddle(request) {
-      const huddle = dashboard.huddles.find((entry) => entry.id === request.huddleId);
-      if (!huddle) throw new Error(`Huddle not found: ${request.huddleId}`);
-      if (huddle.targetFlockId && request.targetFlockId !== huddle.targetFlockId) {
-        throw new Error(`Huddle belongs to ${huddle.targetFlockId}`);
-      }
-      huddle.joined = true;
-      huddle.joinedParticipantId = request.participantId;
-      huddle.joinedDisplayName = request.displayName ?? request.participantId;
-      huddle.joinedAction = request.action;
-      if (!huddle.participantIds.includes(request.participantId)) {
-        huddle.participantIds = [...huddle.participantIds, request.participantId];
-      }
-      return huddle;
-    },
-    async sendHuddleMessage(request: HuddleSendRequest) {
-      const huddle = dashboard.huddles.find((entry) => entry.id === request.huddleId);
-      if (!huddle) throw new Error(`Huddle not found: ${request.huddleId}`);
-      if (!huddle.joined || !huddle.joinedParticipantId) {
-        throw new Error(`Join huddle before sending messages: ${request.huddleId}`);
-      }
-      if (request.authorId !== huddle.joinedParticipantId) {
-        throw new Error(
-          `Huddle is joined as ${huddle.joinedParticipantId}, not ${request.authorId}`,
-        );
-      }
-      const message: HuddleMessage = {
-        id: `msg-${request.huddleId}-${huddle.messages.length + 1}`,
-        huddleId: request.huddleId,
-        authorId: huddle.joinedParticipantId,
-        authorName: huddle.joinedDisplayName ?? huddle.joinedParticipantId,
-        body: request.body,
-        createdAt: new Date().toISOString(),
-        directedTo: request.directedTo,
-      };
-      huddle.messages = [...huddle.messages, message];
-      huddle.lastActivityAt = message.createdAt;
-      return message;
-    },
-    async leaveHuddle(huddleId) {
-      const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
-      if (!huddle) throw new Error(`Huddle not found: ${huddleId}`);
-      huddle.joined = false;
-      huddle.participantIds = huddle.participantIds.filter(
-        (participant) => participant !== huddle.joinedParticipantId,
-      );
-      huddle.joinedParticipantId = undefined;
-      huddle.joinedDisplayName = undefined;
-      huddle.joinedAction = undefined;
-      return huddle;
-    },
-    async adoptLearning(request: LearningDecisionRequest) {
-      void request.reason;
-      void request.operatorId;
-      return replaceLearning(dashboard, request.learningId, 'adopted');
-    },
-    async rejectLearning(request: LearningDecisionRequest) {
-      void request.reason;
-      void request.operatorId;
-      return replaceLearning(dashboard, request.learningId, 'rejected');
-    },
-    async overrideLearning(request: LearningDecisionRequest) {
-      void request.reason;
-      void request.operatorId;
-      return replaceLearning(dashboard, request.learningId, 'adopted', { override: true });
-    },
-    async canaryLearning(request: LearningDecisionRequest) {
-      return replaceLearning(dashboard, request.learningId, 'canary', {
-        canaryEnvironmentId: request.canaryEnvironmentId,
-      });
-    },
-    async promoteLearning(request: LearningDecisionRequest) {
-      const learning = dashboard.learnings.find((entry) => entry.id === request.learningId);
-      if (!learning) throw new Error(`Learning not found: ${request.learningId}`);
-      return replaceLearning(dashboard, request.learningId, learning.status, {
-        scope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
-        currentScope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
-      });
-    },
-    async demoteLearning(request: LearningDecisionRequest) {
-      const learning = dashboard.learnings.find((entry) => entry.id === request.learningId);
-      if (!learning) throw new Error(`Learning not found: ${request.learningId}`);
-      return replaceLearning(dashboard, request.learningId, learning.status, {
-        scope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
-        currentScope: (request.targetScope as LearningRecord['scope']) ?? learning.scope,
-      });
-    },
-    async rollbackLearning(request: LearningDecisionRequest) {
-      return replaceLearning(dashboard, request.learningId, 'rolled_back');
-    },
-    async replaySignal(request) {
-      const reason = String(request.payload.reason ?? '');
-      const learning = dashboard.learnings.find(
-        (entry) =>
-          entry.active &&
-          (entry.promotedTool?.includes(reason.replace('_', '-')) ||
-            entry.title.includes(reason.replace('_', '-'))),
-      );
-      return {
-        signalId: String(request.payload.signal_id ?? 'mock-signal'),
-        capabilityName: reason,
-        decision: learning ? 'inspect_with_adopted_learning' : 'defer_and_request_capability',
-        skillName: learning?.promotedTool ?? '',
-        learningId: learning?.id ?? '',
-        confidence: learning ? 0.86 : 0.42,
-        rationale: learning ? 'Mock active learning matched.' : 'No mock active learning matched.',
-        usedAdoptedLearning: Boolean(learning),
-        observedAt: new Date().toISOString(),
-      };
     },
     async updateAutonomy(request: AutonomyUpdateRequest) {
       void request.reason;
@@ -950,24 +783,271 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
   };
 }
 
-export function createMockValkyrieSignalStream(
-  events: ValkyrieSignalEvent[] = signals.map((signal) => ({
-    type: 'signal',
-    id: signal.id,
-    environmentId: signal.environmentId,
-    summary: signal.summary,
-    severity: signal.severity,
-    timestamp: signal.receivedAt,
-  })),
-): IValkyrieSignalStream {
-  const listeners = new Set<ValkyrieSignalListener>();
+const SEED_TOOL_CODE = `def run(signal: dict) -> dict:
+    payload = signal.get("payload", {})
+    is_oom = (
+        signal.get("event_type") == "signal.kubernetes.event"
+        and payload.get("reason") == "OOMKilled"
+        and payload.get("kind") == "Pod"
+    )
+    return {
+        "capability": "inspect.kubernetes.pod.oomkilled",
+        "matches": is_oom,
+        "observed": {
+            "namespace": payload.get("namespace", ""),
+            "pod_name": payload.get("name", ""),
+        },
+    }
+`;
+
+const SEED_SKILL_CONTENT = `# skill: valkyrie-inspect-kubernetes-pod-oomkilled
+
+metadata:
+  capability: inspect.kubernetes.pod.oomkilled
+  safety_class: read_only
+
+## Overview
+Detects and inspects Kubernetes Pod OOMKilled events with read-only evidence
+gathering and memory-limit correlation.
+
+## Safety Constraints
+- Read-only instrumentation only.
+- No cluster state mutations.
+`;
+
+export function createSeedReviewItems(): ReviewItem[] {
+  return [
+    {
+      itemId: 'review:evolution_build:seed01',
+      kind: 'evolution_build',
+      requestedAction: 'install',
+      environmentId: 'env-ymir',
+      valkyrieId: 'valkyrie-ymir-k8s',
+      title: 'valkyrie-inspect-kubernetes-pod-oomkilled',
+      summary: 'Self-built probe for repeated OOMKilled pods in payments.',
+      audience: 'valkyrie',
+      flockId: 'flock:k8s-valkyries',
+      domain: 'k8s',
+      riskClass: 'low',
+      safetyClass: 'read_only',
+      urgency: 0.6,
+      requestedCapability: 'approve',
+      evidence: {
+        artifact: {
+          content: SEED_SKILL_CONTENT,
+          tool_code: SEED_TOOL_CODE,
+          canary_sample: { kind: 'Pod', reason: 'OOMKilled', namespace: 'payments' },
+        },
+        review: {
+          outcome: 'needs_approval',
+          rationale: 'guarded mode records proposals for review',
+          findings: ['policy: guarded mode records proposals for review'],
+        },
+        signal_ids: ['sig-oom-payments-1'],
+      },
+      status: 'pending',
+      requestedBy: 'valkyrie-ymir-k8s',
+      requestedAt: '2026-06-03T13:58:00Z',
+      decidedBy: '',
+      decidedAt: '',
+      decisionReason: '',
+      resolvedAt: '',
+      applyOutcome: '',
+      applyDetail: '',
+    },
+    {
+      itemId: 'review:skill_promotion:seed02',
+      kind: 'skill_promotion',
+      requestedAction: 'promote',
+      environmentId: 'env-ymir',
+      valkyrieId: 'valkyrie-ymir-k8s',
+      title: 'proven-disk-pressure-probe',
+      summary: 'Promote proven-disk-pressure-probe to environment scope after 4 runs.',
+      audience: 'valkyrie',
+      flockId: '',
+      domain: 'k8s',
+      riskClass: 'low',
+      safetyClass: 'read_only',
+      urgency: 0.4,
+      requestedCapability: 'approve',
+      evidence: {
+        skill_name: 'proven-disk-pressure-probe',
+        from_scope: 'private',
+        to_scope: 'environment',
+        success_count: 4,
+        failure_count: 0,
+        policy_reason: 'guarded mode records proposals for review',
+      },
+      status: 'pending',
+      requestedBy: 'valkyrie-ymir-k8s',
+      requestedAt: '2026-06-03T13:40:00Z',
+      decidedBy: '',
+      decidedAt: '',
+      decisionReason: '',
+      resolvedAt: '',
+      applyOutcome: '',
+      applyDetail: '',
+    },
+    {
+      itemId: 'review:court_escalation:seed03',
+      kind: 'court_escalation',
+      requestedAction: 'execute_action',
+      environmentId: 'env-noatun',
+      valkyrieId: 'valkyrie-noatun-k8s',
+      title: 'Action draft: k8s.restart_pod',
+      summary: 'CrashLoopBackOff storm in checkout; court drafted a restart for review.',
+      audience: 'valkyrie',
+      flockId: 'flock:k8s-valkyries',
+      domain: 'k8s',
+      riskClass: 'high',
+      safetyClass: 'mutating',
+      urgency: 0.9,
+      requestedCapability: 'approve',
+      evidence: {
+        audit_ref: 'odin-court:env-noatun:sig-crashloop-7',
+        tier: 'urgent',
+        rationale: '2 judgments and 1 action proposal resolved to draft_for_review',
+        action: {
+          action_id: 'act-restart-checkout',
+          capability: 'k8s.restart_pod',
+          target: { namespace: 'checkout', pod: 'checkout-api-6f' },
+          dry_run: false,
+        },
+      },
+      status: 'pending',
+      requestedBy: 'odin-court:env-noatun',
+      requestedAt: '2026-06-03T13:20:00Z',
+      decidedBy: '',
+      decidedAt: '',
+      decisionReason: '',
+      resolvedAt: '',
+      applyOutcome: '',
+      applyDetail: '',
+    },
+    {
+      itemId: 'review:flock_learning:seed04',
+      kind: 'flock_learning',
+      requestedAction: 'adopt',
+      environmentId: 'env-noatun',
+      valkyrieId: 'valkyrie-noatun-k8s',
+      title: 'valkyrie-inspect-kubernetes-pod-oomkilled',
+      summary: 'Peer learning from env-ymir held for adoption approval.',
+      audience: 'valkyrie',
+      flockId: 'flock:k8s-valkyries',
+      domain: 'k8s',
+      riskClass: 'low',
+      safetyClass: 'read_only',
+      urgency: 0.5,
+      requestedCapability: 'approve',
+      evidence: {
+        artifact: {
+          content: SEED_SKILL_CONTENT,
+          tool_code: SEED_TOOL_CODE,
+          canary_sample: { kind: 'Pod', reason: 'OOMKilled' },
+        },
+        review: { outcome: 'needs_approval', rationale: 'guarded peer', findings: [] },
+      },
+      status: 'applied',
+      requestedBy: 'valkyrie-noatun-k8s',
+      requestedAt: '2026-06-03T12:10:00Z',
+      decidedBy: 'human:operator',
+      decidedAt: '2026-06-03T12:32:00Z',
+      decisionReason: 'Canary passed on ymir; safe to adopt.',
+      resolvedAt: '2026-06-03T12:32:30Z',
+      applyOutcome: 'applied',
+      applyDetail: 'Installed valkyrie-inspect-kubernetes-pod-oomkilled',
+    },
+    {
+      itemId: 'review:autonomy_change:seed05',
+      kind: 'autonomy_change',
+      requestedAction: 'set_autonomy_mode',
+      environmentId: 'env-ymir',
+      valkyrieId: 'valkyrie-ymir-k8s',
+      title: 'Set valkyrie-ymir-k8s autonomy to autonomous',
+      summary: 'Operator raised autonomy after a clean week.',
+      audience: 'valkyrie',
+      flockId: '',
+      domain: 'k8s',
+      riskClass: 'medium',
+      safetyClass: 'read_only',
+      urgency: 0.4,
+      requestedCapability: 'change_autonomy',
+      evidence: { mode: 'autonomous', previous_mode: 'guarded' },
+      status: 'applied',
+      requestedBy: 'human:operator',
+      requestedAt: '2026-06-02T09:00:00Z',
+      decidedBy: 'human:operator',
+      decidedAt: '2026-06-02T09:00:00Z',
+      decisionReason: 'Clean week, no regressions.',
+      resolvedAt: '2026-06-02T09:00:10Z',
+      applyOutcome: 'applied',
+      applyDetail: 'autonomy guarded -> autonomous',
+    },
+  ];
+}
+
+export function createMockOdinReviewService(
+  seed: ReviewItem[] = createSeedReviewItems(),
+): IOdinReviewService {
+  const items = new Map(seed.map((item) => [item.itemId, { ...item }]));
 
   return {
-    subscribe(listener) {
-      listeners.add(listener);
-      for (const event of events) listener(event);
-      return () => {
-        listeners.delete(listener);
+    async listReviews(filters: ReviewListFilters = {}) {
+      let rows = [...items.values()].sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+      if (filters.status) rows = rows.filter((item) => item.status === filters.status);
+      if (filters.kind) rows = rows.filter((item) => item.kind === filters.kind);
+      if (filters.environmentId) {
+        rows = rows.filter((item) => item.environmentId === filters.environmentId);
+      }
+      if (filters.limit !== undefined) rows = rows.slice(0, Math.max(filters.limit, 0));
+      return rows;
+    },
+    async getReview(itemId: string) {
+      return items.get(itemId) ?? null;
+    },
+    async decideReview(request: ReviewDecisionRequest) {
+      const item = items.get(request.itemId);
+      if (!item) throw new Error(`Review item not found: ${request.itemId}`);
+      if (item.status !== 'pending') {
+        throw new Error(`Review item is already ${item.status}`);
+      }
+      if (request.decision === 'rejected' && !request.reason?.trim()) {
+        throw new Error('A reason is required when rejecting a review item');
+      }
+      const now = new Date().toISOString();
+      const decided: ReviewItem = {
+        ...item,
+        status: request.decision === 'approved' ? 'applied' : 'rejected',
+        decidedBy: request.participantId || 'operator',
+        decidedAt: now,
+        decisionReason: request.reason ?? '',
+        resolvedAt: now,
+        applyOutcome: 'applied',
+        applyDetail:
+          request.decision === 'approved'
+            ? 'Mock resident applied the decision.'
+            : 'Mock resident recorded the rejection.',
+      };
+      items.set(item.itemId, decided);
+      return decided;
+    },
+    async getSummary(): Promise<ReviewSummary> {
+      const rows = [...items.values()];
+      const countsByStatus: Record<string, number> = {};
+      const pendingByKind: Record<string, number> = {};
+      const pendingByRisk: Record<string, number> = {};
+      for (const item of rows) {
+        countsByStatus[item.status] = (countsByStatus[item.status] ?? 0) + 1;
+        if (item.status === 'pending') {
+          pendingByKind[item.kind] = (pendingByKind[item.kind] ?? 0) + 1;
+          pendingByRisk[item.riskClass] = (pendingByRisk[item.riskClass] ?? 0) + 1;
+        }
+      }
+      return {
+        pendingTotal: rows.filter((item) => item.status === 'pending').length,
+        pendingByKind,
+        pendingByRisk,
+        countsByStatus,
       };
     },
   };

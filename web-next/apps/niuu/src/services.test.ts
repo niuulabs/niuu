@@ -63,9 +63,9 @@ const observatoryMocks = vi.hoisted(() => ({
 
 const valkyrieMocks = vi.hoisted(() => ({
   createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
-  createMockValkyrieSignalStream: vi.fn(() => ({ kind: 'mock-valkyrie-signals' })),
+  createMockOdinReviewService: vi.fn(() => ({ kind: 'mock-valkyrie-reviews' })),
   buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
-  buildValkyrieSignalSseStream: vi.fn((url) => ({ kind: 'valkyrie-signals', url })),
+  buildOdinReviewHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-reviews', client })),
 }));
 
 const volundrMocks = vi.hoisted(() => ({
@@ -1628,44 +1628,45 @@ describe('buildServices', () => {
     } as any);
 
     expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
-    expect(services['valkyrie.signals']).toEqual({ kind: 'mock-valkyrie-signals' });
+    expect(services['valkyrie.reviews']).toEqual({ kind: 'mock-valkyrie-reviews' });
   });
 
-  it('lets a grouped Valkyrie base drive dashboard and signal adapters', () => {
+  it('lets a grouped Valkyrie base drive dashboard and review adapters', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/valkyrie' },
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
       },
     } as any);
 
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/valkyrie',
+      'http://localhost:8080/api/v1/ravn/valkyrie',
     );
     expect(valkyrieMocks.buildValkyrieHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/valkyrie',
+      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie',
     });
-    expect(valkyrieMocks.buildValkyrieSignalSseStream).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/valkyrie/signals',
+    // The review queue lives beside the dashboard API under /ravn/odin.
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/ravn/odin',
     );
   });
 
-  it('prefers explicit Valkyrie signal stream overrides over the grouped base', () => {
+  it('prefers explicit Valkyrie review queue overrides over the grouped base', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
       services: {
-        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/valkyrie' },
-        'valkyrie.signals': {
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
+        'valkyrie.reviews': {
           mode: 'http',
-          baseUrl: 'http://localhost:8080/api/v1/valkyrie/events',
+          baseUrl: 'http://localhost:8080/api/v1/ravn/odin-custom',
         },
       },
     } as any);
 
-    expect(valkyrieMocks.buildValkyrieSignalSseStream).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/valkyrie/events',
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v1/ravn/odin-custom',
     );
   });
 });

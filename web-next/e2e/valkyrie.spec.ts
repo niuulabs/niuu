@@ -1,42 +1,61 @@
 import { expect, test } from '@playwright/test';
 
-test('valkyrie console renders environment and flock operations', async ({ page }) => {
+test('odin review inbox lists pending decisions with full lineage', async ({ page }) => {
   await page.goto('/valkyrie');
 
-  await expect(page.getByTestId('valkyrie-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('heading', { name: 'Valhalla k8s' })).toBeVisible();
-  await expect(page.getByTestId('valkyrie-live-console')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-live-scope-rail')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-event-log')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-work-queue')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-llm-status')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-court-panel')).toBeVisible();
-  await expect(page.getByTestId('valkyrie-actions-panel')).toBeVisible();
+  await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('3 pending');
+  await expect(page.getByTestId('review-detail')).toBeVisible();
+  await expect(page.getByTestId('review-lineage')).toBeVisible();
 });
 
-test('valkyrie console switches between live route views', async ({ page }) => {
+test('operator can inspect the artifact and approve a held build', async ({ page }) => {
   await page.goto('/valkyrie');
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
 
-  await page.getByRole('button', { name: /topology/i }).click();
-  await expect(page).toHaveURL(/\/valkyrie\/topology$/);
-  await expect(page.getByTestId('valkyrie-topology-view')).toBeVisible();
+  await page
+    .getByTestId('review-card')
+    .filter({ hasText: 'valkyrie-inspect-kubernetes-pod-oomkilled' })
+    .click();
+  await page.getByRole('tab', { name: 'tool' }).click();
+  await expect(page.getByTestId('review-artifact')).toContainText('def run(signal: dict)');
 
-  await page.getByRole('button', { name: /learning/i }).click();
-  await expect(page).toHaveURL(/\/valkyrie\/learning$/);
-  await expect(page.getByTestId('valkyrie-learning-ops')).toBeVisible();
+  await page.getByLabel('Decision reason').fill('canary verified, safe');
+  await page.getByRole('button', { name: /approve/i }).click();
 
-  await page.getByRole('button', { name: /huddles/i }).click();
-  await expect(page).toHaveURL(/\/valkyrie\/huddles$/);
-  await expect(page.getByTestId('valkyrie-huddles-view')).toBeVisible();
-
-  await page.getByRole('button', { name: /autonomy/i }).click();
-  await expect(page).toHaveURL(/\/valkyrie\/autonomy$/);
-  await expect(page.getByTestId('valkyrie-autonomy-panel')).toBeVisible();
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('2 pending');
 });
 
-test('legacy plural valkyries path redirects to the canonical console', async ({ page }) => {
-  await page.goto('/valkyries');
+test('rejecting without a reason is refused', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
+
+  await page.getByRole('button', { name: /reject/i }).click();
+
+  await expect(page.getByRole('alert')).toContainText('A reason is required');
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('3 pending');
+});
+
+test('fleet view exposes autonomy control per resident', async ({ page }) => {
+  await page.goto('/valkyrie/fleet');
+
+  await expect(page.getByTestId('fleet-page')).toBeVisible({ timeout: 5000 });
+  const cards = page.getByTestId('fleet-card');
+  await expect(cards.first()).toBeVisible();
+  await expect(cards.first().getByRole('combobox')).toBeVisible();
+});
+
+test('activity shows the decided ledger', async ({ page }) => {
+  await page.goto('/valkyrie/activity');
+
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('activity-row').first()).toContainText('decided by');
+});
+
+test('legacy valkyrie routes redirect to the inbox', async ({ page }) => {
+  await page.goto('/valkyries/learning');
 
   await expect(page).toHaveURL(/\/valkyrie$/);
-  await expect(page.getByTestId('valkyrie-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
 });

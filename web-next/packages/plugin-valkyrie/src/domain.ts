@@ -485,3 +485,174 @@ export function normalizeValkyrieSignalEvent(raw: unknown): ValkyrieSignalEvent 
     timestamp,
   };
 }
+
+// ---------------------------------------------------------------------------
+// ODIN review queue — the one envelope every human decision rides
+// ---------------------------------------------------------------------------
+
+export type ReviewKind =
+  | 'evolution_build'
+  | 'skill_promotion'
+  | 'flock_learning'
+  | 'court_escalation'
+  | 'autonomy_change';
+
+export type ReviewStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'applied'
+  | 'apply_failed';
+
+export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
+
+export interface ReviewItem {
+  itemId: string;
+  kind: ReviewKind;
+  requestedAction: string;
+  environmentId: string;
+  valkyrieId: string;
+  title: string;
+  summary: string;
+  audience: string;
+  flockId: string;
+  domain: string;
+  riskClass: ReviewRiskClass;
+  safetyClass: string;
+  urgency: number;
+  requestedCapability: string;
+  evidence: Record<string, unknown>;
+  status: ReviewStatus;
+  requestedBy: string;
+  requestedAt: string;
+  decidedBy: string;
+  decidedAt: string;
+  decisionReason: string;
+  resolvedAt: string;
+  applyOutcome: string;
+  applyDetail: string;
+}
+
+export interface ReviewSummary {
+  pendingTotal: number;
+  pendingByKind: Record<string, number>;
+  pendingByRisk: Record<string, number>;
+  countsByStatus: Record<string, number>;
+}
+
+const REVIEW_KINDS: readonly ReviewKind[] = [
+  'evolution_build',
+  'skill_promotion',
+  'flock_learning',
+  'court_escalation',
+  'autonomy_change',
+];
+
+const REVIEW_STATUSES: readonly ReviewStatus[] = [
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+  'applied',
+  'apply_failed',
+];
+
+const REVIEW_RISKS: readonly ReviewRiskClass[] = ['low', 'medium', 'high', 'critical'];
+
+function str(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === 'string' ? value : '';
+}
+
+export function normalizeReviewItem(payload: Record<string, unknown>): ReviewItem {
+  const kindRaw = str(payload, 'kind');
+  const statusRaw = str(payload, 'status');
+  const riskRaw = str(payload, 'risk_class');
+  const evidence = payload.evidence;
+  return {
+    itemId: str(payload, 'item_id'),
+    kind: (REVIEW_KINDS as readonly string[]).includes(kindRaw)
+      ? (kindRaw as ReviewKind)
+      : 'flock_learning',
+    requestedAction: str(payload, 'requested_action'),
+    environmentId: str(payload, 'environment_id'),
+    valkyrieId: str(payload, 'valkyrie_id'),
+    title: str(payload, 'title') || str(payload, 'item_id'),
+    summary: str(payload, 'summary'),
+    audience: str(payload, 'audience') || 'valkyrie',
+    flockId: str(payload, 'flock_id'),
+    domain: str(payload, 'domain'),
+    riskClass: (REVIEW_RISKS as readonly string[]).includes(riskRaw)
+      ? (riskRaw as ReviewRiskClass)
+      : 'low',
+    safetyClass: str(payload, 'safety_class') || 'read_only',
+    urgency: typeof payload.urgency === 'number' ? payload.urgency : 0.5,
+    requestedCapability: str(payload, 'requested_capability') || 'approve',
+    evidence:
+      typeof evidence === 'object' && evidence !== null
+        ? (evidence as Record<string, unknown>)
+        : {},
+    status: (REVIEW_STATUSES as readonly string[]).includes(statusRaw)
+      ? (statusRaw as ReviewStatus)
+      : 'pending',
+    requestedBy: str(payload, 'requested_by'),
+    requestedAt: str(payload, 'requested_at'),
+    decidedBy: str(payload, 'decided_by'),
+    decidedAt: str(payload, 'decided_at'),
+    decisionReason: str(payload, 'decision_reason'),
+    resolvedAt: str(payload, 'resolved_at'),
+    applyOutcome: str(payload, 'apply_outcome'),
+    applyDetail: str(payload, 'apply_detail'),
+  };
+}
+
+export interface ReviewArtifactEvidence {
+  skillContent: string;
+  toolCode: string;
+  canarySample: Record<string, unknown>;
+}
+
+export function reviewArtifactEvidence(item: ReviewItem): ReviewArtifactEvidence {
+  const artifact = item.evidence.artifact;
+  const record =
+    typeof artifact === 'object' && artifact !== null ? (artifact as Record<string, unknown>) : {};
+  const canary = record.canary_sample;
+  return {
+    skillContent: typeof record.content === 'string' ? record.content : '',
+    toolCode: typeof record.tool_code === 'string' ? record.tool_code : '',
+    canarySample:
+      typeof canary === 'object' && canary !== null ? (canary as Record<string, unknown>) : {},
+  };
+}
+
+export function reviewPolicyFindings(item: ReviewItem): string[] {
+  const review = item.evidence.review;
+  if (typeof review !== 'object' || review === null) return [];
+  const findings = (review as Record<string, unknown>).findings;
+  if (!Array.isArray(findings)) return [];
+  return findings.filter((entry): entry is string => typeof entry === 'string');
+}
+
+export function reviewEffectStatement(item: ReviewItem): string {
+  switch (item.kind) {
+    case 'evolution_build':
+      return (
+        `Approving will canary the tool in a sandbox, install the skill and tool on ` +
+        `${item.environmentId}${item.flockId ? `, and propose it to ${item.flockId}` : ''}.`
+      );
+    case 'skill_promotion':
+      return `Approving will promote ${item.title} to environment scope and announce it to peers.`;
+    case 'flock_learning':
+      return (
+        `Approving will canary and ${item.requestedAction === 'retract' ? 'retract' : 'install'} ` +
+        `this learning on every relevant resident in ${item.flockId || 'the flock'}.`
+      );
+    case 'court_escalation':
+      return 'Approving will request execution of the drafted action with operator authority.';
+    case 'autonomy_change':
+      return `Approving will set ${item.valkyrieId} autonomy as requested.`;
+    default:
+      return 'Approving will apply the requested action on the target resident.';
+  }
+}
