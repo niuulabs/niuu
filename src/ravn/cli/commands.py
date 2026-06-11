@@ -2717,6 +2717,9 @@ async def _run_daemon(
     environment_signal_runtime: Any | None = None
     resident_learning_runtime: Any | None = None
     resident_wakefulness: Any | None = None
+    odin_court: Any | None = None
+    feedback_recorder: Any | None = None
+    huddle_archiver: Any | None = None
     resident_learning_owns_publisher = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
@@ -2813,10 +2816,53 @@ async def _run_daemon(
         settings,
         resident_learning_runtime=resident_learning_runtime,
         publisher=environment_signal_publisher,
+        memory=memory,
     )
     if resident_wakefulness is not None:
         await resident_wakefulness.start()
         typer.echo("  Resident wakefulness: started")
+
+    odin_court = _build_odin_court(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if odin_court is not None:
+        await odin_court.start()
+        tasks.append(
+            asyncio.create_task(
+                _run_odin_court_sweep(
+                    odin_court,
+                    settings.odin_court.sweep_interval_seconds,
+                ),
+                name="odin_court_sweep",
+            )
+        )
+        typer.echo("  ODIN court: subscribed")
+
+    feedback_recorder = _build_feedback_recorder(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if feedback_recorder is not None:
+        await feedback_recorder.start()
+        typer.echo("  Feedback recorder: subscribed")
+
+    if (
+        daemon_mimir is not None
+        and environment_signal_publisher is not None
+        and hasattr(environment_signal_publisher, "subscribe")
+        and (settings.environment.flocks or settings.environment.signal_sources)
+    ):
+        from ravn.huddle_archiver import HuddleTranscriptArchiver  # noqa: PLC0415
+
+        huddle_archiver = HuddleTranscriptArchiver(
+            subscriber=environment_signal_publisher,
+            mimir=daemon_mimir,
+        )
+        await huddle_archiver.start()
+        typer.echo("  Huddle transcript archiver: subscribed")
 
     environment_signal_runtime = _build_environment_signal_runtime(
         settings,
@@ -2921,6 +2967,12 @@ async def _run_daemon(
             await environment_signal_runtime.stop()
         if resident_wakefulness is not None:
             await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
         if resident_learning_owns_publisher and environment_signal_publisher is not None:
@@ -2941,6 +2993,12 @@ async def _run_daemon(
             await _cascade_participant.stop()
         if resident_wakefulness is not None:
             await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
@@ -3104,6 +3162,7 @@ def _build_resident_wakefulness(
     *,
     resident_learning_runtime: Any | None,
     publisher: Any | None,
+    memory: Any | None = None,
 ) -> Any | None:
     """Build the wakefulness state machine for a resident daemon."""
     if not settings.resident_wakefulness.enabled:
@@ -3123,12 +3182,74 @@ def _build_resident_wakefulness(
         skills=resident_learning_runtime.skills,
         publisher=publisher,
         resident_learning=resident_learning_runtime,
+        memory=memory,
         tick_interval_seconds=cfg.tick_interval_seconds,
         wakeful_window_seconds=cfg.wakeful_window_seconds,
         dream_interval_seconds=cfg.dream_interval_seconds,
         dream_min_idle_seconds=cfg.dream_min_idle_seconds,
         stale_skill_age_seconds=cfg.stale_skill_age_seconds,
         promote_min_successes=cfg.promote_min_successes,
+    )
+
+
+def _build_odin_court(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    memory: Any | None,
+) -> Any | None:
+    """Build the ODIN court resolver for an active resident environment."""
+    if not settings.odin_court.enabled:
+        return None
+    if publisher is None or not hasattr(publisher, "subscribe"):
+        return None
+    if not settings.environment.flocks and not settings.environment.signal_sources:
+        return None
+
+    from ravn.odin import OdinCourt  # noqa: PLC0415
+    from ravn.odin.audit import EpisodicCourtAuditSink  # noqa: PLC0415
+
+    audit_sink = EpisodicCourtAuditSink(memory) if memory is not None else None
+    return OdinCourt(
+        publisher=publisher,
+        subscriber=publisher,
+        audit_sink=audit_sink,
+        court_id=f"odin-court:{settings.environment.id}",
+        quorum_size=settings.odin_court.quorum_size,
+        timeout_s=settings.odin_court.timeout_seconds,
+    )
+
+
+async def _run_odin_court_sweep(court: Any, interval_seconds: float) -> None:
+    """Periodically resolve court cases that aged past their timeout."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await court.sweep_expired()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("odin court: sweep failed")
+
+
+def _build_feedback_recorder(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    memory: Any | None,
+) -> Any | None:
+    """Build the feedback-to-episodic-memory recorder for resident daemons."""
+    if publisher is None or not hasattr(publisher, "subscribe") or memory is None:
+        return None
+    if not settings.environment.flocks and not settings.environment.signal_sources:
+        return None
+
+    from ravn.feedback import EnvironmentFeedbackRecorder  # noqa: PLC0415
+
+    return EnvironmentFeedbackRecorder(
+        subscriber=publisher,
+        memory=memory,
+        publisher=publisher,
     )
 
 

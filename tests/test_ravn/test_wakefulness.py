@@ -221,3 +221,59 @@ async def test_dream_reopens_unresolved_capability_gaps(tmp_path) -> None:
     machine, _recorder, _clock = await _machine(tmp_path, skills=skills, resident_learning=learner)
     summary = await machine.dream()
     assert summary["capability_gaps_reopened"] == 1
+
+
+async def test_dream_holds_promotion_for_skills_implicated_by_feedback(tmp_path) -> None:
+    """Failure feedback naming a skill blocks its automatic promotion (F3)."""
+    from datetime import UTC, datetime
+
+    from ravn.domain.models import Episode, EpisodeMatch, Outcome
+
+    skills = _skills(tmp_path)
+    await skills.create(
+        name="suspect-probe",
+        content="# skill: suspect-probe\n\nmetadata:\n  capability: x\n",
+        scope="private",
+    )
+    for _ in range(2):
+        await skills.record_usage("suspect-probe", success=True)
+
+    class _FeedbackMemory:
+        async def query_episodes(self, query, *, limit, min_relevance):
+            episode = Episode(
+                episode_id="feedback:f-1",
+                session_id="feedback:cluster-a",
+                timestamp=datetime.now(UTC),
+                summary="bad action",
+                task_description="capture feedback",
+                tools_used=[],
+                outcome=Outcome.FAILURE,
+                tags=["valkyrie-feedback", "environment:cluster-a"],
+                structured_outcome={
+                    "kind": "environment_feedback",
+                    "environment_id": "cluster-a",
+                    "feedback_type": "bad_action",
+                    "correction": {"skill_name": "suspect-probe"},
+                },
+                outcome_valid=True,
+            )
+            return [EpisodeMatch(episode=episode, relevance=1.0)]
+
+    bus = InProcessBus()
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    machine = ResidentWakefulness(
+        identity=_identity("autonomous"),
+        skills=skills,
+        publisher=bus,
+        memory=_FeedbackMemory(),
+        promote_min_successes=2,
+        clock=ManualClock(),
+    )
+    summary = await machine.dream()
+
+    assert summary["promoted"] == []
+    assert summary["promotion_candidates"] == ["suspect-probe"]
+    assert summary["feedback"]["negative"] == 1
+    assert summary["feedback"]["implicated_skills"] == ["suspect-probe"]
+    assert (await skills.show("suspect-probe"))["metadata"]["scope"] == "private"

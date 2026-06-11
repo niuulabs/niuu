@@ -171,7 +171,42 @@ def main() -> int:
     )
     check("replayed signal exercised the built tool", tool_executed, f"judgments={len(judgments)}")
 
-    # 7. Wakefulness: the teacher transitioned through wakeful states and ran
+    # 7. ODIN court resolved resident judgments into attention decisions
+    #    inside the live daemons (NIU-1021 / F1).
+    attention_decisions = [
+        event
+        for event in _of_type(events, "attention.decision.made")
+        if event.get("payload", {}).get("environment_id", "").startswith("cluster")
+    ]
+    check(
+        "ODIN court resolved judgments into attention decisions",
+        bool(attention_decisions),
+        f"decisions={len(attention_decisions)}",
+    )
+    court_decisions = _of_type(events, "odin.court.decided")
+    check(
+        "court decisions published with audit trail",
+        any(
+            event.get("payload", {}).get("audit_ref")
+            or event.get("payload", {}).get("court_id")
+            for event in court_decisions
+        ),
+        f"court events={len(court_decisions)}",
+    )
+
+    # 8. Feedback round-trip: injected operator feedback was consumed by the
+    #    resident's recorder, which published the preference update (F3).
+    preference_updates = _of_type(events, "feedback.preference.updated")
+    check(
+        "feedback recorder consumed operator feedback",
+        any(
+            event.get("payload", {}).get("delivery_state") == "snoozed"
+            for event in preference_updates
+        ),
+        f"preference updates={len(preference_updates)}",
+    )
+
+    # 9. Wakefulness: the teacher transitioned through wakeful states and ran
     #    a scheduled consolidation dream (NIU-1040).
     state_changes = [
         event

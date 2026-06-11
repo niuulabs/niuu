@@ -12,9 +12,22 @@ from sleipnir.domain.catalog import feedback_preference_updated
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
+#: Full resident feedback vocabulary (NIU-1022). Positive types confirm a
+#: judgment/action/draft; failure types teach a correction; delivery types
+#: change future routing without mutating history.
 _POSITIVE_FEEDBACK = {"useful", "good_action", "draft_accepted"}
-_FAILURE_FEEDBACK = {"bad_action", "draft_rejected"}
+_FAILURE_FEEDBACK = {
+    "bad_action",
+    "draft_rejected",
+    "draft_edited",
+    "dismissed",
+    "wrong_tier",
+    "wrong_state",
+    "should_have_shown",
+    "too_late",
+}
 _DELIVERY_FEEDBACK = {"snooze", "escalate"}
+KNOWN_FEEDBACK_TYPES = _POSITIVE_FEEDBACK | _FAILURE_FEEDBACK | _DELIVERY_FEEDBACK
 
 
 @dataclass(frozen=True)

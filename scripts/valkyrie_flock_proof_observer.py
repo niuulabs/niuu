@@ -43,7 +43,39 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--nats-url", default="nats://127.0.0.1:4222")
     parser.add_argument("--stream-name", default="ravn_environment")
     parser.add_argument("--subject-prefix", default="ravn.environment")
+    parser.add_argument(
+        "--inject-feedback-after",
+        type=float,
+        default=0.0,
+        help="Seconds after start to publish one operator feedback event (0 disables)",
+    )
+    parser.add_argument(
+        "--feedback-environment",
+        default="cluster-a",
+        help="Environment id targeted by the injected feedback",
+    )
     return parser.parse_args()
+
+
+async def _inject_feedback(transport, args: argparse.Namespace) -> None:
+    """Publish one snooze feedback event, proving the recorder round-trip.
+
+    The resident's feedback recorder must consume it, persist an episode, and
+    publish feedback.preference_updated — which the capture then contains.
+    """
+    await asyncio.sleep(args.inject_feedback_after)
+    from sleipnir.domain.catalog import feedback_recorded
+
+    event = feedback_recorded(
+        environment_id=args.feedback_environment,
+        target_event_id="proof-judgment-1",
+        feedback_type="snooze",
+        rating="",
+        notes="Operator snoozed during the proof window.",
+        source="valkyrie-proof-observer",
+    )
+    await transport.publish(event)
+    print(f"observer: injected snooze feedback for {args.feedback_environment}", flush=True)
 
 
 class _JsonlSink:
@@ -87,6 +119,8 @@ async def _run_nng(args: argparse.Namespace, sink: _JsonlSink) -> None:
 
     await transport.subscribe(["*"], _handle)
     print(f"observer: nng subscribed to {len(peer_addresses)} peers", flush=True)
+    if args.inject_feedback_after > 0:
+        asyncio.create_task(_inject_feedback(transport, args))
     await asyncio.Event().wait()
 
 
@@ -139,6 +173,8 @@ async def _run_nats(args: argparse.Namespace, sink: _JsonlSink) -> None:
 
     await transport.subscribe(["*"], _handle)
     print("observer: nats subscribed (main + flock.> streams)", flush=True)
+    if args.inject_feedback_after > 0:
+        asyncio.create_task(_inject_feedback(transport, args))
     await asyncio.Event().wait()
 
 

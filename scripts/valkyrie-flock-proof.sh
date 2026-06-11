@@ -63,6 +63,9 @@ fi
 
 OUT_DIR="/tmp/valkyrie-flock-proof-${TRANSPORT}"
 PIDS_FILE="${OUT_DIR}/pids"
+# Observer injects operator feedback this many seconds after it starts —
+# after the daemons have subscribed (8s stagger) and processed the signal.
+FEEDBACK_INJECT_AFTER=$(( WAIT_SECONDS / 2 + 8 ))
 NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
 NATS_PID=""
 
@@ -109,6 +112,11 @@ peers:
     display_name: Rota
     pub_address: "ipc://${OUT_DIR}/printer-pub.sock"
     rep_address: "ipc://${OUT_DIR}/printer-rep.sock"
+  - peer_id: valkyrie-proof-observer
+    persona: observer
+    display_name: Munin
+    pub_address: "ipc://${OUT_DIR}/observer.sock"
+    rep_address: "ipc://${OUT_DIR}/observer-rep.sock"
 YAML
 elif [[ "${TRANSPORT}" == "nats" ]]; then
     if ! curl -sf "http://127.0.0.1:8222/healthz" >/dev/null 2>&1; then
@@ -281,10 +289,14 @@ if [[ "${TRANSPORT}" == "nng" ]]; then
         --transport nng --out "${EVENTS_FILE}" \
         --cluster-file "${OUT_DIR}/cluster.yaml" \
         --own-address "ipc://${OUT_DIR}/observer.sock" \
+        --inject-feedback-after "${FEEDBACK_INJECT_AFTER}" \
+        --feedback-environment cluster-a \
         > "${OUT_DIR}/logs/observer.log" 2>&1 &
 else
     uv run --project "${REPO_ROOT}" python "${SCRIPT_DIR}/valkyrie_flock_proof_observer.py" \
         --transport nats --out "${EVENTS_FILE}" --nats-url "${NATS_URL}" \
+        --inject-feedback-after "${FEEDBACK_INJECT_AFTER}" \
+        --feedback-environment cluster-a \
         > "${OUT_DIR}/logs/observer.log" 2>&1 &
 fi
 OBSERVER_PID=$!

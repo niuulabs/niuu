@@ -2357,6 +2357,36 @@ class DreamCycleTriggerConfig(BaseModel):
     )
 
 
+class OdinCourtConfig(BaseModel):
+    """ODIN court resolver for resident judgments (NIU-1021).
+
+    Runs inside resident daemons next to the learning runtime, resolving
+    ``valkyrie.judgment.proposed``/``valkyrie.action.proposed`` into final
+    attention and action decisions with persisted audit records.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Run the ODIN court when the resident environment is active.",
+    )
+    quorum_size: int = Field(
+        default=1,
+        description=(
+            "Judgments/actions required before a case resolves immediately. "
+            "Single-resident environments should keep 1; flocked deployments "
+            "with multiple judging residents can raise it."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        description="Age after which a case with any input resolves on sweep.",
+    )
+    sweep_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the court sweeps for timed-out cases.",
+    )
+
+
 class ResidentWakefulnessConfig(BaseModel):
     """Resident wakefulness state machine and scheduled consolidation dreams.
 
@@ -2909,6 +2939,9 @@ class Settings(BaseSettings):
     resident_wakefulness: ResidentWakefulnessConfig = Field(
         default_factory=ResidentWakefulnessConfig
     )
+
+    # NIU-1021: ODIN court resolver for resident judgments
+    odin_court: OdinCourtConfig = Field(default_factory=OdinCourtConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

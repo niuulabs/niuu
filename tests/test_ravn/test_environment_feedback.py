@@ -106,7 +106,7 @@ def test_feedback_event_to_episode_preserves_lineage_and_query_tags() -> None:
 
     assert episode.episode_id == f"feedback:{event.event_id}"
     assert episode.session_id == "feedback:cluster-a:valkyrie:k8s-a"
-    assert episode.outcome == "partial"
+    assert episode.outcome == "failure"
     assert episode.outcome_valid is True
     assert episode.structured_outcome is not None
     assert episode.structured_outcome["environment_id"] == "cluster-a"
@@ -202,3 +202,38 @@ async def test_feedback_episodes_feed_existing_evolution_extractor() -> None:
         strategy.task_type == "signal_source:kubernetes.events"
         for strategy in evolution.strategy_injections
     )
+
+
+async def test_full_feedback_vocabulary_is_recorded(tmp_path) -> None:
+    """Every NIU-1022 feedback type round-trips into an episode (F3)."""
+    from ravn.feedback.recorder import KNOWN_FEEDBACK_TYPES, feedback_event_to_episode
+    from sleipnir.domain.catalog import feedback_recorded
+
+    expected = {
+        "useful",
+        "good_action",
+        "draft_accepted",
+        "bad_action",
+        "draft_rejected",
+        "draft_edited",
+        "dismissed",
+        "wrong_tier",
+        "wrong_state",
+        "should_have_shown",
+        "too_late",
+        "snooze",
+        "escalate",
+    }
+    assert expected <= KNOWN_FEEDBACK_TYPES
+
+    for feedback_type in sorted(expected):
+        event = feedback_recorded(
+            environment_id="cluster-a",
+            feedback_type=feedback_type,
+            target_event_id="evt-1",
+            rating="",
+            notes="",
+            source="test",
+        )
+        episode = feedback_event_to_episode(event)
+        assert episode.structured_outcome["feedback_type"] == feedback_type

@@ -44,6 +44,9 @@ DEFAULT_DREAM_MIN_IDLE_SECONDS = 60.0
 DEFAULT_STALE_SKILL_AGE_SECONDS = 7 * 24 * 3600.0
 DEFAULT_PROMOTE_MIN_SUCCESSES = 3
 
+#: How many recent feedback episodes one consolidation dream considers.
+DEFAULT_FEEDBACK_QUERY_LIMIT = 50
+
 _WAKEFUL = "wakeful"
 _WATCHING = "watching"
 _DREAMING = "dreaming"
@@ -60,6 +63,7 @@ class ResidentWakefulness:
         skills: SkillManagementRegistry,
         publisher: SleipnirPublisher,
         resident_learning: Any | None = None,
+        memory: Any | None = None,
         tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS,
         wakeful_window_seconds: float = DEFAULT_WAKEFUL_WINDOW_SECONDS,
         dream_interval_seconds: float = DEFAULT_DREAM_INTERVAL_SECONDS,
@@ -73,6 +77,7 @@ class ResidentWakefulness:
         self._skills = skills
         self._publisher = publisher
         self._resident_learning = resident_learning
+        self._memory = memory
         self._tick_interval_seconds = tick_interval_seconds
         self._wakeful_window_seconds = wakeful_window_seconds
         self._dream_interval_seconds = dream_interval_seconds
@@ -177,6 +182,7 @@ class ResidentWakefulness:
         promoted: list[str] = []
         promotion_candidates: list[str] = []
         policy = AutonomyPolicy()
+        feedback = await self._recent_feedback()
 
         for row in rows:
             metadata = row["metadata"]
@@ -190,6 +196,11 @@ class ResidentWakefulness:
                 continue
 
             if not self._is_promotion_candidate(metadata):
+                continue
+            if name in feedback["implicated_skills"]:
+                # Negative feedback names this skill — hold the promotion and
+                # surface it as a candidate needing review instead.
+                promotion_candidates.append(name)
                 continue
             decision = policy.decide(
                 SelfImprovementProposal(
@@ -239,8 +250,56 @@ class ResidentWakefulness:
             "marked_stale": marked_stale,
             "promoted": promoted,
             "promotion_candidates": promotion_candidates,
+            "feedback": {
+                "positive": feedback["positive"],
+                "negative": feedback["negative"],
+                "delivery": feedback["delivery"],
+                "implicated_skills": sorted(feedback["implicated_skills"]),
+            },
             "capability_gaps_reopened": reopened,
         }
+
+    async def _recent_feedback(self) -> dict[str, Any]:
+        """Summarize recorded resident feedback for this environment.
+
+        Feedback episodes are written by the feedback recorder (NIU-1022);
+        the dream uses them as signal-quality input: counts go into the dream
+        summary, and skills named by failure feedback (in the correction
+        payload or notes) are held back from automatic promotion.
+        """
+        summary: dict[str, Any] = {
+            "positive": 0,
+            "negative": 0,
+            "delivery": 0,
+            "implicated_skills": set(),
+        }
+        if self._memory is None:
+            return summary
+        from ravn.feedback.recorder import _FAILURE_FEEDBACK  # noqa: PLC0415
+
+        matches = await self._memory.query_episodes(
+            f"valkyrie-feedback environment:{self.identity.environment_id}",
+            limit=DEFAULT_FEEDBACK_QUERY_LIMIT,
+            min_relevance=0.0,
+        )
+        for match in matches:
+            structured = match.episode.structured_outcome or {}
+            if structured.get("kind") != "environment_feedback":
+                continue
+            if structured.get("environment_id") != self.identity.environment_id:
+                continue
+            feedback_type = str(structured.get("feedback_type") or "")
+            if feedback_type in _FAILURE_FEEDBACK:
+                summary["negative"] += 1
+                correction = structured.get("correction") or {}
+                skill_name = str(correction.get("skill_name") or "").strip()
+                if skill_name:
+                    summary["implicated_skills"].add(skill_name)
+            elif feedback_type in ("snooze", "escalate"):
+                summary["delivery"] += 1
+            else:
+                summary["positive"] += 1
+        return summary
 
     def _is_stale(self, metadata: dict[str, Any], now: datetime) -> bool:
         last_used = str(metadata.get("last_used_at") or metadata.get("updated_at") or "")

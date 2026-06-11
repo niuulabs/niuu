@@ -613,20 +613,24 @@ class RoomBridge:
             lines.append("")
         return "\n".join(lines).strip() + "\n"
 
-    async def write_huddle_transcript(
+    async def close_environment_huddle(
         self,
         *,
-        mimir: Any,
         room_id: str,
-        path: str | None = None,
+        reason: str = "closed",
         summary: str = "",
-    ) -> str:
-        """Write the huddle transcript to Mimir and emit a transcript event."""
+    ) -> dict[str, Any]:
+        """Close a replayable huddle, publishing its transcript and terminal event.
+
+        The rendered transcript travels in the ``room.transcript.recorded``
+        payload so any Mimir-holding consumer (the resident Ravn daemon's
+        transcript archiver) can persist it — the broker itself has no Mimir
+        access.
+        """
         snapshot = self._room_context_snapshots.get(room_id, {})
         environment_id = str(snapshot.get("environmentId") or self._environment_id)
-        transcript_path = path or f"huddles/{environment_id}/{room_id}.md"
+        transcript_ref = f"huddles/{environment_id}/{room_id}.md"
         content = self.build_huddle_transcript(room_id)
-        await mimir.upsert_page(transcript_path, content)
         message_refs = [
             str(event.get("id"))
             for event in self._room_event_log.get(room_id, [])
@@ -635,22 +639,11 @@ class RoomBridge:
         await self._publish_room_transcript_recorded(
             environment_id=environment_id,
             room_id=room_id,
-            transcript_ref=transcript_path,
+            transcript_ref=transcript_ref,
             message_refs=message_refs,
             summary=summary or f"{len(message_refs)} huddle messages recorded",
+            transcript_content=content,
         )
-        return transcript_path
-
-    async def close_environment_huddle(
-        self,
-        *,
-        room_id: str,
-        reason: str = "closed",
-        transcript_ref: str = "",
-    ) -> dict[str, Any]:
-        """Close a replayable huddle and publish its terminal event."""
-        snapshot = self._room_context_snapshots.get(room_id, {})
-        environment_id = str(snapshot.get("environmentId") or self._environment_id)
         closed = {
             "type": "room_closed",
             "roomId": room_id,
@@ -894,20 +887,22 @@ class RoomBridge:
         transcript_ref: str,
         message_refs: list[str],
         summary: str,
+        transcript_content: str = "",
     ) -> None:
         from sleipnir.domain.catalog import room_transcript_recorded
 
-        await self._publish_presence(
-            room_transcript_recorded(
-                environment_id=environment_id,
-                room_id=room_id,
-                transcript_ref=transcript_ref,
-                message_refs=message_refs,
-                summary=summary,
-                source="skuld:room_bridge",
-                correlation_id=room_id,
-            )
+        event = room_transcript_recorded(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_ref,
+            message_refs=message_refs,
+            summary=summary,
+            source="skuld:room_bridge",
+            correlation_id=room_id,
         )
+        if transcript_content:
+            event.payload["transcript_content"] = transcript_content
+        await self._publish_presence(event)
 
     async def _publish_room_closed(
         self,
