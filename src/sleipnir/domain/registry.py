@@ -389,6 +389,9 @@ SIGNAL_PRINTER_EVENT: str = "signal.printer.event"
 #: A Valkyrie's wake/sleep/dream/health state changed.
 VALKYRIE_STATE_CHANGED: str = "valkyrie.state.changed"
 
+#: An operator changed a resident Valkyrie's autonomy mode.
+VALKYRIE_AUTONOMY_CHANGED: str = "valkyrie.autonomy.changed"
+
 #: A Valkyrie published its current operational/wakefulness state.
 VALKYRIE_STATE_UPDATED: str = "valkyrie.state.updated"
 

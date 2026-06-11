@@ -1523,9 +1523,9 @@ function AutonomyPanel({
     environmentMatchesSelection(environmentId, runtime.environmentId),
   );
   const tiers = [
-    { label: 'manual', tier: 'tier 0', body: 'Proposes only; every action waits.' },
-    { label: 'supervised', tier: 'tier 1', body: 'Acts on low-risk; escalates medium+.' },
-    { label: 'delegated', tier: 'tier 2', body: 'Acts within authority; hard gates escalate.' },
+    { label: 'guarded', tier: 'tier 0', body: 'Proposes only; every change waits for review.' },
+    { label: 'autonomous', tier: 'tier 1', body: 'Applies low-risk private/environment changes.' },
+    { label: 'yolo', tier: 'tier 2', body: 'Evolves within delegated boundaries; hard gates escalate.' },
     { label: 'yolo', tier: 'tier 3', body: 'Full autonomy inside versioned rollback bounds.' },
   ];
   return (
@@ -1566,7 +1566,7 @@ function AutonomyPanel({
                 </p>
               </div>
               <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-brand">
-                {runtime.driveLoopEnabled ? 'delegated' : 'manual'}
+                {runtime.driveLoopEnabled ? 'autonomous' : 'guarded'}
               </span>
             </div>
             <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5">
@@ -1841,9 +1841,9 @@ function ResidentPanel({
                 }}
                 className="niuu:flex-1 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:text-text-primary"
               >
-                <option value="manual">manual</option>
-                <option value="supervised">supervised</option>
-                <option value="delegated">delegated</option>
+                <option value="guarded">guarded</option>
+                <option value="autonomous">autonomous</option>
+                
                 <option value="yolo">yolo</option>
               </select>
             </label>

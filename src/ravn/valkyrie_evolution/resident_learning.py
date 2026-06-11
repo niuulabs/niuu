@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -59,7 +59,11 @@ _SUBSCRIBED_EVENT_TYPES = [
     registry.FLOCK_LEARNING_ADOPTED,
     registry.FLOCK_LEARNING_REJECTED,
     registry.FLOCK_LEARNING_ROLLED_BACK,
+    registry.VALKYRIE_AUTONOMY_CHANGED,
 ]
+
+#: The only autonomy modes a resident accepts (shared with AutonomyPolicy).
+CANONICAL_AUTONOMY_MODES = frozenset({"guarded", "autonomous", "yolo"})
 
 
 @dataclass(frozen=True)
@@ -651,6 +655,9 @@ class ResidentLearningRuntime:
         )
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
+        if event.event_type == registry.VALKYRIE_AUTONOMY_CHANGED:
+            await self._apply_autonomy_change(event)
+            return
         if _is_resident_ack(event):
             return
         artifact = _artifact_from_event(event)
@@ -659,6 +666,52 @@ class ResidentLearningRuntime:
         else:
             decision = await self.evaluate_and_apply(artifact)
         self._decisions.append(decision)
+
+    async def _apply_autonomy_change(self, event: SleipnirEvent) -> None:
+        """Apply an operator autonomy command addressed to this resident.
+
+        The dashboard's autonomy toggle is a real command, not a cosmetic
+        field: the resident validates the mode, swaps its identity, and
+        confirms with a ``valkyrie.state.updated`` event so the change is
+        auditable end to end.
+        """
+        payload = event.payload
+        target = str(payload.get("valkyrie_id") or "")
+        environment_id = str(payload.get("environment_id") or "")
+        if target and target != self.identity.valkyrie_id:
+            return
+        if not target and environment_id != self.identity.environment_id:
+            return
+        mode = str(payload.get("mode") or "").lower()
+        if mode not in CANONICAL_AUTONOMY_MODES:
+            logger.warning(
+                "resident_learning: ignoring autonomy change to unknown mode %r (known: %s)",
+                mode,
+                sorted(CANONICAL_AUTONOMY_MODES),
+            )
+            return
+        previous = self.identity.autonomy_mode
+        self.identity = replace(self.identity, autonomy_mode=mode)
+        await self._publisher.publish(
+            SleipnirEvent(
+                event_type=registry.VALKYRIE_STATE_UPDATED,
+                source=self._source,
+                payload={
+                    "environment_id": self.identity.environment_id,
+                    "valkyrie_id": self.identity.valkyrie_id,
+                    "autonomy_mode": mode,
+                    "previous_autonomy_mode": previous,
+                    "operator_id": str(payload.get("operator_id") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                },
+                summary=(f"{self.identity.valkyrie_id} autonomy changed {previous} -> {mode}"),
+                urgency=0.4,
+                domain="infrastructure",
+                timestamp=datetime.now(UTC),
+                correlation_id=event.correlation_id or event.event_id,
+                causation_id=event.event_id,
+            )
+        )
 
     async def evaluate_and_apply(
         self,

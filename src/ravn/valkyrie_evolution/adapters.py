@@ -504,14 +504,11 @@ def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[
 def _policy_mode(autonomy_mode: str) -> str:
     """Map runtime mode strings onto the shared AutonomyPolicy modes.
 
-    ``supervised`` is the proof-runner's legacy name for autonomous-with-review.
     Unknown modes degrade to guarded — the conservative default.
     """
     mode = autonomy_mode.lower()
     if mode in {"guarded", "autonomous", "yolo"}:
         return mode
-    if mode == "supervised":
-        return "autonomous"
     return "guarded"
 
 

@@ -353,7 +353,7 @@ class EnvironmentSignalRuntime:
             "action_authority: autonomous\n"
             "action_capability: none\n"
             "target_surfaces: []\n"
-            "expires_at: \"\"\n"
+            'expires_at: ""\n'
             "dissent_refs: []\n"
             "correlation_ids:\n"
             f"  root: {event.correlation_id or signal.correlation_id or ''}\n"

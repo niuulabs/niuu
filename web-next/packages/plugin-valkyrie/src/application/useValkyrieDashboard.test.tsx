@@ -49,7 +49,7 @@ describe('useValkyrieActions', () => {
       ...dashboard,
       valkyries: dashboard.valkyries.map((entry) =>
         entry.id === 'valkyrie-valhalla-sigrun'
-          ? { ...entry, autonomyMode: 'manual' as const }
+          ? { ...entry, autonomyMode: 'guarded' as const }
           : entry,
       ),
     };
@@ -117,7 +117,7 @@ describe('useValkyrieActions', () => {
     await act(() =>
       result.current.updateAutonomy.mutateAsync({
         valkyrieId: 'valkyrie-valhalla-sigrun',
-        mode: 'manual',
+        mode: 'guarded',
       }),
     );
     expect(client.getQueryData(VALKYRIE_DASHBOARD_QUERY_KEY)).toEqual(autonomyDashboard);

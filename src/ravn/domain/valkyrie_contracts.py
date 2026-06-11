@@ -69,9 +69,7 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
     inventing missing core judgment data.
     """
     normalized = {
-        str(key): _json_safe_value(value)
-        for key, value in fields.items()
-        if str(key).strip()
+        str(key): _json_safe_value(value) for key, value in fields.items() if str(key).strip()
     }
     if event_type != VALKYRIE_JUDGMENT_PROPOSED:
         return normalized
@@ -98,9 +96,8 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
         if array_field not in normalized:
             continue
         value = normalized[array_field]
-        if (
-            array_field == "dissent_refs"
-            and (value is None or str(value).strip().lower() in {"null", "none"})
+        if array_field == "dissent_refs" and (
+            value is None or str(value).strip().lower() in {"null", "none"}
         ):
             normalized[array_field] = []
         elif array_field == "evidence" and not isinstance(value, list):
@@ -130,11 +127,7 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
         if flattened_correlation:
             normalized["correlation_ids"] = flattened_correlation
         elif isinstance(correlation_ids, list):
-            normalized["correlation_ids"] = (
-                {"refs": correlation_ids}
-                if correlation_ids
-                else {}
-            )
+            normalized["correlation_ids"] = {"refs": correlation_ids} if correlation_ids else {}
         elif str(correlation_ids or "").strip():
             normalized["correlation_ids"] = {"root": str(correlation_ids).strip()}
         else:
@@ -199,8 +192,7 @@ def validate_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> lis
     if wakefulness and wakefulness not in VALKYRIE_WAKEFULNESS_STATES:
         allowed = ", ".join(sorted(VALKYRIE_WAKEFULNESS_STATES))
         errors.append(
-            f"resident judgment wakefulness {wakefulness!r} is invalid; "
-            f"expected one of {allowed}"
+            f"resident judgment wakefulness {wakefulness!r} is invalid; expected one of {allowed}"
         )
 
     confidence = fields.get("confidence")

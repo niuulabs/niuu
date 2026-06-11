@@ -50,7 +50,7 @@ DEFAULT_OPERATIONAL_HEALTH_STATES = (
 )
 
 WakefulnessMode = Literal["sleeping", "watching", "wakeful", "dreaming", "unknown"]
-AutonomyMode = Literal["observe", "suggest", "supervised", "autonomous", "yolo"]
+AutonomyMode = Literal["guarded", "autonomous", "yolo"]
 LearningScopeName = Literal["private", "environment", "flock", "domain", "shared"]
 
 DEFAULT_ENVIRONMENT_SUBJECT_PREFIX = "ravn.environment"
@@ -236,7 +236,7 @@ class ActionCapability(BaseModel):
 class AutonomyPolicy(BaseModel):
     """Authority boundary for an Environment resident."""
 
-    mode: AutonomyMode = "supervised"
+    mode: AutonomyMode = "guarded"
     allowed_authorities: list[str] = Field(
         default_factory=lambda: ["autonomous", "court_required", "human_review_required"]
     )
@@ -708,7 +708,7 @@ def inbox_environment_fixture() -> Environment:
             ),
         ],
         autonomy=AutonomyPolicy(
-            mode="supervised",
+            mode="guarded",
             escalation_surfaces=["ui:valkyries", "email:drafts"],
         ),
         wakefulness=WakefulnessState(state="watching", summary="Watching high-signal mail"),

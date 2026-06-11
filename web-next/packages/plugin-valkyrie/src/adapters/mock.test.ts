@@ -188,12 +188,12 @@ describe('createMockValkyrieService', () => {
     expect(
       await service.updateAutonomy({
         valkyrieId: 'valkyrie-valhalla-sigrun',
-        mode: 'manual',
+        mode: 'guarded',
         reason: 'pause',
       }),
     ).toMatchObject({
       valkyries: expect.arrayContaining([
-        expect.objectContaining({ id: 'valkyrie-valhalla-sigrun', autonomyMode: 'manual' }),
+        expect.objectContaining({ id: 'valkyrie-valhalla-sigrun', autonomyMode: 'guarded' }),
       ]),
     });
   });

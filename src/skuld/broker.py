@@ -5950,6 +5950,13 @@ class _RoomCloseRequest(BaseModel):
     summary: str = ""
 
 
+class _RoomCapabilityRequest(BaseModel):
+    """Request body for verifying a participant control capability."""
+
+    participant_id: str
+    capability: str
+
+
 class _WorkflowGateResolveRequest(BaseModel):
     """Request body for resolving a pending workflow gate."""
 
@@ -6095,6 +6102,20 @@ async def close_room(body: _RoomCloseRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(503, str(exc))
     return {"status": "closed", **closed}
+
+
+@app.post("/api/room/require-capability")
+async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
+    """Verify a joined participant holds a control capability (403 otherwise)."""
+    try:
+        broker.require_room_capability(body.participant_id, body.capability)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
 
 
 @app.get("/api/room/participants")

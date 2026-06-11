@@ -59,6 +59,7 @@ class AutonomyUpdateRequest(BaseModel):
     valkyrieId: str  # noqa: N815
     mode: str
     reason: str = ""
+    participantId: str = ""  # noqa: N815
 
 
 def _now() -> str:
@@ -557,9 +558,7 @@ def _learning_entry(
             or ""
         ),
         "negativeTransferRisk": str(
-            details.get("negative_transfer_risk")
-            or payload.get("negative_transfer_risk")
-            or "low"
+            details.get("negative_transfer_risk") or payload.get("negative_transfer_risk") or "low"
         ),
         "redaction": str(
             details.get("redaction")
@@ -745,17 +744,13 @@ def _capability_gap_from_details(details: dict[str, Any], payload: dict[str, Any
     `recommended_action`. The dashboard treats that as evolution pressure.
     """
     capability = str(
-        details.get("action_capability")
-        or payload.get("action_capability")
-        or ""
+        details.get("action_capability") or payload.get("action_capability") or ""
     ).strip()
     if capability and capability.lower() not in {"none", "n/a", "no_action", "observe"}:
         return capability
 
     recommended = str(
-        details.get("recommended_action")
-        or payload.get("recommended_action")
-        or ""
+        details.get("recommended_action") or payload.get("recommended_action") or ""
     ).strip()
     if not recommended or recommended.lower() in {"none", "n/a", "observe", "watch"}:
         return ""
@@ -1014,6 +1009,13 @@ class ValkyrieRoomClient:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
 
+    async def require_capability(self, participant_id: str, capability: str) -> None:
+        """Raise 403 unless the joined participant holds *capability*."""
+        await self._post(
+            "/api/room/require-capability",
+            {"participant_id": participant_id, "capability": capability},
+        )
+
     async def join_huddle(
         self,
         huddle: dict[str, Any],
@@ -1226,6 +1228,37 @@ class ValkyrieLearningCommandPublisher:
             learning=learning,
             request=request,
         )
+        return await self.publish_event(event)
+
+    async def publish_autonomy_change(
+        self,
+        *,
+        request: AutonomyUpdateRequest,
+        valkyrie: dict[str, Any],
+    ) -> tuple[dict[str, Any], SleipnirEvent | None]:
+        """Publish an operator autonomy command the resident actually applies."""
+        event = SleipnirEvent(
+            event_type=registry.VALKYRIE_AUTONOMY_CHANGED,
+            source=self._source,
+            payload={
+                "valkyrie_id": str(valkyrie.get("id") or request.valkyrieId),
+                "environment_id": str(valkyrie.get("environmentId") or ""),
+                "mode": request.mode,
+                "operator_id": request.participantId or "operator",
+                "reason": request.reason,
+            },
+            summary=(f"Operator set {request.valkyrieId} autonomy to {request.mode}"),
+            urgency=0.4,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=f"valkyrie-autonomy:{request.valkyrieId}",
+        )
+        return await self.publish_event(event)
+
+    async def publish_event(
+        self,
+        event: SleipnirEvent,
+    ) -> tuple[dict[str, Any], SleipnirEvent | None]:
         if self._publisher is None:
             return (
                 {
@@ -1250,9 +1283,7 @@ class ValkyrieLearningCommandPublisher:
                     "message": "published",
                 }
             ]
-        failed_targets = [
-            target for target in targets if not bool(target.get("published"))
-        ]
+        failed_targets = [target for target in targets if not bool(target.get("published"))]
         published_count = len(targets) - len(failed_targets)
         return (
             {
@@ -1286,9 +1317,7 @@ class ValkyrieLearningCommandPublisher:
     ) -> SleipnirEvent:
         raw_learning_id = _raw_learning_id(str(learning.get("id") or request.learningId))
         environment_id = str(
-            learning.get("sourceEnvironmentId")
-            or before.get("sourceEnvironmentId")
-            or "unknown"
+            learning.get("sourceEnvironmentId") or before.get("sourceEnvironmentId") or "unknown"
         )
         correlation_id = f"valkyrie-learning:{raw_learning_id}:{action}"
         if action in {"promote", "demote"}:
@@ -1298,8 +1327,7 @@ class ValkyrieLearningCommandPublisher:
                 from_scope=str(before.get("scope") or before.get("currentScope") or "private"),
                 to_scope=str(learning.get("scope") or learning.get("currentScope") or "private"),
                 summary=(
-                    request.reason
-                    or str(learning.get("summary") or learning.get("title") or "")
+                    request.reason or str(learning.get("summary") or learning.get("title") or "")
                 ),
                 confidence=_as_float(learning.get("confidence"), 0.0),
                 source=self._source,
@@ -1693,9 +1721,7 @@ def _aggregate_telemetry(
                     "taskId": payload.get("task_id", ""),
                     "title": payload.get("title", ""),
                     "status": (
-                        "completed"
-                        if outcome in {"success", "completed", "complete"}
-                        else "failed"
+                        "completed" if outcome in {"success", "completed", "complete"} else "failed"
                     ),
                     "outcome": outcome,
                     "triggeredBy": payload.get("triggered_by", ""),
@@ -1731,11 +1757,7 @@ def _aggregate_telemetry(
             if capability:
                 append_tool_need(
                     capability=capability,
-                    status=str(
-                        details.get("decision")
-                        or details.get("verdict")
-                        or "needed"
-                    ),
+                    status=str(details.get("decision") or details.get("verdict") or "needed"),
                 )
             recent_outcomes.append(
                 {
@@ -2102,6 +2124,7 @@ def _initial_dashboard() -> Dashboard:
         "updatedAt": updated_at,
     }
 
+
 def _signal_events(dashboard: Dashboard) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for signal in dashboard["signals"]:
@@ -2202,11 +2225,7 @@ class ValkyrieDashboardProjection:
 
     def environment(self, environment_id: str) -> dict[str, Any]:
         environment = next(
-            (
-                entry
-                for entry in self._dashboard["environments"]
-                if entry["id"] == environment_id
-            ),
+            (entry for entry in self._dashboard["environments"] if entry["id"] == environment_id),
             None,
         )
         if environment is None:
@@ -2398,8 +2417,8 @@ class ValkyrieDashboardProjection:
         learning = self._require_learning(learning_id)
         learning["status"] = "canary"
         learning["active"] = True
-        learning["canaryEnvironmentId"] = (
-            request.canaryEnvironmentId or str(learning.get("sourceEnvironmentId") or "")
+        learning["canaryEnvironmentId"] = request.canaryEnvironmentId or str(
+            learning.get("sourceEnvironmentId") or ""
         )
         self._append_learning_history(
             learning,
@@ -2592,15 +2611,11 @@ class ValkyrieDashboardProjection:
         }
 
     def update_autonomy(self, request: AutonomyUpdateRequest) -> Dashboard:
-        valid_modes = {"manual", "supervised", "delegated", "yolo"}
+        valid_modes = {"guarded", "autonomous", "yolo"}
         if request.mode not in valid_modes:
             raise HTTPException(status_code=422, detail="Unsupported autonomy mode")
         valkyrie = next(
-            (
-                entry
-                for entry in self._dashboard["valkyries"]
-                if entry["id"] == request.valkyrieId
-            ),
+            (entry for entry in self._dashboard["valkyries"] if entry["id"] == request.valkyrieId),
             None,
         )
         if valkyrie is None:
@@ -2659,9 +2674,7 @@ class ValkyrieDashboardProjection:
             ]
         if contains:
             needle = contains.lower()
-            filtered = [
-                event for event in filtered if needle in json.dumps(event).lower()
-            ]
+            filtered = [event for event in filtered if needle in json.dumps(event).lower()]
         bounded_limit = max(1, min(int(limit or 200), 1_000))
         filtered = sorted(
             filtered,
@@ -2760,9 +2773,7 @@ class ValkyrieDashboardProjection:
                         for entry in existing_history
                         if not (
                             isinstance(entry, dict)
-                            and str(entry.get("eventType") or "").startswith(
-                                "valkyrie.learning."
-                            )
+                            and str(entry.get("eventType") or "").startswith("valkyrie.learning.")
                         )
                     ]
                     by_id[learning["id"]]["history"] = [
@@ -2852,10 +2863,7 @@ class ValkyrieTelemetrySubscription:
         if self._stopping:
             return
         results = await asyncio.gather(
-            *(
-                self._start_subscriber(label, subscriber)
-                for label, subscriber in self._subscribers
-            ),
+            *(self._start_subscriber(label, subscriber) for label, subscriber in self._subscribers),
         )
         failed = [
             subscriber_spec
@@ -2908,10 +2916,7 @@ class ValkyrieTelemetrySubscription:
             if self._stopping:
                 return
             results = await asyncio.gather(
-                *(
-                    self._start_subscriber(label, subscriber)
-                    for label, subscriber in pending
-                ),
+                *(self._start_subscriber(label, subscriber) for label, subscriber in pending),
             )
             next_pending = [
                 subscriber_spec
@@ -2979,9 +2984,7 @@ def _telemetry_stream_specs() -> list[dict[str, str]]:
                 "stream_name": stream_name,
                 "subject_prefix": parts[1] if len(parts) > 1 and parts[1] else default_prefix,
                 "user": parts[2] if len(parts) > 2 and parts[2] else default_user,
-                "password_env": (
-                    parts[3] if len(parts) > 3 and parts[3] else default_password_env
-                ),
+                "password_env": (parts[3] if len(parts) > 3 and parts[3] else default_password_env),
             }
         )
     return specs
@@ -3018,9 +3021,7 @@ def _command_stream_specs() -> list[dict[str, str]]:
         stream_name = parts[0] if parts and parts[0] else default_stream
         subject_prefix = parts[1] if len(parts) > 1 and parts[1] else default_prefix
         user = parts[2] if len(parts) > 2 and parts[2] else default_user
-        password_env = (
-            parts[3] if len(parts) > 3 and parts[3] else default_password_env
-        )
+        password_env = parts[3] if len(parts) > 3 and parts[3] else default_password_env
         specs.append(
             {
                 "stream_name": stream_name,
@@ -3379,6 +3380,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.decide_learning(learning_id, "adopted", request, action="adopt")
         return await finish_learning_action("adopt", before, learning, request)
@@ -3390,6 +3392,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.decide_learning(learning_id, "rejected", request, action="reject")
         return await finish_learning_action("reject", before, learning, request)
@@ -3401,6 +3404,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.decide_learning(learning_id, "adopted", request, action="override")
         return await finish_learning_action("override", before, learning, request)
@@ -3412,6 +3416,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.canary_learning(learning_id, request)
         return await finish_learning_action("canary", before, learning, request)
@@ -3423,6 +3428,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.promote_learning(learning_id, request)
         return await finish_learning_action("promote", before, learning, request)
@@ -3434,6 +3440,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.demote_learning(learning_id, request)
         return await finish_learning_action("demote", before, learning, request)
@@ -3445,6 +3452,7 @@ def create_valkyrie_router(
     ) -> dict[str, Any]:
         if request.learningId != learning_id:
             raise HTTPException(status_code=422, detail="Learning id mismatch")
+        await _require_operator_capability(request.operatorId, "approve")
         before = store.learning(learning_id)
         learning = store.rollback_learning(learning_id, request)
         return await finish_learning_action("rollback", before, learning, request)
@@ -3453,9 +3461,51 @@ def create_valkyrie_router(
     async def replay_signal(signal: dict[str, Any]) -> dict[str, Any]:
         return store.replay_signal(signal)
 
+    async def _require_operator_capability(participant_id: str, capability: str) -> None:
+        """Enforce room capabilities on operator control endpoints.
+
+        When Skuld rooms are configured the participant must hold the
+        capability (403 otherwise). Without a room client (local dev,
+        proofs) controls stay open but the gap is logged loudly.
+        """
+        if skuld_room is None:
+            logger.warning(
+                "valkyrie controls: no Skuld room client configured; "
+                "%s capability for %r not enforced",
+                capability,
+                participant_id or "anonymous",
+            )
+            return
+        if not participant_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"participantId with the {capability!r} capability is required",
+            )
+        await skuld_room.require_capability(participant_id, capability)
+
     @router.post("/autonomy")
     async def update_autonomy(request: AutonomyUpdateRequest) -> Dashboard:
-        return store.update_autonomy(request)
+        await _require_operator_capability(request.participantId, "change_autonomy")
+        dashboard = store.update_autonomy(request)
+        valkyrie = next(
+            (
+                entry
+                for entry in dashboard.get("valkyries", [])
+                if entry.get("id") == request.valkyrieId
+            ),
+            {"id": request.valkyrieId},
+        )
+        try:
+            _delivery, event = await command_publisher.publish_autonomy_change(
+                request=request,
+                valkyrie=valkyrie,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valkyrie autonomy command publish failed: %s", exc)
+            event = None
+        if event is not None:
+            store.record_event(event)
+        return store.dashboard()
 
     @router.get("/telemetry/events")
     async def list_telemetry_events(

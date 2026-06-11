@@ -73,7 +73,7 @@ class ResidentWakefulness:
         clock: Callable[[], float] = time.monotonic,
         source: str = "",
     ) -> None:
-        self.identity = identity
+        self._identity = identity
         self._skills = skills
         self._publisher = publisher
         self._resident_learning = resident_learning
@@ -90,6 +90,14 @@ class ResidentWakefulness:
         self._last_activity_at = clock()
         self._last_dream_at = clock()
         self._task: asyncio.Task | None = None
+
+    @property
+    def identity(self) -> ResidentLearningIdentity:
+        """Live identity — follows operator autonomy changes applied by the
+        learning runtime instead of a snapshot captured at construction."""
+        if self._resident_learning is not None:
+            return self._resident_learning.identity
+        return self._identity
 
     @property
     def state(self) -> str:

@@ -220,8 +220,7 @@ def _outcome_parse_errors(errors: list[str]) -> list[str]:
     return [
         error
         for error in errors
-        if error.startswith("YAML parse error:")
-        or "did not parse as a YAML mapping" in error
+        if error.startswith("YAML parse error:") or "did not parse as a YAML mapping" in error
     ]
 
 
@@ -346,7 +345,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "action_authority: autonomous | yolo_allowed | court_required | human_review_required\n"
         "action_capability: <capability name, or none>\n"
         "target_surfaces: []\n"
-        "expires_at: \"\"\n"
+        'expires_at: ""\n'
         "dissent_refs: []\n"
         "correlation_ids: {root: <root correlation id>, signal: <signal id>}\n"
         "---end---"
@@ -1615,8 +1614,7 @@ class DriveLoop:
         )
         if repaired_errors:
             logger.warning(
-                "drive_loop: resident Valkyrie schema repair still invalid "
-                "task_id=%s errors=%s",
+                "drive_loop: resident Valkyrie schema repair still invalid task_id=%s errors=%s",
                 task.task_id,
                 repaired_errors,
             )
@@ -2250,8 +2248,7 @@ class DriveLoop:
             tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
             action = str(payload.get("recommended_action") or "observe")
             return (
-                f"Valkyrie {valkyrie_id or 'unknown'} judgment "
-                f"in {environment_id}: {tier}/{action}"
+                f"Valkyrie {valkyrie_id or 'unknown'} judgment in {environment_id}: {tier}/{action}"
             )
         if event_type.startswith("valkyrie.action."):
             capability = str(

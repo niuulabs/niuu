@@ -1,7 +1,7 @@
 export type EnvironmentKind = 'kubernetes' | 'host' | 'printer' | 'generic';
 export type EnvironmentHealth = 'healthy' | 'watch' | 'degraded' | 'critical';
 export type WakefulnessState = 'sleeping' | 'watching' | 'wakeful' | 'dreaming';
-export type AutonomyMode = 'manual' | 'supervised' | 'delegated' | 'yolo';
+export type AutonomyMode = 'guarded' | 'autonomous' | 'yolo';
 export type SignalSeverity = 'info' | 'notice' | 'warning' | 'critical';
 export type SignalStatus = 'new' | 'triaged' | 'acting' | 'resolved' | 'ignored';
 export type ActionStatus = 'planned' | 'running' | 'succeeded' | 'failed' | 'rolled_back';

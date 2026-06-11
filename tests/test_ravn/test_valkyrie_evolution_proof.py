@@ -140,11 +140,11 @@ async def test_evolution_proof_is_repeatable_in_same_output_dir(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_supervised_mode_requires_odin_review_before_activation(tmp_path: Path) -> None:
+async def test_autonomous_mode_requires_odin_review_before_activation(tmp_path: Path) -> None:
     report = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
         builder=TemplateToolBuilder(),
-        autonomy_mode="supervised",
+        autonomy_mode="autonomous",
     ).run()
 
     assert report.summary["odin_reviews"] == 3
@@ -161,7 +161,7 @@ async def test_odin_review_holds_unsafe_generated_skills(tmp_path: Path) -> None
     report = await ValkyrieEvolutionProofRunner(
         out_dir=tmp_path,
         builder=UnsafeBuilder(),
-        autonomy_mode="supervised",
+        autonomy_mode="autonomous",
     ).run()
 
     assert report.summary["odin_reviews_required"] == 3
