@@ -761,6 +761,75 @@ def create_volundr_router(
     ) -> dict[str, Any]:
         return await _start_session_on_owner(request, session_id, principal, "resume")
 
+    @router.post("/sessions/{session_id}/log", status_code=status.HTTP_201_CREATED)
+    async def append_log(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/log",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/log/head")
+    async def get_log_head(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/log/head",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/log")
+    async def get_log(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Any:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/log",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        # The backing replay endpoint returns a JSON LIST of log entries
+        # (response_model=list[SessionLogEntryResponse]). Pass it through
+        # verbatim: coercing a non-dict to {"entries": []} silently dropped the
+        # ENTIRE transcript, so the web's durable-log replay rendered nothing
+        # ("session looks dead / no final message") even with hundreds of
+        # frames stored (latest_seq high, replay empty).
+        return response.json()
+
     @router.post("/sessions/{session_id}/activity", status_code=status.HTTP_204_NO_CONTENT)
     async def report_activity(
         request: Request,

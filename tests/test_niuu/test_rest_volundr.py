@@ -943,3 +943,57 @@ def test_sse_stream_embedded_without_broadcaster_returns_503() -> None:
     response = client.get("/api/v1/forge/sessions/stream", headers=_headers())
 
     assert response.status_code == 503
+
+
+@respx.mock
+def test_event_log_proxies_forward_to_owner() -> None:
+    """Broker log ingest + cursor replay route through the aggregate."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    ingest = respx.post("http://beta/api/v1/forge/sessions/s2/log").mock(
+        return_value=Response(201, json={"appended": 2})
+    )
+    head = respx.get("http://beta/api/v1/forge/sessions/s2/log/head").mock(
+        return_value=Response(200, json={"latest_seq": 41})
+    )
+
+    assert (
+        client.post(
+            "/api/v1/forge/sessions/s2/log",
+            headers=_headers(),
+            json={"entries": [{"seq": 40}, {"seq": 41}]},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.get("/api/v1/forge/sessions/s2/log/head", headers=_headers()).json()["latest_seq"]
+        == 41
+    )
+    assert ingest.called and head.called
+
+
+@respx.mock
+def test_event_log_replay_passes_list_through_verbatim() -> None:
+    """The replay endpoint returns a LIST — coercing it to a dict previously
+    discarded the entire transcript."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    respx.get("http://beta/api/v1/forge/sessions/s2/log").mock(
+        return_value=Response(
+            200,
+            json=[{"seq": 1, "kind": "assistant"}, {"seq": 2, "kind": "result"}],
+        )
+    )
+
+    payload = client.get(
+        "/api/v1/forge/sessions/s2/log",
+        headers=_headers(),
+        params={"after": 0},
+    ).json()
+
+    assert isinstance(payload, list)
+    assert [entry["seq"] for entry in payload] == [1, 2]
