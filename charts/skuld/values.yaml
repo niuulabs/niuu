@@ -246,7 +246,12 @@ envSecrets:
 
 # -- Plain environment variables injected into the skuld broker container.
 # Use for non-secret configuration like proxy URLs or auth tokens.
-envVars: []
+envVars:
+  # Cluster pods have no ~/.claude login, so Claude transports must keep the
+  # injected ANTHROPIC_API_KEY. Host/mini-mode deployments default to the
+  # host's claude.ai subscription instead (see skuld.transports.claude_env).
+  - name: SKULD__CLAUDE_AUTH
+    value: "api_key"
 # Example: Anthropic-compatible proxy endpoint (replaces api.baseUrl/authToken)
 # - name: ANTHROPIC_BASE_URL
 #   value: "https://proxy.example.com"

@@ -123,6 +123,79 @@ class TestFileUploadEndpoint:
         assert response.status_code == 400
 
 
+class TestFileUploadRawEndpoint:
+    """Tests for PUT /api/files/upload (raw-body, path names the destination file)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_workspace(self, tmp_path):
+        self._original_workspace = broker.workspace_dir
+        broker.workspace_dir = str(tmp_path)
+        self.workspace = tmp_path
+        self.client = TestClient(app, raise_server_exceptions=False)
+        yield
+        broker.workspace_dir = self._original_workspace
+
+    def test_put_writes_file(self):
+        response = self.client.put(
+            "/api/files/upload", params={"path": "note.txt"}, content=b"hello raw"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["name"] == "note.txt"
+        assert data["path"] == "note.txt"
+        assert data["size"] == 9
+        assert (self.workspace / "note.txt").read_bytes() == b"hello raw"
+
+    def test_put_creates_parent_directories(self):
+        response = self.client.put(
+            "/api/files/upload",
+            params={"path": ".lexi/attachments/photo.jpg"},
+            content=b"\xff\xd8jpegbytes",
+        )
+        assert response.status_code == 200
+        assert (self.workspace / ".lexi/attachments/photo.jpg").read_bytes() == b"\xff\xd8jpegbytes"
+
+    def test_put_overwrites_existing_file(self):
+        (self.workspace / "note.txt").write_text("old")
+        response = self.client.put("/api/files/upload", params={"path": "note.txt"}, content=b"new")
+        assert response.status_code == 200
+        assert (self.workspace / "note.txt").read_bytes() == b"new"
+
+    def test_put_path_traversal_blocked(self):
+        response = self.client.put(
+            "/api/files/upload", params={"path": "../../evil.txt"}, content=b"bad"
+        )
+        assert response.status_code == 400
+
+    def test_put_empty_path_rejected(self):
+        response = self.client.put("/api/files/upload", params={"path": ""}, content=b"bad")
+        assert response.status_code == 400
+        assert "must name a file" in response.json()["detail"]
+
+    def test_put_directory_path_rejected(self):
+        (self.workspace / "dir").mkdir()
+        response = self.client.put("/api/files/upload", params={"path": "dir"}, content=b"bad")
+        assert response.status_code == 400
+        assert "must name a file" in response.json()["detail"]
+
+    def test_put_invalid_root(self):
+        response = self.client.put(
+            "/api/files/upload", params={"path": "x.txt", "root": "invalid"}, content=b"x"
+        )
+        assert response.status_code == 400
+
+    def test_put_oversize_body_rejected(self):
+        original = broker._settings.max_upload_size_bytes
+        broker._settings.max_upload_size_bytes = 4
+        try:
+            response = self.client.put(
+                "/api/files/upload", params={"path": "big.bin"}, content=b"12345"
+            )
+            assert response.status_code == 413
+        finally:
+            broker._settings.max_upload_size_bytes = original
+
+
 class TestMkdirEndpoint:
     """Tests for POST /api/files/mkdir."""
 

@@ -1180,6 +1180,7 @@ data:
 
     ALTER TABLE volundr_launch_specs RENAME TO volundr_presets;
 
+
   000045_session_origin.up.sql: |
     -- Track where a session originated (volundr, claude, codex) and the native
     -- CLI session/thread id for sessions imported from an external harness.
@@ -1196,4 +1197,43 @@ data:
 
     ALTER TABLE sessions DROP COLUMN IF EXISTS external_session_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS origin;
+
+  000046_session_cli_session_id.up.sql: |
+    -- Capture the CLI/agent conversation id (Claude session UUID or Codex thread
+    -- id) reported by the broker at runtime, so a stopped session can be resumed
+    -- with its prior conversation on restart.
+
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cli_session_id VARCHAR(255);
+
+  000046_session_cli_session_id.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS cli_session_id;
+
+  000047_session_event_log.up.sql: |
+    -- Durable, append-only, full-fidelity per-session event log. Preserves the
+    -- complete agent output (text, thinking, tool_use, tool_result, deltas)
+    -- ordered by a monotonic per-session `seq` so any client can replay the full
+    -- transcript from a cursor regardless of whether a socket was attached.
+    -- PRIMARY KEY (session_id, seq) makes at-least-once ingestion idempotent.
+    -- No FK to sessions: history survives session deletion.
+    CREATE TABLE IF NOT EXISTS session_event_log (
+        session_id   UUID NOT NULL,
+        seq          BIGINT NOT NULL,
+        kind         VARCHAR(64) NOT NULL,
+        role         VARCHAR(32),
+        request_id   TEXT,
+        payload      JSONB NOT NULL DEFAULT '{}',
+        ts           TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (session_id, seq)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_event_log_session_seq
+        ON session_event_log(session_id, seq);
+
+    CREATE INDEX IF NOT EXISTS idx_session_event_log_request
+        ON session_event_log(session_id, request_id);
+  000047_session_event_log.down.sql: |
+    DROP INDEX IF EXISTS idx_session_event_log_request;
+    DROP INDEX IF EXISTS idx_session_event_log_session_seq;
+    DROP TABLE IF EXISTS session_event_log;
 {{- end }}

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -336,6 +338,64 @@ def create_volundr_router(
             reverse=True,
         )
         return sessions
+
+    @router.get("/sessions/stream")
+    async def stream_sessions(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> StreamingResponse:
+        """Proxy the backing instance's Server-Sent Events session stream.
+
+        MUST be declared before GET /sessions/{session_id} — otherwise the
+        literal path "stream" is captured as a session id, the request falls
+        through to a session lookup, and the frontend's FleetStream hangs on a
+        connection that never emits an event (status frozen until a manual
+        reload). Single-instance/mini deployments stream the default backing
+        instance; fleet-wide fan-in across instances is a separate feature.
+        """
+        instance = await _resolve_target_instance(service, principal, None)
+        headers = _forward_headers(request)
+        embedded = _uses_embedded_transport(instance)
+
+        # For the in-process instance, subscribe to its event bus directly.
+        # httpx's ASGITransport buffers the entire response and never returns for
+        # an infinite stream, so it cannot proxy SSE — but the embedded volundr
+        # app shares this process, so we read its broadcaster. If it is somehow
+        # unavailable, fail fast with 503 so the frontend degrades to polling
+        # (a hung 200 stream would freeze status until a manual reload).
+        broadcaster = None
+        if embedded:
+            broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
+            if broadcaster is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Session event stream unavailable",
+                )
+
+        async def _proxy() -> Any:
+            if embedded:
+                async for event in broadcaster.subscribe():
+                    if await request.is_disconnected():
+                        break
+                    yield (
+                        f"event: {event.type.value}\ndata: {json.dumps(event.data)}\n\n"
+                    ).encode()
+                return
+            url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    async for chunk in resp.aiter_raw():
+                        yield chunk
+
+        return StreamingResponse(
+            _proxy(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.get("/sessions/{session_id}")
     async def get_session(
@@ -701,6 +761,131 @@ def create_volundr_router(
     ) -> dict[str, Any]:
         return await _start_session_on_owner(request, session_id, principal, "resume")
 
+    @router.post("/sessions/{session_id}/log", status_code=status.HTTP_201_CREATED)
+    async def append_log(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/log",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/log/head")
+    async def get_log_head(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/log/head",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/log")
+    async def get_log(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Any:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/log",
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        # The backing replay endpoint returns a JSON LIST of log entries
+        # (response_model=list[SessionLogEntryResponse]). Pass it through
+        # verbatim: coercing a non-dict to {"entries": []} silently dropped the
+        # ENTIRE transcript, so the web's durable-log replay rendered nothing
+        # ("session looks dead / no final message") even with hundreds of
+        # frames stored (latest_seq high, replay empty).
+        return response.json()
+
+    @router.post("/sessions/{session_id}/activity", status_code=status.HTTP_204_NO_CONTENT)
+    async def report_activity(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        # Skuld brokers post activity heartbeats (incl. the cli_session_id used
+        # for restart resume) to the public /api/v1/forge prefix; without this
+        # proxy they 404 at the aggregate and the session never becomes
+        # resumable in the full host profile.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/activity",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post("/sessions/{session_id}/usage", status_code=status.HTTP_201_CREATED)
+    async def report_usage(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # Token-usage reports take the same broker ingestion path as activity.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/usage",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
     @router.post("/sessions/{session_id}/stop")
     async def stop_session(
         request: Request,
@@ -767,6 +952,35 @@ def create_volundr_router(
             request,
             method="PATCH",
             path=f"/sessions/{session_id}/restore",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
+    @router.put("/sessions/{session_id}")
+    async def update_session(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # Rename/update (contract §2.1: PUT /sessions/{id} with {name|model|…}).
+        # The aggregate owns /api/v1/forge but only registered GET/DELETE on this
+        # path, so web + iOS renames 405'd — same gap class as activity/log/start.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="PUT",
+            path=f"/sessions/{session_id}",
+            json_body=body,
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
@@ -924,5 +1138,107 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         return response.json()
+
+    # --- Skuld broker telemetry ingestion -----------------------------------
+    # The in-instance Skuld broker POSTs trace spans, session events, and
+    # chronicle-timeline entries back to the Forge API. These were missing
+    # from the aggregate (same gap class as the activity/usage routes above),
+    # so every session logged 404/405 noise. Session-keyed routes resolve the
+    # owning instance; span/event telemetry carries no session id in the
+    # path, so it forwards to the default backing instance (correct for
+    # single-instance/mini deployments — the only place a broker reports to).
+
+    async def _forward_to_default(
+        request: Request,
+        principal: Principal,
+        *,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        instance = await _resolve_target_instance(service, principal, None)
+        return await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=path,
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+
+    @router.post("/chronicles/{session_id}/timeline", status_code=status.HTTP_201_CREATED)
+    async def post_chronicle_timeline(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/chronicles/{session_id}/timeline",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/start", status_code=status.HTTP_201_CREATED)
+    async def span_start(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/spans/start", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/complete", status_code=status.HTTP_201_CREATED)
+    async def span_complete(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/spans/complete", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/spans/{span_id}/finish")
+    async def span_finish(
+        request: Request,
+        span_id: str = Path(description="Trace span identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path=f"/spans/{span_id}/finish", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/events", status_code=status.HTTP_201_CREATED)
+    async def post_event(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _forward_to_default(
+            request, principal, method="POST", path="/events", body=body
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     return router

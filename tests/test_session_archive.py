@@ -225,3 +225,43 @@ def test_load_workspace_transcript_rejects_non_object_json(tmp_path):
 
     with pytest.raises(ValueError, match="Expected JSON object"):
         load_workspace_transcript(tmp_path, "sess-3")
+
+
+def test_workspace_archive_not_served_to_a_different_session(tmp_path):
+    """The ghost-replay bug: workspace archives are SHARED per workspace
+    (archive_root ignores session_id for location="workspace"), so the loader
+    must verify manifest ownership — a NEW session in a workspace with prior
+    history must NOT inherit the previous session's transcript/logs."""
+    import json as _json
+
+    from volundr.session_archive import (
+        archive_logs_aggregate_path,
+        archive_manifest_path,
+        archive_transcript_json_path,
+        load_archive_logs,
+        load_archive_transcript,
+    )
+
+    owner = "11111111-1111-1111-1111-111111111111"
+    stranger = "22222222-2222-2222-2222-222222222222"
+
+    tpath = archive_transcript_json_path(tmp_path, session_id=owner)
+    tpath.parent.mkdir(parents=True, exist_ok=True)
+    tpath.write_text(_json.dumps({"turns": [{"role": "user", "content": "old stuff"}]}))
+    lpath = archive_logs_aggregate_path(tmp_path, session_id=owner)
+    lpath.parent.mkdir(parents=True, exist_ok=True)
+    lpath.write_text(_json.dumps({"lines": ["old log"]}))
+    mpath = archive_manifest_path(tmp_path, session_id=owner)
+    mpath.write_text(_json.dumps({"version": 1, "session_id": owner}))
+
+    # The owner still reads its archive.
+    assert load_archive_transcript(tmp_path, session_id=owner) is not None
+    assert load_archive_logs(tmp_path, session_id=owner) is not None
+
+    # A different session in the SAME workspace gets nothing.
+    assert load_archive_transcript(tmp_path, session_id=stranger) is None
+    assert load_archive_logs(tmp_path, session_id=stranger) is None
+
+    # Legacy archive without a manifest stays readable (no regression).
+    mpath.unlink()
+    assert load_archive_transcript(tmp_path, session_id=stranger) is not None

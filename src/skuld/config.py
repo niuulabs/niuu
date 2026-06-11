@@ -196,7 +196,7 @@ class SkuldSessionConfig(BaseModel):
 
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
-    model: str = Field(default="claude-sonnet-4-6")
+    model: str = Field(default="claude-opus-4-8")
     workspace_dir: str | None = Field(default=None)
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
@@ -255,6 +255,15 @@ class SkuldSettings(BaseSettings):
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
     agent_teams: bool = Field(default=False)
+    ask_user_question_enabled: bool = Field(
+        default=False,
+        description=(
+            "Route Claude tool permissions over the control protocol so "
+            "AskUserQuestion reaches a human (requires a client that answers "
+            "ask_user_question events). Off by default: sessions keep the "
+            "classic bypassPermissions behavior."
+        ),
+    )
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
@@ -262,8 +271,23 @@ class SkuldSettings(BaseSettings):
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
-    chronicle_watcher_enabled: bool = Field(default=True)
+    # OFF by default in our pipeline: the watcher tails session JSONL and POSTs
+    # chronicle timeline events we don't use (and which 405 through the guild
+    # aggregate). Opt in with SKULD__CHRONICLE_WATCHER_ENABLED=true.
+    chronicle_watcher_enabled: bool = Field(default=False)
     chronicle_watcher_debounce_ms: int = Field(default=500)
+    # Generate + report a Chronicle SUMMARY (an LLM pass) when a session stops.
+    # OFF by default in our pipeline: stopping a session must NOT trigger an
+    # extra summarization (cost / latency / unwanted behavior). Opt in with
+    # SKULD__CHRONICLE_ON_STOP_ENABLED=true.
+    chronicle_on_stop_enabled: bool = Field(default=False)
+    # Durable full-fidelity event log: every CLI frame is appended to the
+    # Volundr session_event_log so any client can replay the full transcript
+    # (including the in-flight turn) regardless of whether a socket is attached.
+    event_log_enabled: bool = Field(default=True)
+    event_log_batch_size: int = Field(default=100)
+    event_log_flush_interval_ms: int = Field(default=500)
+    event_log_max_buffer: int = Field(default=50_000)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -295,7 +319,7 @@ class SkuldSettings(BaseSettings):
             if val:
                 self.session.name = val
 
-        if self.session.model == "claude-sonnet-4-6":
+        if self.session.model == "claude-opus-4-8":
             val = os.environ.get("MODEL")
             if val:
                 self.session.model = val

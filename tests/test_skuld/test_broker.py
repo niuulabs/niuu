@@ -2574,6 +2574,9 @@ class TestReportChronicle:
 
     @pytest.mark.asyncio
     async def test_report_chronicle_posts_to_api(self, test_broker):
+        # Stop-summarization is opt-in (OFF by default); this test exercises
+        # the enabled path.
+        test_broker._settings.chronicle_on_stop_enabled = True
         test_broker._artifacts.turn_count = 3
         test_broker._artifacts.files_changed = ["/src/main.py"]
 
@@ -2644,7 +2647,20 @@ class TestReportChronicle:
         mock_client.post.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_report_chronicle_skipped_by_default(self, test_broker):
+        """Stop summarization is OFF by default — no chronicle POST fires."""
+        test_broker._artifacts.turn_count = 3
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock()
+        test_broker._http_client = mock_client
+        test_broker._transport = None
+
+        await test_broker._report_chronicle()
+
+        assert mock_client.post.call_count == 0
+
     async def test_report_chronicle_posts_for_flock_outcome_without_turns(self, test_broker):
+        test_broker._settings.chronicle_on_stop_enabled = True
         test_broker._artifacts.structured_outcome = {
             "summary": "Reviewer approved the changes",
             "files_changed": ["proofs/marker.txt"],

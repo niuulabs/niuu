@@ -122,6 +122,37 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
     return _normalise_transcript_payload(data)
 
 
+def _archive_owned_by(
+    workspace_dir: str | Path | None,
+    *,
+    session_id: str | None,
+    archive_location: str = "workspace",
+    archive_path: str | Path | None = None,
+) -> bool:
+    """True when the archive at this root belongs to ``session_id``.
+
+    Workspace-scoped archives live at ONE shared path per workspace
+    (``.volundr/archive``) — ``archive_root`` ignores the session id for that
+    location. Without this guard a freshly created session in a workspace with
+    prior history is served the PREVIOUS session's transcript while its broker
+    is still starting (the "new session born full of old content" ghost-replay
+    bug). The manifest records the owning session; an archive without a
+    manifest (legacy) stays readable to avoid regressions.
+    """
+    if not session_id:
+        return True
+    manifest = load_archive_manifest(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    )
+    if not isinstance(manifest, dict):
+        return True
+    owner = manifest.get("session_id")
+    return not owner or str(owner) == str(session_id)
+
+
 def load_archive_transcript(
     workspace_dir: str | Path | None,
     *,
@@ -129,7 +160,7 @@ def load_archive_transcript(
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    """Load the normalized archived transcript if present."""
+    """Load the normalized archived transcript if present (and owned)."""
     try:
         path = archive_transcript_json_path(
             workspace_dir,
@@ -140,6 +171,13 @@ def load_archive_transcript(
     except ValueError:
         return None
     if not path.exists():
+        return None
+    if not _archive_owned_by(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    ):
         return None
     data = _read_json(path)
     return _normalise_transcript_payload(data)
@@ -194,7 +232,7 @@ def load_archive_logs(
     archive_location: str = "workspace",
     archive_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    """Load archived aggregate logs if present."""
+    """Load archived aggregate logs if present (and owned — see transcript)."""
     try:
         path = archive_logs_aggregate_path(
             workspace_dir,
@@ -205,6 +243,13 @@ def load_archive_logs(
     except ValueError:
         return None
     if not path.exists():
+        return None
+    if not _archive_owned_by(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    ):
         return None
     return _read_json(path)
 

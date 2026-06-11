@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
 import socket
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -122,6 +124,13 @@ def _mock_provision(mgr: LocalProcessPodManager) -> patch:
         new_callable=AsyncMock,
         return_value=WS,
     )
+
+
+def _reaped_child_pid() -> int:
+    """Spawn and immediately reap a child so its pid is guaranteed dead."""
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
 
 
 def _mock_spawn(
@@ -524,19 +533,17 @@ class TestWorkspaceProvisioning:
         assert workspace.exists()
         assert workspace == tmp_workspaces / str(git_session.id)
 
-    async def test_writes_claude_md(
+    async def test_does_not_write_claude_md(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
         default_spec: SessionSpec,
     ) -> None:
-        """CLAUDE.md is written with system prompt."""
+        """Prompts are delivered via the transport — CLAUDE.md is never written
+        (it used to clobber real project files and bleed into later sessions)."""
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, default_spec)
-        claude_md = workspace / "CLAUDE.md"
-        assert claude_md.exists()
-        content = claude_md.read_text()
-        assert "You are a helpful assistant." in content
+        assert not (workspace / "CLAUDE.md").exists()
 
     async def test_local_mount_path_outside_allowed_prefixes_is_rejected(
         self,
@@ -610,14 +617,16 @@ class TestWorkspaceProvisioning:
         clone_repo.assert_not_called()
         assert workspace == project.resolve()
         assert not (manager._workspaces_dir / str(session.id)).exists()
-        assert "You are a helpful assistant." in (project / "CLAUDE.md").read_text()
+        # The user's real project directory is left untouched.
+        assert not (project / "CLAUDE.md").exists()
 
-    async def test_writes_claude_md_with_initial_prompt(
+    async def test_does_not_write_claude_md_with_initial_prompt(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
     ) -> None:
-        """CLAUDE.md includes initial prompt when provided."""
+        """Even with prompts configured, CLAUDE.md is not written — prompts go
+        through the transport (system_prompt option / send_message)."""
         spec = SessionSpec(
             values={
                 "session": {
@@ -629,9 +638,7 @@ class TestWorkspaceProvisioning:
         )
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, spec)
-        content = (workspace / "CLAUDE.md").read_text()
-        assert "Initial Task" in content
-        assert "Do the thing." in content
+        assert not (workspace / "CLAUDE.md").exists()
 
     async def test_no_claude_md_when_no_prompts(
         self,
@@ -1958,11 +1965,40 @@ class TestStartStop:
 
         with (
             _mock_provision(mgr),
-            _mock_spawn(mgr),
+            # A live pid — the cap reconciler reaps sessions whose process is
+            # dead, so a fake dead pid would silently free the slot.
+            _mock_spawn(mgr, pid=os.getpid()),
         ):
             await mgr.start(session1, spec)
             with pytest.raises(RuntimeError, match="Max concurrent sessions"):
                 await mgr.start(session2, spec)
+
+    async def test_dead_process_frees_concurrent_slot(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+    ) -> None:
+        """A session whose broker died no longer holds a phantom slot."""
+        mgr = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            claude_binary="/usr/bin/fake-claude",
+            max_concurrent=1,
+            state_file=str(tmp_state_file),
+        )
+        session1 = Session(id=uuid4(), name="s1")
+        session2 = Session(id=uuid4(), name="s2")
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        with (
+            _mock_provision(mgr),
+            # pid that is guaranteed dead: spawn a child and wait for it
+            _mock_spawn(mgr, pid=_reaped_child_pid()),
+        ):
+            await mgr.start(session1, spec)
+            # The dead session is reaped, freeing the slot — no raise.
+            await mgr.start(session2, spec)
+
+        assert mgr._processes[str(session1.id)].state == ProcessState.STOPPED
 
     async def test_start_failure_releases_port(
         self,

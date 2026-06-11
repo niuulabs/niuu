@@ -18,7 +18,7 @@ class TestSkuldSessionConfig:
         config = SkuldSessionConfig()
         assert config.id == "unknown"
         assert config.name == "unknown"
-        assert config.model == "claude-sonnet-4-6"
+        assert config.model == "claude-opus-4-8"
         assert config.workspace_dir is None
 
     def test_explicit_values(self):
@@ -60,7 +60,7 @@ class TestSkuldSettings:
         assert s.volundr_api_url == ""
         assert s.session.id == "unknown"
         assert s.session.name == "unknown"
-        assert s.session.model == "claude-sonnet-4-6"
+        assert s.session.model == "claude-opus-4-8"
         assert s.persistence_mount_path == "/volundr/sessions"
         assert s.peer_watchdog.enabled is True
         assert s.peer_watchdog.poll_seconds == 5.0

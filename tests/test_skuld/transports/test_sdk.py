@@ -428,7 +428,8 @@ def test_capabilities() -> None:
     assert caps.interrupt is True
     assert caps.steer is True
     assert caps.steering_mode == "interrupt_resume"
-    assert caps.session_resume is False
+    # SDKTransport supports resume via ClaudeAgentOptions.resume.
+    assert caps.session_resume is True
     assert caps.set_model is True
     assert caps.set_permission_mode is True
 
@@ -1069,3 +1070,131 @@ def test_pending_steers_and_visibility_helpers() -> None:
     )
     assert transport._is_visible_output_event({"type": "assistant", "message": "bad"}) is False
     assert transport._is_visible_output_event({"type": "content_block_delta", "delta": []}) is False
+
+
+@pytest.mark.asyncio
+async def test_resume_session_id_sets_resume_option_and_skips_initial_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    """A seeded resume id reloads the prior conversation: ClaudeAgentOptions.resume
+    is set and the initial prompt is NOT replayed (it is already in history)."""
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        initial_prompt="Warm up.",
+        resume_session_id="sess-resume-1",
+    )
+
+    await transport.start()
+
+    assert factory.options.resume == "sess-resume-1"
+    assert factory.client.query.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_no_resume_option_without_seed(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+
+    assert factory.options.resume is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_omits_can_use_tool_callback(monkeypatch, tmp_path) -> None:
+    """Default: no permission callback — the SDK keeps its classic behavior."""
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(workspace_dir=str(tmp_path), skip_permissions=True)
+    await transport.start()
+
+    assert factory.options.can_use_tool is None
+    assert factory.options.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.asyncio
+async def test_flag_on_registers_can_use_tool_callback(monkeypatch, tmp_path) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        ask_user_question_enabled=True,
+    )
+    await transport.start()
+
+    assert factory.options.can_use_tool == transport._on_can_use_tool
+
+
+class TestAskUserQuestionHandlers:
+    @pytest.mark.asyncio
+    async def test_can_use_tool_allows_ordinary_tools(self, tmp_path) -> None:
+        from claude_agent_sdk import PermissionResultAllow
+
+        transport = SDKTransport(workspace_dir=str(tmp_path), ask_user_question_enabled=True)
+
+        result = await transport._on_can_use_tool("Write", {"file_path": "/tmp/x"}, None)
+
+        assert isinstance(result, PermissionResultAllow)
+
+    @pytest.mark.asyncio
+    async def test_ask_user_question_blocks_until_resolved(self, tmp_path) -> None:
+        from claude_agent_sdk import PermissionResultDeny
+
+        transport = SDKTransport(workspace_dir=str(tmp_path), ask_user_question_enabled=True)
+        events: list[dict] = []
+
+        async def collect(event: dict) -> None:
+            events.append(event)
+
+        transport.on_event(collect)
+
+        task = asyncio.create_task(
+            transport._on_can_use_tool(
+                "AskUserQuestion",
+                {"questions": [{"header": "Env", "question": "Which env?"}]},
+                None,
+            )
+        )
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if events:
+                break
+        question = next(e for e in events if e.get("type") == "ask_user_question")
+        assert not task.done()
+
+        assert transport.resolve_question(question["request_id"], [{"answer": "prod"}]) is True
+        result = await asyncio.wait_for(task, timeout=2)
+
+        assert isinstance(result, PermissionResultDeny)
+        assert "Env: prod" in result.message
+
+    @pytest.mark.asyncio
+    async def test_ask_user_question_without_questions_denies(self, tmp_path) -> None:
+        from claude_agent_sdk import PermissionResultDeny
+
+        transport = SDKTransport(workspace_dir=str(tmp_path))
+
+        result = await transport._handle_ask_user_question({}, None)
+
+        assert isinstance(result, PermissionResultDeny)
+        assert "No questions" in result.message
+
+    @pytest.mark.asyncio
+    async def test_send_control_routes_ask_user_answer(self, tmp_path) -> None:
+        transport = SDKTransport(workspace_dir=str(tmp_path))
+        fut = asyncio.get_event_loop().create_future()
+        transport._pending_questions["askq-x"] = fut
+
+        await transport.send_control("ask_user_answer", request_id="askq-x", answers=["a"])
+
+        assert fut.done() and fut.result() == ["a"]
+
+    def test_resolve_question_unknown_id_returns_false(self, tmp_path) -> None:
+        transport = SDKTransport(workspace_dir=str(tmp_path))
+        assert transport.resolve_question("missing", []) is False

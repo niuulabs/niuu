@@ -579,6 +579,10 @@ class SessionResponse(BaseModel):
         default=None,
         description="Native CLI session id for imported sessions",
     )
+    cli_session_id: str | None = Field(
+        default=None,
+        description="Captured CLI/agent conversation id; present once the session is resumable",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -638,6 +642,7 @@ class SessionResponse(BaseModel):
             workload_type=session.workload_type,
             origin=session.origin,
             external_session_id=session.external_session_id,
+            cli_session_id=session.cli_session_id,
         )
 
 
@@ -2079,10 +2084,28 @@ def create_router(
 
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
-                # Send immediately. Draining startup traffic here can delay or
-                # drop the first user turn for transports that emit welcome or
-                # capability events while still coming online.
+                # Send immediately. Draining startup traffic *before* sending can
+                # delay or drop the first user turn for transports that emit
+                # welcome or capability events while still coming online.
                 await ws.send(json.dumps({"type": "user", "content": content}))
+
+                # Then hold the socket open for a short, bounded grace so the
+                # broker's receive loop actually consumes the frame before we
+                # close. A just-restarted broker may still be warming its
+                # transport on this very connection; closing instantly races that
+                # startup and silently drops the message (HTTP 200 "sent" but no
+                # assistant reply). Drain-and-discard broker frames until the
+                # deadline; the cap keeps send latency bounded even while the
+                # assistant streams a reply back over the same channel.
+                import asyncio
+                import contextlib
+
+                async def _drain() -> None:
+                    while True:
+                        await ws.recv()
+
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(_drain(), timeout=0.75)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

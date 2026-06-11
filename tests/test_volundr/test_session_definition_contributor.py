@@ -186,4 +186,4 @@ class TestDefaultSessionDefinitions:
         context = SessionContext()
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
-        assert result.values["model"] == "claude-sonnet-4-6"
+        assert result.values["model"] == "claude-opus-4-8"
