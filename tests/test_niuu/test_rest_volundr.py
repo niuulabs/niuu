@@ -829,3 +829,50 @@ def test_feature_flags_proxies_to_default_instance() -> None:
 
     assert response.status_code == 200
     assert response.json()["mini_mode"] is True
+
+
+@respx.mock
+def test_activity_report_proxies_to_owner_with_body() -> None:
+    """Broker activity heartbeats (incl. cli_session_id for resume) must reach
+    the owning instance through the aggregate, not 404 at the gateway."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/activity").mock(
+        return_value=Response(204)
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/activity",
+        headers=_headers(),
+        json={"state": "active", "metadata": {"cli_session_id": "sess-1"}},
+    )
+
+    assert response.status_code == 204
+    assert route.called
+    import json as _json
+
+    sent = _json.loads(route.calls.last.request.content)
+    assert sent["metadata"]["cli_session_id"] == "sess-1"
+
+
+@respx.mock
+def test_usage_report_proxies_to_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/sessions/s2/usage").mock(
+        return_value=Response(201, json={"recorded": True})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/usage",
+        headers=_headers(),
+        json={"tokens": 1200, "model": "claude-opus-4-8"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["recorded"] is True
+    assert route.called

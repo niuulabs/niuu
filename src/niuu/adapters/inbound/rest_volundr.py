@@ -701,6 +701,62 @@ def create_volundr_router(
     ) -> dict[str, Any]:
         return await _start_session_on_owner(request, session_id, principal, "resume")
 
+    @router.post("/sessions/{session_id}/activity", status_code=status.HTTP_204_NO_CONTENT)
+    async def report_activity(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        # Skuld brokers post activity heartbeats (incl. the cli_session_id used
+        # for restart resume) to the public /api/v1/forge prefix; without this
+        # proxy they 404 at the aggregate and the session never becomes
+        # resumable in the full host profile.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/activity",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post("/sessions/{session_id}/usage", status_code=status.HTTP_201_CREATED)
+    async def report_usage(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        # Token-usage reports take the same broker ingestion path as activity.
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/usage",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
     @router.post("/sessions/{session_id}/stop")
     async def stop_session(
         request: Request,
