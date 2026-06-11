@@ -246,6 +246,7 @@ memory:
 
 llm:
   model: "${LLM_MODEL}"
+  timeout: 300.0
   provider:
     adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
     kwargs:
