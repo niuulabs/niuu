@@ -113,6 +113,40 @@ def _resident_ravn_state_dir(workspace: Path) -> Path:
     return Path.home() / ".ravn"
 
 
+def _attach_signal_build_tool(
+    agent: Any,
+    workspace: Path,
+    *,
+    triggered_by: str | None,
+    settings: Settings,
+    publisher: Any | None = None,
+) -> Any:
+    """Attach build_tool to RavnAgent signal investigations when supported."""
+    if not triggered_by or not triggered_by.startswith("signal:"):
+        return agent
+    try:
+        from ravn.adapters.tools.build_tool import attach_build_tool  # noqa: PLC0415
+
+        state_dir = _resident_ravn_state_dir(workspace)
+        attach_build_tool(
+            agent,
+            tools_dir=state_dir / "learned_tools",
+            artifacts_dir=state_dir / "learned_tool_artifacts",
+            publisher=publisher,
+            environment_id=settings.environment.id,
+            valkyrie_id=settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}",
+            flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
+            domain=settings.environment.type,
+            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+        )
+    except TypeError:
+        logger.debug("build_tool not attached: executor does not support dynamic tools")
+    except Exception as exc:
+        logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
+    return agent
+
+
 def _warden_store():
     from ravn.warden import build_warden_store
 
@@ -2628,7 +2662,7 @@ async def _run_daemon(
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
         executor = _build_executor(resolved_persona)
-        return executor.build(
+        agent = executor.build(
             llm=llm,
             tools=tools,
             channel=channel,
@@ -2663,6 +2697,13 @@ async def _run_daemon(
             # NIU-612: persona config for outcome parsing + early termination
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+        )
+        return _attach_signal_build_tool(
+            agent,
+            workspace,
+            triggered_by=triggered_by,
+            settings=settings,
+            publisher=daemon_bus,
         )
 
     tasks: list[asyncio.Task] = []
@@ -3170,6 +3211,7 @@ def _build_resident_learning_runtime(
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
+        legacy_probe_builder_enabled=settings.resident_evolution.legacy_probe_builder_enabled,
     )
 
 

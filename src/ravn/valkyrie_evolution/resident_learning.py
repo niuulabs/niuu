@@ -25,10 +25,16 @@ from ravn.odin.review import (
 )
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
+from ravn.valkyrie_evolution.learned_tools import (
+    write_learned_tool,
+    write_learned_tool_artifact,
+)
 from ravn.valkyrie_evolution.models import (
     BuildResult,
     CapabilityGap,
     EvolutionRequest,
+    LearnedToolArtifact,
+    LearnedToolManifest,
     OperationalSignal,
     ReviewResult,
 )
@@ -63,7 +69,7 @@ DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES = 3
 #: Tail of the failing tool's stderr carried in rollback judgment evidence.
 DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS = 500
 
-_SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill"})
+_SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill", "agent_tool"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
     registry.LEARNING_PROMOTED,
@@ -110,6 +116,7 @@ class ResidentLearningArtifact:
     artifact_path: str = ""
     tool_code: str = ""
     tool_entry_point: str = "run"
+    learned_tool_manifest: dict[str, Any] = field(default_factory=dict)
     canary_sample: dict[str, Any] = field(default_factory=dict)
     causation_id: str = ""
     correlation_id: str = ""
@@ -142,7 +149,7 @@ class ResidentLearningPolicy:
             return False, "source Valkyrie already owns this learning"
         if artifact.artifact_type not in _SKILL_ARTIFACT_TYPES:
             return False, f"unsupported artifact type: {artifact.artifact_type or 'unknown'}"
-        if not artifact.content.strip():
+        if artifact.artifact_type != "agent_tool" and not artifact.content.strip():
             return False, "artifact content unavailable for local install"
         if artifact.redaction_status.lower() not in _SAFE_REDACTION_STATES:
             return False, "artifact has not been redacted for peer adoption"
@@ -184,6 +191,7 @@ class ResidentLearningRuntime:
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
+        legacy_probe_builder_enabled: bool = True,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -198,6 +206,7 @@ class ResidentLearningRuntime:
         self._rollback_consecutive_failures = rollback_consecutive_failures
         self._learning_store = learning_store
         self._review_requester = review_requester
+        self._legacy_probe_builder_enabled = legacy_probe_builder_enabled
         self._subscription: Subscription | None = None
         self._decisions: list[ResidentLearningDecision] = []
         self._local_evolved_capabilities: set[str] = set()
@@ -274,6 +283,14 @@ class ResidentLearningRuntime:
         capability = _derive_capability_name(operational_signal)
         skill = await self._find_installed_skill_by_capability(capability)
         if skill is None:
+            if not self._legacy_probe_builder_enabled:
+                return {
+                    "signalId": operational_signal.signal_id,
+                    "capabilityName": capability,
+                    "decision": "defer_to_investigation_with_build_tool",
+                    "usedAdoptedLearning": False,
+                    "skillName": "",
+                }
             evolved = await self._evolve_missing_capability(operational_signal, capability)
             if evolved is not None:
                 return evolved
@@ -1062,6 +1079,7 @@ class ResidentLearningRuntime:
                     "findings": list(review.findings),
                 },
                 "build_evidence": dict(build.evidence),
+                "learned_tool_manifest": dict(artifact.learned_tool_manifest),
                 "signal_ids": [signal.signal_id] if signal is not None else [],
             },
             requested_by=self.identity.valkyrie_id,
@@ -1086,6 +1104,15 @@ class ResidentLearningRuntime:
         import tempfile  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory(prefix="valkyrie-canary-") as canary_dir:
+            if build.artifact_type == "agent_tool":
+                artifact = _learned_tool_artifact_from_build(build)
+                tool_path = write_learned_tool(tools_dir=canary_dir, artifact=artifact)
+                return await run_tool(
+                    tool_path,
+                    sample_payload,
+                    entry_point=artifact.manifest.entry_point,
+                    timeout_seconds=self._tool_timeout_seconds,
+                )
             tool_path = write_tool(
                 tools_dir=canary_dir,
                 skill_name=build.skill_name or "canary",
@@ -1134,6 +1161,14 @@ class ResidentLearningRuntime:
         artifact: ResidentLearningArtifact,
         build: BuildResult,
     ) -> str:
+        if build.artifact_type == "agent_tool":
+            tool_name = _install_learned_tool_artifact(
+                tools_dir=self._tools_dir,
+                artifact=artifact,
+                build=build,
+            )
+            return tool_name
+
         scope = _normalise_scope(artifact.scope)
         try:
             await self._skills.create(
@@ -1364,40 +1399,29 @@ class ResidentLearningRuntime:
         if not artifact.flock_id:
             return
         await self._publisher.publish(
-            SleipnirEvent(
-                event_type=registry.FLOCK_LEARNING_PROPOSED,
+            flock_learning_proposed_event(
                 source=self._source,
-                payload={
-                    "learning_id": artifact.learning_id,
-                    "title": artifact.title,
-                    "summary": artifact.summary,
-                    "flock_id": artifact.flock_id,
-                    "artifact_type": artifact.artifact_type,
-                    "content": artifact.content,
-                    "artifact_content": artifact.content,
-                    "status": "candidate",
-                    "domain": artifact.domain,
-                    "source_environment_id": artifact.source_environment_id,
-                    "source_valkyrie_id": artifact.source_valkyrie_id,
-                    "confidence": artifact.confidence,
-                    "redaction_status": artifact.redaction_status,
-                    "promotion_id": artifact.promotion_id,
-                    "artifact_path": artifact.artifact_path,
-                    "tool_code": build.tool_code,
-                    "tool_entry_point": build.tool_entry_point,
-                    "canary_sample": dict(artifact.canary_sample),
-                    "review_outcome": review.outcome,
-                    "builder_evidence": dict(build.evidence),
-                    "nats_subject": "ravn.environment.flock.learning.proposed",
-                    "additional_nats_subjects": [
-                        _flock_nats_subject(self.identity, registry.FLOCK_LEARNING_PROPOSED)
-                    ],
-                },
-                summary=f"flock.learning.proposed: {artifact.title}",
-                urgency=0.2,
-                domain="infrastructure",
-                timestamp=datetime.now(UTC),
-                correlation_id=artifact.correlation_id or artifact.learning_id,
+                learning_id=artifact.learning_id,
+                title=artifact.title,
+                summary=artifact.summary,
+                flock_id=artifact.flock_id,
+                artifact_type=artifact.artifact_type,
+                content=artifact.content,
+                domain=artifact.domain,
+                environment_id=artifact.source_environment_id,
+                source_valkyrie_id=artifact.source_valkyrie_id,
+                confidence=artifact.confidence,
+                redaction_status=artifact.redaction_status,
+                promotion_id=artifact.promotion_id,
+                artifact_path=artifact.artifact_path,
+                tool_code=build.tool_code,
+                tool_entry_point=build.tool_entry_point,
+                learned_tool_manifest=artifact.learned_tool_manifest,
+                canary_sample=artifact.canary_sample,
+                review_outcome=review.outcome,
+                builder_evidence=build.evidence,
+                subject_domain=self.identity.domain or self.identity.environment_type,
+                correlation_id=artifact.correlation_id,
                 causation_id=artifact.causation_id,
             )
         )
@@ -1520,7 +1544,11 @@ def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearnin
         confidence=artifact.confidence,
         redaction_status=artifact.redaction_status or "redacted",
         promotion_id=artifact.promotion_id,
-        metadata={"domain": artifact.domain},
+        metadata={
+            "domain": artifact.domain,
+            "artifact_type": artifact.artifact_type,
+            "learned_tool_manifest": dict(artifact.learned_tool_manifest),
+        },
     )
 
 
@@ -1557,6 +1585,11 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
         artifact_path=str(payload.get("artifact_path") or payload.get("promoted_path") or ""),
         tool_code=str(payload.get("tool_code") or ""),
         tool_entry_point=str(payload.get("tool_entry_point") or "run"),
+        learned_tool_manifest=(
+            dict(payload["learned_tool_manifest"])
+            if isinstance(payload.get("learned_tool_manifest"), dict)
+            else {}
+        ),
         canary_sample=(
             dict(payload["canary_sample"]) if isinstance(payload.get("canary_sample"), dict) else {}
         ),
@@ -1571,7 +1604,15 @@ def _review_inputs(
     artifact: ResidentLearningArtifact,
     identity: ResidentLearningIdentity,
 ) -> tuple[EvolutionRequest, BuildResult]:
-    capability = _capability_from_content(artifact.content) or _slug(artifact.title)
+    manifest: LearnedToolManifest | None = None
+    if artifact.artifact_type == "agent_tool":
+        manifest = LearnedToolManifest.from_dict(artifact.learned_tool_manifest)
+    capability = (
+        f"tool.{manifest.name}"
+        if manifest is not None
+        else _capability_from_content(artifact.content) or _slug(artifact.title)
+    )
+    safety_class = _artifact_safety_class(artifact, manifest)
     request = EvolutionRequest(
         request_id=f"resident-adopt:{artifact.learning_id}:{identity.environment_id}",
         gap=CapabilityGap(
@@ -1586,18 +1627,19 @@ def _review_inputs(
                 "source_environment_id": artifact.source_environment_id,
                 "source_valkyrie_id": artifact.source_valkyrie_id,
             },
-            safety_class=_safety_class_from_content(artifact.content),
+            safety_class=safety_class,
         ),
         autonomy_mode=identity.autonomy_mode,
         target_scope=_normalise_scope(artifact.scope),
     )
-    artifact_type = (
-        "ravn_skill_tool" if artifact.artifact_type == "tool_skill" else artifact.artifact_type
-    )
+    artifact_type = _build_artifact_type(artifact)
+    skill_content = artifact.content
+    if not skill_content and manifest is not None:
+        skill_content = _agent_tool_content(artifact, manifest, safety_class)
     build = BuildResult(
         request_id=request.request_id,
         skill_name=artifact.title,
-        skill_content=artifact.content,
+        skill_content=skill_content,
         description=artifact.summary,
         artifact_type=artifact_type,
         artifact_path=artifact.artifact_path,
@@ -1608,9 +1650,72 @@ def _review_inputs(
             "promotion_id": artifact.promotion_id,
             "source_environment_id": artifact.source_environment_id,
             "source_valkyrie_id": artifact.source_valkyrie_id,
+            "learned_tool_manifest": dict(artifact.learned_tool_manifest),
         },
     )
     return request, build
+
+
+def _build_artifact_type(artifact: ResidentLearningArtifact) -> str:
+    if artifact.artifact_type == "tool_skill":
+        return "ravn_skill_tool"
+    return artifact.artifact_type
+
+
+def _agent_tool_content(
+    artifact: ResidentLearningArtifact,
+    manifest: LearnedToolManifest,
+    safety_class: str,
+) -> str:
+    return (
+        f"# learned tool: {manifest.name}\n"
+        "metadata:\n"
+        f"  capability: tool.{manifest.name}\n"
+        f"  source: {artifact.source_valkyrie_id or 'resident-agent'}\n"
+        f"  safety_class: {safety_class}\n"
+        f"  tool_entry_point: {manifest.entry_point}\n"
+        f"  required_permission: {manifest.required_permission}\n\n"
+        f"{manifest.description}\n"
+    )
+
+
+def _artifact_safety_class(
+    artifact: ResidentLearningArtifact,
+    manifest: LearnedToolManifest | None,
+) -> str:
+    if manifest is None:
+        return _safety_class_from_content(artifact.content)
+    for grant in manifest.declared_reach:
+        if grant.access in {"write", "read_write", "execute", "admin"}:
+            return "mutating"
+    return "read_only"
+
+
+def _learned_tool_artifact_from_build(build: BuildResult) -> LearnedToolArtifact:
+    manifest = LearnedToolManifest.from_dict(
+        dict(build.evidence.get("learned_tool_manifest") or {})
+    )
+    return LearnedToolArtifact(
+        artifact_id=str(build.evidence.get("learning_id") or f"learned-tool:{manifest.name}"),
+        manifest=manifest,
+        tool_code=build.tool_code,
+        source_build_id=build.request_id,
+        provenance=dict(build.evidence),
+    )
+
+
+def _install_learned_tool_artifact(
+    *,
+    tools_dir: Path | None,
+    artifact: ResidentLearningArtifact,
+    build: BuildResult,
+) -> str:
+    if tools_dir is None:
+        raise ValueError("agent_tool install requires a resident tools directory")
+    learned = _learned_tool_artifact_from_build(build)
+    write_learned_tool(tools_dir=tools_dir / "agent_tools", artifact=learned)
+    write_learned_tool_artifact(artifacts_dir=tools_dir / "agent_tool_artifacts", artifact=learned)
+    return learned.manifest.name
 
 
 def _review_allows_install(review: ReviewResult, autonomy_mode: str) -> bool:
@@ -1719,10 +1824,93 @@ def _authority_boundary(autonomy_mode: str) -> str:
     return "yolo" if autonomy_mode.lower() == "yolo" else "human_review_required"
 
 
+def flock_learning_proposed_event(
+    *,
+    source: str,
+    learning_id: str,
+    title: str,
+    summary: str,
+    flock_id: str,
+    artifact_type: str,
+    content: str,
+    domain: str,
+    environment_id: str,
+    source_valkyrie_id: str,
+    confidence: float,
+    redaction_status: str,
+    promotion_id: str,
+    artifact_path: str = "",
+    tool_code: str = "",
+    tool_entry_point: str = "run",
+    learned_tool_manifest: dict[str, Any] | None = None,
+    canary_sample: dict[str, Any] | None = None,
+    review_outcome: str = "",
+    builder_evidence: dict[str, Any] | None = None,
+    subject_domain: str = "",
+    correlation_id: str = "",
+    causation_id: str = "",
+) -> SleipnirEvent:
+    """The one shape of a flock learning proposal.
+
+    Every proposer (the resident install pipeline, build_tool) builds the
+    event here so the payload contract — including the scoped flock NATS
+    fan-out subject — cannot drift between publishers.
+    """
+    return SleipnirEvent(
+        event_type=registry.FLOCK_LEARNING_PROPOSED,
+        source=source,
+        payload={
+            "learning_id": learning_id,
+            "title": title,
+            "summary": summary,
+            "flock_id": flock_id,
+            "artifact_type": artifact_type,
+            "content": content,
+            "artifact_content": content,
+            "status": "candidate",
+            "domain": domain,
+            "source_environment_id": environment_id,
+            "source_valkyrie_id": source_valkyrie_id,
+            "confidence": confidence,
+            "redaction_status": redaction_status,
+            "promotion_id": promotion_id,
+            "artifact_path": artifact_path,
+            "tool_code": tool_code,
+            "tool_entry_point": tool_entry_point,
+            "learned_tool_manifest": dict(learned_tool_manifest or {}),
+            "canary_sample": dict(canary_sample or {}),
+            "review_outcome": review_outcome,
+            "builder_evidence": dict(builder_evidence or {}),
+            "nats_subject": "ravn.environment.flock.learning.proposed",
+            "additional_nats_subjects": [
+                _scoped_flock_subject(
+                    subject_domain or domain,
+                    environment_id,
+                    registry.FLOCK_LEARNING_PROPOSED,
+                )
+            ],
+        },
+        summary=f"flock.learning.proposed: {title}",
+        urgency=0.2,
+        domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or learning_id,
+        causation_id=causation_id,
+    )
+
+
+def _scoped_flock_subject(domain: str, environment_id: str, event_type: str) -> str:
+    return (
+        f"flock.{_nats_token(domain or 'environment')}.{_nats_token(environment_id)}.{event_type}"
+    )
+
+
 def _flock_nats_subject(identity: ResidentLearningIdentity, event_type: str) -> str:
-    domain = _nats_token(identity.domain or identity.environment_type or "environment")
-    environment_id = _nats_token(identity.environment_id)
-    return f"flock.{domain}.{environment_id}.{event_type}"
+    return _scoped_flock_subject(
+        identity.domain or identity.environment_type,
+        identity.environment_id,
+        event_type,
+    )
 
 
 def _nats_token(value: str) -> str:

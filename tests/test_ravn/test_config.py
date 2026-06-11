@@ -22,6 +22,7 @@ from ravn.config import (
     MemoryConfig,
     PermissionConfig,
     PermissionRuleConfig,
+    ResidentEvolutionConfig,
     Settings,
     SignalSourceConfig,
     ThreadConfig,
@@ -327,6 +328,20 @@ class TestLoggingConfig:
     def test_defaults(self) -> None:
         c = LoggingConfig()
         assert c.level in ("debug", "info", "warning", "error", "critical")
+
+
+class TestResidentEvolutionConfig:
+    def test_learned_tool_execution_defaults_keep_the_probe_builder_on(self) -> None:
+        # The probe builder stays the default until the build_tool
+        # investigation loop (NIU-1051) is the proven replacement —
+        # flipping it off without that loop leaves capability gaps unhandled.
+        c = ResidentEvolutionConfig()
+        assert c.legacy_probe_builder_enabled is True
+        assert c.learned_tool_execution_backend == "local"
+
+    def test_learned_tool_execution_backend_can_select_forge(self) -> None:
+        c = ResidentEvolutionConfig(learned_tool_execution_backend="forge")
+        assert c.learned_tool_execution_backend == "forge"
 
 
 class TestSettings:

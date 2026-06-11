@@ -16,7 +16,22 @@ from ravn.valkyrie_evolution.adapters import (
     ToolBuildError,
     WorkflowToolBuilder,
 )
-from ravn.valkyrie_evolution.models import CapabilityGap, EvolutionRequest, OperationalSignal
+from ravn.valkyrie_evolution.learned_tools import (
+    LearnedToolError,
+    learned_tool_path,
+    load_learned_tool,
+    read_learned_tool_artifact,
+    write_learned_tool,
+    write_learned_tool_artifact,
+)
+from ravn.valkyrie_evolution.models import (
+    CapabilityGap,
+    EvolutionRequest,
+    LearnedToolArtifact,
+    LearnedToolManifest,
+    OperationalSignal,
+    ToolReachGrant,
+)
 from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningArtifact,
     ResidentLearningIdentity,
@@ -166,6 +181,98 @@ def test_write_tool_rejects_empty_code(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# learned agent tools
+# ---------------------------------------------------------------------------
+
+
+def _learned_tool_artifact() -> LearnedToolArtifact:
+    manifest = LearnedToolManifest(
+        name="mimir_metric_window",
+        description="Query a bounded metric window and summarize the series.",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "points": {"type": "integer"}},
+        },
+        required_permission="mimir:read",
+        declared_reach=[
+            ToolReachGrant(
+                kind="network",
+                target="https://mimir.internal",
+                access="read",
+                metadata={"reason": "query metrics"},
+            )
+        ],
+    )
+    return LearnedToolArtifact(
+        artifact_id="learned-tool:mimir_metric_window",
+        manifest=manifest,
+        tool_code=(
+            "def run(input):\n"
+            "    query = input.get('query', '')\n"
+            "    return {'query': query, 'points': 0, 'source': 'fixture'}\n"
+        ),
+        source_signal_ids=["sig-1"],
+        source_session_id="session-1",
+        source_gap_id="gap-1",
+        source_build_id="build-1",
+        provenance={"builder": "test"},
+    )
+
+
+def test_learned_tool_artifact_round_trips_manifest_and_reach(tmp_path) -> None:
+    artifact = _learned_tool_artifact()
+    path = write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=artifact)
+
+    loaded = read_learned_tool_artifact(path)
+
+    assert loaded.artifact_type == "agent_tool"
+    assert loaded.manifest.name == "mimir_metric_window"
+    assert loaded.manifest.required_permission == "mimir:read"
+    assert loaded.manifest.declared_reach[0].kind == "network"
+    assert loaded.manifest.declared_reach[0].target == "https://mimir.internal"
+    assert loaded.source_signal_ids == ["sig-1"]
+
+
+async def test_learned_tool_loads_as_agent_tool_port_and_executes(tmp_path) -> None:
+    artifact = _learned_tool_artifact()
+    tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+    tool = load_learned_tool(artifact=artifact, tool_path=tool_path)
+
+    assert tool.name == "mimir_metric_window"
+    assert tool.required_permission == "mimir:read"
+    assert tool.input_schema["required"] == ["query"]
+    assert learned_tool_path(tmp_path, "mimir_metric_window") == tool_path
+
+    result = await tool.execute({"query": "up"})
+
+    assert not result.is_error
+    assert json.loads(result.content) == {"points": 0, "query": "up", "source": "fixture"}
+
+
+def test_learned_tool_rejects_invalid_declared_reach(tmp_path) -> None:
+    artifact = _learned_tool_artifact()
+    bad = LearnedToolArtifact(
+        artifact_id=artifact.artifact_id,
+        manifest=LearnedToolManifest(
+            name=artifact.manifest.name,
+            description=artifact.manifest.description,
+            input_schema=artifact.manifest.input_schema,
+            required_permission=artifact.manifest.required_permission,
+            declared_reach=[ToolReachGrant(kind="filesystem", access="root")],
+        ),
+        tool_code=artifact.tool_code,
+    )
+
+    with pytest.raises(LearnedToolError, match="unsupported reach access"):
+        write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=bad)
+
+
+# ---------------------------------------------------------------------------
 # TemplateToolBuilder
 # ---------------------------------------------------------------------------
 
@@ -240,7 +347,12 @@ async def test_workflow_builder_is_an_explicit_boundary() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _runtime(tmp_path, name: str, autonomy_mode: str = "yolo") -> ResidentLearningRuntime:
+def _runtime(
+    tmp_path,
+    name: str,
+    autonomy_mode: str = "yolo",
+    legacy_probe_builder_enabled: bool = True,
+) -> ResidentLearningRuntime:
     skill_dir = tmp_path / name / "skills"
     registry = FileSkillRegistry(
         skill_dirs=[str(skill_dir)],
@@ -265,7 +377,20 @@ def _runtime(tmp_path, name: str, autonomy_mode: str = "yolo") -> ResidentLearni
         publisher=bus,
         subscriber=bus,
         tools_dir=tmp_path / name / "tools",
+        legacy_probe_builder_enabled=legacy_probe_builder_enabled,
     )
+
+
+async def test_missing_capability_can_defer_to_investigation_instead_of_probe_build(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, "k8s-investigate", legacy_probe_builder_enabled=False)
+
+    result = await runtime.process_signal(_signal())
+
+    assert result["decision"] == "defer_to_investigation_with_build_tool"
+    assert result["usedAdoptedLearning"] is False
+    assert not (tmp_path / "k8s-investigate" / "tools").exists()
 
 
 async def test_micro_dream_installs_tool_and_replay_executes_it(tmp_path) -> None:
@@ -316,6 +441,42 @@ async def test_peer_adoption_installs_proposed_tool_implementation(tmp_path) -> 
     replay = await peer.process_signal(_signal())
     assert replay["usedAdoptedLearning"] is True
     assert replay["toolResult"]["matches"] is True
+
+
+async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) -> None:
+    peer = _runtime(tmp_path, "k8s-agent-tool")
+    learned = _learned_tool_artifact()
+    artifact = ResidentLearningArtifact(
+        learning_id=learned.artifact_id,
+        title=learned.manifest.name,
+        summary=learned.manifest.description,
+        content="",
+        artifact_type="agent_tool",
+        scope="flock",
+        confidence=0.9,
+        source_environment_id="env-k8s-teacher",
+        source_valkyrie_id="valkyrie:k8s-teacher",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+        tool_code=learned.tool_code,
+        tool_entry_point=learned.manifest.entry_point,
+        learned_tool_manifest=learned.manifest.to_dict(),
+        canary_sample={"query": "up"},
+    )
+
+    decision = await peer.evaluate_and_apply(artifact)
+
+    assert decision.action == "adopted"
+    assert decision.installed_skill_name == "mimir_metric_window"
+    tool_path = tmp_path / "k8s-agent-tool" / "tools" / "agent_tools" / "mimir_metric_window.py"
+    artifact_path = (
+        tmp_path / "k8s-agent-tool" / "tools" / "agent_tool_artifacts" / "mimir_metric_window.json"
+    )
+    assert tool_path.is_file()
+    installed = read_learned_tool_artifact(artifact_path)
+    assert installed.manifest.name == "mimir_metric_window"
+    assert installed.manifest.declared_reach[0].kind == "network"
 
 
 def _skill_content_for(skill_name: str) -> str:

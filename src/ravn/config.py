@@ -2443,6 +2443,24 @@ class ResidentEvolutionConfig(BaseModel):
             "auto-rolled-back (archived, regression published to the flock)."
         ),
     )
+    legacy_probe_builder_enabled: bool = Field(
+        default=True,
+        description=(
+            "Compatibility switch for the per-signal classifier builder. When "
+            "disabled, residents defer missing capabilities to the build_tool "
+            "investigation loop instead of authoring run(signal) probes — only "
+            "flip this off once that loop (signal_task_severities + drive "
+            "sessions) is enabled, or capability gaps go unhandled."
+        ),
+    )
+    learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
+        default="local",
+        description=(
+            "Execution backend for learned agent tools authored through build_tool. "
+            "'local' uses the resident subprocess sandbox; 'forge'/'devrunner' run "
+            "inside the workspace-mounted devrunner container path."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

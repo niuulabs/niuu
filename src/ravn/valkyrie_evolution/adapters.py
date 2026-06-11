@@ -476,8 +476,36 @@ _BLOCKED_INSTRUCTIONS = (
 def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[str]:
     """Blocking structural findings for a built or adopted artifact."""
     from ravn.context.autonomy import unnegated_prose_mentions  # noqa: PLC0415
+    from ravn.valkyrie_evolution.models import LearnedToolManifest  # noqa: PLC0415
 
     findings: list[str] = []
+    if build.artifact_type == "agent_tool":
+        try:
+            manifest = LearnedToolManifest.from_dict(
+                dict(build.evidence.get("learned_tool_manifest") or {})
+            )
+        except Exception as exc:  # noqa: BLE001
+            findings.append(f"invalid learned tool manifest: {exc}")
+            manifest = None
+        if manifest is not None:
+            if not manifest.name:
+                findings.append("learned tool manifest is missing name")
+            if not manifest.required_permission:
+                findings.append("learned tool manifest is missing required_permission")
+            if not manifest.input_schema:
+                findings.append("learned tool manifest is missing input_schema")
+        if build.has_tool_implementation:
+            findings.extend(
+                tool_implementation_findings(
+                    build.tool_code,
+                    entry_point=build.tool_entry_point or "run",
+                    safety_class=request.gap.safety_class,
+                )
+            )
+        else:
+            findings.append("learned tool is missing implementation")
+        return findings
+
     if build.artifact_type != "ravn_skill_tool":
         findings.append(f"unexpected artifact type: {build.artifact_type}")
     capability_marker = f"capability: {request.gap.capability_name}"

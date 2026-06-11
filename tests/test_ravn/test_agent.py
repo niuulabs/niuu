@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
 
+from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.domain.events import RavnEventType
 from ravn.domain.exceptions import MaxIterationsError
@@ -20,6 +22,9 @@ from ravn.domain.models import (
     ToolResult,
 )
 from ravn.ports.llm import LLMPort
+from sleipnir.adapters.in_process import InProcessBus
+from sleipnir.domain import registry
+from sleipnir.domain.events import SleipnirEvent
 from tests.test_ravn.conftest import (
     AllowAllPermission,
     DenyAllPermission,
@@ -51,6 +56,19 @@ def make_agent(
         max_iterations=max_iterations,
     )
     return agent, ch
+
+
+async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
+    events.append(event)
+
+
+class _FakeSandboxShell:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def run(self, command: str) -> tuple[str, int]:
+        self.commands.append(command)
+        return '{"backend": "forge", "ok": true}', 0
 
 
 class TestRavnAgentSimpleTurn:
@@ -135,6 +153,147 @@ class TestRavnAgentToolUse:
         assert result.tool_calls[0].name == "echo"
         assert len(result.tool_results) == 1
         assert result.tool_results[0].content == "ping"
+
+    async def test_build_tool_registers_tool_for_same_turn(self, tmp_path) -> None:
+        build_call = ToolCall(
+            id="tc-build",
+            name="build_tool",
+            input={
+                "manifest": {
+                    "name": "diagnose_widget",
+                    "description": "Summarize a widget identifier.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"widget_id": {"type": "string"}},
+                        "required": ["widget_id"],
+                    },
+                    "required_permission": "widget:read",
+                    "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                },
+                "tool_code": (
+                    "def run(input):\n"
+                    "    return {'widget_id': input.get('widget_id'), 'status': 'ok'}\n"
+                ),
+                "canary_input": {"widget_id": "canary"},
+            },
+        )
+        learned_call = ToolCall(
+            id="tc-learned",
+            name="diagnose_widget",
+            input={"widget_id": "w-123"},
+        )
+        tool_names_by_call: list[list[str]] = []
+
+        async def _stream(messages, *, tools, **kwargs) -> AsyncIterator[StreamEvent]:
+            tool_names_by_call.append([tool["name"] for tool in tools])
+            if len(tool_names_by_call) == 1:
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=build_call)
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=5, output_tokens=2),
+                )
+            elif len(tool_names_by_call) == 2:
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=learned_call)
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=6, output_tokens=2),
+                )
+            else:
+                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="diagnosed")
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=7, output_tokens=3),
+                )
+
+        llm = AsyncMock(spec=LLMPort)
+        llm.stream = _stream
+        agent, _ = make_agent(llm)
+        attach_build_tool(agent, tools_dir=tmp_path / "tools")
+
+        result = await agent.run_turn("need a widget diagnostic")
+
+        assert result.response == "diagnosed"
+        assert [call.name for call in result.tool_calls] == ["build_tool", "diagnose_widget"]
+        assert "diagnose_widget" not in tool_names_by_call[0]
+        assert "diagnose_widget" in tool_names_by_call[1]
+        assert '"status": "ok"' in result.tool_results[-1].content
+
+    async def test_build_tool_publishes_agent_tool_flock_proposal(self, tmp_path) -> None:
+        bus = InProcessBus()
+        events: list[SleipnirEvent] = []
+        await bus.subscribe(
+            [registry.FLOCK_LEARNING_PROPOSED],
+            lambda event: _record(events, event),
+        )
+
+        llm = make_simple_llm("unused")
+        agent, _ = make_agent(llm)
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            publisher=bus,
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+            flock_id="flock:k8s-valkyries",
+            domain="k8s",
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "diagnose_widget",
+                    "description": "Summarize a widget identifier.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "widget:read",
+                    "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                },
+                "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "canary_input": {},
+            }
+        )
+        await bus.flush()
+
+        assert not result.is_error
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["artifact_type"] == "agent_tool"
+        assert payload["source_valkyrie_id"] == "valkyrie:k8s-a"
+        assert payload["learned_tool_manifest"]["name"] == "diagnose_widget"
+        assert payload["tool_code"].startswith("def run")
+
+    async def test_build_tool_can_register_forge_sandboxed_tool(self, tmp_path) -> None:
+        shell = _FakeSandboxShell()
+        llm = make_simple_llm("unused")
+        agent, _ = make_agent(llm)
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / ".ravn" / "learned_tools",
+            execution_backend="forge",
+            workspace_root=tmp_path,
+            sandbox_shell=shell,
+        )
+
+        build = await tool.execute(
+            {
+                "manifest": {
+                    "name": "sandbox_probe",
+                    "description": "Run in the Forge sandbox.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "sandbox:read",
+                    "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                },
+                "tool_code": "def run(input):\n    return {'backend': 'local'}\n",
+                "canary_input": {},
+            }
+        )
+        learned = next(item for item in agent.tools if item.name == "sandbox_probe")
+        result = await learned.execute({})
+
+        assert not build.is_error
+        assert not result.is_error
+        assert json.loads(result.content) == {"backend": "forge", "ok": True}
+        assert shell.commands
+        assert "python -I" in shell.commands[0]
 
     async def test_tool_start_event_emitted(self) -> None:
         tool = EchoTool()

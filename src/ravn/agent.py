@@ -191,6 +191,12 @@ class RavnAgent:
         """Return all registered tools in registration order."""
         return list(self._tools.values())
 
+    def register_tool(self, tool: ToolPort, *, replace: bool = False) -> None:
+        """Register a tool for subsequent LLM iterations in this session."""
+        if tool.name in self._tools and not replace:
+            raise ValueError(f"Tool {tool.name!r} is already registered")
+        self._tools[tool.name] = tool
+
     @property
     def max_iterations(self) -> int:
         """Maximum tool-call iterations allowed per turn."""
