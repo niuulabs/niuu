@@ -876,3 +876,70 @@ def test_usage_report_proxies_to_owner() -> None:
     assert response.status_code == 201
     assert response.json()["recorded"] is True
     assert route.called
+
+
+@respx.mock
+def test_chronicle_timeline_post_proxies_to_owner() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    route = respx.post("http://beta/api/v1/forge/chronicles/s2/timeline").mock(
+        return_value=Response(201, json={"recorded": True})
+    )
+
+    response = client.post(
+        "/api/v1/forge/chronicles/s2/timeline",
+        headers=_headers(),
+        json={"event": "message_user"},
+    )
+
+    assert response.status_code == 201
+    assert route.called
+
+
+@respx.mock
+def test_span_and_event_telemetry_forward_to_default_instance() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    start = respx.post("http://alpha/api/v1/forge/spans/start").mock(
+        return_value=Response(201, json={"span_id": "sp-1"})
+    )
+    complete = respx.post("http://alpha/api/v1/forge/spans/complete").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+    finish = respx.post("http://alpha/api/v1/forge/spans/sp-1/finish").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    events = respx.post("http://alpha/api/v1/forge/events").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+
+    assert client.post("/api/v1/forge/spans/start", headers=_headers(), json={}).status_code == 201
+    assert (
+        client.post("/api/v1/forge/spans/complete", headers=_headers(), json={}).status_code == 201
+    )
+    assert (
+        client.post("/api/v1/forge/spans/sp-1/finish", headers=_headers(), json={}).status_code
+        == 200
+    )
+    assert client.post("/api/v1/forge/events", headers=_headers(), json={}).status_code == 201
+    assert start.called and complete.called and finish.called and events.called
+
+
+def test_sse_stream_embedded_without_broadcaster_returns_503() -> None:
+    embedded = FastAPI()
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                is_default=True,
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    response = client.get("/api/v1/forge/sessions/stream", headers=_headers())
+
+    assert response.status_code == 503
