@@ -169,3 +169,107 @@ class TestCodexStub:
     def test_capabilities_disable_send_message(self):
         caps = CodexRemoteControlTransport("/tmp").capabilities
         assert caps.send_message is False
+
+
+class TestProcessIteration:
+    def test_ps_fallback_parses_pid_and_command(self):
+        fake_ps = "  101 claude remote-control --name volundr-tok\n  bad line\n 103 claude daemon\n"
+        with (
+            patch("skuld.transports.remote_control.glob.glob", return_value=[]),
+            patch(
+                "skuld.transports.remote_control.subprocess.run",
+                return_value=type("R", (), {"stdout": fake_ps})(),
+            ),
+        ):
+            entries = RemoteControlTransport._iter_processes()
+
+        assert (101, "claude remote-control --name volundr-tok") in entries
+        assert (103, "claude daemon") in entries
+        assert len(entries) == 2
+
+    def test_ps_failure_returns_empty(self):
+        with (
+            patch("skuld.transports.remote_control.glob.glob", return_value=[]),
+            patch(
+                "skuld.transports.remote_control.subprocess.run",
+                side_effect=OSError("no ps"),
+            ),
+        ):
+            assert RemoteControlTransport._iter_processes() == []
+
+    def test_sweep_without_token_is_noop(self):
+        transport = RemoteControlTransport("/tmp")
+        assert transport._sweep_kill(15) == 0
+
+
+class TestStopAndResurface:
+    @pytest.mark.asyncio
+    async def test_stop_terminates_and_sweeps(self):
+        import signal as _signal
+
+        transport = RemoteControlTransport("/tmp", session_id="tok12345")
+
+        class _Proc:
+            returncode = None
+            signals: list[int] = []
+
+            def send_signal(self, sig):
+                self.signals.append(sig)
+                self.returncode = 0
+
+            async def wait(self):
+                return 0
+
+        proc = _Proc()
+        transport._process = proc
+        swept: list[int] = []
+        with patch.object(transport, "_sweep_kill", side_effect=lambda sig: swept.append(sig) or 0):
+            await transport.stop()
+
+        assert _signal.SIGTERM in proc.signals
+        assert _signal.SIGTERM in swept
+
+    @pytest.mark.asyncio
+    async def test_send_message_resurfaces_pairing_url(self):
+        transport = RemoteControlTransport("/tmp", session_id="tok12345")
+        transport._url = "https://claude.ai/code?environment=env_abc"
+        events: list[dict] = []
+
+        async def collect(event: dict) -> None:
+            events.append(event)
+
+        transport.on_event(collect)
+        await transport.send_message("hello?")
+
+        resurfaced = [e for e in events if e.get("type") == "remote_control"]
+        assert resurfaced and resurfaced[0]["url"].endswith("env_abc")
+
+
+class TestCodexNotice:
+    @pytest.mark.asyncio
+    async def test_notice_when_standalone_missing(self):
+        transport = CodexRemoteControlTransport("/tmp")
+        events: list[dict] = []
+
+        async def collect(event: dict) -> None:
+            events.append(event)
+
+        transport.on_event(collect)
+        with patch("os.path.exists", return_value=False):
+            await transport._notice()
+
+        assert events, "a notice event must be emitted"
+
+    @pytest.mark.asyncio
+    async def test_notice_when_standalone_present(self):
+        transport = CodexRemoteControlTransport("/tmp")
+        events: list[dict] = []
+
+        async def collect(event: dict) -> None:
+            events.append(event)
+
+        transport.on_event(collect)
+        with patch("os.path.exists", return_value=True):
+            await transport._notice()
+
+        assert events
