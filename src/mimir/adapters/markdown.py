@@ -49,7 +49,8 @@ try:
     from sleipnir.domain.catalog import mimir_page_written as _catalog_page_written
 except ImportError:
     _catalog_page_written = None  # type: ignore[assignment]
-from mimir.config import RankingConfig
+from mimir.config import EvidenceConfig, RankingConfig
+from mimir.learning import consolidate_source as compute_source_consolidation
 from mimir.ranking import apply_boosts, tokenize, zone_factor
 from niuu.domain.mimir import (
     EntityType,
@@ -312,6 +313,7 @@ class MarkdownMimirAdapter(MimirPort):
         *,
         search_port: SearchPort | None = None,
         ranking_config: RankingConfig | None = None,
+        evidence_config: EvidenceConfig | None = None,
     ) -> None:
         self._root = Path(root).expanduser()
         self._wiki = self._root / "wiki"
@@ -323,6 +325,10 @@ class MarkdownMimirAdapter(MimirPort):
         self._sleipnir_publisher = sleipnir_publisher
         self._search_port = search_port
         self._ranking = ranking_config or RankingConfig()
+        self._evidence = evidence_config or EvidenceConfig()
+        # Paths affected by the most recent write-time consolidation pass,
+        # surfaced in the ingest HTTP response (NIU-1062).
+        self._last_consolidated: list[str] = []
         # Tracks how many chunks were indexed per page path so we can remove
         # them before re-indexing on update.  Populated lazily on first write.
         self._page_chunk_counts: dict[str, int] = {}
@@ -386,6 +392,8 @@ class MarkdownMimirAdapter(MimirPort):
 
         Returns an empty list — page creation is delegated to the agent via
         ``upsert_page()``.  The raw source is stored for staleness tracking.
+        After persistence, write-time scoped consolidation (NIU-1062) runs so
+        bearing pages get their evidence recomputed without a dream cycle.
         """
         self._write_raw_source(source)
         self._append_log(
@@ -394,7 +402,46 @@ class MarkdownMimirAdapter(MimirPort):
             f"source_id={source.source_id} type={source.source_type}",
         )
         logger.info("mimir: ingested source %r (%s)", source.title, source.source_id)
+        self._last_consolidated = self.consolidate_source(source)
         return []
+
+    def consolidate_source(self, source: MimirSource) -> list[str]:
+        """Write-time scoped consolidation ("micro-dream", NIU-1062).
+
+        Finds the wiki pages the freshly-persisted *source* bears on, then
+        recomputes their fact evidence with and without the new source to
+        count how many facts it strengthened. Deterministic, zero LLM.
+        Gated by ``EvidenceConfig.consolidate_on_ingest``.
+
+        Returns:
+            The wiki paths of the bearing pages (empty when gated off).
+        """
+        if not self._evidence.consolidate_on_ingest:
+            return []
+
+        pages = [
+            (meta.path, meta.title, content) for meta, content in self._list_pages_with_content()
+        ]
+        other_sources = [
+            (source_id, content)
+            for source_id, content in self._all_raw_source_pairs()
+            if source_id != source.source_id
+        ]
+        result = compute_source_consolidation(
+            source.source_id,
+            source.title,
+            source.content,
+            pages,
+            other_sources,
+            self._evidence,
+        )
+        logger.info(
+            "mimir.consolidation: source=%s pages=%d strengthened=%d",
+            result.source_id,
+            len(result.pages),
+            result.strengthened,
+        )
+        return result.pages
 
     async def query(self, question: str) -> MimirQueryResult:
         """Return index content + relevant pages for the agent to synthesise.
@@ -1124,6 +1171,19 @@ class MarkdownMimirAdapter(MimirPort):
             "ingested_at": source.ingested_at.isoformat(),
         }
         dest.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _all_raw_source_pairs(self) -> list[tuple[str, str]]:
+        """Return ``(source_id, content)`` pairs for every persisted raw source."""
+        if not self._raw.exists():
+            return []
+        pairs: list[tuple[str, str]] = []
+        for json_path in sorted(self._raw.glob("*.json")):
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                pairs.append((data["source_id"], data["content"]))
+            except Exception as exc:
+                logger.warning("Mímir: failed to read raw source %s: %s", json_path.name, exc)
+        return pairs
 
     def read_raw_source(self, source_id: str) -> MimirSource | None:
         """Read a persisted raw source by ID.  Returns None if not found."""

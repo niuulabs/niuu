@@ -104,6 +104,14 @@ class EvidenceConfig(BaseModel):
         default=3,
         description="Fresh facts with at least this many proofs trend 'strengthening'.",
     )
+    consolidate_on_ingest: bool = Field(
+        default=True,
+        description=(
+            "Run write-time scoped consolidation (the 'micro-dream') after "
+            "every source ingest: bearing pages get their evidence recomputed "
+            "immediately instead of waiting for the nightly dream cycle."
+        ),
+    )
 
 
 class MimirServiceConfig(BaseModel):

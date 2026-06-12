@@ -89,6 +89,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         root=config.path,
         search_port=search_port,
         ranking_config=config.ranking,
+        evidence_config=config.evidence,
     )
     registry_store = MimirRegistryStore(Path(config.path).expanduser() / ".mimir-registry.json")
     registry_store.ensure_entry(
