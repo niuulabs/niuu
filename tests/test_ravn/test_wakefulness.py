@@ -201,6 +201,7 @@ async def test_dream_reopens_unresolved_capability_gaps(tmp_path) -> None:
         publisher=bus,
         subscriber=bus,
         tools_dir=tmp_path / "tools",
+        legacy_probe_builder_enabled=True,
     )
     # Guarded mode builds, holds the install for review, and parks the
     # capability so the resident does not re-dream on every signal.

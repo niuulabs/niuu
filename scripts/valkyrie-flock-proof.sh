@@ -236,6 +236,9 @@ ${sources}
 
 resident_evolution:
   autonomy_mode: ${autonomy}
+  # This proof exercises the legacy classifier micro-dream leg explicitly;
+  # the investigation loop is proven in tests/test_ravn/test_investigation_loop.py.
+  legacy_probe_builder_enabled: true
   builder_adapter: ${BUILDER_ADAPTER}${BUILDER_KWARGS}
 
 resident_wakefulness:

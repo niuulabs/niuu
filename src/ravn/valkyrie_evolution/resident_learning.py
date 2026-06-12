@@ -194,7 +194,7 @@ class ResidentLearningRuntime:
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
-        legacy_probe_builder_enabled: bool = True,
+        legacy_probe_builder_enabled: bool = False,
     ) -> None:
         self.identity = identity
         self._skills = skills

@@ -2444,13 +2444,13 @@ class ResidentEvolutionConfig(BaseModel):
         ),
     )
     legacy_probe_builder_enabled: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Compatibility switch for the per-signal classifier builder. When "
-            "disabled, residents defer missing capabilities to the build_tool "
-            "investigation loop instead of authoring run(signal) probes — only "
-            "flip this off once that loop (signal_task_severities + drive "
-            "sessions) is enabled, or capability gaps go unhandled."
+            "Legacy switch for the retired per-signal classifier micro-dream. "
+            "Default off: residents defer a missing capability to the build_tool "
+            "investigation loop (signal -> drive session -> author instrument) "
+            "instead of authoring a run(signal) probe. Kept only so the legacy "
+            "flock proof can still exercise the old path explicitly."
         ),
     )
     learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(

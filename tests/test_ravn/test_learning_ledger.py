@@ -68,6 +68,7 @@ def _runtime(
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         learning_store=store or FlockLearningStore(tmp_path / "flock_learning.json"),
+        legacy_probe_builder_enabled=True,
     )
 
 

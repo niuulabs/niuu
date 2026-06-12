@@ -100,6 +100,7 @@ async def _peer(tmp_path, *, threshold: int = 3) -> tuple[ResidentLearningRuntim
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         rollback_consecutive_failures=threshold,
+        legacy_probe_builder_enabled=True,
     )
     return runtime, recorder
 

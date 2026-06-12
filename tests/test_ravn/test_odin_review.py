@@ -166,6 +166,7 @@ def _runtime(tmp_path, *, autonomy_mode: str = "guarded") -> tuple[ResidentLearn
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         learning_store=FlockLearningStore(tmp_path / "flock_learning.json"),
+        legacy_probe_builder_enabled=True,
         review_requester=ReviewRequester(
             publisher=bus,
             store=store,

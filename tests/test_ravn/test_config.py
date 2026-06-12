@@ -331,12 +331,13 @@ class TestLoggingConfig:
 
 
 class TestResidentEvolutionConfig:
-    def test_learned_tool_execution_defaults_keep_the_probe_builder_on(self) -> None:
-        # The probe builder stays the default until the build_tool
-        # investigation loop (NIU-1051) is the proven replacement —
-        # flipping it off without that loop leaves capability gaps unhandled.
+    def test_defaults_route_missing_capabilities_to_the_investigation_loop(self) -> None:
+        # The classifier micro-dream is retired by default: a missing capability
+        # defers to the build_tool investigation loop (NIU-1051), and tools are
+        # authored inline unless a Forge/Ting build backend is configured.
         c = ResidentEvolutionConfig()
-        assert c.legacy_probe_builder_enabled is True
+        assert c.legacy_probe_builder_enabled is False
+        assert c.tool_build_backend == "inline"
         assert c.learned_tool_execution_backend == "local"
 
     def test_learned_tool_execution_backend_can_select_forge(self) -> None:

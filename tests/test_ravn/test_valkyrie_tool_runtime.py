@@ -690,6 +690,7 @@ async def test_micro_dream_holds_tool_that_fails_its_own_canary(tmp_path) -> Non
         subscriber=bus,
         builder=RuntimeBrokenBuilder(),
         tools_dir=tmp_path / "broken" / "tools",
+        legacy_probe_builder_enabled=True,
     )
     result = await runtime.process_signal(_signal())
     assert result["decision"] == "capability_build_held"

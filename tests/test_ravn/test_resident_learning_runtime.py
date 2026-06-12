@@ -329,6 +329,7 @@ async def test_resident_micro_dream_builds_and_proposes_missing_capability(
         skills=skills,
         publisher=bus,
         subscriber=bus,
+        legacy_probe_builder_enabled=True,
     )
 
     signal = OperationalSignal(
@@ -427,6 +428,7 @@ async def test_micro_dream_proposal_is_adopted_by_relevant_peer_and_rejected_by_
         skills=source_skills,
         publisher=bus,
         subscriber=bus,
+        legacy_probe_builder_enabled=True,
     )
     relevant_peer = ResidentLearningRuntime(
         identity=ResidentLearningIdentity(
