@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 _ALLOWED_INGEST_URL_SCHEMES = {"http", "https"}
 _SAFE_INGEST_PATH_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
 _SAFE_INGEST_QUERY_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
+# Recent-query rows returned by GET /eval/queries for the Analytics view.
+_RECENT_QUERY_LIMIT = 20
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -1493,6 +1495,67 @@ class MimirRouter:
                     status_code=501,
                     detail="doctor requires a filesystem-backed Mimir adapter",
                 )
+            report = await run_doctor(
+                adapter,
+                Path(root),
+                registry_store=self._registry_store,
+            )
+            return report.to_dict()
+
+        @router.get("/eval/latest")
+        async def eval_latest() -> dict[str, Any]:
+            """Latest retrieval eval report (written by `mimir eval --out
+            <root>/evals/eval-latest.json`). 404 when none has been recorded."""
+            root = getattr(adapter, "_root", None)
+            if root is None:
+                raise HTTPException(status_code=501, detail="No filesystem root")
+            report_path = Path(root) / "evals" / "eval-latest.json"
+            if not report_path.exists():
+                raise HTTPException(status_code=404, detail="No eval report recorded")
+            import json as _json
+
+            return _json.loads(report_path.read_text(encoding="utf-8"))
+
+        @router.get("/eval/queries")
+        async def eval_queries() -> dict[str, Any]:
+            """Aggregated live query stats from the eval-capture JSONL files."""
+            from mimir.eval import load_capture
+
+            root = getattr(adapter, "_root", None)
+            if root is None:
+                raise HTTPException(status_code=501, detail="No filesystem root")
+            evals_dir = Path(root) / "evals"
+            captures = []
+            for capture_file in sorted(evals_dir.glob("queries-*.jsonl")):
+                captures.extend(load_capture(capture_file))
+            if not captures:
+                raise HTTPException(status_code=404, detail="No captured queries")
+            recent = [
+                {
+                    "ts": entry.ts,
+                    "query": entry.query,
+                    "result_count": len(entry.result_paths),
+                }
+                for entry in captures[-_RECENT_QUERY_LIMIT:]
+            ][::-1]
+            return {
+                "total": len(captures),
+                "zero_result_count": sum(1 for c in captures if not c.result_paths),
+                "recent": recent,
+            }
+
+        @router.post("/doctor/fix", dependencies=[Depends(_require_write_auth)])
+        async def doctor_fix() -> dict[str, Any]:
+            """Run the safe auto-remediations, then return a fresh report."""
+            from mimir.doctor import run_doctor, run_fixes
+
+            root = getattr(adapter, "_root", None)
+            if root is None:
+                raise HTTPException(
+                    status_code=501,
+                    detail="doctor requires a filesystem-backed Mimir adapter",
+                )
+            await run_fixes(adapter)
             report = await run_doctor(
                 adapter,
                 Path(root),

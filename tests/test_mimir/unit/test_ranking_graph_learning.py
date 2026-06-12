@@ -3,6 +3,7 @@ and the learning loop (NIU-1062)."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -440,6 +441,45 @@ def test_evidence_endpoint(tmp_path: Path) -> None:
     body = client.get("/mimir/evidence", params={"path": "entities/alice-smith.md"}).json()
     assert body[0]["fact"].startswith("Alice is the lead engineer")
     assert client.get("/mimir/evidence", params={"path": "nope.md"}).status_code == 404
+
+
+def test_eval_endpoints_serve_report_and_query_stats(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    root = tmp_path / "mimir"
+
+    # 404s before any artifacts exist (Analytics shows empty states).
+    assert client.get("/mimir/eval/latest").status_code == 404
+    assert client.get("/mimir/eval/queries").status_code == 404
+
+    evals = root / "evals"
+    evals.mkdir(parents=True, exist_ok=True)
+    (evals / "eval-latest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-06-12T00:00:00Z",
+                "query_count": 62,
+                "overall": {"precision_at_5": 0.976, "mrr": 0.884, "recall_at_10": 0.984},
+                "by_category": {},
+                "queries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (evals / "queries-2026-W24.jsonl").write_text(
+        json.dumps({"ts": "t1", "query": "alice", "result_paths": ["entities/alice-smith.md"]})
+        + "\n"
+        + json.dumps({"ts": "t2", "query": "nothing", "result_paths": []})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = client.get("/mimir/eval/latest").json()
+    assert report["overall"]["precision_at_5"] == 0.976
+
+    stats = client.get("/mimir/eval/queries").json()
+    assert stats["total"] == 2
+    assert stats["zero_result_count"] == 1
+    assert stats["recent"][0]["query"] == "nothing"  # newest first
 
 
 def test_revise_endpoint_roundtrip(tmp_path: Path) -> None:

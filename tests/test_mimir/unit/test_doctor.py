@@ -511,6 +511,23 @@ def _make_app(tmp_path: Path) -> FastAPI:
     return app
 
 
+def test_doctor_fix_endpoint_runs_fixes_and_returns_fresh_report(tmp_path: Path) -> None:
+    app = _make_app(tmp_path)
+    client = TestClient(app)
+    # Break the wiki: page on disk that index.md does not know about.
+    page = tmp_path / "mimir" / "wiki" / "technical" / "orphan.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("# Orphan\n\nA page missing from the index.\n", encoding="utf-8")
+
+    before = client.get("/mimir/doctor").json()
+    assert before["status"] != "pass"
+
+    after = client.post("/mimir/doctor/fix").json()
+    assert after["passed"] >= before["passed"]
+    d02 = next(check for check in after["checks"] if check["id"] == "D02")
+    assert d02["status"] == "pass"
+
+
 def test_doctor_endpoint_returns_report(tmp_path: Path) -> None:
     client = TestClient(_make_app(tmp_path))
     response = client.get("/mimir/doctor")
