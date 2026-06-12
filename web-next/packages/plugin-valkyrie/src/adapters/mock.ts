@@ -843,6 +843,13 @@ export function createSeedReviewItems(): ReviewItem[] {
           rationale: 'guarded mode records proposals for review',
           findings: ['policy: guarded mode records proposals for review'],
         },
+        investigation_prompt:
+          'A resident Valkyrie received an environment signal.\n\n' +
+          'Environment: env-ymir (k8s)\nSeverity: critical\n' +
+          'Object: Pod payments/payments-api-7d9f — reason OOMKilled.\n\n' +
+          'Decide whether this is noise, needs watching, or requires action. No ' +
+          'installed instrument matches this capability — author one with build_tool ' +
+          'that acquires the evidence this investigation lacks.',
         signal_ids: ['sig-oom-payments-1'],
       },
       status: 'pending',

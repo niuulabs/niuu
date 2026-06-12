@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Check, Gavel, GraduationCap, Hammer, Shield, TrendingUp, X } from 'lucide-react';
+import { HighlightedCode, MarkdownContent, SegmentedFilter } from '@niuulabs/ui';
 import {
   reviewArtifactEvidence,
   reviewEffectStatement,
+  reviewInvestigationPrompt,
   reviewPolicyFindings,
   type ReviewItem,
   type ReviewKind,
@@ -24,8 +26,8 @@ const KIND_ICONS: Record<ReviewKind, typeof Hammer> = {
   autonomy_change: Shield,
 };
 
-const ARTIFACT_TABS = ['skill', 'tool', 'canary', 'findings'] as const;
-type ArtifactTab = (typeof ARTIFACT_TABS)[number];
+const ARTIFACT_TAB_ORDER = ['ticket', 'skill', 'tool', 'canary', 'findings'] as const;
+type ArtifactTab = (typeof ARTIFACT_TAB_ORDER)[number];
 
 function KindBadge({ kind }: { kind: ReviewKind }) {
   const Icon = KIND_ICONS[kind];
@@ -44,7 +46,7 @@ function LineageStrip({ item }: { item: ReviewItem }) {
     if (Array.isArray(signalIds) && signalIds.length > 0) {
       list.push(`signal ×${signalIds.length}`);
     }
-    if (item.kind === 'evolution_build') list.push('micro-dream build');
+    if (item.kind === 'evolution_build') list.push('investigation build');
     if (item.kind === 'flock_learning') list.push(`peer learning from ${item.environmentId}`);
     if (item.kind === 'skill_promotion') list.push('consolidation dream');
     if (item.kind === 'court_escalation') {
@@ -72,14 +74,17 @@ function LineageStrip({ item }: { item: ReviewItem }) {
 }
 
 function ArtifactViewer({ item }: { item: ReviewItem }) {
-  const [tab, setTab] = useState<ArtifactTab>('skill');
+  const [tab, setTab] = useState<ArtifactTab | ''>('');
   const artifact = reviewArtifactEvidence(item);
   const findings = reviewPolicyFindings(item);
+  const prompt = reviewInvestigationPrompt(item);
+
   const hasArtifact = Boolean(artifact.skillContent || artifact.toolCode);
-  if (!hasArtifact && findings.length === 0) return null;
+  if (!hasArtifact && findings.length === 0 && !prompt) return null;
 
   const contentByTab: Record<ArtifactTab, string> = {
-    skill: artifact.skillContent || 'No skill content attached.',
+    ticket: prompt,
+    skill: artifact.skillContent,
     tool: artifact.toolCode || 'No tool implementation attached.',
     canary:
       Object.keys(artifact.canarySample).length > 0
@@ -88,32 +93,53 @@ function ArtifactViewer({ item }: { item: ReviewItem }) {
     findings: findings.length > 0 ? findings.join('\n') : 'No policy findings.',
   };
 
+  // `ticket` and `skill` show only when present — a build_tool tool has no skill
+  // markdown, and only a signal investigation carries a ticket. tool/canary/
+  // findings render for any artifact-bearing item so the strip stays stable.
+  const present: Record<ArtifactTab, boolean> = {
+    ticket: Boolean(prompt),
+    skill: Boolean(artifact.skillContent),
+    tool: hasArtifact,
+    canary: hasArtifact,
+    findings: hasArtifact || findings.length > 0,
+  };
+  const tabs = ARTIFACT_TAB_ORDER.filter((entry) => present[entry]);
+  const activeTab = tab && tabs.includes(tab as ArtifactTab) ? (tab as ArtifactTab) : tabs[0]!;
+
   return (
     <div data-testid="review-artifact">
-      <div
-        role="tablist"
-        className="niuu:flex niuu:gap-1 niuu:border-b niuu:border-solid niuu:border-border"
-      >
-        {ARTIFACT_TABS.map((entry) => (
-          <button
-            key={entry}
-            role="tab"
-            type="button"
-            aria-selected={tab === entry}
-            onClick={() => setTab(entry)}
-            className={`niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:capitalize ${
-              tab === entry
-                ? 'niuu:border-b-2 niuu:border-solid niuu:border-brand niuu:text-text-primary'
-                : MUTED
-            }`}
-          >
-            {entry}
-          </button>
-        ))}
-      </div>
-      <pre className="niuu:mt-2 niuu:max-h-72 niuu:overflow-auto niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:font-mono niuu:text-xs niuu:text-text-secondary niuu:whitespace-pre-wrap">
-        {contentByTab[tab]}
-      </pre>
+      <SegmentedFilter
+        aria-label="Artifact view"
+        value={activeTab}
+        onChange={setTab}
+        options={tabs.map((entry) => ({
+          value: entry,
+          label: entry.charAt(0).toUpperCase() + entry.slice(1),
+        }))}
+      />
+      {activeTab === 'ticket' && (
+        <div className="niuu:mt-2 niuu:max-h-[28rem] niuu:overflow-auto niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-4 niuu:py-3 niuu:text-text-primary">
+          <MarkdownContent content={contentByTab.ticket} />
+        </div>
+      )}
+      {(activeTab === 'tool' || activeTab === 'canary') && (
+        <HighlightedCode
+          className="niuu:mt-2"
+          code={contentByTab[activeTab]}
+          lang={activeTab === 'tool' ? 'python' : 'json'}
+          testId="review-code"
+        />
+      )}
+      {activeTab === 'findings' && (
+        <pre className="niuu:mt-2 niuu:max-h-72 niuu:overflow-auto niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:font-mono niuu:text-xs niuu:text-text-secondary niuu:whitespace-pre-wrap">
+          {contentByTab.findings}
+        </pre>
+      )}
+      {activeTab === 'skill' && (
+        <pre className="niuu:mt-2 niuu:max-h-72 niuu:overflow-auto niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:font-mono niuu:text-xs niuu:text-text-secondary niuu:whitespace-pre-wrap">
+          {contentByTab.skill}
+        </pre>
+      )}
     </div>
   );
 }

@@ -1,6 +1,12 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// HighlightedCode lazily loads shiki; reject it so the deterministic plain-text
+// fallback (which carries the real code) renders in tests.
+vi.mock('shiki', () => ({
+  codeToHtml: vi.fn().mockRejectedValue(new Error('no highlight in test')),
+}));
 import { createMockOdinReviewService, createSeedReviewItems } from '../adapters/mock';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { InboxPage } from './InboxPage';
@@ -35,11 +41,28 @@ describe('InboxPage', () => {
     expect(buildCard).toBeDefined();
     await user.click(buildCard!);
 
-    expect(screen.getByTestId('review-lineage')).toHaveTextContent('micro-dream build');
-    await user.click(screen.getByRole('tab', { name: 'tool' }));
+    expect(screen.getByTestId('review-lineage')).toHaveTextContent('investigation build');
+    await user.click(screen.getByRole('button', { name: 'Tool' }));
     expect(screen.getByTestId('review-artifact')).toHaveTextContent('def run(signal: dict)');
-    await user.click(screen.getByRole('tab', { name: 'findings' }));
+    await user.click(screen.getByRole('button', { name: 'Findings' }));
     expect(screen.getByTestId('review-artifact')).toHaveTextContent('guarded mode records');
+  });
+
+  it('shows the investigation ticket that produced the build', async () => {
+    const user = userEvent.setup();
+    renderInbox();
+    const cards = await screen.findAllByTestId('review-card');
+    const buildCard = cards.find((card) =>
+      card.textContent?.includes('valkyrie-inspect-kubernetes-pod-oomkilled'),
+    );
+    await user.click(buildCard!);
+
+    // The ticket tab is the first segment and renders by default.
+    const ticketTab = screen.getByRole('button', { name: 'Ticket' });
+    expect(ticketTab).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('review-artifact')).toHaveTextContent(
+      'No installed instrument matches this capability',
+    );
   });
 
   it('approves an item and shows the verdict', async () => {

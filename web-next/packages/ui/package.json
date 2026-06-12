@@ -36,7 +36,8 @@
     "@radix-ui/react-toast": "^1.2.16",
     "@radix-ui/react-tooltip": "^1.2.9",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.17.0"
+    "lucide-react": "^1.17.0",
+    "shiki": "^4.2.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",

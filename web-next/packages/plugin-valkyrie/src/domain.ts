@@ -634,6 +634,12 @@ export function reviewPolicyFindings(item: ReviewItem): string[] {
   return findings.filter((entry): entry is string => typeof entry === 'string');
 }
 
+/** The investigation prompt/ticket the resident was working when it built the tool. */
+export function reviewInvestigationPrompt(item: ReviewItem): string {
+  const prompt = item.evidence.investigation_prompt;
+  return typeof prompt === 'string' ? prompt : '';
+}
+
 export function reviewEffectStatement(item: ReviewItem): string {
   switch (item.kind) {
     case 'evolution_build':

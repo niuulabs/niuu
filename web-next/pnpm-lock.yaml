@@ -916,6 +916,9 @@ importers:
       lucide-react:
         specifier: ^1.17.0
         version: 1.17.0(react@19.2.7)
+      shiki:
+        specifier: ^4.2.0
+        version: 4.2.0
     devDependencies:
       '@niuulabs/design-tokens':
         specifier: workspace:*
