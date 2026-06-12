@@ -182,6 +182,16 @@ async def test_learned_tool_loads_as_agent_tool_port_and_executes(tmp_path) -> N
     assert json.loads(result.content) == {"points": 0, "query": "up", "source": "fixture"}
 
 
+def test_reach_grant_accepts_kind_shorthand_and_rejects_other_shapes() -> None:
+    # LLMs often write declared_reach as ["pure_compute"]; a bare string is
+    # the grant's kind. Anything else non-object must fail with a clear error.
+    grant = ToolReachGrant.from_dict("pure_compute")
+    assert grant.kind == "pure_compute"
+    assert grant.access == "read"
+    with pytest.raises(ValueError, match="declared_reach entries"):
+        ToolReachGrant.from_dict(42)
+
+
 def test_learned_tool_rejects_invalid_declared_reach(tmp_path) -> None:
     artifact = _learned_tool_artifact()
     bad = LearnedToolArtifact(

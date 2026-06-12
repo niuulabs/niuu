@@ -100,8 +100,9 @@ NATS_URL="${NATS_URL}" \
 # ---------------------------------------------------------------------------
 
 echo "Waiting for the held build to reach the central review queue..."
+echo "(the teacher's investigation session is authoring the tool on a live LLM)"
 ITEM_ID=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 240); do
     ITEM_ID="$(curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews?status=pending" \
         | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["item_id"] if rows else "")' \
         2>/dev/null || true)"

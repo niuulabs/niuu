@@ -53,6 +53,38 @@ async def _build(request: EvolutionRequest) -> BuildResult:
     )
 
 
+async def test_agent_tool_that_shells_out_is_not_blocked_for_subprocess() -> None:
+    """An agent tool gates on declared_reach, not a read-only import allowlist:
+    a read-reach tool that runs a CLI to acquire live evidence must pass review."""
+    from ravn.valkyrie_evolution.models import BuildResult
+
+    request = _request(autonomy_mode="guarded", safety_class="read_only")
+    manifest = {
+        "name": "inspect_oomkilled_pod",
+        "description": "Fetch live pod state via the cluster CLI.",
+        "input_schema": {"type": "object", "properties": {"pod_name": {"type": "string"}}},
+        "required_permission": "k8s:read",
+        "declared_reach": [{"kind": "kubectl get pod -o json", "access": "read"}],
+        "entry_point": "run",
+    }
+    build = BuildResult(
+        request_id=request.request_id,
+        skill_name="inspect_oomkilled_pod",
+        skill_content="",
+        description=manifest["description"],
+        artifact_type="agent_tool",
+        tool_code="import subprocess\n\ndef run(input):\n    return {'ok': True}\n",
+        tool_entry_point="run",
+        evidence={"learned_tool_manifest": manifest},
+    )
+    review = await PolicyCourtReviewer().review(
+        request=request, build=build, autonomy_mode="guarded"
+    )
+    assert not review.blocking_findings
+    # guarded still holds it for an operator — the point is it is not *rejected*.
+    assert review.outcome == "needs_approval"
+
+
 async def test_autonomous_low_risk_environment_change_is_approved() -> None:
     request = _request(autonomy_mode="autonomous")
     review = await PolicyCourtReviewer().review(

@@ -28,6 +28,7 @@ from ravn.valkyrie_evolution.resident_learning import (
     flock_learning_proposed_event,
     review_allows_install,
     review_inputs,
+    risk_class_for_safety,
 )
 
 #: Confidence a freshly self-registered learned tool travels to the flock
@@ -59,6 +60,7 @@ class BuildTool(ToolPort):
         sandbox_shell: Any | None = None,
         reviewer: Any | None = None,
         build_backend: Any | None = None,
+        investigation_context: Callable[[], str] | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -78,6 +80,16 @@ class BuildTool(ToolPort):
         self._sandbox_shell = sandbox_shell
         self._reviewer = reviewer or PolicyCourtReviewer(reviewer="odin:build-tool")
         self._build_backend = build_backend
+        self._investigation_context = investigation_context
+
+    def _investigation_prompt(self) -> str:
+        """The investigation prompt that drove this build, for review provenance."""
+        if self._investigation_context is None:
+            return ""
+        try:
+            return str(self._investigation_context() or "")
+        except Exception:  # noqa: BLE001 — provenance must never break a build
+            return ""
 
     @property
     def name(self) -> str:
@@ -90,8 +102,14 @@ class BuildTool(ToolPort):
             "Provide a manifest with name, description, input_schema, required_permission, "
             "declared_reach, and either Python tool_code exposing the manifest entry_point "
             "(default run(input)) OR a build_request describing what to build when a build "
-            "backend (Forge session / Ting workflow) is configured. The tool is canaried, "
-            "persisted, and registered so it can be called by name on the next iteration."
+            "backend (Forge session / Ting workflow) is configured. Good instruments "
+            "ACQUIRE live evidence: tool_code may run CLI commands (subprocess), call HTTP "
+            "APIs, and read files — declare that reach honestly in declared_reach, it is "
+            "what review and invocation policy gate on. Do not hardcode environment values "
+            "or thresholds; take them as input_schema parameters. The tool is canaried "
+            "(one sandboxed run on canary_input — return a clear error object instead of "
+            "raising when access is missing), persisted, and registered so it can be "
+            "called by name on the next iteration."
         )
 
     @property
@@ -111,7 +129,11 @@ class BuildTool(ToolPort):
                     "type": "string",
                     "description": (
                         "Python implementation (inline). Define the manifest entry_point "
-                        "and return a JSON object. Omit to commission a build_request."
+                        "and return a JSON object. Runs in a sandboxed subprocess: "
+                        "subprocess/CLI calls, HTTP, and file reads are available within "
+                        "the declared_reach. Prefer fetching live state over re-analysing "
+                        "the input payload; return a clear error object when access is "
+                        "unavailable. Omit to commission a build_request."
                     ),
                 },
                 "build_request": {
@@ -298,6 +320,7 @@ class BuildTool(ToolPort):
     ) -> bool:
         if self._review_requester is None:
             return False
+        safety_class = manifest_safety_class(artifact.manifest)
         item = ReviewItem.new(
             kind=ReviewKind.EVOLUTION_BUILD.value,
             requested_action="install",
@@ -307,8 +330,8 @@ class BuildTool(ToolPort):
             summary=artifact.manifest.description,
             flock_id=self._flock_id,
             domain=self._domain,
-            risk_class=_risk_class_for_safety(resident_artifact),
-            safety_class=manifest_safety_class(artifact.manifest),
+            risk_class=risk_class_for_safety(safety_class),
+            safety_class=safety_class,
             urgency=0.6,
             dedupe_key=f"build_tool:{self._environment_id}:{artifact.manifest.name}",
             evidence={
@@ -320,6 +343,7 @@ class BuildTool(ToolPort):
                 },
                 "build_evidence": dict(artifact.provenance),
                 "learned_tool_manifest": artifact.manifest.to_dict(),
+                "investigation_prompt": self._investigation_prompt(),
             },
             requested_by=self._valkyrie_id,
             correlation_id=artifact.artifact_id,
@@ -383,6 +407,7 @@ def attach_build_tool(
     workspace_root: str | Path | None = None,
     sandbox_shell: Any | None = None,
     build_backend: Any | None = None,
+    investigation_context: Callable[[], str] | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -404,6 +429,7 @@ def attach_build_tool(
         workspace_root=workspace_root,
         sandbox_shell=sandbox_shell,
         build_backend=build_backend,
+        investigation_context=investigation_context,
     )
     registrar(tool, replace=replace)
     return tool
@@ -446,11 +472,6 @@ def _resident_learning_artifact(
         canary_sample=dict(canary_input),
         correlation_id=artifact.artifact_id,
     )
-
-
-def _risk_class_for_safety(resident_artifact: ResidentLearningArtifact) -> str:
-    manifest = LearnedToolManifest.from_dict(resident_artifact.learned_tool_manifest)
-    return "high" if manifest_safety_class(manifest) == "mutating" else "low"
 
 
 def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002

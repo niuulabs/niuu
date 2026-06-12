@@ -241,6 +241,15 @@ resident_evolution:
 initiative:
   enabled: true
 
+# The proof daemons must not adopt the operator's global Mimir backlog: the
+# source/staleness synthesis triggers would flood the drive loop's slots and
+# starve the signal investigation.
+mimir:
+  source_trigger:
+    enabled: false
+  staleness_trigger:
+    enabled: false
+
 resident_wakefulness:
   enabled: true
   tick_interval_seconds: 1.0
@@ -332,10 +341,13 @@ sleep 2
 
 start_daemon() {
     local node="$1" config="$2"
+    # Invoke python directly (not via the _ravn function): backgrounding a
+    # function call forks a wrapper subshell, so $! would record the wrapper
+    # and cleanup would orphan the actual daemon.
     RAVN_CONFIG="${config}" \
     RAVN_STATE_DIR="${OUT_DIR}/${node}-state" \
     NATS_URL="${NATS_URL}" \
-        _ravn daemon > "${OUT_DIR}/logs/${node}.log" 2>&1 &
+        "${PYTHON_BIN}" -m ravn daemon > "${OUT_DIR}/logs/${node}.log" 2>&1 &
     local pid=$!
     echo "${pid}" > "${OUT_DIR}/${node}.pid"
     echo "${pid}" >> "${PIDS_FILE}"

@@ -386,6 +386,49 @@ class TestRavnAgentToolUse:
         assert review["evidence"]["artifact"]["artifact_type"] == "agent_tool"
         assert review["evidence"]["artifact"]["canary_sample"] == {"name": "canary"}
 
+    async def test_held_review_carries_the_investigation_prompt(self, tmp_path) -> None:
+        bus = InProcessBus()
+        events: list[SleipnirEvent] = []
+        await bus.subscribe([registry.ODIN_REVIEW_REQUESTED], lambda event: _record(events, event))
+        agent, _ = make_agent(make_simple_llm("unused"))
+        requester = ReviewRequester(
+            publisher=bus,
+            store=JsonReviewStore(tmp_path / "review_outbox.json"),
+            source="valkyrie:k8s-a",
+        )
+        ticket = "A Kubernetes signal arrived: Pod OOMKilled in payments. Investigate it."
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=tmp_path / "artifacts",
+            review_requester=requester,
+            autonomy_mode="guarded",
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+            flock_id="flock:k8s-valkyries",
+            domain="k8s",
+            investigation_context=lambda: ticket,
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "inspect_pod",
+                    "description": "Inspect a pod.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "k8s:read",
+                    "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                },
+                "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "canary_input": {},
+            }
+        )
+        await bus.flush()
+
+        assert not result.is_error
+        assert len(events) == 1
+        assert events[0].payload["evidence"]["investigation_prompt"] == ticket
+
     async def test_build_tool_holds_read_only_credential_tool_via_boundary(self, tmp_path) -> None:
         """A read-only tool that reaches credentials is gated by the autonomy
         policy's hard boundary, not by access level — the one policy stays

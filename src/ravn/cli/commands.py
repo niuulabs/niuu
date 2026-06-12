@@ -120,10 +120,19 @@ def _attach_signal_build_tool(
     triggered_by: str | None,
     settings: Settings,
     publisher: Any | None = None,
+    drive_loop: Any | None = None,
 ) -> Any:
     """Attach build_tool to RavnAgent signal investigations when supported."""
     if not triggered_by or not triggered_by.startswith("signal:"):
         return agent
+
+    def _investigation_context() -> str:
+        # Lazily read the running task's prompt at build time — the drive loop
+        # sets the current-task contextvar while the session executes, so a
+        # filed review carries the exact ticket the resident was working.
+        task = drive_loop.current_task() if drive_loop is not None else None
+        return getattr(task, "initiative_context", "") if task is not None else ""
+
     try:
         from ravn.adapters.tools.build_tool import attach_build_tool  # noqa: PLC0415
         from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
@@ -155,6 +164,7 @@ def _attach_signal_build_tool(
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
             workspace_root=workspace,
             build_backend=_build_tool_build_backend(settings),
+            investigation_context=_investigation_context,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -164,41 +174,12 @@ def _attach_signal_build_tool(
 
 
 def _build_tool_build_backend(settings: Settings) -> Any | None:
-    """Construct the configured tool build backend, or None for inline authoring."""
+    """Construct the configured tool build adapter, or None for inline authoring."""
     cfg = settings.resident_evolution
-    backend = cfg.tool_build_backend
-    if backend == "inline":
+    if not cfg.tool_build_adapter:
         return None
-
-    from ravn.adapters.tool_build import (  # noqa: PLC0415
-        ForgeSessionToolBuildBackend,
-        HttpxJsonClient,
-        TingWorkflowToolBuildBackend,
-    )
-
-    token = os.environ.get(cfg.tool_build_pat_env, "") if cfg.tool_build_pat_env else ""
-    client = HttpxJsonClient(token=token)
-    if backend == "forge_session":
-        if not cfg.tool_build_forge_base_url:
-            logger.warning("tool_build_backend=forge_session but no forge base url configured")
-            return None
-        return ForgeSessionToolBuildBackend(
-            client=client,
-            base_url=cfg.tool_build_forge_base_url,
-            model=cfg.tool_build_model,
-            poll_interval_seconds=cfg.tool_build_poll_interval_seconds,
-            max_poll_attempts=cfg.tool_build_max_poll_attempts,
-        )
-    if not cfg.tool_build_ting_base_url or not cfg.tool_build_ting_workflow_id:
-        logger.warning("tool_build_backend=ting_workflow but ting base url/workflow not configured")
-        return None
-    return TingWorkflowToolBuildBackend(
-        client=client,
-        base_url=cfg.tool_build_ting_base_url,
-        workflow_id=cfg.tool_build_ting_workflow_id,
-        poll_interval_seconds=cfg.tool_build_poll_interval_seconds,
-        max_poll_attempts=cfg.tool_build_max_poll_attempts,
-    )
+    cls = _import_class(cfg.tool_build_adapter)
+    return cls(**cfg.tool_build_kwargs)
 
 
 def _warden_store():
@@ -2673,12 +2654,17 @@ async def _run_daemon(
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
         )
+        # Reviews and flock proposals must cross the mesh, not stay on the
+        # daemon's in-process reflection bus — same precedence as the drive
+        # loop's sleipnir publisher (closure binds late; the signal publisher
+        # is built during daemon boot, before any task runs).
         return _attach_signal_build_tool(
             agent,
             workspace,
             triggered_by=triggered_by,
             settings=settings,
-            publisher=daemon_bus,
+            publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
+            drive_loop=drive_loop,
         )
 
     tasks: list[asyncio.Task] = []

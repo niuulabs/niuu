@@ -897,7 +897,7 @@ class ResidentLearningRuntime:
             summary=build.description or artifact.summary,
             flock_id=artifact.flock_id,
             domain=artifact.domain or self.identity.domain,
-            risk_class=_risk_class_for_safety(safety_class),
+            risk_class=risk_class_for_safety(safety_class),
             safety_class=safety_class,
             urgency=0.6,
             dedupe_key=dedupe_key,
@@ -1554,7 +1554,12 @@ def _install_authorization_rationale(review: ReviewResult, autonomy_mode: str) -
     return review.rationale
 
 
-def _risk_class_for_safety(safety_class: str) -> str:
+def risk_class_for_safety(safety_class: str) -> str:
+    """ReviewItem risk class for an artifact's safety class.
+
+    Shared by every producer that files a review item (the resident install
+    pipeline, build_tool) so operators see one consistent risk vocabulary.
+    """
     return {
         "read_only": "low",
         "mutating": "high",

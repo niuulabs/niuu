@@ -69,9 +69,18 @@ class ToolReachGrant:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | ToolReachGrant) -> ToolReachGrant:
+    def from_dict(cls, data: dict[str, Any] | str | ToolReachGrant) -> ToolReachGrant:
         if isinstance(data, ToolReachGrant):
             return data
+        if isinstance(data, str):
+            # Agents often shorthand a grant as just its kind ("pure_compute").
+            return cls(kind=data or "pure_compute")
+        if not isinstance(data, dict):
+            raise ValueError(
+                "declared_reach entries must be objects like "
+                '{"kind": "network", "access": "read"} or a kind string, '
+                f"got {data!r}"
+            )
         return cls(
             kind=str(data.get("kind") or "pure_compute"),
             target=str(data.get("target") or ""),

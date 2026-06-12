@@ -207,6 +207,16 @@ async def test_ting_workflow_backend_requires_workflow_id() -> None:
         await backend.build(_request())
 
 
+def test_backends_construct_from_plain_yaml_kwargs() -> None:
+    """The dynamic-adapter contract: dotted path + plain kwargs, no client."""
+    forge = ForgeSessionToolBuildBackend(base_url="http://forge", pat_env="UNSET_PROOF_PAT")
+    ting = TingWorkflowToolBuildBackend(
+        base_url="http://ting", workflow_id="wf-1", pat_env="UNSET_PROOF_PAT"
+    )
+    assert forge.name == "forge_session"
+    assert ting.name == "ting_workflow"
+
+
 async def test_ting_workflow_backend_raises_without_artifact() -> None:
     client = _FakeHttpClient(
         {

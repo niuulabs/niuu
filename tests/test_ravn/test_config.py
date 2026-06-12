@@ -336,7 +336,7 @@ class TestResidentEvolutionConfig:
         # the build_tool investigation loop (NIU-1051), and tools are authored
         # inline unless a Forge/Ting build backend is configured.
         c = ResidentEvolutionConfig()
-        assert c.tool_build_backend == "inline"
+        assert c.tool_build_adapter == ""
         assert c.learned_tool_execution_backend == "local"
 
     def test_learned_tool_execution_backend_can_select_forge(self) -> None:

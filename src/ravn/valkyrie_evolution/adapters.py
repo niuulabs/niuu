@@ -53,11 +53,16 @@ def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[
             if not manifest.input_schema:
                 findings.append("learned tool manifest is missing input_schema")
         if build.has_tool_implementation:
+            # Agent tools gate capability through declared_reach (and the
+            # mutating-access boundaries), not a read-only Python-import
+            # allowlist: a tool that shells out to acquire live evidence is
+            # exactly what we want. Validate structure only — the same
+            # "declared_reach" contract the install path enforces.
             findings.extend(
                 tool_implementation_findings(
                     build.tool_code,
                     entry_point=build.tool_entry_point or "run",
-                    safety_class=request.gap.safety_class,
+                    safety_class="declared_reach",
                 )
             )
         else:

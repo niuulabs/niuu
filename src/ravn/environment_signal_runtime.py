@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import os
 import uuid
@@ -292,66 +293,89 @@ class EnvironmentSignalRuntime:
             title = (
                 f"{obj['kind']} {obj.get('namespace', 'default')}/{obj['name']}: {signal.severity}"
             )
+        peer_id = self._settings.mesh.own_peer_id or "unknown"
         resident_name = self._resident_name()
         resident_personality = self._resident_personality()
-        identity_lines = [
-            f"Resident Valkyrie: {resident_name}",
-            f"Resident peer id: {self._settings.mesh.own_peer_id or 'unknown'}",
+        signal_ref = event.event_id or signal.provider_event_id or signal.dedupe_key
+
+        resident_lines = [
+            f"- **Valkyrie:** {resident_name}",
+            f"- **Peer id:** `{peer_id}`",
         ]
         if resident_personality:
-            identity_lines.append(f"Resident personality: {resident_personality}")
-        learning_context = ""
+            resident_lines.append(f"- **Personality:** {resident_personality}")
+
+        # Markdown section the agent reads about what resident learning already
+        # found, plus the (last-placed, heavily-weighted) build mandate.
+        learning_section = ""
+        closing_section = ""
         if resident_learning_result:
+            decision = resident_learning_result.get("decision")
+            capability = resident_learning_result.get("capabilityName")
             if resident_learning_result.get("usedAdoptedLearning"):
-                learning_context = (
-                    "\nResident learning matched this signal before task enqueue:\n"
-                    f"- decision: {resident_learning_result.get('decision')}\n"
-                    f"- skill: {resident_learning_result.get('skillName')}\n"
-                    f"- capability: {resident_learning_result.get('capabilityName')}\n"
+                learning_section = (
+                    "\n## Resident learning\n\n"
+                    f"- **Decision:** `{decision}`\n"
+                    f"- **Skill:** `{resident_learning_result.get('skillName')}`\n"
+                    f"- **Capability:** `{capability}`\n\n"
                     "Use the adopted skill context before proposing new tooling.\n"
                 )
-            elif resident_learning_result.get("decision"):
-                learning_context = (
-                    "\nResident learning checked this signal before task enqueue:\n"
-                    f"- decision: {resident_learning_result.get('decision')}\n"
-                    f"- capability: {resident_learning_result.get('capabilityName')}\n"
+            elif decision == "defer_to_investigation_with_build_tool":
+                learning_section = (
+                    "\n## Resident learning\n\n"
+                    f"- **Decision:** `{decision}`\n"
+                    f"- **Capability:** `{capability}`\n"
                 )
-        context = (
-            "A resident Valkyrie received an environment signal.\n\n"
-            + "\n".join(identity_lines)
-            + learning_context
-            + "\n\n"
-            f"Environment: {signal.environment_id} ({signal.environment_type})\n"
-            f"Source: {signal.source_id}\n"
-            f"Signal type: {signal.signal_type}\n"
-            f"Severity: {signal.severity}\n"
-            f"Object: {signal.object_ref}\n"
-            f"Payload: {signal.normalized_payload}\n\n"
-            "Decide whether this is noise, needs watching state, or requires action. "
-            "Use existing tools, memory, and resident skills/runbooks before proposing "
-            "any new tooling; when skill_list and skill_run are available, inspect and "
-            "load the relevant runbook first. If the investigation is blocked because "
-            "the toolbox lacks a reusable instrument, call build_tool with a manifest, "
-            "declared reach, and canary input; then use the newly registered tool before "
-            "deciding, or note the review item when the tool requires approval. "
-            "Always finish with a valkyrie.judgment.proposed outcome block for this signal, "
-            "including when the decision is ignore or watch.\n\n"
-            "Schema compliance is mandatory. Return one valid YAML outcome block and no "
-            "free-form prose after it. Use this shape:\n"
+                closing_section = (
+                    "\n## Required before you finish\n\n"
+                    f"No installed instrument matches capability `{capability}`. "
+                    "Decide for yourself what instrument this investigation and "
+                    "its follow-ups actually need — **you write that spec, it is "
+                    "not pre-defined** — then capitalise the gap with `build_tool`: "
+                    "author the `tool_code` yourself, or pass your spec as "
+                    "`build_request` to commission a build session.\n\n"
+                    "Guardrails, not recipes:\n\n"
+                    "- Declare the tool's **real reach** — review gates on it, and "
+                    "mutating reach is held for an operator.\n"
+                    "- Never hardcode environment values or thresholds; take them "
+                    "as `input_schema` parameters and fetch live state.\n"
+                    "- When access is missing, return a clear error object instead "
+                    "of raising, so the canary still passes in restricted "
+                    "environments.\n\n"
+                    "Then run the new tool on this signal and cite its result in "
+                    "the outcome. If the tool is held for operator review, say so "
+                    "in the rationale. **Do not finish without calling "
+                    "`build_tool`.**\n"
+                )
+            elif decision:
+                learning_section = (
+                    "\n## Resident learning\n\n"
+                    f"- **Decision:** `{decision}`\n"
+                    f"- **Capability:** `{capability}`\n"
+                )
+
+        payload_json = json.dumps(
+            signal.normalized_payload, indent=2, sort_keys=True, default=str
+        )
+        object_json = json.dumps(signal.object_ref, sort_keys=True, default=str)
+        # The literal block the agent must reproduce. Kept inside a fenced block
+        # so the response parser's ---outcome---/---end--- contract is preserved
+        # while the ticket renders it as a clean code block, not a stray card.
+        outcome_template = (
             "---outcome---\n"
             "decision: watch\n"
             f"environment_id: {signal.environment_id}\n"
             f"environment_type: {signal.environment_type}\n"
-            f"valkyrie_id: {self._settings.mesh.own_peer_id or 'unknown'}\n"
+            f"valkyrie_id: {peer_id}\n"
             "signal_refs:\n"
-            f"  - {event.event_id or signal.provider_event_id or signal.dedupe_key}\n"
+            f"  - {signal_ref}\n"
             "tier: ambient\n"
             "confidence: 0.5\n"
             "operational_state: watching\n"
             "wakefulness: wakeful\n"
             "rationale: concise reason grounded in the signal\n"
             "evidence:\n"
-            f"  - event_id: {event.event_id or signal.provider_event_id or signal.dedupe_key}\n"
+            f"  - event_id: {signal_ref}\n"
             f"    source_id: {signal.source_id}\n"
             f"    severity: {signal.severity}\n"
             "recommended_action: what to do next, or none\n"
@@ -362,9 +386,44 @@ class EnvironmentSignalRuntime:
             "dissent_refs: []\n"
             "correlation_ids:\n"
             f"  root: {event.correlation_id or signal.correlation_id or ''}\n"
-            f"  signal: {event.event_id or signal.provider_event_id or signal.dedupe_key}\n"
+            f"  signal: {signal_ref}\n"
             f"  environment: {signal.environment_id}\n"
             "---end---"
+        )
+        resident_block = "\n".join(resident_lines)
+        context = (
+            f"# Signal investigation — {title}\n\n"
+            "A resident Valkyrie received an environment signal and must decide "
+            "what to do with it.\n\n"
+            "## Resident\n\n"
+            f"{resident_block}\n\n"
+            "## Signal\n\n"
+            f"- **Environment:** {signal.environment_id} (`{signal.environment_type}`)\n"
+            f"- **Source:** `{signal.source_id}`\n"
+            f"- **Type:** `{signal.signal_type}`\n"
+            f"- **Severity:** **{signal.severity}**\n"
+            f"- **Object:** `{object_json}`\n\n"
+            "```json\n"
+            f"{payload_json}\n"
+            "```\n"
+            f"{learning_section}\n"
+            "## Your task\n\n"
+            "Decide whether this is noise, needs a **watching** state, or "
+            "**requires action**. Use existing tools, memory, and resident "
+            "skills/runbooks before proposing new tooling; when `skill_list` and "
+            "`skill_run` are available, inspect and load the relevant runbook "
+            "first. If the investigation is blocked because the toolbox lacks a "
+            "reusable instrument, call `build_tool` with a manifest, declared "
+            "reach, and canary input, then use the newly registered tool before "
+            "deciding — or note the review item when the tool requires approval.\n\n"
+            "## Required outcome\n\n"
+            "Finish with exactly one `valkyrie.judgment.proposed` block in this "
+            "shape — keep the `---outcome---` / `---end---` delimiters, valid YAML "
+            "between them, and no prose after it:\n\n"
+            "```text\n"
+            f"{outcome_template}\n"
+            "```\n"
+            f"{closing_section}"
         )
         return AgentTask(
             task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",

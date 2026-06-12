@@ -8,7 +8,7 @@ the two scheduled layers below still do.
 
 | Layer | Trigger | Scope | Config | Events |
 | --- | --- | --- | --- | --- |
-| **Investigation loop** | Reactive: a signal arrives with no installed capability | Escalate to an agent session that authors the instrument(s) it needs with `build_tool` (inline, or commissioned via a Forge/Ting backend), reviews, canaries, installs, proposes to flock | `resident_evolution` (reviewer adapter, autonomy, rollback, `tool_build_backend`) | `valkyrie.evolution.*`, `flock.learning.proposed`, session/drive-loop events |
+| **Investigation loop** | Reactive: a signal arrives with no installed capability | Escalate to an agent session that authors the instrument(s) it needs with `build_tool` (inline, or commissioned via a Forge/Ting backend), reviews, canaries, installs, proposes to flock | `resident_evolution` (reviewer adapter, autonomy, rollback, `tool_build_adapter`) | `valkyrie.evolution.*`, `flock.learning.proposed`, session/drive-loop events |
 | **Consolidation dream** | Scheduled: idle + interval gates in the wakefulness state machine | Reflective pass over the whole skill registry: mark stale, promote proven private skills, hold skills implicated by feedback | `resident_wakefulness` (intervals, idle gates, promotion thresholds) | `valkyrie.state.changed`, `valkyrie.dream.started/completed` (`dream_kind: consolidation`), `learning.promoted` |
 | **Mimir curation** | Cron: the `dream_cycle` trigger fires the `mimir-curator` persona | Knowledge-base hygiene: enrich, lint, cross-reference Mimir pages | `dream_cycle` (cron expression, persona, token budget) | `mimir.dream.completed` |
 
@@ -31,7 +31,7 @@ the two scheduled layers below still do.
 
 - `resident_evolution` — how a resident reviews, canaries, and rolls back the
   tools its investigation sessions author (reviewer adapter selection, autonomy
-  mode, canary timeout, rollback threshold, `tool_build_backend`). Consumed by
+  mode, canary timeout, rollback threshold, `tool_build_adapter`). Consumed by
   the resident learning runtime.
 - `resident_wakefulness` — when the resident is wakeful/watching/dreaming and
   when consolidation runs. Consumed by the wakefulness state machine.

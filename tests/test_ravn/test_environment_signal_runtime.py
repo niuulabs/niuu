@@ -111,19 +111,22 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert len(enqueued) == 1
     assert enqueued[0].triggered_by == "signal:signal.host.event"
     assert enqueued[0].root_correlation_id == received[0].correlation_id
-    assert "Resident Valkyrie: Sigrun" in enqueued[0].initiative_context
-    assert "Resident peer id: valkyrie-host-jozef" in enqueued[0].initiative_context
-    assert "Quietly skeptical and evidence-first" in enqueued[0].initiative_context
-    assert "Use existing tools, memory" in enqueued[0].initiative_context
-    assert "resident skills/runbooks" in enqueued[0].initiative_context
-    assert "skill_list and skill_run" in enqueued[0].initiative_context
-    assert "call build_tool with a manifest" in enqueued[0].initiative_context
-    assert "use the newly registered tool" in enqueued[0].initiative_context
-    assert "note the review item" in enqueued[0].initiative_context
-    assert "Schema compliance is mandatory" in enqueued[0].initiative_context
-    assert "environment_id: host-jozef" in enqueued[0].initiative_context
-    assert "valkyrie_id: valkyrie-host-jozef" in enqueued[0].initiative_context
-    assert "correlation_ids:" in enqueued[0].initiative_context
+    # The prompt is structured markdown: a heading, sections, fenced payload +
+    # outcome schema. Assert the durable contract, not exact prose.
+    context = enqueued[0].initiative_context
+    assert context.startswith("# Signal investigation")
+    assert "**Valkyrie:** Sigrun" in context
+    assert "**Peer id:** `valkyrie-host-jozef`" in context
+    assert "Quietly skeptical and evidence-first" in context
+    assert "skill_list" in context and "skill_run" in context
+    assert "`build_tool`" in context
+    assert "use the newly registered tool" in context
+    assert "## Required outcome" in context
+    assert "```json" in context  # the signal payload is a fenced code block
+    assert "---outcome---" in context and "---end---" in context  # response contract
+    assert "environment_id: host-jozef" in context
+    assert "valkyrie_id: valkyrie-host-jozef" in context
+    assert "correlation_ids:" in context
 
 
 @pytest.mark.asyncio
@@ -157,10 +160,10 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert len(processed) == 1
     assert processed[0].event_type == "signal.host.event"
     assert len(enqueued) == 1
-    assert "Resident learning matched this signal before task enqueue" in (
-        enqueued[0].initiative_context
-    )
-    assert "skill: valkyrie-inspect-host-host-disk-pressure" in (enqueued[0].initiative_context)
+    context = enqueued[0].initiative_context
+    assert "## Resident learning" in context
+    assert "Use the adopted skill context before proposing new tooling" in context
+    assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
 

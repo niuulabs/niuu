@@ -16,7 +16,7 @@ from ravn.adapters.tool_build._contract import (
     parse_tool_build_response,
     poll_until,
 )
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient
+from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_pat_env
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,
@@ -34,15 +34,16 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
     def __init__(
         self,
         *,
-        client: AsyncJsonHttpClient,
         base_url: str,
+        client: AsyncJsonHttpClient | None = None,
+        pat_env: str = "",
         model: str = "",
         source: dict[str, Any] | None = None,
         max_poll_attempts: int = 60,
         poll_interval_seconds: float = 5.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self._client = client
+        self._client = client if client is not None else client_from_pat_env(pat_env)
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._source = source

@@ -25,6 +25,19 @@ class AsyncJsonHttpClient(Protocol):
     async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse: ...
 
 
+def client_from_pat_env(pat_env: str) -> HttpxJsonClient:
+    """Build the real client, bearer-authenticated from an env-var-named PAT.
+
+    Backend constructors take plain YAML kwargs (dynamic-adapter rule), so
+    config names the env var and the token resolves here at construction
+    time — it is never stored in config.
+    """
+    import os  # noqa: PLC0415
+
+    token = os.environ.get(pat_env, "") if pat_env else ""
+    return HttpxJsonClient(token=token)
+
+
 class HttpxJsonClient:
     """httpx-backed :class:`AsyncJsonHttpClient` with PAT bearer auth."""
 
