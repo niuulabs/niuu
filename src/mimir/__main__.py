@@ -5,6 +5,7 @@ Usage::
     python -m mimir serve --path ~/.ravn/mimir --port 7477
     python -m mimir serve --name shared --role shared --announce-url https://mimir.odin.niuu.world
     python -m mimir mcp --path ~/.ravn/mimir
+    python -m mimir doctor --path ~/.ravn/mimir [--fix] [--json]
     python -m mimir eval --json
     python -m mimir eval replay --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
 """
@@ -79,6 +80,49 @@ def mcp(
     adapter = MarkdownMimirAdapter(root=path)
     server = MimirMcpServer(adapter=adapter, name=name)
     asyncio.run(server.run_stdio())
+
+
+@app.command()
+def doctor(
+    path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
+    fix: bool = typer.Option(False, "--fix", help="Apply safe auto-fixes before reporting."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+) -> None:
+    """Run health checks (D01–D08) against a Mímir root; exit 0/1/2 on pass/warn/fail."""
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.doctor import DoctorReport, run_doctor, run_fixes
+    from mimir.registry import MimirRegistryStore
+    from niuu.adapters.search.sqlite import SqliteSearchAdapter
+
+    root = Path(path).expanduser()
+    search_db = root / "search.db"
+    adapter = MarkdownMimirAdapter(root=root, search_port=SqliteSearchAdapter(path=str(search_db)))
+    registry_store = MimirRegistryStore(root / ".mimir-registry.json")
+
+    async def _run() -> tuple[list[str], DoctorReport]:
+        fixes = await run_fixes(adapter) if fix else []
+        report = await run_doctor(
+            adapter,
+            root,
+            registry_store=registry_store,
+            search_db=search_db,
+        )
+        return fixes, report
+
+    fixes, report = asyncio.run(_run())
+
+    if json_output:
+        payload = report.to_dict()
+        payload["fixes_applied"] = fixes
+        typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=report.exit_code)
+
+    for applied in fixes:
+        typer.echo(f"fixed: {applied}")
+    if fixes:
+        typer.echo("")
+    typer.echo(report.format_text())
+    raise typer.Exit(code=report.exit_code)
 
 
 eval_app = typer.Typer(
