@@ -88,7 +88,13 @@ def test_zone_factor_demotes_timeline() -> None:
 
 
 def test_apply_boosts_breakdown_is_product() -> None:
-    config = RankingConfig(recency_half_life_days=0)
+    # Explicit non-neutral weights — defaults are neutral for confidence and
+    # backlinks per the hybrid ablation (NIU-1057).
+    config = RankingConfig(
+        recency_half_life_days=0,
+        confidence_boosts={"high": 1.15, "medium": 1.0, "low": 0.85},
+        backlink_alpha=0.1,
+    )
     meta = _meta(
         title="Widget assembly",
         page_type=PageType.decision,

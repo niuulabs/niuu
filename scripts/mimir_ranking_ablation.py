@@ -4,11 +4,12 @@ Runs the golden set against the fixture corpus once per ranking-config
 variant and prints overall P@5 / MRR / recall@10 per variant. FTS-only —
 no model downloads.
 
-Usage: uv run python scripts/mimir_ranking_ablation.py
+Usage: uv run python scripts/mimir_ranking_ablation.py [--embedding-model NAME]
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import shutil
 import sys
@@ -22,6 +23,8 @@ from niuu.adapters.search.sqlite import SqliteSearchAdapter
 
 CORPUS = Path("tests/test_mimir/evals/corpus")
 GOLDEN = Path("tests/test_mimir/evals/golden.yaml")
+
+_EMBEDDING_MODEL: str | None = None
 
 
 def neutral() -> RankingConfig:
@@ -83,9 +86,14 @@ async def run_variant(config: RankingConfig) -> tuple[float, float, float]:
     with TemporaryDirectory(prefix="mimir-ablation-") as tmp:
         root = Path(tmp)
         shutil.copytree(CORPUS, root / "wiki", dirs_exist_ok=True)
+        embed_fn = None
+        if _EMBEDDING_MODEL is not None:
+            from mimir.app import _build_embed_fn
+
+            embed_fn = _build_embed_fn(_EMBEDDING_MODEL)
         adapter = MarkdownMimirAdapter(
             root=root,
-            search_port=SqliteSearchAdapter(path=str(root / "search.db")),
+            search_port=SqliteSearchAdapter(path=str(root / "search.db"), embed_fn=embed_fn),
             ranking_config=config,
         )
         await adapter.rebuild_search_index()
@@ -114,4 +122,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--embedding-model", default=None)
+    args = parser.parse_args()
+    _EMBEDDING_MODEL = args.embedding_model
     asyncio.run(main())

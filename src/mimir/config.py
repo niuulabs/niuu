@@ -31,16 +31,26 @@ class RankingConfig(BaseModel):
         description="Boost when all query tokens appear in the page title.",
     )
     confidence_boosts: dict[str, float] = Field(
-        default={"high": 1.15, "medium": 1.0, "low": 0.85},
-        description="Multiplier per frontmatter confidence level.",
+        default={},
+        description=(
+            "Multiplier per frontmatter confidence level. Defaults to empty "
+            "(neutral): the NIU-1057 hybrid ablation measured the "
+            "high=1.15/low=0.85 preset at -7.0 pts P@5 — high-confidence "
+            "pages crowded out correct answers. Opt in per deployment."
+        ),
     )
     page_type_weights: dict[str, float] = Field(
         default={"directive": 1.1, "decision": 1.1},
         description="Multiplier per page type; unlisted types get 1.0.",
     )
     backlink_alpha: float = Field(
-        default=0.1,
-        description="Backlink centrality boost strength: 1 + alpha*log1p(backlinks).",
+        default=0.0,
+        description=(
+            "Backlink centrality boost strength: 1 + alpha*log1p(backlinks). "
+            "Defaults to neutral: the NIU-1057 hybrid ablation measured "
+            "alpha=0.1 at -4.6 pts P@5 (hub pages crowd out answers) and "
+            "+0.0 in FTS-only mode. Opt in per deployment."
+        ),
     )
     zone_weights: dict[str, float] = Field(
         default={"timeline": 0.9},

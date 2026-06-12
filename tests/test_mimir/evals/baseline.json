@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-06-12T20:32:22.291042+00:00",
+  "generated_at": "2026-06-12T20:57:51.367678+00:00",
   "corpus": "tests/test_mimir/evals/corpus",
   "embedding_model": null,
   "query_count": 62,
   "overall": {
-    "precision_at_5": 0.47580645161290325,
-    "recall_at_10": 0.47580645161290325,
-    "mrr": 0.4798387096774194
+    "precision_at_5": 0.4596774193548387,
+    "recall_at_10": 0.46774193548387094,
+    "mrr": 0.4838709677419355
   },
   "by_category": {
     "evolution": {
@@ -20,9 +20,9 @@
       "mrr": 0.9666666666666667
     },
     "relational": {
-      "precision_at_5": 0.375,
-      "recall_at_10": 0.375,
-      "mrr": 0.3541666666666667
+      "precision_at_5": 0.2916666666666667,
+      "recall_at_10": 0.3333333333333333,
+      "mrr": 0.375
     },
     "semantic": {
       "precision_at_5": 0.0,
@@ -168,9 +168,9 @@
         "research/battery-tech.md"
       ],
       "returned": [
+        "research/battery-tech.md",
         "entities/nordvolt.md",
-        "projects/vendor-selection.md",
-        "research/battery-tech.md"
+        "projects/vendor-selection.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -395,18 +395,18 @@
       ],
       "returned": [
         "entities/asgard-robotics.md",
-        "entities/freya-larsen.md",
-        "entities/bjorn-eriksen.md",
-        "entities/astrid-nilsen.md",
-        "entities/valhalla-cloud.md",
         "projects/budget-2026.md",
+        "research/competitor-landscape.md",
+        "projects/hiring-plan.md",
+        "projects/orchard.md",
+        "projects/helios.md",
+        "entities/valhalla-cloud.md",
         "entities/nordvolt.md",
         "entities/rune-lindqvist.md",
-        "entities/sigrid-dahl.md",
-        "projects/helios.md"
+        "entities/sigrid-dahl.md"
       ],
-      "precision_at_5": 1.0,
-      "recall_at_10": 1.0,
+      "precision_at_5": 0.5,
+      "recall_at_10": 0.5,
       "mrr": 1.0
     },
     {
@@ -418,9 +418,9 @@
       ],
       "returned": [
         "projects/helios.md",
+        "entities/nordvolt.md",
         "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/nordvolt.md"
+        "entities/bjorn-eriksen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -435,17 +435,17 @@
       ],
       "returned": [
         "entities/bjorn-eriksen.md",
-        "entities/asgard-robotics.md",
-        "entities/freya-larsen.md",
-        "entities/astrid-nilsen.md",
         "projects/vendor-selection.md",
         "technical/release-process.md",
         "projects/helios-launch-retro.md",
         "projects/helios.md",
         "technical/incident-2026-03-db-outage.md",
-        "technical/observability.md"
+        "technical/observability.md",
+        "entities/asgard-robotics.md",
+        "entities/astrid-nilsen.md",
+        "entities/freya-larsen.md"
       ],
-      "precision_at_5": 1.0,
+      "precision_at_5": 0.5,
       "recall_at_10": 1.0,
       "mrr": 1.0
     },
@@ -492,9 +492,9 @@
       ],
       "returned": [
         "projects/midgard-dashboard.md",
-        "entities/freya-larsen.md",
+        "research/user-interviews-spring.md",
         "entities/sigrid-dahl.md",
-        "research/user-interviews-spring.md"
+        "entities/freya-larsen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -545,13 +545,13 @@
       ],
       "returned": [
         "projects/helios.md",
+        "entities/nordvolt.md",
         "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/nordvolt.md"
+        "entities/bjorn-eriksen.md"
       ],
       "precision_at_5": 0.5,
       "recall_at_10": 0.5,
-      "mrr": 0.25
+      "mrr": 0.5
     },
     {
       "query": "who reviews new external integrations for security",
@@ -584,9 +584,9 @@
       ],
       "returned": [
         "projects/helios.md",
+        "entities/nordvolt.md",
         "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/nordvolt.md"
+        "entities/bjorn-eriksen.md"
       ],
       "precision_at_5": 0.5,
       "recall_at_10": 0.5,
@@ -601,11 +601,11 @@
       ],
       "returned": [
         "entities/nordvolt.md",
-        "entities/asgard-robotics.md",
         "projects/vendor-selection.md",
+        "research/battery-tech.md",
         "projects/helios-launch-retro.md",
         "projects/helios.md",
-        "research/battery-tech.md"
+        "entities/asgard-robotics.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -632,15 +632,15 @@
       ],
       "returned": [
         "entities/freya-larsen.md",
-        "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/astrid-nilsen.md",
         "technical/auth-oidc.md",
-        "projects/midgard-dashboard.md",
-        "entities/sigrid-dahl.md",
+        "projects/hiring-plan.md",
         "projects/q2-roadmap.md",
+        "projects/midgard-dashboard.md",
         "technical/api-gateway.md",
-        "technical/event-bus.md"
+        "technical/event-bus.md",
+        "entities/asgard-robotics.md",
+        "entities/sigrid-dahl.md",
+        "entities/astrid-nilsen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -654,9 +654,9 @@
       ],
       "returned": [
         "projects/helios.md",
+        "entities/nordvolt.md",
         "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/nordvolt.md"
+        "entities/bjorn-eriksen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -670,9 +670,9 @@
       ],
       "returned": [
         "projects/orchard.md",
+        "research/edge-deployment.md",
         "entities/asgard-robotics.md",
-        "entities/rune-lindqvist.md",
-        "research/edge-deployment.md"
+        "entities/rune-lindqvist.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -741,9 +741,9 @@
       ],
       "returned": [
         "projects/helios.md",
+        "entities/nordvolt.md",
         "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/nordvolt.md"
+        "entities/bjorn-eriksen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -758,11 +758,11 @@
       ],
       "returned": [
         "entities/nordvolt.md",
-        "entities/asgard-robotics.md",
         "projects/vendor-selection.md",
+        "research/battery-tech.md",
         "projects/helios-launch-retro.md",
         "projects/helios.md",
-        "research/battery-tech.md"
+        "entities/asgard-robotics.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -776,9 +776,9 @@
       ],
       "returned": [
         "projects/midgard-dashboard.md",
-        "entities/freya-larsen.md",
+        "research/user-interviews-spring.md",
         "entities/sigrid-dahl.md",
-        "research/user-interviews-spring.md"
+        "entities/freya-larsen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -792,15 +792,15 @@
       ],
       "returned": [
         "entities/asgard-robotics.md",
-        "entities/freya-larsen.md",
-        "entities/bjorn-eriksen.md",
-        "entities/astrid-nilsen.md",
-        "entities/valhalla-cloud.md",
         "projects/budget-2026.md",
+        "research/competitor-landscape.md",
+        "projects/hiring-plan.md",
+        "projects/orchard.md",
+        "projects/helios.md",
+        "entities/valhalla-cloud.md",
         "entities/nordvolt.md",
         "entities/rune-lindqvist.md",
-        "entities/sigrid-dahl.md",
-        "projects/helios.md"
+        "entities/sigrid-dahl.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -859,15 +859,15 @@
       ],
       "returned": [
         "entities/freya-larsen.md",
-        "entities/asgard-robotics.md",
-        "entities/bjorn-eriksen.md",
-        "entities/astrid-nilsen.md",
         "technical/auth-oidc.md",
-        "projects/midgard-dashboard.md",
-        "entities/sigrid-dahl.md",
+        "projects/hiring-plan.md",
         "projects/q2-roadmap.md",
+        "projects/midgard-dashboard.md",
         "technical/api-gateway.md",
-        "technical/event-bus.md"
+        "technical/event-bus.md",
+        "entities/asgard-robotics.md",
+        "entities/sigrid-dahl.md",
+        "entities/astrid-nilsen.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
@@ -881,9 +881,9 @@
       ],
       "returned": [
         "projects/orchard.md",
+        "research/edge-deployment.md",
         "entities/asgard-robotics.md",
-        "entities/rune-lindqvist.md",
-        "research/edge-deployment.md"
+        "entities/rune-lindqvist.md"
       ],
       "precision_at_5": 1.0,
       "recall_at_10": 1.0,
