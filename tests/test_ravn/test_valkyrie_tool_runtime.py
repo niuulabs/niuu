@@ -2,32 +2,23 @@
 
 from __future__ import annotations
 
-import ast
 import json
 
 import pytest
 
 from ravn.adapters.skill.file_registry import FileSkillRegistry
-from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewStatus, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.adapters import (
-    AgentToolBuilder,
-    TemplateToolBuilder,
-    ToolBuildError,
-    WorkflowToolBuilder,
-)
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     learned_tool_path,
     load_learned_tool,
     read_learned_tool_artifact,
+    tool_implementation_findings,
     write_learned_tool,
     write_learned_tool_artifact,
 )
 from ravn.valkyrie_evolution.models import (
-    CapabilityGap,
-    EvolutionRequest,
     LearnedToolArtifact,
     LearnedToolManifest,
     OperationalSignal,
@@ -40,32 +31,7 @@ from ravn.valkyrie_evolution.resident_learning import (
 )
 from ravn.valkyrie_evolution.tool_runtime import run_tool, tool_path_for_skill, write_tool
 from sleipnir.adapters.in_process import InProcessBus
-
-
-def _request(capability: str = "inspect.kubernetes.pod.oomkilled") -> EvolutionRequest:
-    gap = CapabilityGap(
-        gap_id=f"gap:{capability}",
-        capability_name=capability,
-        environment_id="cluster-a",
-        domain="k8s",
-        reason="Resident saw signal without an installed skill",
-        signal_ids=["sig-1"],
-        evidence={
-            "payload": {
-                "kind": "Pod",
-                "reason": "OOMKilled",
-                "namespace": "payments",
-                "message": "Container killed due to memory pressure",
-            }
-        },
-        safety_class="read_only",
-    )
-    return EvolutionRequest(
-        request_id=f"evolve:{capability}",
-        gap=gap,
-        autonomy_mode="yolo",
-        target_scope="environment",
-    )
+from tests.ravn.fixtures.skills import probe_skill_content
 
 
 def _signal(capability_payload: dict | None = None) -> OperationalSignal:
@@ -78,45 +44,6 @@ def _signal(capability_payload: dict | None = None) -> OperationalSignal:
         summary="Pod OOMKilled in payments",
         payload=capability_payload
         or {"kind": "Pod", "reason": "OOMKilled", "namespace": "payments"},
-    )
-
-
-class _FakeLLM:
-    """Minimal LLMPort stand-in returning a canned generate() response."""
-
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.calls: list[dict] = []
-
-    async def generate(self, messages, *, tools, system, model, max_tokens, thinking=None):
-        self.calls.append({"messages": messages, "model": model})
-        return LLMResponse(
-            content=self.content,
-            tool_calls=[],
-            stop_reason=StopReason.END_TURN,
-            usage=TokenUsage(input_tokens=1, output_tokens=1),
-        )
-
-
-def _valid_agent_response() -> str:
-    tool_code = (
-        '"""Probe for OOMKilled pods."""\n\n'
-        "def run(signal: dict) -> dict:\n"
-        '    payload = signal.get("payload", signal)\n'
-        '    observed = {k: payload[k] for k in ("kind", "reason") if k in payload}\n'
-        "    return {\n"
-        '        "capability": "inspect.kubernetes.pod.oomkilled",\n'
-        '        "matches": bool(observed),\n'
-        '        "observed": observed,\n'
-        '        "severity": str(payload.get("severity", "warning")),\n'
-        '        "summary": "oom probe",\n'
-        "    }\n"
-    )
-    return json.dumps(
-        {
-            "skill_markdown": "# skill: valkyrie-inspect-kubernetes-pod-oomkilled\n\nInspect.",
-            "tool_code": tool_code,
-        }
     )
 
 
@@ -274,73 +201,35 @@ def test_learned_tool_rejects_invalid_declared_reach(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TemplateToolBuilder
+# Tool implementation validators (shared by the reviewer and learned tools)
 # ---------------------------------------------------------------------------
 
 
-async def test_template_builder_emits_runnable_tool_implementation(tmp_path) -> None:
-    builder = TemplateToolBuilder(artifact_dir=tmp_path)
-    build = await builder.build(_request())
-
-    assert build.has_tool_implementation
-    ast.parse(build.tool_code)
-    assert build.tool_path.endswith(".py")
-
-    result = await run_tool(build.tool_path, {"payload": _signal().payload})
-    assert result.ok
-    assert result.result["matches"] is True
-    assert result.result["observed"]["reason"] == "OOMKilled"
-    assert result.result["capability"] == "inspect.kubernetes.pod.oomkilled"
-
-
-# ---------------------------------------------------------------------------
-# AgentToolBuilder
-# ---------------------------------------------------------------------------
-
-
-async def test_agent_builder_authors_skill_and_tool_via_llm(tmp_path) -> None:
-    llm = _FakeLLM(_valid_agent_response())
-    builder = AgentToolBuilder(llm=llm, model="claude-test", artifact_dir=tmp_path)
-    build = await builder.build(_request())
-
-    assert llm.calls and llm.calls[0]["model"] == "claude-test"
-    assert build.has_tool_implementation
-    assert "capability: inspect.kubernetes.pod.oomkilled" in build.skill_content
-    result = await run_tool(build.tool_path, {"payload": _signal().payload})
-    assert result.ok
-    assert result.result["observed"] == {"kind": "Pod", "reason": "OOMKilled"}
-
-
-async def test_agent_builder_rejects_forbidden_imports() -> None:
-    response = json.dumps(
-        {
-            "skill_markdown": "# skill: x",
-            "tool_code": "import subprocess\n\ndef run(signal):\n    return {}\n",
-        }
+def test_tool_implementation_findings_flags_forbidden_imports() -> None:
+    findings = tool_implementation_findings(
+        "import subprocess\n\ndef run(signal):\n    return {}\n",
+        entry_point="run",
+        safety_class="read_only",
     )
-    builder = AgentToolBuilder(llm=_FakeLLM(response))
-    with pytest.raises(ToolBuildError, match="forbidden modules: subprocess"):
-        await builder.build(_request())
+    assert any("forbidden modules: subprocess" in finding for finding in findings)
 
 
-async def test_agent_builder_rejects_missing_entry_point() -> None:
-    response = json.dumps(
-        {"skill_markdown": "# skill: x", "tool_code": "def probe(signal):\n    return {}\n"}
+def test_tool_implementation_findings_requires_the_entry_point() -> None:
+    findings = tool_implementation_findings(
+        "def probe(signal):\n    return {}\n",
+        entry_point="run",
+        safety_class="read_only",
     )
-    builder = AgentToolBuilder(llm=_FakeLLM(response))
-    with pytest.raises(ToolBuildError, match="does not define run"):
-        await builder.build(_request())
+    assert any("does not define run" in finding for finding in findings)
 
 
-async def test_agent_builder_rejects_non_json_response() -> None:
-    builder = AgentToolBuilder(llm=_FakeLLM("I cannot help with that."))
-    with pytest.raises(ToolBuildError, match="no JSON object"):
-        await builder.build(_request())
-
-
-async def test_workflow_builder_is_an_explicit_boundary() -> None:
-    with pytest.raises(NotImplementedError, match="workflow"):
-        await WorkflowToolBuilder().build(_request())
+def test_tool_implementation_findings_accepts_a_clean_read_only_tool() -> None:
+    findings = tool_implementation_findings(
+        "import json\n\ndef run(signal):\n    return {'ok': True}\n",
+        entry_point="run",
+        safety_class="read_only",
+    )
+    assert findings == []
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +241,6 @@ def _runtime(
     tmp_path,
     name: str,
     autonomy_mode: str = "yolo",
-    legacy_probe_builder_enabled: bool = True,
 ) -> ResidentLearningRuntime:
     skill_dir = tmp_path / name / "skills"
     registry = FileSkillRegistry(
@@ -378,14 +266,11 @@ def _runtime(
         publisher=bus,
         subscriber=bus,
         tools_dir=tmp_path / name / "tools",
-        legacy_probe_builder_enabled=legacy_probe_builder_enabled,
     )
 
 
-async def test_missing_capability_can_defer_to_investigation_instead_of_probe_build(
-    tmp_path,
-) -> None:
-    runtime = _runtime(tmp_path, "k8s-investigate", legacy_probe_builder_enabled=False)
+async def test_missing_capability_defers_to_the_investigation_loop(tmp_path) -> None:
+    runtime = _runtime(tmp_path, "k8s-investigate")
 
     result = await runtime.process_signal(_signal())
 
@@ -394,36 +279,14 @@ async def test_missing_capability_can_defer_to_investigation_instead_of_probe_bu
     assert not (tmp_path / "k8s-investigate" / "tools").exists()
 
 
-async def test_micro_dream_installs_tool_and_replay_executes_it(tmp_path) -> None:
-    runtime = _runtime(tmp_path, "k8s-a")
-
-    first = await runtime.process_signal(_signal())
-    assert first["decision"] == "built_capability_for_next_signal"
-    skill_name = first["skillName"]
-    tool_path = tool_path_for_skill(tmp_path / "k8s-a" / "tools", skill_name)
-    assert tool_path.is_file()
-
-    replay = await runtime.process_signal(_signal())
-    assert replay["decision"] == "inspect_with_adopted_learning"
-    assert replay["usedAdoptedLearning"] is True
-    assert replay["toolResult"]["matches"] is True
-    assert replay["toolResult"]["observed"]["reason"] == "OOMKilled"
-
-
 async def test_peer_adoption_installs_proposed_tool_implementation(tmp_path) -> None:
-    teacher = _runtime(tmp_path, "k8s-a")
-    built = await teacher.process_signal(_signal())
-    skill_name = built["skillName"]
-    teacher_tool = tool_path_for_skill(tmp_path / "k8s-a" / "tools", skill_name)
-
     peer = _runtime(tmp_path, "k8s-b")
+    skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
     artifact = ResidentLearningArtifact(
         learning_id="learn-oom",
         title=skill_name,
         summary="OOM probe",
-        content=(tmp_path / "k8s-a" / "skills" / f"{skill_name}.md").read_text()
-        if (tmp_path / "k8s-a" / "skills" / f"{skill_name}.md").is_file()
-        else _skill_content_for(skill_name),
+        content=probe_skill_content(skill_name),
         artifact_type="ravn_skill_tool",
         scope="flock",
         confidence=0.9,
@@ -432,7 +295,11 @@ async def test_peer_adoption_installs_proposed_tool_implementation(tmp_path) -> 
         flock_id="flock:k8s-valkyries",
         domain="k8s",
         redaction_status="redacted",
-        tool_code=teacher_tool.read_text(),
+        tool_code=(
+            "def run(signal):\n"
+            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
+        ),
+        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
     )
     decision = await peer.evaluate_and_apply(artifact)
     assert decision.action == "adopted"
@@ -565,25 +432,31 @@ async def test_review_approval_installs_self_authored_agent_tool(tmp_path) -> No
     assert read_learned_tool_artifact(artifact_path).manifest.name == "mimir_metric_window"
 
 
-def _skill_content_for(skill_name: str) -> str:
-    return f"""# skill: {skill_name}
-
-metadata:
-  capability: inspect.kubernetes.pod.oomkilled
-  source: valkyrie-dream-cycle
-  safety_class: read_only
-  tool_entry_point: run
-
-## Procedure
-
-1. Run the installed probe implementation.
-"""
-
-
 async def test_failing_tool_surfaces_failure_judgment(tmp_path) -> None:
     runtime = _runtime(tmp_path, "k8s-c")
-    first = await runtime.process_signal(_signal())
-    skill_name = first["skillName"]
+    skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
+    artifact = ResidentLearningArtifact(
+        learning_id="learn-oom-c",
+        title=skill_name,
+        summary="OOM probe",
+        content=probe_skill_content(skill_name),
+        artifact_type="ravn_skill_tool",
+        scope="flock",
+        confidence=0.9,
+        source_environment_id="env-k8s-x",
+        source_valkyrie_id="valkyrie:k8s-x",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+        tool_code=(
+            "def run(signal):\n"
+            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
+        ),
+        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
+    )
+    assert (await runtime.evaluate_and_apply(artifact)).action == "adopted"
+
+    # Regress the installed implementation in place, then replay the signal.
     tool_path = tool_path_for_skill(tmp_path / "k8s-c" / "tools", skill_name)
     tool_path.write_text("def run(signal):\n    raise RuntimeError('regression')\n")
 
@@ -603,7 +476,7 @@ async def test_broken_proposed_tool_is_rejected_by_canary(tmp_path) -> None:
         learning_id="learn-broken",
         title="valkyrie-inspect-kubernetes-pod-oomkilled",
         summary="Broken probe",
-        content=_skill_content_for("valkyrie-inspect-kubernetes-pod-oomkilled"),
+        content=probe_skill_content("valkyrie-inspect-kubernetes-pod-oomkilled"),
         artifact_type="ravn_skill_tool",
         scope="flock",
         confidence=0.9,
@@ -631,7 +504,7 @@ async def test_healthy_proposed_tool_passes_canary_and_is_adopted(tmp_path) -> N
         learning_id="learn-ok",
         title="valkyrie-inspect-kubernetes-pod-oomkilled",
         summary="Healthy probe",
-        content=_skill_content_for("valkyrie-inspect-kubernetes-pod-oomkilled"),
+        content=probe_skill_content("valkyrie-inspect-kubernetes-pod-oomkilled"),
         artifact_type="ravn_skill_tool",
         scope="flock",
         confidence=0.9,
@@ -649,49 +522,3 @@ async def test_healthy_proposed_tool_passes_canary_and_is_adopted(tmp_path) -> N
     decision = await peer.evaluate_and_apply(artifact)
     assert decision.action == "adopted"
     assert decision.canary_passed is True
-
-
-async def test_micro_dream_holds_tool_that_fails_its_own_canary(tmp_path) -> None:
-    class RuntimeBrokenBuilder:
-        async def build(self, request):
-            from ravn.valkyrie_evolution.models import BuildResult
-
-            name = "valkyrie-broken"
-            return BuildResult(
-                request_id=request.request_id,
-                skill_name=name,
-                skill_content=_skill_content_for(name).replace(
-                    "inspect.kubernetes.pod.oomkilled", request.gap.capability_name
-                ),
-                description="Parses fine, fails at runtime.",
-                artifact_type="ravn_skill_tool",
-                tool_code="def run(signal):\n    raise RuntimeError('boom')\n",
-            )
-
-    skill_dir = tmp_path / "broken" / "skills"
-    registry_port = FileSkillRegistry(
-        skill_dirs=[str(skill_dir)], write_dir=skill_dir, include_builtin=False
-    )
-    skills = SkillManagementRegistry(
-        registry_port, metadata_path=tmp_path / "broken" / "skill_management.json"
-    )
-    bus = InProcessBus()
-    runtime = ResidentLearningRuntime(
-        identity=ResidentLearningIdentity(
-            environment_id="env-broken",
-            valkyrie_id="valkyrie:broken",
-            domain="k8s",
-            flock_ids=["flock:k8s-valkyries"],
-            autonomy_mode="yolo",
-            environment_type="k8s",
-        ),
-        skills=skills,
-        publisher=bus,
-        subscriber=bus,
-        builder=RuntimeBrokenBuilder(),
-        tools_dir=tmp_path / "broken" / "tools",
-        legacy_probe_builder_enabled=True,
-    )
-    result = await runtime.process_signal(_signal())
-    assert result["decision"] == "capability_build_held"
-    assert result["skillName"] == ""

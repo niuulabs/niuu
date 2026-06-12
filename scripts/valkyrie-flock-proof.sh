@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# End-to-end Valkyrie flock proof: a resident Valkyrie self-improves, writes
-# its own tool, and teaches peer Valkyries — over the local nng flock or NATS.
+# End-to-end Valkyrie flock proof: a resident Valkyrie investigates a signal,
+# authors its own tool with build_tool, and teaches peer Valkyries — over the
+# local nng flock or NATS.
 #
 # Topology (three real `ravn daemon` processes + one observer):
-#   valkyrie-k8s-a   teacher   yolo        flock:k8s-valkyries  (gets the signal)
+#   valkyrie-k8s-a   teacher   autonomous  flock:k8s-valkyries  (gets the signal)
 #   valkyrie-k8s-b   student   autonomous  flock:k8s-valkyries  (adopts via canary)
 #   valkyrie-printer control   autonomous  flock:printer-cell   (rejects: wrong flock)
 #
-# Chain proven:
-#   signal -> micro-dream -> skill + executable probe on disk
-#          -> flock.learning.proposed (tool code + canary sample)
+# Chain proven (the investigation loop — NIU-1051/1052):
+#   signal -> escalates to an agent investigation session (build_tool attached)
+#          -> session authors + installs a learned agent tool on disk (teacher)
+#          -> flock.learning.proposed (agent_tool: manifest + tool code)
 #          -> student canaries, installs, ACKs adoption
-#          -> NATS student restart keeps adoption exactly once
 #          -> printer rejects (flock mismatch)
-#          -> replayed signal handled by the built tool
+#          -> NATS student restart keeps adoption exactly once
+#   plus the live-mesh legs: wakefulness consolidation + operator feedback,
+#   and (with --guarded-approval) the held -> review -> approve -> install
+#   round-trip on the unified ODIN review path.
+#
+# The investigation session needs a live LLM that calls build_tool; configure
+# it with OPENAI_API_KEY (defaults to the OpenAI API) or the VALKYRIE_PROOF_LLM_*
+# env vars (defaults to the local vLLM endpoint otherwise).
 #
 # Usage:
-#   scripts/valkyrie-flock-proof.sh                    # nng (local flock)
-#   scripts/valkyrie-flock-proof.sh --transport nats   # NATS JetStream
-#   scripts/valkyrie-flock-proof.sh --keep             # leave daemons running
+#   scripts/valkyrie-flock-proof.sh                       # nng (local flock)
+#   scripts/valkyrie-flock-proof.sh --transport nats      # NATS JetStream
+#   scripts/valkyrie-flock-proof.sh --guarded-approval    # held -> approve leg
+#   scripts/valkyrie-flock-proof.sh --keep                # leave daemons running
 
 set -euo pipefail
 
@@ -27,17 +36,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TRANSPORT="nng"
 KEEP_RUNNING=0
-BUILDER="template"   # template | agent (agent authors the tool with a real LLM)
 WAIT_SECONDS="${VALKYRIE_PROOF_WAIT_SECONDS:-}"
 # Guarded approval mode: the teacher runs guarded, the build is HELD behind an
 # odin.review.requested item, and the observer acts as the approving operator.
 GUARDED_APPROVAL=0
-TEACHER_AUTONOMY="${VALKYRIE_PROOF_TEACHER_AUTONOMY:-yolo}"
+TEACHER_AUTONOMY="${VALKYRIE_PROOF_TEACHER_AUTONOMY:-autonomous}"
 # Orchestrators (the full-stack ODIN proof) set this to leave verification —
 # and the operator approval — to an outer harness.
 SKIP_VERIFY="${VALKYRIE_PROOF_SKIP_VERIFY:-0}"
 
-# LLM used by --builder agent (any OpenAI-compatible endpoint).
+# The investigation session always runs on a live, OpenAI-compatible LLM.
 # When OPENAI_API_KEY is set the proof defaults to the OpenAI API; otherwise
 # it uses the local vLLM. Override with VALKYRIE_PROOF_LLM_* env vars.
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
@@ -54,21 +62,19 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --transport) TRANSPORT="$2"; shift 2 ;;
         --keep) KEEP_RUNNING=1; shift ;;
-        --builder) BUILDER="$2"; shift 2 ;;
         --guarded-approval) GUARDED_APPROVAL=1; TEACHER_AUTONOMY="guarded"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-# Real LLM generation needs more time than the deterministic template, and
-# the guarded round-trip adds a hold → approve → install leg.
+# A live investigation session (LLM call -> build_tool -> canary -> install ->
+# propose -> peer adopt) needs real time; the guarded round-trip adds a
+# hold -> approve -> install leg.
 if [[ -z "${WAIT_SECONDS}" ]]; then
-    if [[ "${BUILDER}" == "agent" ]]; then
-        WAIT_SECONDS=150
-    elif [[ "${GUARDED_APPROVAL}" == "1" ]]; then
-        WAIT_SECONDS=35
+    if [[ "${GUARDED_APPROVAL}" == "1" ]]; then
+        WAIT_SECONDS=180
     else
-        WAIT_SECONDS=25
+        WAIT_SECONDS=150
     fi
 fi
 
@@ -164,23 +170,13 @@ fi
 # Node configs
 # ---------------------------------------------------------------------------
 
-BUILDER_ADAPTER="ravn.valkyrie_evolution.adapters.TemplateToolBuilder"
-BUILDER_KWARGS=""
-LLM_MODEL="proof-disabled"
-LLM_BASE_URL="http://127.0.0.1:1"
+LLM_MODEL="${PROOF_LLM_MODEL}"
+LLM_BASE_URL="${PROOF_LLM_BASE_URL}"
 LLM_SECRET_BLOCK=""
-if [[ "${BUILDER}" == "agent" ]]; then
-    BUILDER_ADAPTER="ravn.valkyrie_evolution.adapters.AgentToolBuilder"
-    # Thinking models burn output budget on hidden reasoning before any
-    # visible JSON appears; 4096 truncates mid-think and yields empty content.
-    BUILDER_KWARGS=$'\n  builder_kwargs:\n    max_tokens: 16384'
-    LLM_MODEL="${PROOF_LLM_MODEL}"
-    LLM_BASE_URL="${PROOF_LLM_BASE_URL}"
-    if [[ -n "${PROOF_LLM_API_KEY_ENV}" ]]; then
-        LLM_SECRET_BLOCK=$'\n    secret_kwargs_env:\n      api_key: '"${PROOF_LLM_API_KEY_ENV}"
-    fi
-    echo "Agent builder LLM: ${LLM_MODEL} @ ${LLM_BASE_URL}"
+if [[ -n "${PROOF_LLM_API_KEY_ENV}" ]]; then
+    LLM_SECRET_BLOCK=$'\n    secret_kwargs_env:\n      api_key: '"${PROOF_LLM_API_KEY_ENV}"
 fi
+echo "Investigation LLM: ${LLM_MODEL} @ ${LLM_BASE_URL}"
 
 write_config() {
     local node="$1" peer_id="$2" env_id="$3" env_type="$4" flock="$5" autonomy="$6" sources="$7"
@@ -231,15 +227,19 @@ environment:
   flocks:
     - ${flock}
   signal_poll_interval_seconds: 2.0
-  signal_task_severities: []
+  # Warning-or-worse signals escalate to an agent investigation session.
+  signal_task_severities:
+    - warning
+    - critical
 ${sources}
 
 resident_evolution:
   autonomy_mode: ${autonomy}
-  # This proof exercises the legacy classifier micro-dream leg explicitly;
-  # the investigation loop is proven in tests/test_ravn/test_investigation_loop.py.
-  legacy_probe_builder_enabled: true
-  builder_adapter: ${BUILDER_ADAPTER}${BUILDER_KWARGS}
+
+# The drive loop runs the signal-triggered investigation session; build_tool is
+# attached to signal-triggered sessions automatically.
+initiative:
+  enabled: true
 
 resident_wakefulness:
   enabled: true
@@ -256,9 +256,6 @@ cascade:
   enabled: false
 
 gateway:
-  enabled: false
-
-initiative:
   enabled: false
 
 memory:
@@ -360,7 +357,7 @@ stop_daemon() {
     rm -f "${pid_file}"
 }
 
-echo "Starting Valkyrie flock (transport=${TRANSPORT}, builder=${BUILDER})..."
+echo "Starting Valkyrie flock (transport=${TRANSPORT}, teacher=${TEACHER_AUTONOMY})..."
 start_daemon printer "${CONFIG_P}"
 start_daemon k8s-b "${CONFIG_B}"
 start_daemon k8s-a "${CONFIG_A}"
@@ -369,41 +366,25 @@ echo "Waiting for residents to subscribe..."
 sleep 8
 
 # ---------------------------------------------------------------------------
-# Inject the signal: two OOMKilled events (same capability, distinct ids).
-# Item 1 triggers the micro-dream; item 2 replays through the built tool.
+# Inject the signal: one OOMKilled event. It escalates to an investigation
+# session on the teacher, which authors the instrument it needs with build_tool.
 # ---------------------------------------------------------------------------
 
-FIRST_OOM_EVENT='{
+OOM_EVENT='{
     "metadata": {"name": "payments-api-oom.1", "uid": "oom-uid-1", "namespace": "payments"},
     "involvedObject": {"kind": "Pod", "name": "payments-api-7d9f", "namespace": "payments"},
     "reason": "OOMKilled",
     "message": "Container payments-api was OOM killed (memory limit 512Mi)",
     "type": "Warning"
   }'
-SECOND_OOM_EVENT='{
-    "metadata": {"name": "payments-api-oom.2", "uid": "oom-uid-2", "namespace": "payments"},
-    "involvedObject": {"kind": "Pod", "name": "payments-api-b41c", "namespace": "payments"},
-    "reason": "OOMKilled",
-    "message": "Container payments-api was OOM killed again after restart",
-    "type": "Warning"
-  }'
 
+printf '[\n  %s\n]\n' "${OOM_EVENT}" > "${OUT_DIR}/inject-k8s-a.json"
 if [[ "${GUARDED_APPROVAL}" == "1" ]]; then
-    # The replay event must arrive AFTER the operator approval installs the
-    # tool, or it lands while the build is still held.
-    printf '[\n  %s\n]\n' "${FIRST_OOM_EVENT}" > "${OUT_DIR}/inject-k8s-a.json"
-    echo "Signal injected (guarded). Waiting for hold -> approval -> install (${WAIT_SECONDS}s)..."
-    sleep "${WAIT_SECONDS}"
-    printf '[\n  %s,\n  %s\n]\n' "${FIRST_OOM_EVENT}" "${SECOND_OOM_EVENT}" \
-        > "${OUT_DIR}/inject-k8s-a.json"
-    echo "Replay signal injected. Letting the installed tool handle it..."
-    sleep 12
+    echo "Signal injected (guarded). Waiting for investigate -> hold -> approve -> install (${WAIT_SECONDS}s)..."
 else
-    printf '[\n  %s,\n  %s\n]\n' "${FIRST_OOM_EVENT}" "${SECOND_OOM_EVENT}" \
-        > "${OUT_DIR}/inject-k8s-a.json"
-    echo "Signal injected. Letting the learning loop run for ${WAIT_SECONDS}s..."
-    sleep "${WAIT_SECONDS}"
+    echo "Signal injected. Letting the investigation loop run for ${WAIT_SECONDS}s..."
 fi
+sleep "${WAIT_SECONDS}"
 
 if [[ "${SKIP_VERIFY}" == "1" ]]; then
     echo "Skipping verification (VALKYRIE_PROOF_SKIP_VERIFY=1). Daemons stay up with --keep."

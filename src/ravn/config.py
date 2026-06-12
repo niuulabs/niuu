@@ -2408,19 +2408,6 @@ class ResidentEvolutionConfig(BaseModel):
             "delegated boundaries."
         ),
     )
-    builder_adapter: str = Field(
-        default="ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
-        description=(
-            "Fully-qualified EvolutionBuilderPort class used by resident "
-            "micro-dreams to author skills and tool implementations. "
-            "Constructors declaring an ``llm`` parameter receive the "
-            "configured LLM adapter automatically."
-        ),
-    )
-    builder_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Constructor kwargs for the builder adapter.",
-    )
     reviewer_adapter: str = Field(
         default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
         description=(
@@ -2441,16 +2428,6 @@ class ResidentEvolutionConfig(BaseModel):
         description=(
             "Consecutive implementation failures before an installed skill is "
             "auto-rolled-back (archived, regression published to the flock)."
-        ),
-    )
-    legacy_probe_builder_enabled: bool = Field(
-        default=False,
-        description=(
-            "Legacy switch for the retired per-signal classifier micro-dream. "
-            "Default off: residents defer a missing capability to the build_tool "
-            "investigation loop (signal -> drive session -> author instrument) "
-            "instead of authoring a run(signal) probe. Kept only so the legacy "
-            "flock proof can still exercise the old path explicitly."
         ),
     )
     learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(

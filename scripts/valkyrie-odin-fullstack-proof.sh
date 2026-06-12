@@ -138,14 +138,28 @@ for _ in $(seq 1 45); do
     sleep 2
 done
 
-SKILL="valkyrie-inspect-kubernetes-pod-oomkilled"
-TEACHER_SKILL="${FLOCK_OUT}/k8s-a-state/skills/${SKILL}.md"
-STUDENT_SKILL="${FLOCK_OUT}/k8s-b-state/skills/${SKILL}.md"
+# The investigation session authors an agent tool with an LLM-chosen name; it
+# installs into learned_tools/ rather than a fixed skill path. The review item
+# we already fetched names the tool (title = manifest name), and the installer
+# maps dots/dashes in the name to underscores in the filename.
+TOOL_FILE="$(python3 -c '
+import json, sys
+title = json.load(open(sys.argv[1])).get("title", "")
+print(title.replace(".", "_").replace("-", "_"))
+' "${OUT_DIR}/review-item-pending.json")"
+if [[ -z "${TOOL_FILE}" ]]; then
+    echo "FAIL: pending review item has no title to derive the tool name from" >&2
+    exit 1
+fi
+TEACHER_TOOL="${FLOCK_OUT}/k8s-a-state/learned_tools/${TOOL_FILE}.py"
+STUDENT_TOOL="${FLOCK_OUT}/k8s-b-state/learned_tools/${TOOL_FILE}.py"
 STUDENT_ADOPTED=0
 for _ in $(seq 1 30); do
-    [[ -f "${STUDENT_SKILL}" ]] && STUDENT_ADOPTED=1 && break
+    [[ -f "${STUDENT_TOOL}" ]] && STUDENT_ADOPTED=1 && break
     sleep 2
 done
+TEACHER_INSTALLED=0
+[[ -f "${TEACHER_TOOL}" ]] && TEACHER_INSTALLED=1
 
 curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews/${ITEM_ID}" \
     > "${OUT_DIR}/review-item-final.json" || true
@@ -169,9 +183,8 @@ echo ""
 echo "============================================================"
 report_check "review item settled to applied" \
     "$([[ "${ITEM_STATUS}" == "applied" ]] && echo 1 || echo 0)" "status=${ITEM_STATUS}"
-report_check "teacher installed the approved skill" \
-    "$([[ -f "${TEACHER_SKILL}" ]] && echo 1 || echo 0)" "${TEACHER_SKILL}"
-report_check "student adopted after the approval" "${STUDENT_ADOPTED}" "${STUDENT_SKILL}"
+report_check "teacher installed the approved tool" "${TEACHER_INSTALLED}" "${TEACHER_TOOL}"
+report_check "student adopted after the approval" "${STUDENT_ADOPTED}" "${STUDENT_TOOL}"
 report_check "inbox screenshots captured" \
     "$([[ -f "${OUT_DIR}/odin-inbox-pending.png" && -f "${OUT_DIR}/odin-inbox-after-approve.png" ]] && echo 1 || echo 0)"
 report_check "activity ledger screenshot captured" \

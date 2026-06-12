@@ -1,20 +1,26 @@
-# Valkyrie Dream Layers
+# Valkyrie Reactive and Dream Layers
 
-Three distinct mechanisms publish `*.dream.*` events. They are deliberately
-separate layers, each with its own trigger, scope, and configuration. This doc
-exists so nobody re-merges them or mistakes one for another.
+A resident grows in three deliberately separate layers, each with its own
+trigger, scope, and configuration. This doc exists so nobody re-merges them or
+mistakes one for another. The reactive layer (the investigation loop) replaced
+the retired classifier micro-dream and no longer publishes `*.dream.*` events;
+the two scheduled layers below still do.
 
 | Layer | Trigger | Scope | Config | Events |
 | --- | --- | --- | --- | --- |
-| **Micro-dream** | Reactive: a signal arrives with no installed capability | Build one skill + executable probe, review, canary, install, propose to flock | `resident_evolution` (builder/reviewer adapters, autonomy, rollback) | `valkyrie.dream.started/completed`, `valkyrie.evolution.*`, `flock.learning.proposed` |
-| **Consolidation dream** | Scheduled: idle + interval gates in the wakefulness state machine | Reflective pass over the whole skill registry: mark stale, promote proven private skills, hold skills implicated by feedback, reopen deferred capability gaps | `resident_wakefulness` (intervals, idle gates, promotion thresholds) | `valkyrie.state.changed`, `valkyrie.dream.started/completed` (`dream_kind: consolidation`), `learning.promoted` |
+| **Investigation loop** | Reactive: a signal arrives with no installed capability | Escalate to an agent session that authors the instrument(s) it needs with `build_tool` (inline, or commissioned via a Forge/Ting backend), reviews, canaries, installs, proposes to flock | `resident_evolution` (reviewer adapter, autonomy, rollback, `tool_build_backend`) | `valkyrie.evolution.*`, `flock.learning.proposed`, session/drive-loop events |
+| **Consolidation dream** | Scheduled: idle + interval gates in the wakefulness state machine | Reflective pass over the whole skill registry: mark stale, promote proven private skills, hold skills implicated by feedback | `resident_wakefulness` (intervals, idle gates, promotion thresholds) | `valkyrie.state.changed`, `valkyrie.dream.started/completed` (`dream_kind: consolidation`), `learning.promoted` |
 | **Mimir curation** | Cron: the `dream_cycle` trigger fires the `mimir-curator` persona | Knowledge-base hygiene: enrich, lint, cross-reference Mimir pages | `dream_cycle` (cron expression, persona, token budget) | `mimir.dream.completed` |
 
 ## Where each lives
 
-- Micro-dream: `src/ravn/valkyrie_evolution/resident_learning.py`
-  (`_evolve_missing_capability`). Runs inside `ResidentLearningRuntime`,
-  wired in the daemon's resident block.
+- Investigation loop: a missing capability returns
+  `defer_to_investigation_with_build_tool` from
+  `ResidentLearningRuntime.process_signal`
+  (`src/ravn/valkyrie_evolution/resident_learning.py`); the signal escalates
+  through the environment signal runtime into an agent session whose toolbox
+  includes `build_tool` (`src/ravn/adapters/tools/build_tool.py`). The session
+  authors, reviews, canaries, installs, and proposes the instrument.
 - Consolidation dream: `src/ravn/valkyrie_evolution/wakefulness.py`
   (`ResidentWakefulness.dream`). Driven by the wakefulness tick; reads
   feedback episodes recorded by the feedback recorder.
@@ -23,9 +29,10 @@ exists so nobody re-merges them or mistakes one for another.
 
 ## Configuration boundaries
 
-- `resident_evolution` — how a resident builds, reviews, and rolls back its
-  own tools (builder/reviewer adapter selection, autonomy mode, canary
-  timeout, rollback threshold). Consumed by the resident learning runtime.
+- `resident_evolution` — how a resident reviews, canaries, and rolls back the
+  tools its investigation sessions author (reviewer adapter selection, autonomy
+  mode, canary timeout, rollback threshold, `tool_build_backend`). Consumed by
+  the resident learning runtime.
 - `resident_wakefulness` — when the resident is wakeful/watching/dreaming and
   when consolidation runs. Consumed by the wakefulness state machine.
 - `dream_cycle` — the Mimir-curator cron only. Its `autonomy_mode` and
@@ -36,11 +43,11 @@ exists so nobody re-merges them or mistakes one for another.
 
 `guarded | autonomous | yolo` — everywhere: the autonomy policy
 (`src/ravn/context/autonomy.py`), the Environment domain model, the dashboard
-API, and the UI. Every mode builds when it sees a capability gap; the modes
-differ only in what happens to the finished artifact. Guarded residents hold
-the install behind an ODIN review request, autonomous residents install
-low-risk builds, and YOLO residents install anything without blocking
-findings.
+API, and the UI. An investigation session authors the tool it needs via
+`build_tool` in every mode; the modes differ only in what happens to the
+finished tool. Guarded residents hold the install behind an ODIN review
+request, autonomous residents install low-risk tools, and YOLO residents
+install anything without blocking findings.
 
 ## The unified ODIN review path
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 
@@ -200,27 +199,3 @@ class ReviewResult:
     required_for_activation: bool
     findings: list[str] = field(default_factory=list)
     blocking_findings: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ProofArtifacts:
-    out_dir: Path
-    events_path: Path
-    report_json_path: Path
-    report_markdown_path: Path
-    skills_dir: Path
-
-
-@dataclass(frozen=True)
-class ProofReport:
-    summary: dict[str, Any]
-    signals: list[dict[str, Any]]
-    first_pass_decisions: list[dict[str, Any]]
-    dream_cycles: list[dict[str, Any]]
-    build_results: list[dict[str, Any]]
-    review_results: list[dict[str, Any]]
-    replay_decisions: list[dict[str, Any]]
-    artifacts: dict[str, str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)

@@ -258,10 +258,6 @@ class ResidentWakefulness:
                 )
             )
 
-        reopened = 0
-        if self._resident_learning is not None:
-            reopened = await self._resident_learning.reopen_unresolved_capabilities()
-
         return {
             "skills_reviewed": len(rows),
             "marked_stale": marked_stale,
@@ -273,7 +269,6 @@ class ResidentWakefulness:
                 "delivery": feedback["delivery"],
                 "implicated_skills": sorted(feedback["implicated_skills"]),
             },
-            "capability_gaps_reopened": reopened,
         }
 
     async def _file_promotion_review(

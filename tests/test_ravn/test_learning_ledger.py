@@ -5,7 +5,6 @@ from __future__ import annotations
 from ravn.adapters.reflection.flock_learning import FlockLearningStore
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.models import OperationalSignal
 from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningArtifact,
     ResidentLearningIdentity,
@@ -68,7 +67,6 @@ def _runtime(
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         learning_store=store or FlockLearningStore(tmp_path / "flock_learning.json"),
-        legacy_probe_builder_enabled=True,
     )
 
 
@@ -161,24 +159,3 @@ async def test_irrelevant_learnings_stay_out_of_the_ledger(tmp_path) -> None:
     assert decision.action == "rejected"
     assert not decision.relevant
     assert store.list() == []
-
-
-async def test_self_built_learning_lands_in_ledger_with_provenance(tmp_path) -> None:
-    store = FlockLearningStore(tmp_path / "flock_learning.json")
-    teacher = _runtime(tmp_path, store=store)
-    result = await teacher.process_signal(
-        OperationalSignal(
-            signal_id="sig-1",
-            event_type="signal.kubernetes.event",
-            environment_id="cluster-b",
-            domain="k8s",
-            severity="warning",
-            summary="Pod OOMKilled",
-            payload={"kind": "Pod", "reason": "OOMKilled"},
-        )
-    )
-    assert result["decision"] == "built_capability_for_next_signal"
-    records = store.list()
-    assert len(records) == 1
-    assert records[0].status == "adopted"
-    assert records[0].candidate.source_valkyrie_id == "valkyrie:k8s-b"

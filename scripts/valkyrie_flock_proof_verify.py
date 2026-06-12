@@ -2,13 +2,22 @@
 """Verify the Valkyrie flock proof evidence and write the proof report.
 
 Reads the observer's JSONL event capture plus each resident's state directory
-and asserts the full chain:
+and asserts the investigation-loop chain (NIU-1051/1052):
 
-  signal -> micro-dream -> tool + skill on disk (teacher)
-         -> flock.learning.proposed (with tool code + canary sample)
+  signal -> agent investigation session authors a learned tool with build_tool
+         -> learned tool + artifact on disk (teacher)
+         -> flock.learning.proposed (agent_tool: manifest + tool code)
          -> peer canary + install + adoption ACK (student)
          -> flock-mismatch rejection (negative control)
-         -> replayed signal handled by the built tool (teacher judgment)
+
+plus the live-mesh legs that run alongside it: the durable adoption ledger,
+operator feedback round-trip, the teacher's wakefulness consolidation dream,
+and (with --expect-guarded-approval) the held -> review -> approve -> install
+round-trip on the unified ODIN review path.
+
+The retired classifier micro-dream's skill-on-disk and replay-via-process_signal
+legs are gone: the investigation loop builds callable agent tools, not classifier
+skills that ``process_signal`` auto-runs.
 
 Exits non-zero with the failed assertions when the chain is incomplete.
 """
@@ -70,6 +79,8 @@ def main() -> int:
         print(f"FAIL: no event capture at {events_path}")
         return 1
     events = _load_events(events_path)
+    teacher_state = Path(args.teacher_state)
+    student_state = Path(args.student_state)
     failures: list[str] = []
     checks: list[tuple[str, str]] = []
 
@@ -79,47 +90,49 @@ def main() -> int:
         else:
             failures.append(f"{name}{f' — {detail}' if detail else ''}")
 
-    # 1. Teacher micro-dream ran.
-    dreams_started = _of_type(events, "valkyrie.dream.started")
-    dreams_completed = _of_type(events, "valkyrie.dream.completed")
-    check(
-        "teacher dreamed",
-        bool(dreams_started) and bool(dreams_completed),
-        f"started={len(dreams_started)} completed={len(dreams_completed)}",
-    )
-
-    # 2. Teacher built and activated a skill + tool.
-    activations = [
-        event
-        for event in _of_type(events, "valkyrie.evolution.activated")
-        if event.get("payload", {}).get("valkyrie_id") == args.teacher_id
-    ]
-    check("teacher activated self-built skill", bool(activations))
-    skill_name = activations[0]["payload"].get("skill_name", "") if activations else ""
-
-    teacher_state = Path(args.teacher_state)
-    teacher_skill = teacher_state / "skills" / f"{skill_name}.md"
-    teacher_tool = teacher_state / "tools" / f"{skill_name}.py"
-    check("teacher skill on disk", skill_name != "" and teacher_skill.is_file(), str(teacher_skill))
-    check("teacher tool implementation on disk", teacher_tool.is_file(), str(teacher_tool))
-
-    # 3. Flock proposal carried the implementation and a canary sample.
+    # 1. The teacher's investigation authored an agent tool and proposed it.
     proposals = _of_type(events, "flock.learning.proposed")
     proposal = next(
         (
             event
             for event in proposals
             if event.get("payload", {}).get("source_valkyrie_id") == args.teacher_id
+            and event.get("payload", {}).get("artifact_type") == "agent_tool"
         ),
         None,
     )
-    check("teacher proposed learning to flock", proposal is not None)
+    check("teacher proposed a self-built agent tool to the flock", proposal is not None)
+
+    tool_name = ""
     if proposal is not None:
         payload = proposal["payload"]
-        check("proposal carries tool implementation", bool(payload.get("tool_code", "").strip()))
-        check("proposal carries canary sample", bool(payload.get("canary_sample")))
+        manifest = payload.get("learned_tool_manifest") or {}
+        tool_name = manifest.get("name", "") or payload.get("title", "")
+        has_code = bool(str(payload.get("tool_code", "")).strip())
+        check("proposal carries tool implementation", has_code)
+        check(
+            "proposal manifest declares name + permission",
+            bool(manifest.get("name")) and bool(manifest.get("required_permission")),
+            f"name={manifest.get('name', '')!r}",
+        )
 
-    # 4. Student adopted after a passing canary.
+    # 2. The learned tool + artifact are on the teacher's disk. The installer
+    #    maps dots/dashes in the manifest name to underscores in the filename.
+    tool_file = tool_name.replace(".", "_").replace("-", "_")
+    teacher_tool = teacher_state / "learned_tools" / f"{tool_file}.py"
+    teacher_artifact = teacher_state / "learned_tool_artifacts" / f"{tool_file}.json"
+    check(
+        "teacher learned tool on disk",
+        tool_name != "" and teacher_tool.is_file(),
+        str(teacher_tool),
+    )
+    check(
+        "teacher learned tool artifact on disk",
+        teacher_artifact.is_file(),
+        str(teacher_artifact),
+    )
+
+    # 3. Student adopted after a passing canary, exactly once.
     adoptions = _of_type(events, "learning.adoption.recorded")
     student_adoptions = [
         event
@@ -134,16 +147,19 @@ def main() -> int:
         f"student adoptions={len(student_adoptions)}",
     )
     if student_adoptions:
-        payload = student_adoptions[0]["payload"]
-        check("student canary actually passed", payload.get("canary_passed") is True)
+        check(
+            "student canary actually passed",
+            student_adoptions[0]["payload"].get("canary_passed") is True,
+        )
 
-    student_state = Path(args.student_state)
-    student_skill = student_state / "skills" / f"{skill_name}.md"
-    student_tool = student_state / "tools" / f"{skill_name}.py"
-    check("student skill installed on disk", skill_name != "" and student_skill.is_file())
-    check("student tool implementation installed on disk", student_tool.is_file())
+    student_tool = student_state / "learned_tools" / f"{tool_file}.py"
+    check(
+        "student learned tool installed on disk",
+        tool_name != "" and student_tool.is_file(),
+        str(student_tool),
+    )
 
-    # 5. Negative control: the printer valkyrie rejected the k8s flock learning.
+    # 4. Negative control: the printer valkyrie rejected the k8s flock learning.
     control_rejections = [
         event
         for event in adoptions
@@ -159,25 +175,8 @@ def main() -> int:
         f"rejections={len(control_rejections)}",
     )
 
-    # 6. Replayed signal handled by the built tool (teacher judgment evidence).
-    judgments = [
-        event
-        for event in _of_type(events, "valkyrie.judgment.proposed")
-        if event.get("payload", {}).get("valkyrie_id") == args.teacher_id
-        and event.get("payload", {}).get("recommended_action") == "inspect_with_adopted_learning"
-    ]
-    tool_executed = any(
-        any(
-            item.get("tool_executed") is True and item.get("tool_ok") is True
-            for item in event.get("payload", {}).get("evidence", [])
-            if isinstance(item, dict)
-        )
-        for event in judgments
-    )
-    check("replayed signal exercised the built tool", tool_executed, f"judgments={len(judgments)}")
-
-    # 6b. Durable flock-learning ledger: the student's adoption survives on
-    #     disk with provenance (F5/NIU-1034).
+    # 5. Durable flock-learning ledger: the student's adoption survives on disk
+    #    with provenance (F5/NIU-1034).
     ledger_path = student_state / "flock_learning.json"
     ledger_ok = False
     ledger_detail = f"missing {ledger_path}"
@@ -197,29 +196,7 @@ def main() -> int:
         ledger_detail = f"records={len(records)} adopted={len(adopted)}"
     check("student adoption persisted in durable ledger", ledger_ok, ledger_detail)
 
-    # 7. ODIN court resolved resident judgments into attention decisions
-    #    inside the live daemons (NIU-1021 / F1).
-    attention_decisions = [
-        event
-        for event in _of_type(events, "attention.decision.made")
-        if event.get("payload", {}).get("environment_id", "").startswith("cluster")
-    ]
-    check(
-        "ODIN court resolved judgments into attention decisions",
-        bool(attention_decisions),
-        f"decisions={len(attention_decisions)}",
-    )
-    court_decisions = _of_type(events, "odin.court.decided")
-    check(
-        "court decisions published with audit trail",
-        any(
-            event.get("payload", {}).get("audit_ref") or event.get("payload", {}).get("court_id")
-            for event in court_decisions
-        ),
-        f"court events={len(court_decisions)}",
-    )
-
-    # 8. Feedback round-trip: injected operator feedback was consumed by the
+    # 6. Feedback round-trip: injected operator feedback was consumed by the
     #    resident's recorder, which published the preference update (F3).
     preference_updates = _of_type(events, "feedback.preference.updated")
     check(
@@ -231,8 +208,8 @@ def main() -> int:
         f"preference updates={len(preference_updates)}",
     )
 
-    # 9. Wakefulness: the teacher transitioned through wakeful states and ran
-    #    a scheduled consolidation dream (NIU-1040).
+    # 7. Wakefulness: the teacher transitioned through wakeful states and ran a
+    #    scheduled consolidation dream (NIU-1040).
     state_changes = [
         event
         for event in _of_type(events, "valkyrie.state.changed")
@@ -255,16 +232,9 @@ def main() -> int:
         f"consolidation dreams={len(consolidations)}",
     )
 
-    # 10. Guarded approval round-trip: the build was held behind a ReviewItem,
-    #     the operator approved it, and the resident applied + confirmed.
+    # 8. Guarded approval round-trip: the build was held behind a ReviewItem,
+    #    the operator approved it, and the resident applied + confirmed.
     if args.expect_guarded_approval:
-        held = [
-            event
-            for event in _of_type(events, "valkyrie.evolution.held")
-            if event.get("payload", {}).get("valkyrie_id") == args.teacher_id
-        ]
-        check("guarded teacher held the build", bool(held), f"held events={len(held)}")
-
         requested = [
             event
             for event in _of_type(events, "odin.review.requested")
@@ -276,9 +246,8 @@ def main() -> int:
             evidence = requested[0].get("payload", {}).get("evidence", {})
             artifact = evidence.get("artifact", {}) if isinstance(evidence, dict) else {}
             check(
-                "review item carries the full artifact",
-                bool(str(artifact.get("content", "")).strip())
-                and bool(str(artifact.get("tool_code", "")).strip()),
+                "review item carries the tool implementation",
+                bool(str(artifact.get("tool_code", "")).strip()),
             )
 
         decided = [
@@ -319,7 +288,7 @@ def main() -> int:
             outbox_detail = f"items={len(outbox.get('items', []))} applied={len(applied_items)}"
         check("approval persisted in the teacher's review outbox", outbox_ok, outbox_detail)
 
-    # 11. NATS only: scoped flock subject fan-out observed.
+    # 9. NATS only: scoped flock subject fan-out observed.
     if args.transport == "nats":
         scoped = [
             event
@@ -343,12 +312,11 @@ def main() -> int:
         "passed": not failures,
         "checks_passed": [name for name, _ in checks],
         "failures": failures,
-        "skill_name": skill_name,
+        "tool_name": tool_name,
         "event_count": len(events),
         "artifacts": {
-            "teacher_skill": str(teacher_skill),
             "teacher_tool": str(teacher_tool),
-            "student_skill": str(student_skill),
+            "teacher_artifact": str(teacher_artifact),
             "student_tool": str(student_tool),
             "events": str(events_path),
         },
@@ -363,7 +331,7 @@ def main() -> int:
         f"Transport: **{args.transport}**",
         f"Result: **{'PASSED' if not failures else 'FAILED'}**",
         f"Events captured: {len(events)}",
-        f"Self-built skill: `{skill_name}`",
+        f"Self-built tool: `{tool_name}`",
         "",
         "## Checks",
         "",

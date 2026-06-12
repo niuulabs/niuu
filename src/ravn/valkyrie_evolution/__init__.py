@@ -1,6 +1,5 @@
-"""Adapter-driven Valkyrie self-improvement proof harness."""
+"""Resident Valkyrie self-improvement: learned tools, review, and adoption."""
 
-from ravn.valkyrie_evolution.engine import ValkyrieEvolutionProofRunner
 from ravn.valkyrie_evolution.learned_tools import (
     ForgeSandboxLearnedToolRunner,
     LearnedTool,
@@ -10,7 +9,6 @@ from ravn.valkyrie_evolution.learned_tools import (
 from ravn.valkyrie_evolution.models import (
     LearnedToolArtifact,
     LearnedToolManifest,
-    ProofReport,
     ToolReachGrant,
 )
 from ravn.valkyrie_evolution.resident_learning import (
@@ -25,9 +23,7 @@ __all__ = [
     "LearnedToolManifest",
     "ForgeSandboxLearnedToolRunner",
     "LocalLearnedToolRunner",
-    "ProofReport",
     "ResidentLearningIdentity",
     "ResidentLearningRuntime",
     "ToolReachGrant",
-    "ValkyrieEvolutionProofRunner",
 ]

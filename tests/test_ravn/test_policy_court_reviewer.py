@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from ravn.odin.court import InMemoryCourtAuditSink
-from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer, TemplateToolBuilder
-from ravn.valkyrie_evolution.models import CapabilityGap, EvolutionRequest
+from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
+from ravn.valkyrie_evolution.models import BuildResult, CapabilityGap, EvolutionRequest
 from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningArtifact,
     ResidentLearningIdentity,
 )
+from tests.ravn.fixtures.skills import probe_skill_content
 
 
 def _request(
@@ -35,8 +36,21 @@ def _request(
     )
 
 
-async def _build(request: EvolutionRequest):
-    return await TemplateToolBuilder().build(request)
+async def _build(request: EvolutionRequest) -> BuildResult:
+    """A read-only ravn_skill_tool build, as a build_tool session would file it."""
+    skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
+    return BuildResult(
+        request_id=request.request_id,
+        skill_name=skill_name,
+        skill_content=probe_skill_content(skill_name, capability=request.gap.capability_name),
+        description="Inspect OOMKilled pods.",
+        artifact_type="ravn_skill_tool",
+        tool_code=(
+            "def run(signal):\n"
+            "    return {'matches': True, 'observed': signal.get('payload', {})}\n"
+        ),
+        tool_entry_point="run",
+    )
 
 
 async def test_autonomous_low_risk_environment_change_is_approved() -> None:

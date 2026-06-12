@@ -192,39 +192,6 @@ async def test_dream_marks_long_unused_skills_stale(tmp_path) -> None:
     assert (await skills.show("dusty-probe"))["metadata"]["status"] == "stale"
 
 
-async def test_dream_reopens_unresolved_capability_gaps(tmp_path) -> None:
-    skills = _skills(tmp_path)
-    bus = InProcessBus()
-    learner = ResidentLearningRuntime(
-        identity=_identity("guarded"),
-        skills=skills,
-        publisher=bus,
-        subscriber=bus,
-        tools_dir=tmp_path / "tools",
-        legacy_probe_builder_enabled=True,
-    )
-    # Guarded mode builds, holds the install for review, and parks the
-    # capability so the resident does not re-dream on every signal.
-    from ravn.valkyrie_evolution.models import OperationalSignal
-
-    held = await learner.process_signal(
-        OperationalSignal(
-            signal_id="sig-1",
-            event_type="signal.kubernetes.event",
-            environment_id="cluster-a",
-            domain="k8s",
-            severity="warning",
-            summary="Pod OOMKilled",
-            payload={"kind": "Pod", "reason": "OOMKilled"},
-        )
-    )
-    assert held["decision"] == "capability_build_held"
-
-    machine, _recorder, _clock = await _machine(tmp_path, skills=skills, resident_learning=learner)
-    summary = await machine.dream()
-    assert summary["capability_gaps_reopened"] == 1
-
-
 async def test_dream_holds_promotion_for_skills_implicated_by_feedback(tmp_path) -> None:
     """Failure feedback naming a skill blocks its automatic promotion (F3)."""
     from datetime import UTC, datetime

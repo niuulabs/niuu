@@ -14,6 +14,7 @@ from ravn.valkyrie_evolution.tool_runtime import tool_path_for_skill
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
 from tests.ravn.fixtures.fakes import BusRecorder
+from tests.ravn.fixtures.skills import probe_skill_content
 
 SKILL_NAME = "valkyrie-inspect-kubernetes-pod-oomkilled"
 CAPABILITY = "inspect.kubernetes.pod.oomkilled"
@@ -32,27 +33,12 @@ HEALTHY_TOOL = """def run(signal):
 """
 
 
-def _skill_content() -> str:
-    return f"""# skill: {SKILL_NAME}
-
-metadata:
-  capability: {CAPABILITY}
-  source: valkyrie-dream-cycle
-  safety_class: read_only
-  tool_entry_point: run
-
-## Procedure
-
-1. Run the installed probe implementation.
-"""
-
-
 def _artifact(tool_code: str) -> ResidentLearningArtifact:
     return ResidentLearningArtifact(
         learning_id="learn-oom",
         title=SKILL_NAME,
         summary="OOM probe from cluster-a",
-        content=_skill_content(),
+        content=probe_skill_content(SKILL_NAME, capability=CAPABILITY),
         artifact_type="ravn_skill_tool",
         scope="flock",
         confidence=0.9,
@@ -100,7 +86,6 @@ async def _peer(tmp_path, *, threshold: int = 3) -> tuple[ResidentLearningRuntim
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         rollback_consecutive_failures=threshold,
-        legacy_probe_builder_enabled=True,
     )
     return runtime, recorder
 
@@ -156,7 +141,7 @@ async def test_transient_failures_do_not_roll_back(tmp_path) -> None:
     assert not await recorder.of_type("valkyrie.evolution.rolled_back")
 
 
-async def test_capability_reopens_and_can_be_rebuilt_after_rollback(tmp_path) -> None:
+async def test_capability_defers_to_investigation_after_rollback(tmp_path) -> None:
     peer, recorder = await _peer(tmp_path, threshold=2)
     await peer.evaluate_and_apply(_artifact(FLAKY_TOOL))
 
@@ -164,11 +149,11 @@ async def test_capability_reopens_and_can_be_rebuilt_after_rollback(tmp_path) ->
     rolled = await peer.process_signal(_signal(2))
     assert rolled["decision"] == "adopted_learning_rolled_back"
 
-    # The gap reopened: the next signal triggers a fresh micro-dream build
-    # (yolo mode, default template builder) instead of silently deferring.
-    rebuilt = await peer.process_signal(_signal(3))
-    assert rebuilt["decision"] == "built_capability_for_next_signal"
-    assert await recorder.of_type("valkyrie.dream.started")
+    # The skill is archived: the next signal finds no installed capability and
+    # defers to the build_tool investigation loop instead of running the
+    # rolled-back tool again.
+    after = await peer.process_signal(_signal(3))
+    assert after["decision"] == "defer_to_investigation_with_build_tool"
 
 
 async def test_rollback_judgment_escalates_with_evidence(tmp_path) -> None:

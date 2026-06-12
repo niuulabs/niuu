@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import pytest
 
 from ravn.adapters.reflection.flock_learning import FlockLearningStore
@@ -17,24 +19,15 @@ from ravn.odin.review import (
     review_requested_event,
 )
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.models import OperationalSignal
 from ravn.valkyrie_evolution.resident_learning import (
+    ResidentLearningArtifact,
     ResidentLearningIdentity,
     ResidentLearningRuntime,
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
 from tests.ravn.fixtures.fakes import BusRecorder
-
-OOM_SIGNAL = OperationalSignal(
-    signal_id="sig-oom-1",
-    event_type="signal.kubernetes.event",
-    environment_id="cluster-a",
-    domain="k8s",
-    severity="warning",
-    summary="Pod OOMKilled",
-    payload={"kind": "Pod", "reason": "OOMKilled", "name": "payments-7d4", "namespace": "payments"},
-)
+from tests.ravn.fixtures.skills import probe_skill_content
 
 
 def _item(**overrides) -> ReviewItem:
@@ -166,7 +159,6 @@ def _runtime(tmp_path, *, autonomy_mode: str = "guarded") -> tuple[ResidentLearn
         subscriber=bus,
         tools_dir=tmp_path / "tools",
         learning_store=FlockLearningStore(tmp_path / "flock_learning.json"),
-        legacy_probe_builder_enabled=True,
         review_requester=ReviewRequester(
             publisher=bus,
             store=store,
@@ -176,14 +168,52 @@ def _runtime(tmp_path, *, autonomy_mode: str = "guarded") -> tuple[ResidentLearn
     return runtime, bus, store, skills
 
 
-async def test_guarded_build_holds_and_operator_approval_installs(tmp_path) -> None:
+def _held_evolution_build() -> ReviewItem:
+    """The held EVOLUTION_BUILD item a guarded build_tool session files."""
+    content = probe_skill_content("valkyrie-inspect-kubernetes-pod-oomkilled")
+    artifact = ResidentLearningArtifact(
+        learning_id="resident:cluster-a:inspect-kubernetes-pod-oomkilled",
+        title="valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Inspect an OOMKilled pod and summarize it.",
+        content=content,
+        artifact_type="ravn_skill_tool",
+        scope="environment",
+        confidence=0.74,
+        source_environment_id="cluster-a",
+        source_valkyrie_id="valkyrie:k8s-a",
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+        tool_code="def run(signal):\n    return {'matches': True}\n",
+        tool_entry_point="run",
+        canary_sample={"kind": "Pod", "reason": "OOMKilled"},
+    )
+    return ReviewItem.new(
+        kind=ReviewKind.EVOLUTION_BUILD.value,
+        requested_action="install",
+        environment_id="cluster-a",
+        valkyrie_id="valkyrie:k8s-a",
+        title=artifact.title,
+        summary=artifact.summary,
+        flock_id="flock:k8s-valkyries",
+        domain="k8s",
+        evidence={
+            "artifact": asdict(artifact),
+            "review": {"outcome": "needs_approval", "rationale": "guarded hold", "findings": []},
+            "signal_ids": ["sig-oom-1"],
+        },
+    )
+
+
+async def test_operator_approval_of_held_self_build_installs_and_teaches_flock(tmp_path) -> None:
     runtime, bus, store, skills = _runtime(tmp_path)
     recorder = BusRecorder(bus)
     await bus.subscribe(["*"], recorder)
     await runtime.start()
 
-    held = await runtime.process_signal(OOM_SIGNAL)
-    assert held["decision"] == "capability_build_held"
+    # A guarded build_tool session holds the self-built instrument for review.
+    item = _held_evolution_build()
+    await runtime.review_requester.request(item)
 
     requested = await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)
     assert len(requested) == 1
@@ -191,23 +221,20 @@ async def test_guarded_build_holds_and_operator_approval_installs(tmp_path) -> N
     assert payload["kind"] == "evolution_build"
     assert payload["requested_action"] == "install"
     assert payload["evidence"]["artifact"]["tool_code"]
-    assert payload["evidence"]["review"]["outcome"] == "needs_approval"
     assert payload["evidence"]["signal_ids"] == ["sig-oom-1"]
 
     # The operator approves the exact item the resident filed.
-    item = ReviewItem.from_payload(payload)
     item.decide(decision="approved", operator_id="human:jozef", reason="looks safe")
     await bus.publish(review_decided_event(item, source="ravn:odin-review"))
     await bus.flush()
 
-    skill_name = payload["title"]
-    assert await skills.get_runnable_skill(skill_name) is not None
+    assert await skills.get_runnable_skill(item.title) is not None
     resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
     assert len(resolved) == 1
     assert resolved[0].payload["apply_outcome"] == "applied"
-    assert any(event.event_type == registry.FLOCK_LEARNING_PROPOSED for event in recorder.events), (
-        "an operator-approved self-build must still teach the flock"
-    )
+    assert any(
+        event.event_type == registry.FLOCK_LEARNING_PROPOSED for event in recorder.events
+    ), "an operator-approved self-build must still teach the flock"
     outbox_item = store.get(item.item_id)
     assert outbox_item.status == ReviewStatus.APPLIED.value
 
@@ -215,49 +242,6 @@ async def test_guarded_build_holds_and_operator_approval_installs(tmp_path) -> N
     await bus.publish(review_decided_event(item, source="ravn:odin-review"))
     await bus.flush()
     assert len(await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)) == 1
-
-    await runtime.stop()
-
-
-async def test_rejected_build_declines_durably_and_never_rebuilds(tmp_path) -> None:
-    runtime, bus, store, skills = _runtime(tmp_path)
-    recorder = BusRecorder(bus)
-    await bus.subscribe(["*"], recorder)
-    await runtime.start()
-
-    held = await runtime.process_signal(OOM_SIGNAL)
-    assert held["decision"] == "capability_build_held"
-    payload = (await recorder.of_type(registry.ODIN_REVIEW_REQUESTED))[0].payload
-
-    item = ReviewItem.from_payload(payload)
-    item.decide(decision="rejected", operator_id="human:jozef", reason="not needed")
-    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
-    await bus.flush()
-
-    assert await skills.get_runnable_skill(payload["title"]) is None
-    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
-    assert resolved[0].payload["apply_outcome"] == "applied"
-    assert resolved[0].payload["status"] == "rejected"
-
-    # The dream consolidation reopens the capability, but the durable decline
-    # keeps the resident from rebuilding and re-filing the same item.
-    assert await runtime.reopen_unresolved_capabilities() == 1
-    again = await runtime.process_signal(OOM_SIGNAL)
-    assert again["decision"] == "defer_and_request_capability"
-    assert len(await recorder.of_type(registry.ODIN_REVIEW_REQUESTED)) == 1
-
-    await runtime.stop()
-
-
-async def test_pending_review_blocks_capability_reopen(tmp_path) -> None:
-    runtime, bus, _store, _skills = _runtime(tmp_path)
-    await runtime.start()
-
-    held = await runtime.process_signal(OOM_SIGNAL)
-    assert held["decision"] == "capability_build_held"
-    # The held build is awaiting the operator; the consolidation dream must
-    # not reopen the gap and trigger a duplicate build.
-    assert await runtime.reopen_unresolved_capabilities() == 0
 
     await runtime.stop()
 
@@ -372,42 +356,3 @@ async def test_promotion_of_unknown_skill_fails_loudly(tmp_path) -> None:
     assert resolved[0].payload["apply_outcome"] == "apply_failed"
     await runtime.stop()
 
-
-async def test_restarted_resident_does_not_rebuild_a_pending_item(tmp_path) -> None:
-    """A fresh process must not burn another build on an item awaiting review."""
-    runtime, bus, store, skills = _runtime(tmp_path)
-    await runtime.start()
-    held = await runtime.process_signal(OOM_SIGNAL)
-    assert held["decision"] == "capability_build_held"
-    await runtime.stop()
-
-    class _CountingBuilder:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def build(self, request):
-            self.calls += 1
-            raise AssertionError("must not rebuild while the item is pending")
-
-    builder = _CountingBuilder()
-    from ravn.odin.review import JsonReviewStore as _Store
-    from ravn.odin.review import ReviewRequester as _Requester
-
-    restarted = ResidentLearningRuntime(
-        identity=runtime.identity,
-        skills=skills,
-        publisher=bus,
-        subscriber=bus,
-        builder=builder,
-        tools_dir=tmp_path / "tools",
-        review_requester=_Requester(
-            publisher=bus,
-            store=_Store(tmp_path / "review_outbox.json"),
-            source="valkyrie:k8s-a",
-        ),
-    )
-    await restarted.start()
-    result = await restarted.process_signal(OOM_SIGNAL)
-    assert builder.calls == 0
-    assert result is None or result.get("decision") != "capability_build_held"
-    await restarted.stop()

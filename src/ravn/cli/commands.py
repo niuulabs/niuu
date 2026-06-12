@@ -1967,138 +1967,6 @@ def _print_usage(usage: TokenUsage) -> None:
     typer.echo(f"[tokens] {', '.join(parts)}")
 
 
-@app.command("valkyrie-evolution-proof")
-def valkyrie_evolution_proof(
-    out_dir: str = typer.Option(
-        "/tmp/valkyrie-evolution-proof",
-        "--out-dir",
-        help="Directory for proof events, generated skills, and reports.",
-    ),
-    builder_adapter: str = typer.Option(
-        "ravn.valkyrie_evolution.adapters.TemplateToolBuilder",
-        "--builder-adapter",
-        help="Fully-qualified EvolutionBuilderPort adapter class.",
-    ),
-    builder_arg: list[str] = typer.Option(
-        [],
-        "--builder-arg",
-        help="Builder adapter kwarg as key=value. May be repeated.",
-    ),
-    review_adapter: str = typer.Option(
-        "ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
-        "--review-adapter",
-        help="Fully-qualified EvolutionReviewPort adapter class.",
-    ),
-    review_arg: list[str] = typer.Option(
-        [],
-        "--review-arg",
-        help="Review adapter kwarg as key=value. May be repeated.",
-    ),
-    environment_id: str = typer.Option(
-        "local-proof",
-        "--environment-id",
-        help="Environment id used in proof events and skill metadata.",
-    ),
-    autonomy_mode: str = typer.Option(
-        "yolo",
-        "--autonomy-mode",
-        help="Autonomy mode recorded for dream-cycle evolution requests.",
-    ),
-    publish_dashboard_url: str = typer.Option(
-        "",
-        "--publish-dashboard-url",
-        help=(
-            "Optional Valkyrie API base URL to receive proof telemetry, "
-            "for example http://localhost:8080/api/v1/ravn/valkyrie."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Print full JSON report."),
-) -> None:
-    """Run a local end-to-end Valkyrie self-improvement proof.
-
-    The proof receives signals, records first-pass judgments, detects generic
-    capability gaps, runs a dream cycle, builds Ravn skills through the selected
-    builder adapter, then replays the signals and proves those skills are used.
-    """
-    builder_cls = _import_class(builder_adapter)
-    builder = builder_cls(**_parse_deployment_kwargs(builder_arg))
-    reviewer_cls = _import_class(review_adapter)
-    reviewer = reviewer_cls(**_parse_deployment_kwargs(review_arg))
-
-    from ravn.valkyrie_evolution import ValkyrieEvolutionProofRunner
-
-    report = asyncio.run(
-        ValkyrieEvolutionProofRunner(
-            out_dir=out_dir,
-            builder=builder,
-            reviewer=reviewer,
-            environment_id=environment_id,
-            autonomy_mode=autonomy_mode,
-        ).run()
-    )
-
-    published_count = 0
-    if publish_dashboard_url.strip():
-        published_count = _publish_valkyrie_proof_events_to_dashboard(
-            report.artifacts["events"],
-            publish_dashboard_url.strip(),
-        )
-
-    if json_output:
-        payload = report.to_dict()
-        payload["dashboard_events_published"] = published_count
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-
-    summary = report.summary
-    typer.echo("Valkyrie evolution proof complete")
-    typer.echo(f"  signals received       : {summary['signals_received']}")
-    typer.echo(f"  capability gaps        : {summary['capability_gaps_detected']}")
-    typer.echo(f"  dream cycles completed : {summary['dream_cycles_completed']}")
-    typer.echo(f"  skills built           : {summary['skills_built']}")
-    typer.echo(f"  odin reviews           : {summary['odin_reviews']}")
-    typer.echo(f"  skills activated       : {summary['skills_activated']}")
-    typer.echo(f"  replay skills used     : {summary['skills_used_on_replay']}")
-    typer.echo(f"  flock proposals        : {summary['flock_learnings_proposed']}")
-    typer.echo(f"  resident installs      : {summary['resident_skills_installed']}")
-    typer.echo(f"  resident adopted       : {summary['resident_learnings_adopted']}")
-    typer.echo(f"  resident rejected      : {summary['resident_learnings_rejected']}")
-    typer.echo(f"  resident held          : {summary['resident_learnings_held']}")
-    typer.echo(f"  resident skill uses    : {summary['resident_adopted_skills_used']}")
-    typer.echo(f"  resident odin decisions: {summary['resident_odin_decisions']}")
-    if publish_dashboard_url.strip():
-        typer.echo(f"  dashboard events sent  : {published_count}")
-    typer.echo(f"  events                 : {report.artifacts['events']}")
-    typer.echo(f"  report                 : {report.artifacts['report_markdown']}")
-
-
-def _publish_valkyrie_proof_events_to_dashboard(events_path: str, dashboard_url: str) -> int:
-    import os
-    import urllib.error
-    import urllib.request
-
-    target = dashboard_url.rstrip("/") + "/telemetry/events?minimal=true"
-    timeout = float(os.environ.get("RAVN_VALKYRIE_PROOF_PUBLISH_TIMEOUT_SECONDS", "15"))
-    count = 0
-    with open(events_path, encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            request = urllib.request.Request(
-                target,
-                data=line.encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=timeout):
-                    count += 1
-            except urllib.error.URLError as exc:
-                raise typer.BadParameter(
-                    f"could not publish Valkyrie proof event to {target}: {exc}"
-                ) from exc
-    return count
-
 
 # ---------------------------------------------------------------------------
 # Approvals CLI
@@ -3287,11 +3155,6 @@ def _build_resident_learning_runtime(
         flock_ids=list(settings.environment.flocks),
         autonomy_mode=settings.resident_evolution.autonomy_mode,
     )
-    builder = _build_evolution_adapter(
-        settings,
-        adapter_path=settings.resident_evolution.builder_adapter,
-        kwargs=settings.resident_evolution.builder_kwargs,
-    )
     reviewer = _build_evolution_adapter(
         settings,
         adapter_path=settings.resident_evolution.reviewer_adapter,
@@ -3311,14 +3174,12 @@ def _build_resident_learning_runtime(
         publisher=publisher,
         subscriber=publisher,
         source=resident_id,
-        builder=builder,
         reviewer=reviewer,
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
-        legacy_probe_builder_enabled=settings.resident_evolution.legacy_probe_builder_enabled,
     )
 
 
@@ -3427,11 +3288,11 @@ def _build_evolution_adapter(
     adapter_path: str,
     kwargs: dict[str, Any],
 ) -> Any:
-    """Instantiate a dream-cycle builder/reviewer adapter from config.
+    """Instantiate an evolution review adapter from config.
 
     Plain kwargs come straight from YAML.  Adapters whose constructor declares
-    an ``llm`` parameter (for example ``AgentToolBuilder``) receive the
-    configured LLM adapter — composition-root injection, not a YAML value.
+    an ``llm`` parameter receive the configured LLM adapter — composition-root
+    injection, not a YAML value.
     """
     import inspect  # noqa: PLC0415
 

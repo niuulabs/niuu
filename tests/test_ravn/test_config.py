@@ -332,11 +332,10 @@ class TestLoggingConfig:
 
 class TestResidentEvolutionConfig:
     def test_defaults_route_missing_capabilities_to_the_investigation_loop(self) -> None:
-        # The classifier micro-dream is retired by default: a missing capability
-        # defers to the build_tool investigation loop (NIU-1051), and tools are
-        # authored inline unless a Forge/Ting build backend is configured.
+        # The classifier micro-dream is retired: a missing capability defers to
+        # the build_tool investigation loop (NIU-1051), and tools are authored
+        # inline unless a Forge/Ting build backend is configured.
         c = ResidentEvolutionConfig()
-        assert c.legacy_probe_builder_enabled is False
         assert c.tool_build_backend == "inline"
         assert c.learned_tool_execution_backend == "local"
 
