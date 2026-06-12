@@ -75,6 +75,8 @@ from ravn.warden import (
 from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from ravn.ports.persona import PersonaRegistryPort
 
 
@@ -649,7 +651,6 @@ def create_app(
         review_ingest=odin_review_service.ingest_event,
     )
     review_sweep_interval = review_sweep_interval_from_env()
-    review_sweep_task: dict[str, asyncio.Task | None] = {"task": None}
 
     async def _run_review_sweep() -> None:
         while True:
@@ -661,45 +662,32 @@ def create_app(
             except Exception:
                 logger.exception("odin review: expiry sweep failed")
 
-    @app.on_event("startup")
-    async def start_review_sweep() -> None:
-        review_sweep_task["task"] = asyncio.create_task(
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+        review_sweep_task = asyncio.create_task(
             _run_review_sweep(),
             name="odin_review_sweep",
         )
-
-    @app.on_event("shutdown")
-    async def stop_review_sweep() -> None:
-        task = review_sweep_task["task"]
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            review_sweep_task["task"] = None
-
-    if valkyrie_telemetry is not None:
-
-        @app.on_event("startup")
-        async def start_valkyrie_telemetry() -> None:
+        if valkyrie_telemetry is not None:
             try:
                 await valkyrie_telemetry.start()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("valkyrie telemetry subscription did not start: %s", exc)
-
-        @app.on_event("shutdown")
-        async def stop_valkyrie_telemetry() -> None:
-            await valkyrie_telemetry.stop()
-
-    @app.on_event("startup")
-    async def start_valkyrie_learning_commands() -> None:
         try:
             await valkyrie_learning_commands.start()
         except Exception as exc:  # noqa: BLE001
             logger.warning("valkyrie learning command publisher did not start: %s", exc)
+        try:
+            yield
+        finally:
+            review_sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await review_sweep_task
+            if valkyrie_telemetry is not None:
+                await valkyrie_telemetry.stop()
+            await valkyrie_learning_commands.stop()
 
-    @app.on_event("shutdown")
-    async def stop_valkyrie_learning_commands() -> None:
-        await valkyrie_learning_commands.stop()
+    app.router.lifespan_context = lifespan
 
     app.include_router(
         create_valkyrie_router(

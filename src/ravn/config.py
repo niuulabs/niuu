@@ -1477,7 +1477,7 @@ class MimirReflexConfig(BaseModel):
     base_url: str = Field(
         default="",
         description=(
-            "Base URL of the Mímir HTTP service exposing GET /mimir/entities. "
+            "Base URL of the Mímir HTTP service exposing GET /mimir/entities/index. "
             "When empty, falls back to the first mimir.instances entry with a url."
         ),
     )

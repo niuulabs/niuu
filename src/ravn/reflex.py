@@ -6,7 +6,7 @@ the knowledge base already covers a topic before re-deriving it.
 
 Entity feed contract (owned by the Mímir stream — do not modify ``src/mimir``)::
 
-    GET {mimir_base_url}/mimir/entities ->
+    GET {mimir_base_url}/mimir/entities/index ->
         [{"slug": str, "title": str, "type": str|null, "confidence": str|null,
           "updated_at": iso8601, "path": str}, ...]
 
@@ -60,7 +60,7 @@ class ReflexEntity:
 
 
 def parse_entities(payload: object) -> list[ReflexEntity]:
-    """Parse the ``GET /mimir/entities`` JSON payload into entities.
+    """Parse the ``GET /mimir/entities/index`` JSON payload into entities.
 
     Rows that are not objects or lack both ``slug`` and ``title`` are skipped —
     a malformed row must not take down the whole feed.
@@ -240,8 +240,8 @@ def http_entity_fetcher(
     base_url: str,
     timeout_seconds: float,
 ) -> Callable[[], Awaitable[list[ReflexEntity]]]:
-    """Build an async fetcher for ``GET {base_url}/mimir/entities``."""
-    url = f"{base_url.rstrip('/')}/mimir/entities"
+    """Build an async fetcher for ``GET {base_url}/mimir/entities/index``."""
+    url = f"{base_url.rstrip('/')}/mimir/entities/index"
 
     async def _fetch() -> list[ReflexEntity]:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:

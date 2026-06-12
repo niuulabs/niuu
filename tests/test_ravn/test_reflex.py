@@ -261,7 +261,7 @@ class TestEntityIndexCache:
 class TestHttpEntityFetcher:
     @respx.mock
     async def test_fetches_and_parses(self):
-        respx.get("http://mimir.test/mimir/entities").mock(
+        respx.get("http://mimir.test/mimir/entities/index").mock(
             return_value=httpx.Response(
                 200,
                 json=[
@@ -282,7 +282,7 @@ class TestHttpEntityFetcher:
 
     @respx.mock
     async def test_http_error_raises(self):
-        respx.get("http://mimir.test/mimir/entities").mock(return_value=httpx.Response(500))
+        respx.get("http://mimir.test/mimir/entities/index").mock(return_value=httpx.Response(500))
         fetch = http_entity_fetcher("http://mimir.test", timeout_seconds=5.0)
         with pytest.raises(httpx.HTTPStatusError):
             await fetch()

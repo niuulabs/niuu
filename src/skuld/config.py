@@ -235,7 +235,7 @@ class ReflexConfig(BaseModel):
     )
     base_url: str = Field(
         default="",
-        description="Base URL of the Mímir HTTP service exposing GET /mimir/entities.",
+        description="Base URL of the Mímir HTTP service exposing GET /mimir/entities/index.",
     )
     max_pointers: int = Field(
         default=5,
