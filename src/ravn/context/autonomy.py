@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -387,16 +388,62 @@ async def evaluate_and_store_proposals(
     return saved
 
 
+#: Negation cues that mark a sentence as describing what a proposal does NOT
+#: do. A gated term inside such a sentence ("performs no destructive
+#: operations") is a disclaimer, not an instruction, and must not trip a gate.
+_NEGATION_CUE_RE = re.compile(
+    r"\b(no|not|never|none|nothing|without|avoid|avoids|avoiding|"
+    r"don't|do not|does not|doesn't|cannot|can't|won't|must not|shall not|"
+    r"forbidden|prohibited|blocked|disallowed|refuse|refuses|rejects?)\b",
+    re.IGNORECASE,
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+
+
+def unnegated_prose_mentions(content: str, terms: Iterable[str]) -> set[str]:
+    """Return the *terms* that *content* mentions outside negated sentences.
+
+    Matching is word-boundary based, never bare substring, so "spending"
+    does not fire inside "suspending". A term whose sentence carries a
+    negation cue is skipped — safety disclaimers are not instructions.
+    """
+    sentences = [sentence for sentence in _SENTENCE_SPLIT_RE.split(content) if sentence.strip()]
+    found: set[str] = set()
+    for term in terms:
+        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        for sentence in sentences:
+            if not pattern.search(sentence):
+                continue
+            if _NEGATION_CUE_RE.search(sentence):
+                continue
+            found.add(term)
+            break
+    return found
+
+
 def _gated_boundaries(proposal: SelfImprovementProposal) -> set[str]:
+    """Resolve which hard-gated boundaries a proposal touches.
+
+    Declared metadata is authoritative: ``risk_boundaries``, the ``action``
+    verb, and the target scope. Prose is only a negation-aware backstop for
+    imperative mentions — a disclaimer that *names* a boundary in negation
+    ("never touches credentials") does not gate.
+    """
     boundaries = {b for b in proposal.risk_boundaries if b in _HARD_GATED_BOUNDARIES}
-    content = proposal.content.lower()
-    action = proposal.action.lower()
     if proposal.scope == ProposalScope.GLOBAL.value:
         boundaries.add("global_doctrine")
+
+    action = proposal.action.lower()
+    prose_terms: dict[str, str] = {}
     for boundary in _HARD_GATED_BOUNDARIES:
-        token = boundary.replace("_", " ")
-        if boundary in action or boundary in content or token in content:
+        if re.search(rf"\b{re.escape(boundary)}\b", action):
             boundaries.add(boundary)
+        prose_terms[boundary] = boundary
+        prose_terms[boundary.replace("_", " ")] = boundary
+
+    for mention in unnegated_prose_mentions(proposal.content, prose_terms):
+        boundaries.add(prose_terms[mention])
     return boundaries
 
 

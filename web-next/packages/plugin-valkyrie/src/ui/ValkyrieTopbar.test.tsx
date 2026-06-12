@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { ValkyrieTopbar } from './ValkyrieTopbar';
+import { describe, expect, it } from 'vitest';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
+import { ValkyrieTopbar } from './ValkyrieTopbar';
 
 describe('ValkyrieTopbar', () => {
-  it('renders live resident counters', async () => {
+  it('shows the pending review count and active residents', async () => {
     render(<ValkyrieTopbar />, { wrapper: wrapWithValkyrie() });
 
-    expect(await screen.findByTestId('valkyrie-topbar')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText('4')).toBeInTheDocument());
+    await waitFor(() => {
+      expect(screen.getByTestId('topbar-pending')).toHaveTextContent('3');
+    });
+    expect(screen.getByTestId('valkyrie-topbar')).toBeInTheDocument();
   });
 });

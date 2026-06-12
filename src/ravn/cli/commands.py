@@ -103,6 +103,85 @@ def _resolve_workspace(settings: Settings) -> Path:
     return Path(ws).resolve() if ws else Path.cwd()
 
 
+def _resident_ravn_state_dir(workspace: Path) -> Path:
+    """Return the writable resident Ravn state directory for skills/metadata."""
+    override = os.environ.get("RAVN_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.access(workspace, os.W_OK):
+        return workspace / ".ravn"
+    return Path.home() / ".ravn"
+
+
+def _attach_signal_build_tool(
+    agent: Any,
+    workspace: Path,
+    *,
+    triggered_by: str | None,
+    settings: Settings,
+    publisher: Any | None = None,
+    drive_loop: Any | None = None,
+) -> Any:
+    """Attach build_tool to RavnAgent signal investigations when supported."""
+    if not triggered_by or not triggered_by.startswith("signal:"):
+        return agent
+
+    def _investigation_context() -> str:
+        # Lazily read the running task's prompt at build time — the drive loop
+        # sets the current-task contextvar while the session executes, so a
+        # filed review carries the exact ticket the resident was working.
+        task = drive_loop.current_task() if drive_loop is not None else None
+        return getattr(task, "initiative_context", "") if task is not None else ""
+
+    try:
+        from ravn.adapters.tools.build_tool import attach_build_tool  # noqa: PLC0415
+        from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
+        from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
+
+        state_dir = _resident_ravn_state_dir(workspace)
+        valkyrie_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
+        review_requester = (
+            ReviewRequester(
+                publisher=publisher,
+                store=JsonReviewStore(state_dir / "review_outbox.json"),
+                source=valkyrie_id,
+            )
+            if publisher is not None
+            else None
+        )
+        code_dir, artifacts_dir = learned_tool_storage(state_dir)
+        attach_build_tool(
+            agent,
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            publisher=publisher,
+            review_requester=review_requester,
+            autonomy_mode=settings.resident_evolution.autonomy_mode,
+            environment_id=settings.environment.id,
+            valkyrie_id=valkyrie_id,
+            flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
+            domain=settings.environment.type,
+            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+            build_backend=_build_tool_build_backend(settings),
+            investigation_context=_investigation_context,
+        )
+    except TypeError:
+        logger.debug("build_tool not attached: executor does not support dynamic tools")
+    except Exception as exc:
+        logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
+    return agent
+
+
+def _build_tool_build_backend(settings: Settings) -> Any | None:
+    """Construct the configured tool build adapter, or None for inline authoring."""
+    cfg = settings.resident_evolution
+    if not cfg.tool_build_adapter:
+        return None
+    cls = _import_class(cfg.tool_build_adapter)
+    return cls(**cfg.tool_build_kwargs)
+
+
 def _warden_store():
     from ravn.warden import build_warden_store
 
@@ -528,6 +607,9 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
     """Build the memory adapter (SQLite or Postgres), or None."""
     backend = settings.memory.backend
 
+    if backend in {"", "none", "disabled", "off"}:
+        return None
+
     embedding_port = None
     if settings.embedding.enabled:
         try:
@@ -827,6 +909,8 @@ def _build_tools(
         except Exception as exc:
             logger.warning("Failed to load custom tool %r: %s", ct.adapter, exc)
 
+    tools.extend(_load_resident_learned_tools(settings, workspace, tools))
+
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
 
@@ -835,6 +919,57 @@ def _build_tools(
         state_tool._tool_names = [t.name for t in tools]
 
     return tools
+
+
+def _load_resident_learned_tools(
+    settings: Settings,
+    workspace: Path,
+    existing_tools: list[Any],
+) -> list[Any]:
+    """Load approved resident-authored learned tools from local state."""
+    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
+        ForgeSandboxLearnedToolRunner,
+        learned_tool_storage,
+        load_learned_tool,
+        read_learned_tool_artifact,
+    )
+
+    state_dir = _resident_ravn_state_dir(workspace)
+    backend = settings.resident_evolution.learned_tool_execution_backend
+    if backend not in {"", "local", "forge", "devrunner"}:
+        logger.warning("Skipping learned tools: unknown execution backend %s", backend)
+        return []
+    runner = (
+        ForgeSandboxLearnedToolRunner(workspace_root=workspace)
+        if backend in {"forge", "devrunner"}
+        else None
+    )
+
+    code_dir, artifacts_dir = learned_tool_storage(state_dir)
+    if not artifacts_dir.exists():
+        return []
+    seen = {tool.name for tool in existing_tools}
+    loaded: list[Any] = []
+    for artifact_file in sorted(artifacts_dir.glob("*.json")):
+        try:
+            artifact = read_learned_tool_artifact(artifact_file)
+            if artifact.manifest.name in seen:
+                continue
+            tool_path = code_dir / f"{artifact.manifest.name}.py"
+            if not tool_path.exists():
+                continue
+            tool = load_learned_tool(
+                artifact=artifact,
+                tool_path=tool_path,
+                timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+                runner=runner,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load learned tool artifact %s: %s", artifact_file, exc)
+            continue
+        seen.add(tool.name)
+        loaded.append(tool)
+    return loaded
 
 
 def _in_groups(name: str, groups: set[str]) -> bool:
@@ -1505,7 +1640,7 @@ def _build_agent(
         iteration_budget=iteration_budget,
         compressor=compressor,
         prompt_builder=prompt_builder,
-        reflection_model=settings.memory.reflection_model,
+        reflection_model=settings.effective_memory_reflection_model(),
         reflection_max_tokens=settings.memory.reflection_max_tokens,
         task_summary_max_chars=settings.memory.task_summary_max_chars,
         input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -1517,7 +1652,7 @@ def _build_agent(
         auto_checkpoint_before_destructive=cp_cfg.auto_before_destructive,
         budget_milestone_fractions=cp_cfg.budget_milestone_fractions,
         sleipnir_publisher=sleipnir_publisher,
-        reflection_config=settings.reflection,
+        reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
     )
 
@@ -1641,7 +1776,7 @@ async def _run_with_signals(
                 subscriber=in_process_bus,
                 mimir=_refl_mimir,
                 llm=_build_llm(settings),
-                config=settings.reflection,
+                config=settings.effective_post_session_reflection_config(),
             )
             await reflection_svc.start()
 
@@ -1811,6 +1946,7 @@ def _print_usage(usage: TokenUsage) -> None:
     if usage.cache_write_tokens:
         parts.append(f"cache_write={usage.cache_write_tokens}")
     typer.echo(f"[tokens] {', '.join(parts)}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -2205,7 +2341,7 @@ async def _run_gateway(
             iteration_budget=budget,
             compressor=compressor,
             prompt_builder=prompt_builder,
-            reflection_model=settings.memory.reflection_model,
+            reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -2482,7 +2618,7 @@ async def _run_daemon(
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
         executor = _build_executor(resolved_persona)
-        return executor.build(
+        agent = executor.build(
             llm=llm,
             tools=tools,
             channel=channel,
@@ -2504,7 +2640,7 @@ async def _run_daemon(
             iteration_budget=budget,
             compressor=compressor,
             prompt_builder=prompt_builder,
-            reflection_model=settings.memory.reflection_model,
+            reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
@@ -2512,11 +2648,23 @@ async def _run_daemon(
             extended_thinking=extended_thinking,
             # NIU-598: session lifecycle events + learnings injection
             sleipnir_publisher=daemon_bus,
-            reflection_config=settings.reflection,
+            reflection_config=settings.effective_post_session_reflection_config(),
             persona=resolved_persona.name if resolved_persona else "",
             # NIU-612: persona config for outcome parsing + early termination
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+        )
+        # Reviews and flock proposals must cross the mesh, not stay on the
+        # daemon's in-process reflection bus — same precedence as the drive
+        # loop's sleipnir publisher (closure binds late; the signal publisher
+        # is built during daemon boot, before any task runs).
+        return _attach_signal_build_tool(
+            agent,
+            workspace,
+            triggered_by=triggered_by,
+            settings=settings,
+            publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
+            drive_loop=drive_loop,
         )
 
     tasks: list[asyncio.Task] = []
@@ -2570,6 +2718,13 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
+    resident_learning_runtime: Any | None = None
+    resident_wakefulness: Any | None = None
+    odin_court: Any | None = None
+    feedback_recorder: Any | None = None
+    huddle_archiver: Any | None = None
+    resident_learning_owns_publisher = False
+    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
@@ -2603,7 +2758,9 @@ async def _run_daemon(
             event_publisher=event_publisher,
             resume=resume,
             mimir=daemon_mimir,
-            sleipnir_publisher=sleipnir_catalog_publisher or daemon_bus,
+            sleipnir_publisher=environment_signal_publisher
+            or sleipnir_catalog_publisher
+            or daemon_bus,
         )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
@@ -2645,10 +2802,84 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
+    resident_learning_runtime = _build_resident_learning_runtime(
+        settings,
+        publisher=environment_signal_publisher,
+        workspace=_resolve_workspace(settings),
+    )
+    if resident_learning_runtime is not None:
+        if hasattr(environment_signal_publisher, "start"):
+            await environment_signal_publisher.start()
+            resident_learning_owns_publisher = True
+        await resident_learning_runtime.start()
+        tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
+        typer.echo("  Resident learning: subscribed")
+
+    resident_wakefulness = _build_resident_wakefulness(
+        settings,
+        resident_learning_runtime=resident_learning_runtime,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if resident_wakefulness is not None:
+        await resident_wakefulness.start()
+        typer.echo("  Resident wakefulness: started")
+
+    odin_court = _build_odin_court(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+        review_requester=(
+            resident_learning_runtime.review_requester
+            if resident_learning_runtime is not None
+            else None
+        ),
+    )
+    if odin_court is not None:
+        await odin_court.start()
+        tasks.append(
+            asyncio.create_task(
+                _run_odin_court_sweep(
+                    odin_court,
+                    settings.odin_court.sweep_interval_seconds,
+                ),
+                name="odin_court_sweep",
+            )
+        )
+        typer.echo("  ODIN court: subscribed")
+
+    feedback_recorder = _build_feedback_recorder(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if feedback_recorder is not None:
+        await feedback_recorder.start()
+        typer.echo("  Feedback recorder: subscribed")
+
+    if (
+        daemon_mimir is not None
+        and environment_signal_publisher is not None
+        and hasattr(environment_signal_publisher, "subscribe")
+        and (settings.environment.flocks or settings.environment.signal_sources)
+    ):
+        from ravn.huddle_archiver import HuddleTranscriptArchiver  # noqa: PLC0415
+
+        huddle_archiver = HuddleTranscriptArchiver(
+            subscriber=environment_signal_publisher,
+            mimir=daemon_mimir,
+        )
+        await huddle_archiver.start()
+        typer.echo("  Huddle transcript archiver: subscribed")
+
     environment_signal_runtime = _build_environment_signal_runtime(
         settings,
         drive_loop=drive_loop,
         persona_config=persona_config,
+        publisher=environment_signal_publisher,
+        resident_learning_runtime=resident_learning_runtime,
+        resident_wakefulness=resident_wakefulness,
+        owns_publisher=not resident_learning_owns_publisher,
     )
     if environment_signal_runtime is not None:
         await environment_signal_runtime.start()
@@ -2714,7 +2945,7 @@ async def _run_daemon(
             subscriber=daemon_bus,
             mimir=daemon_mimir,
             llm=llm,
-            config=settings.reflection,
+            config=settings.effective_post_session_reflection_config(),
         )
         await daemon_reflection_svc.start()
 
@@ -2742,6 +2973,18 @@ async def _run_daemon(
             await sleipnir_catalog_publisher.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
+        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
         return
 
     try:
@@ -2756,8 +2999,20 @@ async def _run_daemon(
         await asyncio.gather(*tasks, return_exceptions=True)
         if _cascade_participant is not None:
             await _cascade_participant.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
+        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
@@ -2775,32 +3030,20 @@ def _build_environment_signal_runtime(
     *,
     drive_loop: Any | None = None,
     persona_config: Any | None = None,
+    publisher: Any | None = None,
+    resident_learning_runtime: Any | None = None,
+    resident_wakefulness: Any | None = None,
+    owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
     enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
     if not enabled_sources:
         return None
-    if not settings.mesh.enabled:
-        logger.warning("environment_signals: mesh is disabled; signal sources will not start")
-        return None
-
-    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
     from ravn.environment_signal_runtime import EnvironmentSignalRuntime  # noqa: PLC0415
 
-    if settings.mesh.adapters:
-        entry = settings.mesh.adapters[0]
-        adapter = entry.get("transport", settings.mesh.adapter or "nng")
-    else:
-        adapter = settings.mesh.adapter or "nng"
-
-    kwargs = _resolve_transport_kwargs(settings, adapter)
-    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
-        logger.warning("environment_signals: %s transport unavailable", adapter)
-        return None
-
-    publisher = build_transport(adapter, **kwargs)
     if publisher is None:
-        logger.warning("environment_signals: failed to build %s transport", adapter)
+        publisher = _build_environment_signal_publisher(settings)
+    if publisher is None:
         return None
 
     try:
@@ -2818,14 +3061,261 @@ def _build_environment_signal_runtime(
     if not persona:
         persona = settings.initiative.default_persona or None
 
+    resident_signal_processor = None
+    if resident_learning_runtime is not None:
+        process_signal = resident_learning_runtime.process_signal
+        if resident_wakefulness is not None:
+
+            async def _process_with_wakefulness(event: Any) -> Any:
+                resident_wakefulness.notify_activity()
+                return await process_signal(event)
+
+            resident_signal_processor = _process_with_wakefulness
+        else:
+            resident_signal_processor = process_signal
+
     return EnvironmentSignalRuntime(
         settings=settings,
         publisher=publisher,
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
+        resident_signal_processor=resident_signal_processor,
         persona=persona,
         output_mode=output_mode,
-        owns_publisher=True,
+        owns_publisher=owns_publisher,
     )
+
+
+def _build_resident_learning_runtime(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    workspace: Path,
+) -> Any | None:
+    """Build the resident learning subscriber/installer for environment Valkyries."""
+    if not settings.environment.flocks:
+        return None
+    if publisher is None or not hasattr(publisher, "subscribe"):
+        logger.warning(
+            "resident_learning: shared mesh transport is unavailable; "
+            "learning adoption will not run"
+        )
+        return None
+    if settings.skill.backend == "sqlite":
+        logger.warning("resident_learning: sqlite skill backend is forbidden for Valkyries")
+        return None
+
+    from ravn.adapters.skill.file_registry import FileSkillRegistry  # noqa: PLC0415
+    from ravn.skills.management import SkillManagementRegistry  # noqa: PLC0415
+    from ravn.valkyrie_evolution import (  # noqa: PLC0415
+        ResidentLearningIdentity,
+        ResidentLearningRuntime,
+    )
+
+    resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
+    local_ravn_dir = _resident_ravn_state_dir(workspace)
+    resident_skills_dir = local_ravn_dir / "skills"
+    # The resident's own write dir must be searchable, or skills installed by
+    # the learning loop are invisible to capability lookup when RAVN_STATE_DIR
+    # diverges from the workspace defaults.
+    skill_dirs = [
+        str(resident_skills_dir),
+        *settings.skill.skill_dirs,
+        str(workspace / ".ravn" / "skills"),
+        str(Path.home() / ".ravn" / "skills"),
+    ]
+    skill_port = FileSkillRegistry(
+        skill_dirs=list(dict.fromkeys(skill_dirs)),
+        write_dir=resident_skills_dir,
+        include_builtin=settings.skill.include_builtin,
+        cwd=workspace,
+    )
+    skills = SkillManagementRegistry(
+        skill_port,
+        metadata_path=local_ravn_dir / "skill_management.json",
+    )
+    identity = ResidentLearningIdentity(
+        environment_id=settings.environment.id,
+        environment_type=settings.environment.type,
+        valkyrie_id=resident_id,
+        domain=settings.environment.type,
+        flock_ids=list(settings.environment.flocks),
+        autonomy_mode=settings.resident_evolution.autonomy_mode,
+    )
+    reviewer = _build_evolution_adapter(
+        settings,
+        adapter_path=settings.resident_evolution.reviewer_adapter,
+        kwargs=settings.resident_evolution.reviewer_kwargs,
+    )
+    from ravn.adapters.reflection.flock_learning import FlockLearningStore  # noqa: PLC0415
+    from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
+
+    review_requester = ReviewRequester(
+        publisher=publisher,
+        store=JsonReviewStore(local_ravn_dir / "review_outbox.json"),
+        source=resident_id,
+    )
+    return ResidentLearningRuntime(
+        identity=identity,
+        skills=skills,
+        publisher=publisher,
+        subscriber=publisher,
+        source=resident_id,
+        reviewer=reviewer,
+        tools_dir=local_ravn_dir / "tools",
+        tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+        rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
+        learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
+        review_requester=review_requester,
+    )
+
+
+def _build_resident_wakefulness(
+    settings: Settings,
+    *,
+    resident_learning_runtime: Any | None,
+    publisher: Any | None,
+    memory: Any | None = None,
+) -> Any | None:
+    """Build the wakefulness state machine for a resident daemon."""
+    if not settings.resident_wakefulness.enabled:
+        return None
+    if resident_learning_runtime is None or publisher is None:
+        logger.warning(
+            "wakefulness: enabled but resident learning runtime or mesh "
+            "publisher is unavailable; state machine will not run"
+        )
+        return None
+
+    from ravn.valkyrie_evolution.wakefulness import ResidentWakefulness  # noqa: PLC0415
+
+    cfg = settings.resident_wakefulness
+    return ResidentWakefulness(
+        identity=resident_learning_runtime.identity,
+        skills=resident_learning_runtime.skills,
+        publisher=publisher,
+        resident_learning=resident_learning_runtime,
+        memory=memory,
+        review_requester=resident_learning_runtime.review_requester,
+        tick_interval_seconds=cfg.tick_interval_seconds,
+        wakeful_window_seconds=cfg.wakeful_window_seconds,
+        dream_interval_seconds=cfg.dream_interval_seconds,
+        dream_min_idle_seconds=cfg.dream_min_idle_seconds,
+        stale_skill_age_seconds=cfg.stale_skill_age_seconds,
+        promote_min_successes=cfg.promote_min_successes,
+    )
+
+
+def _build_odin_court(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    memory: Any | None,
+    review_requester: Any | None = None,
+) -> Any | None:
+    """Build the ODIN court resolver for an active resident environment."""
+    if not settings.odin_court.enabled:
+        return None
+    if publisher is None or not hasattr(publisher, "subscribe"):
+        return None
+    if not settings.environment.flocks and not settings.environment.signal_sources:
+        return None
+
+    from ravn.odin import OdinCourt  # noqa: PLC0415
+    from ravn.odin.audit import EpisodicCourtAuditSink  # noqa: PLC0415
+
+    audit_sink = EpisodicCourtAuditSink(memory) if memory is not None else None
+    return OdinCourt(
+        publisher=publisher,
+        subscriber=publisher,
+        audit_sink=audit_sink,
+        review_requester=review_requester,
+        court_id=f"odin-court:{settings.environment.id}",
+        quorum_size=settings.odin_court.quorum_size,
+        timeout_s=settings.odin_court.timeout_seconds,
+    )
+
+
+async def _run_odin_court_sweep(court: Any, interval_seconds: float) -> None:
+    """Periodically resolve court cases that aged past their timeout."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await court.sweep_expired()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("odin court: sweep failed")
+
+
+def _build_feedback_recorder(
+    settings: Settings,
+    *,
+    publisher: Any | None,
+    memory: Any | None,
+) -> Any | None:
+    """Build the feedback-to-episodic-memory recorder for resident daemons."""
+    if publisher is None or not hasattr(publisher, "subscribe") or memory is None:
+        return None
+    if not settings.environment.flocks and not settings.environment.signal_sources:
+        return None
+
+    from ravn.feedback import EnvironmentFeedbackRecorder  # noqa: PLC0415
+
+    return EnvironmentFeedbackRecorder(
+        subscriber=publisher,
+        memory=memory,
+        publisher=publisher,
+    )
+
+
+def _build_evolution_adapter(
+    settings: Settings,
+    *,
+    adapter_path: str,
+    kwargs: dict[str, Any],
+) -> Any:
+    """Instantiate an evolution review adapter from config.
+
+    Plain kwargs come straight from YAML.  Adapters whose constructor declares
+    an ``llm`` parameter receive the configured LLM adapter — composition-root
+    injection, not a YAML value.
+    """
+    import inspect  # noqa: PLC0415
+
+    cls = _import_class(adapter_path)
+    resolved = dict(kwargs)
+    parameters = inspect.signature(cls.__init__).parameters
+    if "llm" in parameters and "llm" not in resolved:
+        resolved["llm"] = _build_llm(settings)
+    return cls(**resolved)
+
+
+def _build_environment_signal_publisher(settings: Settings) -> Any | None:
+    """Build the shared publisher used by resident Valkyrie signal and task telemetry."""
+    enabled_sources = [source for source in settings.environment.signal_sources if source.enabled]
+    if not enabled_sources and not settings.environment.flocks:
+        return None
+    if not settings.mesh.enabled:
+        logger.warning("environment_signals: mesh is disabled; signal sources will not start")
+        return None
+
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+
+    if settings.mesh.adapters:
+        entry = settings.mesh.adapters[0]
+        adapter = entry.get("transport", settings.mesh.adapter or "nng")
+    else:
+        adapter = settings.mesh.adapter or "nng"
+
+    kwargs = _resolve_transport_kwargs(settings, adapter)
+    if adapter in ("sleipnir", "rabbitmq") and not kwargs:
+        logger.warning("environment_signals: %s transport unavailable", adapter)
+        return None
+
+    publisher = build_transport(adapter, **kwargs)
+    if publisher is None:
+        logger.warning("environment_signals: failed to build %s transport", adapter)
+    return publisher
 
 
 def _wire_triggers(drive_loop: Any, initiative: InitiativeConfig) -> list[Any]:
@@ -2929,7 +3419,7 @@ def _wire_mimir_triggers(
             )
 
     # Wakefulness trigger (NIU-565) — detects silence, reflects, emits intents.
-    if settings.wakefulness.enabled and llm is not None:
+    if settings.resident_wakefulness.enabled and llm is not None:
         if _uses_cli_transport_runtime():
             logger.info(
                 "wakefulness: skipped for CLI-transport runtime; auxiliary LLM hooks still need "
@@ -3816,6 +4306,7 @@ def _resolve_transport_kwargs(
         kwargs: dict[str, Any] = {
             "servers": servers or ["nats://localhost:4222"],
             "stream_name": nats_cfg.stream_name,
+            "jetstream_domain": nats_cfg.jetstream_domain,
             "subject_prefix": nats_cfg.subject_prefix,
             "retention": nats_cfg.retention,
             "max_age_seconds": nats_cfg.max_age_seconds,
@@ -3824,6 +4315,7 @@ def _resolve_transport_kwargs(
             "connect_timeout_s": nats_cfg.connect_timeout_s,
             "max_reconnect_attempts": nats_cfg.max_reconnect_attempts,
             "ensure_stream": nats_cfg.ensure_stream,
+            "publish_timeout_s": nats_cfg.publish_timeout_s,
             "tls_ca_file": nats_cfg.tls_ca_file,
             "tls_cert_file": nats_cfg.tls_cert_file,
             "tls_key_file": nats_cfg.tls_key_file,
@@ -3839,6 +4331,18 @@ def _resolve_transport_kwargs(
             "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")
             if nats_cfg.nkeys_seed_env
             else "",
+            "extra_subscriptions": [
+                {
+                    "subject": entry.subject,
+                    "stream_name": entry.stream_name,
+                    "event_types": list(entry.event_types),
+                }
+                for entry in nats_cfg.extra_subscriptions
+                if entry.subject
+            ],
+            "core_subscriptions": [
+                {"subject": entry.subject} for entry in nats_cfg.core_subscriptions if entry.subject
+            ],
         }
         if nats_cfg.consumer_group:
             kwargs["consumer_group"] = nats_cfg.consumer_group
@@ -4094,6 +4598,100 @@ def tui(
         mimir_urls=mimir_urls,
     )
     ravn_tui.run()
+
+
+@app.command()
+def room(
+    action: str = typer.Argument(
+        help="Room action: join | leave | message | heartbeat | close | participants."
+    ),
+    broker_url: str = typer.Option(
+        "http://127.0.0.1:9000",
+        "--broker-url",
+        envvar="SKULD_BROKER_URL",
+        help="Skuld broker base URL hosting the Environment room.",
+    ),
+    participant: str = typer.Option("", "--participant", help="Participant id, e.g. human:jozef."),
+    environment: str = typer.Option("", "--environment", help="Environment id to join."),
+    role: str = typer.Option(
+        "observer", "--role", help="Room role: observer|teacher|approver|debugger|owner."
+    ),
+    room_id: str = typer.Option("", "--room", help="Optional huddle room id."),
+    text: str = typer.Option("", "--text", help="Message text (message action)."),
+    reason: str = typer.Option("left", "--reason", help="Reason for leave/close."),
+) -> None:
+    """Join, talk in, and leave a live Valkyrie Environment room from the CLI.
+
+    Wraps the Skuld broker room API so a terminal operator participates in
+    the same live Environment state as the UI (NIU-1023).
+    """
+    import httpx  # noqa: PLC0415
+
+    base = broker_url.rstrip("/")
+
+    def _post(path: str, payload: dict) -> dict:
+        response = httpx.post(f"{base}{path}", json=payload, timeout=10.0)
+        if response.status_code >= 400:
+            typer.echo(f"error {response.status_code}: {response.text[:300]}", err=True)
+            raise typer.Exit(1)
+        return response.json()
+
+    if action == "join":
+        if not participant or not environment:
+            typer.echo("join requires --participant and --environment", err=True)
+            raise typer.Exit(2)
+        result = _post(
+            "/api/room/join",
+            {
+                "participant_id": participant,
+                "display_name": participant,
+                "environment_id": environment,
+                "role": role,
+                "room_id": room_id,
+            },
+        )
+        meta = result.get("participant", result)
+        typer.echo(
+            f"joined {environment} as {participant} ({role}); "
+            f"capabilities: {', '.join(meta.get('capabilities', []))}"
+        )
+        return
+    if action == "leave":
+        _post("/api/room/leave", {"participant_id": participant, "reason": reason})
+        typer.echo(f"left: {participant}")
+        return
+    if action == "message":
+        if not text:
+            typer.echo("message requires --text", err=True)
+            raise typer.Exit(2)
+        _post(
+            "/api/room/message",
+            {"participant_id": participant, "content": text, "room_id": room_id},
+        )
+        typer.echo("sent")
+        return
+    if action == "heartbeat":
+        _post("/api/room/heartbeat", {"participant_id": participant})
+        typer.echo("heartbeat recorded")
+        return
+    if action == "close":
+        result = _post(
+            "/api/room/close",
+            {"room_id": room_id, "reason": reason},
+        )
+        typer.echo(f"closed {room_id}; transcript: {result.get('transcriptRef', '-')}")
+        return
+    if action == "participants":
+        response = httpx.get(f"{base}/api/room/participants", timeout=10.0)
+        response.raise_for_status()
+        for entry in response.json().get("participants", []):
+            typer.echo(
+                f"- {entry.get('peer_id')} [{entry.get('participant_type')}] "
+                f"{entry.get('authority_role') or ''} {entry.get('status') or ''}"
+            )
+        return
+    typer.echo(f"unknown action: {action}", err=True)
+    raise typer.Exit(2)
 
 
 @app.command()

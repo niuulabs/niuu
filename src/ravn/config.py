@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -395,11 +395,11 @@ class SkillConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Conversation memory / persistence backend configuration."""
 
-    backend: Literal["sqlite", "postgres"] | str = Field(
+    backend: Literal["none", "sqlite", "postgres"] | str = Field(
         default="sqlite",
         description=(
-            "Backend to use: 'sqlite', 'postgres', or a fully-qualified class path "
-            "for a custom backend adapter."
+            "Backend to use: 'none', 'sqlite', 'postgres', or a fully-qualified "
+            "class path for a custom backend adapter."
         ),
     )
     path: str = Field(
@@ -453,7 +453,10 @@ class MemoryConfig(BaseModel):
     # Reflection config (merged from OutcomeConfig, NIU-574)
     reflection_model: str = Field(
         default="claude-haiku-4-5-20251001",
-        description="Model alias used for the compact post-task reflection call.",
+        description=(
+            "Model alias used for the compact post-task reflection call. Use empty, "
+            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model."
+        ),
     )
     reflection_max_tokens: int = Field(
         default=512,
@@ -1556,6 +1559,35 @@ class MeshSleipnirConfig(BaseModel):
     )
 
 
+class MeshNatsExtraSubscriptionConfig(BaseModel):
+    """Additional NATS JetStream filter subject for an existing stream."""
+
+    subject: str = Field(
+        default="",
+        description="Raw NATS filter subject to subscribe to in addition to the prefixed subject.",
+    )
+    stream_name: str = Field(
+        default="",
+        description="JetStream stream that owns the raw filter subject.",
+    )
+    event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Logical Sleipnir event types allowed to attach this raw NATS subject. "
+            "When empty, the raw subject is attached to every logical subscription."
+        ),
+    )
+
+
+class MeshNatsCoreSubscriptionConfig(BaseModel):
+    """Additional core NATS filter subject for live control messages."""
+
+    subject: str = Field(
+        default="",
+        description="Core NATS filter subject to subscribe to in addition to JetStream.",
+    )
+
+
 class MeshNatsConfig(BaseModel):
     """NATS JetStream mesh settings for environment-resident Valkyries."""
 
@@ -1567,6 +1599,13 @@ class MeshNatsConfig(BaseModel):
         default="ravn_environment",
         description="JetStream stream used for Ravn environment/flock events.",
     )
+    jetstream_domain: str = Field(
+        default="",
+        description=(
+            "Optional JetStream domain to use when the connected NATS account exposes "
+            "JetStream through a domain. Empty uses the server/account default."
+        ),
+    )
     subject_prefix: str = Field(
         default="ravn.environment",
         description="NATS subject prefix for Ravn environment signals and mesh traffic.",
@@ -1574,6 +1613,10 @@ class MeshNatsConfig(BaseModel):
     consumer_group: str = Field(
         default="",
         description="Optional durable consumer group for load-sharing resident agents.",
+    )
+    publish_timeout_s: float = Field(
+        default=10.0,
+        description="Hard deadline for one JetStream publish before raising.",
     )
     replay_from_sequence: int | None = Field(
         default=None,
@@ -1654,6 +1697,20 @@ class MeshNatsConfig(BaseModel):
     nkeys_seed_env: str = Field(
         default="",
         description="Optional env var containing an NKey seed string.",
+    )
+    extra_subscriptions: list[MeshNatsExtraSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional raw NATS subject filters, with stream names, consumed in addition "
+            "to subject_prefix-derived Sleipnir subjects."
+        ),
+    )
+    core_subscriptions: list[MeshNatsCoreSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional core NATS subject filters for live controls such as resident "
+            "Valkyrie commands routed over leafnodes."
+        ),
     )
 
 
@@ -2077,7 +2134,8 @@ class WakefulnessConfig(BaseModel):
         default="fast",
         description=(
             "LLM alias for the reflection call.  Should resolve to a cheap/fast "
-            "model in the LLM aliases map."
+            "model in the LLM aliases map. Use empty, 'default', 'agent', or "
+            "'same-as-agent' to reuse the effective agent model."
         ),
     )
     max_intents_per_reflection: int = Field(
@@ -2249,9 +2307,8 @@ class DreamCycleTriggerConfig(BaseModel):
     autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
         default="guarded",
         description=(
-            "Autonomy mode for self-improvement proposals emitted by dream cycles. "
-            "guarded records proposals, autonomous applies low-risk private/Environment "
-            "changes, and yolo applies delegated private/Environment/domain changes."
+            "Autonomy mode for self-improvement proposals emitted by the "
+            "Mimir-curator dream cycle trigger."
         ),
     )
     environment_id: str = Field(
@@ -2261,6 +2318,144 @@ class DreamCycleTriggerConfig(BaseModel):
     proposal_store_path: str = Field(
         default="~/.ravn/autonomy_proposals.json",
         description="JSON proposal store used for dream-cycle self-improvement audit trails.",
+    )
+
+
+class OdinCourtConfig(BaseModel):
+    """ODIN court resolver for resident judgments (NIU-1021).
+
+    Runs inside resident daemons next to the learning runtime, resolving
+    ``valkyrie.judgment.proposed``/``valkyrie.action.proposed`` into final
+    attention and action decisions with persisted audit records.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Run the ODIN court when the resident environment is active.",
+    )
+    quorum_size: int = Field(
+        default=1,
+        description=(
+            "Judgments/actions required before a case resolves immediately. "
+            "Single-resident environments should keep 1; flocked deployments "
+            "with multiple judging residents can raise it."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        description="Age after which a case with any input resolves on sweep.",
+    )
+    sweep_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the court sweeps for timed-out cases.",
+    )
+
+
+class ResidentWakefulnessConfig(BaseModel):
+    """Resident wakefulness state machine and scheduled consolidation dreams.
+
+    Drives ``watching``/``wakeful``/``dreaming`` transitions for resident
+    Valkyrie daemons and runs the reflective consolidation dream (skill
+    telemetry review, stale marking, promotion, gap reopening) on a schedule.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the wakefulness state machine for resident daemons.",
+    )
+    tick_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the state machine evaluates transitions.",
+    )
+    wakeful_window_seconds: float = Field(
+        default=30.0,
+        description="Recency window of signal activity that keeps the resident wakeful.",
+    )
+    dream_interval_seconds: float = Field(
+        default=3600.0,
+        description="Seconds between scheduled consolidation dreams.",
+    )
+    dream_min_idle_seconds: float = Field(
+        default=60.0,
+        description="Minimum idle time before a due dream may start (no mid-incident dreams).",
+    )
+    stale_skill_age_seconds: float = Field(
+        default=7 * 24 * 3600.0,
+        description="Unused-for-this-long skills are marked stale during dreams.",
+    )
+    promote_min_successes: int = Field(
+        default=3,
+        description=(
+            "Successful runs (with zero failures) before a private skill is "
+            "promoted to environment scope during a dream, policy permitting."
+        ),
+    )
+
+
+class ResidentEvolutionConfig(BaseModel):
+    """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
+
+    Lives apart from :class:`DreamCycleTriggerConfig` (the Mimir-curator cron)
+    — these settings drive the resident micro-dream/adoption loop, not the
+    nightly knowledge-base pass.
+    """
+
+    autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
+        default="guarded",
+        description=(
+            "Resident autonomy: guarded records proposals, autonomous applies "
+            "low-risk private/Environment changes, yolo evolves within "
+            "delegated boundaries."
+        ),
+    )
+    reviewer_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
+        description=(
+            "Fully-qualified EvolutionReviewPort class gating built and "
+            "adopted learnings before install."
+        ),
+    )
+    reviewer_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the reviewer adapter.",
+    )
+    tool_timeout_seconds: float = Field(
+        default=10.0,
+        description="Hard timeout for one sandboxed resident tool execution.",
+    )
+    rollback_consecutive_failures: int = Field(
+        default=3,
+        description=(
+            "Consecutive implementation failures before an installed skill is "
+            "auto-rolled-back (archived, regression published to the flock)."
+        ),
+    )
+    learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
+        default="local",
+        description=(
+            "Execution backend for learned agent tools authored through build_tool. "
+            "'local' uses the resident subprocess sandbox; 'forge'/'devrunner' run "
+            "inside the workspace-mounted devrunner container path."
+        ),
+    )
+    tool_build_adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified ToolBuildBackend class commissioned by build_tool "
+            "when the agent supplies a build_request (for example "
+            "ravn.adapters.tool_build.ForgeSessionToolBuildBackend or "
+            "ravn.adapters.tool_build.TingWorkflowToolBuildBackend). Empty: the "
+            "investigating agent authors tool code inline in-session. The result "
+            "flows through the same review/canary/install path regardless of "
+            "backend."
+        ),
+    )
+    tool_build_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Constructor kwargs for the tool build adapter (base_url, "
+            "workflow_id, pat_env, model, poll intervals, ...)."
+        ),
     )
 
 
@@ -2611,6 +2806,28 @@ class SignalSourceConfig(BaseModel):
     )
 
 
+class EnvironmentVocabularyConfig(BaseModel):
+    """Deployment-defined vocabulary extensions for Environment models.
+
+    Values listed here are registered into the domain vocabulary registry on
+    settings load, so new environment types, signal kinds, and health states
+    are a config change, not a code change.
+    """
+
+    environment_types: list[str] = Field(
+        default_factory=list,
+        description="Extra environment types beyond the platform defaults.",
+    )
+    signal_source_kinds: list[str] = Field(
+        default_factory=list,
+        description="Extra signal source kinds beyond the platform defaults.",
+    )
+    operational_health_states: list[str] = Field(
+        default_factory=list,
+        description="Extra operational health states beyond the platform defaults.",
+    )
+
+
 class EnvironmentConfig(BaseModel):
     """Runtime environment identity for long-running resident Valkyries."""
 
@@ -2625,6 +2842,16 @@ class EnvironmentConfig(BaseModel):
     type: str = Field(
         default="local",
         description="Environment type, for example k8s, host, printer, or local.",
+    )
+    resident_name: str = Field(
+        default="",
+        description="Optional human-friendly name for the resident Valkyrie.",
+    )
+    resident_personality: str = Field(
+        default="",
+        description=(
+            "Optional lightweight resident guidance injected into autonomous Valkyrie tasks."
+        ),
     )
     flocks: list[str] = Field(
         default_factory=list,
@@ -2653,6 +2880,21 @@ class EnvironmentConfig(BaseModel):
             "transport adapters derive subscriptions from enabled sources."
         ),
     )
+    vocabulary: EnvironmentVocabularyConfig = Field(
+        default_factory=EnvironmentVocabularyConfig,
+        description="Deployment-defined extensions to the Environment vocabularies.",
+    )
+
+    @model_validator(mode="after")
+    def _register_vocabulary(self) -> EnvironmentConfig:
+        from ravn.domain.environment import extend_environment_vocabulary  # noqa: PLC0415
+
+        extend_environment_vocabulary(
+            environment_types=self.vocabulary.environment_types,
+            signal_source_kinds=self.vocabulary.signal_source_kinds,
+            operational_health_states=self.vocabulary.operational_health_states,
+        )
+        return self
 
 
 class Settings(BaseSettings):
@@ -2723,6 +2965,17 @@ class Settings(BaseSettings):
 
     # NIU-587: dream cycle trigger — nightly Mímir enrichment
     dream_cycle: DreamCycleTriggerConfig = Field(default_factory=DreamCycleTriggerConfig)
+
+    # NIU-1040: resident wakefulness state machine + scheduled consolidation dreams
+    resident_wakefulness: ResidentWakefulnessConfig = Field(
+        default_factory=ResidentWakefulnessConfig
+    )
+
+    # NIU-1021: ODIN court resolver for resident judgments
+    odin_court: OdinCourtConfig = Field(default_factory=OdinCourtConfig)
+
+    # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
+    resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
@@ -2817,6 +3070,27 @@ class Settings(BaseSettings):
             )
             return self.agent.model
         return _default
+
+    @staticmethod
+    def _uses_effective_agent_model(value: str | None) -> bool:
+        if value is None:
+            return True
+        return value.strip().lower() in {"", "default", "agent", "same-as-agent"}
+
+    def effective_memory_reflection_model(self) -> str:
+        """Return the model for compact post-task reflections."""
+
+        configured = self.memory.reflection_model
+        if self._uses_effective_agent_model(configured):
+            return self.effective_model()
+        return configured
+
+    def effective_post_session_reflection_config(self) -> PostSessionReflectionConfig:
+        """Return post-session reflection config with any model fallback resolved."""
+
+        if not self._uses_effective_agent_model(self.reflection.llm_alias):
+            return self.reflection
+        return self.reflection.model_copy(update={"llm_alias": self.effective_model()})
 
     def effective_max_tokens(self) -> int:
         """Return the resolved max_tokens.

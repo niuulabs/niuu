@@ -329,3 +329,55 @@ async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
     events.append(event)
+
+
+async def test_kubernetes_adapter_reads_raw_items_from_file(tmp_path) -> None:
+    import json as _json
+
+    from ravn.adapters.environment_signals import KubernetesSignalAdapter
+    from ravn.domain.environment import k8s_environment_fixture
+
+    signal_file = tmp_path / "signals.json"
+    adapter = KubernetesSignalAdapter(
+        environment=k8s_environment_fixture(),
+        source_id="file-events",
+        raw_items_file=str(signal_file),
+    )
+
+    assert await adapter.collect() == []
+
+    signal_file.write_text(
+        _json.dumps(
+            [
+                {
+                    "metadata": {"name": "payments-oom.1", "uid": "uid-1"},
+                    "involvedObject": {"kind": "Pod", "name": "payments-1", "namespace": "pay"},
+                    "reason": "OOMKilled",
+                    "message": "Container killed",
+                    "type": "Warning",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    signals = await adapter.collect()
+    assert len(signals) == 1
+    assert signals[0].normalized_payload["reason"] == "OOMKilled"
+    assert signals[0].severity == "critical"
+
+
+async def test_raw_items_file_rejects_non_array_content(tmp_path) -> None:
+    import pytest as _pytest
+
+    from ravn.adapters.environment_signals import KubernetesSignalAdapter
+    from ravn.domain.environment import k8s_environment_fixture
+
+    signal_file = tmp_path / "signals.json"
+    signal_file.write_text('{"not": "a list"}', encoding="utf-8")
+    adapter = KubernetesSignalAdapter(
+        environment=k8s_environment_fixture(),
+        source_id="file-events",
+        raw_items_file=str(signal_file),
+    )
+    with _pytest.raises(ValueError, match="JSON array"):
+        await adapter.collect()

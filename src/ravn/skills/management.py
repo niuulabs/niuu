@@ -38,6 +38,7 @@ class SkillLifecycle:
     run_count: int = 0
     success_count: int = 0
     failure_count: int = 0
+    consecutive_failures: int = 0
     last_used_at: str = ""
 
 
@@ -149,6 +150,15 @@ class SkillManagementRegistry:
         self._save()
         return meta
 
+    async def mark_stale(self, name: str) -> SkillLifecycle:
+        """Flag a long-unused skill; it stays runnable but is surfaced for review."""
+        await self._require_skill(name, include_archived=True)
+        meta = self._metadata_for_name(name)
+        meta.status = "stale"
+        meta.updated_at = datetime.now(UTC).isoformat()
+        self._save()
+        return meta
+
     async def pin(self, name: str, *, pinned: bool) -> SkillLifecycle:
         await self._require_skill(name, include_archived=True)
         meta = self._metadata_for_name(name)
@@ -215,8 +225,13 @@ class SkillManagementRegistry:
         meta.run_count += 1
         if success:
             meta.success_count += 1
+            meta.consecutive_failures = 0
+            if meta.status == "stale":
+                # A skill in active use is no longer stale.
+                meta.status = "active"
         else:
             meta.failure_count += 1
+            meta.consecutive_failures += 1
         if environment_id:
             meta.environment_id = environment_id
         if domain:

@@ -315,6 +315,9 @@ SYSTEM_ERROR: str = "system.error"
 #: A metric snapshot was emitted for observability.
 SYSTEM_METRIC: str = "system.metric"
 
+#: A message that could not be processed was dead-lettered with its raw bytes.
+SYSTEM_DLQ_MESSAGE: str = "system.dlq.message"
+
 # ---------------------------------------------------------------------------
 # mimir — Mimir knowledge-base events
 # ---------------------------------------------------------------------------
@@ -426,6 +429,15 @@ ODIN_COURT_DECIDED: str = "odin.court.decided"
 #: ODIN court recorded dissenting or minority context.
 ODIN_COURT_DISSENT_RECORDED: str = "odin.court.dissent.recorded"
 
+#: A valkyrie (or operator) filed a ReviewItem for human decision.
+ODIN_REVIEW_REQUESTED: str = "odin.review.requested"
+
+#: An operator decided a ReviewItem; the target resident applies it.
+ODIN_REVIEW_DECIDED: str = "odin.review.decided"
+
+#: A resident applied (or failed to apply) a decided ReviewItem.
+ODIN_REVIEW_RESOLVED: str = "odin.review.resolved"
+
 # ---------------------------------------------------------------------------
 # attention — routing, escalation, and notification decisions
 # ---------------------------------------------------------------------------
@@ -466,25 +478,25 @@ LEARNING_PROMOTED: str = "learning.promoted"
 LEARNING_ADOPTION_RECORDED: str = "learning.adoption.recorded"
 
 # ---------------------------------------------------------------------------
-# flock — membership, learning exchange, canary, and adoption events
+# flock — learning exchange between related Valkyries across Environments
 # ---------------------------------------------------------------------------
 
-#: A peer proposed a learning to its flock.
+#: A resident proposed a vetted learning/tool to its flock.
 FLOCK_LEARNING_PROPOSED: str = "flock.learning.proposed"
 
-#: A canary trial started for a proposed flock learning.
+#: A peer Environment started canarying a proposed flock learning.
 FLOCK_LEARNING_CANARY_STARTED: str = "flock.learning.canary_started"
 
-#: A flock learning was adopted after its canary trial.
+#: A peer Environment adopted a flock learning after canary.
 FLOCK_LEARNING_ADOPTED: str = "flock.learning.adopted"
 
-#: A flock learning was rejected.
+#: A peer Environment rejected a flock learning.
 FLOCK_LEARNING_REJECTED: str = "flock.learning.rejected"
 
-#: A flock learning was activated on a peer.
+#: A flock learning became active across the cohort.
 FLOCK_LEARNING_ACTIVATED: str = "flock.learning.activated"
 
-#: A flock learning was rolled back after adoption.
+#: A flock learning was rolled back after regression or negative transfer.
 FLOCK_LEARNING_ROLLED_BACK: str = "flock.learning.rolled_back"
 
 # ---------------------------------------------------------------------------

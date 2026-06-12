@@ -1,42 +1,61 @@
 import { expect, test } from '@playwright/test';
 
-test('valkyrie console renders environment and flock operations', async ({ page }) => {
-  await page.goto('/valkyries');
+test('odin review inbox lists pending decisions with full lineage', async ({ page }) => {
+  await page.goto('/valkyrie');
 
-  await expect(page.getByTestId('valkyrie-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('heading', { name: 'Valhalla k8s' })).toBeVisible();
-  await expect(page.getByTestId('resident-panel')).toBeVisible();
-  await expect(page.getByTestId('signal-panel')).toBeVisible();
-  await expect(page.getByTestId('environment-state-panel')).toBeVisible();
-  await expect(page.getByTestId('decisions-panel')).toBeVisible();
-  await expect(page.getByTestId('huddle-panel')).toBeVisible();
-  await expect(page.getByTestId('learning-panel')).toBeVisible();
+  await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('3 pending');
+  await expect(page.getByTestId('review-detail')).toBeVisible();
+  await expect(page.getByTestId('review-lineage')).toBeVisible();
 });
 
-test('valkyrie console switches to flock learning without leaving the NATS flock model', async ({
-  page,
-}) => {
-  await page.goto('/valkyries');
+test('operator can inspect the artifact and approve a held build', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
 
-  await page.getByTestId('flock-flock-k8s').click();
+  await page
+    .getByTestId('review-card')
+    .filter({ hasText: 'valkyrie-inspect-kubernetes-pod-oomkilled' })
+    .click();
+  await page.getByRole('tab', { name: 'tool' }).click();
+  await expect(page.getByTestId('review-artifact')).toContainText('def run(signal: dict)');
 
-  await expect(page.getByRole('heading', { name: 'Kubernetes Valkyries' })).toBeVisible();
-  await expect(page.getByText('kubernetes · odin.flock.k8s.>')).toBeVisible();
-  await expect(page.getByText('OOMKilled with rising queue depth')).toBeVisible();
-  await expect(page.getByRole('button', { name: /adopt oomkilled/i })).toBeVisible();
+  await page.getByLabel('Decision reason').fill('canary verified, safe');
+  await page.getByRole('button', { name: /approve/i }).click();
+
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('2 pending');
 });
 
-test('valkyrie console supports operator autonomy and huddle actions', async ({ page }) => {
-  await page.goto('/valkyries');
+test('rejecting without a reason is refused', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('review-card')).toHaveCount(3);
 
-  const sigrunAutonomy = page.getByLabel('Autonomy for Sigrun');
-  await expect(sigrunAutonomy).toHaveValue('delegated');
-  await sigrunAutonomy.selectOption('yolo');
-  await expect(sigrunAutonomy).toHaveValue('yolo');
+  await page.getByRole('button', { name: /reject/i }).click();
 
-  await page.getByRole('button', { name: 'Join' }).click();
-  await page.getByLabel(/message valhalla memory/i).fill('Check the pull secret rollout.');
-  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByRole('alert')).toContainText('A reason is required');
+  await expect(page.getByTestId('inbox-pending-count')).toHaveText('3 pending');
+});
 
-  await expect(page.getByText('Check the pull secret rollout.')).toBeVisible();
+test('fleet view exposes autonomy control per resident', async ({ page }) => {
+  await page.goto('/valkyrie/fleet');
+
+  await expect(page.getByTestId('fleet-page')).toBeVisible({ timeout: 5000 });
+  const cards = page.getByTestId('fleet-card');
+  await expect(cards.first()).toBeVisible();
+  await expect(cards.first().getByRole('combobox')).toBeVisible();
+});
+
+test('activity shows the decided ledger', async ({ page }) => {
+  await page.goto('/valkyrie/activity');
+
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('activity-row').first()).toContainText('decided by');
+});
+
+test('legacy valkyrie routes redirect to the inbox', async ({ page }) => {
+  await page.goto('/valkyries/learning');
+
+  await expect(page).toHaveURL(/\/valkyrie$/);
+  await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
 });

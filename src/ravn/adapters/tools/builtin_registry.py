@@ -9,6 +9,7 @@ Groups
 ``core``      — file, git, bash, web_fetch, todo, ask_user, terminal
 ``extended``  — web_search, introspection, memory search, session search
 ``skill``     — skill_list, skill_run  (conditional on settings.skill.enabled)
+``kubernetes``— read-only Kubernetes inspection tools for resident Valkyries
 ``platform``  — volundr/ting platform tools  (conditional on gateway.platform.enabled)
 ``cascade``   — marker group; cascade tools are wired externally via build_cascade_tools()
 
@@ -299,6 +300,18 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         condition=lambda s: s.skill.enabled,
         required_context=frozenset({"skill_port"}),
         kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
+    ),
+    # =========================================================================
+    # kubernetes — read-only resident Environment inspection
+    # =========================================================================
+    "kubernetes_inspect": BuiltinToolDef(
+        adapter="ravn.adapters.tools.kubernetes.KubernetesInspectTool",
+        groups=frozenset({"kubernetes"}),
+        condition=lambda s: s.environment.type == "k8s",
+        kwargs_fn=lambda s, _ctx: {
+            "in_cluster": True,
+            "max_log_lines": 120,
+        },
     ),
     # =========================================================================
     # platform — Niuu platform integration (conditional on gateway.platform.enabled)

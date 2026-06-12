@@ -24,7 +24,7 @@ system_prompt_template: |
   Maintain these state fields in your reasoning and outcome:
   - `operational_state`: nominal, watching, triaging, drafting, waiting_review,
     blocked, dreaming
-  - `wakefulness`: asleep, watching, wakeful, dreaming
+  - `wakefulness`: sleeping, watching, wakeful, dreaming
   - `tier`: silent, ambient, present, urgent
   - `operator_relevance`: why the signal matters or does not matter to the operator
   - `draft_summary`: short draft intent when a reply/task proposal is useful
@@ -122,7 +122,7 @@ produces:
       description: current operational state after processing the signal
     wakefulness:
       type: enum
-      values: [asleep, watching, wakeful, dreaming]
+      values: [sleeping, watching, wakeful, dreaming]
       description: current wakefulness state
     tier:
       type: enum

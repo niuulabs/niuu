@@ -71,9 +71,7 @@ def _request(
         json=json_body,
     )
     if response.status_code != expected:
-        raise RuntimeError(
-            f"{method} {path} -> {response.status_code}: {response.text[:1000]}"
-        )
+        raise RuntimeError(f"{method} {path} -> {response.status_code}: {response.text[:1000]}")
     if not response.content:
         return None
     return response.json()
@@ -101,9 +99,7 @@ def _request_optional(
         return response.json()
     if response.status_code in allowed_statuses:
         return None
-    raise RuntimeError(
-        f"{method} {path} -> {response.status_code}: {response.text[:1000]}"
-    )
+    raise RuntimeError(f"{method} {path} -> {response.status_code}: {response.text[:1000]}")
 
 
 def _wait_for_session(

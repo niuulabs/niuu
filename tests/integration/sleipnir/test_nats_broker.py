@@ -501,3 +501,42 @@ async def test_nats_consumer_group_delivers_resident_signals_once():
     delivered_ids = [event.event_id for event in delivered]
     assert set(delivered_ids) == {event.event_id for event in events}
     assert len(delivered_ids) == len(set(delivered_ids))
+
+
+async def test_nats_consumer_group_keeps_distinct_subscription_filters():
+    """RPC and event subscriptions in one group must not share one durable filter."""
+    stream_name = f"ravn_multi_filter_{uuid.uuid4().hex[:8]}"
+    transport = _nats_transport(stream_name, consumer_group="resident-workers")
+    rpc_received: list[SleipnirEvent] = []
+    judgment_received: list[SleipnirEvent] = []
+
+    async def rpc_handler(event: SleipnirEvent) -> None:
+        rpc_received.append(event)
+
+    async def judgment_handler(event: SleipnirEvent) -> None:
+        judgment_received.append(event)
+
+    async with transport:
+        await transport.subscribe(["ravn.mesh.rpc.valkyrie_a"], rpc_handler)
+        await transport.subscribe(["ravn.mesh.valkyrie.judgment.proposed"], judgment_handler)
+
+        await transport.publish(
+            make_event(
+                event_id="rpc-event",
+                event_type="ravn.mesh.rpc.valkyrie_a",
+                payload={"kind": "rpc"},
+            )
+        )
+        await transport.publish(
+            make_event(
+                event_id="judgment-event",
+                event_type="ravn.mesh.valkyrie.judgment.proposed",
+                payload={"kind": "judgment"},
+            )
+        )
+
+        await collect_events(1, rpc_received)
+        await collect_events(1, judgment_received)
+
+    assert [event.event_id for event in rpc_received] == ["rpc-event"]
+    assert [event.event_id for event in judgment_received] == ["judgment-event"]

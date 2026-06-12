@@ -6,8 +6,9 @@
     "ting": { "enabled": true, "order": 2 },
     "mimir": { "enabled": true, "order": 3 },
     "ravn": { "enabled": true, "order": 4 },
-    "observatory": { "enabled": true, "order": 5 },
-    "settings": { "enabled": true, "order": 6 }
+    "valkyrie": { "enabled": true, "order": 5 },
+    "observatory": { "enabled": true, "order": 6 },
+    "settings": { "enabled": true, "order": 7 }
   },
   "services": {
     "identity": { "mode": "mock" },
@@ -25,6 +26,8 @@
     "ravn.sessions": { "mode": "mock" },
     "ravn.triggers": { "mode": "mock" },
     "ravn.budget": { "mode": "mock" },
+    "valkyrie": { "mode": "mock" },
+    "valkyrie.reviews": { "mode": "mock" },
     "forge": { "mode": "mock" },
     "forge.pty": { "mode": "mock" },
     "forge.metrics": { "mode": "mock" },

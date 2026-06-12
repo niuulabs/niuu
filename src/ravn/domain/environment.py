@@ -16,7 +16,11 @@ from observatory.contracts import ObservatoryFragment
 from skuld.room_models import ParticipantMeta
 from sleipnir.domain.events import SleipnirEvent
 
-EnvironmentType = Literal[
+EnvironmentType = str
+SignalSourceKind = str
+OperationalHealth = str
+
+DEFAULT_ENVIRONMENT_TYPES = (
     "k8s",
     "host.inbox",
     "printer.pi",
@@ -24,8 +28,8 @@ EnvironmentType = Literal[
     "service",
     "home_lab",
     "local",
-]
-SignalSourceKind = Literal[
+)
+DEFAULT_SIGNAL_SOURCE_KINDS = (
     "kubernetes",
     "email",
     "printer_telemetry",
@@ -33,8 +37,9 @@ SignalSourceKind = Literal[
     "webhook",
     "metrics",
     "logs",
-]
-OperationalHealth = Literal[
+    "generic",
+)
+DEFAULT_OPERATIONAL_HEALTH_STATES = (
     "unknown",
     "nominal",
     "watching",
@@ -42,9 +47,10 @@ OperationalHealth = Literal[
     "incident",
     "recovering",
     "maintenance",
-]
+)
+
 WakefulnessMode = Literal["sleeping", "watching", "wakeful", "dreaming", "unknown"]
-AutonomyMode = Literal["observe", "suggest", "supervised", "autonomous", "yolo"]
+AutonomyMode = Literal["guarded", "autonomous", "yolo"]
 LearningScopeName = Literal["private", "environment", "flock", "domain", "shared"]
 
 DEFAULT_ENVIRONMENT_SUBJECT_PREFIX = "ravn.environment"
@@ -59,6 +65,107 @@ _VALID_EVENT_METADATA_PREFIXES = (
     "participant.",
     "room.",
 )
+
+
+class EnvironmentVocabulary:
+    """Extensible vocabulary for deployment-defined Environment values.
+
+    The canonical defaults ship with the platform; deployments register extra
+    values through ``EnvironmentConfig.vocabulary`` (or directly via
+    :func:`extend_environment_vocabulary`) instead of editing domain code.
+    """
+
+    def __init__(self) -> None:
+        self._environment_types: set[str] = set(DEFAULT_ENVIRONMENT_TYPES)
+        self._signal_source_kinds: set[str] = set(DEFAULT_SIGNAL_SOURCE_KINDS)
+        self._operational_health_states: set[str] = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
+
+    @property
+    def environment_types(self) -> frozenset[str]:
+        return frozenset(self._environment_types)
+
+    @property
+    def signal_source_kinds(self) -> frozenset[str]:
+        return frozenset(self._signal_source_kinds)
+
+    @property
+    def operational_health_states(self) -> frozenset[str]:
+        return frozenset(self._operational_health_states)
+
+    def extend(
+        self,
+        *,
+        environment_types: list[str] | tuple[str, ...] = (),
+        signal_source_kinds: list[str] | tuple[str, ...] = (),
+        operational_health_states: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        self._environment_types.update(_normalize_vocabulary_values(environment_types))
+        self._signal_source_kinds.update(_normalize_vocabulary_values(signal_source_kinds))
+        self._operational_health_states.update(
+            _normalize_vocabulary_values(operational_health_states)
+        )
+
+    def reset(self) -> None:
+        """Restore the canonical defaults (used by tests)."""
+        self._environment_types = set(DEFAULT_ENVIRONMENT_TYPES)
+        self._signal_source_kinds = set(DEFAULT_SIGNAL_SOURCE_KINDS)
+        self._operational_health_states = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
+
+    def validate_environment_type(self, value: str) -> str:
+        return _validate_vocabulary_value(
+            value, self._environment_types, field_name="environment type"
+        )
+
+    def validate_signal_source_kind(self, value: str) -> str:
+        return _validate_vocabulary_value(
+            value, self._signal_source_kinds, field_name="signal source kind"
+        )
+
+    def validate_operational_health(self, value: str) -> str:
+        return _validate_vocabulary_value(
+            value, self._operational_health_states, field_name="operational health"
+        )
+
+
+_vocabulary = EnvironmentVocabulary()
+
+
+def environment_vocabulary() -> EnvironmentVocabulary:
+    """Return the process-wide Environment vocabulary registry."""
+    return _vocabulary
+
+
+def extend_environment_vocabulary(
+    *,
+    environment_types: list[str] | tuple[str, ...] = (),
+    signal_source_kinds: list[str] | tuple[str, ...] = (),
+    operational_health_states: list[str] | tuple[str, ...] = (),
+) -> None:
+    """Register deployment-defined vocabulary values for Environment models."""
+    _vocabulary.extend(
+        environment_types=environment_types,
+        signal_source_kinds=signal_source_kinds,
+        operational_health_states=operational_health_states,
+    )
+
+
+def _normalize_vocabulary_values(values: list[str] | tuple[str, ...]) -> set[str]:
+    normalized = {str(value).strip().lower() for value in values}
+    normalized.discard("")
+    return normalized
+
+
+def _validate_vocabulary_value(value: str, known: set[str], *, field_name: str) -> str:
+    normalized = str(value).strip().lower()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty; known values: {sorted(known)}")
+    if normalized not in known:
+        raise ValueError(
+            f"unknown {field_name} {normalized!r}; known values: {sorted(known)}. "
+            "Register deployment-specific values via EnvironmentConfig.vocabulary "
+            "or ravn.domain.environment.extend_environment_vocabulary()."
+        )
+    return normalized
 
 
 def _stable_now() -> datetime:
@@ -93,6 +200,11 @@ class SignalSource(BaseModel):
     replay_cursor: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        return _vocabulary.validate_signal_source_kind(value)
+
     @field_validator("subject_patterns")
     @classmethod
     def _dedupe_subjects(cls, value: list[str]) -> list[str]:
@@ -124,7 +236,7 @@ class ActionCapability(BaseModel):
 class AutonomyPolicy(BaseModel):
     """Authority boundary for an Environment resident."""
 
-    mode: AutonomyMode = "supervised"
+    mode: AutonomyMode = "guarded"
     allowed_authorities: list[str] = Field(
         default_factory=lambda: ["autonomous", "court_required", "human_review_required"]
     )
@@ -195,6 +307,12 @@ class OperationalState(BaseModel):
 
     health: OperationalHealth = "unknown"
     baselines: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("health")
+    @classmethod
+    def _validate_health(cls, value: str) -> str:
+        return _vocabulary.validate_operational_health(value)
+
     active_incidents: list[dict[str, Any]] = Field(default_factory=list)
     suppressed_noise: list[dict[str, Any]] = Field(default_factory=list)
     pending_actions: list[dict[str, Any]] = Field(default_factory=list)
@@ -221,6 +339,11 @@ class Environment(BaseModel):
     learning_scopes: list[LearningScope] = Field(default_factory=list)
     nats_subject_prefix: str = DEFAULT_ENVIRONMENT_SUBJECT_PREFIX
     skuld_room_prefix: str = "environment"
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        return _vocabulary.validate_environment_type(value)
 
     @model_validator(mode="after")
     def _normalize_environment(self) -> Environment:
@@ -294,7 +417,20 @@ class Environment(BaseModel):
             "name": self.name,
             "type": self.type,
             "flocks": self.flock_ids,
-            "signal_subjects": self.signal_subjects(),
+            "signal_sources": [
+                {
+                    "id": source.id,
+                    "name": source.name,
+                    "kind": source.kind,
+                    "adapter": source.adapter,
+                    "enabled": source.enabled,
+                    "kwargs": {
+                        "metadata": source.metadata,
+                        "replay_cursor": source.replay_cursor,
+                    },
+                }
+                for source in self.signal_sources
+            ],
         }
 
     def to_ting_flock_refs(self) -> list[dict[str, Any]]:
@@ -572,7 +708,7 @@ def inbox_environment_fixture() -> Environment:
             ),
         ],
         autonomy=AutonomyPolicy(
-            mode="supervised",
+            mode="guarded",
             escalation_surfaces=["ui:valkyries", "email:drafts"],
         ),
         wakefulness=WakefulnessState(state="watching", summary="Watching high-signal mail"),

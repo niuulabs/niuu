@@ -18,6 +18,7 @@ Wire events emitted to browsers:
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
@@ -75,6 +76,31 @@ HUMAN_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: Capability verbs that only make sense when the Environment declares action
+#: capabilities requiring human or court review.
+_APPROVAL_CAPABILITIES: frozenset[str] = frozenset({"approve", "authorize_action"})
+
+#: Environment action authorities that imply something can be approved.
+_REVIEWABLE_AUTHORITIES: frozenset[str] = frozenset({"court_required", "human_review_required"})
+
+
+def _effective_role_capabilities(
+    role: str,
+    *,
+    environment_action_authorities: list[str] | None,
+) -> tuple[str, ...]:
+    """Intersect static role grants with what the Environment declares.
+
+    Approval verbs are stripped when the Environment has no action capability
+    requiring review — a human cannot authorize actions that do not exist.
+    """
+    grants = HUMAN_ROLE_CAPABILITIES[role]
+    if environment_action_authorities is None:
+        return grants
+    if _REVIEWABLE_AUTHORITIES & set(environment_action_authorities):
+        return grants
+    return tuple(grant for grant in grants if grant not in _APPROVAL_CAPABILITIES)
+
 
 class RoomBridge:
     """Bridges Ravn WebSocket connections into the multi-agent room.
@@ -116,6 +142,75 @@ class RoomBridge:
         self._color_cycle = itertools.cycle(list(config.participant_colors))
         self._timeline_started_at = time.monotonic()
         self._known_files: set[str] = set()
+        self._presence_sweep_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    # Presence sweep — evict participants whose heartbeats expired
+    # ------------------------------------------------------------------
+
+    def start_presence_sweep(self) -> None:
+        """Run the heartbeat-expiry sweep on the configured interval."""
+        interval = getattr(self._config, "presence_sweep_interval_s", 0.0)
+        if interval <= 0 or self._presence_sweep_task is not None:
+            return
+        self._presence_sweep_task = asyncio.create_task(
+            self._presence_sweep_loop(interval), name="room_presence_sweep"
+        )
+
+    async def stop_presence_sweep(self) -> None:
+        if self._presence_sweep_task is None:
+            return
+        self._presence_sweep_task.cancel()
+        await asyncio.gather(self._presence_sweep_task, return_exceptions=True)
+        self._presence_sweep_task = None
+
+    async def _presence_sweep_loop(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.sweep_expired_participants()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("RoomBridge: presence sweep failed")
+
+    async def sweep_expired_participants(self) -> list[str]:
+        """Evict participants whose heartbeat TTL has lapsed.
+
+        Participants with a live WebSocket are never evicted — an open
+        connection is stronger evidence of liveness than an application-level
+        heartbeat. Each eviction broadcasts ``participant_left`` with the
+        ``heartbeat_timeout`` reason so rosters and escalation decisions stop
+        counting on a peer that is gone.
+        """
+        now = self._clock()
+        expired = [
+            peer_id
+            for peer_id, meta in self._participants.items()
+            if peer_id not in self._websockets and self._heartbeat_expired(meta, now)
+        ]
+        for peer_id in expired:
+            meta = self._participants.pop(peer_id)
+            logger.warning(
+                "RoomBridge: evicting participant %s after heartbeat timeout (ttl=%ss)",
+                peer_id,
+                meta.heartbeat_ttl_s,
+            )
+            await self._channels.broadcast(
+                {
+                    "type": "participant_left",
+                    "participantId": peer_id,
+                    "reason": "heartbeat_timeout",
+                }
+            )
+            await self._publish_participant_left(meta, reason="heartbeat_timeout")
+        return expired
+
+    @staticmethod
+    def _heartbeat_expired(meta: ParticipantMeta, now: float) -> bool:
+        if meta.last_heartbeat_at is None or meta.heartbeat_ttl_s <= 0:
+            return False
+        return now - meta.last_heartbeat_at > meta.heartbeat_ttl_s
 
     # ------------------------------------------------------------------
     # Participant management
@@ -276,8 +371,18 @@ class RoomBridge:
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
         heartbeat_ttl_s: float = 300.0,
+        environment_action_authorities: list[str] | None = None,
     ) -> ParticipantMeta:
-        """Register or update a human participant inside a live Environment."""
+        """Register or update a human participant inside a live Environment.
+
+        ``environment_action_authorities`` is the set of authority levels the
+        Environment declares on its action capabilities (for example
+        ``["autonomous", "court_required"]`` from
+        ``Environment.action_capabilities[].authority``). When provided, role
+        grants are intersected with what the Environment actually supports: an
+        approver in an Environment with nothing to approve gets no approval
+        powers. When omitted (legacy callers) the static role grants apply.
+        """
         participant_id = participant_id.strip()
         if not participant_id:
             raise ValueError("participant_id is required")
@@ -287,7 +392,10 @@ class RoomBridge:
         if role not in HUMAN_ENVIRONMENT_ROLES:
             raise PermissionError(f"Unknown Environment role: {role}")
 
-        role_capabilities = HUMAN_ROLE_CAPABILITIES[role]
+        role_capabilities = _effective_role_capabilities(
+            role,
+            environment_action_authorities=environment_action_authorities,
+        )
         requested_capabilities = tuple(capabilities or role_capabilities)
         disallowed = sorted(set(requested_capabilities) - set(role_capabilities))
         if disallowed:
@@ -505,20 +613,24 @@ class RoomBridge:
             lines.append("")
         return "\n".join(lines).strip() + "\n"
 
-    async def write_huddle_transcript(
+    async def close_environment_huddle(
         self,
         *,
-        mimir: Any,
         room_id: str,
-        path: str | None = None,
+        reason: str = "closed",
         summary: str = "",
-    ) -> str:
-        """Write the huddle transcript to Mimir and emit a transcript event."""
+    ) -> dict[str, Any]:
+        """Close a replayable huddle, publishing its transcript and terminal event.
+
+        The rendered transcript travels in the ``room.transcript.recorded``
+        payload so any Mimir-holding consumer (the resident Ravn daemon's
+        transcript archiver) can persist it — the broker itself has no Mimir
+        access.
+        """
         snapshot = self._room_context_snapshots.get(room_id, {})
         environment_id = str(snapshot.get("environmentId") or self._environment_id)
-        transcript_path = path or f"huddles/{environment_id}/{room_id}.md"
+        transcript_ref = f"huddles/{environment_id}/{room_id}.md"
         content = self.build_huddle_transcript(room_id)
-        await mimir.upsert_page(transcript_path, content)
         message_refs = [
             str(event.get("id"))
             for event in self._room_event_log.get(room_id, [])
@@ -527,22 +639,11 @@ class RoomBridge:
         await self._publish_room_transcript_recorded(
             environment_id=environment_id,
             room_id=room_id,
-            transcript_ref=transcript_path,
+            transcript_ref=transcript_ref,
             message_refs=message_refs,
             summary=summary or f"{len(message_refs)} huddle messages recorded",
+            transcript_content=content,
         )
-        return transcript_path
-
-    async def close_environment_huddle(
-        self,
-        *,
-        room_id: str,
-        reason: str = "closed",
-        transcript_ref: str = "",
-    ) -> dict[str, Any]:
-        """Close a replayable huddle and publish its terminal event."""
-        snapshot = self._room_context_snapshots.get(room_id, {})
-        environment_id = str(snapshot.get("environmentId") or self._environment_id)
         closed = {
             "type": "room_closed",
             "roomId": room_id,
@@ -786,20 +887,22 @@ class RoomBridge:
         transcript_ref: str,
         message_refs: list[str],
         summary: str,
+        transcript_content: str = "",
     ) -> None:
         from sleipnir.domain.catalog import room_transcript_recorded
 
-        await self._publish_presence(
-            room_transcript_recorded(
-                environment_id=environment_id,
-                room_id=room_id,
-                transcript_ref=transcript_ref,
-                message_refs=message_refs,
-                summary=summary,
-                source="skuld:room_bridge",
-                correlation_id=room_id,
-            )
+        event = room_transcript_recorded(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_ref,
+            message_refs=message_refs,
+            summary=summary,
+            source="skuld:room_bridge",
+            correlation_id=room_id,
         )
+        if transcript_content:
+            event.payload["transcript_content"] = transcript_content
+        await self._publish_presence(event)
 
     async def _publish_room_closed(
         self,

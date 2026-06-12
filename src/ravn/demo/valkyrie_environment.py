@@ -100,7 +100,7 @@ def _subject(environment_id: str, event_type: str) -> str:
 
 
 def _flock_subject(flock_id: str, suffix: str) -> str:
-    return f"odin.flock.{flock_id}.{suffix}"
+    return f"flock.{flock_id}.{suffix}"
 
 
 def _source(valkyrie_id: str) -> str:
@@ -285,13 +285,13 @@ def build_valkyrie_environment_demo() -> DemoArtifact:
             environment_id="k8s-cluster-a",
             valkyrie_id="valkyrie:k8s-a",
             previous_state="watching",
-            new_state="awake",
+            new_state="wakeful",
             reason="critical signal crossed action threshold",
             source=_source("valkyrie:k8s-a"),
             correlation_id=root_failure,
             causation_id=state.event_id,
         ),
-        event_id="demo-k8s-a-valkyrie-awake",
+        event_id="demo-k8s-a-valkyrie-wakeful",
         nats_subject=_subject("k8s-cluster-a", registry.VALKYRIE_STATE_UPDATED),
         tags=("wakefulness",),
     )
@@ -529,7 +529,7 @@ def build_valkyrie_environment_demo() -> DemoArtifact:
         valkyrie_state_updated(
             environment_id="k8s-cluster-a",
             valkyrie_id="valkyrie:k8s-a",
-            previous_state="awake",
+            previous_state="wakeful",
             new_state="dreaming",
             reason="compress successful incident into private tool improvement",
             source=_source("valkyrie:k8s-a"),

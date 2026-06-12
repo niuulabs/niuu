@@ -282,6 +282,7 @@ async def test_drive_loop_records_cost_after_task(tmp_path: Path) -> None:
 
     class FakeTurnResult:
         usage = fake_usage
+        response = ""
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=FakeTurnResult())
@@ -332,6 +333,7 @@ async def test_drive_loop_publishes_warning_at_threshold(tmp_path: Path) -> None
 
     class FakeTurnResult:
         usage = TokenUsage(input_tokens=0, output_tokens=0)
+        response = ""
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=FakeTurnResult())
@@ -359,6 +361,7 @@ async def test_drive_loop_no_warning_below_threshold(tmp_path: Path) -> None:
 
     class FakeTurnResult:
         usage = TokenUsage(input_tokens=0, output_tokens=0)
+        response = ""
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=FakeTurnResult())
@@ -385,6 +388,7 @@ async def test_drive_loop_warning_emitted_only_once_per_day(tmp_path: Path) -> N
 
     class FakeTurnResult:
         usage = TokenUsage(input_tokens=0, output_tokens=0)
+        response = ""
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=FakeTurnResult())
@@ -466,6 +470,7 @@ async def test_drive_loop_uses_fallback_rates_with_mock_settings(tmp_path: Path)
 
     class FakeTurnResult:
         usage = TokenUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+        response = ""
 
     mock_agent = AsyncMock()
     mock_agent.run_turn = AsyncMock(return_value=FakeTurnResult())

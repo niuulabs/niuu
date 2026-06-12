@@ -63,10 +63,10 @@ import {
   type VolundrSession,
 } from '@niuulabs/plugin-volundr';
 import {
+  buildOdinReviewHttpAdapter,
   buildValkyrieHttpAdapter,
-  buildValkyrieSignalSseStream,
+  createMockOdinReviewService,
   createMockValkyrieService,
-  createMockValkyrieSignalStream,
 } from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
 import {
@@ -347,18 +347,17 @@ function resolveObservatoryServiceBase(
 
 function resolveValkyrieServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'valkyrie' | 'valkyrie.signals',
+  serviceKey: 'valkyrie' | 'valkyrie.reviews',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
-  if (explicitBase) {
-    return serviceKey === 'valkyrie.signals'
-      ? explicitBase.replace(/\/signals\/?$/, '')
-      : explicitBase;
-  }
+  if (explicitBase) return explicitBase;
 
   const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
   if (!groupedBase) return null;
-  return serviceKey === 'valkyrie.signals' ? `${groupedBase}/signals` : groupedBase;
+  // The review queue lives beside the dashboard API under /ravn/odin.
+  return serviceKey === 'valkyrie.reviews'
+    ? groupedBase.replace(/\/valkyrie\/?$/, '/odin')
+    : groupedBase;
 }
 
 export function resolveSettingsServiceBase(
@@ -562,7 +561,7 @@ export function buildServiceBackendStatus(
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
-    'valkyrie.signals': resolveDirectServiceStatus(config, 'http', 'valkyrie.signals', 'valkyrie'),
+    'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
@@ -1098,13 +1097,13 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     : createMockEventStream();
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
-  const valkyrieSignalsBase = resolveValkyrieServiceBase(config, 'valkyrie.signals');
+  const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
   const valkyrie = valkyrieBase
     ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
     : createMockValkyrieService();
-  const valkyrieSignals = valkyrieSignalsBase
-    ? buildValkyrieSignalSseStream(valkyrieSignalsBase)
-    : createMockValkyrieSignalStream();
+  const valkyrieReviews = valkyrieReviewsBase
+    ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
+    : createMockOdinReviewService();
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1188,6 +1187,6 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
     valkyrie,
-    'valkyrie.signals': valkyrieSignals,
+    'valkyrie.reviews': valkyrieReviews,
   };
 }

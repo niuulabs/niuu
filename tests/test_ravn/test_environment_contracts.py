@@ -47,14 +47,24 @@ def test_environment_examples_share_one_serializable_model() -> None:
         assert loaded.learning_scopes
 
 
-def test_environment_projects_to_existing_ravn_config_and_nats_subjects() -> None:
+def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects() -> None:
     environment = k8s_environment_fixture()
     config = EnvironmentConfig(**environment.to_ravn_environment_config())
 
     assert config.id == "cluster-prod-a"
     assert config.type == "k8s"
     assert config.flocks == ["k8s-valkyries"]
-    assert config.signal_subjects == [
+    assert [source.id for source in config.signal_sources] == [
+        "kubernetes-events",
+        "prometheus-alerts",
+    ]
+    assert config.signal_sources[0].adapter == "ravn.adapters.environment.kubernetes"
+    assert config.signal_sources[0].kwargs == {
+        "metadata": {"cluster": "prod-a"},
+        "replay_cursor": "",
+    }
+    assert config.signal_subjects == []
+    assert environment.signal_subjects() == [
         "ravn.environment.signal.kubernetes.*",
         "ravn.environment.environment.state",
         "ravn.environment.signal.metrics.*",
@@ -178,3 +188,52 @@ def test_environment_projects_into_existing_observatory_topology_types() -> None
                 "kind": "soft",
             }
         ]
+
+
+def test_environment_vocabulary_rejects_unknown_values_with_known_list() -> None:
+    import pytest
+
+    from ravn.domain.environment import environment_vocabulary
+
+    vocabulary = environment_vocabulary()
+    try:
+        with pytest.raises(ValueError, match="unknown environment type 'submarine'"):
+            Environment(
+                id="env-x",
+                name="X",
+                type="submarine",
+                topology=k8s_environment_fixture().topology,
+            )
+        with pytest.raises(ValueError, match="must not be empty"):
+            vocabulary.validate_signal_source_kind("")
+    finally:
+        vocabulary.reset()
+
+
+def test_environment_vocabulary_extends_from_config() -> None:
+    from ravn.domain.environment import SignalSource, environment_vocabulary
+
+    vocabulary = environment_vocabulary()
+    try:
+        EnvironmentConfig(
+            id="cnc-cell-1",
+            name="CNC Cell",
+            type="local",
+            vocabulary={
+                "environment_types": ["cnc.cell"],
+                "signal_source_kinds": ["cnc_telemetry"],
+                "operational_health_states": ["calibrating"],
+            },
+        )
+        environment = Environment(
+            id="cnc-cell-1",
+            name="CNC Cell",
+            type="CNC.Cell",
+            topology=k8s_environment_fixture().topology,
+            signal_sources=[SignalSource(id="cnc", name="CNC Telemetry", kind="cnc_telemetry")],
+        )
+        assert environment.type == "cnc.cell"
+        assert environment.signal_sources[0].kind == "cnc_telemetry"
+        assert "calibrating" in vocabulary.operational_health_states
+    finally:
+        vocabulary.reset()

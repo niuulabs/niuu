@@ -392,7 +392,7 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
             or validation_errors
             or (expected_keys is not None and not expected_keys.issubset(parsed_fields))
             or len(salvage_errors) < len(validation_errors)
-        ) and len(salvage_errors) <= len(errors):
+        ) and (parse_errors or len(salvage_errors) <= len(errors)):
             parsed_fields = salvaged
             errors = salvage_errors
 

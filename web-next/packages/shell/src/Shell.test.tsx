@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createMemoryHistory } from '@tanstack/react-router';
+import { createMemoryHistory, createRoute } from '@tanstack/react-router';
 import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
 
@@ -36,6 +36,21 @@ const pluginWithTabs = definePlugin({
   render: () => <div data-testid="tabbed-content">tabbed-rendered</div>,
   subnav: () => <div data-testid="tabbed-subnav">subnav-content</div>,
   footer: () => <span data-testid="tabbed-footer-chip">api ● connected</span>,
+});
+
+const pluginWithCustomTabPath = definePlugin({
+  id: 'valkyrie',
+  rune: 'ᛒ',
+  title: 'Valkyrie',
+  subtitle: 'resident operators',
+  tabs: [{ id: 'console', label: 'Console', path: '/valkyries' }],
+  routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyries',
+      component: () => <div data-testid="valkyrie-content">valkyrie-rendered</div>,
+    }),
+  ],
 });
 
 const pluginWithCollapsibleSubnav = definePlugin({
@@ -163,6 +178,23 @@ describe('Shell', () => {
     const badge = screen.getByTestId('tab-count-one');
     expect(badge).toBeInTheDocument();
     expect(badge.textContent).toBe('4');
+  });
+
+  it('marks a plugin active when the route matches a custom tab path', async () => {
+    wrap(
+      <Shell
+        plugins={[pluginA, pluginWithCustomTabPath]}
+        _testHistory={memHistory('/valkyries')}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('valkyrie-content')).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('heading', { name: 'Valkyrie' })).toBeInTheDocument();
+    expect(screen.getByTestId('valkyrie-tab-console')).toBeInTheDocument();
+    expect(localStorage.getItem('niuu.active')).toBe('valkyrie');
   });
 
   it('does not render tab count badge when count is 0', async () => {

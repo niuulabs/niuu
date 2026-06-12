@@ -66,6 +66,19 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.openai.com"
 
+# OpenAI reasoning-era models reject the legacy ``max_tokens`` parameter and
+# require ``max_completion_tokens`` instead. OpenAI-compatible servers (vLLM,
+# llama.cpp, older GPT models) still take ``max_tokens``.
+_MAX_COMPLETION_TOKENS_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _max_tokens_param(model: str) -> str:
+    name = model.lower()
+    if name.startswith(_MAX_COMPLETION_TOKENS_MODEL_PREFIXES):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 # Regex to strip reasoning tags produced by some open-source models.
 # Uses a named backreference so open and close tags must match exactly.
 # Handles: <think>, <reasoning>, <REASONING_SCRATCHPAD> (all case-insensitive).
@@ -301,7 +314,7 @@ class OpenAICompatibleAdapter(LLMPort):
         effective_model = model or self._default_model
         body: dict = {
             "model": effective_model,
-            "max_tokens": max_tokens or self._default_max_tokens,
+            _max_tokens_param(effective_model): max_tokens or self._default_max_tokens,
             "messages": self._build_messages(messages, system, effective_model),
             "stream": stream,
         }

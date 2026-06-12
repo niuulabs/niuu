@@ -1582,6 +1582,10 @@ class Broker:
         # Load conversation history from disk
         self._load_conversation_history()
 
+        # Evict participants whose heartbeats lapse (room mode only)
+        if self._room_bridge is not None:
+            self._room_bridge.start_presence_sweep()
+
         # Initialize transport
         self._transport = self._create_transport()
         self._transport.on_event(self._handle_cli_event)
@@ -1667,6 +1671,9 @@ class Broker:
         transport, so the CLI process is still alive for summary generation.
         """
         logger.info("Broker shutting down")
+
+        if self._room_bridge is not None:
+            await self._room_bridge.stop_presence_sweep()
 
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:
@@ -3599,6 +3606,7 @@ class Broker:
         room_id: str = "",
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
+        environment_action_authorities: list[str] | None = None,
     ) -> dict[str, Any]:
         """Join a human participant to the live Environment room state."""
         if self._room_bridge is None:
@@ -3611,6 +3619,7 @@ class Broker:
             room_id=room_id,
             capabilities=capabilities,
             surfaces=surfaces,
+            environment_action_authorities=environment_action_authorities,
         )
         return asdict(meta)
 
@@ -3645,6 +3654,22 @@ class Broker:
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         await self._room_bridge.leave_human_environment(participant_id, reason=reason)
+
+    async def close_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        reason: str = "closed",
+        summary: str = "",
+    ) -> dict[str, Any]:
+        """Close a live Environment huddle and publish its transcript."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        return await self._room_bridge.close_environment_huddle(
+            room_id=room_id,
+            reason=reason,
+            summary=summary,
+        )
 
     def require_room_capability(self, participant_id: str, capability: str) -> None:
         """Raise when a room participant cannot perform a control action."""
@@ -5898,6 +5923,7 @@ class _RoomJoinRequest(BaseModel):
     room_id: str = ""
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
+    environment_action_authorities: list[str] = Field(default_factory=list)
 
 
 class _RoomHeartbeatRequest(BaseModel):
@@ -5914,6 +5940,21 @@ class _RoomLeaveRequest(BaseModel):
 
     participant_id: str
     reason: str = "left"
+
+
+class _RoomCloseRequest(BaseModel):
+    """Request body for closing a live Environment huddle."""
+
+    room_id: str
+    reason: str = "closed"
+    summary: str = ""
+
+
+class _RoomCapabilityRequest(BaseModel):
+    """Request body for verifying a participant control capability."""
+
+    participant_id: str
+    capability: str
 
 
 class _WorkflowGateResolveRequest(BaseModel):
@@ -6001,6 +6042,7 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             room_id=body.room_id,
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
+            environment_action_authorities=body.environment_action_authorities,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -6046,6 +6088,34 @@ async def leave_room(body: _RoomLeaveRequest) -> dict:
         raise HTTPException(403, str(exc))
 
     return {"status": "left", "participant_id": body.participant_id}
+
+
+@app.post("/api/room/close")
+async def close_room(body: _RoomCloseRequest) -> dict:
+    """Close a live Environment huddle, publishing its transcript for archival."""
+    try:
+        closed = await broker.close_environment_huddle(
+            room_id=body.room_id,
+            reason=body.reason,
+            summary=body.summary,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    return {"status": "closed", **closed}
+
+
+@app.post("/api/room/require-capability")
+async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
+    """Verify a joined participant holds a control capability (403 otherwise)."""
+    try:
+        broker.require_room_capability(body.participant_id, body.capability)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
 
 
 @app.get("/api/room/participants")

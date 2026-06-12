@@ -485,6 +485,65 @@ def test_parse_soft_wrapped_mapping_keeps_fragment_as_scalar_when_next_key_is_ex
     }
 
 
+def test_parse_outcome_block_salvages_yaml_colons_in_scalar_values() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "environment_id": OutcomeField(type="string", description="environment id"),
+            "valkyrie_id": OutcomeField(type="string", description="valkyrie id"),
+            "signal_refs": OutcomeField(type="array", description="signal refs"),
+            "tier": OutcomeField(
+                type="enum",
+                description="attention tier",
+                enum_values=["silent", "ambient", "present", "urgent"],
+            ),
+            "confidence": OutcomeField(type="number", description="confidence"),
+            "operational_state": OutcomeField(type="string", description="state"),
+            "rationale": OutcomeField(type="string", description="rationale"),
+            "evidence": OutcomeField(type="array", description="evidence"),
+            "recommended_action": OutcomeField(type="string", description="action"),
+            "action_authority": OutcomeField(
+                type="enum",
+                description="authority",
+                enum_values=["autonomous", "yolo_allowed", "court_required"],
+            ),
+            "target_surfaces": OutcomeField(type="array", description="surfaces"),
+            "expires_at": OutcomeField(type="string", description="expiry"),
+            "dissent_refs": OutcomeField(type="array", description="dissent"),
+            "correlation_ids": OutcomeField(type="object", description="correlation"),
+        }
+    )
+    text = """\
+---outcome---
+environment_id: valhalla
+valkyrie_id: k8s-valkyrie
+signal_refs:
+  - evt1
+tier: urgent
+confidence: 0.8
+operational_state: degraded
+rationale: Pod is in CrashLoopBackOff. Root cause: container fails on startup
+evidence:
+  - event_id: evt1
+recommended_action: Inspect pod logs. Root cause: check container config
+action_authority: autonomous
+target_surfaces:
+  - surface:ops
+expires_at:
+dissent_refs: []
+correlation_ids:
+  root: corr1
+---end---
+"""
+
+    result = parse_outcome_block(text, schema)
+
+    assert result is not None
+    assert result.fields["environment_id"] == "valhalla"
+    assert result.fields["rationale"].endswith("container fails on startup")
+    assert result.fields["recommended_action"].endswith("check container config")
+    assert result.fields["signal_refs"] == ["evt1"]
+
+
 def test_optional_field_can_be_missing() -> None:
     schema = OutcomeSchema(
         fields={

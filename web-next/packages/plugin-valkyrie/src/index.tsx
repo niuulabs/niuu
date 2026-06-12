@@ -1,59 +1,106 @@
-import { createRoute } from '@tanstack/react-router';
+import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { ValkyriePage } from './ui/ValkyriePage';
-import { ValkyrieSubnav } from './ui/ValkyrieSubnav';
+import { ActivityPage } from './ui/ActivityPage';
+import { FleetPage } from './ui/FleetPage';
+import { InboxPage } from './ui/InboxPage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
+
+const LEGACY_PATHS = [
+  '/valkyrie/console',
+  '/valkyrie/topology',
+  '/valkyrie/lineage',
+  '/valkyrie/learning',
+  '/valkyrie/huddles',
+  '/valkyrie/autonomy',
+  '/valkyries',
+  '/valkyries/topology',
+  '/valkyries/lineage',
+  '/valkyries/learning',
+  '/valkyries/huddles',
+  '/valkyries/autonomy',
+];
+
+const createLegacyRedirect =
+  (to: string) =>
+  ({ location }: { location: { search: unknown } }) => {
+    throw redirect({
+      to: to as never,
+      search: location.search as never,
+    });
+  };
 
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
-  rune: 'V',
+  rune: 'ᛒ',
   title: 'Valkyrie',
-  subtitle: 'environments · flocks · learning',
-  tabs: [{ id: 'console', label: 'Console', path: '/valkyries' }],
+  subtitle: 'odin review',
+  tabs: [
+    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie' },
+    { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
+    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
+  ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/valkyries',
-      component: ValkyriePage,
+      path: '/valkyrie',
+      component: () => <InboxPage />,
     }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyrie/fleet',
+      component: () => <FleetPage />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyrie/activity',
+      component: () => <ActivityPage />,
+    }),
+    ...LEGACY_PATHS.map((path) =>
+      createRoute({
+        getParentRoute: () => rootRoute,
+        path,
+        beforeLoad: createLegacyRedirect('/valkyrie'),
+        component: () => null,
+      }),
+    ),
   ],
-  subnav: () => <ValkyrieSubnav />,
   topbarRight: () => <ValkyrieTopbar />,
 });
 
-export { createMockValkyrieService, createMockValkyrieSignalStream } from './adapters/mock';
-export { buildValkyrieHttpAdapter, buildValkyrieSignalSseStream } from './adapters/http';
-export { useValkyrieDashboard, useValkyrieSignals } from './application/useValkyrieDashboard';
-export { selectEnvironmentSlice, selectFlockLearnings } from './application/selectors';
-export { normalizeValkyrieSignalEvent } from './domain';
+export {
+  createMockOdinReviewService,
+  createMockValkyrieService,
+  createSeedReviewItems,
+  createSeedValkyrieDashboard,
+} from './adapters/mock';
+export { buildOdinReviewHttpAdapter, buildValkyrieHttpAdapter } from './adapters/http';
+export { useUpdateAutonomy, useValkyrieDashboard } from './application/useValkyrieDashboard';
+export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
+export {
+  normalizeReviewItem,
+  reviewArtifactEvidence,
+  reviewEffectStatement,
+  reviewPolicyFindings,
+} from './domain';
 export type {
-  ActionRecord,
   AutonomyMode,
-  CourtDecision,
   EnvironmentHealth,
   EnvironmentKind,
-  EnvironmentSignal,
   EnvironmentSummary,
   FlockSummary,
-  HuddleMessage,
-  HuddleSummary,
-  JudgmentRecord,
-  LearningRecord,
-  LearningScope,
-  LearningStatus,
-  OperationalState,
-  SignalSeverity,
-  SignalStatus,
+  ReviewItem,
+  ReviewKind,
+  ReviewRiskClass,
+  ReviewStatus,
+  ReviewSummary,
   ValkyrieDashboard,
   ValkyrieResident,
-  ValkyrieSignalEvent,
   WakefulnessState,
 } from './domain';
 export type {
   AutonomyUpdateRequest,
-  HuddleSendRequest,
+  IOdinReviewService,
   IValkyrieService,
-  IValkyrieSignalStream,
-  LearningDecisionRequest,
-  ValkyrieSignalListener,
+  ReviewDecisionRequest,
+  ReviewListFilters,
 } from './ports';

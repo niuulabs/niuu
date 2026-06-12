@@ -44,17 +44,20 @@ async def enqueue_with_overflow(
     event: SleipnirEvent,
     ring_buffer_depth: int,
     log: logging.Logger,
-) -> None:
+) -> bool:
     """Put *event* on *queue*, dropping the oldest entry on overflow.
 
     When the queue is full the oldest event is dequeued and discarded so that
     the producer is never blocked.  A ``WARNING`` is logged with the dropped
-    event's id and type.
+    event's id and type.  Returns ``True`` when an event was dropped so
+    callers can surface sustained backpressure through their stats.
     """
+    overflowed = False
     if queue.full():
         with suppress(asyncio.QueueEmpty):
             dropped = queue.get_nowait()
             queue.task_done()
+            overflowed = True
             log.warning(
                 "Ring buffer overflow (depth=%d): dropped event %s (%s)",
                 ring_buffer_depth,
@@ -62,6 +65,7 @@ async def enqueue_with_overflow(
                 dropped.event_type,
             )
     await queue.put(event)
+    return overflowed
 
 
 class _BaseSubscription(Subscription):

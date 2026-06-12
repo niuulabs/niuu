@@ -148,6 +148,13 @@ class RoomConfig(BaseModel):
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    presence_sweep_interval_s: float = Field(
+        default=30.0,
+        description=(
+            "How often expired participants (heartbeat TTL exceeded, no live "
+            "WebSocket) are evicted from room state. 0 disables the sweep."
+        ),
+    )
 
 
 class TelegramConfig(BaseModel):

@@ -33,6 +33,7 @@ from sleipnir.adapters.nats_transport import (
     DEFAULT_STREAM_NAME,
     DEFAULT_SUBJECT_PREFIX,
     NatsBridgeAdapter,
+    NatsCorePublisher,
     NatsPublisher,
     NatsSubscriber,
     NatsTransport,
@@ -40,6 +41,7 @@ from sleipnir.adapters.nats_transport import (
     _build_tls_context,
     _decode_nats_message,
     _DeduplicationCache,
+    _durable_name_for_subject,
     _nats_subject_for_event,
     _nats_subjects_for_patterns,
     _parse_retention,
@@ -75,6 +77,9 @@ def _make_mock_client() -> tuple[AsyncMock, AsyncMock, AsyncMock]:
 
     mock_client = AsyncMock()
     mock_client.jetstream = MagicMock(return_value=mock_js)
+    mock_client.publish = AsyncMock()
+    mock_client.flush = AsyncMock()
+    mock_client.subscribe = AsyncMock(return_value=mock_sub)
     mock_client.drain = AsyncMock()
     mock_client.close = AsyncMock()
 
@@ -169,6 +174,32 @@ def test_subjects_empty_list_returns_all():
     """Empty pattern list → subscribe-all (safe default)."""
     result = _nats_subjects_for_patterns([], "sleipnir")
     assert result == ["sleipnir.>"]
+
+
+def test_durable_name_includes_filter_subject_hash():
+    """One consumer group can own multiple JetStream filter subjects safely."""
+    rpc_durable = _durable_name_for_subject(
+        "valhalla-valkyries",
+        "obs.valhalla.ravn.mesh.rpc.valkyrie_valhalla_k8s",
+    )
+    judgment_durable = _durable_name_for_subject(
+        "valhalla-valkyries",
+        "obs.valhalla.ravn.mesh.valkyrie.judgment.proposed",
+    )
+
+    assert rpc_durable.startswith("valhalla-valkyries-")
+    assert judgment_durable.startswith("valhalla-valkyries-")
+    assert rpc_durable != judgment_durable
+    assert len(rpc_durable) <= 64
+    assert len(judgment_durable) <= 64
+
+
+def test_durable_name_sanitizes_consumer_group():
+    durable = _durable_name_for_subject("cluster/k8s valkyries", "obs.ymir.>")
+
+    assert durable.startswith("cluster-k8s-valkyries-")
+    assert "/" not in durable
+    assert " " not in durable
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +303,22 @@ async def test_publisher_start_connects_and_ensures_stream(mock_nats):
     pub = NatsPublisher(servers=["nats://localhost:4222"])
     await pub.start()
     mock_module.connect.assert_called_once()
+    client.jetstream.assert_called_once_with()
     js.stream_info.assert_called_once_with(DEFAULT_STREAM_NAME)
+
+
+async def test_publisher_start_uses_configured_jetstream_domain(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsPublisher(
+        servers=["nats://localhost:4222"],
+        jetstream_domain="ymir",
+        ensure_stream=False,
+    )
+
+    await pub.start()
+
+    client.jetstream.assert_called_once_with(domain="ymir")
+    js.stream_info.assert_not_called()
 
 
 async def test_publisher_start_passes_auth_and_can_skip_stream_ensure(mock_nats):
@@ -330,6 +376,32 @@ async def test_publisher_publish_sends_correct_subject(mock_nats):
     js.publish.assert_called_once()
     subject = js.publish.call_args[0][0]
     assert subject == "sleipnir.ravn.tool.complete"
+
+
+async def test_publisher_publish_sends_explicit_additional_subjects(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsPublisher(subject_prefix="obs.ymir")
+    await pub.start()
+    event = make_event(
+        event_type="flock.learning.proposed",
+        payload={
+            "learning_id": "resident:ymir:inspect-proof",
+            "additional_nats_subjects": [
+                "flock.k8s.ymir.flock.learning.proposed",
+                "obs.ymir.flock.learning.proposed",
+            ],
+        },
+    )
+
+    await pub.publish(event)
+
+    subjects = [call.args[0] for call in js.publish.call_args_list]
+    assert subjects == [
+        "obs.ymir.flock.learning.proposed",
+        "flock.k8s.ymir.flock.learning.proposed",
+    ]
+    payloads = [call.args[1] for call in js.publish.call_args_list]
+    assert all(_decode_nats_message(payload).event_id == event.event_id for payload in payloads)
 
 
 async def test_publisher_publish_payload_is_msgpack(mock_nats):
@@ -405,6 +477,35 @@ async def test_publisher_custom_subject_prefix(mock_nats):
 
 
 # ---------------------------------------------------------------------------
+# NatsCorePublisher tests
+# ---------------------------------------------------------------------------
+
+
+async def test_core_publisher_publish_sends_core_subject(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    pub = NatsCorePublisher(subject_prefix="obs.cmd.valhalla")
+
+    await pub.start()
+    event = make_event(event_type="learning.adoption.recorded")
+    await pub.publish(event)
+
+    client.jetstream.assert_not_called()
+    client.publish.assert_called_once()
+    subject, payload = client.publish.call_args.args
+    assert subject == "obs.cmd.valhalla.learning.adoption.recorded"
+    assert _decode_nats_message(payload).event_id == event.event_id
+    client.flush.assert_called_once()
+    await pub.stop()
+
+
+async def test_core_publisher_publish_before_start_raises():
+    pub = NatsCorePublisher()
+
+    with pytest.raises(RuntimeError, match="not started"):
+        await pub.publish(make_event())
+
+
+# ---------------------------------------------------------------------------
 # NatsSubscriber tests
 # ---------------------------------------------------------------------------
 
@@ -419,7 +520,19 @@ async def test_subscriber_start_connects(mock_nats):
     sub = NatsSubscriber()
     await sub.start()
     mock_module.connect.assert_called_once()
+    client.jetstream.assert_called_once_with()
     assert sub._running is True
+
+
+async def test_subscriber_start_uses_configured_jetstream_domain(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(jetstream_domain="ymir", ensure_stream=False)
+
+    await sub.start()
+
+    client.jetstream.assert_called_once_with(domain="ymir")
+    js.stream_info.assert_not_called()
+    await sub.stop()
 
 
 async def test_subscriber_subscribe_before_start_raises():
@@ -462,14 +575,88 @@ async def test_subscriber_subscribe_namespace_wildcard_subject(mock_nats):
     await sub.stop()
 
 
+async def test_subscriber_adds_extra_stream_subjects(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        extra_subscriptions=[
+            {"subject": "flock.k8s.>", "stream_name": "flock-k8s-events"},
+        ],
+    )
+    await sub.start()
+    await sub.subscribe(["flock.learning.proposed"], AsyncMock())
+
+    calls = js.subscribe.call_args_list
+    assert [call.args[0] for call in calls] == [
+        "obs.valhalla.flock.learning.proposed",
+        "flock.k8s.>",
+    ]
+    assert [call.kwargs["stream"] for call in calls] == [
+        "obs-valhalla-events",
+        "flock-k8s-events",
+    ]
+    await sub.stop()
+
+
+async def test_subscriber_scopes_extra_stream_subjects_to_event_types(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        extra_subscriptions=[
+            {
+                "subject": "flock.k8s.>",
+                "stream_name": "flock-k8s-events",
+                "event_types": ["flock.learning.*", "learning.adoption.recorded"],
+            },
+        ],
+    )
+    await sub.start()
+
+    await sub.subscribe(["signal.kubernetes.event"], AsyncMock())
+    assert [call.args[0] for call in js.subscribe.call_args_list] == [
+        "obs.valhalla.signal.kubernetes.event"
+    ]
+
+    js.subscribe.reset_mock()
+    await sub.subscribe(["flock.learning.proposed"], AsyncMock())
+    assert [call.args[0] for call in js.subscribe.call_args_list] == [
+        "obs.valhalla.flock.learning.proposed",
+        "flock.k8s.>",
+    ]
+    assert [call.kwargs["stream"] for call in js.subscribe.call_args_list] == [
+        "obs-valhalla-events",
+        "flock-k8s-events",
+    ]
+    await sub.stop()
+
+
+async def test_subscriber_adds_core_subscriptions(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.valhalla",
+        stream_name="obs-valhalla-events",
+        core_subscriptions=[{"subject": "obs.cmd.valhalla.>"}],
+    )
+    await sub.start()
+    await sub.subscribe(["learning.adoption.recorded"], AsyncMock())
+
+    js.subscribe.assert_called_once()
+    client.subscribe.assert_called_once()
+    assert client.subscribe.call_args.args[0] == "obs.cmd.valhalla.>"
+    await sub.stop()
+
+
 async def test_subscriber_consumer_group_sets_durable_and_queue(mock_nats):
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber(consumer_group="my-service")
     await sub.start()
     await sub.subscribe(["*"], AsyncMock())
     kwargs = js.subscribe.call_args[1]
-    assert kwargs["durable"] == "my-service"
-    assert kwargs["queue"] == "my-service"
+    assert kwargs["durable"].startswith("my-service-")
+    assert kwargs["durable"] != "my-service"
+    assert kwargs["queue"] == kwargs["durable"]
     await sub.stop()
 
 
@@ -758,7 +945,20 @@ async def test_transport_consumer_group_forwarded(mock_nats):
     await transport.start()
     await transport.subscribe(["*"], AsyncMock())
     kwargs = js.subscribe.call_args[1]
-    assert kwargs["durable"] == "workers"
+    assert kwargs["durable"].startswith("workers-")
+    assert kwargs["queue"] == kwargs["durable"]
+    await transport.stop()
+
+
+async def test_transport_jetstream_domain_forwarded_to_publisher_and_subscriber(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    transport = NatsTransport(jetstream_domain="ymir", ensure_stream=False)
+
+    await transport.start()
+
+    assert client.jetstream.call_count == 2
+    assert client.jetstream.call_args_list[0].kwargs == {"domain": "ymir"}
+    assert client.jetstream.call_args_list[1].kwargs == {"domain": "ymir"}
     await transport.stop()
 
 
@@ -1019,3 +1219,228 @@ def test_defaults_are_sane():
     assert DEFAULT_MAX_BYTES == 1024 * 1024 * 1024
     assert DEFAULT_RING_BUFFER_DEPTH == 1000
     assert DEFAULT_DEDUP_CACHE_SIZE == 10_000
+
+
+async def test_each_js_subscription_gets_a_fresh_consumer_config(mock_nats):
+    """Sharing one ConsumerConfig across push subscriptions makes nats-py
+    stamp the same deliver_subject onto every consumer, so each message fans
+    out to every callback (observed as N duplicate deliveries for N subjects).
+    Every JetStream subscription must receive its own config instance."""
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    handler = AsyncMock()
+    await sub.subscribe(
+        ["learning.promoted", "flock.learning.proposed", "flock.learning.adopted"],
+        handler,
+    )
+    configs = [call.kwargs["config"] for call in js.subscribe.call_args_list]
+    assert len(configs) == 3
+    assert len({id(config) for config in configs}) == 3
+    await sub.stop()
+
+
+# ---------------------------------------------------------------------------
+# NIU-1042: error-path hardening — every failure is observable
+# ---------------------------------------------------------------------------
+
+
+class _FakeMsg:
+    def __init__(self, data: bytes, subject: str = "sleipnir.test.event") -> None:
+        self.data = data
+        self.subject = subject
+        self.acked = False
+        self.ack_error: Exception | None = None
+
+    async def ack(self) -> None:
+        if self.ack_error is not None:
+            raise self.ack_error
+        self.acked = True
+
+
+async def _subscribed_callback(sub: NatsSubscriber, js, patterns: list[str]):
+    handler = AsyncMock()
+    await sub.subscribe(patterns, handler)
+    return js.subscribe.call_args_list[0].kwargs["cb"]
+
+
+async def test_ack_failure_is_counted_and_logged(mock_nats, caplog) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    callback = await _subscribed_callback(sub, js, ["test.*"])
+
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from sleipnir.adapters.serialization import serialize as _serialize
+    from sleipnir.domain.events import SleipnirEvent as _Event
+
+    event = _Event(
+        event_type="test.event",
+        source="t",
+        payload={},
+        summary="t",
+        urgency=0.1,
+        domain="infrastructure",
+        timestamp=_dt.now(_UTC),
+    )
+    msg = _FakeMsg(_serialize(event))
+    msg.ack_error = RuntimeError("ack broke")
+    with caplog.at_level("WARNING"):
+        await callback(msg)
+    assert sub.stats()["ack_failures"] == 1
+    assert any("ack failed" in record.message for record in caplog.records)
+    await sub.stop()
+
+
+async def test_decode_failure_publishes_dlq_record(mock_nats) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    callback = await _subscribed_callback(sub, js, ["test.*"])
+    js.publish.reset_mock()
+
+    msg = _FakeMsg(b"\x00not-msgpack-garbage")
+    await callback(msg)
+
+    stats = sub.stats()
+    assert stats["decode_failures"] == 1
+    assert stats["dlq_published"] == 1
+    assert msg.acked, "poison message must still be acked after dead-lettering"
+
+    dlq_subject, dlq_payload = js.publish.call_args[0]
+    assert dlq_subject == "sleipnir.system.dlq.message"
+    from sleipnir.adapters.serialization import deserialize as _deserialize
+
+    record = _deserialize(dlq_payload)
+    assert record.event_type == "system.dlq.message"
+    assert record.payload["original_subject"] == "sleipnir.test.event"
+    import base64 as _base64
+
+    assert _base64.b64decode(record.payload["raw_base64"]) == b"\x00not-msgpack-garbage"
+    await sub.stop()
+
+
+async def test_poison_dlq_record_is_not_dead_lettered_again(mock_nats) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    callback = await _subscribed_callback(sub, js, ["*"])
+    js.publish.reset_mock()
+
+    msg = _FakeMsg(b"garbage", subject="sleipnir.system.dlq.message")
+    await callback(msg)
+
+    stats = sub.stats()
+    assert stats["decode_failures"] == 1
+    assert stats["dlq_published"] == 0
+    js.publish.assert_not_called()
+    await sub.stop()
+
+
+async def test_dlq_publish_failure_is_counted_not_raised(mock_nats) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber()
+    await sub.start()
+    callback = await _subscribed_callback(sub, js, ["test.*"])
+    js.publish.side_effect = RuntimeError("broker down")
+
+    msg = _FakeMsg(b"garbage")
+    await callback(msg)
+
+    stats = sub.stats()
+    assert stats["dlq_publish_failures"] == 1
+    assert stats["dlq_published"] == 0
+    assert msg.acked
+    await sub.stop()
+
+
+async def test_ring_buffer_overflow_is_counted(mock_nats) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    sub = NatsSubscriber(ring_buffer_depth=1)
+    await sub.start()
+    # Block the consumer so the queue cannot drain between deliveries.
+    import asyncio as _asyncio
+
+    gate = _asyncio.Event()
+
+    async def _slow_handler(event):
+        await gate.wait()
+
+    await sub.subscribe(["test.*"], _slow_handler)
+    callback = js.subscribe.call_args_list[0].kwargs["cb"]
+
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from sleipnir.adapters.serialization import serialize as _serialize
+    from sleipnir.domain.events import SleipnirEvent as _Event
+
+    def _event(n: int) -> bytes:
+        return _serialize(
+            _Event(
+                event_type="test.event",
+                source="t",
+                payload={"n": n},
+                summary="t",
+                urgency=0.1,
+                domain="infrastructure",
+                timestamp=_dt.now(_UTC),
+            )
+        )
+
+    await callback(_FakeMsg(_event(1)))
+    await callback(_FakeMsg(_event(2)))
+    await callback(_FakeMsg(_event(3)))
+    assert sub.stats()["ring_buffer_overflows"] >= 1
+    gate.set()
+    await sub.stop()
+
+
+async def test_ensure_stream_failure_raises_at_startup(mock_nats) -> None:
+    mock_module, client, js, nats_sub = mock_nats
+    js.stream_info.side_effect = RuntimeError("no such stream")
+    js.add_stream.side_effect = RuntimeError("permission denied")
+    sub = NatsSubscriber()
+    with pytest.raises(RuntimeError, match="could not be created"):
+        await sub.start()
+
+
+async def test_insecure_tls_logs_prominent_warning(caplog) -> None:
+    from sleipnir.adapters.nats_transport import _build_tls_context
+
+    with caplog.at_level("WARNING"):
+        context = _build_tls_context(tls_insecure_skip_verify=True)
+    assert context is not None
+    assert any("DISABLED" in record.message for record in caplog.records)
+
+
+async def test_publish_timeout_raises_with_subject(mock_nats) -> None:
+    import asyncio as _asyncio
+
+    mock_module, client, js, nats_sub = mock_nats
+
+    async def _hang(*args, **kwargs):
+        await _asyncio.sleep(30)
+
+    js.publish.side_effect = _hang
+    pub = NatsPublisher(publish_timeout_s=0.05)
+    await pub.start()
+
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from sleipnir.domain.events import SleipnirEvent as _Event
+
+    event = _Event(
+        event_type="test.event",
+        source="t",
+        payload={},
+        summary="t",
+        urgency=0.1,
+        domain="infrastructure",
+        timestamp=_dt.now(_UTC),
+    )
+    with pytest.raises(TimeoutError, match="sleipnir.test.event"):
+        await pub.publish(event)

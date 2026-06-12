@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 VALKYRIE_JUDGMENT_PROPOSED = "valkyrie.judgment.proposed"
@@ -13,6 +14,7 @@ VALKYRIE_ACTION_EXECUTED = "valkyrie.action.executed"
 VALKYRIE_ACTION_FAILED = "valkyrie.action.failed"
 
 VALKYRIE_ATTENTION_TIERS = frozenset({"silent", "ambient", "present", "urgent"})
+VALKYRIE_WAKEFULNESS_STATES = frozenset({"sleeping", "watching", "wakeful", "dreaming"})
 VALKYRIE_ACTION_AUTHORITIES = frozenset(
     {"autonomous", "yolo_allowed", "court_required", "human_review_required"}
 )
@@ -25,6 +27,14 @@ VALKYRIE_OUTCOME_EVENTS = frozenset(
         VALKYRIE_ACTION_FAILED,
     }
 )
+
+_ACTION_AUTHORITY_ALIASES = {
+    "court": "court_required",
+    "human_review": "human_review_required",
+    "human": "human_review_required",
+    "review": "human_review_required",
+    "yolo": "yolo_allowed",
+}
 
 _JUDGMENT_REQUIRED_FIELDS = (
     "environment_id",
@@ -49,6 +59,112 @@ def is_valkyrie_outcome_event(event_type: str) -> bool:
     return event_type in VALKYRIE_OUTCOME_EVENTS
 
 
+def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Return resident Valkyrie fields normalized for validation and transport.
+
+    Local models can be good operators while still being loose YAML emitters:
+    unquoted timestamps become ``datetime`` objects, single refs sometimes arrive
+    as scalars, and wakefulness vocabulary may drift between UI and persona
+    wording.  Normalize those edge cases at the contract boundary without
+    inventing missing core judgment data.
+    """
+    normalized = {
+        str(key): _json_safe_value(value) for key, value in fields.items() if str(key).strip()
+    }
+    if event_type != VALKYRIE_JUDGMENT_PROPOSED:
+        return normalized
+
+    authority = str(normalized.get("action_authority", "") or "").strip()
+    if authority:
+        normalized["action_authority"] = _ACTION_AUTHORITY_ALIASES.get(authority, authority)
+
+    confidence = normalized.get("confidence")
+    if isinstance(confidence, str):
+        confidence = _strip_wrapping_quotes(confidence.strip())
+        try:
+            normalized["confidence"] = float(confidence.strip())
+        except ValueError:
+            pass
+
+    expires_at = normalized.get("expires_at")
+    if expires_at is None:
+        normalized["expires_at"] = ""
+    elif "expires_at" in normalized:
+        normalized["expires_at"] = str(expires_at)
+
+    for array_field in ("signal_refs", "evidence", "target_surfaces", "dissent_refs"):
+        if array_field not in normalized:
+            continue
+        value = normalized[array_field]
+        if array_field == "dissent_refs" and (
+            value is None or str(value).strip().lower() in {"null", "none"}
+        ):
+            normalized[array_field] = []
+        elif array_field == "evidence" and not isinstance(value, list):
+            if isinstance(value, Mapping):
+                normalized[array_field] = [dict(value)]
+            elif not str(value or "").strip():
+                flattened_evidence = {
+                    key: normalized[key]
+                    for key in ("event_id", "kind", "object", "namespace", "reason", "message")
+                    if str(normalized.get(key, "") or "").strip()
+                }
+                normalized[array_field] = [flattened_evidence] if flattened_evidence else []
+            else:
+                normalized[array_field] = [value]
+        elif not isinstance(value, list):
+            normalized[array_field] = [value]
+
+    correlation_ids = normalized.get("correlation_ids")
+    if correlation_ids is None and "correlation_ids" in normalized:
+        normalized["correlation_ids"] = {}
+    elif "correlation_ids" in normalized and not isinstance(correlation_ids, Mapping):
+        flattened_correlation = {
+            key: normalized[key]
+            for key in ("root", "task", "signal", "environment")
+            if str(normalized.get(key, "") or "").strip()
+        }
+        if flattened_correlation:
+            normalized["correlation_ids"] = flattened_correlation
+        elif isinstance(correlation_ids, list):
+            normalized["correlation_ids"] = {"refs": correlation_ids} if correlation_ids else {}
+        elif str(correlation_ids or "").strip():
+            normalized["correlation_ids"] = {"root": str(correlation_ids).strip()}
+        else:
+            normalized["correlation_ids"] = {}
+
+    if not str(normalized.get("state_summary", "") or "").strip():
+        operational_state = str(normalized.get("operational_state", "") or "").strip()
+        rationale = str(normalized.get("rationale", "") or "").strip()
+        if operational_state or rationale:
+            normalized["state_summary"] = ": ".join(
+                part for part in (operational_state, rationale) if part
+            )
+
+    return normalized
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Coerce values commonly produced by YAML parsing into wire-safe objects."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe_value(item) for item in value]
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return str(value)
+
+
 def validate_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> list[str]:
     """Return validation errors for a resident Valkyrie outcome payload."""
     if event_type != VALKYRIE_JUDGMENT_PROPOSED:
@@ -70,6 +186,13 @@ def validate_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> lis
         errors.append(
             f"resident judgment action_authority {authority!r} is invalid; "
             f"expected one of {allowed}"
+        )
+
+    wakefulness = str(fields.get("wakefulness", "") or "").strip()
+    if wakefulness and wakefulness not in VALKYRIE_WAKEFULNESS_STATES:
+        allowed = ", ".join(sorted(VALKYRIE_WAKEFULNESS_STATES))
+        errors.append(
+            f"resident judgment wakefulness {wakefulness!r} is invalid; expected one of {allowed}"
         )
 
     confidence = fields.get("confidence")

@@ -84,7 +84,7 @@ def test_k8s_lineage_links_signal_state_judgment_action_court_huddle_feedback_le
 
     assert events["demo-k8s-a-action-completed"].causation_id == "demo-k8s-a-room-message-human"
     assert events["demo-k8s-a-learning-flock"].payload["nats_subject"] == (
-        "odin.flock.k8s.learning.promoted"
+        "flock.k8s.learning.promoted"
     )
 
 
@@ -114,7 +114,7 @@ def test_flock_learning_transfer_records_canary_adoption_and_rejection() -> None
     assert adopted.payload["action"] == "adopted"
     assert adopted.payload["canary_passed"] is True
     assert rejected.payload["action"] == "rejected"
-    assert rejected.payload["nats_subject"] == "odin.flock.k8s.learning.rejected"
+    assert rejected.payload["nats_subject"] == "flock.k8s.learning.rejected"
 
 
 def test_demo_writes_jsonl_lineage_and_summary_artifacts(tmp_path: Path) -> None:

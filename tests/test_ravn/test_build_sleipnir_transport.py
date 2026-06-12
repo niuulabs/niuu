@@ -20,6 +20,7 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
     return {
         "servers": servers or ["nats://localhost:4222"],
         "stream_name": "ravn_environment",
+        "jetstream_domain": "",
         "subject_prefix": "ravn.environment",
         "retention": "limits",
         "max_age_seconds": 604800,
@@ -28,6 +29,7 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "connect_timeout_s": 10.0,
         "max_reconnect_attempts": 60,
         "ensure_stream": True,
+        "publish_timeout_s": 10.0,
         "tls_ca_file": "",
         "tls_cert_file": "",
         "tls_key_file": "",
@@ -39,6 +41,8 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "token": "",
         "nkeys_seed_file": "",
         "nkeys_seed": "",
+        "extra_subscriptions": [],
+        "core_subscriptions": [],
     }
 
 

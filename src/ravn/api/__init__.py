@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +55,12 @@ from ravn.api.runtime_data import (
 from ravn.api.runtime_data import (
     list_triggers as list_runtime_triggers,
 )
+from ravn.api.valkyries import (
+    ValkyrieDashboardProjection,
+    build_nats_review_command_publisher_from_env,
+    build_nats_telemetry_subscription_from_env,
+    create_valkyrie_router,
+)
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.warden import (
@@ -69,6 +76,9 @@ from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
     from ravn.ports.persona import PersonaRegistryPort
+
+
+logger = logging.getLogger(__name__)
 
 
 class TriggerCreateRequest(BaseModel):
@@ -613,5 +623,96 @@ def create_app(
         from ravn.api.personas import create_personas_router
 
         app.include_router(create_personas_router(persona_loader))
+
+    import contextlib  # noqa: PLC0415
+
+    from ravn.api.odin_reviews import (  # noqa: PLC0415
+        build_review_queue_store_from_env,
+        build_review_ttls_from_env,
+        create_odin_review_router,
+        review_sweep_interval_from_env,
+    )
+    from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
+    from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
+
+    valkyrie_projection = ValkyrieDashboardProjection()
+    valkyrie_learning_commands = build_nats_review_command_publisher_from_env()
+    review_ttls, review_default_ttl = build_review_ttls_from_env()
+    odin_review_service = OdinReviewService(
+        build_review_queue_store_from_env(),
+        publisher=valkyrie_learning_commands,
+        ttl_seconds_by_kind=review_ttls,
+        default_ttl_seconds=review_default_ttl,
+    )
+    valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
+        valkyrie_projection,
+        review_ingest=odin_review_service.ingest_event,
+    )
+    review_sweep_interval = review_sweep_interval_from_env()
+    review_sweep_task: dict[str, asyncio.Task | None] = {"task": None}
+
+    async def _run_review_sweep() -> None:
+        while True:
+            await asyncio.sleep(review_sweep_interval)
+            try:
+                await odin_review_service.sweep_expired()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("odin review: expiry sweep failed")
+
+    @app.on_event("startup")
+    async def start_review_sweep() -> None:
+        review_sweep_task["task"] = asyncio.create_task(
+            _run_review_sweep(),
+            name="odin_review_sweep",
+        )
+
+    @app.on_event("shutdown")
+    async def stop_review_sweep() -> None:
+        task = review_sweep_task["task"]
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            review_sweep_task["task"] = None
+
+    if valkyrie_telemetry is not None:
+
+        @app.on_event("startup")
+        async def start_valkyrie_telemetry() -> None:
+            try:
+                await valkyrie_telemetry.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("valkyrie telemetry subscription did not start: %s", exc)
+
+        @app.on_event("shutdown")
+        async def stop_valkyrie_telemetry() -> None:
+            await valkyrie_telemetry.stop()
+
+    @app.on_event("startup")
+    async def start_valkyrie_learning_commands() -> None:
+        try:
+            await valkyrie_learning_commands.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valkyrie learning command publisher did not start: %s", exc)
+
+    @app.on_event("shutdown")
+    async def stop_valkyrie_learning_commands() -> None:
+        await valkyrie_learning_commands.stop()
+
+    app.include_router(
+        create_valkyrie_router(
+            valkyrie_projection,
+            review_command_publisher=valkyrie_learning_commands,
+            review_service=odin_review_service,
+        )
+    )
+    app.include_router(
+        create_odin_review_router(
+            odin_review_service,
+            room_client=build_skuld_room_client_from_env(),
+        )
+    )
 
     return app
