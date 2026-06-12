@@ -61,9 +61,7 @@ def test_investigation_prompt_handles_missing_and_failing_providers(tmp_path) ->
         raise RuntimeError("provider exploded")
 
     no_provider = attach_build_tool(_FakeAgent(), tools_dir=tmp_path / "a")
-    raising = attach_build_tool(
-        _FakeAgent(), tools_dir=tmp_path / "b", investigation_context=_boom
-    )
+    raising = attach_build_tool(_FakeAgent(), tools_dir=tmp_path / "b", investigation_context=_boom)
     # Provenance must never break a build: both degrade to an empty prompt.
     assert no_provider._investigation_prompt() == ""
     assert raising._investigation_prompt() == ""

@@ -232,9 +232,9 @@ async def test_operator_approval_of_held_self_build_installs_and_teaches_flock(t
     resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
     assert len(resolved) == 1
     assert resolved[0].payload["apply_outcome"] == "applied"
-    assert any(
-        event.event_type == registry.FLOCK_LEARNING_PROPOSED for event in recorder.events
-    ), "an operator-approved self-build must still teach the flock"
+    assert any(event.event_type == registry.FLOCK_LEARNING_PROPOSED for event in recorder.events), (
+        "an operator-approved self-build must still teach the flock"
+    )
     outbox_item = store.get(item.item_id)
     assert outbox_item.status == ReviewStatus.APPLIED.value
 
@@ -375,4 +375,3 @@ async def test_promotion_of_unknown_skill_fails_loudly(tmp_path) -> None:
     assert len(resolved) == 1
     assert resolved[0].payload["apply_outcome"] == "apply_failed"
     await runtime.stop()
-
