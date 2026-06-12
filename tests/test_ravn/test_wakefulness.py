@@ -248,6 +248,49 @@ async def test_dream_holds_promotion_for_skills_implicated_by_feedback(tmp_path)
     assert (await skills.show("suspect-probe"))["metadata"]["scope"] == "private"
 
 
+async def test_dream_tallies_delivery_and_positive_feedback(tmp_path) -> None:
+    """Snooze/escalate count as delivery, other feedback as positive (F3)."""
+    from datetime import UTC, datetime
+
+    from ravn.domain.models import Episode, EpisodeMatch, Outcome
+
+    def _episode(feedback_type: str, environment_id: str = "cluster-a") -> EpisodeMatch:
+        episode = Episode(
+            episode_id=f"feedback:{feedback_type}",
+            session_id="feedback:cluster-a",
+            timestamp=datetime.now(UTC),
+            summary="fb",
+            task_description="capture feedback",
+            tools_used=[],
+            outcome=Outcome.SUCCESS,
+            tags=["valkyrie-feedback"],
+            structured_outcome={
+                "kind": "environment_feedback",
+                "environment_id": environment_id,
+                "feedback_type": feedback_type,
+            },
+            outcome_valid=True,
+        )
+        return EpisodeMatch(episode=episode, relevance=1.0)
+
+    class _FeedbackMemory:
+        async def query_episodes(self, query, *, limit, min_relevance):
+            return [
+                _episode("snooze"),
+                _episode("escalate"),
+                _episode("acknowledged"),
+                _episode("snooze", environment_id="other-env"),  # filtered out
+            ]
+
+    machine, _recorder, _clock = await _machine(tmp_path)
+    machine._memory = _FeedbackMemory()
+    summary = await machine.dream()
+
+    assert summary["feedback"]["delivery"] == 2
+    assert summary["feedback"]["positive"] == 1
+    assert summary["feedback"]["negative"] == 0
+
+
 async def test_guarded_promotion_candidates_become_review_items(tmp_path) -> None:
     """Held promotions go to the operator on the unified review path."""
     from ravn.odin.review import JsonReviewStore, ReviewRequester

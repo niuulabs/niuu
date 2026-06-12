@@ -246,6 +246,26 @@ async def test_operator_approval_of_held_self_build_installs_and_teaches_flock(t
     await runtime.stop()
 
 
+async def test_operator_rejection_of_a_held_build_records_and_does_not_install(tmp_path) -> None:
+    runtime, bus, _store, skills = _runtime(tmp_path)
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    await runtime.start()
+
+    item = _held_evolution_build()
+    await runtime.review_requester.request(item)
+    item.decide(decision="rejected", operator_id="human:jozef", reason="not needed")
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
+    await bus.flush()
+
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert resolved and resolved[0].payload["status"] == "rejected"
+    assert resolved[0].payload["apply_outcome"] == "applied"
+    assert await skills.get_runnable_skill(item.title) is None
+
+    await runtime.stop()
+
+
 # ---------------------------------------------------------------------------
 # Court escalations and skill promotions through the same dispatcher
 # ---------------------------------------------------------------------------

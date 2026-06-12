@@ -169,6 +169,33 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
+async def test_resident_learning_failure_is_published_and_recovered() -> None:
+    bus = InProcessBus()
+    failures: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    await bus.subscribe(
+        ["valkyrie.resident_learning.failed"], lambda event: _record(failures, event)
+    )
+
+    async def _boom(_event: SleipnirEvent) -> dict:
+        raise RuntimeError("resident exploded")
+
+    runtime = EnvironmentSignalRuntime(
+        settings=_settings(),
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=_boom,
+    )
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert failures and failures[0].payload["error_type"] == "RuntimeError"
+    # The signal still escalates; the prompt records the failed pre-check.
+    assert enqueued and "resident_learning_failed" in enqueued[0].initiative_context
+
+
+@pytest.mark.asyncio
 async def test_defer_to_investigation_appends_the_build_mandate() -> None:
     bus = InProcessBus()
     enqueued: list[AgentTask] = []

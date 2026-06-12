@@ -85,6 +85,67 @@ async def test_agent_tool_that_shells_out_is_not_blocked_for_subprocess() -> Non
     assert review.outcome == "needs_approval"
 
 
+def _agent_tool_build(request, *, manifest: dict, tool_code: str) -> BuildResult:
+    return BuildResult(
+        request_id=request.request_id,
+        skill_name=manifest.get("name", "tool"),
+        skill_content="",
+        description="d",
+        artifact_type="agent_tool",
+        tool_code=tool_code,
+        tool_entry_point="run",
+        evidence={"learned_tool_manifest": manifest},
+    )
+
+
+async def test_agent_tool_manifest_validation_findings_block_review() -> None:
+    request = _request(autonomy_mode="yolo")
+    build = _agent_tool_build(
+        request,
+        manifest={"name": "", "required_permission": "", "input_schema": {}},
+        tool_code="def run(input):\n    return {}\n",
+    )
+    review = await PolicyCourtReviewer().review(request=request, build=build, autonomy_mode="yolo")
+    assert "learned tool manifest is missing name" in review.blocking_findings
+    assert "learned tool manifest is missing required_permission" in review.blocking_findings
+
+
+async def test_agent_tool_without_implementation_is_flagged() -> None:
+    request = _request(autonomy_mode="yolo")
+    build = _agent_tool_build(
+        request,
+        manifest={"name": "t", "required_permission": "x", "input_schema": {"type": "object"}},
+        tool_code="",
+    )
+    review = await PolicyCourtReviewer().review(request=request, build=build, autonomy_mode="yolo")
+    assert "learned tool is missing implementation" in review.blocking_findings
+
+
+async def test_unexpected_artifact_type_and_missing_marker_are_flagged() -> None:
+    request = _request(autonomy_mode="yolo")
+    weird = BuildResult(
+        request_id=request.request_id,
+        skill_name="t",
+        skill_content="# skill: t\n",
+        description="d",
+        artifact_type="mystery_tool",
+        tool_code="",
+        tool_entry_point="run",
+    )
+    review = await PolicyCourtReviewer().review(request=request, build=weird, autonomy_mode="yolo")
+    assert any("unexpected artifact type" in f for f in review.blocking_findings)
+    assert "missing capability marker" in review.blocking_findings
+
+
+async def test_unknown_autonomy_mode_degrades_to_guarded() -> None:
+    request = _request(autonomy_mode="mystery")
+    review = await PolicyCourtReviewer().review(
+        request=request, build=await _build(request), autonomy_mode="mystery"
+    )
+    # Unknown mode maps to guarded, which holds rather than auto-approves.
+    assert review.outcome == "needs_approval"
+
+
 async def test_autonomous_low_risk_environment_change_is_approved() -> None:
     request = _request(autonomy_mode="autonomous")
     review = await PolicyCourtReviewer().review(

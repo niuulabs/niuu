@@ -217,6 +217,83 @@ def test_backends_construct_from_plain_yaml_kwargs() -> None:
     assert ting.name == "ting_workflow"
 
 
+async def test_forge_create_rejects_non_object_body() -> None:
+    client = _FakeHttpClient({("POST", "/api/v1/forge/sessions"): [HttpResponse(200, "nope")]})
+    backend = ForgeSessionToolBuildBackend(client=client, base_url="http://forge")
+    with pytest.raises(ToolBuildError, match="non-object body"):
+        await backend.build(_request())
+
+
+async def test_forge_create_without_session_id_raises() -> None:
+    client = _FakeHttpClient({("POST", "/api/v1/forge/sessions"): [HttpResponse(201, {})]})
+    backend = ForgeSessionToolBuildBackend(client=client, base_url="http://forge")
+    with pytest.raises(ToolBuildError, match="no session id"):
+        await backend.build(_request())
+
+
+async def test_forge_chronicle_fetch_error_raises() -> None:
+    client = _FakeHttpClient(
+        {
+            ("POST", "/api/v1/forge/sessions"): [HttpResponse(201, {"id": "s1"})],
+            ("GET", "/api/v1/forge/sessions/s1"): [HttpResponse(200, {"status": "completed"})],
+            ("GET", "/api/v1/forge/sessions/s1/chronicle"): [HttpResponse(500, "boom")],
+        }
+    )
+    backend = ForgeSessionToolBuildBackend(
+        client=client, base_url="http://forge", poll_interval_seconds=0, sleep=_no_sleep
+    )
+    with pytest.raises(ToolBuildError, match="chronicle fetch"):
+        await backend.build(_request())
+
+
+async def test_forge_empty_chronicle_has_no_contract() -> None:
+    client = _FakeHttpClient(
+        {
+            ("POST", "/api/v1/forge/sessions"): [HttpResponse(201, {"id": "s1"})],
+            ("GET", "/api/v1/forge/sessions/s1"): [HttpResponse(200, {"status": "completed"})],
+            ("GET", "/api/v1/forge/sessions/s1/chronicle"): [HttpResponse(200, {"unused": "x"})],
+        }
+    )
+    backend = ForgeSessionToolBuildBackend(
+        client=client, base_url="http://forge", poll_interval_seconds=0, sleep=_no_sleep
+    )
+    with pytest.raises(ToolBuildError, match="no JSON object"):
+        await backend.build(_request())
+
+
+async def test_ting_launch_rejects_non_object_body() -> None:
+    client = _FakeHttpClient(
+        {("POST", "/api/v1/ting/workflows/wf-1/launch"): [HttpResponse(200, "nope")]}
+    )
+    backend = TingWorkflowToolBuildBackend(
+        client=client, base_url="http://ting", workflow_id="wf-1"
+    )
+    with pytest.raises(ToolBuildError, match="non-object body"):
+        await backend.build(_request())
+
+
+async def test_ting_uses_inline_campaign_result() -> None:
+    client = _FakeHttpClient(
+        {
+            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
+                HttpResponse(200, {"campaign_id": "c1"})
+            ],
+            ("GET", "/api/v1/ting/research/campaigns/c1"): [
+                HttpResponse(200, {"status": "COMPLETED", "result": _BUILT_CONTRACT})
+            ],
+        }
+    )
+    backend = TingWorkflowToolBuildBackend(
+        client=client,
+        base_url="http://ting",
+        workflow_id="wf-1",
+        poll_interval_seconds=0,
+        sleep=_no_sleep,
+    )
+    result = await backend.build(_request())
+    assert result.tool_code.startswith("def run")
+
+
 def test_client_from_pat_env_resolves_the_token(monkeypatch) -> None:
     from ravn.adapters.tool_build.http import client_from_pat_env
 
