@@ -1489,7 +1489,7 @@ class MimirRouter:
         async def doctor_report() -> dict[str, Any]:
             from mimir.doctor import run_doctor
 
-            root = getattr(adapter, "_root", None)
+            root = adapter.filesystem_root()
             if root is None:
                 raise HTTPException(
                     status_code=501,
@@ -1506,7 +1506,7 @@ class MimirRouter:
         async def eval_latest() -> dict[str, Any]:
             """Latest retrieval eval report (written by `mimir eval --out
             <root>/evals/eval-latest.json`). 404 when none has been recorded."""
-            root = getattr(adapter, "_root", None)
+            root = adapter.filesystem_root()
             if root is None:
                 raise HTTPException(status_code=501, detail="No filesystem root")
             report_path = Path(root) / "evals" / "eval-latest.json"
@@ -1521,7 +1521,7 @@ class MimirRouter:
             """Aggregated live query stats from the eval-capture JSONL files."""
             from mimir.eval import load_capture
 
-            root = getattr(adapter, "_root", None)
+            root = adapter.filesystem_root()
             if root is None:
                 raise HTTPException(status_code=501, detail="No filesystem root")
             evals_dir = Path(root) / "evals"
@@ -1536,8 +1536,8 @@ class MimirRouter:
                     "query": entry.query,
                     "result_count": len(entry.result_paths),
                 }
-                for entry in captures[-_RECENT_QUERY_LIMIT:]
-            ][::-1]
+                for entry in reversed(captures[-_RECENT_QUERY_LIMIT:])
+            ]
             return {
                 "total": len(captures),
                 "zero_result_count": sum(1 for c in captures if not c.result_paths),
@@ -1549,7 +1549,7 @@ class MimirRouter:
             """Run the safe auto-remediations, then return a fresh report."""
             from mimir.doctor import run_doctor, run_fixes
 
-            root = getattr(adapter, "_root", None)
+            root = adapter.filesystem_root()
             if root is None:
                 raise HTTPException(
                     status_code=501,

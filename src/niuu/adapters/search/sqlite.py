@@ -642,15 +642,15 @@ class SqliteSearchAdapter(SearchPort):
         """True when the native KNN path can serve this query vector."""
         if not self._vec_enabled or self._vec_dim is None:
             return False
-        if len(query_vec) == self._vec_dim:
-            return True
-        logger.warning(
-            "query embedding dimension (%d) does not match the sqlite-vec "
-            "index dimension (%d) — falling back to Python cosine similarity",
-            len(query_vec),
-            self._vec_dim,
-        )
-        return False
+        if len(query_vec) != self._vec_dim:
+            logger.warning(
+                "query embedding dimension (%d) does not match the sqlite-vec "
+                "index dimension (%d) — falling back to Python cosine similarity",
+                len(query_vec),
+                self._vec_dim,
+            )
+            return False
+        return True
 
     async def _search_hybrid(self, query: str, *, limit: int) -> list[SearchResult]:
         """Hybrid retrieval: FTS5 + semantic similarity merged via RRF.

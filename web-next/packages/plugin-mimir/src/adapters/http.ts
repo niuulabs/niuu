@@ -634,6 +634,16 @@ export function toDoctorReport(raw: RawDoctorReport): DoctorReport {
   };
 }
 
+/** Run a request, mapping missing-route errors (optional backend capability) to null. */
+async function nullOnMissingRoute<T>(request: () => Promise<T>): Promise<T | null> {
+  try {
+    return await request();
+  } catch (error) {
+    if (!isMissingRouteError(error)) throw error;
+    return null;
+  }
+}
+
 export function isMissingRouteError(error: unknown): error is { status: number } {
   return (
     typeof error === 'object' &&
@@ -853,43 +863,27 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
       },
 
       async getEvalReport(): Promise<EvalReport | null> {
-        try {
-          const raw = await client.get<RawEvalReport>('/eval/latest');
-          return toEvalReport(raw);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return null;
-        }
+        return nullOnMissingRoute(async () =>
+          toEvalReport(await client.get<RawEvalReport>('/eval/latest')),
+        );
       },
 
       async getQueryStats(): Promise<QueryStats | null> {
-        try {
-          const raw = await client.get<RawQueryStats>('/eval/queries');
-          return toQueryStats(raw);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return null;
-        }
+        return nullOnMissingRoute(async () =>
+          toQueryStats(await client.get<RawQueryStats>('/eval/queries')),
+        );
       },
 
       async getDoctor(): Promise<DoctorReport | null> {
-        try {
-          const raw = await client.get<RawDoctorReport>('/doctor');
-          return toDoctorReport(raw);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return null;
-        }
+        return nullOnMissingRoute(async () =>
+          toDoctorReport(await client.get<RawDoctorReport>('/doctor')),
+        );
       },
 
       async runDoctorFixes(): Promise<DoctorReport | null> {
-        try {
-          const raw = await client.post<RawDoctorReport>('/doctor/fix', {});
-          return toDoctorReport(raw);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return null;
-        }
+        return nullOnMissingRoute(async () =>
+          toDoctorReport(await client.post<RawDoctorReport>('/doctor/fix', {})),
+        );
       },
     },
 

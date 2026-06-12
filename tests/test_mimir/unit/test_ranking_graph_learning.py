@@ -193,8 +193,9 @@ def test_link_graph_builds_edges_and_backlinks(tmp_path: Path) -> None:
 
     targets = {edge.target for edge in graph.forward["entities/alice-smith.md"]}
     assert targets == {"entities/acme-corp.md"}
-    assert graph.backlinks["entities/acme-corp.md"] == 1
-    assert graph.backlinks["entities/alice-smith.md"] == 1  # from widgets.md
+    # Reverse adjacency: (source, rel) pairs pointing at each target.
+    assert graph.inbound["entities/acme-corp.md"] == [("entities/alice-smith.md", "works_at")]
+    assert [src for src, _ in graph.inbound["entities/alice-smith.md"]] == ["technical/widgets.md"]
     assert {meta.path for meta in graph.entities} == {
         "entities/alice-smith.md",
         "entities/acme-corp.md",
@@ -230,7 +231,7 @@ def test_graph_cache_invalidated_on_upsert(tmp_path: Path) -> None:
 
     asyncio.run(adapter.upsert_page("technical/new.md", "# New\n\nLinks [[acme-corp]].\n"))
     graph = adapter._link_graph()
-    assert graph.backlinks["entities/acme-corp.md"] == 2
+    assert len(graph.inbound["entities/acme-corp.md"]) == 2
 
 
 async def test_relational_arm_injects_entities_when_fts_misses(tmp_path: Path) -> None:

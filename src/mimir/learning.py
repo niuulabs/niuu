@@ -103,14 +103,17 @@ def compute_page_evidence(
     facts = extract_key_facts(content)
     source_token_sets = [tokenize(source_content) for _, source_content in sources or []]
 
+    entry_token_sets = [
+        (entry.date, tokenize(entry.description)) for entry in page.timeline_entries
+    ]
+
     results: list[FactEvidence] = []
     for fact in facts:
         fact_tokens = tokenize(fact)
         supporting: list[str] = []
-        for entry in page.timeline_entries:
-            overlap = fact_tokens & tokenize(entry.description)
-            if len(overlap) >= cfg.min_token_overlap:
-                supporting.append(entry.date)
+        for entry_date, entry_tokens in entry_token_sets:
+            if len(fact_tokens & entry_tokens) >= cfg.min_token_overlap:
+                supporting.append(entry_date)
 
         source_proofs = sum(
             1
@@ -203,6 +206,7 @@ def find_bearing_pages(
     page title. Pure function over (path, title) pairs — zero I/O, zero LLM.
     """
     source_tokens = tokenize(f"{source_title}\n{source_content}")
+    source_title_tokens = tokenize(source_title)
     affected: list[str] = []
     for path, title in pages:
         title_tokens = tokenize(title)
@@ -211,7 +215,7 @@ def find_bearing_pages(
         if title_tokens <= source_tokens:
             affected.append(path)
             continue
-        if len(title_tokens & tokenize(source_title)) >= min_token_overlap:
+        if len(title_tokens & source_title_tokens) >= min_token_overlap:
             affected.append(path)
     return affected
 

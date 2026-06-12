@@ -7,6 +7,7 @@ depend on this interface.  Neither module depends on the other.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from niuu.domain.mimir import (
     MimirLintReport,
@@ -27,7 +28,20 @@ class MimirPort(ABC):
     knowledge between agent sessions.  Raw sources flow in via ``ingest()``;
     the wiki layer is queried via ``query()`` and ``search()``; idle-time
     maintenance is driven by ``lint()``.
+
+    Adapters may expose optional capabilities beyond this interface (link
+    graph traversal, entity index, doctor checks); callers discover them via
+    ``getattr`` and degrade gracefully (the HTTP router answers 501).
     """
+
+    def filesystem_root(self) -> Path | None:
+        """Root directory of a filesystem-backed store, or ``None``.
+
+        Filesystem-coupled features (doctor checks, eval artifacts under
+        ``<root>/evals/``) use this instead of reaching into adapter
+        internals. Remote/composite adapters keep the ``None`` default.
+        """
+        return None
 
     @abstractmethod
     async def ingest(self, source: MimirSource) -> list[str]:

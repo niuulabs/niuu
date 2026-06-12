@@ -30,7 +30,9 @@ class SearchPort(ABC):
 
     The port is content-agnostic: callers pass arbitrary ``content`` strings
     and ``metadata`` dicts.  Domain-specific scoring (e.g. recency decay) is
-    the caller's responsibility.
+    the caller's responsibility — the port returns base relevance scores and
+    domain adapters (e.g. Mímir's markdown adapter) may apply their own
+    boosts on top before surfacing results.
     """
 
     @abstractmethod

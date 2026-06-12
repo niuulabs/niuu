@@ -43,41 +43,30 @@ def neutral() -> RankingConfig:
 
 
 def variants() -> dict[str, RankingConfig]:
-    base = neutral()
-    out: dict[str, RankingConfig] = {"neutral (no boosts)": base}
-
-    cfg = neutral()
-    cfg.recency_half_life_days = RankingConfig().recency_half_life_days
-    out["+recency"] = cfg
-
-    cfg = neutral()
-    cfg.title_match_boost = RankingConfig().title_match_boost
-    out["+title_match"] = cfg
-
-    cfg = neutral()
-    cfg.confidence_boosts = RankingConfig().confidence_boosts
-    out["+confidence"] = cfg
-
-    cfg = neutral()
-    cfg.page_type_weights = RankingConfig().page_type_weights
-    out["+page_type"] = cfg
-
-    cfg = neutral()
-    cfg.backlink_alpha = RankingConfig().backlink_alpha
-    out["+backlinks"] = cfg
-
-    cfg = neutral()
-    cfg.zone_weights = RankingConfig().zone_weights
-    out["+zone"] = cfg
-
-    cfg = neutral()
     defaults = RankingConfig()
-    cfg.graph_injection_base = defaults.graph_injection_base
-    cfg.graph_neighbor_boost = defaults.graph_neighbor_boost
-    cfg.graph_entity_boost = defaults.graph_entity_boost
-    out["+graph (relational arm)"] = cfg
+    out: dict[str, RankingConfig] = {"neutral (no boosts)": neutral()}
 
-    out["full (defaults)"] = RankingConfig()
+    # label -> the default-config fields that variant re-enables on top of neutral.
+    single_boost_fields = {
+        "recency": ["recency_half_life_days"],
+        "title_match": ["title_match_boost"],
+        "confidence": ["confidence_boosts"],
+        "page_type": ["page_type_weights"],
+        "backlinks": ["backlink_alpha"],
+        "zone": ["zone_weights"],
+        "graph (relational arm)": [
+            "graph_injection_base",
+            "graph_neighbor_boost",
+            "graph_entity_boost",
+        ],
+    }
+    for label, fields in single_boost_fields.items():
+        cfg = neutral()
+        for name in fields:
+            setattr(cfg, name, getattr(defaults, name))
+        out[f"+{label}"] = cfg
+
+    out["full (defaults)"] = defaults
     return out
 
 

@@ -39,6 +39,7 @@ from typing import Any
 import yaml
 
 from mimir.compiled_truth import (
+    _FRONTMATTER_RE,
     extract_wikilinks,
 )
 from mimir.compiled_truth import (
@@ -210,7 +211,6 @@ _CATEGORY_TO_PAGE_TYPE: dict[str, str] = {
 }
 
 _COMPILED_TRUTH_HEADING = "## Compiled Truth"
-_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 # Typed relationship edges (NIU-1058), an additive FORMAT.md extension:
@@ -228,12 +228,9 @@ def _extract_typed_edges(content: str) -> dict[str, str]:
     }
 
 
-_META_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
-
-
 def _parse_meta_frontmatter(content: str) -> dict[str, Any]:
     """Parse the frontmatter fields MimirPageMeta carries; tolerant of junk."""
-    match = _META_FRONTMATTER_RE.match(content)
+    match = _FRONTMATTER_RE.match(content)
     if match is None:
         return {}
     try:
@@ -263,6 +260,11 @@ def _parse_meta_frontmatter(content: str) -> dict[str, Any]:
     return parsed
 
 
+# (path, score, breakdown, content, meta) — content/meta None when ranking is
+# disabled and pages are loaded lazily at materialisation time.
+_RankedCandidate = tuple[str, float, "dict[str, float]", "str | None", "MimirPageMeta | None"]
+
+
 @dataclass
 class LinkEdge:
     """A directed wikilink edge, optionally typed (rel)."""
@@ -273,10 +275,16 @@ class LinkEdge:
 
 @dataclass
 class LinkGraph:
-    """In-memory wikilink graph derived from the markdown on disk."""
+    """In-memory wikilink graph derived from the markdown on disk.
+
+    ``inbound`` is the reverse adjacency: for each target path, the list of
+    ``(source_path, rel)`` edges pointing at it. Backlink counts are
+    ``len(inbound[path])``; keeping the edges (not just counts) lets the
+    relational arm and BFS avoid O(V·E) full-graph scans.
+    """
 
     forward: dict[str, list[LinkEdge]]
-    backlinks: dict[str, int]
+    inbound: dict[str, list[tuple[str, str | None]]]
     stem_to_path: dict[str, str]
     entities: list[MimirPageMeta]
 
@@ -561,7 +569,7 @@ class MarkdownMimirAdapter(MimirPort):
 
         if not config.enabled:
             return self._load_ranked_pages(
-                [(path, score, {}) for path, score in base_scores.items()]
+                [(path, score, {}, None, None) for path, score in base_scores.items()]
             )
 
         # Relational arm (NIU-1058): entities named in the query pull in
@@ -577,12 +585,13 @@ class MarkdownMimirAdapter(MimirPort):
                 base_scores.setdefault(path, config.graph_injection_base)
 
         query_tokens = tokenize(query)
-        ranked: list[tuple[str, float, dict[str, float]]] = []
+        ranked: list[_RankedCandidate] = []
         for path, base in base_scores.items():
             md_path = self._wiki / path
             if not md_path.exists():
                 continue
-            meta = self._build_page_meta(md_path, md_path.read_text(encoding="utf-8"))
+            content = md_path.read_text(encoding="utf-8")
+            meta = self._build_page_meta(md_path, content)
             graph_factor = 1.0
             if path in entity_paths:
                 graph_factor = config.graph_entity_boost
@@ -593,25 +602,29 @@ class MarkdownMimirAdapter(MimirPort):
                 meta,
                 query_tokens,
                 config,
-                backlink_count=graph.backlinks.get(path, 0),
+                backlink_count=len(graph.inbound.get(path, ())),
                 graph_factor=graph_factor,
             )
-            ranked.append((path, final, breakdown))
+            ranked.append((path, final, breakdown, content, meta))
 
         ranked.sort(key=lambda item: item[1], reverse=True)
         return self._load_ranked_pages(ranked[:_SEARCH_RESULT_LIMIT])
 
-    def _load_ranked_pages(
-        self, ranked: list[tuple[str, float, dict[str, float]]]
-    ) -> list[MimirPage]:
-        """Materialise (path, score, breakdown) tuples into ordered MimirPages."""
+    def _load_ranked_pages(self, ranked: list[_RankedCandidate]) -> list[MimirPage]:
+        """Materialise ranked candidates into ordered MimirPages.
+
+        Content/meta are carried through from the ranking pass so each page is
+        read from disk exactly once per search; the ``None`` form (ranking
+        disabled) loads lazily here instead.
+        """
         pages: list[tuple[float, MimirPage]] = []
-        for path, score, breakdown in ranked:
-            md_path = self._wiki / path
-            if not md_path.exists():
-                continue
-            content = md_path.read_text(encoding="utf-8")
-            meta = self._build_page_meta(md_path, content)
+        for path, score, breakdown, content, meta in ranked:
+            if content is None or meta is None:
+                md_path = self._wiki / path
+                if not md_path.exists():
+                    continue
+                content = md_path.read_text(encoding="utf-8")
+                meta = self._build_page_meta(md_path, content)
             meta.search_score = score
             meta.score_breakdown = breakdown or None
             pages.append((score, MimirPage(meta=meta, content=content)))
@@ -1071,7 +1084,7 @@ class MarkdownMimirAdapter(MimirPort):
                 stem_to_path[stem] = rel
 
         forward: dict[str, list[LinkEdge]] = {}
-        backlinks: dict[str, int] = {}
+        inbound: dict[str, list[tuple[str, str | None]]] = {}
         entities: list[MimirPageMeta] = []
         for rel, content, meta in pages:
             if meta.page_type is not None and meta.page_type.value == "entity":
@@ -1083,13 +1096,14 @@ class MarkdownMimirAdapter(MimirPort):
                 target = stem_to_path.get(slug.strip().lower())
                 if target is None or target == rel:
                     continue
-                edges.append(LinkEdge(target=target, rel=rel_types.get(slug.strip().lower())))
-                backlinks[target] = backlinks.get(target, 0) + 1
+                edge_rel = rel_types.get(slug.strip().lower())
+                edges.append(LinkEdge(target=target, rel=edge_rel))
+                inbound.setdefault(target, []).append((rel, edge_rel))
             forward[rel] = edges
 
         return LinkGraph(
             forward=forward,
-            backlinks=backlinks,
+            inbound=inbound,
             stem_to_path=stem_to_path,
             entities=entities,
         )
@@ -1110,9 +1124,7 @@ class MarkdownMimirAdapter(MimirPort):
         neighbors: set[str] = set()
         for path in entity_paths:
             neighbors.update(edge.target for edge in graph.forward.get(path, []))
-            for source, edges in graph.forward.items():
-                if any(edge.target == path for edge in edges):
-                    neighbors.add(source)
+            neighbors.update(source for source, _ in graph.inbound.get(path, []))
         return entity_paths, neighbors - entity_paths
 
     def related_pages(self, path: str, depth: int = 1, rel: str | None = None) -> list[dict]:
@@ -1136,19 +1148,18 @@ class MarkdownMimirAdapter(MimirPort):
                     results.append(
                         {"path": edge.target, "hop": hop, "rel": edge.rel, "direction": "out"}
                     )
-                for source, edges in graph.forward.items():
-                    for edge in edges:
-                        if edge.target != current or source in visited:
-                            continue
-                        if rel is not None and edge.rel != rel:
-                            continue
-                        visited.add(source)
-                        next_frontier.append(source)
-                        results.append(
-                            {"path": source, "hop": hop, "rel": edge.rel, "direction": "in"}
-                        )
+                for source, edge_rel in graph.inbound.get(current, []):
+                    if source in visited or (rel is not None and edge_rel != rel):
+                        continue
+                    visited.add(source)
+                    next_frontier.append(source)
+                    results.append({"path": source, "hop": hop, "rel": edge_rel, "direction": "in"})
             frontier = next_frontier
         return results
+
+    def filesystem_root(self) -> Path | None:
+        """This adapter is filesystem-backed; expose the store root."""
+        return self._root
 
     def entity_index(self) -> list[MimirPageMeta]:
         """All entity-typed pages (feeds ``GET /mimir/entities``, NIU-1059)."""
