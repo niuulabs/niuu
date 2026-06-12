@@ -1,0 +1,893 @@
+{
+  "generated_at": "2026-06-12T20:32:22.291042+00:00",
+  "corpus": "tests/test_mimir/evals/corpus",
+  "embedding_model": null,
+  "query_count": 62,
+  "overall": {
+    "precision_at_5": 0.47580645161290325,
+    "recall_at_10": 0.47580645161290325,
+    "mrr": 0.4798387096774194
+  },
+  "by_category": {
+    "evolution": {
+      "precision_at_5": 0.6,
+      "recall_at_10": 0.6,
+      "mrr": 0.6
+    },
+    "keyword": {
+      "precision_at_5": 0.9666666666666667,
+      "recall_at_10": 0.9666666666666667,
+      "mrr": 0.9666666666666667
+    },
+    "relational": {
+      "precision_at_5": 0.375,
+      "recall_at_10": 0.375,
+      "mrr": 0.3541666666666667
+    },
+    "semantic": {
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    "temporal": {
+      "precision_at_5": 0.375,
+      "recall_at_10": 0.375,
+      "mrr": 0.4166666666666667
+    }
+  },
+  "queries": [
+    {
+      "query": "OIDC authentication decision",
+      "category": "keyword",
+      "expected": [
+        "technical/auth-oidc.md"
+      ],
+      "returned": [
+        "technical/auth-oidc.md",
+        "entities/freya-larsen.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "NATS JetStream event bus",
+      "category": "keyword",
+      "expected": [
+        "technical/event-bus.md"
+      ],
+      "returned": [
+        "technical/event-bus.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "pgvector hybrid search",
+      "category": "keyword",
+      "expected": [
+        "technical/vector-search.md"
+      ],
+      "returned": [
+        "technical/vector-search.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "postgres migration rules",
+      "category": "keyword",
+      "expected": [
+        "technical/postgres-migrations.md"
+      ],
+      "returned": [
+        "technical/postgres-migrations.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "Envoy gateway JWT validation",
+      "category": "keyword",
+      "expected": [
+        "technical/api-gateway.md"
+      ],
+      "returned": [
+        "technical/api-gateway.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "disk pressure alert thresholds",
+      "category": "keyword",
+      "expected": [
+        "technical/observability.md",
+        "technical/incident-2026-03-db-outage.md"
+      ],
+      "returned": [
+        "technical/observability.md",
+        "technical/incident-2026-03-db-outage.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "feature flag expiry linter",
+      "category": "keyword",
+      "expected": [
+        "technical/feature-flags.md"
+      ],
+      "returned": [
+        "technical/feature-flags.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "bench fleet firmware soak",
+      "category": "keyword",
+      "expected": [
+        "technical/release-process.md",
+        "projects/helios-launch-retro.md"
+      ],
+      "returned": [
+        "technical/release-process.md",
+        "projects/helios-launch-retro.md",
+        "projects/vendor-selection.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "soft-grip arm apple harvesting",
+      "category": "keyword",
+      "expected": [
+        "projects/orchard.md"
+      ],
+      "returned": [
+        "projects/orchard.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "battery energy density cold weather",
+      "category": "keyword",
+      "expected": [
+        "entities/nordvolt.md",
+        "projects/vendor-selection.md",
+        "research/battery-tech.md"
+      ],
+      "returned": [
+        "entities/nordvolt.md",
+        "projects/vendor-selection.md",
+        "research/battery-tech.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "operator interviews wind farm sites",
+      "category": "keyword",
+      "expected": [
+        "research/user-interviews-spring.md"
+      ],
+      "returned": [
+        "entities/sigrid-dahl.md",
+        "research/user-interviews-spring.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 0.5
+    },
+    {
+      "query": "single-board computer benchmark",
+      "category": "keyword",
+      "expected": [
+        "research/edge-deployment.md",
+        "entities/rune-lindqvist.md"
+      ],
+      "returned": [
+        "entities/rune-lindqvist.md"
+      ],
+      "precision_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "mrr": 1.0
+    },
+    {
+      "query": "espresso machine backflush",
+      "category": "keyword",
+      "expected": [
+        "household/espresso-machine.md"
+      ],
+      "returned": [
+        "household/espresso-machine.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "drip irrigation zones greenhouse",
+      "category": "keyword",
+      "expected": [
+        "household/garden-irrigation.md"
+      ],
+      "returned": [
+        "household/garden-irrigation.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "mesh access point wired backhaul",
+      "category": "keyword",
+      "expected": [
+        "household/home-network.md"
+      ],
+      "returned": [
+        "household/home-network.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "how do people sign in to our products",
+      "category": "semantic",
+      "expected": [
+        "technical/auth-oidc.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "how services talk to each other asynchronously",
+      "category": "semantic",
+      "expected": [
+        "technical/event-bus.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "finding similar telemetry incidents by meaning",
+      "category": "semantic",
+      "expected": [
+        "technical/vector-search.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "changing the database schema without breaking production",
+      "category": "semantic",
+      "expected": [
+        "technical/postgres-migrations.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what sits in front of all our public endpoints",
+      "category": "semantic",
+      "expected": [
+        "technical/api-gateway.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "how we keep an eye on production health",
+      "category": "semantic",
+      "expected": [
+        "technical/observability.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "turning functionality on and off without deploying",
+      "category": "semantic",
+      "expected": [
+        "technical/feature-flags.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "how a new version reaches customers",
+      "category": "semantic",
+      "expected": [
+        "technical/release-process.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "robot that harvests fruit",
+      "category": "semantic",
+      "expected": [
+        "projects/orchard.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "the screen drone operators watch all day",
+      "category": "semantic",
+      "expected": [
+        "projects/midgard-dashboard.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what it costs to write customer reports with AI",
+      "category": "semantic",
+      "expected": [
+        "research/llm-cost-analysis.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "running models where there is no internet",
+      "category": "semantic",
+      "expected": [
+        "research/edge-deployment.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "keeping the coffee maker in good shape",
+      "category": "semantic",
+      "expected": [
+        "household/espresso-machine.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "who is the CTO of Asgard Robotics",
+      "category": "relational",
+      "expected": [
+        "entities/freya-larsen.md",
+        "entities/asgard-robotics.md"
+      ],
+      "returned": [
+        "entities/asgard-robotics.md",
+        "entities/freya-larsen.md",
+        "entities/bjorn-eriksen.md",
+        "entities/astrid-nilsen.md",
+        "entities/valhalla-cloud.md",
+        "projects/budget-2026.md",
+        "entities/nordvolt.md",
+        "entities/rune-lindqvist.md",
+        "entities/sigrid-dahl.md",
+        "projects/helios.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "who leads the Helios programme",
+      "category": "relational",
+      "expected": [
+        "entities/bjorn-eriksen.md",
+        "projects/helios.md"
+      ],
+      "returned": [
+        "projects/helios.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/nordvolt.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "who does Bjorn Eriksen report to",
+      "category": "relational",
+      "expected": [
+        "entities/bjorn-eriksen.md",
+        "entities/freya-larsen.md"
+      ],
+      "returned": [
+        "entities/bjorn-eriksen.md",
+        "entities/asgard-robotics.md",
+        "entities/freya-larsen.md",
+        "entities/astrid-nilsen.md",
+        "projects/vendor-selection.md",
+        "technical/release-process.md",
+        "projects/helios-launch-retro.md",
+        "projects/helios.md",
+        "technical/incident-2026-03-db-outage.md",
+        "technical/observability.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "who supplies batteries for the drone fleet",
+      "category": "relational",
+      "expected": [
+        "entities/nordvolt.md",
+        "projects/vendor-selection.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "which cloud provider hosts our infrastructure",
+      "category": "relational",
+      "expected": [
+        "entities/valhalla-cloud.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "who owns incident response",
+      "category": "relational",
+      "expected": [
+        "entities/astrid-nilsen.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "who designed the Midgard dashboard",
+      "category": "relational",
+      "expected": [
+        "entities/sigrid-dahl.md",
+        "projects/midgard-dashboard.md"
+      ],
+      "returned": [
+        "projects/midgard-dashboard.md",
+        "entities/freya-larsen.md",
+        "entities/sigrid-dahl.md",
+        "research/user-interviews-spring.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "which projects use the edge inference stack",
+      "category": "relational",
+      "expected": [
+        "projects/orchard.md",
+        "research/edge-deployment.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "who ran the spring operator interviews",
+      "category": "relational",
+      "expected": [
+        "entities/sigrid-dahl.md",
+        "research/user-interviews-spring.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "who approved the OIDC decision",
+      "category": "relational",
+      "expected": [
+        "entities/freya-larsen.md",
+        "technical/auth-oidc.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "which vendor caused the Helios launch delay",
+      "category": "relational",
+      "expected": [
+        "entities/nordvolt.md",
+        "projects/helios-launch-retro.md"
+      ],
+      "returned": [
+        "projects/helios.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/nordvolt.md"
+      ],
+      "precision_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "mrr": 0.25
+    },
+    {
+      "query": "who reviews new external integrations for security",
+      "category": "relational",
+      "expected": [
+        "entities/astrid-nilsen.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what happened on March 14 2026",
+      "category": "temporal",
+      "expected": [
+        "technical/incident-2026-03-db-outage.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "when did the Helios spring launch actually happen",
+      "category": "temporal",
+      "expected": [
+        "projects/helios.md",
+        "projects/helios-launch-retro.md"
+      ],
+      "returned": [
+        "projects/helios.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/nordvolt.md"
+      ],
+      "precision_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "mrr": 1.0
+    },
+    {
+      "query": "when was Nordvolt selected as battery vendor",
+      "category": "temporal",
+      "expected": [
+        "projects/vendor-selection.md",
+        "entities/nordvolt.md"
+      ],
+      "returned": [
+        "entities/nordvolt.md",
+        "entities/asgard-robotics.md",
+        "projects/vendor-selection.md",
+        "projects/helios-launch-retro.md",
+        "projects/helios.md",
+        "research/battery-tech.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "what changed after the database outage postmortem",
+      "category": "temporal",
+      "expected": [
+        "technical/incident-2026-03-db-outage.md",
+        "technical/postgres-migrations.md",
+        "technical/observability.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "when did Freya Larsen join the company",
+      "category": "temporal",
+      "expected": [
+        "entities/freya-larsen.md"
+      ],
+      "returned": [
+        "entities/freya-larsen.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/astrid-nilsen.md",
+        "technical/auth-oidc.md",
+        "projects/midgard-dashboard.md",
+        "entities/sigrid-dahl.md",
+        "projects/q2-roadmap.md",
+        "technical/api-gateway.md",
+        "technical/event-bus.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "what milestone did Helios hit in May 2026",
+      "category": "temporal",
+      "expected": [
+        "projects/helios.md"
+      ],
+      "returned": [
+        "projects/helios.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/nordvolt.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "when is the Orchard harvest trial",
+      "category": "temporal",
+      "expected": [
+        "projects/orchard.md"
+      ],
+      "returned": [
+        "projects/orchard.md",
+        "entities/asgard-robotics.md",
+        "entities/rune-lindqvist.md",
+        "research/edge-deployment.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "when did the dashboard rebuild kick off",
+      "category": "temporal",
+      "expected": [
+        "projects/midgard-dashboard.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what was decided at the December board meeting",
+      "category": "temporal",
+      "expected": [
+        "projects/budget-2026.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "when does Rune's contract end",
+      "category": "temporal",
+      "expected": [
+        "entities/rune-lindqvist.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "when was the first quarterly failover drill",
+      "category": "temporal",
+      "expected": [
+        "technical/incident-2026-03-db-outage.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what did the Q2 roadmap commit to",
+      "category": "temporal",
+      "expected": [
+        "projects/q2-roadmap.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what changed about Helios since April",
+      "category": "evolution",
+      "expected": [
+        "projects/helios.md"
+      ],
+      "returned": [
+        "projects/helios.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/nordvolt.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "how has our belief about Nordvolt firmware evolved",
+      "category": "evolution",
+      "expected": [
+        "entities/nordvolt.md",
+        "projects/helios-launch-retro.md"
+      ],
+      "returned": [
+        "entities/nordvolt.md",
+        "entities/asgard-robotics.md",
+        "projects/vendor-selection.md",
+        "projects/helios-launch-retro.md",
+        "projects/helios.md",
+        "research/battery-tech.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "history of the Midgard dashboard project",
+      "category": "evolution",
+      "expected": [
+        "projects/midgard-dashboard.md"
+      ],
+      "returned": [
+        "projects/midgard-dashboard.md",
+        "entities/freya-larsen.md",
+        "entities/sigrid-dahl.md",
+        "research/user-interviews-spring.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "what happened with Asgard Robotics over the past year",
+      "category": "evolution",
+      "expected": [
+        "entities/asgard-robotics.md"
+      ],
+      "returned": [
+        "entities/asgard-robotics.md",
+        "entities/freya-larsen.md",
+        "entities/bjorn-eriksen.md",
+        "entities/astrid-nilsen.md",
+        "entities/valhalla-cloud.md",
+        "projects/budget-2026.md",
+        "entities/nordvolt.md",
+        "entities/rune-lindqvist.md",
+        "entities/sigrid-dahl.md",
+        "projects/helios.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "timeline of the database outage follow-ups",
+      "category": "evolution",
+      "expected": [
+        "technical/incident-2026-03-db-outage.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "how did the OIDC migration progress over time",
+      "category": "evolution",
+      "expected": [
+        "technical/auth-oidc.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "what changed in the release process recently",
+      "category": "evolution",
+      "expected": [
+        "technical/release-process.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "evolution of the battery vendor relationship",
+      "category": "evolution",
+      "expected": [
+        "entities/nordvolt.md",
+        "projects/vendor-selection.md"
+      ],
+      "returned": [],
+      "precision_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "query": "how has Freya Larsen's role developed",
+      "category": "evolution",
+      "expected": [
+        "entities/freya-larsen.md"
+      ],
+      "returned": [
+        "entities/freya-larsen.md",
+        "entities/asgard-robotics.md",
+        "entities/bjorn-eriksen.md",
+        "entities/astrid-nilsen.md",
+        "technical/auth-oidc.md",
+        "projects/midgard-dashboard.md",
+        "entities/sigrid-dahl.md",
+        "projects/q2-roadmap.md",
+        "technical/api-gateway.md",
+        "technical/event-bus.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "query": "track record of the Orchard pilot so far",
+      "category": "evolution",
+      "expected": [
+        "projects/orchard.md"
+      ],
+      "returned": [
+        "projects/orchard.md",
+        "entities/asgard-robotics.md",
+        "entities/rune-lindqvist.md",
+        "research/edge-deployment.md"
+      ],
+      "precision_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "mrr": 1.0
+    }
+  ]
+}

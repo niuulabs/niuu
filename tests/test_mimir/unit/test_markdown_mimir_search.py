@@ -189,7 +189,8 @@ async def test_search_uses_search_port_when_configured(tmp_path: Path) -> None:
 
     results = await adapter.search("bash tools")
 
-    port.search.assert_called_once_with("bash tools", limit=20)
+    # Over-fetch (NIU-1057): the ranking layer requests limit * overfetch_factor.
+    port.search.assert_called_once_with("bash tools", limit=80)
     assert len(results) == 1
     assert results[0].meta.path == "technical/tools.md"
 
@@ -244,7 +245,10 @@ async def test_search_uses_search_result_limit_constant(tmp_path: Path) -> None:
     port = _make_mock_search_port()
     adapter = _make_adapter(tmp_path, search_port=port)
     await adapter.search("anything")
-    port.search.assert_called_once_with("anything", limit=_SEARCH_RESULT_LIMIT)
+    from mimir.config import RankingConfig
+
+    expected_limit = _SEARCH_RESULT_LIMIT * RankingConfig().overfetch_factor
+    port.search.assert_called_once_with("anything", limit=expected_limit)
 
 
 @pytest.mark.asyncio

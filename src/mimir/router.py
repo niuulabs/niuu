@@ -146,6 +146,40 @@ class SearchResult(BaseModel):
     title: str
     summary: str
     category: str
+    # Populated only when the search is called with ?debug=true (NIU-1057).
+    score: float | None = None
+    score_breakdown: dict[str, float] | None = None
+
+
+class EntityResponse(BaseModel):
+    slug: str
+    title: str
+    type: str | None = None
+    confidence: str | None = None
+    updated_at: str
+    path: str
+
+
+class RelatedPageResponse(BaseModel):
+    path: str
+    hop: int
+    rel: str | None = None
+    direction: str
+
+
+class FactEvidenceResponse(BaseModel):
+    fact: str
+    proof_count: int
+    trend: str
+    latest_support: str | None = None
+    supporting_dates: list[str] = []
+
+
+class ReviseBeliefRequest(BaseModel):
+    path: str
+    old_fact: str
+    new_fact: str
+    attribution: str
 
 
 class LintIssueResponse(BaseModel):
@@ -1284,6 +1318,7 @@ class MimirRouter:
         async def search(
             q: str = Query(),
             mount: str | None = Query(default=None),
+            debug: bool = Query(default=False),
         ) -> list[SearchResult]:
             port, _ = self._resolve_port(mount)
             pages = await port.search(q)
@@ -1302,9 +1337,81 @@ class MimirRouter:
                     title=p.meta.title,
                     summary=p.meta.summary,
                     category=p.meta.category,
+                    score=p.meta.search_score if debug else None,
+                    score_breakdown=p.meta.score_breakdown if debug else None,
                 )
                 for p in pages
             ]
+
+        @router.get("/entities/index", response_model=list[EntityResponse])
+        async def entities() -> list[EntityResponse]:
+            """Entity index for the Retrieval Reflex (NIU-1059) and graph tools.
+
+            Distinct from ``GET /entities`` (the UI catalog): this is the
+            compact, typed index derived from the link graph."""
+            index = getattr(adapter, "entity_index", None)
+            if index is None:
+                raise HTTPException(status_code=501, detail="Adapter has no entity index")
+            return [
+                EntityResponse(
+                    slug=meta.path.rsplit("/", 1)[-1].removesuffix(".md"),
+                    title=meta.title,
+                    type=meta.entity_type.value if meta.entity_type else None,
+                    confidence=meta.confidence.value if meta.confidence else None,
+                    updated_at=meta.updated_at.isoformat(),
+                    path=meta.path,
+                )
+                for meta in index()
+            ]
+
+        @router.get("/related", response_model=list[RelatedPageResponse])
+        async def related(
+            path: str = Query(),
+            depth: int = Query(default=1, ge=1, le=3),
+            rel: str | None = Query(default=None),
+        ) -> list[RelatedPageResponse]:
+            """Link-graph traversal from a page (NIU-1058)."""
+            related_fn = getattr(adapter, "related_pages", None)
+            if related_fn is None:
+                raise HTTPException(status_code=501, detail="Adapter has no link graph")
+            return [RelatedPageResponse(**item) for item in related_fn(path, depth=depth, rel=rel)]
+
+        @router.get("/evidence", response_model=list[FactEvidenceResponse])
+        async def evidence(path: str = Query()) -> list[FactEvidenceResponse]:
+            """Evidence-counted beliefs for a page (NIU-1062)."""
+            from mimir.learning import compute_page_evidence
+
+            try:
+                content = await adapter.read_page(path)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+            return [
+                FactEvidenceResponse(**item.to_dict()) for item in compute_page_evidence(content)
+            ]
+
+        @router.post(
+            "/page/revise",
+            response_model=PageResponse,
+            dependencies=[Depends(_require_write_auth)],
+        )
+        async def revise_belief_endpoint(request: ReviseBeliefRequest) -> PageResponse:
+            """Belief revision with journey (NIU-1062): rewrite a compiled-truth
+            fact while appending the old → new transition to the Timeline."""
+            from mimir.learning import revise_belief
+
+            try:
+                content = await adapter.read_page(request.path)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Page not found: {request.path}")
+            try:
+                revised = revise_belief(
+                    content, request.old_fact, request.new_fact, request.attribution
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            await adapter.upsert_page(request.path, revised)
+            page = await adapter.get_page(request.path)
+            return _decorate_page(page, mounts=[self._name])
 
         @router.get("/log")
         async def log_entries(

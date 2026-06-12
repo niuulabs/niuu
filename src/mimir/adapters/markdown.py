@@ -31,6 +31,7 @@ import difflib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,10 @@ try:
     from sleipnir.domain.catalog import mimir_page_written as _catalog_page_written
 except ImportError:
     _catalog_page_written = None  # type: ignore[assignment]
+from mimir.config import RankingConfig
+from mimir.ranking import apply_boosts, tokenize, zone_factor
 from niuu.domain.mimir import (
+    EntityType,
     LintIssue,
     MimirLintReport,
     MimirPage,
@@ -56,6 +60,7 @@ from niuu.domain.mimir import (
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
+    PageConfidence,
     PageType,
     ThreadContextRef,
     ThreadOwnershipError,
@@ -207,6 +212,73 @@ _COMPILED_TRUTH_HEADING = "## Compiled Truth"
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
+# Typed relationship edges (NIU-1058), an additive FORMAT.md extension:
+#   - [[slug]] — rel: works_at — description
+# Untyped relationship lines remain valid; the rel label is optional metadata.
+_TYPED_EDGE_RE = re.compile(
+    r"^\s*-\s*\[\[([^\[\]]+)\]\]\s*[—-]+\s*rel:\s*([a-zA-Z_]+)", re.MULTILINE
+)
+
+
+def _extract_typed_edges(content: str) -> dict[str, str]:
+    """Map wikilink slug → relationship type for typed edge lines."""
+    return {
+        slug.strip().lower(): rel_type.lower() for slug, rel_type in _TYPED_EDGE_RE.findall(content)
+    }
+
+
+_META_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+
+
+def _parse_meta_frontmatter(content: str) -> dict[str, Any]:
+    """Parse the frontmatter fields MimirPageMeta carries; tolerant of junk."""
+    match = _META_FRONTMATTER_RE.match(content)
+    if match is None:
+        return {}
+    try:
+        raw = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    parsed: dict[str, Any] = {}
+    try:
+        parsed["page_type"] = PageType(raw["type"]) if raw.get("type") else None
+    except ValueError:
+        parsed["page_type"] = None
+    try:
+        parsed["confidence"] = PageConfidence(raw["confidence"]) if raw.get("confidence") else None
+    except ValueError:
+        parsed["confidence"] = None
+    try:
+        parsed["entity_type"] = EntityType(raw["entity_type"]) if raw.get("entity_type") else None
+    except ValueError:
+        parsed["entity_type"] = None
+    related = raw.get("related_entities")
+    parsed["related_entities"] = (
+        [str(slug) for slug in related] if isinstance(related, list) else []
+    )
+    return parsed
+
+
+@dataclass
+class LinkEdge:
+    """A directed wikilink edge, optionally typed (rel)."""
+
+    target: str
+    rel: str | None = None
+
+
+@dataclass
+class LinkGraph:
+    """In-memory wikilink graph derived from the markdown on disk."""
+
+    forward: dict[str, list[LinkEdge]]
+    backlinks: dict[str, int]
+    stem_to_path: dict[str, str]
+    entities: list[MimirPageMeta]
+
 
 # ---------------------------------------------------------------------------
 # Path security (local import to avoid circular deps)
@@ -239,6 +311,7 @@ class MarkdownMimirAdapter(MimirPort):
         sleipnir_publisher: object | None = None,
         *,
         search_port: SearchPort | None = None,
+        ranking_config: RankingConfig | None = None,
     ) -> None:
         self._root = Path(root).expanduser()
         self._wiki = self._root / "wiki"
@@ -249,9 +322,12 @@ class MarkdownMimirAdapter(MimirPort):
         self._log = self._wiki / "log.md"
         self._sleipnir_publisher = sleipnir_publisher
         self._search_port = search_port
+        self._ranking = ranking_config or RankingConfig()
         # Tracks how many chunks were indexed per page path so we can remove
         # them before re-indexing on update.  Populated lazily on first write.
         self._page_chunk_counts: dict[str, int] = {}
+        # Lazily-built wikilink graph (NIU-1058); invalidated on page writes.
+        self._graph_cache: LinkGraph | None = None
         self._ensure_layout()
 
     # ------------------------------------------------------------------
@@ -408,25 +484,92 @@ class MarkdownMimirAdapter(MimirPort):
         return await self._search_keywords(query)
 
     async def _search_via_port(self, query: str) -> list[MimirPage]:
-        """Delegate search to the configured SearchPort."""
-        search_results = await self._search_port.search(query, limit=_SEARCH_RESULT_LIMIT)  # type: ignore[union-attr]
+        """Delegate search to the configured SearchPort, then apply ranking.
 
-        seen_paths: dict[str, tuple[float, MimirPage]] = {}
+        Pipeline (NIU-1057/1058/1062): over-fetch candidates from the port,
+        weight chunks by zone (compiled truth vs timeline), dedup to pages,
+        inject relational candidates (query-matched entities + their 1-hop
+        neighbors), apply multiplicative boosts, and return the top results
+        with per-boost attribution on ``meta.score_breakdown``.
+        """
+        config = self._ranking
+        fetch_limit = (
+            _SEARCH_RESULT_LIMIT * config.overfetch_factor
+            if config.enabled
+            else _SEARCH_RESULT_LIMIT
+        )
+        search_results = await self._search_port.search(query, limit=fetch_limit)  # type: ignore[union-attr]
+
+        # Best chunk per page, zone-weighted.
+        base_scores: dict[str, float] = {}
         for result in search_results:
             page_path = result.metadata.get("page_path", "")
-            if not page_path:
+            if not page_path or not (self._wiki / page_path).exists():
                 continue
-            md_path = self._wiki / page_path
+            score = result.score
+            if config.enabled:
+                score *= zone_factor(result.metadata.get("section_heading", ""), config)
+            if score > base_scores.get(page_path, 0.0):
+                base_scores[page_path] = score
+
+        if not config.enabled:
+            return self._load_ranked_pages(
+                [(path, score, {}) for path, score in base_scores.items()]
+            )
+
+        # Relational arm (NIU-1058): entities named in the query pull in
+        # themselves and their 1-hop neighbourhood even when retrieval missed
+        # them entirely (FTS implicit-AND returns nothing for most
+        # natural-language queries). graph_injection_base <= 0 disables it.
+        graph = self._link_graph()
+        entity_paths: set[str] = set()
+        neighbor_paths: set[str] = set()
+        if config.graph_injection_base > 0:
+            entity_paths, neighbor_paths = self._relational_candidates(query, graph)
+            for path in entity_paths | neighbor_paths:
+                base_scores.setdefault(path, config.graph_injection_base)
+
+        query_tokens = tokenize(query)
+        ranked: list[tuple[str, float, dict[str, float]]] = []
+        for path, base in base_scores.items():
+            md_path = self._wiki / path
             if not md_path.exists():
                 continue
-            # Keep only the best-scoring chunk per page.
-            if page_path in seen_paths and seen_paths[page_path][0] >= result.score:
+            meta = self._build_page_meta(md_path, md_path.read_text(encoding="utf-8"))
+            graph_factor = 1.0
+            if path in entity_paths:
+                graph_factor = config.graph_entity_boost
+            elif path in neighbor_paths:
+                graph_factor = config.graph_neighbor_boost
+            final, breakdown = apply_boosts(
+                base,
+                meta,
+                query_tokens,
+                config,
+                backlink_count=graph.backlinks.get(path, 0),
+                graph_factor=graph_factor,
+            )
+            ranked.append((path, final, breakdown))
+
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return self._load_ranked_pages(ranked[:_SEARCH_RESULT_LIMIT])
+
+    def _load_ranked_pages(
+        self, ranked: list[tuple[str, float, dict[str, float]]]
+    ) -> list[MimirPage]:
+        """Materialise (path, score, breakdown) tuples into ordered MimirPages."""
+        pages: list[tuple[float, MimirPage]] = []
+        for path, score, breakdown in ranked:
+            md_path = self._wiki / path
+            if not md_path.exists():
                 continue
             content = md_path.read_text(encoding="utf-8")
             meta = self._build_page_meta(md_path, content)
-            seen_paths[page_path] = (result.score, MimirPage(meta=meta, content=content))
-
-        return [page for _, page in sorted(seen_paths.values(), key=lambda t: t[0], reverse=True)]
+            meta.search_score = score
+            meta.score_breakdown = breakdown or None
+            pages.append((score, MimirPage(meta=meta, content=content)))
+        pages.sort(key=lambda t: t[0], reverse=True)
+        return [page for _, page in pages]
 
     async def _search_keywords(self, query: str) -> list[MimirPage]:
         """Built-in keyword-counting fallback search."""
@@ -468,6 +611,7 @@ class MarkdownMimirAdapter(MimirPort):
 
         is_new = not page_path.exists()
         page_path.write_text(content, encoding="utf-8")
+        self._graph_cache = None
 
         if is_new:
             self._add_to_index(path, content)
@@ -848,6 +992,120 @@ class MarkdownMimirAdapter(MimirPort):
             await self._search_port.index(f"{path}::{i}", chunk_content, chunk_meta)
 
         self._page_chunk_counts[path] = len(chunks)
+
+    # ------------------------------------------------------------------
+    # Link graph (NIU-1058)
+    # ------------------------------------------------------------------
+
+    def _link_graph(self) -> LinkGraph:
+        """Return the wikilink/related-entities graph, building it lazily.
+
+        Derived purely from the markdown on disk — nothing is persisted; the
+        cache is invalidated on every page write.
+        """
+        if self._graph_cache is not None:
+            return self._graph_cache
+        self._graph_cache = self._build_link_graph()
+        return self._graph_cache
+
+    def _build_link_graph(self) -> LinkGraph:
+        pages: list[tuple[str, str, MimirPageMeta]] = []
+        stem_to_path: dict[str, str] = {}
+        for md_path in sorted(self._wiki.rglob("*.md")):
+            if md_path.name in {"index.md", "log.md"}:
+                continue
+            rel = str(self._wiki_relative_path(md_path))
+            content = md_path.read_text(encoding="utf-8")
+            meta = self._build_page_meta(md_path, content)
+            pages.append((rel, content, meta))
+            stem = md_path.stem.lower()
+            # entities/ pages win stem collisions — wikilinks resolve there first.
+            if stem not in stem_to_path or rel.startswith("entities/"):
+                stem_to_path[stem] = rel
+
+        forward: dict[str, list[LinkEdge]] = {}
+        backlinks: dict[str, int] = {}
+        entities: list[MimirPageMeta] = []
+        for rel, content, meta in pages:
+            if meta.page_type is not None and meta.page_type.value == "entity":
+                entities.append(meta)
+            rel_types = _extract_typed_edges(content)
+            edges: list[LinkEdge] = []
+            slugs = set(extract_wikilinks(content)) | set(meta.related_entities)
+            for slug in slugs:
+                target = stem_to_path.get(slug.strip().lower())
+                if target is None or target == rel:
+                    continue
+                edges.append(LinkEdge(target=target, rel=rel_types.get(slug.strip().lower())))
+                backlinks[target] = backlinks.get(target, 0) + 1
+            forward[rel] = edges
+
+        return LinkGraph(
+            forward=forward,
+            backlinks=backlinks,
+            stem_to_path=stem_to_path,
+            entities=entities,
+        )
+
+    def _relational_candidates(self, query: str, graph: LinkGraph) -> tuple[set[str], set[str]]:
+        """Paths of entities named in *query* and their 1-hop neighbourhood."""
+        query_tokens = tokenize(query)
+        entity_paths: set[str] = set()
+        for meta in graph.entities:
+            title_tokens = tokenize(meta.title)
+            if title_tokens and title_tokens <= query_tokens:
+                entity_paths.add(meta.path)
+                continue
+            stem = Path(meta.path).stem.lower()
+            if stem.replace("-", " ") in query.lower():
+                entity_paths.add(meta.path)
+
+        neighbors: set[str] = set()
+        for path in entity_paths:
+            neighbors.update(edge.target for edge in graph.forward.get(path, []))
+            for source, edges in graph.forward.items():
+                if any(edge.target == path for edge in edges):
+                    neighbors.add(source)
+        return entity_paths, neighbors - entity_paths
+
+    def related_pages(self, path: str, depth: int = 1, rel: str | None = None) -> list[dict]:
+        """BFS over the link graph from *path* up to *depth* hops (NIU-1058).
+
+        Returns dicts with target path, hop distance, edge type (when typed),
+        and direction. Used by ``GET /mimir/related`` and the MCP tool.
+        """
+        graph = self._link_graph()
+        results: list[dict] = []
+        visited = {path}
+        frontier = [path]
+        for hop in range(1, max(1, depth) + 1):
+            next_frontier: list[str] = []
+            for current in frontier:
+                for edge in graph.forward.get(current, []):
+                    if edge.target in visited or (rel is not None and edge.rel != rel):
+                        continue
+                    visited.add(edge.target)
+                    next_frontier.append(edge.target)
+                    results.append(
+                        {"path": edge.target, "hop": hop, "rel": edge.rel, "direction": "out"}
+                    )
+                for source, edges in graph.forward.items():
+                    for edge in edges:
+                        if edge.target != current or source in visited:
+                            continue
+                        if rel is not None and edge.rel != rel:
+                            continue
+                        visited.add(source)
+                        next_frontier.append(source)
+                        results.append(
+                            {"path": source, "hop": hop, "rel": edge.rel, "direction": "in"}
+                        )
+            frontier = next_frontier
+        return results
+
+    def entity_index(self) -> list[MimirPageMeta]:
+        """All entity-typed pages (feeds ``GET /mimir/entities``, NIU-1059)."""
+        return list(self._link_graph().entities)
 
     # ------------------------------------------------------------------
     # Raw source storage
@@ -1395,6 +1653,7 @@ class MarkdownMimirAdapter(MimirPort):
         stat = md_path.stat()
         updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
         source_ids = self._extract_source_ids(content)
+        front = _parse_meta_frontmatter(content)
         return MimirPageMeta(
             path=path_str,
             title=_extract_title(content, path_str),
@@ -1402,6 +1661,10 @@ class MarkdownMimirAdapter(MimirPort):
             category=category,
             updated_at=updated_at,
             source_ids=source_ids,
+            page_type=front.get("page_type"),
+            confidence=front.get("confidence"),
+            entity_type=front.get("entity_type"),
+            related_entities=front.get("related_entities", []),
         )
 
     @staticmethod
