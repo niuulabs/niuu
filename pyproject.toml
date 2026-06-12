@@ -36,6 +36,11 @@ dependencies = [
 nats = [
     "nats-py>=2.14.0",
 ]
+# Semantic search for Mimir (NIU-1056): hybrid retrieval needs an embedding
+# model. FTS-only mode works without this extra.
+embeddings = [
+    "sentence-transformers>=3.0.0",
+]
 test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
