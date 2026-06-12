@@ -217,6 +217,16 @@ def test_backends_construct_from_plain_yaml_kwargs() -> None:
     assert ting.name == "ting_workflow"
 
 
+def test_client_from_pat_env_resolves_the_token(monkeypatch) -> None:
+    from ravn.adapters.tool_build.http import client_from_pat_env
+
+    monkeypatch.setenv("PROOF_PAT", "secret-123")
+    client = client_from_pat_env("PROOF_PAT")
+    assert client._headers()["Authorization"] == "Bearer secret-123"
+    # No env var name -> no Authorization header (anonymous client).
+    assert "Authorization" not in client_from_pat_env("")._headers()
+
+
 async def test_ting_workflow_backend_raises_without_artifact() -> None:
     client = _FakeHttpClient(
         {
