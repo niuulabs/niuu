@@ -49,6 +49,7 @@ from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
+from ravn.reflex import ReflexInjector, build_reflex_injector
 from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
@@ -810,6 +811,8 @@ class DriveLoop:
             Callable[[AgentTask, PersonaConfig], set[str] | None] | None
         ) = None
         self._fan_in = FanInBuffer()
+        self._reflex_injector: ReflexInjector | None = None
+        self._reflex_initialised = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
             default=None,
@@ -1339,6 +1342,33 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
+    def _retrieval_reflex_injector(self) -> ReflexInjector | None:
+        """Lazily build the retrieval reflex injector from mimir.reflex config."""
+        if self._reflex_initialised:
+            return self._reflex_injector
+        self._reflex_initialised = True
+        self._reflex_injector = build_reflex_injector(getattr(self._settings, "mimir", None))
+        return self._reflex_injector
+
+    async def _apply_retrieval_reflex(self, prompt: str, task: AgentTask) -> str:
+        """Prefix known Mímir entity pointers onto the turn prompt (NIU-1059).
+
+        Fail-open: any reflex failure logs an ERROR and returns the prompt
+        unchanged — the reflex must never crash or block a turn.
+        """
+        try:
+            injector = self._retrieval_reflex_injector()
+            if injector is None:
+                return prompt
+            return await injector.apply(prompt, task.session_id or task.task_id)
+        except Exception:
+            logger.error(
+                "drive_loop: retrieval reflex failed for task %s — continuing without pointers",
+                task.task_id,
+                exc_info=True,
+            )
+            return prompt
+
     async def _run_task(self, task: AgentTask) -> None:
         """Execute a single initiative task."""
         # Budget pre-check: skip when daily cap is reached.
@@ -1393,6 +1423,7 @@ class DriveLoop:
             agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
             logger.info("drive_loop: task %s building prompt", task.task_id)
             prompt = build_initiative_prompt(task)
+            prompt = await self._apply_retrieval_reflex(prompt, task)
             logger.info("drive_loop: task %s setup complete", task.task_id)
         except Exception as exc:
             logger.error("drive_loop: task %s failed during setup: %s", task.task_id, exc)

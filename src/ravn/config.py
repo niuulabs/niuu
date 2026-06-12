@@ -1455,6 +1455,38 @@ class MimirIngestConfig(BaseModel):
     )
 
 
+class MimirReflexConfig(BaseModel):
+    """Retrieval reflex — deterministic Mímir entity pointer injection (NIU-1059).
+
+    A zero-LLM scanner that matches incoming agent-turn messages against the
+    Mímir entity feed and prefixes compact pointers (never page bodies).
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable retrieval reflex pointer injection on agent turns.",
+    )
+    max_pointers: int = Field(
+        default=5,
+        description="Maximum number of entity pointers injected per turn.",
+    )
+    cache_ttl_seconds: int = Field(
+        default=300,
+        description="How long (seconds) the entity index is cached before refetching.",
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the Mímir HTTP service exposing GET /mimir/entities. "
+            "When empty, falls back to the first mimir.instances entry with a url."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        description="HTTP timeout (seconds) for the entity feed request.",
+    )
+
+
 class MimirConfig(BaseModel):
     """Mímir persistent compounding knowledge base configuration (NIU-540).
 
@@ -1530,6 +1562,10 @@ class MimirConfig(BaseModel):
     ingest: MimirIngestConfig = Field(
         default_factory=MimirIngestConfig,
         description="Entity detection settings for ingest.",
+    )
+    reflex: MimirReflexConfig = Field(
+        default_factory=MimirReflexConfig,
+        description="Retrieval reflex — deterministic entity pointer injection per turn.",
     )
 
 
