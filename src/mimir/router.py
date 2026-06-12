@@ -19,6 +19,7 @@ GET  /mimir/search         — full-text search (?q=...)
 GET  /mimir/log            — last N log entries (?n=50)
 GET  /mimir/lint           — current lint report (12 check types, L01–L12)
 POST /mimir/lint/fix       — run lint and apply auto-fixes (L05, L11, L12)
+GET  /mimir/doctor         — health-check report (8 checks, D01–D08)
 GET  /mimir/graph          — nodes + edges for MimirExplorer visualiser
 PUT  /mimir/page           — upsert a page (requires write auth)
 POST /mimir/ingest         — ingest URL or text (requires write auth)
@@ -1365,6 +1366,23 @@ class MimirRouter:
                     resolved_mount if mount is not None else mount_map.get(path, [self._name])[0]
                 ),
             )
+
+        @router.get("/doctor")
+        async def doctor_report() -> dict[str, Any]:
+            from mimir.doctor import run_doctor
+
+            root = getattr(adapter, "_root", None)
+            if root is None:
+                raise HTTPException(
+                    status_code=501,
+                    detail="doctor requires a filesystem-backed Mimir adapter",
+                )
+            report = await run_doctor(
+                adapter,
+                Path(root),
+                registry_store=self._registry_store,
+            )
+            return report.to_dict()
 
         @router.post("/lint/reassign", response_model=LintResponse)
         async def lint_reassign(request: LintReassignRequest) -> LintResponse:
