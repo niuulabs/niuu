@@ -26,6 +26,15 @@ export default tseslint.config(
     },
   },
   {
+    // e2e driver scripts run in Node with bare process/console.
+    files: ['e2e/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2022,
