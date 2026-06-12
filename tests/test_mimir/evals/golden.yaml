@@ -1,0 +1,181 @@
+# Golden retrieval set for the Mímir eval harness (NIU-1055).
+#
+# Categories:
+#   keyword   — query terms appear (nearly) verbatim in the target page
+#   semantic  — paraphrases sharing few or no keywords with the target;
+#               expected to be weak in FTS-only mode (headroom for Phases 1–2)
+#   relational — answered by relationships between entities
+#   temporal  — answered by timeline entries and dates
+#
+# Every `expected` path must exist under tests/test_mimir/evals/corpus/ —
+# run_eval() validates this and refuses to run otherwise.
+
+queries:
+  # ----- keyword -----
+  - query: "OIDC authentication decision"
+    category: keyword
+    expected: [technical/auth-oidc.md]
+  - query: "NATS JetStream event bus"
+    category: keyword
+    expected: [technical/event-bus.md]
+  - query: "pgvector hybrid search"
+    category: keyword
+    expected: [technical/vector-search.md]
+  - query: "postgres migration rules"
+    category: keyword
+    expected: [technical/postgres-migrations.md]
+  - query: "Envoy gateway JWT validation"
+    category: keyword
+    expected: [technical/api-gateway.md]
+  - query: "disk pressure alert thresholds"
+    category: keyword
+    expected: [technical/observability.md, technical/incident-2026-03-db-outage.md]
+  - query: "feature flag expiry linter"
+    category: keyword
+    expected: [technical/feature-flags.md]
+  - query: "bench fleet firmware soak"
+    category: keyword
+    expected: [technical/release-process.md, projects/helios-launch-retro.md]
+  - query: "soft-grip arm apple harvesting"
+    category: keyword
+    expected: [projects/orchard.md]
+  - query: "battery energy density cold weather"
+    category: keyword
+    expected: [entities/nordvolt.md, projects/vendor-selection.md, research/battery-tech.md]
+  - query: "operator interviews wind farm sites"
+    category: keyword
+    expected: [research/user-interviews-spring.md]
+  - query: "single-board computer benchmark"
+    category: keyword
+    expected: [research/edge-deployment.md, entities/rune-lindqvist.md]
+  - query: "espresso machine backflush"
+    category: keyword
+    expected: [household/espresso-machine.md]
+  - query: "drip irrigation zones greenhouse"
+    category: keyword
+    expected: [household/garden-irrigation.md]
+  - query: "mesh access point wired backhaul"
+    category: keyword
+    expected: [household/home-network.md]
+
+  # ----- semantic -----
+  - query: "how do people sign in to our products"
+    category: semantic
+    expected: [technical/auth-oidc.md]
+  - query: "how services talk to each other asynchronously"
+    category: semantic
+    expected: [technical/event-bus.md]
+  - query: "finding similar telemetry incidents by meaning"
+    category: semantic
+    expected: [technical/vector-search.md]
+  - query: "changing the database schema without breaking production"
+    category: semantic
+    expected: [technical/postgres-migrations.md]
+  - query: "what sits in front of all our public endpoints"
+    category: semantic
+    expected: [technical/api-gateway.md]
+  - query: "how we keep an eye on production health"
+    category: semantic
+    expected: [technical/observability.md]
+  - query: "turning functionality on and off without deploying"
+    category: semantic
+    expected: [technical/feature-flags.md]
+  - query: "how a new version reaches customers"
+    category: semantic
+    expected: [technical/release-process.md]
+  - query: "robot that harvests fruit"
+    category: semantic
+    expected: [projects/orchard.md]
+  - query: "the screen drone operators watch all day"
+    category: semantic
+    expected: [projects/midgard-dashboard.md]
+  - query: "what it costs to write customer reports with AI"
+    category: semantic
+    expected: [research/llm-cost-analysis.md]
+  - query: "running models where there is no internet"
+    category: semantic
+    expected: [research/edge-deployment.md]
+  - query: "keeping the coffee maker in good shape"
+    category: semantic
+    expected: [household/espresso-machine.md]
+
+  # ----- relational -----
+  - query: "who is the CTO of Asgard Robotics"
+    category: relational
+    expected: [entities/freya-larsen.md, entities/asgard-robotics.md]
+  - query: "who leads the Helios programme"
+    category: relational
+    expected: [entities/bjorn-eriksen.md, projects/helios.md]
+  - query: "who does Bjorn Eriksen report to"
+    category: relational
+    expected: [entities/bjorn-eriksen.md, entities/freya-larsen.md]
+  - query: "who supplies batteries for the drone fleet"
+    category: relational
+    expected: [entities/nordvolt.md, projects/vendor-selection.md]
+  - query: "which cloud provider hosts our infrastructure"
+    category: relational
+    expected: [entities/valhalla-cloud.md]
+  - query: "who owns incident response"
+    category: relational
+    expected: [entities/astrid-nilsen.md]
+  - query: "who designed the Midgard dashboard"
+    category: relational
+    expected: [entities/sigrid-dahl.md, projects/midgard-dashboard.md]
+  - query: "which projects use the edge inference stack"
+    category: relational
+    expected: [projects/orchard.md, research/edge-deployment.md]
+  - query: "who ran the spring operator interviews"
+    category: relational
+    expected: [entities/sigrid-dahl.md, research/user-interviews-spring.md]
+  - query: "who approved the OIDC decision"
+    category: relational
+    expected: [entities/freya-larsen.md, technical/auth-oidc.md]
+  - query: "which vendor caused the Helios launch delay"
+    category: relational
+    expected: [entities/nordvolt.md, projects/helios-launch-retro.md]
+  - query: "who reviews new external integrations for security"
+    category: relational
+    expected: [entities/astrid-nilsen.md]
+
+  # ----- temporal -----
+  - query: "what happened on March 14 2026"
+    category: temporal
+    expected: [technical/incident-2026-03-db-outage.md]
+  - query: "when did the Helios spring launch actually happen"
+    category: temporal
+    expected: [projects/helios.md, projects/helios-launch-retro.md]
+  - query: "when was Nordvolt selected as battery vendor"
+    category: temporal
+    expected: [projects/vendor-selection.md, entities/nordvolt.md]
+  - query: "what changed after the database outage postmortem"
+    category: temporal
+    expected:
+      [
+        technical/incident-2026-03-db-outage.md,
+        technical/postgres-migrations.md,
+        technical/observability.md,
+      ]
+  - query: "when did Freya Larsen join the company"
+    category: temporal
+    expected: [entities/freya-larsen.md]
+  - query: "what milestone did Helios hit in May 2026"
+    category: temporal
+    expected: [projects/helios.md]
+  - query: "when is the Orchard harvest trial"
+    category: temporal
+    expected: [projects/orchard.md]
+  - query: "when did the dashboard rebuild kick off"
+    category: temporal
+    expected: [projects/midgard-dashboard.md]
+  - query: "what was decided at the December board meeting"
+    category: temporal
+    expected: [projects/budget-2026.md]
+  - query: "when does Rune's contract end"
+    category: temporal
+    expected: [entities/rune-lindqvist.md]
+  - query: "when was the first quarterly failover drill"
+    category: temporal
+    expected: [technical/incident-2026-03-db-outage.md]
+  - query: "what did the Q2 roadmap commit to"
+    category: temporal
+    expected: [projects/q2-roadmap.md]
