@@ -1772,6 +1772,11 @@ class TestDispatchBrowserMessage:
             "set_permission_mode",
             "rewind_files",
             "mcp_set_servers",
+            "terminal_input",
+            "terminal_key",
+            "terminal_resize",
+            "slash_command",
+            "discover_slash_commands",
         ]
         for msg_type in guarded:
             sender_ws = AsyncMock()
@@ -1791,6 +1796,131 @@ class TestDispatchBrowserMessage:
         await test_broker._dispatch_browser_message({"type": "interrupt"})
 
         test_broker._transport.send_control.assert_called_once_with("interrupt")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_terminal_controls(self, test_broker):
+        """Interactive terminal controls pass through when the transport supports them."""
+        test_broker._transport.capabilities = TransportCapabilities(
+            terminal_input=True,
+            terminal_keys=True,
+            terminal_resize=True,
+            slash_commands=True,
+        )
+
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_input", "data": "/help", "enter": True, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_key", "key": "Up", "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_resize", "cols": 120, "rows": 40, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {
+                "type": "slash_command",
+                "command": "compact",
+                "arguments": "now",
+                "pane_id": "%1",
+            }
+        )
+
+        assert test_broker._transport.send_control.call_args_list[0].args == ("terminal_input",)
+        assert test_broker._transport.send_control.call_args_list[0].kwargs == {
+            "data": "/help",
+            "enter": True,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[1].args == ("terminal_key",)
+        assert test_broker._transport.send_control.call_args_list[1].kwargs == {
+            "key": "Up",
+            "keys": [],
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[2].args == ("terminal_resize",)
+        assert test_broker._transport.send_control.call_args_list[2].kwargs == {
+            "cols": 120,
+            "rows": 40,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[3].args == ("slash_command",)
+        assert test_broker._transport.send_control.call_args_list[3].kwargs == {
+            "command": "compact",
+            "arguments": "now",
+            "pane_id": "%1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_dispatch_discovers_slash_commands(self, test_broker):
+        """Browser can request slash commands over the session WebSocket."""
+        test_broker._transport.capabilities = TransportCapabilities(slash_commands=True)
+        test_broker._transport.discover_slash_commands = AsyncMock(
+            return_value=[
+                {
+                    "name": "/workflows",
+                    "command": "workflows",
+                    "description": "Browse workflows",
+                    "kind": "command",
+                    "source": "tmux_autocomplete",
+                }
+            ]
+        )
+        sender_ws = AsyncMock()
+
+        await test_broker._dispatch_browser_message(
+            {"type": "discover_slash_commands", "refresh": True},
+            sender_ws=sender_ws,
+        )
+
+        test_broker._transport.discover_slash_commands.assert_awaited_once_with(refresh=True)
+        sender_ws.send_json.assert_awaited_once_with(
+            {
+                "type": "slash_commands",
+                "commands": [
+                    {
+                        "name": "/workflows",
+                        "command": "workflows",
+                        "description": "Browse workflows",
+                        "kind": "command",
+                        "source": "tmux_autocomplete",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_normalizes_payload(self, test_broker):
+        """Claude HTTP hooks are routed into the normal CLI event pipeline."""
+        test_broker._transport = None
+        test_broker._handle_cli_event = AsyncMock()
+
+        await test_broker.handle_claude_hook(
+            {"hook_event_name": "PostToolUse", "tool_name": "Read"}
+        )
+
+        test_broker._handle_cli_event.assert_awaited_once_with(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": "PostToolUse",
+                "payload": {"hook_event_name": "PostToolUse", "tool_name": "Read"},
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_delegates_to_transport_handler(self, test_broker):
+        """Interactive transports can convert hook payloads before broker fallback."""
+        transport = MagicMock()
+        transport.handle_claude_hook = AsyncMock(return_value=True)
+        test_broker._transport = transport
+        test_broker._handle_cli_event = AsyncMock()
+
+        payload = {"hook_event_name": "Stop", "last_assistant_message": "done"}
+        await test_broker.handle_claude_hook(payload)
+
+        transport.handle_claude_hook.assert_awaited_once_with(payload)
+        test_broker._handle_cli_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_guard_no_sender_ws_still_blocks(self, test_broker):
@@ -1920,6 +2050,66 @@ class TestFastAPIEndpoints:
         broker._transport = None
         response = client.get("/api/capabilities")
         assert response.status_code == 503
+
+    def test_slash_commands_endpoint_returns_discovered_commands(self, client):
+        """GET /api/slash-commands returns normalized transport commands."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities(slash_commands=True)
+        mock_transport.discover_slash_commands = AsyncMock(
+            return_value=[
+                {
+                    "name": "/deep-research",
+                    "command": "deep-research",
+                    "description": "Deep research",
+                    "kind": "workflow",
+                    "source": "tmux_autocomplete",
+                }
+            ]
+        )
+        broker._transport = mock_transport
+
+        response = client.get("/api/slash-commands?refresh=true")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["commands"][0]["name"] == "/deep-research"
+        assert data["commands"][0]["kind"] == "workflow"
+        mock_transport.discover_slash_commands.assert_awaited_once_with(refresh=True)
+        broker._transport = None
+
+    def test_send_slash_command_endpoint_uses_transport_control(self, client):
+        """POST /api/slash-commands/send sends a terminal slash command."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities(slash_commands=True)
+        mock_transport.send_control = AsyncMock()
+        broker._transport = mock_transport
+
+        response = client.post(
+            "/api/slash-commands/send",
+            json={"command": "workflows", "arguments": "--all", "pane_id": "%1"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "sent", "command": "/workflows"}
+        mock_transport.send_control.assert_awaited_once_with(
+            "slash_command",
+            command="workflows",
+            arguments="--all",
+            pane_id="%1",
+        )
+        broker._transport = None
+
+    def test_slash_commands_endpoint_501_when_unsupported(self, client):
+        """Slash command APIs report unsupported transports clearly."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities()
+        broker._transport = mock_transport
+
+        response = client.get("/api/slash-commands")
+
+        assert response.status_code == 501
+        broker._transport = None
 
     def test_logs_endpoint_level_filter(self, client):
         _log_buffer.clear()

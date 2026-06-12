@@ -27,6 +27,11 @@ class TransportCapabilities:
     permission_requests: bool = False
     slash_commands: bool = False
     skills: bool = False
+    terminal_output: bool = False
+    terminal_input: bool = False
+    terminal_keys: bool = False
+    terminal_resize: bool = False
+    terminal_panes: bool = False
 
 
 class CLITransport(ABC):
@@ -71,6 +76,10 @@ class CLITransport(ABC):
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Send a server-initiated control message."""
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Return slash commands available in this transport, if discoverable."""
+        return []
 
     @property
     @abstractmethod

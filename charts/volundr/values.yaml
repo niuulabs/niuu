@@ -907,6 +907,134 @@ sessionDefinitions:
       volundr:
         apiUrl: ""
 
+  # Skuld-Claude Interactive session definition (Claude Code REPL in tmux).
+  # This runtime uses the interactive subscription path and captures tmux pane
+  # output/events instead of the Agent SDK stream-json protocol.
+  skuldClaudeInteractive:
+    # -- Enable skuld-claude-interactive session definition
+    enabled: true
+    # -- Human-readable name shown in the UI
+    displayName: "Claude Code Interactive"
+    # -- Short description for the session picker
+    description: "Anthropic Claude Code through a tmux-backed interactive terminal"
+    # -- Default model for this definition (empty = use server default)
+    defaultModel: "claude-sonnet-4-6"
+    # -- Labels for agent routing
+    labels:
+      - session
+      - interactive
+    # -- Model providers this runtime accepts
+    compatibleProviders:
+      - anthropic
+    # -- Whether this session definition is active
+    active: true
+
+    # Helm chart configuration (references the shared skuld chart)
+    helm:
+      # -- Chart name
+      chart: skuld
+      # -- Helm repository URL (supports oci:// for OCI registries)
+      repo: "oci://ghcr.io/niuulabs/charts"
+      # -- Name of HelmRepository or OCIRepository CR in cluster
+      repoName: ""
+      # -- Chart version constraint
+      version: "0.1.0"
+
+    defaults:
+      session:
+        # -- Default Claude model
+        model: "claude-sonnet-4-6"
+
+      broker:
+        # -- AI CLI backend: "claude" (Claude Code)
+        cliType: claude
+        # -- Interactive tmux transport (real TTY; supports built-in slash commands)
+        transport: tmux-interactive
+        # -- Fully-qualified transport adapter class path
+        transportAdapter: "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+        # -- Skip tool permission prompts (--dangerously-skip-permissions)
+        skipPermissions: true
+        # -- Enable Claude Code experimental Agent Teams
+        agentTeams: false
+
+      image:
+        # -- Session image repository
+        repository: ghcr.io/niuulabs/skuld
+        # -- Session image tag
+        tag: "latest"
+
+      resources:
+        requests:
+          memory: "256Mi"
+          cpu: "100m"
+        limits:
+          memory: "1Gi"
+          cpu: "500m"
+
+      # -- Image pull secrets for session pods
+      imagePullSecrets:
+        - ghcr-pull-secret
+
+      ingress:
+        # -- Ingress class name for sessions
+        className: ""
+        # -- Controller-specific annotations for WebSocket support
+        annotations: {}
+        tls:
+          # -- Enable TLS for session ingress
+          enabled: false
+          # -- TLS wildcard secret name for session ingress
+          secretName: "skuld-wildcard-tls"
+
+      # -- Git credential secret for session pods to clone repositories
+      git:
+        credentials:
+          # -- K8s secret name containing git credentials
+          secretName: github-token
+
+      localServices:
+        terminal:
+          # -- Enable terminal debug UI in session pods
+          debug: false
+
+      persistence:
+        # -- Mount path for session data
+        mountPath: "/volundr/sessions"
+
+      homeVolume:
+        # -- Enable persistent home directory in session pods
+        enabled: true
+        # -- Mount path for the home PVC
+        mountPath: "/volundr/home"
+        credentialFiles:
+          # -- Pre-existing K8s secret containing Claude credential files
+          secretName: "claude-credentials"
+          # -- Subdirectory under mountPath where credential symlinks are placed
+          destDir: ".claude"
+          # -- Internal mount path for the credentials secret
+          secretMountPath: "/volundr/secrets/credential-files"
+
+      # Secrets injected as env vars into the skuld broker container.
+      envSecrets:
+        - envVar: ANTHROPIC_API_KEY
+          secretName: anthropic-api-key
+          secretKey: api-key
+
+      # Plain env vars injected into the skuld broker container.
+      envVars: []
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      # -- Runtime class name for session pods (e.g., "nvidia", "kata", "gvisor")
+      runtimeClassName: ""
+
+      # -- Volundr API URL for session pods to report token usage
+      volundr:
+        apiUrl: ""
+
   # Skuld-Codex session definition (OpenAI Codex)
   # Uses the merged skuld image (ships both Claude Code and Codex CLIs).
   skuldCodex:

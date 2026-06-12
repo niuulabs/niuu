@@ -141,4 +141,10 @@ export interface SessionCapabilities {
   set_model?: boolean;
   set_thinking_tokens?: boolean;
   rewind_files?: boolean;
+  slash_commands?: boolean;
+  terminal_output?: boolean;
+  terminal_input?: boolean;
+  terminal_keys?: boolean;
+  terminal_resize?: boolean;
+  terminal_panes?: boolean;
 }

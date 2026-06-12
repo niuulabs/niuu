@@ -1,8 +1,8 @@
 # Volundr Helm Chart
 
-![Version: 0.55.0](https://img.shields.io/badge/Version-0.55.0-informational?style=flat-square)
+![Version: 0.0.0-ting.160](https://img.shields.io/badge/Version-0.0.0--ting.160-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
-![AppVersion: 0.55.0](https://img.shields.io/badge/AppVersion-0.55.0-informational?style=flat-square)
+![AppVersion: 0.0.0-ting.159](https://img.shields.io/badge/AppVersion-0.0.0--ting.159-informational?style=flat-square)
 
 Helm chart for deploying **Volundr** — a self-hosted Claude Code session manager with pluggable adapters for identity, authorization, storage, secret management, and session orchestration.
 
@@ -20,7 +20,7 @@ Helm chart for deploying **Volundr** — a self-hosted Claude Code session manag
 
 ```bash
 # Add the helm repository (if using OCI registry)
-helm pull oci://ghcr.io/niuulabs/charts/volundr --version 0.55.0
+helm pull oci://ghcr.io/niuulabs/charts/volundr --version 0.0.0-ting.160
 
 # Create namespace
 kubectl create namespace volundr
@@ -602,7 +602,7 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldClaude.helm.chart` | string | `"skuld"` | Chart name |
 | `sessionDefinitions.skuldClaude.helm.repo` | string | `"oci://ghcr.io/niuulabs/charts"` | Helm repository URL (supports `oci://` for OCI registries) |
 | `sessionDefinitions.skuldClaude.helm.repoName` | string | `""` | Name of HelmRepository or OCIRepository CR in cluster (for Flux) |
-| `sessionDefinitions.skuldClaude.helm.version` | string | `"0.55.0"` | Chart version constraint |
+| `sessionDefinitions.skuldClaude.helm.version` | string | `"0.1.0"` | Chart version constraint |
 | `sessionDefinitions.skuldClaude.defaults.session.model` | string | `"claude-sonnet-4-20250514"` | Default Claude model |
 | `sessionDefinitions.skuldClaude.defaults.broker.cliType` | string | `"claude"` | AI CLI backend |
 | `sessionDefinitions.skuldClaude.defaults.broker.transport` | string | `"sdk"` | CLI transport mode (`sdk` = WebSocket, `subprocess` = legacy) |
@@ -634,6 +634,49 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldClaude.defaults.runtimeClassName` | string | `""` | Runtime class name for session pods (e.g., `"nvidia"`, `"kata"`, `"gvisor"`) |
 | `sessionDefinitions.skuldClaude.defaults.volundr.apiUrl` | string | `""` | Volundr API URL for session pods (auto-wired in template) |
 
+#### skuld-claude-interactive
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `sessionDefinitions.skuldClaudeInteractive.enabled` | bool | `true` | Enable skuld-claude-interactive session definition |
+| `sessionDefinitions.skuldClaudeInteractive.displayName` | string | `"Claude Code Interactive"` | Human-readable name shown in the UI |
+| `sessionDefinitions.skuldClaudeInteractive.description` | string | `"Anthropic Claude Code through a tmux-backed interactive terminal"` | Short description for the session picker |
+| `sessionDefinitions.skuldClaudeInteractive.defaultModel` | string | `"claude-sonnet-4-6"` | Default model for this definition |
+| `sessionDefinitions.skuldClaudeInteractive.labels` | list | `["session","interactive"]` | Labels for agent routing |
+| `sessionDefinitions.skuldClaudeInteractive.compatibleProviders` | list | `["anthropic"]` | Model providers this runtime accepts |
+| `sessionDefinitions.skuldClaudeInteractive.active` | bool | `true` | Whether this session definition is active |
+| `sessionDefinitions.skuldClaudeInteractive.helm.chart` | string | `"skuld"` | Chart name |
+| `sessionDefinitions.skuldClaudeInteractive.helm.repo` | string | `"oci://ghcr.io/niuulabs/charts"` | Helm repository URL (supports `oci://` for OCI registries) |
+| `sessionDefinitions.skuldClaudeInteractive.helm.repoName` | string | `""` | Name of HelmRepository or OCIRepository CR in cluster |
+| `sessionDefinitions.skuldClaudeInteractive.helm.version` | string | `"0.1.0"` | Chart version constraint |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.session.model` | string | `"claude-sonnet-4-6"` | Default Claude model |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.broker.cliType` | string | `"claude"` | AI CLI backend |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.broker.transport` | string | `"tmux-interactive"` | Interactive tmux transport for a real TTY |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.broker.transportAdapter` | string | `"skuld.transports.tmux_interactive.TmuxInteractiveTransport"` | Fully-qualified transport adapter class path |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.broker.skipPermissions` | bool | `true` | Skip tool permission prompts (`--dangerously-skip-permissions`) |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.broker.agentTeams` | bool | `false` | Enable Claude Code experimental Agent Teams |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.image.repository` | string | `"ghcr.io/niuulabs/skuld"` | Session image repository |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.image.tag` | string | `"latest"` | Session image tag |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.resources` | object | See values.yaml | Resource requests/limits for the session container |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.imagePullSecrets` | list | `["ghcr-pull-secret"]` | Image pull secrets for session pods |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.ingress.className` | string | `""` | Ingress class name for sessions |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.ingress.annotations` | object | `{}` | Controller-specific annotations for WebSocket support |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.ingress.tls.enabled` | bool | `false` | Enable TLS for session ingress |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.ingress.tls.secretName` | string | `"skuld-wildcard-tls"` | TLS wildcard secret name |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.git.credentials.secretName` | string | `"github-token"` | K8s secret name containing git credentials |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.localServices.terminal.debug` | bool | `false` | Enable terminal debug UI in session pods |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.persistence.mountPath` | string | `"/volundr/sessions"` | Mount path for session data |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.homeVolume.enabled` | bool | `true` | Enable persistent home directory in session pods |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.homeVolume.mountPath` | string | `"/volundr/home"` | Mount path for the home PVC |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.homeVolume.credentialFiles.secretName` | string | `"claude-credentials"` | K8s secret containing Claude credential files |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.homeVolume.credentialFiles.destDir` | string | `".claude"` | Subdirectory under mountPath where credential symlinks are placed |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.homeVolume.credentialFiles.secretMountPath` | string | `"/volundr/secrets/credential-files"` | Internal mount path for the credentials secret |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.envSecrets` | list | See values.yaml | Secrets injected as env vars into the broker container |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.envVars` | list | `[]` | Plain env vars injected into the broker container |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.securityContext` | object | `{"runAsNonRoot":true,"runAsUser":1000,"fsGroup":1000}` | Security context for session pods |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.runtimeClassName` | string | `""` | Runtime class name for session pods (e.g., `"nvidia"`, `"kata"`, `"gvisor"`) |
+| `sessionDefinitions.skuldClaudeInteractive.defaults.volundr.apiUrl` | string | `""` | Volundr API URL for session pods (auto-wired in template) |
+
 #### skuld-codex
 
 | Key | Type | Default | Description |
@@ -644,7 +687,7 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldCodex.helm.chart` | string | `"skuld"` | Chart name |
 | `sessionDefinitions.skuldCodex.helm.repo` | string | `"oci://ghcr.io/niuulabs/charts"` | Helm repository URL |
 | `sessionDefinitions.skuldCodex.helm.repoName` | string | `""` | Name of HelmRepository or OCIRepository CR in cluster |
-| `sessionDefinitions.skuldCodex.helm.version` | string | `"0.55.0"` | Chart version constraint |
+| `sessionDefinitions.skuldCodex.helm.version` | string | `"0.1.0"` | Chart version constraint |
 | `sessionDefinitions.skuldCodex.defaults.session.model` | string | `"o4-mini"` | Default Codex model |
 | `sessionDefinitions.skuldCodex.defaults.broker.cliType` | string | `"codex"` | AI CLI backend |
 | `sessionDefinitions.skuldCodex.defaults.broker.transport` | string | `"subprocess"` | Codex always uses subprocess transport |
@@ -971,7 +1014,7 @@ podManager:
   kwargs:
     namespace: "default"
     chart_name: "skuld"
-    chart_version: "0.55.0"
+    chart_version: "0.1.0"
     source_ref_kind: "HelmRepository"
     source_ref_name: "skuld"
     timeout: "5m"

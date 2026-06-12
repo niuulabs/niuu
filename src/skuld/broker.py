@@ -3234,6 +3234,11 @@ class Broker:
         "set_permission_mode": "set_permission_mode",
         "rewind_files": "rewind_files",
         "mcp_set_servers": "mcp_set_servers",
+        "terminal_input": "terminal_input",
+        "terminal_key": "terminal_keys",
+        "terminal_resize": "terminal_resize",
+        "slash_command": "slash_commands",
+        "discover_slash_commands": "slash_commands",
     }
 
     async def _dispatch_browser_message(
@@ -3344,6 +3349,54 @@ class Broker:
                     "mcp_set_servers",
                     servers=servers,
                 )
+
+            # Interactive terminal transports: raw input, key presses, and
+            # resize events. These are intentionally transport controls, not
+            # chat turns, so workflows can drive slash menus/history/editing.
+            case "terminal_input":
+                await self._transport.send_control(
+                    "terminal_input",
+                    data=data.get("data", data.get("text", "")),
+                    enter=bool(data.get("enter", False)),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_key":
+                await self._transport.send_control(
+                    "terminal_key",
+                    key=data.get("key", ""),
+                    keys=data.get("keys", []),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_resize":
+                await self._transport.send_control(
+                    "terminal_resize",
+                    cols=data.get("cols", data.get("columns", 0)),
+                    rows=data.get("rows", 0),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "slash_command":
+                await self._transport.send_control(
+                    "slash_command",
+                    command=data.get("command", ""),
+                    arguments=data.get("arguments", data.get("args", "")),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "discover_slash_commands":
+                commands = await self.discover_slash_commands(
+                    refresh=bool(data.get("refresh", True))
+                )
+                if sender_ws is not None:
+                    await sender_ws.send_json(
+                        {
+                            "type": "slash_commands",
+                            "commands": commands,
+                            "count": len(commands),
+                        }
+                    )
 
             # Room: forward a directed message to a specific Ravn participant
             case "directed_message":
@@ -3480,6 +3533,90 @@ class Broker:
                 await self._channels.broadcast({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
+
+    async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
+        """Ingest a Claude Code hook payload into the normal event pipeline.
+
+        Interactive tmux sessions can configure Claude Code HTTP hooks to POST
+        here. The payload schema is owned by Claude Code, so we keep the raw
+        body intact and add only stable routing fields.
+        """
+        transport_hook = getattr(self._transport, "handle_claude_hook", None)
+        if callable(transport_hook):
+            try:
+                handled = await transport_hook(payload)
+            except Exception:
+                logger.warning("Transport Claude hook handler failed", exc_info=True)
+            else:
+                if handled:
+                    return
+
+        event_name = (
+            payload.get("hook_event_name")
+            or payload.get("hookEventName")
+            or payload.get("event")
+            or payload.get("hook_event")
+            or "unknown"
+        )
+        await self._handle_cli_event(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": str(event_name),
+                "payload": payload,
+            }
+        )
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """Return slash commands available through the current transport."""
+        if self._transport is None:
+            return []
+
+        commands = await self._transport.discover_slash_commands(refresh=refresh)
+        if commands:
+            return self._normalize_slash_commands(commands)
+
+        raw_commands = getattr(self._transport, "slash_commands", [])
+        if callable(raw_commands):
+            raw_commands = raw_commands()
+        return self._normalize_slash_commands(raw_commands)
+
+    @staticmethod
+    def _normalize_slash_commands(raw_commands: Any) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if not isinstance(raw_commands, list):
+            return normalized
+        for item in raw_commands:
+            if isinstance(item, str):
+                raw_name = item
+                description = ""
+                kind = "command"
+                source = "transport"
+            elif isinstance(item, dict):
+                raw_name = str(item.get("name") or item.get("command") or "")
+                description = str(item.get("description") or "")
+                kind = str(item.get("kind") or "command")
+                source = str(item.get("source") or "transport")
+            else:
+                continue
+            raw_name = raw_name.strip()
+            if not raw_name:
+                continue
+            name = raw_name if raw_name.startswith("/") else f"/{raw_name}"
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(
+                {
+                    "name": name,
+                    "command": name[1:],
+                    "description": description.strip(),
+                    "kind": kind,
+                    "source": source,
+                }
+            )
+        return normalized
 
     async def handle_human_room_message(
         self,
@@ -5368,12 +5505,60 @@ async def get_conversation_history() -> dict:
 # --- Capabilities API ---
 
 
+class _SlashCommandRequest(BaseModel):
+    """Request body for sending a slash command to the active transport."""
+
+    command: str
+    arguments: str = ""
+    pane_id: str = ""
+
+
 @app.get("/api/capabilities")
 async def get_capabilities() -> dict:
     """Return transport capabilities so the frontend knows which controls to render."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
     return asdict(broker._transport.capabilities)
+
+
+@app.get("/api/slash-commands")
+async def get_slash_commands(refresh: bool = Query(True)) -> dict[str, Any]:
+    """Return slash commands available in the active CLI session."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.slash_commands:
+        raise HTTPException(status_code=501, detail="Slash commands not supported")
+    commands = await broker.discover_slash_commands(refresh=refresh)
+    return {"commands": commands, "count": len(commands)}
+
+
+@app.post("/api/slash-commands/send")
+async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
+    """Send a slash command to the active CLI session as terminal input."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.slash_commands:
+        raise HTTPException(status_code=501, detail="Slash commands not supported")
+    command = body.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+    await broker._transport.send_control(
+        "slash_command",
+        command=command,
+        arguments=body.arguments,
+        pane_id=body.pane_id,
+    )
+    name = command.split(maxsplit=1)[0]
+    if not name.startswith("/"):
+        name = f"/{name}"
+    return {"status": "sent", "command": name}
+
+
+@app.post("/api/claude/hooks")
+async def receive_claude_hook(payload: dict[str, Any]) -> dict[str, bool]:
+    """Receive Claude Code HTTP hook callbacks for interactive tmux sessions."""
+    await broker.handle_claude_hook(payload)
+    return {"ok": True}
 
 
 # --- Service Management API ---

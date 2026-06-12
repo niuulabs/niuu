@@ -81,11 +81,14 @@ describe('LaunchWizard helpers', () => {
     expect(getDefinitionRune('skuld-codex')).toBe('ᚲ');
     expect(getDefinitionRune('unknown')).toBe('ᚠ');
     expect(deriveCliTool('skuld-gemini')).toBe('gemini');
+    expect(deriveCliTool('skuld-claude-interactive')).toBe('claude');
     expect(deriveCliTool('codex')).toBe('codex');
     expect(deriveCliTool('skuld-custom')).toBe('custom');
     expect(deriveCliTool(' bespoke-tool ')).toBe('bespoke-tool');
     expect(normalizeDefinitionKey(' skuld-opencode ')).toBe('skuldOpenCode');
+    expect(normalizeDefinitionKey('skuld-claude-interactive')).toBe('skuldClaudeInteractive');
     expect(normalizeDefinitionKey('custom-tool')).toBe('custom-tool');
+    expect(definitionToTaskType('skuldClaudeInteractive')).toBe('skuld-claude-interactive');
     expect(definitionToTaskType('skuldOpenCode')).toBe('skuld-opencode');
     expect(definitionToTaskType('raw-task')).toBe('raw-task');
   });

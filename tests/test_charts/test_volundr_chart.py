@@ -63,6 +63,13 @@ class TestValuesDefaults:
         skuld = values_yaml["sessionDefinitions"]["skuldClaude"]
         assert "session" in skuld["labels"]
 
+    def test_skuld_claude_interactive_session_definition_enabled(self, values_yaml):
+        """Test skuld-claude-interactive session definition is enabled."""
+        skuld = values_yaml["sessionDefinitions"]["skuldClaudeInteractive"]
+        assert skuld["enabled"] is True
+        assert skuld["active"] is True
+        assert "interactive" in skuld["labels"]
+
     def test_skuld_claude_defaults_session_model(self, values_yaml):
         """Test skuld-claude defaults include session model."""
         defaults = values_yaml["sessionDefinitions"]["skuldClaude"]["defaults"]
@@ -139,6 +146,16 @@ class TestValuesDefaults:
         broker = values_yaml["sessionDefinitions"]["skuldClaude"]["defaults"]["broker"]
         assert broker["transport"] == "sdk"
         assert broker["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
+
+    def test_skuld_claude_interactive_broker_transport_adapter(self, values_yaml):
+        """Test skuld-claude-interactive broker uses the tmux adapter."""
+        broker = values_yaml["sessionDefinitions"]["skuldClaudeInteractive"]["defaults"]["broker"]
+        assert broker["transport"] == "tmux-interactive"
+        assert (
+            broker["transportAdapter"]
+            == "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+        )
+        assert broker["skipPermissions"] is True
 
     def test_skuld_codex_broker_cli_type(self, values_yaml):
         """Test skuld-codex broker cliType is codex-ws (WebSocket transport)."""

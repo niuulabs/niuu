@@ -295,6 +295,13 @@ class TestTransportAdapter:
         s = SkuldSettings()
         assert s.transport_adapter == "skuld.transports.subprocess.SubprocessTransport"
 
+    def test_transport_tmux_interactive_resolves(self, monkeypatch):
+        """transport=tmux-interactive maps to TmuxInteractiveTransport."""
+        monkeypatch.setenv("SKULD__TRANSPORT", "tmux-interactive")
+
+        s = SkuldSettings()
+        assert s.transport_adapter == "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+
     def test_explicit_transport_adapter_takes_precedence(self, monkeypatch):
         """Explicit transport_adapter overrides legacy fields."""
         monkeypatch.setenv("SKULD__CLI_TYPE", "codex")

@@ -110,8 +110,9 @@ describe('LaunchWizard', () => {
   it('shows runtime step with CLI options', async () => {
     wrap();
     await advanceToRuntime();
-    expect(screen.getByTestId('cli-option-claude')).toBeInTheDocument();
-    expect(screen.getByTestId('cli-option-codex')).toBeInTheDocument();
+    expect(screen.getByTestId('runtime-option-skuldClaude')).toBeInTheDocument();
+    expect(screen.getByTestId('runtime-option-skuldClaudeInteractive')).toBeInTheDocument();
+    expect(screen.getByTestId('runtime-option-skuldCodex')).toBeInTheDocument();
   });
 
   it('shows confirm step with review rows', async () => {

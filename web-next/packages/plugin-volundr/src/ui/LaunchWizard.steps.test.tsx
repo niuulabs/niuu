@@ -399,7 +399,7 @@ describe('LaunchWizard step components', () => {
     });
     expect(onApplyPreset).toHaveBeenCalledWith(PRESET.id);
 
-    fireEvent.click(screen.getByTestId('cli-option-codex'));
+    fireEvent.click(screen.getByTestId('runtime-option-skuld-codex'));
     expect(update).toHaveBeenCalledWith({ definition: 'skuld-codex', model: 'gpt-test' });
 
     fireEvent.click(screen.getByText('show advanced'));
