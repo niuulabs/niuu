@@ -1224,7 +1224,7 @@ export function RuntimeStep({
                   }
                   update(patch);
                 }}
-                data-testid={`cli-option-${deriveCliTool(def.key)}`}
+                data-testid={`runtime-option-${def.key}`}
                 title={def.description || undefined}
               >
                 <span className="niuu:font-mono niuu:text-base">{getDefinitionRune(def.key)}</span>
