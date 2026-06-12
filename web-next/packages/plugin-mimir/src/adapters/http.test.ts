@@ -1310,7 +1310,8 @@ describe('buildMimirHttpAdapter', () => {
   describe('mounts.getDoctor', () => {
     const rawReport = {
       score: '5/6',
-      worst: 'warn',
+      // Live API wire field is `status`; mapped to DoctorReport.worst.
+      status: 'warn',
       checks: [
         {
           id: 'embedding-coverage',

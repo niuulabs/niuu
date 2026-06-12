@@ -216,6 +216,34 @@ describe('SearchPage', () => {
     );
   });
 
+  it('survives JSON null score and breakdown from the live API (regression)', async () => {
+    // The real backend sends score: null outside debug mode; null !== undefined
+    // crashed the result row with `null.toFixed(2)` against the live stack.
+    const search = vi.fn().mockResolvedValue([
+      {
+        path: 'technical/page.md',
+        title: 'Page',
+        summary: 'A page.',
+        category: 'technical',
+        type: 'topic',
+        confidence: 'medium',
+        score: null as unknown as number,
+        scoreBreakdown: null as unknown as Record<string, number>,
+      },
+    ]);
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        search,
+      },
+    };
+    wrap(<SearchPage />, service);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'page' } });
+    await waitFor(() => expect(screen.getAllByTestId('search-result').length).toBe(1));
+    expect(screen.queryByText(/score/i)).not.toBeInTheDocument();
+  });
+
   it('renders per-factor score breakdown chips when debug is on', async () => {
     wrap(<SearchPage />);
     fireEvent.click(screen.getByTestId('debug-toggle'));

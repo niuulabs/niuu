@@ -235,7 +235,8 @@ interface RawDoctorCheck {
 
 interface RawDoctorReport {
   score: string;
-  worst: string;
+  /** Worst status across checks — the live API field is `status`. */
+  status: string;
   checks: RawDoctorCheck[];
 }
 
@@ -628,7 +629,7 @@ export function toDoctorCheck(raw: RawDoctorCheck): DoctorCheck {
 export function toDoctorReport(raw: RawDoctorReport): DoctorReport {
   return {
     score: raw.score,
-    worst: raw.worst as DoctorReport['worst'],
+    worst: raw.status as DoctorReport['worst'],
     checks: raw.checks.map(toDoctorCheck),
   };
 }
@@ -947,9 +948,10 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           category: r.category,
           type: (r.type ?? inferPageType(r.path, r.category)) as SearchResult['type'],
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
-          score: r.score,
+          // The API sends JSON null outside debug mode — normalise to undefined.
+          score: r.score ?? undefined,
           mounts: mountName ? [mountName] : undefined,
-          scoreBreakdown: r.score_breakdown,
+          scoreBreakdown: r.score_breakdown ?? undefined,
         }));
       },
 

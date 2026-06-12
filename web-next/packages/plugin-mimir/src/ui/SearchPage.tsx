@@ -172,7 +172,7 @@ export function SearchPage({ initialDebug = false }: SearchPageProps = {}) {
                 <span className="niuu:font-medium niuu:text-sm niuu:text-text-primary niuu:flex-1">
                   {highlightText(result.title, query)}
                 </span>
-                {result.score !== undefined && (
+                {typeof result.score === 'number' && (
                   <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint niuu:shrink-0">
                     score {result.score.toFixed(2)}
                   </span>
@@ -217,7 +217,8 @@ export function SearchPage({ initialDebug = false }: SearchPageProps = {}) {
                 >
                   {Object.entries(result.scoreBreakdown).map(([factor, value]) => (
                     <span key={factor} className={`mm-chip${factor === 'final' ? ' accent' : ''}`}>
-                      <span className="mm-chip-k">{factor}</span> {value.toFixed(2)}
+                      <span className="mm-chip-k">{factor}</span>{' '}
+                      {typeof value === 'number' ? value.toFixed(2) : '—'}
                     </span>
                   ))}
                 </div>
