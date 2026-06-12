@@ -256,3 +256,59 @@ test('/mimir/entities — clicking a kind filter updates active state', async ({
   await orgBtn.click();
   await expect(orgBtn).toHaveAttribute('aria-pressed', 'true');
 });
+
+// ---------------------------------------------------------------------------
+// /mimir/search — debug retrieval workbench
+// ---------------------------------------------------------------------------
+
+test('/mimir/search — debug toggle reveals score breakdowns', async ({ page }) => {
+  await page.goto('/mimir/search');
+  await page.getByRole('searchbox').fill('architecture');
+  await expect(page.getByTestId('search-result').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('score-breakdown')).toHaveCount(0);
+
+  await page.getByTestId('debug-toggle').click();
+  await expect(page.getByTestId('score-breakdown').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('score-breakdown').first()).toContainText('final');
+});
+
+// ---------------------------------------------------------------------------
+// /mimir/analytics — Analytics view
+// ---------------------------------------------------------------------------
+
+test('/mimir/analytics renders metric tiles and the category table', async ({ page }) => {
+  await page.goto('/mimir/analytics');
+  await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible();
+  await expect(page.getByTestId('eval-tiles')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('precision @5')).toBeVisible();
+  await expect(page.getByTestId('category-table')).toBeVisible();
+});
+
+test('/mimir/analytics shows the query traffic log', async ({ page }) => {
+  await page.goto('/mimir/analytics');
+  await expect(page.getByTestId('query-log')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('zero-result-query').first()).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// /mimir/doctor — Doctor view
+// ---------------------------------------------------------------------------
+
+test('/mimir/doctor renders the scored checklist', async ({ page }) => {
+  await page.goto('/mimir/doctor');
+  await expect(page.getByRole('heading', { name: 'Doctor' })).toBeVisible();
+  await expect(page.getByTestId('doctor-score')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('doctor-check').first()).toBeVisible();
+});
+
+test('/mimir/doctor — run fixes flows through the confirm dialog', async ({ page }) => {
+  await page.goto('/mimir/doctor');
+  await expect(page.getByTestId('doctor-score')).toHaveText('3/6', { timeout: 5000 });
+
+  await page.getByTestId('run-fixes-btn').click();
+  await expect(page.getByText('Run automatic fixes?')).toBeVisible();
+  await page.getByTestId('confirm-fix').click();
+
+  await expect(page.getByTestId('doctor-score')).toHaveText('5/6', { timeout: 5000 });
+  await expect(page.getByTestId('run-fixes-btn')).toHaveCount(0);
+});

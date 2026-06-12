@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
-import { GraphPage, layoutCategoryRadial } from './GraphPage';
+import {
+  GraphPage,
+  layoutCategoryRadial,
+  nodeRadius,
+  buildDegreeMap,
+  zoomViewBox,
+  panViewBox,
+} from './GraphPage';
 import { createMimirMockAdapter } from '../adapters/mock';
 import type { IMimirService } from '../ports';
 import { renderWithMimir } from '../testing/renderWithMimir';
@@ -87,6 +94,147 @@ describe('GraphPage', () => {
     expect(screen.getByText('Edges')).toBeInTheDocument();
     expect(screen.getByText('shared source')).toBeInTheDocument();
     expect(screen.getByText('wikilink')).toBeInTheDocument();
+  });
+
+  it('scrolling zooms the viewBox in and out', async () => {
+    wrap(<GraphPage />);
+    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    const initial = svg.getAttribute('viewBox')!;
+    const initialW = Number(initial.split(' ')[2]);
+
+    fireEvent.wheel(svg, { deltaY: -100 });
+    const zoomedIn = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+    expect(zoomedIn).toBeLessThan(initialW);
+
+    fireEvent.wheel(svg, { deltaY: 100 });
+    fireEvent.wheel(svg, { deltaY: 100 });
+    const zoomedOut = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+    expect(zoomedOut).toBeGreaterThan(initialW);
+  });
+
+  it('dragging pans the viewBox', async () => {
+    wrap(<GraphPage />);
+    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    const initial = svg.getAttribute('viewBox')!;
+
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 150, clientY: 170 });
+    fireEvent.pointerUp(svg, { pointerId: 1 });
+
+    const panned = svg.getAttribute('viewBox')!;
+    expect(panned).not.toBe(initial);
+    const [x, y] = panned.split(' ').map(Number);
+    // Dragging left/up moves the viewBox origin right/down.
+    expect(x).toBeGreaterThan(0);
+    expect(y).toBeGreaterThan(0);
+  });
+
+  it('pointer moves without a preceding pointer down do not pan', async () => {
+    wrap(<GraphPage />);
+    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    const initial = svg.getAttribute('viewBox')!;
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 50, clientY: 50 });
+    expect(svg.getAttribute('viewBox')).toBe(initial);
+  });
+
+  it('node radius scales with edge count', async () => {
+    wrap(<GraphPage />);
+    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    const radii = [...svg.querySelectorAll('g[role="button"] circle')].map((c) =>
+      Number(c.getAttribute('r')),
+    );
+    expect(radii.length).toBeGreaterThan(0);
+    // The mock graph has both connected and unconnected nodes.
+    expect(new Set(radii).size).toBeGreaterThan(1);
+    expect(Math.min(...radii)).toBeGreaterThanOrEqual(4);
+    expect(Math.max(...radii)).toBeLessThanOrEqual(10);
+  });
+});
+
+describe('nodeRadius', () => {
+  it('returns the minimum radius for isolated nodes', () => {
+    expect(nodeRadius(0)).toBe(4);
+  });
+
+  it('grows with edge count', () => {
+    expect(nodeRadius(2)).toBeGreaterThan(nodeRadius(1));
+  });
+
+  it('caps at the maximum radius', () => {
+    expect(nodeRadius(100)).toBe(10);
+  });
+});
+
+describe('buildDegreeMap', () => {
+  it('counts inbound and outbound edges per node', () => {
+    const degree = buildDegreeMap({
+      nodes: [],
+      edges: [
+        { source: 'a', target: 'b' },
+        { source: 'a', target: 'c' },
+        { source: 'b', target: 'c' },
+      ],
+    });
+    expect(degree.get('a')).toBe(2);
+    expect(degree.get('b')).toBe(2);
+    expect(degree.get('c')).toBe(2);
+    expect(degree.get('d')).toBeUndefined();
+  });
+});
+
+describe('zoomViewBox', () => {
+  const base = { x: 0, y: 0, w: 1100, h: 750 };
+
+  it('shrinks the viewBox when zooming in', () => {
+    const zoomed = zoomViewBox(base, 0.9, 550, 375);
+    expect(zoomed.w).toBeCloseTo(990);
+    expect(zoomed.h).toBeCloseTo(675);
+  });
+
+  it('keeps the anchor point stationary', () => {
+    const anchorX = 200;
+    const anchorY = 100;
+    const zoomed = zoomViewBox(base, 0.5, anchorX, anchorY);
+    // The anchor's relative position must be unchanged.
+    const relBefore = (anchorX - base.x) / base.w;
+    const relAfter = (anchorX - zoomed.x) / zoomed.w;
+    expect(relAfter).toBeCloseTo(relBefore);
+    const relBeforeY = (anchorY - base.y) / base.h;
+    const relAfterY = (anchorY - zoomed.y) / zoomed.h;
+    expect(relAfterY).toBeCloseTo(relBeforeY);
+  });
+
+  it('clamps zoom-in to the minimum width', () => {
+    let vb = base;
+    for (let i = 0; i < 50; i++) vb = zoomViewBox(vb, 0.5, 550, 375);
+    expect(vb.w).toBeCloseTo(1100 / 8);
+  });
+
+  it('clamps zoom-out to the maximum width', () => {
+    let vb = base;
+    for (let i = 0; i < 50; i++) vb = zoomViewBox(vb, 2, 550, 375);
+    expect(vb.w).toBeCloseTo(1100 * 4);
+  });
+});
+
+describe('panViewBox', () => {
+  it('shifts the origin opposite to the drag direction, scaled to SVG units', () => {
+    const vb = { x: 0, y: 0, w: 1100, h: 750 };
+    const panned = panViewBox(vb, -110, 55, 1100);
+    expect(panned.x).toBeCloseTo(110);
+    expect(panned.y).toBeCloseTo(-55);
+    expect(panned.w).toBe(1100);
+    expect(panned.h).toBe(750);
+  });
+
+  it('falls back to the base width when the client width is zero', () => {
+    const vb = { x: 0, y: 0, w: 1100, h: 750 };
+    const panned = panViewBox(vb, -10, 0, 0);
+    expect(panned.x).toBeCloseTo(10);
   });
 });
 

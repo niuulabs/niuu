@@ -10,6 +10,8 @@ import { IngestPage } from './ui/IngestPage';
 import { LintPage } from './ui/LintPage';
 import { DreamsPage } from './ui/DreamsPage';
 import { RegistryPage } from './ui/RegistryPage';
+import { AnalyticsPage } from './ui/AnalyticsPage';
+import { DoctorPage } from './ui/DoctorPage';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
 
@@ -28,6 +30,8 @@ export const mimirPlugin = definePlugin({
     { id: 'ingest', label: 'Ingest', rune: '↧', path: '/mimir/ingest' },
     { id: 'lint', label: 'Lint', rune: '⚠', path: '/mimir/lint' },
     { id: 'dreams', label: 'Dreams', rune: '≡', path: '/mimir/dreams' },
+    { id: 'analytics', label: 'Analytics', rune: '∑', path: '/mimir/analytics' },
+    { id: 'doctor', label: 'Doctor', rune: '✚', path: '/mimir/doctor' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -85,6 +89,16 @@ export const mimirPlugin = definePlugin({
       path: '/mimir/dreams',
       component: DreamsPage,
     }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/analytics',
+      component: AnalyticsPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/doctor',
+      component: DoctorPage,
+    }),
   ],
   subnav: (ctx: PluginCtx) => <MimirSubnav ctx={ctx} />,
   topbarRight: (ctx: PluginCtx) => <MimirTopbar ctx={ctx} />,
@@ -122,6 +136,10 @@ export type { RavnState, RavnBinding } from './domain/ravn-binding';
 export type { Source, OriginType } from './domain/source';
 export type { EntityKind, EntityMeta } from './domain/entity';
 export type { RegistryMount } from './domain/registry';
+export type { EvalMetrics, EvalReport, QueryLogEntry, QueryStats } from './domain/analytics';
+export { zeroResultQueries } from './domain/analytics';
+export type { DoctorStatus, DoctorCheck, DoctorReport } from './domain/doctor';
+export { fixableChecks } from './domain/doctor';
 export type {
   FileTreeDir,
   FileTreeLeaf,
