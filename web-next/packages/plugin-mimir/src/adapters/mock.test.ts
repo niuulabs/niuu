@@ -63,6 +63,60 @@ describe('createMimirMockAdapter', () => {
     });
   });
 
+  describe('mounts.getEvalReport', () => {
+    it('returns a populated eval report', async () => {
+      const svc = createMimirMockAdapter();
+      const report = await svc.mounts.getEvalReport();
+      expect(report).not.toBeNull();
+      expect(report!.overall.precisionAt5).toBeGreaterThan(0);
+      expect(report!.overall.mrr).toBeGreaterThan(0);
+      expect(report!.overall.recallAt10).toBeGreaterThan(0);
+      expect(report!.queryCount).toBeGreaterThan(0);
+      expect(Object.keys(report!.byCategory).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('mounts.getQueryStats', () => {
+    it('returns query stats with a recent log', async () => {
+      const svc = createMimirMockAdapter();
+      const stats = await svc.mounts.getQueryStats();
+      expect(stats).not.toBeNull();
+      expect(stats!.total).toBeGreaterThan(0);
+      expect(stats!.recent.length).toBeGreaterThan(0);
+      expect(stats!.recent.some((entry) => entry.resultCount === 0)).toBe(true);
+    });
+  });
+
+  describe('mounts.getDoctor', () => {
+    it('returns a scored doctor report', async () => {
+      const svc = createMimirMockAdapter();
+      const report = await svc.mounts.getDoctor();
+      expect(report).not.toBeNull();
+      expect(report!.score).toMatch(/^\d+\/\d+$/);
+      expect(['pass', 'warn', 'fail']).toContain(report!.worst);
+      expect(report!.checks.length).toBeGreaterThan(0);
+    });
+
+    it('runDoctorFixes remediates fixable checks and improves the score', async () => {
+      const svc = createMimirMockAdapter();
+      const before = await svc.mounts.getDoctor();
+      const fixableBefore = before!.checks.filter(
+        (check) => check.fixable && check.status !== 'pass',
+      ).length;
+      expect(fixableBefore).toBeGreaterThan(0);
+
+      const after = await svc.mounts.runDoctorFixes();
+      const fixableAfter = after!.checks.filter(
+        (check) => check.fixable && check.status !== 'pass',
+      ).length;
+      expect(fixableAfter).toBe(0);
+
+      const passing = (report: NonNullable<typeof after>) =>
+        report.checks.filter((check) => check.status === 'pass').length;
+      expect(passing(after!)).toBe(passing(before!) + fixableBefore);
+    });
+  });
+
   describe('pages.getStats', () => {
     it('returns healthy flag and non-zero pageCount', async () => {
       const svc = createMimirMockAdapter();
@@ -150,6 +204,34 @@ describe('createMimirMockAdapter', () => {
       const svc = createMimirMockAdapter();
       const results = await svc.pages.search('xyzxyzxyz_no_match');
       expect(results).toHaveLength(0);
+    });
+
+    it('omits score breakdowns by default', async () => {
+      const svc = createMimirMockAdapter();
+      const results = await svc.pages.search('architecture');
+      expect(results[0]?.scoreBreakdown).toBeUndefined();
+    });
+
+    it('returns per-factor score breakdowns in debug mode', async () => {
+      const svc = createMimirMockAdapter();
+      const results = await svc.pages.search('architecture', 'hybrid', undefined, true);
+      expect(results.length).toBeGreaterThan(0);
+      for (const result of results) {
+        const breakdown = result.scoreBreakdown!;
+        expect(breakdown).toBeDefined();
+        for (const factor of [
+          'base',
+          'recency',
+          'title_match',
+          'confidence',
+          'backlinks',
+          'zone',
+          'final',
+        ]) {
+          expect(typeof breakdown[factor]).toBe('number');
+        }
+        expect(breakdown['final']).toBeCloseTo(result.score!, 2);
+      }
     });
   });
 

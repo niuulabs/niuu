@@ -10,6 +10,8 @@ import type { EntityMeta } from '../domain/entity';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
+import type { EvalReport, QueryStats } from '../domain/analytics';
+import type { DoctorCheck, DoctorReport, DoctorStatus } from '../domain/doctor';
 import { tallySeverity } from '../domain/lint';
 import { toPageMeta } from '../domain/page';
 
@@ -906,6 +908,127 @@ const MOCK_ACTIVITY_EVENTS: ActivityEvent[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Seed data — retrieval analytics
+// ---------------------------------------------------------------------------
+
+const MOCK_EVAL_REPORT: EvalReport = {
+  generatedAt: '2026-04-19T04:30:00Z',
+  overall: { precisionAt5: 0.82, mrr: 0.74, recallAt10: 0.91 },
+  byCategory: {
+    arch: { precisionAt5: 0.88, mrr: 0.81, recallAt10: 0.95 },
+    api: { precisionAt5: 0.85, mrr: 0.78, recallAt10: 0.93 },
+    infra: { precisionAt5: 0.79, mrr: 0.7, recallAt10: 0.88 },
+    concept: { precisionAt5: 0.74, mrr: 0.66, recallAt10: 0.86 },
+  },
+  queryCount: 120,
+};
+
+const MOCK_QUERY_STATS: QueryStats = {
+  total: 1843,
+  zeroResultCount: 37,
+  recent: [
+    { ts: '2026-04-19T10:14:02Z', query: 'hexagonal architecture', resultCount: 6 },
+    { ts: '2026-04-19T10:02:48Z', query: 'sleipnir retention policy', resultCount: 0 },
+    { ts: '2026-04-19T09:54:31Z', query: 'asyncpg pool sizing', resultCount: 3 },
+    { ts: '2026-04-19T09:41:12Z', query: 'resin print profiles', resultCount: 2 },
+    { ts: '2026-04-19T09:22:10Z', query: 'bifrost gpu quota', resultCount: 0 },
+    { ts: '2026-04-19T08:58:44Z', query: 'cluster upgrade', resultCount: 2 },
+    { ts: '2026-04-19T08:31:09Z', query: 'kubernetes deployment', resultCount: 5 },
+    { ts: '2026-04-19T08:12:55Z', query: 'dream cycle cadence', resultCount: 4 },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Seed data — doctor checklist
+// ---------------------------------------------------------------------------
+
+const INITIAL_DOCTOR_CHECKS: DoctorCheck[] = [
+  {
+    id: 'index-fresh',
+    title: 'Mount index freshness',
+    status: 'pass',
+    detail: 'All 4 mount indexes rebuilt within the last 24h',
+    remediation: '',
+    fixable: false,
+  },
+  {
+    id: 'embedding-coverage',
+    title: 'Embedding coverage',
+    status: 'warn',
+    detail: '12 pages missing embeddings on mount "platform"',
+    remediation: 'Re-run the embedding backfill for the platform mount',
+    fixable: true,
+  },
+  {
+    id: 'orphan-sources',
+    title: 'Orphaned sources',
+    status: 'warn',
+    detail: '2 sources not compiled into any page',
+    remediation: 'Trigger a compile pass or archive the stale sources',
+    fixable: true,
+  },
+  {
+    id: 'wikilink-integrity',
+    title: 'Wikilink integrity',
+    status: 'fail',
+    detail: '1 broken wikilink: [[ports/overview]] in /arch/hexagonal',
+    remediation: 'Create the missing target page or repoint the link',
+    fixable: false,
+  },
+  {
+    id: 'fts-index',
+    title: 'Full-text index',
+    status: 'pass',
+    detail: 'FTS index consistent with page store (2118 pages)',
+    remediation: '',
+    fixable: false,
+  },
+  {
+    id: 'registry-health',
+    title: 'Registry mount health',
+    status: 'pass',
+    detail: 'All registered mounts reachable',
+    remediation: '',
+    fixable: false,
+  },
+];
+
+const DOCTOR_STATUS_RANK: Record<DoctorStatus, number> = { pass: 0, warn: 1, fail: 2 };
+
+function buildDoctorReport(checks: DoctorCheck[]): DoctorReport {
+  const passing = checks.filter((check) => check.status === 'pass').length;
+  const worst = checks.reduce<DoctorStatus>(
+    (acc, check) =>
+      DOCTOR_STATUS_RANK[check.status] > DOCTOR_STATUS_RANK[acc] ? check.status : acc,
+    'pass',
+  );
+  return { score: `${passing}/${checks.length}`, worst, checks };
+}
+
+// ---------------------------------------------------------------------------
+// Debug score breakdowns
+// ---------------------------------------------------------------------------
+
+const CONFIDENCE_FACTOR: Record<Page['confidence'], number> = {
+  high: 1.15,
+  medium: 1.0,
+  low: 0.85,
+};
+
+function buildScoreBreakdown(page: Page, score: number, index: number): Record<string, number> {
+  const round = (n: number) => Number(n.toFixed(2));
+  return {
+    base: round(score * 0.7),
+    recency: round(Math.max(0.5, 0.93 - index * 0.04)),
+    title_match: round(Math.max(0.8, 1.25 - index * 0.06)),
+    confidence: CONFIDENCE_FACTOR[page.confidence],
+    backlinks: round(1 + Math.min(0.2, (page.related?.length ?? 0) * 0.04)),
+    zone: round(page.zones && page.zones.length > 0 ? 1.1 : 1.0),
+    final: round(score),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mock adapter
 // ---------------------------------------------------------------------------
 
@@ -915,6 +1038,7 @@ export function createMimirMockAdapter(): IMimirService {
   let routingRules = [...INITIAL_ROUTING_RULES];
   let sources = [...MOCK_SOURCES];
   let registryMounts = [...MOCK_REGISTRY_MOUNTS];
+  let doctorChecks = INITIAL_DOCTOR_CHECKS.map((check) => ({ ...check }));
 
   return {
     mounts: {
@@ -970,6 +1094,32 @@ export function createMimirMockAdapter(): IMimirService {
       async getRecentWrites(limit = 20): Promise<RecentWrite[]> {
         return MOCK_RECENT_WRITES.slice(0, limit);
       },
+
+      async getEvalReport(): Promise<EvalReport | null> {
+        return MOCK_EVAL_REPORT;
+      },
+
+      async getQueryStats(): Promise<QueryStats | null> {
+        return MOCK_QUERY_STATS;
+      },
+
+      async getDoctor(): Promise<DoctorReport | null> {
+        return buildDoctorReport(doctorChecks);
+      },
+
+      async runDoctorFixes(): Promise<DoctorReport | null> {
+        doctorChecks = doctorChecks.map((check) =>
+          check.fixable && check.status !== 'pass'
+            ? {
+                ...check,
+                status: 'pass' as const,
+                detail: `${check.detail} — fixed`,
+                fixable: false,
+              }
+            : check,
+        );
+        return buildDoctorReport(doctorChecks);
+      },
     },
 
     pages: {
@@ -1004,22 +1154,31 @@ export function createMimirMockAdapter(): IMimirService {
         // no-op in mock
       },
 
-      async search(query: string, _mode, mountName?: string): Promise<SearchResult[]> {
+      async search(
+        query: string,
+        _mode,
+        mountName?: string,
+        debug?: boolean,
+      ): Promise<SearchResult[]> {
         const q = query.toLowerCase();
         return MOCK_PAGES.filter(
           (p) =>
             (p.title.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q)) &&
             (!mountName || p.mounts.includes(mountName)),
-        ).map((p, i) => ({
-          path: p.path,
-          title: p.title,
-          summary: p.summary,
-          category: p.category,
-          type: p.type,
-          confidence: p.confidence,
-          score: Math.max(0.5, 0.95 - i * 0.1),
-          mounts: p.mounts,
-        }));
+        ).map((p, i) => {
+          const score = Math.max(0.5, 0.95 - i * 0.1);
+          return {
+            path: p.path,
+            title: p.title,
+            summary: p.summary,
+            category: p.category,
+            type: p.type,
+            confidence: p.confidence,
+            score,
+            mounts: p.mounts,
+            scoreBreakdown: debug ? buildScoreBreakdown(p, score, i) : undefined,
+          };
+        });
       },
 
       async listSources(options): Promise<Source[]> {

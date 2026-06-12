@@ -2,10 +2,12 @@
  * GraphPage — full-bleed knowledge graph canvas with floating overlays.
  *
  * Matches web2 layout: graph fills the content area, category legend floats
- * top-left, graph info card floats top-right. No visible controls — click
- * a node to focus, click again to deselect.
+ * top-left, graph info card floats top-right. Click a node to focus, click
+ * again to deselect. Drag to pan, scroll to zoom (viewBox-based). Node
+ * radius scales with edge count.
  */
 
+import { useRef, useState } from 'react';
 import { StateDot } from '@niuulabs/ui';
 import { useActiveMount } from '../application/useActiveMount';
 import { useGraph } from '../application/useGraph';
@@ -17,6 +19,17 @@ const SVG_H = 750;
 const SVG_CX = SVG_W / 2;
 const SVG_CY = SVG_H / 2;
 const SVG_R = 300;
+
+// Node radius scaling — radius grows with edge count, capped.
+const NODE_RADIUS_MIN = 4;
+const NODE_RADIUS_MAX = 10;
+const NODE_RADIUS_PER_EDGE = 1.2;
+const FOCUS_RADIUS_BONUS = 3;
+
+// Zoom limits as multiples of the base viewBox width.
+const ZOOM_MIN_SCALE = 1 / 8;
+const ZOOM_MAX_SCALE = 4;
+const ZOOM_STEP = 1.1;
 
 const CATEGORY_COLORS = [
   'var(--brand-300)',
@@ -93,6 +106,61 @@ export function layoutCategoryRadial(
 }
 
 // ---------------------------------------------------------------------------
+// Pan / zoom helpers (viewBox-based)
+// ---------------------------------------------------------------------------
+
+export interface ViewBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const BASE_VIEWBOX: ViewBox = { x: 0, y: 0, w: SVG_W, h: SVG_H };
+
+/** Radius for a node with the given edge count (degree). */
+export function nodeRadius(edgeCount: number): number {
+  return Math.min(NODE_RADIUS_MAX, NODE_RADIUS_MIN + edgeCount * NODE_RADIUS_PER_EDGE);
+}
+
+/** Edge count (inbound + outbound) per node id. */
+export function buildDegreeMap(graph: MimirGraph): Map<string, number> {
+  const degree = new Map<string, number>();
+  for (const edge of graph.edges) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  return degree;
+}
+
+/**
+ * Zoom the viewBox by `factor` (>1 zooms out, <1 zooms in), keeping the
+ * anchor point (in SVG coordinates) stationary. Clamped to the zoom limits.
+ */
+export function zoomViewBox(
+  vb: ViewBox,
+  factor: number,
+  anchorX: number,
+  anchorY: number,
+): ViewBox {
+  const w = Math.min(SVG_W * ZOOM_MAX_SCALE, Math.max(SVG_W * ZOOM_MIN_SCALE, vb.w * factor));
+  const applied = w / vb.w;
+  const h = vb.h * applied;
+  return {
+    x: anchorX - (anchorX - vb.x) * applied,
+    y: anchorY - (anchorY - vb.y) * applied,
+    w,
+    h,
+  };
+}
+
+/** Shift the viewBox by a pixel delta, scaled to SVG units. */
+export function panViewBox(vb: ViewBox, dxPx: number, dyPx: number, clientWidth: number): ViewBox {
+  const scale = vb.w / (clientWidth || SVG_W);
+  return { ...vb, x: vb.x - dxPx * scale, y: vb.y - dyPx * scale };
+}
+
+// ---------------------------------------------------------------------------
 // Graph SVG
 // ---------------------------------------------------------------------------
 
@@ -106,14 +174,66 @@ interface GraphSvgProps {
 function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
   const positions = layoutCategoryRadial(graph.nodes);
   const posMap = new Map(positions.map((p) => [p.node.id, p]));
+  const degree = buildDegreeMap(graph);
+
+  const [viewBox, setViewBox] = useState<ViewBox>(BASE_VIEWBOX);
+  const [isPanning, setIsPanning] = useState(false);
+  const drag = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
+
+  function svgPointAt(
+    svg: SVGSVGElement,
+    clientX: number,
+    clientY: number,
+  ): { x: number; y: number } {
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return { x: viewBox.x + viewBox.w / 2, y: viewBox.y + viewBox.h / 2 };
+    }
+    return {
+      x: viewBox.x + ((clientX - rect.left) / rect.width) * viewBox.w,
+      y: viewBox.y + ((clientY - rect.top) / rect.height) * viewBox.h,
+    };
+  }
+
+  function handleWheel(e: React.WheelEvent<SVGSVGElement>) {
+    const factor = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+    const anchor = svgPointAt(e.currentTarget, e.clientX, e.clientY);
+    setViewBox((vb) => zoomViewBox(vb, factor, anchor.x, anchor.y));
+  }
+
+  function handlePointerDown(e: React.PointerEvent<SVGSVGElement>) {
+    drag.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
+    setIsPanning(true);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+
+  function handlePointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    if (!drag.current || drag.current.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.current.lastX;
+    const dy = e.clientY - drag.current.lastY;
+    drag.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
+    const width = e.currentTarget.getBoundingClientRect().width;
+    setViewBox((vb) => panViewBox(vb, dx, dy, width));
+  }
+
+  function handlePointerEnd(e: React.PointerEvent<SVGSVGElement>) {
+    if (!drag.current || drag.current.pointerId !== e.pointerId) return;
+    drag.current = null;
+    setIsPanning(false);
+  }
 
   return (
     <svg
-      className="niuu-graph-canvas"
-      viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+      className={`niuu-graph-canvas ${isPanning ? 'niuu:cursor-grabbing' : 'niuu:cursor-grab'}`}
+      viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
       role="img"
       aria-label="Knowledge graph"
       preserveAspectRatio="xMidYMid meet"
+      onWheel={handleWheel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerLeave={handlePointerEnd}
     >
       <defs>
         <filter id="niuu-node-glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -155,6 +275,7 @@ function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
           const fill = isFocus
             ? 'var(--color-brand, var(--color-accent-cyan))'
             : getCategoryFill(node.category, categories);
+          const radius = nodeRadius(degree.get(node.id) ?? 0);
           return (
             <g
               key={node.id}
@@ -169,7 +290,7 @@ function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
               }}
             >
               <circle
-                r={isFocus ? 8 : 5}
+                r={isFocus ? radius + FOCUS_RADIUS_BONUS : radius}
                 className="niuu-graph-node-circle"
                 fill={fill}
                 stroke={isFocus ? fill : 'none'}
