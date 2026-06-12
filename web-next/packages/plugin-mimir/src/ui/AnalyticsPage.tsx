@@ -14,6 +14,7 @@ import { useEvalReport, useQueryStats } from '../application/useAnalytics';
 import type { EvalMetrics, EvalReport, QueryStats } from '../domain/analytics';
 import { zeroResultQueries } from '../domain/analytics';
 import { formatTimestamp } from './format';
+import { DreamsPage } from './DreamsPage';
 
 const STATUS_ROW = 'niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary';
 
@@ -274,6 +275,12 @@ export function AnalyticsPage() {
         )}
 
         {queryStats.data && <QueryTraffic stats={queryStats.data} />}
+      </div>
+
+      {/* Dream-cycle history — enrichment telemetry belongs with the rest of
+          the quality/traffic analytics rather than its own tab. */}
+      <div className="niuu:border-t niuu:border-solid niuu:border-0 niuu:border-t-border niuu:mt-6">
+        <DreamsPage />
       </div>
     </div>
   );

@@ -1,26 +1,24 @@
 /**
  * OverviewView — Mímir landing screen.
  *
- * Layout (matches web2 home.jsx prototype):
+ * Layout:
  *   KPI strip — aggregate pages / sources / wardens / lint / last write
  *   2-col grid (1.2fr 1fr, border-right separator):
- *     LEFT:  mount cards grid (minmax 300px) + wardens ravn cards
+ *     LEFT:  mount cards grid (minmax 300px)
  *     RIGHT: activity feed (time / kind / mount / message)
  *
  * Mount cards are expandable — clicking reveals role, size, category
- * badges, and a 5-item per-mount recent activity excerpt.
- * Warden cards show bio text and a pages-touched / last-dream metrics row.
+ * badges, and a 5-item per-mount recent activity excerpt. Warden detail
+ * lives on the Wardens tab; the overview only surfaces the count.
  */
 
 import { useState } from 'react';
-import { useNavigate } from '@tanstack/react-router';
-import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { KpiStrip, KpiCard, StateDot, relTime } from '@niuulabs/ui';
 import { useMimirMounts } from './useMimirMounts';
 import { useMimirRecentWrites } from './useMimirSources';
 import { useRavns } from '../application/useRavns';
 import { MountChip } from './components/MountChip';
-import { RAVN_DOT_STATE, MOUNT_DOT_STATE } from './mimir.constants';
+import { MOUNT_DOT_STATE } from './mimir.constants';
 
 const FEED_LIMIT = 20;
 const MOUNT_ACTIVITY_LIMIT = 5;
@@ -41,17 +39,12 @@ const FEED_KIND_COLOR: Record<string, string> = {
 };
 
 export function OverviewView() {
-  const navigate = useNavigate();
-  const ctx = usePluginCtx();
   const [expandedMount, setExpandedMount] = useState<string | null>(null);
   const { data: mounts, isLoading: mountsLoading, error: mountsError } = useMimirMounts();
   const { data: feed } = useMimirRecentWrites(FEED_LIMIT);
+  // Warden detail lives on the Wardens tab (and the context rail); the
+  // overview keeps only the KPI count to avoid triplicating the roster.
   const { data: ravns = [] } = useRavns();
-
-  function openWarden(wardenId: string) {
-    ctx.setTweak('mimir.selectedWardenId', wardenId);
-    void navigate({ to: '/mimir/ravns' });
-  }
 
   const totalPages = mounts?.reduce((a, m) => a + m.pages, 0) ?? 0;
   const totalSources = mounts?.reduce((a, m) => a + m.sources, 0) ?? 0;
@@ -241,90 +234,6 @@ export function OverviewView() {
             })}
           </div>
 
-          {/* ── Wardens section ────────────────────────────────────── */}
-          {ravns.length > 0 && (
-            <>
-              <div className="niuu:flex niuu:items-baseline niuu:gap-3 niuu:mb-4 niuu:mt-6">
-                <h3 className="niuu:m-0 niuu:text-base niuu:text-text-primary">Wardens</h3>
-                <span className="niuu:text-xs niuu:text-text-muted">
-                  ravns bound here · read / write fan-out
-                </span>
-              </div>
-              <div className="niuu:grid niuu:gap-3 niuu:grid-cols-[repeat(auto-fill,minmax(220px,1fr))]">
-                {ravns.map((ravn) => (
-                  <div
-                    key={ravn.ravnId}
-                    className="niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-3 niuu:flex niuu:flex-col niuu:gap-3 niuu:cursor-pointer niuu:transition-colors niuu:hover:border-border niuu:focus-visible:outline niuu:focus-visible:outline-2 niuu:focus-visible:outline-brand niuu:focus-visible:outline-offset-2"
-                    onClick={() => openWarden(ravn.ravnId)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') openWarden(ravn.ravnId);
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Open warden ${ravn.ravnId}`}
-                  >
-                    {/* Identity row */}
-                    <div className="niuu:flex niuu:items-center niuu:gap-2">
-                      <span
-                        className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:font-mono niuu:text-xs niuu:font-bold niuu:text-text-secondary niuu:bg-bg-tertiary niuu:border niuu:border-border-subtle niuu:uppercase niuu:shrink-0"
-                        style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
-                        aria-hidden
-                      >
-                        {ravn.ravnId.charAt(0)}
-                        {ravn.ravnId.charAt(ravn.ravnId.length - 1)}
-                      </span>
-                      <div className="niuu:flex-1 niuu:min-w-0">
-                        <div className="niuu:flex niuu:items-center niuu:gap-2">
-                          <span className="niuu:font-mono niuu:text-xs niuu:font-semibold niuu:text-text-primary niuu:truncate">
-                            {ravn.ravnId}
-                          </span>
-                          <StateDot state={RAVN_DOT_STATE[ravn.state]} size={6} />
-                        </div>
-                        <div className="niuu:text-xs niuu:text-text-muted">{ravn.role}</div>
-                      </div>
-                    </div>
-
-                    {/* Bio */}
-                    <p className="niuu:text-xs niuu:text-text-secondary niuu:m-0 niuu:truncate">
-                      {ravn.bio}
-                    </p>
-
-                    {/* Mount bindings */}
-                    <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
-                      {ravn.mountNames.map((m) => (
-                        <span
-                          key={m}
-                          className={
-                            m === ravn.writeMount
-                              ? 'niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:rounded-full niuu:font-mono niuu:text-xs niuu:border niuu:bg-brand/10 niuu:border-brand/25 niuu:text-brand'
-                              : 'niuu:inline-flex niuu:items-center niuu:gap-1 niuu:px-2 niuu:rounded-full niuu:font-mono niuu:text-xs niuu:border niuu:bg-bg-tertiary niuu:border-border-subtle niuu:text-text-secondary'
-                          }
-                        >
-                          {m}
-                          {m === ravn.writeMount && (
-                            <span className="niuu:text-xs niuu:text-text-muted niuu:uppercase">
-                              write
-                            </span>
-                          )}
-                        </span>
-                      ))}
-                    </div>
-
-                    {/* Metrics row: pages-touched + last-dream */}
-                    <div className="niuu:flex niuu:gap-3 niuu:font-mono niuu:text-xs niuu:text-text-muted">
-                      <span>
-                        <strong className="niuu:text-text-primary">{ravn.pagesTouched}</strong>{' '}
-                        pages touched
-                      </span>
-                      <span>
-                        last dream {ravn.lastDream ? relTime(ravn.lastDream.timestamp) : 'never'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
         </div>
 
         {/* RIGHT column: activity feed */}

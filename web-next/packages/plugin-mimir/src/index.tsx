@@ -4,14 +4,10 @@ import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { MimirPage } from './ui/MimirPage';
 import { SearchPage } from './ui/SearchPage';
 import { GraphPage } from './ui/GraphPage';
-import { EntitiesPage } from './ui/EntitiesPage';
 import { RavnsPage } from './ui/RavnsPage';
-import { IngestPage } from './ui/IngestPage';
-import { LintPage } from './ui/LintPage';
-import { DreamsPage } from './ui/DreamsPage';
+import { HealthPage } from './ui/HealthPage';
 import { RegistryPage } from './ui/RegistryPage';
 import { AnalyticsPage } from './ui/AnalyticsPage';
-import { DoctorPage } from './ui/DoctorPage';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
 
@@ -23,15 +19,13 @@ export const mimirPlugin = definePlugin({
   tabs: [
     { id: 'overview', label: 'Overview', rune: '◎', path: '/mimir' },
     { id: 'pages', label: 'Pages', rune: '▤', path: '/mimir/pages' },
+    { id: 'sources', label: 'Sources', rune: '↧', path: '/mimir/sources' },
     { id: 'search', label: 'Search', rune: '⌕', path: '/mimir/search' },
     { id: 'graph', label: 'Graph', rune: '⌖', path: '/mimir/graph' },
     { id: 'registry', label: 'Registry', rune: '⛁', path: '/mimir/registry' },
     { id: 'wardens', label: 'Wardens', rune: 'ᚢ', path: '/mimir/ravns' },
-    { id: 'ingest', label: 'Ingest', rune: '↧', path: '/mimir/ingest' },
-    { id: 'lint', label: 'Lint', rune: '⚠', path: '/mimir/lint' },
-    { id: 'dreams', label: 'Dreams', rune: '≡', path: '/mimir/dreams' },
+    { id: 'health', label: 'Health', rune: '✚', path: '/mimir/health' },
     { id: 'analytics', label: 'Analytics', rune: '∑', path: '/mimir/analytics' },
-    { id: 'doctor', label: 'Doctor', rune: '✚', path: '/mimir/doctor' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -66,38 +60,41 @@ export const mimirPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/mimir/entities',
-      component: EntitiesPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
       path: '/mimir/ravns',
       component: RavnsPage,
     }),
+    // Legacy deep links: /ingest -> Sources (which owns the working ingest
+    // form), /lint and /doctor -> the consolidated Health page, /dreams ->
+    // Analytics (dream history lives in its telemetry section).
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/ingest',
-      component: IngestPage,
+      component: () => <MimirPage defaultTab="sources" />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/health',
+      component: HealthPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/lint',
-      component: LintPage,
+      component: HealthPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/doctor',
+      component: HealthPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/dreams',
-      component: DreamsPage,
+      component: AnalyticsPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/analytics',
       component: AnalyticsPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/doctor',
-      component: DoctorPage,
     }),
   ],
   subnav: (ctx: PluginCtx) => <MimirSubnav ctx={ctx} />,

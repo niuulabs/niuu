@@ -230,31 +230,25 @@ test('/mimir/graph shows category and edge legend labels', async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// /mimir/entities — Entities view
+// /mimir/health — consolidated Doctor + Lint surface (legacy /lint deep link)
 // ---------------------------------------------------------------------------
 
-test('/mimir/entities renders the entities page', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByRole('heading', { name: /entities/i })).toBeVisible();
+test('/mimir/health stacks the doctor checklist above the lint detail', async ({ page }) => {
+  await page.goto('/mimir/health');
+  await expect(page.getByTestId('health-page')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /doctor/i })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[aria-label="Lint checks"]')).toBeVisible();
 });
 
-test('/mimir/entities shows entity items after load', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByTestId('entity-item').first()).toBeVisible({ timeout: 5000 });
+test('/mimir/lint deep link lands on the Health page', async ({ page }) => {
+  await page.goto('/mimir/lint');
+  await expect(page.getByTestId('health-page')).toBeVisible();
 });
 
-test('/mimir/entities shows entity type filter buttons', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
-  await expect(page.locator('button[data-kind="org"]')).toBeVisible();
-  await expect(page.locator('button[data-kind="concept"]')).toBeVisible();
-});
-
-test('/mimir/entities — clicking a kind filter updates active state', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  const orgBtn = page.locator('button[data-kind="org"]');
-  await orgBtn.click();
-  await expect(orgBtn).toHaveAttribute('aria-pressed', 'true');
+test('/mimir/dreams deep link lands on Analytics with the dream section', async ({ page }) => {
+  await page.goto('/mimir/dreams');
+  await expect(page.getByRole('heading', { name: /analytics/i })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: /dreams/i })).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
