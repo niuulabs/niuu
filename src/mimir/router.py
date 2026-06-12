@@ -174,6 +174,7 @@ class FactEvidenceResponse(BaseModel):
     trend: str
     latest_support: str | None = None
     supporting_dates: list[str] = []
+    source_proof_count: int = 0
 
 
 class ReviseBeliefRequest(BaseModel):
@@ -236,6 +237,7 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     source_id: str
     pages_updated: list[str]
+    consolidated: list[str] = []
 
 
 class UrlIngestRequest(BaseModel):
@@ -1379,15 +1381,22 @@ class MimirRouter:
 
         @router.get("/evidence", response_model=list[FactEvidenceResponse])
         async def evidence(path: str = Query()) -> list[FactEvidenceResponse]:
-            """Evidence-counted beliefs for a page (NIU-1062)."""
+            """Evidence-counted beliefs for a page (NIU-1062).
+
+            Proofs come from the page's timeline entries AND from ingested raw
+            sources that bear on a fact (write-time scoped consolidation)."""
             from mimir.learning import compute_page_evidence
 
             try:
                 content = await adapter.read_page(path)
             except FileNotFoundError:
                 raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+            sources = [
+                (source.source_id, source.content) for source in await _read_full_sources(adapter)
+            ]
             return [
-                FactEvidenceResponse(**item.to_dict()) for item in compute_page_evidence(content)
+                FactEvidenceResponse(**item.to_dict())
+                for item in compute_page_evidence(content, sources=sources)
             ]
 
         @router.post(
@@ -1767,7 +1776,12 @@ class MimirRouter:
                 ingested_at=datetime.now(UTC),
             )
             page_paths = await port.ingest(source)
-            return IngestResponse(source_id=source_id, pages_updated=page_paths)
+            consolidated = list(getattr(port, "_last_consolidated", []))
+            return IngestResponse(
+                source_id=source_id,
+                pages_updated=page_paths,
+                consolidated=consolidated,
+            )
 
         @router.post("/sources/ingest/url", response_model=SourceResponse)
         async def ingest_url(

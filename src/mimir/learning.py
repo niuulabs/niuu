@@ -43,13 +43,18 @@ TREND_STALE = "stale"
 
 @dataclass
 class FactEvidence:
-    """Evidence accounting for one compiled-truth fact."""
+    """Evidence accounting for one compiled-truth fact.
+
+    ``proof_count`` is the total: timeline proofs plus raw-source proofs.
+    ``source_proof_count`` breaks out how many came from raw sources.
+    """
 
     fact: str
     proof_count: int
     trend: str
     latest_support: str | None  # YYYY-MM-DD of the freshest supporting entry
     supporting_dates: list[str] = field(default_factory=list)
+    source_proof_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +63,7 @@ class FactEvidence:
             "trend": self.trend,
             "latest_support": self.latest_support,
             "supporting_dates": self.supporting_dates,
+            "source_proof_count": self.source_proof_count,
         }
 
 
@@ -75,11 +81,15 @@ def compute_page_evidence(
     config: EvidenceConfig | None = None,
     *,
     now: datetime | None = None,
+    sources: list[tuple[str, str]] | None = None,
 ) -> list[FactEvidence]:
-    """Score each Key Fact against the page's timeline entries.
+    """Score each Key Fact against the page's timeline entries and raw sources.
 
     A timeline entry supports a fact when they share at least
-    ``min_token_overlap`` significant tokens. Trend derivation:
+    ``min_token_overlap`` significant tokens; the same rule applies to each
+    ``(source_id, content)`` pair in *sources*. Source proofs add to the
+    total ``proof_count`` but carry no date, so trend derivation stays
+    timeline-driven:
 
     - no support → ``new``
     - freshest support older than ``stale_after_days`` → ``stale``
@@ -91,6 +101,7 @@ def compute_page_evidence(
     moment = now or datetime.now(UTC)
     page = parse_page(content)
     facts = extract_key_facts(content)
+    source_token_sets = [tokenize(source_content) for _, source_content in sources or []]
 
     results: list[FactEvidence] = []
     for fact in facts:
@@ -101,14 +112,21 @@ def compute_page_evidence(
             if len(overlap) >= cfg.min_token_overlap:
                 supporting.append(entry.date)
 
+        source_proofs = sum(
+            1
+            for source_tokens in source_token_sets
+            if len(fact_tokens & source_tokens) >= cfg.min_token_overlap
+        )
+
         supporting.sort()
         results.append(
             FactEvidence(
                 fact=fact,
-                proof_count=len(supporting),
+                proof_count=len(supporting) + source_proofs,
                 trend=_derive_trend(supporting, cfg, moment),
                 latest_support=supporting[-1] if supporting else None,
                 supporting_dates=supporting,
+                source_proof_count=source_proofs,
             )
         )
     return results
@@ -196,3 +214,58 @@ def find_bearing_pages(
         if len(title_tokens & tokenize(source_title)) >= min_token_overlap:
             affected.append(path)
     return affected
+
+
+@dataclass
+class ConsolidationResult:
+    """Outcome of one write-time scoped consolidation pass (micro-dream)."""
+
+    source_id: str
+    pages: list[str] = field(default_factory=list)
+    strengthened: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "pages": self.pages,
+            "strengthened": self.strengthened,
+        }
+
+
+def consolidate_source(
+    source_id: str,
+    source_title: str,
+    source_content: str,
+    pages: list[tuple[str, str, str]],
+    other_sources: list[tuple[str, str]],
+    config: EvidenceConfig | None = None,
+    *,
+    now: datetime | None = None,
+) -> ConsolidationResult:
+    """Write-time scoped consolidation: re-evidence the pages a source bears on.
+
+    For every bearing page (per :func:`find_bearing_pages`), evidence is
+    computed twice — once without the newly-ingested source (the pre-ingest
+    state, *other_sources* only) and once with it. Facts whose total
+    ``proof_count`` rose are counted as ``strengthened``. Pure function over
+    ``(path, title, content)`` triples — zero I/O, zero LLM.
+    """
+    cfg = config or EvidenceConfig()
+    bearing = find_bearing_pages(
+        source_title,
+        source_content,
+        [(path, title) for path, title, _ in pages],
+        min_token_overlap=cfg.min_token_overlap,
+    )
+    content_by_path = {path: content for path, _, content in pages}
+    all_sources = [*other_sources, (source_id, source_content)]
+
+    strengthened = 0
+    for path in bearing:
+        content = content_by_path[path]
+        before = compute_page_evidence(content, cfg, now=now, sources=other_sources)
+        after = compute_page_evidence(content, cfg, now=now, sources=all_sources)
+        strengthened += sum(
+            1 for pre, post in zip(before, after, strict=True) if post.proof_count > pre.proof_count
+        )
+    return ConsolidationResult(source_id=source_id, pages=bearing, strengthened=strengthened)
