@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -162,6 +163,26 @@ async def _run_publish_files(args: argparse.Namespace) -> int:
     return _print_result(result)
 
 
+def _run_related(args: argparse.Namespace) -> int:
+    raw_root = os.environ.get("RAVN_MIMIR_PATH", "").strip()
+    if raw_root.startswith(("http://", "https://")):
+        params: dict[str, str | int] = {"path": args.path, "depth": args.depth}
+        if args.rel:
+            params["rel"] = args.rel
+        response = httpx.get(f"{raw_root.rstrip('/')}/mimir/related", params=params, timeout=30.0)
+        response.raise_for_status()
+        print(json.dumps(response.json(), indent=2))
+        return 0
+
+    related_fn = getattr(_adapter(), "related_pages", None)
+    if related_fn is None:
+        print("this Mimir adapter does not expose a link graph", file=sys.stderr)
+        return 1
+    items = related_fn(args.path, depth=args.depth, rel=args.rel or None)
+    print(json.dumps(items, indent=2))
+    return 0
+
+
 def _run_list(args: argparse.Namespace) -> int:
     root = _mimir_root() / "wiki"
     if not root.exists():
@@ -210,6 +231,11 @@ def _build_parser() -> argparse.ArgumentParser:
     publish_files.add_argument("paths", nargs="+")
     publish_files.add_argument("--mimir", default="")
 
+    related = sub.add_parser("related")
+    related.add_argument("--path", required=True)
+    related.add_argument("--depth", type=int, default=1)
+    related.add_argument("--rel", default="")
+
     list_cmd = sub.add_parser("list")
     list_cmd.add_argument("prefix", nargs="?", default="")
 
@@ -232,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_write(args))
     if command == "publish-files":
         return asyncio.run(_run_publish_files(args))
+    if command == "related":
+        return _run_related(args)
     if command == "list":
         return _run_list(args)
     raise SystemExit(f"unknown command: {command}")
