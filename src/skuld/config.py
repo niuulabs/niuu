@@ -221,6 +221,36 @@ class ArchiveStoreConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class ReflexConfig(BaseModel):
+    """Retrieval reflex — deterministic Mímir entity pointer injection (NIU-1059).
+
+    When enabled, user messages forwarded to the CLI agent are scanned for
+    known Mímir entities and prefixed with compact pointers (never page
+    bodies). Disabled by default so existing sessions are unaffected.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable retrieval reflex pointer injection on forwarded user messages.",
+    )
+    base_url: str = Field(
+        default="",
+        description="Base URL of the Mímir HTTP service exposing GET /mimir/entities.",
+    )
+    max_pointers: int = Field(
+        default=5,
+        description="Maximum number of entity pointers injected per message.",
+    )
+    cache_ttl_seconds: int = Field(
+        default=300,
+        description="How long (seconds) the entity index is cached before refetching.",
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        description="HTTP timeout (seconds) for the entity feed request.",
+    )
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -290,6 +320,7 @@ class SkuldSettings(BaseSettings):
     event_log_max_buffer: int = Field(default=50_000)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
