@@ -1239,11 +1239,29 @@ class MarkdownMimirAdapter(MimirPort):
     # ------------------------------------------------------------------
 
     def _read_indexed_paths(self) -> set[str]:
-        """Return the set of page paths currently listed in index.md."""
+        """Return the set of page paths currently listed in index.md.
+
+        Catalog entries have the exact shape the index writers emit:
+        ``- [title](path) — summary …``. The path is matched as the
+        ``](path)`` immediately preceding the ``—`` summary separator, which
+        makes the parse robust against the two things that previously broke
+        L11 sync detection:
+
+        * **Brackets in the title** (e.g. directive pages whose H1 is
+          ``[INITIATIVE TASK — …]``) — a ``[^\\]]`` title class dropped these
+          entries, reporting real pages as perpetually "missing".
+        * **Markdown links embedded in the summary prose** — an un-anchored
+          scan matched these as catalog paths, reporting phantom "stale"
+          entries no rebuild could clear.
+
+        Greedy ``.*`` over the title absorbs nested brackets; requiring the
+        ``—`` after ``](path)`` excludes summary links (which are followed by
+        prose, not the separator).
+        """
         if not self._index.exists():
             return set()
         content = self._index.read_text(encoding="utf-8")
-        return set(re.findall(r"\[.*?\]\(([^)]+\.md)\)", content))
+        return set(re.findall(r"(?m)^\s*-\s+\[.*\]\(([^)]+\.md)\)\s*—", content))
 
     def _add_to_index(self, path: str, content: str) -> None:
         """Append a new entry to index.md."""
