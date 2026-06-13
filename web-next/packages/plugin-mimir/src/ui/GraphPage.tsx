@@ -7,7 +7,7 @@
  * radius scales with edge count.
  */
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { StateDot } from '@niuulabs/ui';
 import { useActiveMount } from '../application/useActiveMount';
 import { useGraph } from '../application/useGraph';
@@ -16,9 +16,6 @@ import './GraphPage.css';
 
 const SVG_W = 1100;
 const SVG_H = 750;
-const SVG_CX = SVG_W / 2;
-const SVG_CY = SVG_H / 2;
-const SVG_R = 300;
 
 // Node radius scaling — radius grows with edge count, capped.
 const NODE_RADIUS_MIN = 4;
@@ -61,48 +58,123 @@ interface NodePosition {
   y: number;
 }
 
-export function layoutCategoryRadial(
+// Force-directed layout: edges act as springs so linked pages cluster and
+// their connections stay short enough to read. Deterministic (hash-seeded
+// initial ring, fixed iteration count) so tests and reloads are stable.
+const LAYOUT_ITERATIONS = 260;
+const LAYOUT_PADDING = 70;
+const SPRING_LENGTH = 110;
+const SPRING_K = 0.02;
+const REPULSION = 22000;
+const GRAVITY = 0.012;
+const COOLING = 0.96;
+const INITIAL_STEP = 26;
+
+/** Deterministic [0, 1) value from a string (FNV-1a). */
+function hash01(value: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) / 0x100000000;
+}
+
+export function layoutForceDirected(
   nodes: GraphNode[],
-  cx = SVG_CX,
-  cy = SVG_CY,
-  r = SVG_R,
+  edges: { source: string; target: string }[],
+  width = SVG_W,
+  height = SVG_H,
 ): NodePosition[] {
   if (nodes.length === 0) return [];
+  const cx = width / 2;
+  const cy = height / 2;
   if (nodes.length === 1) return [{ node: nodes[0]!, x: cx, y: cy }];
 
-  const categories = [...new Set(nodes.map((n) => n.category))];
-  const byCategory = new Map<string, GraphNode[]>();
-  for (const node of nodes) {
-    const list = byCategory.get(node.category) ?? [];
-    list.push(node);
-    byCategory.set(node.category, list);
-  }
+  // Hash-seeded ring start: stable, and spread enough that repulsion
+  // doesn't have to untangle a degenerate cluster.
+  const initRadius = Math.min(width, height) / 3;
+  const xs = nodes.map(
+    (n, i) =>
+      cx +
+      initRadius *
+        (0.6 + 0.4 * hash01(`${n.id}:r`)) *
+        Math.cos((2 * Math.PI * i) / nodes.length + hash01(n.id)),
+  );
+  const ys = nodes.map(
+    (n, i) =>
+      cy +
+      initRadius *
+        (0.6 + 0.4 * hash01(`${n.id}:r`)) *
+        Math.sin((2 * Math.PI * i) / nodes.length + hash01(n.id)),
+  );
 
-  const result: NodePosition[] = [];
-  let sectorStart = -Math.PI / 2;
+  const index = new Map(nodes.map((n, i) => [n.id, i]));
+  const springs = edges
+    .map((e) => [index.get(e.source), index.get(e.target)] as const)
+    .filter((pair): pair is [number, number] => pair[0] !== undefined && pair[1] !== undefined);
 
-  for (const cat of categories) {
-    const catNodes = byCategory.get(cat) ?? [];
-    const sectorSize = (catNodes.length / nodes.length) * 2 * Math.PI;
-    const sectorCenter = sectorStart + sectorSize / 2;
+  let step = INITIAL_STEP;
+  for (let iter = 0; iter < LAYOUT_ITERATIONS; iter++) {
+    const fx = new Array<number>(nodes.length).fill(0);
+    const fy = new Array<number>(nodes.length).fill(0);
 
-    for (let i = 0; i < catNodes.length; i++) {
-      const node = catNodes[i]!;
-      const spread = catNodes.length <= 1 ? 0 : 0.8;
-      const innerAngle = catNodes.length <= 1 ? 0 : (i / catNodes.length) * spread - spread / 2;
-      const jitter = 0.5 + 0.5 * (Math.abs(Math.sin(i * 2.1)) * 0.9 + 0.1);
-      const radius = r * jitter;
-      result.push({
-        node,
-        x: cx + radius * Math.cos(sectorCenter + innerAngle),
-        y: cy + radius * Math.sin(sectorCenter + innerAngle),
-      });
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        let dx = xs[i]! - xs[j]!;
+        let dy = ys[i]! - ys[j]!;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) {
+          // Coincident points: nudge apart deterministically.
+          dx = hash01(`${i}:${j}`) - 0.5;
+          dy = hash01(`${j}:${i}`) - 0.5;
+          d2 = dx * dx + dy * dy;
+        }
+        const f = REPULSION / d2;
+        const d = Math.sqrt(d2);
+        fx[i]! += (dx / d) * f;
+        fy[i]! += (dy / d) * f;
+        fx[j]! -= (dx / d) * f;
+        fy[j]! -= (dy / d) * f;
+      }
     }
 
-    sectorStart += sectorSize;
+    for (const [a, b] of springs) {
+      const dx = xs[b]! - xs[a]!;
+      const dy = ys[b]! - ys[a]!;
+      const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const f = SPRING_K * (d - SPRING_LENGTH);
+      fx[a]! += (dx / d) * f * d;
+      fy[a]! += (dy / d) * f * d;
+      fx[b]! -= (dx / d) * f * d;
+      fy[b]! -= (dy / d) * f * d;
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      fx[i]! += (cx - xs[i]!) * GRAVITY;
+      fy[i]! += (cy - ys[i]!) * GRAVITY;
+      const mag = Math.sqrt(fx[i]! * fx[i]! + fy[i]! * fy[i]!) || 1;
+      const clamp = Math.min(step, mag);
+      xs[i] = xs[i]! + (fx[i]! / mag) * clamp;
+      ys[i] = ys[i]! + (fy[i]! / mag) * clamp;
+    }
+    step *= COOLING;
   }
 
-  return result;
+  // Fit the settled layout into the canvas with padding.
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  const scale = Math.min((width - 2 * LAYOUT_PADDING) / spanX, (height - 2 * LAYOUT_PADDING) / spanY);
+
+  return nodes.map((node, i) => ({
+    node,
+    x: LAYOUT_PADDING + (xs[i]! - minX) * scale + (width - 2 * LAYOUT_PADDING - spanX * scale) / 2,
+    y: LAYOUT_PADDING + (ys[i]! - minY) * scale + (height - 2 * LAYOUT_PADDING - spanY * scale) / 2,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +244,10 @@ interface GraphSvgProps {
 }
 
 function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
-  const positions = layoutCategoryRadial(graph.nodes);
+  const positions = useMemo(
+    () => layoutForceDirected(graph.nodes, graph.edges),
+    [graph.nodes, graph.edges],
+  );
   const posMap = new Map(positions.map((p) => [p.node.id, p]));
   const degree = buildDegreeMap(graph);
 
@@ -260,10 +335,10 @@ function GraphSvg({ graph, focusId, onNodeClick, categories }: GraphSvgProps) {
               y1={src.y}
               x2={tgt.x}
               y2={tgt.y}
-              stroke="var(--color-border)"
-              strokeWidth={1}
+              stroke={isFocusEdge ? 'var(--brand-400)' : 'var(--color-border)'}
+              strokeWidth={isFocusEdge ? 1.75 : 1.25}
               strokeDasharray={isWikilink ? '4 3' : undefined}
-              className={isFocusEdge ? 'niuu:opacity-50' : 'niuu:opacity-15'}
+              className={isFocusEdge ? 'niuu:opacity-90' : 'niuu:opacity-40'}
             />
           );
         })}

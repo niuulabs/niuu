@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   GraphPage,
-  layoutCategoryRadial,
+  layoutForceDirected,
   nodeRadius,
   buildDegreeMap,
   zoomViewBox,
@@ -61,7 +61,7 @@ describe('GraphPage', () => {
     const svg = screen.getByRole('img', { name: /knowledge graph/i });
     const lines = svg.querySelectorAll('line');
     expect(lines.length).toBeGreaterThan(0);
-    expect(lines[0]!.classList.toString()).toContain('niuu:opacity-15');
+    expect(lines[0]!.classList.toString()).toContain('niuu:opacity-40');
   });
 
   it('clicking a node toggles focus', async () => {
@@ -238,85 +238,76 @@ describe('panViewBox', () => {
   });
 });
 
-describe('layoutCategoryRadial', () => {
+describe('layoutForceDirected', () => {
+  const box = { w: 1100, h: 750 };
+
   it('returns empty array for empty input', () => {
-    expect(layoutCategoryRadial([])).toEqual([]);
+    expect(layoutForceDirected([], [])).toEqual([]);
   });
 
   it('returns single node at center', () => {
     const nodes: GraphNode[] = [{ id: 'n1', title: 'Node 1', category: 'a' }];
-    const result = layoutCategoryRadial(nodes);
+    const result = layoutForceDirected(nodes, []);
     expect(result).toHaveLength(1);
-    expect(result[0]!.x).toBe(550);
-    expect(result[0]!.y).toBe(375);
+    expect(result[0]!.x).toBe(box.w / 2);
+    expect(result[0]!.y).toBe(box.h / 2);
   });
 
-  it('positions nodes for multiple categories separately', () => {
-    const nodes: GraphNode[] = [
-      { id: 'a1', title: 'A1', category: 'alpha' },
-      { id: 'a2', title: 'A2', category: 'alpha' },
-      { id: 'b1', title: 'B1', category: 'beta' },
-    ];
-    const result = layoutCategoryRadial(nodes);
-    expect(result).toHaveLength(3);
-
-    for (const pos of result) {
-      expect(pos.x).toBeGreaterThan(0);
-      expect(pos.x).toBeLessThan(1100);
-      expect(pos.y).toBeGreaterThan(0);
-      expect(pos.y).toBeLessThan(750);
+  it('keeps every node inside the canvas with padding', () => {
+    const nodes: GraphNode[] = Array.from({ length: 24 }, (_, i) => ({
+      id: `n${i}`,
+      title: `N${i}`,
+      category: i % 2 ? 'alpha' : 'beta',
+    }));
+    const edges = nodes.slice(1).map((n, i) => ({ source: `n${i}`, target: n.id }));
+    for (const pos of layoutForceDirected(nodes, edges)) {
+      expect(pos.x).toBeGreaterThanOrEqual(0);
+      expect(pos.x).toBeLessThanOrEqual(box.w);
+      expect(pos.y).toBeGreaterThanOrEqual(0);
+      expect(pos.y).toBeLessThanOrEqual(box.h);
     }
   });
 
   it('produces deterministic output for the same input', () => {
-    const nodes: GraphNode[] = [
-      { id: 'n1', title: 'Node 1', category: 'cat-a' },
-      { id: 'n2', title: 'Node 2', category: 'cat-b' },
-      { id: 'n3', title: 'Node 3', category: 'cat-a' },
-    ];
-    const r1 = layoutCategoryRadial(nodes);
-    const r2 = layoutCategoryRadial(nodes);
-    expect(r1).toEqual(r2);
+    const nodes: GraphNode[] = Array.from({ length: 12 }, (_, i) => ({
+      id: `n${i}`,
+      title: `N${i}`,
+      category: 'a',
+    }));
+    const edges = [{ source: 'n0', target: 'n1' }];
+    expect(layoutForceDirected(nodes, edges)).toEqual(layoutForceDirected(nodes, edges));
   });
 
-  it('respects custom center and radius parameters', () => {
-    const nodes: GraphNode[] = [
-      { id: 'n1', title: 'A', category: 'x' },
-      { id: 'n2', title: 'B', category: 'y' },
-    ];
-    const result = layoutCategoryRadial(nodes, 100, 100, 50);
-    for (const pos of result) {
-      const dx = pos.x - 100;
-      const dy = pos.y - 100;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      expect(dist).toBeLessThan(50 + 1);
-    }
-  });
-
-  it('nodes in same category are clustered in same angular sector', () => {
-    const nodes: GraphNode[] = [
-      { id: 'a1', title: 'A1', category: 'alpha' },
-      { id: 'a2', title: 'A2', category: 'alpha' },
-      { id: 'a3', title: 'A3', category: 'alpha' },
-      { id: 'b1', title: 'B1', category: 'beta' },
-      { id: 'b2', title: 'B2', category: 'beta' },
-      { id: 'b3', title: 'B3', category: 'beta' },
-    ];
-    const result = layoutCategoryRadial(nodes);
-    const byId = new Map(result.map((p) => [p.node.id, p]));
-
-    const angleOf = (id: string) => {
-      const p = byId.get(id)!;
-      return Math.atan2(p.y - 375, p.x - 550);
+  it('pulls connected nodes closer than unconnected ones', () => {
+    // A tight pair plus scattered singletons: the spring must beat repulsion.
+    const nodes: GraphNode[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      title: `N${i}`,
+      category: 'a',
+    }));
+    const edges = [{ source: 'n0', target: 'n1' }];
+    const positions = layoutForceDirected(nodes, edges);
+    const at = new Map(positions.map((p) => [p.node.id, p]));
+    const dist = (a: string, b: string) => {
+      const pa = at.get(a)!;
+      const pb = at.get(b)!;
+      return Math.hypot(pa.x - pb.x, pa.y - pb.y);
     };
-
-    const alphaAngles = ['a1', 'a2', 'a3'].map(angleOf);
-    const betaAngles = ['b1', 'b2', 'b3'].map(angleOf);
-
-    const avgAlpha = alphaAngles.reduce((s, a) => s + a, 0) / alphaAngles.length;
-    const avgBeta = betaAngles.reduce((s, a) => s + a, 0) / betaAngles.length;
-
-    const separation = Math.abs(avgAlpha - avgBeta);
-    expect(separation).toBeGreaterThan(0.3);
+    const connected = dist('n0', 'n1');
+    const unconnected = positions
+      .filter((p) => p.node.id !== 'n0' && p.node.id !== 'n1')
+      .map((p) => dist('n0', p.node.id));
+    const meanUnconnected = unconnected.reduce((a, b) => a + b, 0) / unconnected.length;
+    expect(connected).toBeLessThan(meanUnconnected);
   });
+
+  it('ignores edges referencing unknown node ids', () => {
+    const nodes: GraphNode[] = [
+      { id: 'n1', title: 'N1', category: 'a' },
+      { id: 'n2', title: 'N2', category: 'a' },
+    ];
+    const edges = [{ source: 'n1', target: 'ghost' }];
+    expect(layoutForceDirected(nodes, edges)).toHaveLength(2);
+  });
+
 });
