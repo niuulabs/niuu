@@ -56,7 +56,7 @@ jobs:
               --ignore=tests/test_bifrost
               --ignore=tests/test_sleipnir
               --ignore=tests/integration
-            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld"
+            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld --cov=src/mimir"
           - name: Ting
             flag: backend-ting
             paths: "tests/test_ting"
@@ -102,3 +102,30 @@ jobs:
           files: coverage.xml
           flags: ${{ matrix.pkg.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Mímir retrieval-quality eval (NIU-1055). Report-only: metrics are posted
+  # to the job summary so retrieval changes carry a visible eval delta.
+  # NIU-1057 (ranking layer) flips this to a hard gate via --fail-on-regression.
+  mimir-eval:
+    name: "Mímir: Retrieval eval (report-only)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Run golden-set eval (FTS-only)
+        run: |
+          uv run python -m mimir eval | tee eval-report.txt
+          {
+            echo "## Mímir retrieval eval (FTS-only baseline)"
+            echo '```'
+            cat eval-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -354,9 +354,7 @@ class EnvironmentSignalRuntime:
                     f"- **Capability:** `{capability}`\n"
                 )
 
-        payload_json = json.dumps(
-            signal.normalized_payload, indent=2, sort_keys=True, default=str
-        )
+        payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)
         object_json = json.dumps(signal.object_ref, sort_keys=True, default=str)
         # The literal block the agent must reproduce. Kept inside a fenced block
         # so the response parser's ---outcome---/---end--- contract is preserved

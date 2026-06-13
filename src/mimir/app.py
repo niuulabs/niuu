@@ -97,11 +97,13 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         default_read_priority=0,
         desc="Current Mimir service instance",
     )
+    eval_capture_dir = Path(config.path).expanduser() / "evals" if config.eval_capture else None
     mimir_router = MimirRouter(
         adapter=adapter,
         name=config.name,
         role=config.role,
         registry_store=registry_store,
+        eval_capture_dir=eval_capture_dir,
     )
     mcp_server = MimirMcpServer(adapter=adapter, name=config.name)
 

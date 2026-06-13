@@ -26,10 +26,12 @@ POST /mimir/ingest         — ingest URL or text (requires write auth)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from posixpath import normpath
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
@@ -940,12 +942,14 @@ class MimirRouter:
         name: str = "local",
         role: str = "local",
         registry_store: MimirRegistryStore | None = None,
+        eval_capture_dir: Path | None = None,
     ) -> None:
         self._adapter = adapter
         self._name = name
         self._role = role
         self._registry_store = registry_store
         self._registry_local_ports: dict[str, tuple[str, MimirPort]] = {}
+        self._eval_capture_dir = eval_capture_dir
         self.router = APIRouter()
         self._register_routes()
 
@@ -1283,6 +1287,15 @@ class MimirRouter:
         ) -> list[SearchResult]:
             port, _ = self._resolve_port(mount)
             pages = await port.search(q)
+            if self._eval_capture_dir is not None:
+                from mimir.eval import append_capture
+
+                await asyncio.to_thread(
+                    append_capture,
+                    self._eval_capture_dir,
+                    q,
+                    [p.meta.path for p in pages],
+                )
             return [
                 SearchResult(
                     path=p.meta.path,
