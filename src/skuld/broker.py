@@ -1061,6 +1061,11 @@ class Broker:
             else None
         )
 
+        # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on
+        # first forwarded user message; None when disabled.
+        self._reflex_injector: Any = None
+        self._reflex_initialised = False
+
         # JWT identity state — populated on first browser WebSocket connection
         self._user_jwt: str | None = None
         self._user_claims: dict = {}
@@ -3516,6 +3521,35 @@ class Broker:
             except Exception:
                 logger.debug("Failed to broadcast transport control error", exc_info=True)
 
+    def _retrieval_reflex_injector(self) -> Any:
+        """Lazily build the retrieval reflex injector from reflex config (NIU-1059)."""
+        if self._reflex_initialised:
+            return self._reflex_injector
+        self._reflex_initialised = True
+        from ravn.reflex import build_reflex_injector  # noqa: PLC0415
+
+        self._reflex_injector = build_reflex_injector(self._settings)
+        return self._reflex_injector
+
+    async def _apply_retrieval_reflex(self, message: str) -> str:
+        """Prefix known Mímir entity pointers onto a forwarded user message.
+
+        Fail-open: any reflex failure logs an ERROR and returns the message
+        unchanged — the reflex must never crash or block a turn.
+        """
+        try:
+            injector = self._retrieval_reflex_injector()
+            if injector is None:
+                return message
+            return await injector.apply(message, self.session_id)
+        except Exception:
+            logger.error(
+                "retrieval reflex failed for session %s — forwarding message without pointers",
+                self.session_id,
+                exc_info=True,
+            )
+            return message
+
     async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
@@ -3526,7 +3560,8 @@ class Broker:
         something in the chat UI rather than a silent stall.
         """
         try:
-            await transport.send_message(message)  # type: ignore[attr-defined]
+            outbound = await self._apply_retrieval_reflex(message)
+            await transport.send_message(outbound)  # type: ignore[attr-defined]
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:

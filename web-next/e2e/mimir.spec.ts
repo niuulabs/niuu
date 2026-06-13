@@ -230,29 +230,79 @@ test('/mimir/graph shows category and edge legend labels', async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// /mimir/entities — Entities view
+// /mimir/health — consolidated Doctor + Lint surface (legacy /lint deep link)
 // ---------------------------------------------------------------------------
 
-test('/mimir/entities renders the entities page', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByRole('heading', { name: /entities/i })).toBeVisible();
+test('/mimir/health stacks the doctor checklist above the lint detail', async ({ page }) => {
+  await page.goto('/mimir/health');
+  await expect(page.getByTestId('health-page')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /doctor/i })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[aria-label="Lint checks"]')).toBeVisible();
 });
 
-test('/mimir/entities shows entity items after load', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByTestId('entity-item').first()).toBeVisible({ timeout: 5000 });
+test('/mimir/lint deep link lands on the Health page', async ({ page }) => {
+  await page.goto('/mimir/lint');
+  await expect(page.getByTestId('health-page')).toBeVisible();
 });
 
-test('/mimir/entities shows entity type filter buttons', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
-  await expect(page.locator('button[data-kind="org"]')).toBeVisible();
-  await expect(page.locator('button[data-kind="concept"]')).toBeVisible();
+test('/mimir/dreams deep link lands on Analytics with the dream section', async ({ page }) => {
+  await page.goto('/mimir/dreams');
+  await expect(page.getByRole('heading', { name: /analytics/i })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: /dreams/i })).toBeVisible();
 });
 
-test('/mimir/entities — clicking a kind filter updates active state', async ({ page }) => {
-  await page.goto('/mimir/entities');
-  const orgBtn = page.locator('button[data-kind="org"]');
-  await orgBtn.click();
-  await expect(orgBtn).toHaveAttribute('aria-pressed', 'true');
+// ---------------------------------------------------------------------------
+// /mimir/search — debug retrieval workbench
+// ---------------------------------------------------------------------------
+
+test('/mimir/search — debug toggle reveals score breakdowns', async ({ page }) => {
+  await page.goto('/mimir/search');
+  await page.getByRole('searchbox').fill('architecture');
+  await expect(page.getByTestId('search-result').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('score-breakdown')).toHaveCount(0);
+
+  await page.getByTestId('debug-toggle').click();
+  await expect(page.getByTestId('score-breakdown').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('score-breakdown').first()).toContainText('final');
+});
+
+// ---------------------------------------------------------------------------
+// /mimir/analytics — Analytics view
+// ---------------------------------------------------------------------------
+
+test('/mimir/analytics renders metric tiles and the category table', async ({ page }) => {
+  await page.goto('/mimir/analytics');
+  await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible();
+  await expect(page.getByTestId('eval-tiles')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('precision @5')).toBeVisible();
+  await expect(page.getByTestId('category-table')).toBeVisible();
+});
+
+test('/mimir/analytics shows the query traffic log', async ({ page }) => {
+  await page.goto('/mimir/analytics');
+  await expect(page.getByTestId('query-log')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('zero-result-query').first()).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// /mimir/doctor — Doctor view
+// ---------------------------------------------------------------------------
+
+test('/mimir/doctor renders the scored checklist', async ({ page }) => {
+  await page.goto('/mimir/doctor');
+  await expect(page.getByRole('heading', { name: 'Doctor' })).toBeVisible();
+  await expect(page.getByTestId('doctor-score')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('doctor-check').first()).toBeVisible();
+});
+
+test('/mimir/doctor — run fixes flows through the confirm dialog', async ({ page }) => {
+  await page.goto('/mimir/doctor');
+  await expect(page.getByTestId('doctor-score')).toHaveText('3/6', { timeout: 5000 });
+
+  await page.getByTestId('run-fixes-btn').click();
+  await expect(page.getByText('Run automatic fixes?')).toBeVisible();
+  await page.getByTestId('confirm-fix').click();
+
+  await expect(page.getByTestId('doctor-score')).toHaveText('5/6', { timeout: 5000 });
+  await expect(page.getByTestId('run-fixes-btn')).toHaveCount(0);
 });

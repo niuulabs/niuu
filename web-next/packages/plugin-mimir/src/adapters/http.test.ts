@@ -364,6 +364,53 @@ describe('buildMimirHttpAdapter', () => {
       expect(call).toContain('mount=local');
     });
 
+    it('passes debug=true through to the backend when requested', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
+      await buildMimirHttpAdapter(client).pages.search('k8s', 'hybrid', undefined, true);
+      const call = (client.get as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+      expect(call).toContain('debug=true');
+    });
+
+    it('omits the debug param when debug is false', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
+      await buildMimirHttpAdapter(client).pages.search('k8s', 'hybrid', undefined, false);
+      const call = (client.get as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
+      expect(call).not.toContain('debug=');
+    });
+
+    it('maps score and score_breakdown to the domain shape', async () => {
+      const breakdown = {
+        base: 0.42,
+        recency: 0.93,
+        title_match: 1.25,
+        confidence: 1.15,
+        backlinks: 1.08,
+        zone: 1.1,
+        final: 0.61,
+      };
+      const client = makeClient({
+        get: vi.fn().mockResolvedValue([
+          {
+            path: '/arch/overview',
+            title: 'Architecture Overview',
+            summary: 'Summary',
+            category: 'arch',
+            score: 0.61,
+            score_breakdown: breakdown,
+          },
+        ]),
+      });
+
+      const results = await buildMimirHttpAdapter(client).pages.search(
+        'arch',
+        'hybrid',
+        undefined,
+        true,
+      );
+
+      expect(results[0]).toMatchObject({ score: 0.61, scoreBreakdown: breakdown });
+    });
+
     it('infers page type and confidence when the backend returns the lean shape', async () => {
       const client = makeClient({
         get: vi.fn().mockResolvedValue([
@@ -1191,6 +1238,141 @@ describe('buildMimirHttpAdapter', () => {
     it('returns an empty list when ravn bindings are unavailable', async () => {
       const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
       await expect(buildMimirHttpAdapter(client).mounts.listRavnBindings()).resolves.toEqual([]);
+    });
+  });
+
+  describe('mounts.getEvalReport', () => {
+    it('calls GET /eval/latest and maps the wire shape', async () => {
+      const client = makeClient({
+        get: vi.fn().mockResolvedValue({
+          generated_at: '2026-04-19T04:30:00Z',
+          overall: { precision_at_5: 0.82, mrr: 0.74, recall_at_10: 0.91 },
+          by_category: {
+            arch: { precision_at_5: 0.88, mrr: 0.81, recall_at_10: 0.95 },
+          },
+          query_count: 120,
+        }),
+      });
+
+      const report = await buildMimirHttpAdapter(client).mounts.getEvalReport();
+
+      expect(client.get).toHaveBeenCalledWith('/eval/latest');
+      expect(report).toEqual({
+        generatedAt: '2026-04-19T04:30:00Z',
+        overall: { precisionAt5: 0.82, mrr: 0.74, recallAt10: 0.91 },
+        byCategory: { arch: { precisionAt5: 0.88, mrr: 0.81, recallAt10: 0.95 } },
+        queryCount: 120,
+      });
+    });
+
+    it('returns null when the eval route is unavailable', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
+      await expect(buildMimirHttpAdapter(client).mounts.getEvalReport()).resolves.toBeNull();
+    });
+
+    it('rethrows non-404 errors', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(new Error('boom')) });
+      await expect(buildMimirHttpAdapter(client).mounts.getEvalReport()).rejects.toThrow('boom');
+    });
+  });
+
+  describe('mounts.getQueryStats', () => {
+    it('calls GET /eval/queries and maps the wire shape', async () => {
+      const client = makeClient({
+        get: vi.fn().mockResolvedValue({
+          total: 1843,
+          zero_result_count: 37,
+          recent: [{ ts: '2026-04-19T10:14:02Z', query: 'hexagonal', result_count: 6 }],
+        }),
+      });
+
+      const stats = await buildMimirHttpAdapter(client).mounts.getQueryStats();
+
+      expect(client.get).toHaveBeenCalledWith('/eval/queries');
+      expect(stats).toEqual({
+        total: 1843,
+        zeroResultCount: 37,
+        recent: [{ ts: '2026-04-19T10:14:02Z', query: 'hexagonal', resultCount: 6 }],
+      });
+    });
+
+    it('returns null when query stats are unavailable', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
+      await expect(buildMimirHttpAdapter(client).mounts.getQueryStats()).resolves.toBeNull();
+    });
+
+    it('rethrows non-404 errors', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(new Error('boom')) });
+      await expect(buildMimirHttpAdapter(client).mounts.getQueryStats()).rejects.toThrow('boom');
+    });
+  });
+
+  describe('mounts.getDoctor', () => {
+    const rawReport = {
+      score: '5/6',
+      // Live API wire field is `status`; mapped to DoctorReport.worst.
+      status: 'warn',
+      checks: [
+        {
+          id: 'embedding-coverage',
+          title: 'Embedding coverage',
+          status: 'warn',
+          detail: '12 pages missing embeddings',
+          remediation: 'Re-run the embedding backfill',
+          fixable: true,
+        },
+      ],
+    };
+
+    it('calls GET /doctor and maps the wire shape', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawReport) });
+
+      const report = await buildMimirHttpAdapter(client).mounts.getDoctor();
+
+      expect(client.get).toHaveBeenCalledWith('/doctor');
+      expect(report).toEqual({
+        score: '5/6',
+        worst: 'warn',
+        checks: [
+          {
+            id: 'embedding-coverage',
+            title: 'Embedding coverage',
+            status: 'warn',
+            detail: '12 pages missing embeddings',
+            remediation: 'Re-run the embedding backfill',
+            fixable: true,
+          },
+        ],
+      });
+    });
+
+    it('returns null when the doctor route is unavailable', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
+      await expect(buildMimirHttpAdapter(client).mounts.getDoctor()).resolves.toBeNull();
+    });
+
+    it('rethrows non-404 errors', async () => {
+      const client = makeClient({ get: vi.fn().mockRejectedValue(new Error('boom')) });
+      await expect(buildMimirHttpAdapter(client).mounts.getDoctor()).rejects.toThrow('boom');
+    });
+
+    it('runs fixes through POST /doctor/fix', async () => {
+      const client = makeClient({ post: vi.fn().mockResolvedValue(rawReport) });
+
+      const report = await buildMimirHttpAdapter(client).mounts.runDoctorFixes();
+
+      expect(client.post).toHaveBeenCalledWith('/doctor/fix', {});
+      expect(report).toMatchObject({ score: '5/6', worst: 'warn' });
+    });
+
+    it('returns null when the fix route is unavailable', async () => {
+      const client = makeClient({ post: vi.fn().mockRejectedValue(missingRoute()) });
+      await expect(buildMimirHttpAdapter(client).mounts.runDoctorFixes()).resolves.toBeNull();
+    });
+
+    it('rethrows non-404 errors from the fix route', async () => {
+      const client = makeClient({ post: vi.fn().mockRejectedValue(new Error('boom')) });
+      await expect(buildMimirHttpAdapter(client).mounts.runDoctorFixes()).rejects.toThrow('boom');
     });
   });
 

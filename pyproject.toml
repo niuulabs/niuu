@@ -29,17 +29,24 @@ dependencies = [
     "pynng>=0.9.0",
     "zeroconf>=0.149.16",
     "python-telegram-bot>=22.7",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]
 nats = [
     "nats-py>=2.14.0",
 ]
+# Semantic search for Mimir (NIU-1056): hybrid retrieval needs an embedding
+# model. FTS-only mode works without this extra.
+embeddings = [
+    "sentence-transformers>=3.0.0",
+]
 test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
 ]
 rabbitmq = [
     "aio-pika>=9.6.2",
@@ -80,6 +87,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.15,<0.16",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
     "cryptography>=48.0.0",
     "textual>=8.2.7",
     "typer>=0.26.7",

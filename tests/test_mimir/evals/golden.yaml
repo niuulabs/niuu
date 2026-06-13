@@ -179,3 +179,35 @@ queries:
   - query: "what did the Q2 roadmap commit to"
     category: temporal
     expected: [projects/q2-roadmap.md]
+
+  # ----- evolution (NIU-1062: belief/timeline evolution queries) -----
+  - query: "what changed about Helios since April"
+    category: evolution
+    expected: [projects/helios.md]
+  - query: "how has our belief about Nordvolt firmware evolved"
+    category: evolution
+    expected: [entities/nordvolt.md, projects/helios-launch-retro.md]
+  - query: "history of the Midgard dashboard project"
+    category: evolution
+    expected: [projects/midgard-dashboard.md]
+  - query: "what happened with Asgard Robotics over the past year"
+    category: evolution
+    expected: [entities/asgard-robotics.md]
+  - query: "timeline of the database outage follow-ups"
+    category: evolution
+    expected: [technical/incident-2026-03-db-outage.md]
+  - query: "how did the OIDC migration progress over time"
+    category: evolution
+    expected: [technical/auth-oidc.md]
+  - query: "what changed in the release process recently"
+    category: evolution
+    expected: [technical/release-process.md]
+  - query: "evolution of the battery vendor relationship"
+    category: evolution
+    expected: [entities/nordvolt.md, projects/vendor-selection.md]
+  - query: "how has Freya Larsen's role developed"
+    category: evolution
+    expected: [entities/freya-larsen.md]
+  - query: "track record of the Orchard pilot so far"
+    category: evolution
+    expected: [projects/orchard.md]

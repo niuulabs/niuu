@@ -110,6 +110,15 @@ mimir:
     persona: mimir-curator
     max_tokens: 4096
 
+  # Retrieval reflex (NIU-1059): deterministic, zero-LLM entity pointer
+  # injection per agent turn. base_url falls back to the first HTTP instance.
+  reflex:
+    enabled: false
+    max_pointers: 5
+    cache_ttl_seconds: 300
+    base_url: ""
+    timeout_seconds: 5.0
+
 # ── Sleipnir: event backbone ─────────────────────────────────────────────
 sleipnir:
   enabled: true

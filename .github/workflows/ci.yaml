@@ -744,5 +744,9 @@ jobs:
         with:
           # npm 11.13.0 is the current pinned bootstrap version and still bundles
           # this advisory through its internal socks -> ip-address dependency chain.
-          # Keep dependency review strict elsewhere while allowing this upstream-only case.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g
+          # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
+          # NO patched release (<= 2.12.0 covers every published torch); torch arrives
+          # via the optional mimir embeddings extra and jit.script is never invoked on
+          # untrusted input (inference only). Remove once upstream ships a fix.
+          # Keep dependency review strict elsewhere while allowing these upstream-only cases.
+          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rrmf-rvhw-rf47

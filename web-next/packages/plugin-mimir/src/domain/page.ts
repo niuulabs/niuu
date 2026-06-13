@@ -87,6 +87,12 @@ export interface SearchResult {
   score?: number;
   /** Mounts that carry this page. */
   mounts?: string[];
+  /**
+   * Per-factor ranking breakdown — only present when search was run with
+   * `debug: true`. Keys are factor names (base, recency, title_match, …)
+   * plus `final` for the combined score.
+   */
+  scoreBreakdown?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

@@ -34,9 +34,15 @@ export interface IPageStore {
 
   /**
    * Full-text, semantic, or hybrid search across pages.
-   * Defaults to hybrid mode.
+   * Defaults to hybrid mode. When `debug` is true the backend annotates each
+   * result with a per-factor `scoreBreakdown` (retrieval workbench mode).
    */
-  search(query: string, mode?: SearchMode, mountName?: string): Promise<SearchResult[]>;
+  search(
+    query: string,
+    mode?: SearchMode,
+    mountName?: string,
+    debug?: boolean,
+  ): Promise<SearchResult[]>;
 
   /**
    * List raw source records, optionally filtered by origin type and/or mount.

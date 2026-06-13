@@ -2,6 +2,8 @@ import type { Mount } from '@niuulabs/domain';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
+import type { EvalReport, QueryStats } from '../domain/analytics';
+import type { DoctorReport } from '../domain/doctor';
 
 /**
  * A single entry in the recent-writes activity feed.
@@ -62,4 +64,28 @@ export interface IMountAdapter {
    * Used by the Overview screen's activity feed.
    */
   getRecentWrites(limit?: number): Promise<RecentWrite[]>;
+
+  /**
+   * Fetch the latest retrieval-eval benchmark report.
+   * Returns null when the backend has no eval subsystem (or no report yet).
+   */
+  getEvalReport(): Promise<EvalReport | null>;
+
+  /**
+   * Fetch live query-traffic statistics.
+   * Returns null when the backend does not track query stats.
+   */
+  getQueryStats(): Promise<QueryStats | null>;
+
+  /**
+   * Run the instance health checklist.
+   * Returns null when the backend has no doctor subsystem.
+   */
+  getDoctor(): Promise<DoctorReport | null>;
+
+  /**
+   * Apply automatic remediations for all fixable doctor checks.
+   * Returns the refreshed report, or null when the backend cannot fix.
+   */
+  runDoctorFixes(): Promise<DoctorReport | null>;
 }

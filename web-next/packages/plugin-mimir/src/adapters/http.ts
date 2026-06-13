@@ -25,6 +25,8 @@ import type { EntityKind, EntityMeta } from '../domain/entity';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
+import type { EvalReport, EvalMetrics, QueryStats } from '../domain/analytics';
+import type { DoctorReport, DoctorCheck } from '../domain/doctor';
 import { tallySeverity } from '../domain/lint';
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,8 @@ interface RawSearchResult {
   category: string;
   type?: string;
   confidence?: string;
+  score?: number;
+  score_breakdown?: Record<string, number>;
 }
 
 interface RawLintIssue {
@@ -199,6 +203,41 @@ interface RawEntityMeta {
   entity_kind: string;
   summary: string;
   relationship_count: number;
+}
+
+interface RawEvalMetrics {
+  precision_at_5: number;
+  mrr: number;
+  recall_at_10: number;
+}
+
+interface RawEvalReport {
+  generated_at: string;
+  overall: RawEvalMetrics;
+  by_category: Record<string, RawEvalMetrics>;
+  query_count: number;
+}
+
+interface RawQueryStats {
+  total: number;
+  zero_result_count: number;
+  recent: Array<{ ts: string; query: string; result_count: number }>;
+}
+
+interface RawDoctorCheck {
+  id: string;
+  title: string;
+  status: string;
+  detail: string;
+  remediation: string;
+  fixable: boolean;
+}
+
+interface RawDoctorReport {
+  score: string;
+  /** Worst status across checks — the live API field is `status`. */
+  status: string;
+  checks: RawDoctorCheck[];
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +581,69 @@ export function toEntityMeta(raw: RawEntityMeta): EntityMeta {
   };
 }
 
+export function toEvalMetrics(raw: RawEvalMetrics): EvalMetrics {
+  return {
+    precisionAt5: raw.precision_at_5,
+    mrr: raw.mrr,
+    recallAt10: raw.recall_at_10,
+  };
+}
+
+export function toEvalReport(raw: RawEvalReport): EvalReport {
+  return {
+    generatedAt: raw.generated_at,
+    overall: toEvalMetrics(raw.overall),
+    byCategory: Object.fromEntries(
+      Object.entries(raw.by_category).map(([category, metrics]) => [
+        category,
+        toEvalMetrics(metrics),
+      ]),
+    ),
+    queryCount: raw.query_count,
+  };
+}
+
+export function toQueryStats(raw: RawQueryStats): QueryStats {
+  return {
+    total: raw.total,
+    zeroResultCount: raw.zero_result_count,
+    recent: raw.recent.map((entry) => ({
+      ts: entry.ts,
+      query: entry.query,
+      resultCount: entry.result_count,
+    })),
+  };
+}
+
+export function toDoctorCheck(raw: RawDoctorCheck): DoctorCheck {
+  return {
+    id: raw.id,
+    title: raw.title,
+    status: raw.status as DoctorCheck['status'],
+    detail: raw.detail,
+    remediation: raw.remediation,
+    fixable: raw.fixable,
+  };
+}
+
+export function toDoctorReport(raw: RawDoctorReport): DoctorReport {
+  return {
+    score: raw.score,
+    worst: raw.status as DoctorReport['worst'],
+    checks: raw.checks.map(toDoctorCheck),
+  };
+}
+
+/** Run a request, mapping missing-route errors (optional backend capability) to null. */
+async function nullOnMissingRoute<T>(request: () => Promise<T>): Promise<T | null> {
+  try {
+    return await request();
+  } catch (error) {
+    if (!isMissingRouteError(error)) throw error;
+    return null;
+  }
+}
+
 export function isMissingRouteError(error: unknown): error is { status: number } {
   return (
     typeof error === 'object' &&
@@ -759,6 +861,30 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
             }));
         }
       },
+
+      async getEvalReport(): Promise<EvalReport | null> {
+        return nullOnMissingRoute(async () =>
+          toEvalReport(await client.get<RawEvalReport>('/eval/latest')),
+        );
+      },
+
+      async getQueryStats(): Promise<QueryStats | null> {
+        return nullOnMissingRoute(async () =>
+          toQueryStats(await client.get<RawQueryStats>('/eval/queries')),
+        );
+      },
+
+      async getDoctor(): Promise<DoctorReport | null> {
+        return nullOnMissingRoute(async () =>
+          toDoctorReport(await client.get<RawDoctorReport>('/doctor')),
+        );
+      },
+
+      async runDoctorFixes(): Promise<DoctorReport | null> {
+        return nullOnMissingRoute(async () =>
+          toDoctorReport(await client.post<RawDoctorReport>('/doctor/fix', {})),
+        );
+      },
     },
 
     pages: {
@@ -803,9 +929,11 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         query: string,
         mode: SearchMode = 'hybrid',
         mountName?: string,
+        debug?: boolean,
       ): Promise<SearchResult[]> {
         const params = new URLSearchParams({ q: query, mode });
         if (mountName) params.set('mount', mountName);
+        if (debug) params.set('debug', 'true');
         const raw = await client.get<RawSearchResult[]>(`/search?${params.toString()}`);
         return raw.map((r) => ({
           path: r.path,
@@ -814,7 +942,10 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           category: r.category,
           type: (r.type ?? inferPageType(r.path, r.category)) as SearchResult['type'],
           confidence: (r.confidence ?? 'medium') as SearchResult['confidence'],
+          // The API sends JSON null outside debug mode — normalise to undefined.
+          score: r.score ?? undefined,
           mounts: mountName ? [mountName] : undefined,
+          scoreBreakdown: r.score_breakdown ?? undefined,
         }));
       },
 

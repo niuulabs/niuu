@@ -227,6 +227,34 @@ _TOOLS: list[dict[str, Any]] = [
             "properties": {},
         },
     },
+    {
+        "name": "mimir_related",
+        "description": (
+            "Traverse the wikilink graph from a page and return related pages "
+            "up to N hops away. Use this for relationship questions ('what is "
+            "connected to X?') instead of keyword search. Optionally filter by "
+            "typed relationship (rel), e.g. works_at."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Wiki page path to start from, e.g. entities/alice.md",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Hops to traverse (1-3, default 1)",
+                    "default": 1,
+                },
+                "rel": {
+                    "type": "string",
+                    "description": "Only follow edges with this relationship type",
+                },
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 
@@ -412,6 +440,8 @@ class MimirMcpServer:
                 return await self._tool_lint(arguments)
             case "mimir_stats":
                 return await self._tool_stats(arguments)
+            case "mimir_related":
+                return await self._tool_related(arguments)
             case _:
                 raise ValueError(f"Unknown tool: {name}")
         raise AssertionError("Unreachable _call_tool fallthrough")
@@ -434,6 +464,17 @@ class MimirMcpServer:
             for p in pages[:limit]
         ]
         return [{"type": "text", "text": json.dumps(results, indent=2)}]
+
+    async def _tool_related(self, args: dict[str, Any]) -> list[dict[str, Any]]:
+        related_fn = getattr(self._adapter, "related_pages", None)
+        if related_fn is None:
+            raise ValueError("This Mímir adapter does not expose a link graph")
+        items = related_fn(
+            args["path"],
+            depth=int(args.get("depth") or 1),
+            rel=args.get("rel"),
+        )
+        return [{"type": "text", "text": json.dumps(items, indent=2)}]
 
     async def _tool_read(self, args: dict[str, Any]) -> list[dict[str, Any]]:
         path: str = args["path"]
