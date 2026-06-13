@@ -43,7 +43,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -102,7 +102,7 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -183,7 +183,7 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [skuld, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, devrunner, volundr-web, niuu-web, niuu]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -513,7 +513,7 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          for CHART in bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
+          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -524,6 +524,7 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
+          helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
@@ -543,6 +544,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}

@@ -169,7 +169,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -193,7 +193,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -314,6 +314,7 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
+          helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
@@ -333,6 +334,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}

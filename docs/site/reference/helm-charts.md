@@ -10,6 +10,7 @@ Deploy Niuu services with the charts under `charts/`.
 | `charts/volundr` | Standalone Völundr deployment |
 | `charts/ting` | Workflow service |
 | `charts/ravn` | Assistant runtime |
+| `charts/agent` | Ravn CLI/daemon agent runtime |
 | `charts/mimir` | Knowledge service |
 | `charts/bifrost` | Model gateway |
 | `charts/guild` | Runtime registry |

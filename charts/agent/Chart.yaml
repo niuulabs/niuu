@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agent
+description: "Niuu Agent - Ravn CLI and daemon runtime"
+type: application
+version: 0.0.0-ting.159
+appVersion: "0.0.0-ting.159"
+keywords:
+  - agent
+  - ravn
+  - warden
+  - valkyrie
+  - ai
+maintainers:
+  - name: Niuu Labs
+    url: https://github.com/niuulabs
+home: https://github.com/niuulabs/volundr
+sources:
+  - https://github.com/niuulabs/volundr

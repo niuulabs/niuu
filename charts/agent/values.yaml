@@ -1,0 +1,150 @@
+# Niuu Agent - Ravn CLI and daemon runtime
+
+replicaCount: 1
+revisionHistoryLimit: 10
+
+image:
+  registry: ghcr.io/niuulabs
+  repository: agent
+  tag: ""
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+agent:
+  persona: mimir-warden
+  profile: ""
+  configPath: /etc/ravn/config.yaml
+  workspaceRoot: /workspace
+
+command: []
+args: []
+
+config:
+  create: true
+  existingConfigMap: ""
+  key: config.yaml
+  value: |-
+    permission:
+      mode: workspace_write
+      workspace_root: /workspace
+    logging:
+      level: info
+      format: text
+    initiative:
+      enabled: true
+      default_persona: {{ .Values.agent.persona | quote }}
+      queue_journal_path: /home/agent/.ravn/daemon/queue.json
+    gateway:
+      channels:
+        http:
+          enabled: false
+    wakefulness:
+      enabled: false
+    dream_cycle:
+      enabled: false
+      state_dir: /home/agent/.ravn/daemon/state
+    mimir:
+      enabled: false
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: false
+  rules: []
+  # Example read-only Kubernetes valkyrie rules:
+  # rules:
+  #   - apiGroups: [""]
+  #     resources: ["pods", "pods/log", "events", "nodes", "services", "configmaps"]
+  #     verbs: ["get", "list", "watch"]
+  #   - apiGroups: ["apps"]
+  #     resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  #     verbs: ["get", "list", "watch"]
+
+service:
+  enabled: false
+  type: ClusterIP
+  port: 80
+  targetPort: 7477
+  annotations: {}
+
+persistence:
+  enabled: false
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  mountPath: /home/agent/.ravn
+
+workspace:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi
+  mountPath: /workspace
+  emptyDir: true
+
+livenessProbe:
+  enabled: false
+  exec:
+    command:
+      - ravn
+      - --help
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: false
+  exec:
+    command:
+      - ravn
+      - --help
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+extraEnv: []
+envFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+global:
+  imagePullSecrets: []
+  image:
+    registry: ""
+    tag: ""

@@ -36,6 +36,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - /containers/niuu
+      - /containers/agent
       - /containers/skuld
       - /containers/devrunner
       - /containers/volundr-web

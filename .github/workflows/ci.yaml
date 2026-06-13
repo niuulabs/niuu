@@ -74,7 +74,7 @@ jobs:
               regex = re.compile(pattern)
               return any(regex.search(path) for path in changed)
 
-          all_containers = ["skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
+          all_containers = ["agent", "skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
 
           if full_tier:
               outputs = {
@@ -90,6 +90,7 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
+                  "agent": r"^containers/agent/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/devrunner/",
                   "volundr-web": r"^containers/volundr-web/|^web-next/",
@@ -674,7 +675,7 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -682,6 +683,7 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
+          helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
@@ -700,6 +702,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/agent-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

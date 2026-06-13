@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm@sha256:e2d3af735aff6eeee600b1933bedd99da6645fedf572cc12ef4cc1331f2ceebe AS builder
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS builder
 
 ARG TARGETARCH
 
@@ -24,27 +24,29 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats \
-    && mkdir -p /dist-root/data/mimir
+RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats
 
-FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf
 
-
-LABEL org.opencontainers.image.title="niuu"
-LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"
+LABEL org.opencontainers.image.title="agent"
+LABEL org.opencontainers.image.description="Niuu Agent - Ravn CLI and daemon runtime"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
+RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
+    [ -n "$existing" ] && userdel -r "$existing" || true && \
+    useradd -m -s /usr/sbin/nologin -u 1000 agent
+
 ENV VIRTUAL_ENV=/opt/venv
-ENV PYTHONPATH=/opt/venv/lib/python3.11/site-packages
+COPY --from=builder /opt/venv /opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
-COPY --from=builder --chown=65532:65532 /dist-root/data /data
+COPY containers/agent/entrypoint.py /app/entrypoint.py
+RUN mkdir -p /workspace /etc/ravn /home/agent/.ravn \
+    && chown -R agent:agent /workspace /etc/ravn /home/agent/.ravn
 
-WORKDIR /app
+WORKDIR /workspace
+USER agent
 
-EXPOSE 8082
-
-ENTRYPOINT ["/usr/bin/python3", "-m", "uvicorn", "niuu.main:app", "--host", "0.0.0.0", "--port", "8082"]
+ENTRYPOINT ["python", "/app/entrypoint.py"]
