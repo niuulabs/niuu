@@ -168,7 +168,10 @@ export function layoutForceDirected(
   const maxY = Math.max(...ys);
   const spanX = Math.max(1, maxX - minX);
   const spanY = Math.max(1, maxY - minY);
-  const scale = Math.min((width - 2 * LAYOUT_PADDING) / spanX, (height - 2 * LAYOUT_PADDING) / spanY);
+  const scale = Math.min(
+    (width - 2 * LAYOUT_PADDING) / spanX,
+    (height - 2 * LAYOUT_PADDING) / spanY,
+  );
 
   return nodes.map((node, i) => ({
     node,

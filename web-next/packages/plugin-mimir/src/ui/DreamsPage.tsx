@@ -179,8 +179,8 @@ export function DreamsPage() {
 
       {!cyclesLoading && !cyclesError && cycles?.length === 0 && (
         <p className="niuu:text-sm niuu:text-text-muted" data-testid="dreams-empty">
-          No dream cycles recorded — the autonomous dream cycle is disabled on this
-          instance (enable it via the ravn `dream_cycle` config to populate this history).
+          No dream cycles recorded — the autonomous dream cycle is disabled on this instance (enable
+          it via the ravn `dream_cycle` config to populate this history).
         </p>
       )}
 

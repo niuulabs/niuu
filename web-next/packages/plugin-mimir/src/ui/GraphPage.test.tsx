@@ -309,5 +309,4 @@ describe('layoutForceDirected', () => {
     const edges = [{ source: 'n1', target: 'ghost' }];
     expect(layoutForceDirected(nodes, edges)).toHaveLength(2);
   });
-
 });

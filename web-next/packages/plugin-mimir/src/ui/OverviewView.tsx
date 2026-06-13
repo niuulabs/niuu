@@ -233,7 +233,6 @@ export function OverviewView() {
               );
             })}
           </div>
-
         </div>
 
         {/* RIGHT column: activity feed */}
