@@ -33,6 +33,17 @@ from ravn.ports.trigger import TriggerPort
 logger = logging.getLogger(__name__)
 
 
+def _source_excerpt(content: str, max_chars: int) -> str:
+    """Return a bounded excerpt for source-synthesis task context."""
+    if max_chars <= 0 or len(content) <= max_chars:
+        return content
+    omitted = len(content) - max_chars
+    return (
+        f"{content[:max_chars]}\n\n"
+        f"[Source content truncated: omitted {omitted:,} characters from the raw source.]"
+    )
+
+
 class MimirSourceTrigger(TriggerPort):
     """TriggerPort implementation that synthesises unprocessed Mímir sources.
 
@@ -89,9 +100,14 @@ class MimirSourceTrigger(TriggerPort):
 
             # Fetch full content so the agent can synthesise without filesystem access
             full_source = await self._mimir.read_source(src.source_id)
-            content_section = (
-                f"\n\n## Source content\n\n{full_source.content}"
+            source_content = (
+                _source_excerpt(full_source.content, self._config.max_content_chars)
                 if full_source is not None
+                else None
+            )
+            content_section = (
+                f"\n\n## Source content\n\n{source_content}"
+                if source_content is not None
                 else "\n\n(Content unavailable — check raw/ directory manually.)"
             )
 
@@ -107,7 +123,7 @@ class MimirSourceTrigger(TriggerPort):
                 f"3. Read the source content below and synthesise wiki pages.\n"
                 f"4. Optionally run 1-2 targeted web searches if recency matters.\n"
                 f"5. Call mimir_write to write or update each synthesised page. Every page\n"
-                f"   MUST include `<!-- sources: {src.source_id} -->` in its footer.\n"
+                f"   MUST include a footer HTML comment whose body is `sources: {src.source_id}`.\n"
                 f"   If a page already exists but lacks this source_id, call mimir_write\n"
                 f"   to update it — do not skip synthesis because pages already exist.\n"
                 f"6. Cross-link related pages, update wiki/index.md, append to wiki/log.md."

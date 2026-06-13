@@ -211,6 +211,21 @@ async def test_upsert_page_creates_file(tmp_path: Path) -> None:
     assert page_file.read_text() == content
 
 
+def test_extract_source_ids_only_counts_footer_comment() -> None:
+    content = (
+        "# Task Prompt\n\n"
+        "The instruction mentions <!-- sources: src_prompt --> in the body.\n\n"
+        "No source footer follows."
+    )
+    assert MarkdownMimirAdapter._extract_source_ids(content) == []
+    assert (
+        MarkdownMimirAdapter._extract_source_ids(
+            "# Synthesised Page\n\nUseful summary.\n\n<!-- sources: src_footer -->\n"
+        )
+        == ["src_footer"]
+    )
+
+
 @pytest.mark.asyncio
 async def test_upsert_page_adds_to_index(tmp_path: Path) -> None:
     adapter = _make_adapter(tmp_path)

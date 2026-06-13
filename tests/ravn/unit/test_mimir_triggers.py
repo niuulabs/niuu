@@ -30,11 +30,11 @@ def _source_meta(
     )
 
 
-def _full_source(source_id: str = "src-1") -> MimirSource:
+def _full_source(source_id: str = "src-1", content: str = "Some content here.") -> MimirSource:
     return MimirSource(
         source_id=source_id,
         title="Test Source",
-        content="Some content here.",
+        content=content,
         source_type="web",
         ingested_at=datetime(2024, 1, 1, tzinfo=UTC),
         content_hash="abc123",
@@ -74,6 +74,7 @@ class TestMimirSourceTrigger:
         poll_interval: int = 60,
         retry_after: int = 600,
         persona: str = "mimir-curator",
+        max_content_chars: int = 120_000,
     ) -> MimirSourceTrigger:
         if mimir is None:
             mimir = AsyncMock()
@@ -82,6 +83,7 @@ class TestMimirSourceTrigger:
             poll_interval_seconds=poll_interval,
             retry_after_seconds=retry_after,
             persona=persona,
+            max_content_chars=max_content_chars,
         )
         return MimirSourceTrigger(mimir, cfg)
 
@@ -146,6 +148,37 @@ class TestMimirSourceTrigger:
         await trigger._poll_once(_enqueue)
         context = enqueued[0].initiative_context
         assert "Some content here." in context
+
+    @pytest.mark.asyncio
+    async def test_poll_once_truncates_large_source_content(self) -> None:
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[_source_meta()])
+        mimir.read_source = AsyncMock(return_value=_full_source(content="abcdef"))
+        trigger = self._make_trigger(mimir=mimir, max_content_chars=3)
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> None:
+            enqueued.append(task)
+
+        await trigger._poll_once(_enqueue)
+        context = enqueued[0].initiative_context
+        assert "## Source content\n\nabc" in context
+        assert "def" not in context
+        assert "Source content truncated" in context
+
+    @pytest.mark.asyncio
+    async def test_poll_once_does_not_embed_literal_source_footer_marker(self) -> None:
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[_source_meta(source_id="src-1")])
+        mimir.read_source = AsyncMock(return_value=_full_source(source_id="src-1"))
+        trigger = self._make_trigger(mimir=mimir)
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> None:
+            enqueued.append(task)
+
+        await trigger._poll_once(_enqueue)
+        assert "<!-- sources: src-1 -->" not in enqueued[0].initiative_context
 
     @pytest.mark.asyncio
     async def test_poll_once_handles_missing_source_content(self) -> None:

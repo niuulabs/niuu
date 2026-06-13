@@ -1401,6 +1401,14 @@ class MimirSourceTriggerConfig(BaseModel):
             "in the context window. None uses the LLM/settings default."
         ),
     )
+    max_content_chars: int = Field(
+        default=120_000,
+        description=(
+            "Maximum raw source characters injected into synthesis task context. "
+            "Large web captures can otherwise exhaust the model context before "
+            "the agent can write any synthesis."
+        ),
+    )
     retry_after_seconds: int = Field(
         default=600,
         description=(

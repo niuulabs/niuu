@@ -1762,7 +1762,7 @@ class MarkdownMimirAdapter(MimirPort):
 
         Pages may embed source references as: ``<!-- sources: id1,id2 -->``
         """
-        match = re.search(r"<!--\s*sources:\s*([^-]+?)\s*-->", content)
+        match = re.search(r"<!--\s*sources:\s*([^<]+?)\s*-->\s*$", content)
         if not match:
             return []
         return [s.strip() for s in match.group(1).split(",") if s.strip()]
