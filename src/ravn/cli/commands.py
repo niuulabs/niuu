@@ -546,9 +546,33 @@ def _build_executor(persona_config: Any | None = None) -> ExecutorPort:
         if runtime_transport_adapter:
             adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
             kwargs = {"transport_adapter": runtime_transport_adapter}
+            transport_kwargs = _runtime_cli_transport_kwargs(runtime_transport_adapter)
+            if transport_kwargs:
+                kwargs["transport_kwargs"] = transport_kwargs
 
     cls = _import_class(adapter_path)
     return cls(**kwargs)
+
+
+def _runtime_cli_transport_kwargs(transport_adapter: str) -> dict[str, Any]:
+    """Return explicit transport kwargs advertised by the runtime environment."""
+    if transport_adapter != "skuld.transports.codex_ws.CodexWebSocketTransport":
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    skip_permissions = str(os.environ.get("SKULD__SKIP_PERMISSIONS") or "").strip()
+    if skip_permissions:
+        kwargs["skip_permissions"] = skip_permissions.lower() in {"1", "true", "yes", "on"}
+
+    approval_policy = str(os.environ.get("SKULD__APPROVAL_POLICY") or "").strip()
+    if approval_policy:
+        kwargs["approval_policy"] = approval_policy
+
+    sandbox = str(os.environ.get("SKULD__SANDBOX") or "").strip()
+    if sandbox:
+        kwargs["sandbox"] = sandbox
+
+    return kwargs
 
 
 def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:

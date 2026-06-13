@@ -63,6 +63,7 @@ def supervisor_environment(spec: WardenSpec) -> dict[str, str]:
 
     env["RAVN_LLM__MODEL"] = spec.model
     env.update(runtime_environment)
+    env.update(_broker_environment(spec.broker))
     return env
 
 
@@ -217,6 +218,64 @@ def runtime_config_payload(
     }
     if not _runtime_transport_environment(spec.model):
         payload["llm"]["provider"] = _llm_provider_config(spec.model)
+    skuld_payload = _skuld_runtime_config(spec.broker)
+    if skuld_payload:
+        payload["skuld"] = skuld_payload
+    return payload
+
+
+def _broker_environment(broker: dict[str, object]) -> dict[str, str]:
+    """Return Skuld env overrides configured directly on a warden."""
+    env: dict[str, str] = {}
+    cli_type = str(broker.get("cliType") or broker.get("cli_type") or "").strip()
+    if cli_type:
+        env["SKULD__CLI_TYPE"] = cli_type
+
+    transport = str(broker.get("transport") or "").strip()
+    if transport:
+        env["SKULD__TRANSPORT"] = transport
+
+    transport_adapter = str(
+        broker.get("transportAdapter") or broker.get("transport_adapter") or ""
+    ).strip()
+    if transport_adapter:
+        env["SKULD__TRANSPORT_ADAPTER"] = transport_adapter
+
+    if "skipPermissions" in broker or "skip_permissions" in broker:
+        value = broker.get("skipPermissions", broker.get("skip_permissions"))
+        env["SKULD__SKIP_PERMISSIONS"] = str(bool(value)).lower()
+
+    approval_policy = str(
+        broker.get("approvalPolicy") or broker.get("approval_policy") or ""
+    ).strip()
+    if approval_policy:
+        env["SKULD__APPROVAL_POLICY"] = approval_policy
+
+    sandbox = str(broker.get("sandbox") or "").strip()
+    if sandbox:
+        env["SKULD__SANDBOX"] = sandbox
+
+    return env
+
+
+def _skuld_runtime_config(broker: dict[str, object]) -> dict[str, object]:
+    """Return Skuld config fields configured directly on a warden."""
+    payload: dict[str, object] = {}
+    if "skipPermissions" in broker or "skip_permissions" in broker:
+        payload["skip_permissions"] = bool(
+            broker.get("skipPermissions", broker.get("skip_permissions"))
+        )
+
+    approval_policy = str(
+        broker.get("approvalPolicy") or broker.get("approval_policy") or ""
+    ).strip()
+    if approval_policy:
+        payload["approval_policy"] = approval_policy
+
+    sandbox = str(broker.get("sandbox") or "").strip()
+    if sandbox:
+        payload["sandbox"] = sandbox
+
     return payload
 
 
