@@ -54,3 +54,11 @@ class MimirServiceConfig(BaseModel):
             "Set to null for FTS-only mode (no sentence-transformers required)."
         ),
     )
+    eval_capture: bool = Field(
+        default=False,
+        description=(
+            "When true, every /mimir/search query and its result paths are "
+            "appended to <path>/evals/queries-YYYY-Www.jsonl for offline "
+            "retrieval-quality replay (python -m mimir eval replay)."
+        ),
+    )
