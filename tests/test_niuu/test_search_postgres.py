@@ -292,12 +292,50 @@ class TestPostgresSearchAdapterPgvector:
         adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test", embed_fn=_embed_fn)
         adapter._pool = pool
         adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
 
         await adapter.search("python", limit=2)
 
-        # The second SQL call (semantic leg) must use the <=> operator.
+        # The second SQL call (semantic leg) must use the <=> operator on the
+        # native vector column, not a per-row cast of the JSON text column.
         assert len(sql_calls) >= 2
-        assert "<=>" in sql_calls[1]
+        assert "embedding_vec <=>" in sql_calls[1]
+        assert "embedding::vector" not in sql_calls[1]
+
+    @pytest.mark.asyncio
+    async def test_hybrid_falls_back_on_query_dim_mismatch(self) -> None:
+        """A query vector that doesn't match the column dim uses the Python path."""
+        fts_rows = [_make_record("doc-1", "python testing")]
+        emb_rows = [_make_record("doc-1", "python testing", embedding="[1.0,0.0,0.0]")]
+        sql_calls: list[str] = []
+
+        async def _embed_fn(text: str) -> list[float]:
+            return [1.0, 0.0, 0.0]  # dim 3, column dim 4
+
+        mock_conn = AsyncMock()
+
+        async def _fetch(sql: str, *args, **kwargs):
+            sql_calls.append(sql)
+            if len(sql_calls) == 1:
+                return fts_rows
+            return emb_rows
+
+        mock_conn.fetch = _fetch
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=cm)
+
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test", embed_fn=_embed_fn)
+        adapter._pool = pool
+        adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
+
+        results = await adapter.search("python", limit=2)
+
+        assert all("<=>" not in sql for sql in sql_calls)
+        assert any(r.id == "doc-1" for r in results)
 
     @pytest.mark.asyncio
     async def test_hybrid_fallback_without_pgvector(self) -> None:
@@ -333,3 +371,212 @@ class TestPostgresSearchAdapterPgvector:
         # Must not use <=> when pgvector is unavailable.
         assert all("<=>" not in sql for sql in sql_calls)
         assert any(r.id == "doc-1" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Native vector column lifecycle (pgvector)
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    """Records executed SQL and returns scripted fetchval results."""
+
+    def __init__(self, fetchval_results: list | None = None) -> None:
+        self.executed: list[tuple[str, tuple]] = []
+        self._fetchval_results = list(fetchval_results or [])
+
+    async def execute(self, sql: str, *args) -> None:
+        self.executed.append((sql, args))
+
+    async def fetchval(self, sql: str, *args):
+        if self._fetchval_results:
+            return self._fetchval_results.pop(0)
+        return None
+
+    async def fetchrow(self, sql: str, *args):
+        return None
+
+    async def fetch(self, sql: str, *args):
+        return []
+
+
+def _pool_for(conn: _FakeConn) -> MagicMock:
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=cm)
+    pool.close = AsyncMock()
+    return pool
+
+
+class TestPostgresVectorColumn:
+    @pytest.mark.asyncio
+    async def test_ensure_creates_column_backfill_and_index(self) -> None:
+        """First embedding creates vector(dim) column, backfills, adds HNSW index."""
+        conn = _FakeConn(fetchval_results=[None])  # column absent
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+
+        await adapter._ensure_vector_column(4)
+
+        sqls = [sql for sql, _ in conn.executed]
+        assert any("ADD COLUMN IF NOT EXISTS embedding_vec vector(4)" in s for s in sqls)
+        assert any("SET embedding_vec = embedding::vector" in s for s in sqls)
+        assert any("USING hnsw" in s for s in sqls)
+        assert adapter._vector_column_dim == 4
+
+    @pytest.mark.asyncio
+    async def test_ensure_noop_when_dim_cached(self) -> None:
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
+
+        await adapter._ensure_vector_column(4)
+
+        assert conn.executed == []
+
+    @pytest.mark.asyncio
+    async def test_ensure_noop_without_pgvector(self) -> None:
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = False
+
+        await adapter._ensure_vector_column(4)
+
+        assert conn.executed == []
+        assert adapter._vector_column_dim is None
+
+    @pytest.mark.asyncio
+    async def test_dim_change_drops_and_recreates_column(self) -> None:
+        """An embedding dimension change rebuilds the disposable vector column."""
+        conn = _FakeConn(fetchval_results=[4])  # existing column has dim 4
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
+
+        await adapter._ensure_vector_column(8)
+
+        sqls = [sql for sql, _ in conn.executed]
+        assert any("DROP COLUMN IF EXISTS embedding_vec" in s for s in sqls)
+        assert any("ADD COLUMN IF NOT EXISTS embedding_vec vector(8)" in s for s in sqls)
+        assert adapter._vector_column_dim == 8
+
+    @pytest.mark.asyncio
+    async def test_ensure_adopts_existing_column_with_matching_dim(self) -> None:
+        conn = _FakeConn(fetchval_results=[4])  # column already vector(4)
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+
+        await adapter._ensure_vector_column(4)
+
+        assert conn.executed == []
+        assert adapter._vector_column_dim == 4
+
+    @pytest.mark.asyncio
+    async def test_sync_state_adopts_existing_column(self) -> None:
+        conn = _FakeConn(fetchval_results=[16])
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+
+        await adapter._sync_vector_column_state()
+
+        assert adapter._vector_column_dim == 16
+
+    @pytest.mark.asyncio
+    async def test_sync_state_builds_column_from_stored_json(self) -> None:
+        """Upgrade path: existing JSON embeddings seed the vector column dim."""
+        # fetchvals: column dim (absent), sample embedding, then ensure's
+        # second column-dim probe (still absent).
+        conn = _FakeConn(fetchval_results=[None, "[1.0, 0.0, 0.0]", None])
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+
+        await adapter._sync_vector_column_state()
+
+        sqls = [sql for sql, _ in conn.executed]
+        assert any("ADD COLUMN IF NOT EXISTS embedding_vec vector(3)" in s for s in sqls)
+        assert adapter._vector_column_dim == 3
+
+    @pytest.mark.asyncio
+    async def test_sync_state_noop_without_embeddings(self) -> None:
+        conn = _FakeConn(fetchval_results=[None, None])  # no column, no sample
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+
+        await adapter._sync_vector_column_state()
+
+        assert conn.executed == []
+        assert adapter._vector_column_dim is None
+
+    @pytest.mark.asyncio
+    async def test_index_writes_vector_column(self) -> None:
+        """index() writes embeddings into the native vector column when present."""
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
+
+        await adapter.index("doc-1", "hello", {}, embedding=[1.0, 0.0, 0.0, 0.0])
+
+        sql, args = conn.executed[-1]
+        assert "embedding_vec" in sql
+        assert "$5::vector" in sql
+        assert args[4] == "[1.0, 0.0, 0.0, 0.0]"
+
+    @pytest.mark.asyncio
+    async def test_index_clears_vector_column_without_embedding(self) -> None:
+        """Re-indexing without an embedding nulls the stale vector value."""
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = True
+        adapter._vector_column_dim = 4
+
+        await adapter.index("doc-1", "hello", {})
+
+        sql, args = conn.executed[-1]
+        assert "embedding_vec" in sql
+        assert args[4] is None
+
+    @pytest.mark.asyncio
+    async def test_index_without_pgvector_keeps_json_only_sql(self) -> None:
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
+        adapter._pool = _pool_for(conn)
+        adapter._pgvector_available = False
+
+        await adapter.index("doc-1", "hello", {}, embedding=[1.0, 0.0])
+
+        sql, args = conn.executed[-1]
+        assert "embedding_vec" not in sql
+        assert args[3] == "[1.0, 0.0]"
+
+    @pytest.mark.asyncio
+    async def test_initialize_warns_without_pgvector(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Missing pgvector with an embed_fn logs a loud warning at initialize()."""
+
+        async def _embed_fn(text: str) -> list[float]:
+            return [1.0, 0.0]
+
+        conn = _FakeConn()
+        adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test", embed_fn=_embed_fn)
+        adapter.set_pool(_pool_for(conn))
+
+        with caplog.at_level("WARNING", logger="niuu.adapters.search.postgres"):
+            await adapter.initialize()
+
+        assert adapter.pgvector_available is False
+        assert any("pgvector" in rec.message for rec in caplog.records)

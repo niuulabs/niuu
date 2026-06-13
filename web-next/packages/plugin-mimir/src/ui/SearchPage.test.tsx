@@ -105,7 +105,7 @@ describe('SearchPage', () => {
     wrap(<SearchPage />, service, { tweaks: { activeMount: 'local' } });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
     await waitFor(() => expect(search).toHaveBeenCalled());
-    expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local');
+    expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local', false);
   });
 
   it('updates the search scope when the active mount changes at runtime', async () => {
@@ -149,10 +149,14 @@ describe('SearchPage', () => {
 
     wrap(<Harness />);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
-    await waitFor(() => expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', undefined));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', undefined, false),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'focus local' }));
-    await waitFor(() => expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local'));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', 'local', false),
+    );
     expect(screen.getByPlaceholderText('Search pages in local…')).toBeInTheDocument();
   });
 
@@ -183,6 +187,88 @@ describe('SearchPage', () => {
     // Mount chips render as .mm-chip spans — first result has mounts ['local', 'shared']
     expect(first.textContent).toContain('local');
     expect(first.textContent).toContain('shared');
+  });
+
+  it('renders the debug toggle, off by default', () => {
+    wrap(<SearchPage />);
+    const toggle = screen.getByTestId('debug-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('passes debug=true to the search service when the toggle is enabled', async () => {
+    const search = vi.fn().mockResolvedValue([]);
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        search,
+      },
+    };
+    wrap(<SearchPage />, service);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'memory' } });
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', undefined, false),
+    );
+
+    fireEvent.click(screen.getByTestId('debug-toggle'));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith('memory', 'hybrid', undefined, true),
+    );
+  });
+
+  it('survives JSON null score and breakdown from the live API (regression)', async () => {
+    // The real backend sends score: null outside debug mode; null !== undefined
+    // crashed the result row with `null.toFixed(2)` against the live stack.
+    const search = vi.fn().mockResolvedValue([
+      {
+        path: 'technical/page.md',
+        title: 'Page',
+        summary: 'A page.',
+        category: 'technical',
+        type: 'topic',
+        confidence: 'medium',
+        score: null as unknown as number,
+        scoreBreakdown: null as unknown as Record<string, number>,
+      },
+    ]);
+    const service: IMimirService = {
+      ...createMimirMockAdapter(),
+      pages: {
+        ...createMimirMockAdapter().pages,
+        search,
+      },
+    };
+    wrap(<SearchPage />, service);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'page' } });
+    await waitFor(() => expect(screen.getAllByTestId('search-result').length).toBe(1));
+    expect(screen.queryByText(/score/i)).not.toBeInTheDocument();
+  });
+
+  it('renders per-factor score breakdown chips when debug is on', async () => {
+    wrap(<SearchPage />);
+    fireEvent.click(screen.getByTestId('debug-toggle'));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'architecture' } });
+    await waitFor(() => expect(screen.getAllByTestId('score-breakdown').length).toBeGreaterThan(0));
+    const breakdown = screen.getAllByTestId('score-breakdown')[0]!;
+    expect(breakdown.textContent).toContain('base');
+    expect(breakdown.textContent).toContain('recency');
+    expect(breakdown.textContent).toContain('title_match');
+    expect(breakdown.textContent).toContain('final');
+    expect(breakdown.textContent).toMatch(/\d+\.\d{2}/);
+  });
+
+  it('hides score breakdowns when debug is off', async () => {
+    wrap(<SearchPage />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'architecture' } });
+    await waitFor(() => expect(screen.getAllByTestId('search-result').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('score-breakdown')).not.toBeInTheDocument();
+  });
+
+  it('starts in debug mode when initialDebug is set', async () => {
+    wrap(<SearchPage initialDebug />);
+    expect(screen.getByTestId('debug-toggle')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'architecture' } });
+    await waitFor(() => expect(screen.getAllByTestId('score-breakdown').length).toBeGreaterThan(0));
   });
 
   it('clicking a result opens the pages route and stores the selected page path', async () => {

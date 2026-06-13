@@ -85,7 +85,12 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     embed_fn = _build_embed_fn(config.embedding_model) if config.embedding_model else None
     search_port = SqliteSearchAdapter(path=search_db, embed_fn=embed_fn)
 
-    adapter = MarkdownMimirAdapter(root=config.path, search_port=search_port)
+    adapter = MarkdownMimirAdapter(
+        root=config.path,
+        search_port=search_port,
+        ranking_config=config.ranking,
+        evidence_config=config.evidence,
+    )
     registry_store = MimirRegistryStore(Path(config.path).expanduser() / ".mimir-registry.json")
     registry_store.ensure_entry(
         name=config.name,

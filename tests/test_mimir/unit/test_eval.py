@@ -5,7 +5,7 @@ Covers:
 - Golden-set loading and validation (malformed files, missing corpus paths)
 - run_eval end-to-end against the committed fixture corpus
 - compare_reports flags an artificially-broken ranking
-- Query capture: JSONL writing, default-off, router integration
+- Query capture: JSONL writing, default-on, router integration
 - Replay: ranking drift detection against a capture file
 - CLI: --json/--out/--against/--fail-on-regression and replay
 """
@@ -304,8 +304,9 @@ def test_compare_no_changes_formats_cleanly() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_eval_capture_defaults_off() -> None:
-    assert MimirServiceConfig().eval_capture is False
+def test_eval_capture_defaults_on() -> None:
+    # On by default so Analytics gets query traffic out of the box.
+    assert MimirServiceConfig().eval_capture is True
 
 
 def test_append_and_load_capture(tmp_path: Path) -> None:

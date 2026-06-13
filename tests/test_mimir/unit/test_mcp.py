@@ -91,6 +91,7 @@ class TestProtocol:
             "mimir_read_source",
             "mimir_lint",
             "mimir_stats",
+            "mimir_related",
         }
 
     def test_method_not_found(self, tmp_path: Path) -> None:

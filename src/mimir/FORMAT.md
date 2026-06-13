@@ -54,10 +54,17 @@ but validators emit warnings, not errors, for their absence.
 
 ### Relationships
 - [[entity-slug]] — brief description of the relationship.
+- [[entity-slug]] — rel: works_at — typed relationship with a label.
 
 ### Assessment
 Free-form synthesis: interpretation, implications, open questions.
 ```
+
+**Typed relationships (additive, NIU-1058):** a relationship line may carry a
+machine-readable label using `— rel: <type> —` between the wikilink and the
+description (e.g. `works_at`, `part_of`, `supplies`, `leads`). Typed edges are
+surfaced by `GET /mimir/related?rel=<type>` and the graph API; untyped lines
+remain fully valid and are treated as unlabeled edges.
 
 **Rules:**
 

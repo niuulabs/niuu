@@ -103,11 +103,12 @@ jobs:
           flags: ${{ matrix.pkg.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  # Mímir retrieval-quality eval (NIU-1055). Report-only: metrics are posted
-  # to the job summary so retrieval changes carry a visible eval delta.
-  # NIU-1057 (ranking layer) flips this to a hard gate via --fail-on-regression.
+  # Mímir retrieval-quality eval (NIU-1055/NIU-1057). HARD GATE: fails when
+  # overall P@5 regresses more than the threshold vs the committed baseline
+  # (tests/test_mimir/evals/baseline.json). Improvements should refresh the
+  # baseline via `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json`.
   mimir-eval:
-    name: "Mímir: Retrieval eval (report-only)"
+    name: "Mímir: Retrieval eval (gated)"
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
@@ -120,11 +121,13 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
-      - name: Run golden-set eval (FTS-only)
+      - name: Run golden-set eval vs committed baseline (FTS-only)
         run: |
-          uv run python -m mimir eval | tee eval-report.txt
+          uv run python -m mimir eval \
+            --against tests/test_mimir/evals/baseline.json \
+            --fail-on-regression | tee eval-report.txt
           {
-            echo "## Mímir retrieval eval (FTS-only baseline)"
+            echo "## Mímir retrieval eval (FTS-only, gated vs baseline)"
             echo '```'
             cat eval-report.txt
             echo '```'

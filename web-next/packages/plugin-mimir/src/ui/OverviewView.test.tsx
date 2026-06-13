@@ -137,67 +137,13 @@ describe('OverviewView', () => {
     expect(within(card).getByText('arch')).toBeInTheDocument();
   });
 
-  it('renders warden ravn cards with bio text', async () => {
+  it('shows the warden count KPI without a roster section (wardens live on their tab)', async () => {
     wrap(<OverviewView />);
-    await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
-    expect(
-      screen.getByText('Synthesises infrastructure documentation from git commits and runbooks'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Compiles API guidelines and architectural decisions from RFC discussions'),
-    ).toBeInTheDocument();
-  });
-
-  it('renders warden cards with pages-touched metric', async () => {
-    wrap(<OverviewView />);
-    await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
-    // ravn-fjolnir has 52 pagesTouched
-    expect(screen.getByText('52')).toBeInTheDocument();
-    // "pages touched" label appears at least once
-    expect(screen.getAllByText('pages touched').length).toBeGreaterThan(0);
-  });
-
-  it('renders warden cards with last-dream timestamp', async () => {
-    wrap(<OverviewView />);
-    await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
-    // At least one "last dream" label
-    expect(screen.getAllByText(/last dream/).length).toBeGreaterThan(0);
-  });
-
-  it('opens the selected warden from the overview roster', async () => {
-    const setTweak = vi.fn();
-    wrap(<OverviewView />, undefined, { tweaks: {}, setTweak });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /open warden ravn-fjolnir/i })).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByRole('button', { name: /open warden ravn-fjolnir/i }));
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
-  });
-
-  it('shows "never" for last dream when ravn has no dream cycle', async () => {
-    wrap(<OverviewView />);
-    await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
-    // ravn-galdra and ravn-vor both have lastDream: null
-    const neverEls = screen.getAllByText(/last dream never/);
-    expect(neverEls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('opens a warden from the roster with keyboard controls', async () => {
-    const setTweak = vi.fn();
-    wrap(<OverviewView />, undefined, { tweaks: {}, setTweak });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /open warden ravn-fjolnir/i })).toBeInTheDocument(),
-    );
-
-    const wardenCard = screen.getByRole('button', { name: /open warden ravn-fjolnir/i });
-    fireEvent.keyDown(wardenCard, { key: 'Escape' });
-    expect(setTweak).not.toHaveBeenCalled();
-
-    fireEvent.keyDown(wardenCard, { key: 'Enter' });
-    fireEvent.keyDown(wardenCard, { key: ' ' });
-    expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
+    await waitFor(() => expect(screen.getByText('wardens')).toBeInTheDocument());
+    // The roster (cards with bios / pages-touched / last-dream) was removed:
+    // it triplicated the Wardens tab and the context rail.
+    expect(screen.queryByText('Wardens')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open warden/i })).not.toBeInTheDocument();
   });
 
   it('shows the empty activity copy when the feed has no items', async () => {
@@ -211,20 +157,6 @@ describe('OverviewView', () => {
 
     wrap(<OverviewView />, noFeedService);
     await waitFor(() => expect(screen.getByText('No recent activity.')).toBeInTheDocument());
-  });
-
-  it('hides the wardens section when no wardens are bound to mounts', async () => {
-    const noRavnsService: IMimirService = {
-      ...createMimirMockAdapter(),
-      mounts: {
-        ...createMimirMockAdapter().mounts,
-        listRavnBindings: async () => [],
-      },
-    };
-
-    wrap(<OverviewView />, noRavnsService);
-    await waitFor(() => expect(screen.getByText('Mounts')).toBeInTheDocument());
-    expect(screen.queryByText('Wardens')).not.toBeInTheDocument();
   });
 
   it('uses singular copy when exactly one mount is connected', async () => {
