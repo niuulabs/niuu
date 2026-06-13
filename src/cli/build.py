@@ -15,6 +15,7 @@ Parameterised via BINARY_NAME / ENTRY_POINT for future targets
 
 from __future__ import annotations
 
+import os
 import platform
 import shlex
 import subprocess
@@ -95,6 +96,23 @@ def platform_suffix() -> str:
     return f"{os_name}-{arch}"
 
 
+def linux_arm64() -> bool:
+    machine = platform.machine().lower()
+    return platform.system().lower() == "linux" and machine in {"aarch64", "arm64"}
+
+
+def nuitka_toolchain_flags() -> list[str]:
+    flags: list[str] = []
+    if linux_arm64():
+        flags.extend(["--clang", "--lto=yes", "--static-libpython=no"])
+
+    extra_args = os.environ.get("NIUU_NUITKA_EXTRA_ARGS")
+    if extra_args:
+        flags.extend(shlex.split(extra_args))
+
+    return flags
+
+
 def build_command(
     binary_name: str = DEFAULT_BINARY_NAME,
     entry_point: str = DEFAULT_ENTRY_POINT,
@@ -111,6 +129,7 @@ def build_command(
         f"--output-filename={binary_name}-{platform_suffix()}",
         "--enable-plugin=no-qt",
     ]
+    cmd.extend(nuitka_toolchain_flags())
 
     for pkg in INCLUDE_PACKAGES:
         cmd.append(f"--include-package={pkg}")

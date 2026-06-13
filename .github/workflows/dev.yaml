@@ -479,6 +479,17 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
+      - name: Install Linux ARM64 Nuitka toolchain
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          {
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "LDFLAGS=-fuse-ld=lld"
+          } >> "$GITHUB_ENV"
+
       - name: Download CLI web assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -528,6 +539,17 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install Linux ARM64 Nuitka toolchain
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          {
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "LDFLAGS=-fuse-ld=lld"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
