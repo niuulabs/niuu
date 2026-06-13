@@ -22,9 +22,9 @@ hide:
 
 <p class="landing-kicker">Self-hosted AI operations</p>
 
-# Own the workspace, the agents, and the memory.
+# Self-evolving agents on your platform.
 
-Niuu is a self-hosted platform for AI workspaces, coordinated teams, always-on assistants, shared knowledge, and local or cloud model control. Run it on a laptop while you experiment, then take the same operating model to Kubernetes when the work needs a real platform.
+Niuu is a self-hosted platform for AI workspaces, coordinated agent teams, always-on assistants, shared knowledge, and local or cloud model control. It includes its own agent harness and uses the same repos, terminals, tools, memory, and review surfaces humans do, while still bringing Codex, Claude, opencode, and other coding agents into the loop. Run it on a laptop while you experiment, slowly add additional machines if and when you need them, then take the same operating model to Kubernetes when the work needs a real platform.
 
 <div class="landing-actions">
   <a class="primary" href="get-started/install/">Get started</a>
@@ -40,7 +40,7 @@ Niuu is a self-hosted platform for AI workspaces, coordinated teams, always-on a
 
 ## See the platform in motion
 
-Fresh captures from the local Niuu development stack.
+A quick tour of the Niuu platform: workspaces, teams, memory, models, and observability.
 
 </div>
 
@@ -168,6 +168,7 @@ Niuu is built as cooperating services rather than one opaque agent runner.
 <div markdown><strong>Völundr</strong><span>AI workspaces, session lifecycle, git review, and remote dev pods.</span></div>
 <div markdown><strong>Ting</strong><span>Workflow orchestration, dispatch queues, stages, gates, and runs.</span></div>
 <div markdown><strong>Ravn</strong><span>Personas, assistants, triggers, sessions, budgets, and resident behaviors.</span></div>
+<div markdown><strong>Valkyries</strong><span>Resident Ravn personas that watch environments, make judgments, act within policy, and learn with their flock.</span></div>
 <div markdown><strong>Mímir</strong><span>Shared knowledge, sources, search, wardens, and memory health.</span></div>
 <div markdown><strong>Bifröst</strong><span>Model catalog, provider health, aliases, routing, and usage telemetry.</span></div>
 <div markdown><strong>Guild</strong><span>Runtime registry for local and remote service instances.</span></div>
@@ -214,18 +215,55 @@ Niuu is built as cooperating services rather than one opaque agent runner.
 
 </section>
 
-<footer class="landing-footer">
-  <div>
-    <strong>Niuu</strong>
-    <span>Self-hosted AI workspaces, teams, assistants, memory, and model operations.</span>
+<section class="landing-final" aria-labelledby="landing-final-title">
+  <p class="landing-final-kicker">Ready to run it yourself?</p>
+  <h2 id="landing-final-title">Build the stack where your agents work.</h2>
+  <p>Start with the local development stack, then carry the same workspace, workflow, memory, and model-control pattern into shared infrastructure when the work grows up.</p>
+  <div class="landing-final-actions">
+    <a class="primary" href="get-started/install/">Get started</a>
+    <a href="concepts/platform-model/">Learn how it works</a>
   </div>
-  <nav aria-label="Footer navigation">
-    <a href="get-started/introduction/">Docs</a>
-    <a href="get-started/install/">Install</a>
-    <a href="reference/configuration/">Configuration</a>
-    <a href="operations/kubernetes-deployment/">Deployment</a>
-    <a href="https://github.com/niuulabs/volundr">GitHub</a>
-  </nav>
+</section>
+
+<footer class="landing-footer">
+  <div class="landing-footer-grid">
+    <div class="landing-footer-brand">
+      <strong>Niuu</strong>
+      <span>Self-hosted AI workspaces, teams, assistants, memory, and model operations.</span>
+    </div>
+    <nav aria-label="Docs footer navigation">
+      <h2>[Resources]</h2>
+      <a href="get-started/introduction/">Docs</a>
+      <a href="get-started/install/">Install</a>
+      <a href="reference/configuration/">Configuration</a>
+      <a href="reference/api/">API</a>
+    </nav>
+    <nav aria-label="Platform footer navigation">
+      <h2>[Platform]</h2>
+      <a href="concepts/sessions-and-workspaces/">Workspaces</a>
+      <a href="concepts/workflows-and-teams/">Workflows</a>
+      <a href="concepts/memory-and-knowledge/">Memory</a>
+      <a href="concepts/model-routing/">Model routing</a>
+    </nav>
+    <nav aria-label="Operations footer navigation">
+      <h2>[Operations]</h2>
+      <a href="operations/kubernetes-deployment/">Kubernetes</a>
+      <a href="operations/production-checklist/">Production</a>
+      <a href="operations/security-and-permissions/">Security</a>
+      <a href="operations/observability/">Observability</a>
+    </nav>
+    <nav aria-label="Project footer navigation">
+      <h2>[Project]</h2>
+      <a href="https://github.com/niuulabs/volundr">GitHub</a>
+      <a href="https://github.com/niuulabs/volundr/issues">Issues</a>
+      <a href="troubleshooting/faq/">FAQ</a>
+      <a href="troubleshooting/common-issues/">Common issues</a>
+    </nav>
+  </div>
+  <div class="landing-footer-meta">
+    <span>© 2026 Niuu Labs</span>
+    <a href="https://github.com/niuulabs/volundr">niuulabs/volundr</a>
+  </div>
 </footer>
 
 </div>

@@ -2,7 +2,7 @@
 
 Learn what Niuu is and where to start in the docs.
 
-Niuu is a self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud model operations.
+Niuu is a self-hosted harness for AI workspaces, coordinated agent teams, always-on assistants, shared knowledge, and local or cloud model operations.
 
 Use Niuu when you want operators to stay in control of the workspace, credentials, runtime, review path, and memory layer instead of handing the whole workflow to a hosted agent platform.
 
@@ -20,6 +20,7 @@ Use Niuu when you want operators to stay in control of the workspace, credential
 | Völundr | AI workspaces, sessions, git review, and remote dev pods |
 | Ting | Workflow orchestration, staged runs, and dispatch |
 | Ravn | Personas, assistants, triggers, budgets, and resident behavior |
+| Valkyries | Resident Ravn personas that watch environments, make judgments, act within policy, and learn with their flock |
 | Mímir | Shared knowledge, memory, sources, and wardens |
 | Bifröst | Local and cloud model catalog, routing, and usage telemetry |
 | Guild | Runtime registry for local and remote platform instances |

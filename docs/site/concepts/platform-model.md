@@ -12,6 +12,7 @@ Niuu is a platform of cooperating services. Each service owns a clear part of th
 | Skuld | Live broker inside session environments for chat, terminal, tools, and events |
 | Ting | Workflow orchestration, dispatch, staged runs, and review loops |
 | Ravn | Personas, assistants, triggers, budgets, and resident agent behavior |
+| Valkyries | Long-running resident Ravn personas that live in an environment, watch signals, make judgments, act within policy, and learn with their flock |
 | Mímir | Shared memory, sources, knowledge pages, search, and wardens |
 | Bifröst | Model catalog, provider health, aliases, routing, and usage telemetry |
 | Guild | Registry of runtime instances and service capabilities |
