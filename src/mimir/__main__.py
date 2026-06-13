@@ -30,29 +30,53 @@ _DEFAULT_EVAL_GOLDEN = "tests/test_mimir/evals/golden.yaml"
 
 @app.command()
 def serve(
-    path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
-    host: str = typer.Option("0.0.0.0", help="Host address to bind to."),
-    port: int = typer.Option(7477, help="Port to bind to."),
-    name: str = typer.Option("local", help="Instance name for Sleipnir announce."),
-    role: str = typer.Option("local", help="Instance role: shared, local, or domain."),
+    path: str | None = typer.Option(None, help="Root directory for the Mímir store."),
+    host: str | None = typer.Option(None, help="Host address to bind to."),
+    port: int | None = typer.Option(None, help="Port to bind to."),
+    name: str | None = typer.Option(None, help="Instance name for Sleipnir announce."),
+    role: str | None = typer.Option(None, help="Instance role: shared, local, or domain."),
     announce_url: str | None = typer.Option(None, help="Public URL to announce on Sleipnir."),
-    eval_capture: bool = typer.Option(
-        True,
-        help="Capture every search query to <path>/evals/ for offline replay.",
+    embedding_model: str | None = typer.Option(
+        None,
+        help="sentence-transformers model for hybrid search (e.g. all-MiniLM-L6-v2).",
+    ),
+    categories: str | None = typer.Option(
+        None,
+        help="Comma-separated category filter for domain-scoped instances.",
+    ),
+    search_db: str | None = typer.Option(None, help="Path for the SQLite search index."),
+    eval_capture: bool | None = typer.Option(
+        None,
+        "--eval-capture/--no-eval-capture",
+        help="Capture every search query to <path>/evals/ (default on).",
     ),
 ) -> None:
-    """Serve the Mímir knowledge base over HTTP."""
-    config = MimirServiceConfig(
-        path=path,
-        host=host,
-        port=port,
-        name=name,
-        role=role,
-        announce_url=announce_url,
-        eval_capture=eval_capture,
-    )
+    """Serve the Mímir knowledge base over HTTP.
+
+    Flags override the YAML config (./mimir.yaml, /etc/mimir/config.yaml or
+    $MIMIR_CONFIG) and MIMIR__* environment variables; anything not given on
+    the command line falls through to those sources, then to the defaults.
+    """
+    overrides: dict[str, object] = {
+        key: value
+        for key, value in {
+            "path": path,
+            "host": host,
+            "port": port,
+            "name": name,
+            "role": role,
+            "announce_url": announce_url,
+            "embedding_model": embedding_model,
+            "search_db": search_db,
+            "eval_capture": eval_capture,
+        }.items()
+        if value is not None
+    }
+    if categories is not None:
+        overrides["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
+    config = MimirServiceConfig(**overrides)
     fastapi_app = create_app(config)
-    uvicorn.run(fastapi_app, host=host, port=port)
+    uvicorn.run(fastapi_app, host=config.host, port=config.port)
 
 
 @app.command()

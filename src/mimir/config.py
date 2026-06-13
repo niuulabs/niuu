@@ -1,8 +1,43 @@
-"""Configuration for the standalone Mímir service."""
+"""Configuration for the Mímir service.
+
+``MimirServiceConfig`` loads from (first wins):
+
+1. explicit constructor arguments (the ``serve`` CLI flags)
+2. ``MIMIR__``-prefixed environment variables with ``__`` nesting, e.g.
+   ``MIMIR__EMBEDDING_MODEL=all-MiniLM-L6-v2``,
+   ``MIMIR__RANKING__TITLE_MATCH_BOOST=1.5``, ``MIMIR__EVAL_CAPTURE=false``
+3. a YAML config file: ``$MIMIR_CONFIG`` if set, else ``./mimir.yaml`` or
+   ``/etc/mimir/config.yaml``
+
+This makes every setting reachable in every deployment mode — including the
+platform plugin, which constructs the config with no arguments.
+"""
 
 from __future__ import annotations
 
+import os
+from pathlib import Path as _Path
+
 from pydantic import BaseModel, Field
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
+
+
+def _config_paths() -> list[_Path]:
+    env = os.environ.get("MIMIR_CONFIG")
+    if env:
+        return [_Path(env)]
+    return [
+        _Path("./mimir.yaml"),
+        _Path("/etc/mimir/config.yaml"),
+    ]
+
+
+CONFIG_PATHS = _config_paths()
 
 
 class RankingConfig(BaseModel):
@@ -114,8 +149,35 @@ class EvidenceConfig(BaseModel):
     )
 
 
-class MimirServiceConfig(BaseModel):
-    """Configuration for a standalone Mímir service instance."""
+class MimirServiceConfig(BaseSettings):
+    """Configuration for a Mímir service instance (standalone or plugin).
+
+    See the module docstring for the YAML/env/constructor source order.
+    """
+
+    model_config = SettingsConfigDict(
+        yaml_file=CONFIG_PATHS,
+        yaml_file_encoding="utf-8",
+        env_prefix="MIMIR__",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            YamlConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
     path: str = Field(
         default="~/.ravn/mimir",

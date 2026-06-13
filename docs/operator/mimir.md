@@ -190,6 +190,30 @@ Exit codes make it cron-friendly.
 
 ## 7. Configuration reference
 
+Every setting below is reachable in every deployment mode, sourced in this
+order (first wins):
+
+1. **Constructor / CLI flags** — `python -m mimir serve --embedding-model …
+   --no-eval-capture …` (flags not given fall through)
+2. **Environment** — `MIMIR__`-prefixed with `__` nesting:
+   `MIMIR__EMBEDDING_MODEL=all-MiniLM-L6-v2`,
+   `MIMIR__RANKING__TITLE_MATCH_BOOST=1.5`, `MIMIR__EVAL_CAPTURE=false`
+3. **YAML file** — `$MIMIR_CONFIG` if set, else `./mimir.yaml` or
+   `/etc/mimir/config.yaml`:
+
+```yaml
+embedding_model: all-MiniLM-L6-v2
+eval_capture: true
+ranking:
+  overfetch_factor: 4
+  confidence_boosts: { high: 1.15, low: 0.85 }   # opt back in if you want it
+evidence:
+  stale_after_days: 90
+```
+
+The platform plugin constructs the config with no arguments, so env vars and
+the YAML file are how you configure Mímir inside `./start-dev` / Kubernetes.
+
 ### `MimirServiceConfig` (standalone service / platform plugin)
 
 | Field | Default | Notes |
