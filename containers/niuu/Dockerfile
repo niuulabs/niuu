@@ -25,7 +25,9 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats \
-    && mkdir -p /dist-root/data/mimir
+    && mkdir -p /dist-root/data/mimir /dist-root/usr/local/bin \
+    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python3 \
+    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python
 
 FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5
 
@@ -42,6 +44,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /dist-root/data /data
+COPY --from=builder /dist-root/usr/local/bin /usr/local/bin
 
 WORKDIR /app
 
