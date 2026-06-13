@@ -164,11 +164,12 @@ class MimirServiceConfig(BaseModel):
         ),
     )
     eval_capture: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "When true, every /mimir/search query and its result paths are "
-            "appended to <path>/evals/queries-YYYY-Www.jsonl for offline "
-            "retrieval-quality replay (python -m mimir eval replay)."
+            "Append every /mimir/search query and its result paths to "
+            "<path>/evals/queries-YYYY-Www.jsonl. Feeds the Analytics query "
+            "traffic view and offline replay (python -m mimir eval replay). "
+            "On by default; disable for privacy-sensitive deployments."
         ),
     )
     ranking: RankingConfig = Field(

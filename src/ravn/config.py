@@ -1463,7 +1463,7 @@ class MimirReflexConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable retrieval reflex pointer injection on agent turns.",
     )
     max_pointers: int = Field(

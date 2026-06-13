@@ -37,7 +37,7 @@ def serve(
     role: str = typer.Option("local", help="Instance role: shared, local, or domain."),
     announce_url: str | None = typer.Option(None, help="Public URL to announce on Sleipnir."),
     eval_capture: bool = typer.Option(
-        False,
+        True,
         help="Capture every search query to <path>/evals/ for offline replay.",
     ),
 ) -> None:

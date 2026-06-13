@@ -361,8 +361,10 @@ class TestBuildReflexInjector:
         cfg = MimirConfig(reflex=MimirReflexConfig(enabled=False))
         assert build_reflex_injector(cfg) is None
 
-    def test_default_config_is_off(self):
-        assert MimirConfig().reflex.enabled is False
+    def test_default_config_is_on_but_inert_without_a_url(self):
+        # Enabled by default; without any Mimir HTTP endpoint it resolves
+        # to None (with a warning) instead of erroring.
+        assert MimirConfig().reflex.enabled is True
         assert build_reflex_injector(MimirConfig()) is None
 
     def test_missing_reflex_attribute_returns_none(self):
@@ -389,11 +391,11 @@ class TestBuildReflexInjector:
         )
         assert isinstance(build_reflex_injector(cfg), ReflexInjector)
 
-    def test_enabled_without_any_url_logs_error_and_returns_none(self, caplog):
+    def test_enabled_without_any_url_logs_warning_and_returns_none(self, caplog):
         cfg = MimirConfig(reflex=MimirReflexConfig(enabled=True))
-        with caplog.at_level(logging.ERROR, logger="ravn.reflex"):
+        with caplog.at_level(logging.WARNING, logger="ravn.reflex"):
             assert build_reflex_injector(cfg) is None
-        assert any("no base_url" in r.getMessage() for r in caplog.records)
+        assert any("no Mimir HTTP endpoint" in r.getMessage() for r in caplog.records)
 
 
 class TestScanBenchmark:

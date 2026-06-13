@@ -310,12 +310,16 @@ def _resolve_base_url(host_cfg: object, reflex_cfg: object) -> str:
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
     instances = getattr(host_cfg, "instances", None)
-    if not isinstance(instances, (list, tuple)):
-        return ""
-    for instance in instances:
-        url = getattr(instance, "url", None)
-        if isinstance(url, str) and url.strip():
-            return url.strip()
+    if isinstance(instances, (list, tuple)):
+        for instance in instances:
+            url = getattr(instance, "url", None)
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+    # Skuld brokers always know the platform URL; the mimir plugin is
+    # mounted at {platform}/api/v1/mimir, so derive the reflex base from it.
+    platform_url = getattr(host_cfg, "volundr_api_url", "")
+    if isinstance(platform_url, str) and platform_url.strip():
+        return f"{platform_url.strip().rstrip('/')}/api/v1"
     return ""
 
 
@@ -324,17 +328,20 @@ def build_reflex_injector(host_cfg: object) -> ReflexInjector | None:
 
     *host_cfg* is Ravn's ``MimirConfig`` (which may also carry HTTP
     ``instances`` used as a base-URL fallback) or Skuld's ``SkuldSettings``.
-    Returns None when the reflex is disabled. When enabled but no base URL can
-    be resolved, logs an ERROR and returns None (config error must be loud).
+    Returns None when the reflex is disabled. When enabled (the default)
+    but no base URL can be resolved, logs a WARNING and returns None.
     """
     reflex_cfg = getattr(host_cfg, "reflex", None)
     if reflex_cfg is None or getattr(reflex_cfg, "enabled", False) is not True:
         return None
     base_url = _resolve_base_url(host_cfg, reflex_cfg)
     if not base_url:
-        logger.error(
-            "mimir.reflex: enabled but no base_url configured and no HTTP Mimir "
-            "instance found — retrieval reflex disabled"
+        # Reachable via the on-by-default config on hosts without any Mimir
+        # HTTP endpoint — a normal state, not an error. Configure
+        # reflex.base_url (or an HTTP mimir instance) to activate.
+        logger.warning(
+            "mimir.reflex: enabled (default) but no Mimir HTTP endpoint is "
+            "configured — set reflex.base_url or disable reflex.enabled"
         )
         return None
     return ReflexInjector(

@@ -47,17 +47,17 @@ _FEED = [
 
 
 class TestReflexConfig:
-    def test_defaults_are_off(self):
+    def test_defaults_are_on(self):
         config = ReflexConfig()
-        assert config.enabled is False
+        assert config.enabled is True
         assert config.base_url == ""
         assert config.max_pointers == 5
         assert config.cache_ttl_seconds == 300
         assert config.timeout_seconds == 5.0
 
-    def test_settings_default_off(self, tmp_path):
+    def test_settings_default_on(self, tmp_path):
         settings = _settings(tmp_path)
-        assert settings.reflex.enabled is False
+        assert settings.reflex.enabled is True
 
 
 class TestBrokerReflex:
@@ -74,11 +74,18 @@ class TestBrokerReflex:
         assert isinstance(injector, ReflexInjector)
         assert broker._retrieval_reflex_injector() is injector
 
-    async def test_enabled_without_base_url_disables_with_error(self, tmp_path, caplog):
+    async def test_enabled_without_base_url_disables_with_warning(self, tmp_path, caplog):
         broker = Broker(settings=_settings(tmp_path, enabled=True))
-        with caplog.at_level(logging.ERROR, logger="ravn.reflex"):
+        with caplog.at_level(logging.WARNING, logger="ravn.reflex"):
             assert broker._retrieval_reflex_injector() is None
-        assert any("no base_url" in r.getMessage() for r in caplog.records)
+        assert any("no Mimir HTTP endpoint" in r.getMessage() for r in caplog.records)
+
+    async def test_base_url_derived_from_volundr_api_url(self, tmp_path):
+        from ravn.reflex import _resolve_base_url
+
+        settings = _settings(tmp_path, enabled=True)
+        settings.volundr_api_url = "http://platform:8080"
+        assert _resolve_base_url(settings, settings.reflex) == "http://platform:8080/api/v1"
 
     async def test_enabled_reflex_prefixes_pointer_block(self, tmp_path):
         broker = Broker(settings=_settings(tmp_path))

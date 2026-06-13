@@ -226,11 +226,12 @@ class ReflexConfig(BaseModel):
 
     When enabled, user messages forwarded to the CLI agent are scanned for
     known Mímir entities and prefixed with compact pointers (never page
-    bodies). Disabled by default so existing sessions are unaffected.
+    bodies). Enabled by default; the Mímir base URL is derived from
+    ``volundr_api_url`` when not set explicitly.
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable retrieval reflex pointer injection on forwarded user messages.",
     )
     base_url: str = Field(
