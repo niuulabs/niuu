@@ -1061,11 +1061,23 @@ def _filter_tools(
 
 # Maps documented group aliases to actual tool name prefixes.
 # Needed because some groups don't use prefix_ naming (e.g. "file" → "read_file", not "file_read").
+_MIMIR_TOOL_NAMES: list[str] = [
+    "mimir_ingest",
+    "mimir_query",
+    "mimir_read",
+    "mimir_read_source",
+    "mimir_write",
+    "mimir_publish_files",
+    "mimir_search",
+    "mimir_lint",
+    "mimir_list",
+]
+
 _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
     "file": ["read_file", "write_file", "edit_file", "glob_search", "grep_search"],
     "web": ["web_fetch", "web_search"],
     "terminal": ["terminal", "bash"],
-    "mimir": ["mimir_read", "mimir_write", "mimir_search", "mimir_list", "mimir_ingest"],
+    "mimir": _MIMIR_TOOL_NAMES,
     "cascade": ["cascade_delegate", "cascade_broadcast"],
     "volundr": ["volundr_session", "volundr_git"],
     "ravn": ["persona_validate", "persona_save", "skill_list", "skill_run", "skill_manage"],
@@ -1092,10 +1104,14 @@ def _groups_for_persona(persona_config: Any) -> list[str]:
     """
     from ravn.adapters.tools.builtin_registry import BUILTIN_TOOLS  # noqa: PLC0415
 
-    allowed: set[str] = _expand_allowed_tools(set(persona_config.allowed_tools or []))
+    raw_allowed: set[str] = set(persona_config.allowed_tools or [])
+    allowed: set[str] = _expand_allowed_tools(raw_allowed)
     forbidden: set[str] = _expand_allowed_tools(set(persona_config.forbidden_tools or []))
 
     groups: set[str] = {"core"}
+    if allowed & set(_MIMIR_TOOL_NAMES):
+        groups.add("mimir")
+
     for key, tool_def in BUILTIN_TOOLS.items():
         # Use the same prefix-match logic as _filter_tools
         if any(key == a or key.startswith(a + "_") for a in allowed):

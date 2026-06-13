@@ -624,6 +624,37 @@ class TestFilterTools:
         result = _filter_tools(tools, settings, persona)
         assert [t.name for t in result] == ["a"]
 
+    def test_mimir_alias_expands_to_dynamic_tools(self, settings: Settings) -> None:
+        from ravn.cli.commands import _filter_tools, _groups_for_persona
+
+        tools = [
+            self._make_tool("mimir_query"),
+            self._make_tool("mimir_read_source"),
+            self._make_tool("mimir_lint"),
+            self._make_tool("web_fetch"),
+        ]
+        persona = MagicMock(allowed_tools=["mimir"], forbidden_tools=None)
+
+        assert "mimir" in _groups_for_persona(persona)
+        result = _filter_tools(tools, settings, persona)
+        assert [t.name for t in result] == [
+            "mimir_query",
+            "mimir_read_source",
+            "mimir_lint",
+        ]
+
+    def test_explicit_mimir_tools_enable_dynamic_group(self) -> None:
+        from ravn.cli.commands import _groups_for_persona
+
+        persona = MagicMock(
+            allowed_tools=["mimir_query", "mimir_write", "web_search"],
+            forbidden_tools=None,
+        )
+
+        groups = _groups_for_persona(persona)
+        assert "mimir" in groups
+        assert "extended" in groups
+
 
 # ---------------------------------------------------------------------------
 # _build_hooks
