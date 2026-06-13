@@ -708,6 +708,14 @@ class TestBuiltinSpecialistContracts:
         assert cfg.produces.event_type == "dream.completed"
         assert "pages_updated" in cfg.produces.schema
 
+    def test_mimir_warden_curates_raw_sources(self) -> None:
+        cfg = self._load("mimir-warden")
+        prompt = cfg.system_prompt_template
+        assert "Never complete a raw-source task with prose alone" in prompt
+        assert "mimir_write" in cfg.allowed_tools
+        assert "<!-- sources: <source_id> -->" in prompt
+        assert "pages_written" in cfg.produces.schema
+
     def test_all_specialist_personas_have_system_prompts(self) -> None:
         specialist_names = [
             "reviewer",
