@@ -46,6 +46,7 @@ test = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
 ]
 rabbitmq = [
     "aio-pika>=9.6.2",
@@ -86,6 +87,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.15,<0.16",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
     "cryptography>=48.0.0",
     "textual>=8.2.7",
     "typer>=0.26.7",
