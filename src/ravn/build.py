@@ -91,7 +91,7 @@ def linux_arm64() -> bool:
 def nuitka_toolchain_flags() -> list[str]:
     flags: list[str] = []
     if linux_arm64():
-        flags.extend(["--clang", "--lto=yes", "--static-libpython=no"])
+        flags.extend(["--clang", "--lto=no", "--static-libpython=no"])
 
     extra_args = os.environ.get("NIUU_NUITKA_EXTRA_ARGS")
     if extra_args:
