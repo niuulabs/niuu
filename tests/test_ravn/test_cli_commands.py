@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.cli.commands import (
+    _build_executor,
     _chat,
     _dedupe_preserve_order,
     _derive_capabilities,
@@ -317,6 +318,23 @@ class TestCliTransportHelpers:
             assert _uses_cli_transport_runtime() is True
         with patch.dict(os.environ, {"SKULD__TRANSPORT_ADAPTER": ""}, clear=False):
             assert _uses_cli_transport_runtime() is False
+
+    def test_build_executor_passes_codex_ws_yolo_transport_kwargs(self) -> None:
+        env = {
+            "SKULD__TRANSPORT_ADAPTER": "skuld.transports.codex_ws.CodexWebSocketTransport",
+            "SKULD__SKIP_PERMISSIONS": "true",
+            "SKULD__APPROVAL_POLICY": "never",
+            "SKULD__SANDBOX": "danger-full-access",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            executor = _build_executor()
+
+        assert executor._transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport"
+        assert executor._transport_kwargs == {
+            "skip_permissions": True,
+            "approval_policy": "never",
+            "sandbox": "danger-full-access",
+        }
 
     def test_uses_cli_transport_executor_prefers_persona_executor(self) -> None:
         persona = PersonaConfig(

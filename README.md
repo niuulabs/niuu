@@ -192,7 +192,7 @@ GIT__GITHUB__TOKEN=ghp_xxxx
 EVENT_PIPELINE__OTEL__ENABLED=true
 ```
 
-See the [configuration reference](https://niuulabs.github.io/volundr/configuration/) for all options.
+See the [configuration reference](https://niuulabs.github.io/volundr/reference/configuration/) for all options.
 
 ## Testing
 
@@ -224,7 +224,7 @@ helm upgrade niuu ./charts/niuu -n niuu
 
 You can still deploy individual component charts when you need to, but the default platform deployment path should be the `niuu` chart.
 
-See the [deployment guide](https://niuulabs.github.io/volundr/deployment/) for Helm values, migrations, and production setup.
+See the [deployment guide](https://niuulabs.github.io/volundr/operations/kubernetes-deployment/) for Helm values, migrations, and production setup.
 
 ## Tech Stack
 
