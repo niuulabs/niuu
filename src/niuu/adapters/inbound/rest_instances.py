@@ -1303,8 +1303,13 @@ async def _load_ravn_wardens(
     instance: RegisteredInstance,
     request: Request,
 ) -> list[dict[str, Any]]:
+    base_url = str(
+        instance.config.get("discovery_base_url")
+        or instance.config.get("internal_base_url")
+        or instance.base_url
+    )
     try:
-        remote_url = _ravn_wardens_url(instance.base_url)
+        remote_url = _ravn_wardens_url(base_url)
     except ValueError:
         return []
 
