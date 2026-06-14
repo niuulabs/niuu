@@ -162,6 +162,23 @@ describe('drawEdges', () => {
     expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
   });
 
+  it('ignores self-loop edges from stale discovery snapshots', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [
+        {
+          id: 'edge:cluster-vk:cluster-vk',
+          sourceId: 'cluster-vk',
+          targetId: 'cluster-vk',
+          kind: 'soft',
+        },
+      ],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
+    expect(ctx.bezierCurveTo).not.toHaveBeenCalled();
+  });
+
   it('animates dashed-anim edges with lineDashOffset', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {

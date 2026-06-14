@@ -151,3 +151,33 @@ async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
     assert [entity.id for entity in result.entities] == ["cluster-valhalla"]
     assert result.entities[0].cluster == "valhalla"
     assert json.loads(json.dumps(result.events))[0]["id"] == "event-1"
+
+
+@pytest.mark.asyncio
+async def test_topology_from_remote_cluster_does_not_emit_self_loop() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="cluster-noatun",
+                    kind="cluster",
+                    name="noatun",
+                    cluster="noatun",
+                    status="healthy",
+                    source_kind="remote-observatory",
+                )
+            ],
+            edges=[
+                {
+                    "id": "edge:cluster-noatun:cluster-noatun",
+                    "sourceId": "cluster-noatun",
+                    "targetId": "cluster-noatun",
+                    "kind": "soft",
+                }
+            ],
+        )
+    )
+
+    cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-noatun")
+    assert cluster["parentId"] is None
+    assert not any(edge["sourceId"] == edge["targetId"] for edge in snapshot["edges"])

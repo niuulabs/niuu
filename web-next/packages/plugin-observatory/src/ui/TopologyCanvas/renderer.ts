@@ -632,6 +632,7 @@ function drawEdge(
   positions: Map<string, NodePosition>,
   now: number,
 ): void {
+  if (edge.sourceId === edge.targetId) return;
   const src = positions.get(edge.sourceId);
   const dst = positions.get(edge.targetId);
   if (!src || !dst) return;

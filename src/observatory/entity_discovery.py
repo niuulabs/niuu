@@ -505,9 +505,12 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
         elif entity.cluster:
             parent_id = parent_id or cluster_id
 
+        if parent_id == entity.id:
+            parent_id = None
+
         node = _entity_to_node(entity, parent_id=parent_id)
         nodes[node["id"]] = node
-        if parent_id:
+        if parent_id and parent_id != node["id"]:
             edge_id = f"edge:{parent_id}:{node['id']}"
             edges.setdefault(
                 edge_id,
@@ -515,7 +518,8 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
             )
 
     for edge in result.edges:
-        edges[edge["id"]] = edge
+        if edge["sourceId"] != edge["targetId"]:
+            edges[edge["id"]] = edge
 
     return {
         "timestamp": _iso(),
