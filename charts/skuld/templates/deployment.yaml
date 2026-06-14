@@ -114,6 +114,7 @@ spec:
               # shared home so existing Codex login state remains available.
               if [ "$DEST_DIR" = ".codex" ]; then
                 mkdir -p "$CODEX_STATE_DIR"
+                chown "$TARGET_UID:$TARGET_GID" "$(dirname "$CODEX_STATE_DIR")" 2>/dev/null || true
                 for name in auth.json config.toml version.json models_cache.json; do
                   if [ -f "$HOME_DIR/$DEST_DIR/$name" ]; then
                     cp -f "$HOME_DIR/$DEST_DIR/$name" "$CODEX_STATE_DIR/$name"

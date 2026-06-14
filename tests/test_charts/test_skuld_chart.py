@@ -237,6 +237,7 @@ class TestDeploymentTemplate:
             '(include "skuld.workspacePath" .) }}"'
         ) in deployment_yaml
         assert 'if [ "$DEST_DIR" = ".codex" ]; then' in deployment_yaml
+        assert 'chown "$TARGET_UID:$TARGET_GID" "$(dirname "$CODEX_STATE_DIR")"' in deployment_yaml
         assert "for name in auth.json config.toml version.json models_cache.json" in deployment_yaml
         assert 'cp -f "$HOME_DIR/$DEST_DIR/$name" "$CODEX_STATE_DIR/$name"' in deployment_yaml
         assert "sqlite" not in deployment_yaml.split("Codex auth/config seeded")[0].split(
