@@ -238,6 +238,17 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 "workload_type": getattr(session, "workload_type", "session"),
                 "owner_id": str(session.owner_id) if session.owner_id else None,
                 "tenant_id": str(session.tenant_id) if session.tenant_id else None,
+                # Include the orthogonal activity signal so a SINGLE session_updated event carries
+                # BOTH the running/idle flag AND the metrics (tokens/last_active). Previously the
+                # running flag travelled only on session_activity events and the numbers only on
+                # session_updated, so no streamed event ever had both — a polling client had to
+                # merge two event types or render a stale half. (Structured enum, not piped into the
+                # legacy `activity` keyword field, so existing keyword-whitelist clients are
+                # unaffected; new clients read activity_state directly.)
+                "activity_state": (
+                    session.activity_state.value if session.activity_state else None
+                ),
+                "activity_metadata": session.activity_metadata,
             },
             timestamp=datetime.now(UTC),
         )
