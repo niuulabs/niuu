@@ -26,7 +26,8 @@ class KubernetesWardenDiscoveryAdapter:
     def __init__(
         self,
         namespace: str = "",
-        label_selector: str = "niuu.world/kind=warden",
+        label_selector: str = "",
+        required_labels: dict[str, str] | None = None,
         kubeconfig: str = "",
         context: str = "",
         in_cluster: bool | None = None,
@@ -34,6 +35,7 @@ class KubernetesWardenDiscoveryAdapter:
     ) -> None:
         self._namespace = namespace
         self._label_selector = label_selector
+        self._required_labels = required_labels or {"niuu.world/kind": "warden"}
         self._kubeconfig = kubeconfig
         self._context = context
         self._in_cluster = in_cluster
@@ -52,7 +54,11 @@ class KubernetesWardenDiscoveryAdapter:
             return []
 
         items = getattr(response, "items", response if isinstance(response, list) else [])
-        wardens = [self._deployment_to_warden(item) for item in items]
+        wardens = [
+            self._deployment_to_warden(item)
+            for item in items
+            if self._deployment_matches(item)
+        ]
         return [warden for warden in wardens if warden is not None]
 
     def _build_apps_api(self) -> Any | None:
@@ -146,6 +152,7 @@ class KubernetesWardenDiscoveryAdapter:
                 "namespace": namespace,
                 "discovery_source": "kubernetes",
                 "label_selector": self._label_selector,
+                "required_labels": self._required_labels,
                 "ravn_instance": self._value(merged_labels, "niuu.world/ravn-instance"),
                 "mimir_instance": mimir_instance,
                 "mimir_mount": mimir_mount,
@@ -239,6 +246,14 @@ class KubernetesWardenDiscoveryAdapter:
                 if name and value is not None:
                     env[name] = str(value)
         return env
+
+    def _deployment_matches(self, deployment: Any) -> bool:
+        metadata = getattr(deployment, "metadata", None)
+        deployment_labels = getattr(metadata, "labels", None) or {}
+        pod_template = getattr(getattr(deployment, "spec", None), "template", None)
+        pod_labels = getattr(getattr(pod_template, "metadata", None), "labels", None) or {}
+        labels = {**pod_labels, **deployment_labels}
+        return all(labels.get(key) == value for key, value in self._required_labels.items())
 
     def _image(self, pod_template: Any) -> str:
         pod_spec = getattr(pod_template, "spec", None)

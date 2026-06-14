@@ -15,5 +15,11 @@ spec:
       port: {{ .Values.service.port | default 80 }}
       targetPort: {{ if .Values.envoy.enabled }}envoy{{ else }}http{{ end }}
       protocol: TCP
+    {{- range .Values.service.extraPorts }}
+    - name: {{ .name | quote }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort | quote }}
+      protocol: {{ .protocol | default "TCP" }}
+    {{- end }}
   selector:
     {{- include "ravn.selectorLabels" . | nindent 4 }}
