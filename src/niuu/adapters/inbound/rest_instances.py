@@ -282,7 +282,7 @@ def _ensure_deployment_cluster_node(
             "layoutHints": {
                 "mode": "pack",
                 "scope": "world",
-                "pack_group": "deployment-cluster",
+                "packGroup": "deployment-cluster",
                 "order": 30,
             },
         }
@@ -367,7 +367,7 @@ def _overlay_instance_nodes(
             "layoutHints": {
                 "mode": "pack",
                 "scope": "node",
-                "pack_group": svc_type,
+                "packGroup": svc_type,
                 "order": 0 if instance.is_default else 10 + kind_index,
             },
         }
@@ -490,7 +490,7 @@ def _overlay_ravn_warden_nodes(
                 "layoutHints": {
                     "mode": "pack",
                     "scope": "node",
-                    "pack_group": "ravn",
+                    "packGroup": "ravn",
                     "order": 20 + index,
                 },
             }

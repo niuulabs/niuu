@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 LayoutMode = Literal["manual", "orbit", "pack", "force", "hybrid"]
-LayoutScope = Literal["world", "realm", "cluster", "group", "node"]
+LayoutScope = Literal["world", "realm", "cluster", "namespace", "group", "node"]
 LayoutAxis = Literal["x", "y"]
 EdgeKind = Literal["solid", "dashed-anim", "dashed-long", "soft", "run"]
 
@@ -33,9 +33,9 @@ class ObservatoryLayoutHints(TypedDict, total=False):
     order: int
     ring: int
     radius: float
-    pack_group: str
-    cluster_role: str
-    axis_lock: list[LayoutAxis]
+    packGroup: str
+    clusterRole: str
+    axisLock: list[LayoutAxis]
     note: str
 
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 8,
-    "updatedAt": "2026-05-14T12:00:00Z",
+    "version": 9,
+    "updatedAt": "2026-06-14T00:00:00Z",
     "types": [
         {
             "id": "realm",
@@ -50,13 +50,49 @@ REGISTRY: dict[str, object] = {
             "color": "ice-200",
             "size": 14,
             "border": "dashed",
-            "canContain": ["service", "run", "ting", "bifrost", "volundr", "valkyrie", "mimir"],
+            "canContain": [
+                "namespace",
+                "service",
+                "run",
+                "ting",
+                "bifrost",
+                "volundr",
+                "valkyrie",
+                "mimir",
+            ],
             "parentTypes": ["realm"],
             "category": "topology",
             "description": "A runtime cluster nested inside a realm.",
             "fields": [
                 {"key": "purpose", "label": "Purpose", "type": "string"},
                 {"key": "nodes", "label": "Nodes", "type": "number"},
+            ],
+        },
+        {
+            "id": "namespace",
+            "label": "Namespace",
+            "rune": "ᚾ",
+            "icon": "boxes",
+            "shape": "ring-dashed",
+            "color": "ice-300",
+            "size": 12,
+            "border": "dashed",
+            "canContain": [
+                "service",
+                "run",
+                "ting",
+                "bifrost",
+                "volundr",
+                "ravn_long",
+                "valkyrie",
+                "mimir",
+            ],
+            "parentTypes": ["cluster"],
+            "category": "topology",
+            "description": "Kubernetes namespace grouping runtime workloads.",
+            "fields": [
+                {"key": "namespace", "label": "Namespace", "type": "string"},
+                {"key": "clusterName", "label": "Cluster", "type": "string"},
             ],
         },
         {

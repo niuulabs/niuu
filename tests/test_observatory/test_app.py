@@ -140,8 +140,9 @@ class TestObservatoryApp:
             response = client.get("/api/v1/observatory/registry")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["version"] == 8
+            assert payload["version"] == 9
             assert any(item["id"] == "mimir" for item in payload["types"])
+            assert any(item["id"] == "namespace" for item in payload["types"])
 
     def test_registry_put_persists_changes(self) -> None:
         with _make_client() as client:

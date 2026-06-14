@@ -23,6 +23,7 @@ _KNOWN_TYPE_IDS = {
     "bifrost",
     "cluster",
     "mimir",
+    "namespace",
     "ravn_long",
     "service",
     "skuld",
@@ -480,7 +481,7 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
                     "status": "healthy",
                     "sourceKind": "discovery",
                     "clusterName": entity.cluster,
-                    "layoutHints": {"mode": "pack", "scope": "world", "pack_group": "cluster"},
+                    "layoutHints": {"mode": "pack", "scope": "world", "packGroup": "cluster"},
                 },
             )
         namespace_id = _namespace_id(entity.cluster, entity.namespace)
@@ -490,14 +491,14 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
                 namespace_id,
                 {
                     "id": namespace_id,
-                    "typeId": "service",
+                    "typeId": "namespace",
                     "label": entity.namespace,
                     "parentId": cluster_id,
                     "status": "healthy",
                     "sourceKind": "kubernetes:namespace",
                     "clusterName": entity.cluster,
                     "namespace": entity.namespace,
-                    "layoutHints": {"mode": "pack", "scope": "cluster", "pack_group": "namespace"},
+                    "layoutHints": {"mode": "pack", "scope": "cluster", "packGroup": "namespace"},
                 },
             )
             parent_id = parent_id or namespace_id
@@ -538,7 +539,7 @@ def _entity_to_node(entity: DiscoveredEntity, *, parent_id: str | None) -> dict[
         "namespace": entity.namespace,
         "labels": entity.labels,
         "endpoints": entity.endpoints,
-        "layoutHints": {"mode": "pack", "scope": "node", "pack_group": entity.kind},
+        "layoutHints": {"mode": "pack", "scope": "node", "packGroup": entity.kind},
     }
     node.update(entity.metadata)
     return node
@@ -574,6 +575,7 @@ _NODE_ENTITY_KEYS = {
     "sourceKind",
     "sourceId",
     "endpoints",
+    "layoutHints",
 }
 
 

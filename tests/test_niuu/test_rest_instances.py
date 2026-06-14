@@ -440,7 +440,7 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
     assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
     assert not any(node["id"] == "mimir-well" for node in payload["nodes"])
     assert any(
-        node.get("layoutHints", {}).get("pack_group") == "volundr" for node in payload["nodes"]
+        node.get("layoutHints", {}).get("packGroup") == "volundr" for node in payload["nodes"]
     )
     assert not any(node["id"].startswith("run-") for node in payload["nodes"])
     assert not any(edge.get("label") for edge in payload["edges"])

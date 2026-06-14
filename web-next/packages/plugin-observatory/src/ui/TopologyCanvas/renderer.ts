@@ -59,6 +59,7 @@ export function nodeColour(typeId: string): readonly [number, number, number] {
       return C.model;
     case 'service':
     case 'run':
+    case 'namespace':
       return C.ice;
     case 'printer':
     case 'vaettir':
@@ -158,7 +159,7 @@ export function structureLabel(node: TopologyNode): string {
 
 function drawStructureGlyph(
   ctx: CanvasRenderingContext2D,
-  typeId: 'realm' | 'cluster' | 'host',
+  typeId: 'realm' | 'cluster' | 'namespace' | 'host',
   x: number,
   y: number,
 ): void {
@@ -205,6 +206,21 @@ function drawStructureGlyph(
         ctx.arc(point.x, point.y, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
+      break;
+    }
+    case 'namespace': {
+      ctx.strokeStyle = rgba(C.ice, 0.68);
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.roundRect(x - 5, y - 4, 10, 8, 2);
+      ctx.stroke();
+      ctx.strokeStyle = rgba(C.indigo, 0.56);
+      ctx.beginPath();
+      ctx.moveTo(x - 2.8, y - 1.2);
+      ctx.lineTo(x + 2.8, y - 1.2);
+      ctx.moveTo(x - 2.8, y + 1.6);
+      ctx.lineTo(x + 2.8, y + 1.6);
+      ctx.stroke();
       break;
     }
     case 'host': {
@@ -264,7 +280,7 @@ function drawStructureLabel(
   const textX = startX + glyphWidth + glyphGap;
 
   ctx.save();
-  drawStructureGlyph(ctx, node.typeId as 'realm' | 'cluster' | 'host', glyphX, y - 4);
+  drawStructureGlyph(ctx, node.typeId as 'realm' | 'cluster' | 'namespace' | 'host', glyphX, y - 4);
   ctx.fillStyle = color;
   ctx.font = font;
   ctx.textAlign = 'left';
@@ -286,6 +302,7 @@ export function getStructureLabelBounds(
   if (
     node.typeId !== 'realm' &&
     node.typeId !== 'cluster' &&
+    node.typeId !== 'namespace' &&
     node.typeId !== 'host' &&
     node.typeId !== 'run'
   ) {
@@ -316,10 +333,16 @@ export function getStructureLabelBounds(
   const radius =
     node.typeId === 'realm' || node.typeId === 'cluster'
       ? (pos.zoneRadius ?? zoneRadius(node.typeId))
-      : Math.max(
-          (pos.containerWidth ?? HOST_HALF_W * 2) / 2,
-          (pos.containerHeight ?? HOST_HALF_H * 2) / 2,
-        );
+      : node.typeId === 'namespace'
+        ? Math.max(
+            (pos.containerWidth ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
+            (pos.containerHeight ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
+            LAYOUT.NAMESPACE_INNER_RADIUS,
+          )
+        : Math.max(
+            (pos.containerWidth ?? HOST_HALF_W * 2) / 2,
+            (pos.containerHeight ?? HOST_HALF_H * 2) / 2,
+          );
   const labelY = pos.y - radius - (node.typeId === 'realm' ? 8 : 4);
   const fontHeight = node.typeId === 'realm' ? 13 : 10;
 
@@ -356,13 +379,20 @@ export function drawZones(
   positions: Map<string, NodePosition>,
   now: number,
 ): void {
-  // Draw realms first (larger), then clusters on top.
-  for (const typeId of ['realm', 'cluster'] as const) {
+  // Draw larger structural groups first, then smaller containers on top.
+  for (const typeId of ['realm', 'cluster', 'namespace'] as const) {
     for (const node of nodes) {
       if (node.typeId !== typeId) continue;
       const pos = positions.get(node.id);
       if (!pos) continue;
-      const r = pos.zoneRadius ?? zoneRadius(typeId);
+      const r =
+        typeId === 'namespace'
+          ? Math.max(
+              (pos.containerWidth ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
+              (pos.containerHeight ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
+              LAYOUT.NAMESPACE_INNER_RADIUS,
+            )
+          : (pos.zoneRadius ?? zoneRadius(typeId));
       const { x: cx, y: cy } = pos;
 
       if (typeId === 'realm') {
@@ -387,7 +417,7 @@ export function drawZones(
           color: rgba(C.ice, 0.78),
           uppercase: true,
         });
-      } else {
+      } else if (typeId === 'cluster') {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
         g.addColorStop(0, 'rgba(40,58,88,0.22)');
         g.addColorStop(1, 'rgba(20,28,48,0)');
@@ -407,6 +437,27 @@ export function drawZones(
         drawStructureLabel(ctx, node, cx, cy - r - 4, {
           font: '10px "JetBrains Mono", monospace',
           color: rgba(C.ice, 0.58),
+        });
+      } else {
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0, 'rgba(56,82,118,0.18)');
+        g.addColorStop(1, 'rgba(18,26,40,0.02)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = rgba(C.ice, 0.2);
+        ctx.lineWidth = 0.85;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        drawStructureLabel(ctx, node, cx, cy - r - 4, {
+          font: '10px "JetBrains Mono", monospace',
+          color: rgba(C.ice, 0.62),
         });
       }
     }
@@ -1009,7 +1060,7 @@ export function drawNode(
   hovered: boolean,
 ): void {
   if (node.typeId === 'mimir') return; // handled by drawMimir separately
-  if (node.typeId === 'realm' || node.typeId === 'cluster') return;
+  if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'namespace') return;
 
   if (node.typeId === 'host') {
     drawHost(ctx, node, pos, hovered);

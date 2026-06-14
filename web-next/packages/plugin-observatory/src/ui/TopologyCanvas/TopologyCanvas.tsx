@@ -241,7 +241,14 @@ export function TopologyCanvas({
     if (!topo) return null;
 
     for (const node of topo.nodes) {
-      if (node.typeId !== 'realm' && node.typeId !== 'cluster' && node.typeId !== 'run') continue;
+      if (
+        node.typeId !== 'realm' &&
+        node.typeId !== 'cluster' &&
+        node.typeId !== 'namespace' &&
+        node.typeId !== 'run'
+      ) {
+        continue;
+      }
       const p = pos.get(node.id);
       if (!p) continue;
       const bounds = getStructureLabelBounds(node, p);
@@ -257,8 +264,8 @@ export function TopologyCanvas({
     }
 
     const orderedNodes = [...topo.nodes].sort((a, b) => {
-      const aContainer = a.typeId === 'host';
-      const bContainer = b.typeId === 'host';
+      const aContainer = a.typeId === 'host' || a.typeId === 'namespace';
+      const bContainer = b.typeId === 'host' || b.typeId === 'namespace';
       if (aContainer && !bContainer) return 1;
       if (bContainer && !aContainer) return -1;
       return 0;
@@ -267,10 +274,12 @@ export function TopologyCanvas({
     for (const node of orderedNodes) {
       const p = pos.get(node.id);
       if (!p) continue;
-      if (node.typeId === 'host') {
+      if (node.typeId === 'host' || node.typeId === 'namespace') {
+        const fallbackRadius = node.typeId === 'namespace' ? HIT_RADIUS.namespace : HOST_HALF_W;
         const containerRadius = Math.max(
           (p.containerWidth ?? HOST_HALF_W * 2) / 2,
           (p.containerHeight ?? HOST_HALF_H * 2) / 2,
+          fallbackRadius ?? HOST_HALF_W,
         );
         if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < containerRadius * containerRadius) return node.id;
       } else {

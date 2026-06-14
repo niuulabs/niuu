@@ -75,9 +75,15 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
         "k8s:ymir:volundr:deployment:niuu-ravn",
     }
     ravn = next(node for node in snapshot["nodes"] if node["id"].endswith("niuu-ravn"))
+    namespace = next(node for node in snapshot["nodes"] if node["id"] == "namespace-ymir-volundr")
+    cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-ymir")
     assert ravn["typeId"] == "ravn_long"
     assert ravn["clusterName"] == "ymir"
     assert ravn["namespace"] == "volundr"
+    assert ravn["layoutHints"]["packGroup"] == "ravn_long"
+    assert namespace["typeId"] == "namespace"
+    assert namespace["layoutHints"]["packGroup"] == "namespace"
+    assert cluster["layoutHints"]["packGroup"] == "cluster"
 
 
 @pytest.mark.asyncio
