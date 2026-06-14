@@ -680,6 +680,55 @@ export function edgeDrawPriority(edge: TopologyEdge): number {
   }
 }
 
+export function crossContainerRoutePoints(
+  start: NodePosition,
+  end: NodePosition,
+  ancestor: NodePosition,
+  edge: TopologyEdge,
+): Array<{ x: number; y: number }> {
+  const vx = end.x - start.x;
+  const vy = end.y - start.y;
+  const length = Math.hypot(vx, vy) || 1;
+  const nx = -vy / length;
+  const ny = vx / length;
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  let awayX = midX - ancestor.x;
+  let awayY = midY - ancestor.y;
+  let awayLen = Math.hypot(awayX, awayY);
+  const hashSign = edgeHash(edge.id) % 2 === 0 ? 1 : -1;
+
+  if (awayLen < 1) {
+    awayX = nx * hashSign;
+    awayY = ny * hashSign;
+    awayLen = 1;
+  }
+
+  const lane = edgeRelationLane(edge);
+  const laneSign = lane === 0 ? hashSign : Math.sign(lane);
+  const bow = Math.min(96, Math.max(34, length * 0.22));
+  const laneOffset = Math.min(28, Math.abs(lane) * 5) * laneSign;
+  const offsetX = (awayX / awayLen) * bow + nx * laneOffset;
+  const offsetY = (awayY / awayLen) * bow + ny * laneOffset;
+
+  return [
+    start,
+    {
+      x: start.x + vx * 0.26 + offsetX * 0.72,
+      y: start.y + vy * 0.26 + offsetY * 0.72,
+    },
+    {
+      x: midX + offsetX,
+      y: midY + offsetY,
+    },
+    {
+      x: start.x + vx * 0.74 + offsetX * 0.72,
+      y: start.y + vy * 0.74 + offsetY * 0.72,
+    },
+    end,
+  ];
+}
+
 function drawEdge(
   ctx: CanvasRenderingContext2D,
   edge: TopologyEdge,
@@ -717,6 +766,8 @@ function drawEdge(
   const sign = edgeHash(edge.id) % 2 === 0 ? 1 : -1;
   const ancestorNode = sharedAncestor(srcNode, dstNode, nodeById);
   const sharedParentNode = srcNode?.parentId ? nodeById.get(srcNode.parentId) : undefined;
+  const srcParentNode = srcNode?.parentId ? nodeById.get(srcNode.parentId) : undefined;
+  const dstParentNode = dstNode?.parentId ? nodeById.get(dstNode.parentId) : undefined;
   const sameParent =
     srcNode?.parentId != null &&
     srcNode.parentId === dstNode?.parentId &&
@@ -725,6 +776,18 @@ function drawEdge(
   const sameContainerEdge =
     sameParent &&
     (sharedParentNode?.typeId === 'cluster' || sharedParentNode?.typeId === 'namespace') &&
+    (edge.kind === 'soft' || edge.kind === 'solid' || Boolean(edge.relationType));
+  const crossContainerEdge =
+    Boolean(
+      ancestorNode &&
+      srcParentNode &&
+      dstParentNode &&
+      srcParentNode.id !== dstParentNode.id &&
+      (srcParentNode.typeId === 'namespace' ||
+        dstParentNode.typeId === 'namespace' ||
+        srcParentNode.typeId === 'cluster' ||
+        dstParentNode.typeId === 'cluster'),
+    ) &&
     (edge.kind === 'soft' || edge.kind === 'solid' || Boolean(edge.relationType));
   const offset = Math.min(
     profile.bend *
@@ -748,6 +811,7 @@ function drawEdge(
       cy = midY + (awayY / awayLen) * outward;
     }
   }
+  const ancestorPos = ancestorNode ? positions.get(ancestorNode.id) : undefined;
 
   const edgeLine = line<{ x: number; y: number }>()
     .x((point) => point.x)
@@ -755,16 +819,14 @@ function drawEdge(
     .curve(
       sameRunFlow
         ? curveLinear
-        : sameContainerEdge
+        : sameContainerEdge || crossContainerEdge
           ? curveCatmullRom.alpha(0.5)
           : ancestorNode && !directParentChild && !sameRunFlow
             ? curveBundle.beta(profile.bundleStrength)
             : curveCatmullRom.alpha(0.72),
     )
     .context(ctx);
-  const points: Array<{ x: number; y: number }> = [start];
-
-  const ancestorPos = ancestorNode ? positions.get(ancestorNode.id) : undefined;
+  let points: Array<{ x: number; y: number }> = [start];
   if (sameRunFlow) {
     points.push(end);
   } else if (sameContainerEdge) {
@@ -783,6 +845,8 @@ function drawEdge(
       },
     );
     points.push(end);
+  } else if (crossContainerEdge && ancestorPos) {
+    points = crossContainerRoutePoints(start, end, ancestorPos, edge);
   } else if (ancestorPos && !directParentChild) {
     points.push(bundleWaypoint(start, end, ancestorPos, 0.34));
     points.push({

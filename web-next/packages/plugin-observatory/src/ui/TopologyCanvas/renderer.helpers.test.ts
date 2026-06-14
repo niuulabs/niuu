@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TopologyNode } from '../../domain';
 import {
   bundleWaypoint,
+  crossContainerRoutePoints,
   edgeDrawPriority,
   edgeHash,
   edgeProfile,
@@ -173,5 +174,25 @@ describe('renderer helpers', () => {
         relationType: 'reads',
       }),
     );
+  });
+
+  it('routes concrete cross-container relations around the shared container', () => {
+    const points = crossContainerRoutePoints(
+      { x: -80, y: -20 },
+      { x: 80, y: 20 },
+      { x: 0, y: 0 },
+      {
+        id: 'edge:volundr:session',
+        sourceId: 'runtime:noatun:volundr:volundr:volundr',
+        targetId: 'runtime:noatun:skuld:skuld:session',
+        kind: 'solid',
+        relationType: 'manages',
+      },
+    );
+
+    expect(points).toHaveLength(5);
+    expect(points[0]).toEqual({ x: -80, y: -20 });
+    expect(points[4]).toEqual({ x: 80, y: 20 });
+    expect(Math.hypot(points[2]!.x, points[2]!.y)).toBeGreaterThan(20);
   });
 });
