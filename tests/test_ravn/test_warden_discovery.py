@@ -9,7 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ravn.adapters.warden_discovery.http_ravn import HttpRavnWardenDiscoveryAdapter
-from ravn.adapters.warden_discovery.kubernetes import KubernetesWardenDiscoveryAdapter
+from ravn.adapters.warden_discovery.kubernetes import (
+    KubernetesWardenDiscoveryAdapter,
+    _objectify,
+)
 from ravn.adapters.warden_discovery.local_host import LocalHostWardenDiscoveryAdapter
 from ravn.adapters.warden_discovery.spec import WardenSpecDiscoveryAdapter
 from ravn.api import create_app
@@ -138,6 +141,54 @@ async def test_kubernetes_adapter_converts_labeled_deployment_to_warden() -> Non
     assert wardens[0].mimir.write_mount == "shared"
     assert wardens[0].schedules.dream_cycle_cron_expression == "*/15 * * * *"
     assert wardens[0].supervisor.observation.status == "running"
+
+
+def test_kubernetes_adapter_converts_rest_deployment_payload() -> None:
+    adapter = KubernetesWardenDiscoveryAdapter(namespace="volundr")
+    deployment = _objectify(
+        {
+            "metadata": {
+                "name": "mimir-shared-warden-agent",
+                "namespace": "volundr",
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "niuu.world/kind": "warden",
+                            "niuu.world/warden-id": "mimir-shared-warden",
+                            "niuu.world/mimir-mount": "shared",
+                        },
+                        "annotations": {
+                            "niuu.world/warden-name": "Mimir Shared Warden",
+                        },
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "image": "ghcr.io/niuulabs/agent:dev",
+                                "env": [
+                                    {"name": "RAVN_PERSONA", "value": "mimir-warden"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            },
+            "status": {
+                "replicas": 1,
+                "readyReplicas": 1,
+                "availableReplicas": 1,
+            },
+        }
+    )
+
+    warden = adapter._deployment_to_warden(deployment)
+
+    assert warden is not None
+    assert warden.id == "mimir-shared-warden"
+    assert warden.supervisor.observation.status == "running"
+    assert warden.supervisor.observation.fields[3].value == "1"
 
 
 class _StaticDiscovery:

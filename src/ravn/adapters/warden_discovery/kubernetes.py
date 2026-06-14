@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+import httpx
 
 from ravn.warden.models import (
     WardenFeatures,
@@ -18,6 +24,8 @@ from ravn.warden.models import (
 )
 
 logger = logging.getLogger(__name__)
+_SERVICE_ACCOUNT_ROOT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
 class KubernetesWardenDiscoveryAdapter:
@@ -45,15 +53,15 @@ class KubernetesWardenDiscoveryAdapter:
         """Return wardens represented by Kubernetes deployments."""
         apps_api = self._apps_api or self._build_apps_api()
         if apps_api is None:
-            return []
+            items = await self._list_incluster_deployments()
+        else:
+            try:
+                response = self._list_deployments(apps_api)
+            except Exception as exc:  # pragma: no cover - depends on cluster client
+                logger.warning("Unable to discover Kubernetes wardens: %s", exc)
+                return []
+            items = getattr(response, "items", response if isinstance(response, list) else [])
 
-        try:
-            response = self._list_deployments(apps_api)
-        except Exception as exc:  # pragma: no cover - depends on cluster client
-            logger.warning("Unable to discover Kubernetes wardens: %s", exc)
-            return []
-
-        items = getattr(response, "items", response if isinstance(response, list) else [])
         wardens = [
             self._deployment_to_warden(item)
             for item in items
@@ -65,7 +73,6 @@ class KubernetesWardenDiscoveryAdapter:
         try:
             from kubernetes import client, config  # noqa: PLC0415
         except ImportError:
-            logger.info("Kubernetes client is not installed; skipping warden discovery")
             return None
 
         try:
@@ -74,6 +81,37 @@ class KubernetesWardenDiscoveryAdapter:
             logger.warning("Unable to configure Kubernetes client: %s", exc)
             return None
         return client.AppsV1Api()
+
+    async def _list_incluster_deployments(self) -> list[Any]:
+        token_path = _SERVICE_ACCOUNT_ROOT / "token"
+        ca_path = _SERVICE_ACCOUNT_ROOT / "ca.crt"
+        if not token_path.exists():
+            logger.info("Kubernetes service-account token is not mounted")
+            return []
+
+        host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+        port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+        if self._namespace:
+            path = f"/apis/apps/v1/namespaces/{self._namespace}/deployments"
+        else:
+            path = "/apis/apps/v1/deployments"
+        url = f"https://{host}:{port}{path}"
+        params = {"labelSelector": self._label_selector} if self._label_selector else None
+        headers = {"Authorization": f"Bearer {token_path.read_text(encoding='utf-8').strip()}"}
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                verify=str(ca_path) if ca_path.exists() else True,
+            ) as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            logger.warning("Unable to discover Kubernetes wardens through REST API: %s", exc)
+            return []
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        return [_objectify(item) for item in items if isinstance(item, dict)]
 
     def _load_config(self, config: Any) -> None:
         if self._in_cluster is True:
@@ -290,3 +328,25 @@ class KubernetesWardenDiscoveryAdapter:
         if value in {"false", "0", "no", "off"}:
             return False
         return default
+
+
+def _objectify(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_objectify(item) for item in value]
+    if isinstance(value, dict):
+        if _is_label_map(value):
+            return value
+        return SimpleNamespace(
+            **{_snake_key(str(key)): _objectify(item) for key, item in value.items()}
+        )
+    return value
+
+
+def _is_label_map(value: dict[Any, Any]) -> bool:
+    return all(not isinstance(item, (dict, list)) for item in value.values()) and any(
+        "/" in str(key) or "." in str(key) for key in value
+    )
+
+
+def _snake_key(value: str) -> str:
+    return _CAMEL_RE.sub("_", value).lower()
