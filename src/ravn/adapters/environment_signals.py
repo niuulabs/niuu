@@ -86,6 +86,13 @@ def signal_sources_observatory_fragment(environment: Environment) -> Observatory
                 "sourceId": node_id,
                 "targetId": environment.topology.node_id,
                 "kind": "dashed-anim" if source.enabled else "soft",
+                "relationType": "signals_to",
+                "label": "signals",
+                "confidence": "declared",
+                "evidence": {
+                    "adapter": "environment_signals",
+                    "field": "Environment.signal_sources",
+                },
             }
         )
     return {

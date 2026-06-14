@@ -393,6 +393,13 @@ def _overlay_instance_nodes(
                         "sourceId": node_id,
                         "targetId": model_id,
                         "kind": "soft",
+                        "relationType": "uses",
+                        "label": "uses",
+                        "confidence": "inferred",
+                        "evidence": {
+                            "adapter": "rest_instances",
+                            "field": "InstanceKind.BIFROST",
+                        },
                     }
                 )
 
@@ -501,6 +508,13 @@ def _overlay_ravn_warden_nodes(
                 "sourceId": ravn_node_id,
                 "targetId": node_id,
                 "kind": "soft",
+                "relationType": "manages",
+                "label": "manages",
+                "confidence": "observed",
+                "evidence": {
+                    "adapter": "rest_instances",
+                    "field": "/api/v1/ravn/wardens",
+                },
             }
         )
         if mimir_node_id:
@@ -510,6 +524,13 @@ def _overlay_ravn_warden_nodes(
                     "sourceId": node_id,
                     "targetId": mimir_node_id,
                     "kind": "dashed-long",
+                    "relationType": "writes",
+                    "label": "writes",
+                    "confidence": "observed",
+                    "evidence": {
+                        "adapter": "rest_instances",
+                        "field": "warden.mimir",
+                    },
                 }
             )
         events.append(
