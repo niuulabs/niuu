@@ -443,7 +443,12 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
         node.get("layoutHints", {}).get("packGroup") == "volundr" for node in payload["nodes"]
     )
     assert not any(node["id"].startswith("run-") for node in payload["nodes"])
-    assert not any(edge.get("label") for edge in payload["edges"])
+    assert any(
+        edge.get("relationType") == "uses"
+        and edge.get("label") == "uses"
+        and edge.get("evidence", {}).get("adapter") == "rest_instances"
+        for edge in payload["edges"]
+    )
     assert any(event["service"] == "volundr" for event in payload["events"])
     assert any(event["service"] == "bifrost" for event in payload["events"])
     assert any(event["service"] == "mimir" for event in payload["events"])

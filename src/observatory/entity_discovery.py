@@ -21,13 +21,17 @@ logger = logging.getLogger(__name__)
 _SERVICE_ACCOUNT_ROOT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 _KNOWN_TYPE_IDS = {
     "bifrost",
+    "beacon",
     "cluster",
+    "host",
     "mimir",
     "namespace",
+    "printer",
     "ravn_long",
     "service",
     "skuld",
     "ting",
+    "vaettir",
     "volundr",
     "warden",
 }
@@ -51,6 +55,39 @@ _COMPONENT_TYPES = {
     "web-next": "volundr",
 }
 _STATUS_RANK = {"failed": 3, "healthy": 2, "observing": 1, "unknown": 0}
+_RELATION_TO_EDGE_KIND = {
+    "manages": "solid",
+    "uses": "soft",
+    "reads": "dashed-long",
+    "writes": "dashed-long",
+    "routes_to": "dashed-anim",
+    "exposes": "soft",
+    "observes": "dashed-anim",
+    "signals_to": "dashed-anim",
+    "member_of": "soft",
+}
+_RELATION_LABELS = {
+    "manages": "manages",
+    "uses": "uses",
+    "reads": "reads",
+    "writes": "writes",
+    "routes_to": "routes",
+    "exposes": "exposes",
+    "observes": "observes",
+    "signals_to": "signals",
+    "member_of": "member",
+}
+_RELATION_KEYS = {
+    "observatory.niuu.world/manages": "manages",
+    "observatory.niuu.world/uses": "uses",
+    "observatory.niuu.world/reads": "reads",
+    "observatory.niuu.world/writes": "writes",
+    "observatory.niuu.world/routes-to": "routes_to",
+    "observatory.niuu.world/exposes": "exposes",
+    "observatory.niuu.world/observes": "observes",
+    "observatory.niuu.world/signals-to": "signals_to",
+    "observatory.niuu.world/member-of": "member_of",
+}
 
 
 def _utc_now() -> datetime:
@@ -75,15 +112,52 @@ def _clean_map(value: Mapping[str, Any] | None) -> dict[str, str]:
     }
 
 
+def _csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _edge(
+    *,
+    source_id: str,
+    target_id: str,
+    relation_type: str,
+    source_adapter: str,
+    evidence_field: str = "",
+    confidence: str = "declared",
+    label: str = "",
+) -> ObservatoryEdge:
+    edge_label = label or _RELATION_LABELS.get(relation_type, relation_type.replace("_", " "))
+    edge_id = f"edge:{_slug(relation_type)}:{_slug(source_id)}:{_slug(target_id)}"
+    evidence = {"adapter": source_adapter}
+    if evidence_field:
+        evidence["field"] = evidence_field
+    return {
+        "id": edge_id,
+        "sourceId": source_id,
+        "targetId": target_id,
+        "kind": _RELATION_TO_EDGE_KIND.get(relation_type, "soft"),
+        "relationType": relation_type,
+        "label": edge_label,
+        "confidence": confidence,
+        "evidence": evidence,
+    }
+
+
 def _status_from_k8s(kind: str, payload: dict[str, Any]) -> str:
     status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
-    if kind == "deployment":
+    if kind in {"deployment", "statefulset", "replicaset"}:
         desired = int(status.get("replicas") or 0)
         ready = int(status.get("readyReplicas") or 0)
         available = int(status.get("availableReplicas") or 0)
         if desired == 0:
             return "unknown"
         return "healthy" if ready >= desired and available >= desired else "failed"
+    if kind == "daemonset":
+        desired = int(status.get("desiredNumberScheduled") or 0)
+        ready = int(status.get("numberReady") or 0)
+        if desired == 0:
+            return "unknown"
+        return "healthy" if ready >= desired else "failed"
     if kind == "pod":
         phase = str(status.get("phase") or "").lower()
         if phase == "running":
@@ -263,6 +337,7 @@ class WardenSpecDiscoveryAdapter:
             return DiscoveryResult(events=[_adapter_warning("wardenspec", str(exc))])
 
         entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
         for warden in wardens:
             warden_id = str(getattr(warden, "id", "") or "").strip()
             if not warden_id:
@@ -270,12 +345,13 @@ class WardenSpecDiscoveryAdapter:
             deployment_kwargs = getattr(warden, "deployment_kwargs", {}) or {}
             cluster = str(deployment_kwargs.get("cluster") or self._cluster)
             namespace = str(deployment_kwargs.get("namespace") or self._namespace)
+            warden_node_id = (
+                f"runtime:{_slug(cluster or 'local')}:"
+                f"{_slug(namespace or 'default')}:warden:{_slug(warden_id)}"
+            )
             entities.append(
                 DiscoveredEntity(
-                    id=(
-                        f"runtime:{_slug(cluster or 'local')}:"
-                        f"{_slug(namespace or 'default')}:warden:{_slug(warden_id)}"
-                    ),
+                    id=warden_node_id,
                     kind="warden",
                     name=str(getattr(warden, "name", "") or warden_id),
                     cluster=cluster,
@@ -294,7 +370,60 @@ class WardenSpecDiscoveryAdapter:
                     metadata={"persona": str(getattr(warden, "persona", "") or "")},
                 )
             )
-        return DiscoveryResult(entities=entities)
+
+            if cluster or namespace:
+                edges.append(
+                    _edge(
+                        source_id=f"service:ravn@{cluster or 'local'}/{namespace or 'default'}",
+                        target_id=warden_node_id,
+                        relation_type="manages",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="WardenSpec.deployment",
+                    )
+                )
+
+            mimir_binding = getattr(warden, "mimir", None)
+            explicit_mimir = str(deployment_kwargs.get("mimir_entity") or "").strip()
+            read_mounts = [
+                str(item)
+                for item in (
+                    getattr(mimir_binding, "read_mount_names", None)
+                    or getattr(mimir_binding, "mount_names", None)
+                    or []
+                )
+                if str(item).strip()
+            ]
+            write_mounts = [
+                str(item)
+                for item in (
+                    getattr(mimir_binding, "write_mount_names", None)
+                    or ([getattr(mimir_binding, "write_mount", "")]
+                        if getattr(mimir_binding, "write_mount", "")
+                        else [])
+                )
+                if str(item).strip()
+            ]
+            for relation_type, mounts, field_name in (
+                ("reads", read_mounts, "WardenSpec.mimir.read_mount_names"),
+                ("writes", write_mounts, "WardenSpec.mimir.write_mount_names"),
+            ):
+                targets = [explicit_mimir] if explicit_mimir else []
+                targets.extend(
+                    f"mimir:{mount}@{cluster or 'local'}/{namespace or 'default'}"
+                    for mount in mounts
+                )
+                for target in dict.fromkeys(targets):
+                    if target:
+                        edges.append(
+                            _edge(
+                                source_id=warden_node_id,
+                                target_id=target,
+                                relation_type=relation_type,
+                                source_adapter=self.__class__.__name__,
+                                evidence_field=field_name,
+                            )
+                        )
+        return DiscoveryResult(entities=entities, edges=edges)
 
 
 class HttpObservatoryDiscoveryAdapter:
@@ -367,7 +496,16 @@ class KubernetesDiscoveryAdapter:
         self._cluster = cluster
         self._namespace = namespace
         self._label_selector = label_selector
-        self._include_kinds = include_kinds or ["deployments", "services", "pods", "ingresses"]
+        self._include_kinds = include_kinds or [
+            "deployments",
+            "statefulsets",
+            "daemonsets",
+            "services",
+            "pods",
+            "configmaps",
+            "persistentvolumeclaims",
+            "ingresses",
+        ]
         self._timeout_seconds = timeout_seconds
         self._service_account_root = (
             Path(service_account_root) if service_account_root else _SERVICE_ACCOUNT_ROOT
@@ -392,6 +530,7 @@ class KubernetesDiscoveryAdapter:
         base_url = f"https://{host}:{port}"
         headers = {"Authorization": f"Bearer {token_path.read_text(encoding='utf-8').strip()}"}
         entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
         events: list[ObservatoryEvent] = []
         try:
             async with httpx.AsyncClient(
@@ -419,20 +558,33 @@ class KubernetesDiscoveryAdapter:
                     payload = response.json()
                     for item in payload.get("items", []) if isinstance(payload, dict) else []:
                         if isinstance(item, dict):
-                            entity = self._entity_from_k8s(kind.rstrip("s"), item)
+                            resource_kind = _singular_resource_kind(kind)
+                            entity = self._entity_from_k8s(resource_kind, item)
                             if entity is not None:
                                 entities.append(entity)
+                                edges.extend(
+                                    _relationships_from_k8s(
+                                        entity,
+                                        resource_kind=resource_kind,
+                                        item=item,
+                                        source_adapter=self.__class__.__name__,
+                                    )
+                                )
         except Exception as exc:
             events.append(_adapter_warning("kubernetes", str(exc)))
-        return DiscoveryResult(entities=_merge_discovered_entities(entities), events=events)
+        return DiscoveryResult(
+            entities=_merge_discovered_entities(entities),
+            edges=edges,
+            events=events,
+        )
 
     def _path_for_kind(self, kind: str) -> str:
         namespace = quote(self._namespace, safe="")
-        if kind == "deployments":
+        if kind in {"deployments", "statefulsets", "daemonsets", "replicasets"}:
             if namespace:
-                return f"/apis/apps/v1/namespaces/{namespace}/deployments"
-            return "/apis/apps/v1/deployments"
-        if kind in {"services", "pods"}:
+                return f"/apis/apps/v1/namespaces/{namespace}/{kind}"
+            return f"/apis/apps/v1/{kind}"
+        if kind in {"services", "pods", "configmaps", "persistentvolumeclaims"}:
             if namespace:
                 return f"/api/v1/namespaces/{namespace}/{kind}"
             return f"/api/v1/{kind}"
@@ -440,6 +592,10 @@ class KubernetesDiscoveryAdapter:
             if namespace:
                 return f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses"
             return "/apis/networking.k8s.io/v1/ingresses"
+        if kind == "httproutes":
+            if namespace:
+                return f"/apis/gateway.networking.k8s.io/v1/namespaces/{namespace}/httproutes"
+            return "/apis/gateway.networking.k8s.io/v1/httproutes"
         return ""
 
     def _entity_from_k8s(self, resource_kind: str, item: dict[str, Any]) -> DiscoveredEntity | None:
@@ -453,12 +609,13 @@ class KubernetesDiscoveryAdapter:
         if not name:
             return None
         cluster = labels.get("niuu.world/cluster") or self._cluster or "unknown"
-        component = labels.get("niuu.world/kind") or labels.get("app.kubernetes.io/component")
-        app_name = labels.get("app.kubernetes.io/name")
-        type_id = _COMPONENT_TYPES.get(
-            component or "",
-            _COMPONENT_TYPES.get(app_name or "", "service"),
+        component = (
+            labels.get("niuu.world/kind")
+            or labels.get("observatory.niuu.world/type")
+            or labels.get("app.kubernetes.io/component")
         )
+        app_name = labels.get("app.kubernetes.io/name")
+        type_id = _type_id_for_component(component or "", app_name or "")
         logical_name = labels.get("niuu.world/entity-id") or labels.get("niuu.world/service-id")
         display_name = labels.get("niuu.world/display-name") or ""
         if labels.get("niuu.world/warden-id"):
@@ -469,6 +626,8 @@ class KubernetesDiscoveryAdapter:
                 or display_name
             )
             type_id = "warden"
+        elif logical_name:
+            pass
         elif app_name:
             logical_name = app_name
         elif component:
@@ -616,16 +775,11 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
 
         node = _entity_to_node(entity, parent_id=parent_id)
         nodes[node["id"]] = node
-        if parent_id and parent_id != node["id"]:
-            edge_id = f"edge:{parent_id}:{node['id']}"
-            edges.setdefault(
-                edge_id,
-                {"id": edge_id, "sourceId": parent_id, "targetId": node["id"], "kind": "soft"},
-            )
 
     for edge in result.edges:
-        if edge["sourceId"] != edge["targetId"]:
-            edges[edge["id"]] = edge
+        resolved = _resolve_edge(edge, nodes)
+        if resolved and resolved["sourceId"] != resolved["targetId"]:
+            edges[resolved["id"]] = resolved
 
     return {
         "timestamp": _iso(),
@@ -634,6 +788,78 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
         "events": result.events,
         "layoutHints": {"mode": "pack", "scope": "world"},
     }
+
+
+def _resolve_edge(
+    edge: ObservatoryEdge,
+    nodes: dict[str, dict[str, Any]],
+) -> ObservatoryEdge | None:
+    source_id = _resolve_node_ref(str(edge.get("sourceId") or ""), nodes)
+    target_id = _resolve_node_ref(str(edge.get("targetId") or ""), nodes)
+    if not source_id or not target_id:
+        return None
+    relation_type = str(edge.get("relationType") or "")
+    resolved: ObservatoryEdge = {
+        **edge,
+        "id": str(edge.get("id") or f"edge:{_slug(source_id)}:{_slug(target_id)}"),
+        "sourceId": source_id,
+        "targetId": target_id,
+        "kind": str(edge.get("kind") or _RELATION_TO_EDGE_KIND.get(relation_type, "soft")),
+    }
+    if relation_type and not resolved.get("label"):
+        resolved["label"] = _RELATION_LABELS.get(relation_type, relation_type.replace("_", " "))
+    if not resolved.get("confidence") and relation_type:
+        resolved["confidence"] = "declared"
+    return resolved
+
+
+def _resolve_node_ref(ref: str, nodes: dict[str, dict[str, Any]]) -> str:
+    value = ref.strip()
+    if not value:
+        return ""
+    if value in nodes:
+        return value
+
+    node_list = list(nodes.values())
+    if "@" in value:
+        value, scope = value.split("@", 1)
+        cluster, _, namespace = scope.partition("/")
+    else:
+        cluster = ""
+        namespace = ""
+
+    if ":" in value:
+        type_id, _, name = value.partition(":")
+    else:
+        type_id = ""
+        name = value
+    type_id = _type_id_for_component(type_id, "") if type_id else ""
+    name_slug = _slug(name)
+
+    candidates: list[str] = []
+    for node in node_list:
+        if type_id and node.get("typeId") != type_id:
+            continue
+        if cluster and node.get("clusterName") != cluster:
+            continue
+        if namespace and node.get("namespace") != namespace:
+            continue
+        node_id = str(node.get("id") or "")
+        label = str(node.get("label") or "")
+        labels = node.get("labels") if isinstance(node.get("labels"), dict) else {}
+        logical_names = {
+            _slug(label),
+            _slug(node_id.rsplit(":", 1)[-1]),
+            _slug(str(labels.get("app.kubernetes.io/name") or "")),
+            _slug(str(labels.get("app.kubernetes.io/component") or "")),
+            _slug(str(labels.get("niuu.world/entity-id") or "")),
+            _slug(str(labels.get("niuu.world/service-id") or "")),
+        }
+        if name_slug in logical_names or any(
+            logical_name.endswith(f"-{name_slug}") for logical_name in logical_names
+        ):
+            candidates.append(node_id)
+    return candidates[0] if len(set(candidates)) == 1 else ""
 
 
 def _entity_to_node(entity: DiscoveredEntity, *, parent_id: str | None) -> dict[str, Any]:
@@ -711,6 +937,31 @@ def _namespace_id(cluster: str, namespace: str) -> str:
     return f"namespace-{_slug(cluster or 'unknown')}-{_slug(namespace or 'unknown')}"
 
 
+def _singular_resource_kind(kind: str) -> str:
+    return {
+        "deployments": "deployment",
+        "statefulsets": "statefulset",
+        "daemonsets": "daemonset",
+        "replicasets": "replicaset",
+        "services": "service",
+        "pods": "pod",
+        "configmaps": "configmap",
+        "persistentvolumeclaims": "persistentvolumeclaim",
+        "ingresses": "ingress",
+        "httproutes": "httproute",
+    }.get(kind, kind.rstrip("s"))
+
+
+def _type_id_for_component(component: str, app_name: str = "") -> str:
+    normalized = _slug(component)
+    if normalized in _KNOWN_TYPE_IDS:
+        return normalized
+    mapped = _COMPONENT_TYPES.get(component) or _COMPONENT_TYPES.get(normalized)
+    if mapped:
+        return mapped
+    return _COMPONENT_TYPES.get(app_name, "service")
+
+
 def _is_edge(value: Any) -> bool:
     return (
         isinstance(value, dict)
@@ -719,6 +970,127 @@ def _is_edge(value: Any) -> bool:
         and isinstance(value.get("targetId"), str)
         and isinstance(value.get("kind"), str)
     )
+
+
+def _relationships_from_k8s(
+    entity: DiscoveredEntity,
+    *,
+    resource_kind: str,
+    item: dict[str, Any],
+    source_adapter: str,
+) -> list[ObservatoryEdge]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    labels = _clean_map(metadata.get("labels"))
+    annotations = _clean_map(metadata.get("annotations"))
+    edges: list[ObservatoryEdge] = []
+    for source, source_name in ((labels, "label"), (annotations, "annotation")):
+        for key, relation_type in _RELATION_KEYS.items():
+            value = source.get(key, "")
+            for target in _csv(value):
+                edges.append(
+                    _edge(
+                        source_id=entity.id,
+                        target_id=target,
+                        relation_type=relation_type,
+                        source_adapter=source_adapter,
+                        evidence_field=f"metadata.{source_name}s[{key}]",
+                    )
+                )
+
+    if resource_kind == "ingress":
+        edges.extend(
+            _ingress_relationship_edges(
+                entity,
+                item=item,
+                source_adapter=source_adapter,
+            )
+        )
+    if resource_kind == "httproute":
+        edges.extend(
+            _httproute_relationship_edges(
+                entity,
+                item=item,
+                source_adapter=source_adapter,
+            )
+        )
+    return edges
+
+
+def _ingress_relationship_edges(
+    entity: DiscoveredEntity,
+    *,
+    item: dict[str, Any],
+    source_adapter: str,
+) -> list[ObservatoryEdge]:
+    spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
+    targets: list[str] = []
+    default_backend = (
+        spec.get("defaultBackend") if isinstance(spec.get("defaultBackend"), dict) else {}
+    )
+    service = (
+        default_backend.get("service")
+        if isinstance(default_backend.get("service"), dict)
+        else {}
+    )
+    if service.get("name"):
+        targets.append(str(service["name"]))
+    rules = spec.get("rules") if isinstance(spec.get("rules"), list) else []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        http = rule.get("http") if isinstance(rule.get("http"), dict) else {}
+        paths = http.get("paths") if isinstance(http.get("paths"), list) else []
+        for path in paths:
+            if not isinstance(path, dict):
+                continue
+            backend = path.get("backend") if isinstance(path.get("backend"), dict) else {}
+            service = backend.get("service") if isinstance(backend.get("service"), dict) else {}
+            if service.get("name"):
+                targets.append(str(service["name"]))
+    return [
+        _edge(
+            source_id=entity.id,
+            target_id=f"service:{target}@{entity.cluster}/{entity.namespace}",
+            relation_type="routes_to",
+            source_adapter=source_adapter,
+            evidence_field="spec.rules[].http.paths[].backend.service.name",
+            confidence="observed",
+        )
+        for target in dict.fromkeys(targets)
+    ]
+
+
+def _httproute_relationship_edges(
+    entity: DiscoveredEntity,
+    *,
+    item: dict[str, Any],
+    source_adapter: str,
+) -> list[ObservatoryEdge]:
+    spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
+    rules = spec.get("rules") if isinstance(spec.get("rules"), list) else []
+    targets: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        refs = rule.get("backendRefs") if isinstance(rule.get("backendRefs"), list) else []
+        for ref in refs:
+            if (
+                isinstance(ref, dict)
+                and str(ref.get("kind") or "Service") == "Service"
+                and ref.get("name")
+            ):
+                targets.append(str(ref["name"]))
+    return [
+        _edge(
+            source_id=entity.id,
+            target_id=f"service:{target}@{entity.cluster}/{entity.namespace}",
+            relation_type="routes_to",
+            source_adapter=source_adapter,
+            evidence_field="spec.rules[].backendRefs[].name",
+            confidence="observed",
+        )
+        for target in dict.fromkeys(targets)
+    ]
 
 
 def _endpoints_for_k8s(

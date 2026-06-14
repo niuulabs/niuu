@@ -527,6 +527,13 @@ class Environment(BaseModel):
                     "sourceId": self.topology.node_id,
                     "targetId": node_id,
                     "kind": "soft",
+                    "relationType": "manages",
+                    "label": "manages",
+                    "confidence": "declared",
+                    "evidence": {
+                        "adapter": "environment",
+                        "field": "Environment.resident_valkyrie_ids",
+                    },
                 }
             )
         return {

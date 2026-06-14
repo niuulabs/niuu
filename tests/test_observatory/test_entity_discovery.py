@@ -13,6 +13,7 @@ from observatory.entity_discovery import (
     DiscoveryResult,
     HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    WardenSpecDiscoveryAdapter,
     topology_from_discovery,
 )
 
@@ -86,6 +87,7 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
     assert namespace["typeId"] == "namespace"
     assert namespace["layoutHints"]["packGroup"] == "namespace"
     assert cluster["layoutHints"]["packGroup"] == "cluster"
+    assert snapshot["edges"] == []
 
 
 @pytest.mark.asyncio
@@ -149,6 +151,208 @@ async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
         "pod",
         "service",
     ]
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_discovery_projects_declared_relationships(
+    tmp_path, monkeypatch
+) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def item(name: str, labels: dict[str, str]) -> dict[str, object]:
+        return {
+            "metadata": {
+                "name": name,
+                "namespace": "volundr",
+                "uid": f"uid-{name}",
+                "labels": labels,
+            },
+            "status": {
+                "replicas": 1,
+                "readyReplicas": 1,
+                "availableReplicas": 1,
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/deployments"):
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        item(
+                            "niuu-guild",
+                            {
+                                "niuu.world/cluster": "ymir",
+                                "app.kubernetes.io/name": "guild",
+                                "app.kubernetes.io/component": "guild",
+                                "observatory.niuu.world/uses": "service:ravn@ymir/volundr",
+                            },
+                        ),
+                        item(
+                            "niuu-ravn",
+                            {
+                                "niuu.world/cluster": "ymir",
+                                "app.kubernetes.io/name": "ravn",
+                                "app.kubernetes.io/component": "ravn-api",
+                            },
+                        ),
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        include_kinds=["deployments"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+
+    assert snapshot["edges"] == [
+        {
+            "id": "edge:uses:runtime-ymir-volundr-service-guild:service-ravn-ymir-volundr",
+            "sourceId": "runtime:ymir:volundr:service:guild",
+            "targetId": "runtime:ymir:volundr:service:ravn",
+            "kind": "soft",
+            "relationType": "uses",
+            "label": "uses",
+            "confidence": "declared",
+            "evidence": {
+                "adapter": "KubernetesDiscoveryAdapter",
+                "field": "metadata.labels[observatory.niuu.world/uses]",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_discovery_supports_generic_tagged_objects(
+    tmp_path, monkeypatch
+) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/configmaps")
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "basement-printer",
+                            "namespace": "devices",
+                            "uid": "uid-printer",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "niuu.world/kind": "printer",
+                                "niuu.world/entity-id": "basement-printer",
+                                "niuu.world/display-name": "Basement Printer",
+                            },
+                        },
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        include_kinds=["configmaps"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+    printer = next(node for node in snapshot["nodes"] if node["typeId"] == "printer")
+
+    assert printer["id"] == "runtime:ymir:devices:printer:basement-printer"
+    assert printer["label"] == "Basement Printer"
+    assert printer["resources"] == [
+        {
+            "kind": "configmap",
+            "name": "basement-printer",
+            "uid": "uid-printer",
+            "generation": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_warden_spec_discovery_emits_semantic_relationships(tmp_path) -> None:
+    from ravn.warden.models import WardenMimirBinding, WardenRuntime, WardenSpec
+    from ravn.warden.store import WardenStore
+
+    store = WardenStore(tmp_path)
+    store.save(
+        WardenSpec(
+            id="mimir-shared-warden",
+            name="Mimir Shared Warden",
+            deployment_kwargs={"cluster": "ymir", "namespace": "volundr"},
+            mimir=WardenMimirBinding(
+                read_mount_names=["shared"],
+                write_mount_names=["shared"],
+            ),
+            runtime=WardenRuntime(state="active"),
+        )
+    )
+
+    result = await CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:service:ravn",
+                            kind="service",
+                            name="ravn",
+                            cluster="ymir",
+                            namespace="volundr",
+                            status="healthy",
+                        ),
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:mimir:mimir-shared",
+                            kind="mimir",
+                            name="mimir-shared",
+                            cluster="ymir",
+                            namespace="volundr",
+                            status="healthy",
+                        ),
+                    ]
+                )
+            ),
+            WardenSpecDiscoveryAdapter(root=str(tmp_path)),
+        ]
+    ).discover()
+
+    snapshot = topology_from_discovery(result)
+    edges = {
+        (edge["sourceId"], edge["targetId"], edge["relationType"])
+        for edge in snapshot["edges"]
+    }
+
+    assert (
+        "runtime:ymir:volundr:service:ravn",
+        "runtime:ymir:volundr:warden:mimir-shared-warden",
+        "manages",
+    ) in edges
+    assert (
+        "runtime:ymir:volundr:warden:mimir-shared-warden",
+        "runtime:ymir:volundr:mimir:mimir-shared",
+        "reads",
+    ) in edges
+    assert (
+        "runtime:ymir:volundr:warden:mimir-shared-warden",
+        "runtime:ymir:volundr:mimir:mimir-shared",
+        "writes",
+    ) in edges
 
 
 @pytest.mark.asyncio

@@ -22,12 +22,12 @@ describe('ConnectionLegend', () => {
     expect(screen.getByRole('list', { name: /connection types/i })).toBeInTheDocument();
   });
 
-  it('renders web2-matching label text for each edge kind', () => {
+  it('renders semantic relationship label text for each edge kind', () => {
     render(<ConnectionLegend />);
-    expect(screen.getByText('Ting → Völundr')).toBeInTheDocument();
-    expect(screen.getByText('Ting ⇝ run coord')).toBeInTheDocument();
-    expect(screen.getByText('Bifröst → ext. model')).toBeInTheDocument();
-    expect(screen.getByText('ravn → Mímir')).toBeInTheDocument();
+    expect(screen.getByText('manages')).toBeInTheDocument();
+    expect(screen.getByText('routes / signals')).toBeInTheDocument();
+    expect(screen.getByText('reads / writes')).toBeInTheDocument();
+    expect(screen.getByText('uses / exposes')).toBeInTheDocument();
     expect(screen.getByText('run cohesion')).toBeInTheDocument();
   });
 

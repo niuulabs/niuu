@@ -6,12 +6,12 @@ interface LegendEntry {
   label: string;
 }
 
-/** Labels match the web2 prototype connection legend exactly. */
+/** Semantic relationship categories shown by the Observatory canvas. */
 const EDGE_LEGEND: LegendEntry[] = [
-  { kind: 'solid', label: 'Ting → Völundr' },
-  { kind: 'dashed-anim', label: 'Ting ⇝ run coord' },
-  { kind: 'dashed-long', label: 'Bifröst → ext. model' },
-  { kind: 'soft', label: 'ravn → Mímir' },
+  { kind: 'solid', label: 'manages' },
+  { kind: 'dashed-anim', label: 'routes / signals' },
+  { kind: 'dashed-long', label: 'reads / writes' },
+  { kind: 'soft', label: 'uses / exposes' },
   { kind: 'run', label: 'run cohesion' },
 ];
 

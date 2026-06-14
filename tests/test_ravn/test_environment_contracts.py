@@ -186,6 +186,13 @@ def test_environment_projects_into_existing_observatory_topology_types() -> None
                 "sourceId": environment.topology.node_id,
                 "targetId": valkyrie_node_id,
                 "kind": "soft",
+                "relationType": "manages",
+                "label": "manages",
+                "confidence": "declared",
+                "evidence": {
+                    "adapter": "environment",
+                    "field": "Environment.resident_valkyrie_ids",
+                },
             }
         ]
 

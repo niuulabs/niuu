@@ -641,6 +641,13 @@ function drawEdge(
   if (!src || !dst) return;
   const srcNode = nodeById.get(edge.sourceId);
   const dstNode = nodeById.get(edge.targetId);
+  const directParentChild = srcNode?.id === dstNode?.parentId || dstNode?.id === srcNode?.parentId;
+  if (
+    edge.relationType === 'contains' ||
+    (directParentChild && edge.kind === 'soft' && !edge.label)
+  ) {
+    return;
+  }
   const start = trimToNodeBoundary(srcNode, src, dst);
   const end = trimToNodeBoundary(dstNode, dst, src);
   const profile = edgeProfile(edge.kind, now);
@@ -667,7 +674,6 @@ function drawEdge(
     sameParent &&
     sharedParentNode?.typeId === 'cluster' &&
     (edge.kind === 'soft' || edge.kind === 'solid');
-  const directParentChild = srcNode?.id === dstNode?.parentId || dstNode?.id === srcNode?.parentId;
   const offset = Math.min(
     profile.bend *
       (sameRunFlow ? 0.32 : sameClusterSoft ? 0.18 : sameParent ? 1.2 : 1) *

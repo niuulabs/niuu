@@ -179,6 +179,30 @@ describe('drawEdges', () => {
     expect(ctx.bezierCurveTo).not.toHaveBeenCalled();
   });
 
+  it('ignores legacy containment edges between parent and child nodes', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [
+        {
+          id: 'edge:cluster-vk:ting-0',
+          sourceId: 'cluster-vk',
+          targetId: 'ting-0',
+          kind: 'soft',
+        },
+        {
+          id: 'edge:contains',
+          sourceId: 'cluster-vk',
+          targetId: 'volundr-0',
+          kind: 'soft',
+          relationType: 'contains',
+        },
+      ],
+    };
+    drawEdges(ctx, topo, POSITIONS, 0);
+    expect(ctx.bezierCurveTo).not.toHaveBeenCalled();
+  });
+
   it('animates dashed-anim edges with lineDashOffset', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
