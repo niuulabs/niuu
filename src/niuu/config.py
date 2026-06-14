@@ -142,6 +142,14 @@ class HttpAuthAdapterConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class DynamicAdapterConfig(BaseModel):
+    """Dynamic adapter config for discovery and other pluggable services."""
+
+    adapter: str = Field(default="")
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class InstanceSeedConfig(BaseModel):
     """Config-seeded runtime instance registration."""
 

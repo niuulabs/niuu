@@ -91,6 +91,14 @@ guild:
     kwargs: {}
     secretKwargs: []
 
+discovery:
+  adapters: []
+
+rbac:
+  discovery:
+    enabled: false
+    clusterWide: true
+
 envoy:
   enabled: false
   image:

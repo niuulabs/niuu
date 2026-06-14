@@ -433,58 +433,17 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["nodes"][0]["id"] == "service:guild"
-    assert payload["layoutHints"]["mode"] == "hybrid"
-    assert payload["nodes"][0]["layoutHints"]["anchor"]["pinned"] is True
-    assert any(node["id"] == "realm-vanaheim" for node in payload["nodes"])
-    assert (
-        len(
-            [
-                node
-                for node in payload["nodes"]
-                if node["typeId"] == "cluster" and node["parentId"] == "realm-asgard"
-            ]
-        )
-        >= 3
-    )
-    assert (
-        len(
-            [
-                node
-                for node in payload["nodes"]
-                if node["typeId"] == "host" and node["parentId"] == "realm-vanaheim"
-            ]
-        )
-        >= 3
-    )
+    assert payload["layoutHints"]["mode"] == "pack"
+    assert any(node["id"] == "cluster-unknown" for node in payload["nodes"])
+    assert not any(node["id"].startswith("realm-") for node in payload["nodes"])
     assert any(node.get("svcType") == "volundr" for node in payload["nodes"])
     assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
-    assert any(
-        node["id"] == "mimir-well" and node["parentId"] == "cluster-valaskjalf"
-        for node in payload["nodes"]
-    )
-    assert any(
-        node["id"] == "run-curate" and node.get("flockId") == "workflow-curate"
-        for node in payload["nodes"]
-    )
-    assert any(
-        node["id"] == "run-curate-mimir" and node["parentId"] == "run-curate"
-        for node in payload["nodes"]
-    )
+    assert not any(node["id"] == "mimir-well" for node in payload["nodes"])
     assert any(
         node.get("layoutHints", {}).get("pack_group") == "volundr" for node in payload["nodes"]
     )
-    assert any(
-        node["typeId"] == "stage" and node.get("flockId") == "workflow-refactor"
-        for node in payload["nodes"]
-    )
-    assert any(
-        node["typeId"] == "trigger" and node["parentId"] == "run-migrate"
-        for node in payload["nodes"]
-    )
-    assert any(edge.get("label") == "code.requested -> code.requested" for edge in payload["edges"])
-    assert any(edge.get("label") == "memory.ready -> review.requested" for edge in payload["edges"])
-    assert any(edge.get("label") == "canary.green -> rollout.begin" for edge in payload["edges"])
+    assert not any(node["id"].startswith("run-") for node in payload["nodes"])
+    assert not any(edge.get("label") for edge in payload["edges"])
     assert any(event["service"] == "volundr" for event in payload["events"])
     assert any(event["service"] == "bifrost" for event in payload["events"])
     assert any(event["service"] == "mimir" for event in payload["events"])

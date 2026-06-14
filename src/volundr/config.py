@@ -28,6 +28,7 @@ from pydantic_settings import (
 from bifrost.config import BifrostConfig
 from niuu.config import (
     CorsConfig,
+    DynamicAdapterConfig,
     GitHubConfig,
     GitHubInstance,
     GitLabConfig,
@@ -1496,6 +1497,7 @@ class ObservatoryConfig(BaseModel):
     """Observatory plugin configuration."""
 
     guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
+    discovery: list[DynamicAdapterConfig] = Field(default_factory=list)
 
 
 class Settings(BaseSettings):

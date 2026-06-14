@@ -21,6 +21,7 @@ from niuu.settings_schema import (
 )
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.discovery import ObservatoryDiscoveryService
+from observatory.entity_discovery import build_discovery_adapter
 from observatory.registry import (
     InMemoryObservatoryRegistryRepository,
     ObservatoryRegistryRepository,
@@ -243,6 +244,14 @@ def create_router() -> APIRouter:
             },
         )
 
+    @router.get("/topology/snapshot", summary="Get one live topology snapshot")
+    async def topology_snapshot(request: Request) -> dict[str, Any]:
+        snapshot = await _discovery(request).get_topology_snapshot(
+            headers=_forward_headers(request)
+        )
+        events = await _discovery(request).get_events(headers=_forward_headers(request))
+        return {**snapshot, "events": events}
+
     @router.get("/events", summary="Stream observatory events")
     @router.get("/events/stream", summary="Stream observatory events")
     async def events(request: Request) -> StreamingResponse:
@@ -274,6 +283,7 @@ def create_app(
             guild_url=guild_cfg.url,
             auth=_create_http_auth_adapter(guild_cfg.auth),
             timeout_seconds=guild_cfg.timeout_seconds,
+            discovery_adapter=build_discovery_adapter(loaded_settings.observatory.discovery),
         )
 
     @asynccontextmanager
