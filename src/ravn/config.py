@@ -26,6 +26,7 @@ without modifying the global ravn.yaml.
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -2941,6 +2942,54 @@ class EnvironmentConfig(BaseModel):
         return self
 
 
+class WardenDiscoveryAdapterConfig(BaseModel):
+    """Dynamic adapter entry for Warden discovery."""
+
+    adapter: str = Field(
+        default="ravn.adapters.warden_discovery.spec.WardenSpecDiscoveryAdapter",
+        description="Fully-qualified class path for the Warden discovery adapter.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
+class WardenDiscoveryConfig(BaseModel):
+    """Read-only Warden discovery configuration."""
+
+    enabled: bool = True
+    adapters: list[WardenDiscoveryAdapterConfig] = Field(
+        default_factory=lambda: [
+            WardenDiscoveryAdapterConfig(
+                adapter="ravn.adapters.warden_discovery.spec.WardenSpecDiscoveryAdapter"
+            )
+        ]
+    )
+    adapters_json: str = Field(
+        default="",
+        description="JSON list of adapter objects for env-driven deployments.",
+    )
+
+    @model_validator(mode="after")
+    def _parse_adapters_json(self) -> WardenDiscoveryConfig:
+        if not self.adapters_json.strip():
+            return self
+        raw_adapters = json.loads(self.adapters_json)
+        if not isinstance(raw_adapters, list):
+            msg = "warden_discovery.adapters_json must be a JSON list"
+            raise ValueError(msg)
+        self.adapters = [
+            WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
+        ]
+        return self
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -3038,6 +3087,9 @@ class Settings(BaseSettings):
 
     # NIU-538: flock peer discovery
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+
+    # Warden discovery for UI/Guild/Observatory surfaces.
+    warden_discovery: WardenDiscoveryConfig = Field(default_factory=WardenDiscoveryConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

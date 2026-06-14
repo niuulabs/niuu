@@ -1291,8 +1291,138 @@ def _overlay_instance_demo_nodes(
                 )
 
 
+def _ravn_wardens_url(base_url: str) -> str:
+    if base_url.rstrip("/").endswith("/api/v1/ravn"):
+        return build_remote_url(base_url, "", "/wardens")
+    if base_url.rstrip("/").endswith("/ravn"):
+        return build_remote_url(base_url, "", "/wardens")
+    return build_remote_url(base_url, "/api/v1/ravn", "/wardens")
+
+
+async def _load_ravn_wardens(
+    instance: RegisteredInstance,
+    request: Request,
+) -> list[dict[str, Any]]:
+    try:
+        remote_url = _ravn_wardens_url(instance.base_url)
+    except ValueError:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(remote_url, headers=_forward_headers(request))
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _warden_status(warden: dict[str, Any]) -> str:
+    runtime = warden.get("runtime") if isinstance(warden.get("runtime"), dict) else {}
+    supervisor = warden.get("supervisor") if isinstance(warden.get("supervisor"), dict) else {}
+    observation = (
+        supervisor.get("observation")
+        if isinstance(supervisor.get("observation"), dict)
+        else {}
+    )
+    observed_status = str(observation.get("status") or "").lower()
+    if str(runtime.get("state") or "").lower() == "active":
+        return "healthy"
+    if observed_status == "running":
+        return "healthy"
+    if observed_status in {"degraded", "missing"}:
+        return "failed"
+    return "unknown"
+
+
+def _overlay_ravn_warden_nodes(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, str]],
+    events: list[dict[str, str]],
+    *,
+    ravn_instance: RegisteredInstance,
+    wardens: list[dict[str, Any]],
+    now: datetime,
+) -> None:
+    if not wardens:
+        return
+
+    ravn_slug = _slug(ravn_instance.slug or ravn_instance.name)
+    ravn_node_id = f"instance:{ravn_instance.kind.value}:{ravn_slug}"
+    ravn_node = next((node for node in nodes if node["id"] == ravn_node_id), None)
+    parent_id = ravn_node.get("parentId") if ravn_node else "cluster-valaskjalf"
+    mimir_node = next((node for node in nodes if node.get("typeId") == "mimir"), None)
+    mimir_node_id = str(mimir_node.get("id")) if mimir_node else "mimir-well"
+
+    for index, warden in enumerate(wardens):
+        warden_id = str(warden.get("id") or "").strip()
+        if not warden_id:
+            continue
+        mimir = warden.get("mimir") if isinstance(warden.get("mimir"), dict) else {}
+        schedules = (
+            warden.get("schedules") if isinstance(warden.get("schedules"), dict) else {}
+        )
+        node_id = f"warden:{warden_id}"
+        nodes.append(
+            {
+                "id": node_id,
+                "typeId": "ravn_long",
+                "label": str(warden.get("name") or warden_id),
+                "parentId": parent_id,
+                "status": _warden_status(warden),
+                "svcType": "ravn",
+                "persona": str(warden.get("persona") or ""),
+                "model": str(warden.get("model") or ""),
+                "sourceKind": "warden",
+                "sourceId": warden_id,
+                "baseUrl": ravn_instance.base_url,
+                "deployment": str(warden.get("deployment") or ""),
+                "mimirMounts": list(mimir.get("mount_names") or []),
+                "writeMount": str(mimir.get("write_mount") or ""),
+                "dreamCycle": str(schedules.get("dream_cycle_cron_expression") or ""),
+                "layoutHints": {
+                    "mode": "pack",
+                    "scope": "node",
+                    "pack_group": "ravn",
+                    "order": 20 + index,
+                },
+            }
+        )
+        edges.append(
+            {
+                "id": f"edge:ravn-instance:{ravn_instance.id}:warden:{warden_id}",
+                "sourceId": ravn_node_id,
+                "targetId": node_id,
+                "kind": "soft",
+            }
+        )
+        if mimir_node_id:
+            edges.append(
+                {
+                    "id": f"edge:warden:{warden_id}:mimir",
+                    "sourceId": node_id,
+                    "targetId": mimir_node_id,
+                    "kind": "dashed-long",
+                }
+            )
+        events.append(
+            {
+                "id": f"warden:{warden_id}:discovered",
+                "level": "info",
+                "service": "ravn",
+                "message": (
+                    f"{warden.get('name') or warden_id} discovered through "
+                    f"{ravn_instance.name}"
+                ),
+                "timestamp": _iso(now),
+            }
+        )
+
+
 async def _build_observatory_snapshot(
     instances: list[RegisteredInstance],
+    request: Request | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     probes = await asyncio.gather(*[_probe_instance(instance) for instance in instances])
@@ -1317,6 +1447,21 @@ async def _build_observatory_snapshot(
                 "writes": 71,
             }
         )
+
+    if request is not None:
+        ravn_instances = [instance for instance in instances if instance.kind is InstanceKind.RAVN]
+        ravn_warden_groups = await asyncio.gather(
+            *[_load_ravn_wardens(instance, request) for instance in ravn_instances]
+        )
+        for ravn_instance, wardens in zip(ravn_instances, ravn_warden_groups, strict=False):
+            _overlay_ravn_warden_nodes(
+                nodes,
+                edges,
+                events,
+                ravn_instance=ravn_instance,
+                wardens=wardens,
+                now=now,
+            )
 
     for instance in instances:
         probe = probe_by_id[instance.id]
@@ -1548,9 +1693,10 @@ def create_instances_router(
 
     @router.get("/observatory/snapshot")
     async def get_observatory_snapshot(
+        request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         instances = await service.list_visible(principal, enabled_only=True)
-        return await _build_observatory_snapshot(instances)
+        return await _build_observatory_snapshot(instances, request=request)
 
     return router

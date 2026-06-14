@@ -62,7 +62,9 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.config import Settings
 from ravn.ports.warden_deployer import WardenDeploymentError
+from ravn.ports.warden_discovery import WardenDiscoveryPort
 from ravn.warden import (
     WardenConsoleConfig,
     WardenFeatures,
@@ -72,6 +74,7 @@ from ravn.warden import (
     build_warden_store,
     resolve_deployment_adapter,
 )
+from ravn.warden.discovery import build_warden_discovery
 from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
@@ -129,6 +132,8 @@ _LOG_LINE_RE = re.compile(
 def create_app(
     persona_loader: PersonaRegistryPort | None = None,
     warden_store: WardenStore | None = None,
+    settings: Settings | None = None,
+    warden_discovery: WardenDiscoveryPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -142,6 +147,11 @@ def create_app(
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
     store = warden_store or build_warden_store()
+    if warden_discovery is None:
+        loaded_settings = settings or Settings()
+        discovery = build_warden_discovery(loaded_settings.warden_discovery, store=store)
+    else:
+        discovery = warden_discovery
     stream_broker = WardenStreamBroker()
 
     async def publish_warden_update(event: str, warden: WardenSpec) -> None:
@@ -189,6 +199,30 @@ def create_app(
         merged = [entry for group in groups for entry in group]
         merged.sort(key=lambda entry: (_entry_sort_timestamp(entry.timestamp), entry.id))
         return merged[-limit:]
+
+    async def list_known_wardens() -> list[WardenSpec]:
+        return await discovery.list_wardens()
+
+    async def get_known_warden(warden_id: str) -> WardenSpec | None:
+        stored = store.get(warden_id)
+        if stored is not None:
+            return stored
+        for warden in await list_known_wardens():
+            if warden.id == warden_id:
+                return warden
+        return None
+
+    async def raise_discovery_managed_if_present(warden_id: str) -> None:
+        discovered = await get_known_warden(warden_id)
+        if discovered is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Warden not found",
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="Warden is discovery-managed; change it through its source of truth",
+        )
 
     def _entry_sort_timestamp(raw: str | None) -> datetime:
         if not raw:
@@ -282,8 +316,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
-        """List persisted wardens."""
-        return store.list()
+        """List known wardens from configured discovery adapters."""
+        return await list_known_wardens()
 
     @app.post("/api/v1/ravn/wardens", response_model=WardenSpec, status_code=201)
     async def create_warden_endpoint(body: WardenCreateRequest) -> WardenSpec:
@@ -316,8 +350,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens/{warden_id}", response_model=WardenSpec)
     async def get_warden_endpoint(warden_id: str) -> WardenSpec:
-        """Return one persisted warden."""
-        warden = store.get(warden_id)
+        """Return one known warden."""
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -331,8 +365,8 @@ def create_app(
         stream: str = "stdout",
         limit: int = 200,
     ) -> list[WardenLogEntry]:
-        """Return recent warden log lines for one persisted warden."""
-        warden = store.get(warden_id)
+        """Return recent warden log lines for one known warden."""
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -373,7 +407,7 @@ def create_app(
         warden_id: str, limit: int = 200
     ) -> list[WardenLogEntry]:
         """Return recent parsed activity entries from both warden log streams."""
-        warden = store.get(warden_id)
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -398,8 +432,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens/{warden_id}/stream")
     async def stream_warden_endpoint(warden_id: str, request: Request) -> StreamingResponse:
-        """Stream SSE updates for one persisted warden."""
-        if store.get(warden_id) is None:
+        """Stream SSE updates for one known warden."""
+        if await get_known_warden(warden_id) is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Warden not found",
@@ -445,6 +479,8 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if observed is None:
+            observed = await get_known_warden(warden_id)
+        if observed is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Warden not found",
@@ -463,10 +499,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if warden is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.installed", warden)
         return warden
 
@@ -475,10 +508,7 @@ def create_app(
         """Mark an installed warden as started."""
         existing = store.get(warden_id)
         if existing is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         if not existing.supervisor.installed:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -492,10 +522,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if started is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.started", started)
         return started
 
@@ -504,10 +531,7 @@ def create_app(
         """Stop an installed warden."""
         existing = store.get(warden_id)
         if existing is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         if not existing.supervisor.installed:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -521,10 +545,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if stopped is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.stopped", stopped)
         return stopped
 
@@ -539,10 +560,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if uninstalled is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.uninstalled", uninstalled)
         return uninstalled
 

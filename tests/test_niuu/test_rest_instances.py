@@ -485,3 +485,60 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
     assert any(event["service"] == "volundr" for event in payload["events"])
     assert any(event["service"] == "bifrost" for event in payload["events"])
     assert any(event["service"] == "mimir" for event in payload["events"])
+
+
+@respx.mock
+def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance(
+            "ravn-1",
+            kind=InstanceKind.RAVN,
+            base_url="https://ravn.example.com/api/v1/ravn",
+        ),
+        _instance(
+            "mimir-1",
+            kind=InstanceKind.MIMIR,
+            base_url="https://mimir.example.com",
+        ),
+    ]
+    client = _client(service)
+    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
+    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
+    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": "mimir-shared-warden",
+                    "name": "Mimir Shared Warden",
+                    "persona": "mimir-warden",
+                    "deployment": "kubernetes",
+                    "mimir": {
+                        "mount_names": ["shared"],
+                        "write_mount": "shared",
+                    },
+                    "schedules": {
+                        "dream_cycle_cron_expression": "*/15 * * * *",
+                    },
+                    "runtime": {"state": "active"},
+                    "supervisor": {
+                        "observation": {
+                            "status": "running",
+                            "source": "kubernetes",
+                        }
+                    },
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(node["id"] == "warden:mimir-shared-warden" for node in payload["nodes"])
+    assert any(
+        edge["id"] == "edge:warden:mimir-shared-warden:mimir"
+        for edge in payload["edges"]
+    )
