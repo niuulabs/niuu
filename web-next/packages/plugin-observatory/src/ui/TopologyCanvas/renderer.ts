@@ -7,7 +7,13 @@
 
 import { curveBundle, curveCatmullRom, curveLinear, line } from 'd3-shape';
 import { SERVICE_RUNES } from '@niuulabs/ui';
-import type { Topology, TopologyNode, TopologyEdge, EdgeKind } from '../../domain';
+import type {
+  Topology,
+  TopologyNode,
+  TopologyEdge,
+  EdgeKind,
+  EdgeRelationType,
+} from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
@@ -556,8 +562,13 @@ export function bundleWaypoint(
   };
 }
 
-export function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
-  switch (kind) {
+export function edgeProfile(
+  kind: EdgeKind | string | undefined,
+  now: number,
+  relationType?: EdgeRelationType,
+) {
+  switch (relationType ?? kind) {
+    case 'manages':
     case 'solid':
       return {
         stroke: rgba(C.indigo, 0.46),
@@ -568,6 +579,39 @@ export function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
         dashOffset: 0,
         bundleStrength: 0.84,
         bend: 18,
+      };
+    case 'routes_to':
+      return {
+        stroke: rgba(C.frost, 0.54),
+        glow: rgba(C.frost, 0.17),
+        lineWidth: 1.1,
+        glowWidth: 3.2,
+        dash: [3, 5] as number[],
+        dashOffset: -now / 80,
+        bundleStrength: 0.8,
+        bend: 28,
+      };
+    case 'signals_to':
+      return {
+        stroke: rgba(C.frost, 0.66),
+        glow: rgba(C.frost, 0.22),
+        lineWidth: 1.2,
+        glowWidth: 3.4,
+        dash: [2, 3] as number[],
+        dashOffset: -now / 52,
+        bundleStrength: 0.78,
+        bend: 30,
+      };
+    case 'observes':
+      return {
+        stroke: rgba(C.ice, 0.34),
+        glow: rgba(C.ice, 0.1),
+        lineWidth: 0.95,
+        glowWidth: 2.4,
+        dash: [1, 5] as number[],
+        dashOffset: -now / 96,
+        bundleStrength: 0.9,
+        bend: 26,
       };
     case 'dashed-short':
     case 'dashed-anim':
@@ -581,6 +625,28 @@ export function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
         bundleStrength: 0.8,
         bend: 28,
       };
+    case 'reads':
+      return {
+        stroke: rgba(C.moon, 0.34),
+        glow: rgba(C.moon, 0.1),
+        lineWidth: 0.9,
+        glowWidth: 2.4,
+        dash: [2, 4] as number[],
+        dashOffset: 0,
+        bundleStrength: 0.9,
+        bend: 22,
+      };
+    case 'writes':
+      return {
+        stroke: rgba(C.frost, 0.5),
+        glow: rgba(C.frost, 0.15),
+        lineWidth: 1.05,
+        glowWidth: 2.9,
+        dash: [7, 3] as number[],
+        dashOffset: -now / 110,
+        bundleStrength: 0.86,
+        bend: 25,
+      };
     case 'dashed-long':
       return {
         stroke: rgba(C.moon, 0.36),
@@ -591,6 +657,39 @@ export function edgeProfile(kind: EdgeKind | string | undefined, now: number) {
         dashOffset: -now / 120,
         bundleStrength: 0.88,
         bend: 24,
+      };
+    case 'uses':
+      return {
+        stroke: rgba(C.moon, 0.24),
+        glow: rgba(C.moon, 0.08),
+        lineWidth: 0.85,
+        glowWidth: 2.2,
+        dash: [] as number[],
+        dashOffset: 0,
+        bundleStrength: 0.9,
+        bend: 20,
+      };
+    case 'exposes':
+      return {
+        stroke: rgba(C.moon, 0.3),
+        glow: rgba(C.moon, 0.1),
+        lineWidth: 0.9,
+        glowWidth: 2.3,
+        dash: [8, 6] as number[],
+        dashOffset: 0,
+        bundleStrength: 0.88,
+        bend: 20,
+      };
+    case 'member_of':
+      return {
+        stroke: rgba(C.slate, 0.28),
+        glow: rgba(C.slate, 0.08),
+        lineWidth: 0.8,
+        glowWidth: 1.9,
+        dash: [1, 4] as number[],
+        dashOffset: 0,
+        bundleStrength: 0.92,
+        bend: 18,
       };
     case 'soft':
       return {
@@ -650,7 +749,7 @@ function drawEdge(
   }
   const start = trimToNodeBoundary(srcNode, src, dst);
   const end = trimToNodeBoundary(dstNode, dst, src);
-  const profile = edgeProfile(edge.kind, now);
+  const profile = edgeProfile(edge.kind, now, edge.relationType);
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -771,28 +870,6 @@ function drawEdge(
     ctx.fill();
   }
 
-  if (edge.label && !sameRunFlow) {
-    const labelX =
-      ancestorPos && !directParentChild && !sameRunFlow && !sameContainerEdge ? cx : midX;
-    const labelY =
-      ancestorPos && !directParentChild && !sameRunFlow && !sameContainerEdge ? cy : midY;
-    ctx.font = '500 9px "JetBrains Mono", monospace';
-    const metrics = ctx.measureText(edge.label);
-    const width = Math.max(metrics.width + 10, 30);
-    const height = 16;
-    ctx.fillStyle = 'rgba(9,9,11,0.76)';
-    ctx.beginPath();
-    ctx.roundRect(labelX - width / 2, labelY - height / 2, width, height, 5);
-    ctx.fill();
-    ctx.strokeStyle = rgba(C.ice, 0.12);
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
-    ctx.fillStyle = rgba(C.ice, 0.72);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(edge.label, labelX, labelY + 0.5);
-    ctx.textBaseline = 'alphabetic';
-  }
   ctx.restore();
 }
 

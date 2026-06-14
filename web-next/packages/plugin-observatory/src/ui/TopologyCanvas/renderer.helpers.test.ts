@@ -124,6 +124,19 @@ describe('renderer helpers', () => {
     expect(edgeProfile('dashed-short', 80).dash).toEqual([3, 5]);
     expect(edgeProfile('dashed-anim', 80).dashOffset).toBe(-1);
     expect(edgeProfile('dashed-long', 120).dash).toEqual([6, 4]);
+    expect(edgeProfile('dashed-long', 120, 'reads').dash).toEqual([2, 4]);
+    expect(edgeProfile('dashed-long', 110, 'writes')).toMatchObject({
+      dash: [7, 3],
+      dashOffset: -1,
+    });
+    expect(edgeProfile('dashed-anim', 52, 'signals_to')).toMatchObject({
+      dash: [2, 3],
+      dashOffset: -1,
+    });
+    expect(edgeProfile('dashed-anim', 96, 'observes')).toMatchObject({
+      dash: [1, 5],
+      dashOffset: -1,
+    });
     expect(edgeProfile('soft', 10)).toMatchObject({ lineWidth: 0.85 });
     expect(edgeProfile('run', 10)).toMatchObject({ bend: 34 });
     expect(edgeProfile('mystery', 10)).toMatchObject({ lineWidth: 0.9 });

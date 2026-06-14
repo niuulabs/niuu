@@ -255,7 +255,7 @@ describe('drawEdges', () => {
     ).toBe(true);
   });
 
-  it('keeps same-namespace semantic edge labels between the connected entities', () => {
+  it('does not draw inline labels for semantic edges', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
       timestamp: TOPOLOGY.timestamp,
@@ -301,9 +301,8 @@ describe('drawEdges', () => {
 
     drawEdges(ctx, topo, positions, 0);
 
-    const labelBoxCall = (ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.at(-1);
-    expect(labelBoxCall?.[0]).toBeCloseTo(59.5);
-    expect(labelBoxCall?.[1]).toBeCloseTo(-8);
+    expect(ctx.roundRect).not.toHaveBeenCalled();
+    expect(ctx.fillText).not.toHaveBeenCalled();
   });
 });
 
