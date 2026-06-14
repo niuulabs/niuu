@@ -570,12 +570,12 @@ class SessionService:
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
 
-        if session.status in (SessionStatus.RUNNING, SessionStatus.PROVISIONING):
+        if self._should_stop_infrastructure_on_delete(session.status):
             try:
                 await self._pod_manager.stop(session)
             except Exception as e:
                 logger.warning(
-                    "Failed to stop pods for session %s during deletion: %s. "
+                    "Failed to stop infrastructure for session %s during deletion: %s. "
                     "Proceeding with session deletion.",
                     _sanitize_log(session_id),
                     _sanitize_log(e),
@@ -594,6 +594,17 @@ class SessionService:
             await self._broadcaster.publish_session_deleted(session_id)
 
         return deleted
+
+    @staticmethod
+    def _should_stop_infrastructure_on_delete(status: SessionStatus) -> bool:
+        """Return True when a session may have runtime infrastructure to remove."""
+        return status in {
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+            SessionStatus.STOPPING,
+            SessionStatus.FAILED,
+        }
 
     async def _run_targeted_cleanup(
         self,

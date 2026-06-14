@@ -252,6 +252,80 @@ class TestSessionServiceDelete:
         assert result is True
         assert len(pod_manager.stop_calls) == 1
 
+    async def test_delete_failed_stops_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting a failed session still asks the pod manager to clean up."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        failed = created.with_status(SessionStatus.FAILED)
+        await repository.update(failed)
+
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert await repository.get(created.id) is None
+        assert len(pod_manager.stop_calls) == 1
+        assert pod_manager.stop_calls[0].id == created.id
+
+    async def test_delete_transitional_statuses_stop_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting sessions that may have in-flight resources stops infrastructure."""
+        service = SessionService(repository, pod_manager)
+
+        for status in (
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.STOPPING,
+        ):
+            created = await service.create_session(
+                name=f"test-{status.value}",
+                model="claude-3-opus",
+                source=GitSource(
+                    repo="https://github.com/org/repo",
+                    branch="main",
+                ),
+            )
+            await repository.update(created.with_status(status))
+
+            result = await service.delete_session(created.id)
+
+            assert result is True
+
+        assert [call.status for call in pod_manager.stop_calls] == [
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.STOPPING,
+        ]
+
+    async def test_delete_created_does_not_stop_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting a never-started session does not call the pod manager."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert pod_manager.stop_calls == []
+
     async def test_delete_running_succeeds_when_pod_stop_fails(
         self, repository: Repo, failing_pod_manager: Pods
     ):
@@ -275,6 +349,28 @@ class TestSessionServiceDelete:
         await repository.update(running)
 
         # Delete should succeed even though pod_manager.stop() raises an exception
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert await repository.get(created.id) is None
+        assert len(failing_pod_manager.stop_calls) == 1
+
+    async def test_delete_failed_succeeds_when_infrastructure_cleanup_fails(
+        self, repository: Repo, failing_pod_manager: Pods
+    ):
+        """Deleting a failed session keeps DB cleanup resilient to K8s cleanup errors."""
+        service = SessionService(repository, failing_pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        await repository.update(created.with_status(SessionStatus.FAILED))
+
         result = await service.delete_session(created.id)
 
         assert result is True

@@ -258,7 +258,7 @@ spec:
             - name: CLAUDE_CONFIG_DIR
               value: "{{ .Values.homeVolume.mountPath }}/{{ .Values.homeVolume.credentialFiles.destDir }}"
             - name: CODEX_HOME
-              value: "{{ .Values.homeVolume.mountPath }}/{{ .Values.homeVolume.credentialFiles.destDir }}"
+              value: {{ printf "%s/.codex" (include "skuld.workspacePath" .) | quote }}
             {{- end }}
             {{- range .Values.envSecrets }}
             - name: {{ .envVar }}
