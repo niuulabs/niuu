@@ -15,7 +15,7 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/web-next-configmap.yaml") . | sha256sum }}
       labels:
-        {{- include "volundr.webNext.selectorLabels" . | nindent 8 }}
+        {{- include "volundr.webNext.labels" . | nindent 8 }}
     spec:
       {{- include "volundr.imagePullSecrets" . | nindent 6 }}
       securityContext:

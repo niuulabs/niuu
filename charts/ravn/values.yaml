@@ -141,3 +141,6 @@ global:
   imagePullSecrets: []
   image:
     registry: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown

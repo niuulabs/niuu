@@ -34,6 +34,8 @@ def _instance(
     enabled: bool = True,
     is_default: bool = False,
     base_url: str = "https://registry.example.com",
+    config: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
     return RegisteredInstance(
@@ -47,9 +49,10 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config={"region": "ca-central-1"},
+        config=config if config is not None else {"region": "ca-central-1"},
         created_at=now,
         updated_at=now,
+        tags=list(tags or []),
     )
 
 
@@ -541,4 +544,68 @@ def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
     assert any(
         edge["id"] == "edge:warden:mimir-shared-warden:mimir"
         for edge in payload["edges"]
+    )
+
+
+@respx.mock
+def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance(
+            "ravn-1",
+            kind=InstanceKind.RAVN,
+            base_url="https://ravn.example.com/api/v1/ravn",
+            config={
+                "labels": {
+                    "niuu.world/cluster": "ymir",
+                    "niuu.world/namespace": "volundr",
+                }
+            },
+        ),
+        _instance(
+            "mimir-1",
+            kind=InstanceKind.MIMIR,
+            base_url="https://mimir.example.com",
+            config={"environment": "ymir", "namespace": "volundr"},
+        ),
+    ]
+    client = _client(service)
+    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
+    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
+    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": "mimir-shared-warden",
+                    "name": "Mimir Shared Warden",
+                    "runtime": {"state": "active"},
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(
+        node["id"] == "cluster-ymir"
+        and node["label"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "instance:ravn:ravn-1-slug"
+        and node["parentId"] == "cluster-ymir"
+        and node["clusterName"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "warden:mimir-shared-warden"
+        and node["parentId"] == "cluster-ymir"
+        and node["clusterName"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
     )

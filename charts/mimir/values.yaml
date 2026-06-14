@@ -3,6 +3,11 @@
 
 # -- Number of replicas. Mímir uses a PVC for storage so this should stay at 1
 # unless you use a ReadWriteMany storage class.
+global:
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
+
 replicaCount: 1
 
 # -- How many old ReplicaSets to retain.

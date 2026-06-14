@@ -12,6 +12,9 @@ global:
     registry: ghcr.io/niuulabs
   domain: niuu.world
 
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
 ingress:
   enabled: false
   className: ""

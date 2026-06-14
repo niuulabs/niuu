@@ -8,6 +8,20 @@ import pytest
 import yaml
 
 CHARTS_DIR = Path(__file__).parent.parent.parent / "charts"
+CHARTS = (
+    "agent",
+    "bifrost",
+    "guild",
+    "mimir",
+    "niuu",
+    "niuu-shared",
+    "observatory",
+    "ravn",
+    "skuld",
+    "skuld-planner",
+    "ting",
+    "volundr",
+)
 
 
 @pytest.mark.parametrize(
@@ -48,6 +62,21 @@ def test_volundr_chart_uses_uvicorn_import_path() -> None:
         "--workers",
         "$(WORKERS)",
     ]
+
+
+@pytest.mark.parametrize("chart", CHARTS)
+def test_charts_default_niuu_deployment_cluster_value(chart: str) -> None:
+    values = _load_values(chart)
+
+    assert values["global"]["niuu"]["cluster"] == "unknown"
+
+
+@pytest.mark.parametrize("chart", CHARTS)
+def test_charts_include_niuu_deployment_labels(chart: str) -> None:
+    helpers = (CHARTS_DIR / chart / "templates" / "_helpers.tpl").read_text()
+
+    assert "niuu.world/cluster" in helpers
+    assert "niuu.world/namespace" in helpers
 
 
 def _load_values(chart: str) -> dict:

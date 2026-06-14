@@ -213,6 +213,83 @@ def _slug(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-") or "service"
 
 
+def _string_config_value(config: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _instance_deployment_labels(instance: RegisteredInstance) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for key in ("labels", "deploymentLabels", "kubernetesLabels"):
+        raw_labels = instance.config.get(key)
+        if isinstance(raw_labels, dict):
+            for label_key, label_value in raw_labels.items():
+                if (
+                    isinstance(label_key, str)
+                    and isinstance(label_value, str)
+                    and label_value.strip()
+                ):
+                    labels[label_key] = label_value.strip()
+    return labels
+
+
+def _instance_cluster_name(instance: RegisteredInstance) -> str:
+    labels = _instance_deployment_labels(instance)
+    label_cluster = labels.get("niuu.world/cluster") or labels.get("cluster")
+    if label_cluster:
+        return label_cluster
+    return _string_config_value(instance.config, "cluster", "environment")
+
+
+def _instance_namespace(instance: RegisteredInstance) -> str:
+    labels = _instance_deployment_labels(instance)
+    label_namespace = labels.get("niuu.world/namespace") or labels.get("namespace")
+    if label_namespace:
+        return label_namespace
+    return _string_config_value(instance.config, "namespace")
+
+
+def _deployment_cluster_id(cluster_name: str) -> str:
+    return f"cluster-{_slug(cluster_name)}"
+
+
+def _ensure_deployment_cluster_node(
+    nodes: list[dict[str, Any]],
+    *,
+    cluster_name: str,
+    namespace: str = "",
+) -> str:
+    node_id = _deployment_cluster_id(cluster_name)
+    existing = next((node for node in nodes if node["id"] == node_id), None)
+    if existing is not None:
+        if namespace and not existing.get("namespace"):
+            existing["namespace"] = namespace
+        return node_id
+
+    nodes.append(
+        {
+            "id": node_id,
+            "typeId": "cluster",
+            "label": cluster_name,
+            "parentId": None,
+            "status": "unknown",
+            "sourceKind": "deployment",
+            "clusterName": cluster_name,
+            "namespace": namespace,
+            "layoutHints": {
+                "mode": "pack",
+                "scope": "world",
+                "pack_group": "deployment-cluster",
+                "order": 30,
+            },
+        }
+    )
+    return node_id
+
+
 def _iso(ts: datetime) -> str:
     return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -1221,7 +1298,17 @@ def _overlay_instance_demo_nodes(
         probe = probe_by_id[instance.id]
         kind_index = per_kind_index.get(instance.kind, 0)
         per_kind_index[instance.kind] = kind_index + 1
-        parent_id = cluster_cycle[kind_index % len(cluster_cycle)]
+        cluster_name = _instance_cluster_name(instance)
+        namespace = _instance_namespace(instance)
+        parent_id = (
+            _ensure_deployment_cluster_node(
+                nodes,
+                cluster_name=cluster_name,
+                namespace=namespace,
+            )
+            if cluster_name
+            else cluster_cycle[kind_index % len(cluster_cycle)]
+        )
         node_id = f"instance:{instance.kind.value}:{_slug(instance.slug or instance.name)}"
         type_id = _kind_type_id(instance.kind)
         svc_type = _kind_svc_type(instance.kind)
@@ -1242,6 +1329,8 @@ def _overlay_instance_demo_nodes(
             "enabled": instance.enabled,
             "sourceKind": svc_type,
             "sourceId": instance.id,
+            "clusterName": cluster_name,
+            "namespace": namespace,
             "layoutHints": {
                 "mode": "pack",
                 "scope": "node",
@@ -1352,6 +1441,8 @@ def _overlay_ravn_warden_nodes(
     ravn_node_id = f"instance:{ravn_instance.kind.value}:{ravn_slug}"
     ravn_node = next((node for node in nodes if node["id"] == ravn_node_id), None)
     parent_id = ravn_node.get("parentId") if ravn_node else "cluster-valaskjalf"
+    cluster_name = str(ravn_node.get("clusterName") or "") if ravn_node else ""
+    namespace = str(ravn_node.get("namespace") or "") if ravn_node else ""
     mimir_node = next((node for node in nodes if node.get("typeId") == "mimir"), None)
     mimir_node_id = str(mimir_node.get("id")) if mimir_node else "mimir-well"
 
@@ -1378,6 +1469,8 @@ def _overlay_ravn_warden_nodes(
                 "sourceId": warden_id,
                 "baseUrl": ravn_instance.base_url,
                 "deployment": str(warden.get("deployment") or ""),
+                "clusterName": cluster_name,
+                "namespace": namespace,
                 "mimirMounts": list(mimir.get("mount_names") or []),
                 "writeMount": str(mimir.get("write_mount") or ""),
                 "dreamCycle": str(schedules.get("dream_cycle_cron_expression") or ""),

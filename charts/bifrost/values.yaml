@@ -2,6 +2,11 @@
 # Override these values in your environment-specific values file.
 
 # -- Number of replicas when autoscaling is disabled.
+global:
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
+
 replicaCount: 2
 
 # -- How many old ReplicaSets to retain.

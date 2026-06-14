@@ -29,6 +29,20 @@ Create chart name and version as used by the chart label.
 {{- end }}
 
 {{/*
+Niuu deployment discovery labels.
+*/}}
+{{- define "ravn.niuuLabels" -}}
+{{- $cluster := "unknown" -}}
+{{- if and .Values.global .Values.global.niuu .Values.global.niuu.cluster -}}
+{{- $cluster = .Values.global.niuu.cluster -}}
+{{- else if and .Values.niuu .Values.niuu.cluster -}}
+{{- $cluster = .Values.niuu.cluster -}}
+{{- end -}}
+niuu.world/cluster: {{ $cluster | quote }}
+niuu.world/namespace: {{ .Release.Namespace | quote }}
+{{- end }}
+
+{{/*
 Common labels
 */}}
 {{- define "ravn.labels" -}}
@@ -37,6 +51,7 @@ helm.sh/chart: {{ include "ravn.chart" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
+{{ include "ravn.niuuLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/component: ravn-api
 app.kubernetes.io/part-of: niuu

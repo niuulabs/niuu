@@ -148,3 +148,6 @@ global:
   image:
     registry: ""
     tag: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown

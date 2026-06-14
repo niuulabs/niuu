@@ -27,6 +27,9 @@ global:
     tag: ""
   # -- Global base domain (used for ingress hosts and gateway hostname)
   domain: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
 
 # -- Override the name of the chart
 nameOverride: ""
