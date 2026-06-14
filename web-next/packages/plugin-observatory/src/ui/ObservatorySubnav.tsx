@@ -7,7 +7,6 @@ import './ObservatorySubnav.css';
 // ── Filter section config ─────────────────────────────────────────────────────
 
 const AGENT_KINDS = new Set(['ravn_long', 'ravn_run', 'valkyrie', 'skuld', 'warden']);
-const SERVICE_KINDS = new Set(['service', 'bifrost', 'ting', 'volundr', 'mimir']);
 const DEVICE_KINDS = new Set(['printer', 'vaettir', 'beacon']);
 const RUN_KIND = 'run';
 
@@ -41,7 +40,7 @@ const FILTER_ROWS: FilterRow[] = [
     id: 'services',
     label: 'Services',
     color: 'var(--brand-300, var(--color-brand))',
-    count: (nodes) => nodes.filter((n) => SERVICE_KINDS.has(n.typeId)).length,
+    count: (nodes) => nodes.filter((n) => n.typeId === 'service').length,
   },
   {
     id: 'devices',

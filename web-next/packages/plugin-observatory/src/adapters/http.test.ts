@@ -141,6 +141,40 @@ describe('buildObservatoryTopologySseStream', () => {
     expect(stream.getSnapshot()).toEqual(topologyB);
   });
 
+  it('seeds the current topology from the snapshot endpoint before stream frames arrive', async () => {
+    global.fetch = vi.fn((input, init) => {
+      const url = String(input);
+      if (url === '/topology/snapshot') {
+        return Promise.resolve(
+          new Response(JSON.stringify(topologyA), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>((_, reject) => {
+        (init as RequestInit | undefined)?.signal?.addEventListener('abort', () => {
+          reject(new Error('aborted'));
+        });
+      });
+    }) as typeof fetch;
+
+    const stream = buildObservatoryTopologySseStream('/topology/stream');
+    const received: Topology[] = [];
+    const unsub = stream.subscribe((t) => received.push(t));
+
+    await new Promise((r) => setTimeout(r, 20));
+    unsub();
+
+    expect(received).toEqual([topologyA]);
+    expect(stream.getSnapshot()).toEqual(topologyA);
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/topology/snapshot',
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+  });
+
   it('drops malformed JSON frames without breaking the stream', async () => {
     global.fetch = vi.fn(async () =>
       mockSseResponse([`data: not-json\n\n`, `data: ${JSON.stringify(topologyA)}\n\n`]),
