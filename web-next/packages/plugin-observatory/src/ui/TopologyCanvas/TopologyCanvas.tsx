@@ -529,7 +529,8 @@ export function TopologyCanvas({
             height={CANVAS.MINIMAP_H}
             className="minimap-canvas"
             onClick={handleMinimapClick}
-            aria-label="Minimap — click to pan"
+            role="img"
+            aria-label="Topology minimap — click to pan"
           />
         </div>
       )}
