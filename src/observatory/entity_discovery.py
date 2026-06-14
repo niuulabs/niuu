@@ -29,6 +29,7 @@ _KNOWN_TYPE_IDS = {
     "skuld",
     "ting",
     "volundr",
+    "warden",
 }
 _COMPONENT_TYPES = {
     "agent": "ravn_long",
@@ -45,9 +46,11 @@ _COMPONENT_TYPES = {
     "shared-services": "service",
     "ting": "ting",
     "volundr": "volundr",
+    "warden": "warden",
     "web": "volundr",
     "web-next": "volundr",
 }
+_STATUS_RANK = {"failed": 3, "healthy": 2, "observing": 1, "unknown": 0}
 
 
 def _utc_now() -> datetime:
@@ -89,6 +92,82 @@ def _status_from_k8s(kind: str, payload: dict[str, Any]) -> str:
             return "failed"
         return "unknown"
     return "healthy"
+
+
+def _merge_status(left: str, right: str) -> str:
+    return left if _STATUS_RANK.get(left, 0) >= _STATUS_RANK.get(right, 0) else right
+
+
+def _merge_metadata(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    merged = {**left, **right}
+    resources: list[Any] = []
+    for value in (left.get("resources"), right.get("resources")):
+        if isinstance(value, list):
+            resources.extend(value)
+    if resources:
+        seen: set[tuple[str, str, str]] = set()
+        deduped: list[Any] = []
+        for resource in resources:
+            if not isinstance(resource, dict):
+                continue
+            key = (
+                str(resource.get("kind") or ""),
+                str(resource.get("name") or ""),
+                str(resource.get("uid") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(resource)
+        merged["resources"] = deduped
+    return merged
+
+
+def _merge_discovered_entity(
+    current: DiscoveredEntity | None,
+    incoming: DiscoveredEntity,
+) -> DiscoveredEntity:
+    if current is None:
+        return incoming
+    kind = incoming.kind if incoming.kind != "service" else current.kind
+    if current.kind == "warden" or incoming.kind == "warden":
+        kind = "warden"
+    name = incoming.name if incoming.name and incoming.name != incoming.id else current.name
+    if current.kind == "warden" and current.name:
+        name = current.name
+    source_kinds = {
+        item
+        for value in (current.source_kind, incoming.source_kind)
+        for item in str(value).split(",")
+        if item
+    }
+    return DiscoveredEntity(
+        id=current.id,
+        kind=kind,
+        name=name or current.name,
+        cluster=incoming.cluster or current.cluster,
+        namespace=incoming.namespace or current.namespace,
+        status=_merge_status(current.status, incoming.status),
+        parent_id=incoming.parent_id or current.parent_id,
+        labels={**current.labels, **incoming.labels},
+        annotations={**current.annotations, **incoming.annotations},
+        source_adapter=(
+            incoming.source_adapter
+            if incoming.source_adapter == current.source_adapter
+            else f"{current.source_adapter},{incoming.source_adapter}"
+        ),
+        source_kind=",".join(sorted(source_kinds)),
+        source_uid=incoming.source_uid or current.source_uid,
+        endpoints={**current.endpoints, **incoming.endpoints},
+        metadata=_merge_metadata(current.metadata, incoming.metadata),
+    )
+
+
+def _merge_discovered_entities(entities: list[DiscoveredEntity]) -> list[DiscoveredEntity]:
+    merged: dict[str, DiscoveredEntity] = {}
+    for entity in entities:
+        merged[entity.id] = _merge_discovered_entity(merged.get(entity.id), entity)
+    return list(merged.values())
 
 
 @dataclass(frozen=True)
@@ -194,10 +273,10 @@ class WardenSpecDiscoveryAdapter:
             entities.append(
                 DiscoveredEntity(
                     id=(
-                        f"warden:{_slug(cluster or 'local')}:"
-                        f"{_slug(namespace or 'default')}:{_slug(warden_id)}"
+                        f"runtime:{_slug(cluster or 'local')}:"
+                        f"{_slug(namespace or 'default')}:warden:{_slug(warden_id)}"
                     ),
-                    kind="ravn_long",
+                    kind="warden",
                     name=str(getattr(warden, "name", "") or warden_id),
                     cluster=cluster,
                     namespace=namespace,
@@ -345,7 +424,7 @@ class KubernetesDiscoveryAdapter:
                                 entities.append(entity)
         except Exception as exc:
             events.append(_adapter_warning("kubernetes", str(exc)))
-        return DiscoveryResult(entities=entities, events=events)
+        return DiscoveryResult(entities=_merge_discovered_entities(entities), events=events)
 
     def _path_for_kind(self, kind: str) -> str:
         namespace = quote(self._namespace, safe="")
@@ -380,27 +459,51 @@ class KubernetesDiscoveryAdapter:
             component or "",
             _COMPONENT_TYPES.get(app_name or "", "service"),
         )
-        if resource_kind == "pod":
-            type_id = "service"
-        entity_id = f"k8s:{_slug(cluster)}:{_slug(namespace)}:{resource_kind}:{_slug(name)}"
+        logical_name = labels.get("niuu.world/entity-id") or labels.get("niuu.world/service-id")
+        display_name = labels.get("niuu.world/display-name") or ""
+        if labels.get("niuu.world/warden-id"):
+            logical_name = labels["niuu.world/warden-id"]
+            display_name = (
+                annotations.get("niuu.world/warden-name")
+                or labels.get("niuu.world/warden-name")
+                or display_name
+            )
+            type_id = "warden"
+        elif app_name:
+            logical_name = app_name
+        elif component:
+            logical_name = component
+        else:
+            logical_name = name
+        display_name = display_name or logical_name
+        entity_id = (
+            f"runtime:{_slug(cluster)}:{_slug(namespace)}:"
+            f"{_slug(type_id)}:{_slug(logical_name)}"
+        )
         return DiscoveredEntity(
             id=entity_id,
             kind=type_id if type_id in _KNOWN_TYPE_IDS else "service",
-            name=name,
+            name=display_name,
             cluster=cluster,
             namespace=namespace,
             status=_status_from_k8s(resource_kind, item),
             labels=labels,
             annotations=annotations,
             source_adapter=self.__class__.__name__,
-            source_kind=f"kubernetes:{resource_kind}",
+            source_kind="kubernetes",
             source_uid=str(metadata.get("uid") or ""),
             endpoints=_endpoints_for_k8s(resource_kind, item, labels),
             metadata={
-                "resourceKind": resource_kind,
                 "component": component or "",
                 "app": app_name or "",
-                "generation": metadata.get("generation"),
+                "resources": [
+                    {
+                        "kind": resource_kind,
+                        "name": name,
+                        "uid": str(metadata.get("uid") or ""),
+                        "generation": metadata.get("generation"),
+                    }
+                ],
             },
         )
 
@@ -433,7 +536,10 @@ class CompositeDiscoveryAdapter:
                     events=[_adapter_warning(adapter.__class__.__name__, str(exc))]
                 )
             for entity in result.entities:
-                entities_by_id[entity.id] = entity
+                entities_by_id[entity.id] = _merge_discovered_entity(
+                    entities_by_id.get(entity.id),
+                    entity,
+                )
             for edge in result.edges:
                 edges_by_id[edge["id"]] = edge
             events.extend(result.events)

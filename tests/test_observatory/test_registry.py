@@ -54,7 +54,7 @@ async def test_save_registry_bumps_version() -> None:
     registry = await repo.get_registry()
     registry["types"][0]["label"] = "Realm Prime"
     saved = await repo.save_registry(registry)
-    assert saved["version"] == 10
+    assert saved["version"] == 11
     assert saved["types"][0]["label"] == "Realm Prime"
 
 
@@ -126,7 +126,7 @@ async def test_postgres_repo_seeds_and_loads_registry() -> None:
     await repo.ensure_seeded()
     loaded = await repo.get_registry()
     assert pool.execute_calls == 1
-    assert loaded["version"] == 9
+    assert loaded["version"] == 10
     assert any(item["id"] == "realm" for item in loaded["types"])
     assert any(item["id"] == "namespace" for item in loaded["types"])
 

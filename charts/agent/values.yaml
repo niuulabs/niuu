@@ -134,6 +134,7 @@ containerSecurityContext:
 
 podAnnotations: {}
 podLabels: {}
+deploymentLabels: {}
 deploymentAnnotations: {}
 extraEnv: []
 envFrom: []

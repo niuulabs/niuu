@@ -11,7 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 9,
+    "version": 10,
     "updatedAt": "2026-06-14T00:00:00Z",
     "types": [
         {
@@ -58,6 +58,7 @@ REGISTRY: dict[str, object] = {
                 "bifrost",
                 "volundr",
                 "valkyrie",
+                "warden",
                 "mimir",
             ],
             "parentTypes": ["realm"],
@@ -85,6 +86,7 @@ REGISTRY: dict[str, object] = {
                 "volundr",
                 "ravn_long",
                 "valkyrie",
+                "warden",
                 "mimir",
             ],
             "parentTypes": ["cluster"],
@@ -138,6 +140,25 @@ REGISTRY: dict[str, object] = {
                 },
                 {"key": "specialty", "label": "Specialty", "type": "string"},
                 {"key": "tokens", "label": "Tokens", "type": "number"},
+            ],
+        },
+        {
+            "id": "warden",
+            "label": "Warden",
+            "rune": "ᚱ",
+            "icon": "shield",
+            "shape": "diamond",
+            "color": "brand",
+            "size": 12,
+            "border": "solid",
+            "canContain": [],
+            "parentTypes": ["namespace", "cluster", "realm"],
+            "category": "agent",
+            "description": "Autonomous guardian agent bound to a runtime target.",
+            "fields": [
+                {"key": "persona", "label": "Persona", "type": "string"},
+                {"key": "mimirMount", "label": "Mimir mount", "type": "string"},
+                {"key": "dreamCycle", "label": "Dream cycle", "type": "string"},
             ],
         },
         {

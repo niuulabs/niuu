@@ -41,6 +41,7 @@ export function nodeColour(typeId: string): readonly [number, number, number] {
       return C.indigo;
     case 'volundr':
     case 'ravn_long':
+    case 'warden':
     case 'mimir':
       return C.moon;
     case 'valkyrie':
@@ -78,6 +79,7 @@ export function identityRune(typeId: string): string {
   const alias: Partial<Record<string, keyof typeof SERVICE_RUNES>> = {
     ravn_long: 'ravn',
     ravn_run: 'ravn',
+    warden: 'ravn',
   };
   const key = alias[typeId];
   return key ? SERVICE_RUNES[key] : '';
@@ -931,6 +933,10 @@ function drawShape(
 
     case 'ravn_long':
       drawServiceBadge(ctx, 'diamond', cx, cy, size, col);
+      return;
+
+    case 'warden':
+      drawServiceBadge(ctx, 'pentagon', cx, cy, size, col);
       return;
 
     case 'ravn_run':

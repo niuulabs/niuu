@@ -72,18 +72,83 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
     assert {node["id"] for node in snapshot["nodes"]} == {
         "cluster-ymir",
         "namespace-ymir-volundr",
-        "k8s:ymir:volundr:deployment:niuu-ravn",
+        "runtime:ymir:volundr:ravn-long:ravn-api",
     }
-    ravn = next(node for node in snapshot["nodes"] if node["id"].endswith("niuu-ravn"))
+    ravn = next(node for node in snapshot["nodes"] if node["id"].endswith("ravn-api"))
     namespace = next(node for node in snapshot["nodes"] if node["id"] == "namespace-ymir-volundr")
     cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-ymir")
     assert ravn["typeId"] == "ravn_long"
+    assert "resourceKind" not in ravn
+    assert [resource["kind"] for resource in ravn["resources"]] == ["deployment"]
     assert ravn["clusterName"] == "ymir"
     assert ravn["namespace"] == "volundr"
     assert ravn["layoutHints"]["packGroup"] == "ravn_long"
     assert namespace["typeId"] == "namespace"
     assert namespace["layoutHints"]["packGroup"] == "namespace"
     assert cluster["layoutHints"]["packGroup"] == "cluster"
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
+    tmp_path, monkeypatch
+) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def item(kind: str, name: str, labels: dict[str, str]) -> dict[str, object]:
+        return {
+            "metadata": {
+                "name": name,
+                "namespace": "volundr",
+                "uid": f"uid-{kind}-{name}",
+                "labels": labels,
+            },
+            "status": {
+                "phase": "Running",
+                "replicas": 1,
+                "readyReplicas": 1,
+                "availableReplicas": 1,
+            },
+        }
+
+    labels = {
+        "niuu.world/cluster": "ymir",
+        "app.kubernetes.io/name": "mimir-shared",
+        "app.kubernetes.io/component": "knowledge-service",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/deployments"):
+            return httpx.Response(200, json={"items": [item("deployment", "niuu-mimir", labels)]})
+        if request.url.path.endswith("/services"):
+            return httpx.Response(200, json={"items": [item("service", "niuu-mimir", labels)]})
+        if request.url.path.endswith("/pods"):
+            return httpx.Response(
+                200,
+                json={"items": [item("pod", "niuu-mimir-abc123", labels)]},
+            )
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        include_kinds=["deployments", "services", "pods", "ingresses"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+
+    mimir_nodes = [node for node in snapshot["nodes"] if node["typeId"] == "mimir"]
+    assert len(mimir_nodes) == 1
+    assert mimir_nodes[0]["id"] == "runtime:ymir:volundr:mimir:mimir-shared"
+    assert mimir_nodes[0]["label"] == "mimir-shared"
+    assert sorted(resource["kind"] for resource in mimir_nodes[0]["resources"]) == [
+        "deployment",
+        "pod",
+        "service",
+    ]
 
 
 @pytest.mark.asyncio
@@ -97,13 +162,13 @@ async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
                     DiscoveryResult(
                         entities=[
                             DiscoveredEntity(
-                                id="k8s:noatun:volundr:deployment:niuu-mimir-shared",
+                                id="runtime:noatun:volundr:mimir:niuu-mimir-shared",
                                 kind="mimir",
                                 name="niuu-mimir-shared",
                                 cluster="noatun",
                                 namespace="volundr",
                                 status="healthy",
-                                source_kind="kubernetes:deployment",
+                                source_kind="kubernetes",
                             )
                         ]
                     )
@@ -116,7 +181,7 @@ async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
 
     node_ids = {node["id"] for node in snapshot["nodes"]}
     assert "cluster-noatun" in node_ids
-    assert "k8s:noatun:volundr:deployment:niuu-mimir-shared" in node_ids
+    assert "runtime:noatun:volundr:mimir:niuu-mimir-shared" in node_ids
     assert not any(node_id.startswith("realm-") for node_id in node_ids)
     assert "mimir-well" not in node_ids
 
