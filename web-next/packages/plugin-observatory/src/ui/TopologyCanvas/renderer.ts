@@ -92,51 +92,52 @@ export function identityRune(typeId: string): string {
   return key ? SERVICE_RUNES[key] : '';
 }
 
-type ServiceBadgeKind = 'rounded' | 'hex' | 'diamond' | 'pentagon';
+export function nodeIconGlyph(typeId: string): string {
+  return identityRune(typeId) || typeId.slice(0, 1).toUpperCase();
+}
 
-function drawServiceBadge(
+export function nodeSwatchSize(typeId: string, size = NODE_SIZE[typeId] ?? 6): number {
+  if (typeId === 'realm' || typeId === 'cluster' || typeId === 'namespace') return 16;
+  return Math.max(20, Math.min(30, size * 2.1));
+}
+
+function drawNodeSwatch(
   ctx: CanvasRenderingContext2D,
-  kind: ServiceBadgeKind,
+  typeId: string,
   cx: number,
   cy: number,
-  size: number,
-  col: readonly [number, number, number],
+  size = NODE_SIZE[typeId] ?? 6,
+  hovered = false,
 ): void {
-  ctx.fillStyle = rgba(col, 0.13);
-  ctx.strokeStyle = rgba(col, 0.92);
-  ctx.lineWidth = 1.1;
-  ctx.beginPath();
-  switch (kind) {
-    case 'rounded':
-      ctx.roundRect(cx - size * 1.04, cy - size * 1.04, size * 2.08, size * 2.08, size * 0.38);
-      break;
-    case 'hex':
-      ctx.moveTo(cx - size * 0.72, cy - size * 0.46);
-      ctx.lineTo(cx, cy - size * 0.84);
-      ctx.lineTo(cx + size * 0.72, cy - size * 0.46);
-      ctx.lineTo(cx + size * 0.72, cy + size * 0.46);
-      ctx.lineTo(cx, cy + size * 0.84);
-      ctx.lineTo(cx - size * 0.72, cy + size * 0.46);
-      ctx.closePath();
-      break;
-    case 'diamond':
-      ctx.moveTo(cx, cy - size * 0.96);
-      ctx.lineTo(cx + size * 0.9, cy);
-      ctx.lineTo(cx, cy + size * 0.96);
-      ctx.lineTo(cx - size * 0.9, cy);
-      ctx.closePath();
-      break;
-    case 'pentagon':
-      ctx.moveTo(cx, cy - size * 0.96);
-      ctx.lineTo(cx + size * 0.86, cy - size * 0.18);
-      ctx.lineTo(cx + size * 0.54, cy + size * 0.86);
-      ctx.lineTo(cx - size * 0.54, cy + size * 0.86);
-      ctx.lineTo(cx - size * 0.86, cy - size * 0.18);
-      ctx.closePath();
-      break;
+  const col = nodeColour(typeId);
+  const box = nodeSwatchSize(typeId, size);
+  const half = box / 2;
+  const radius = Math.max(5, box * 0.27);
+
+  ctx.save();
+  if (hovered) {
+    ctx.strokeStyle = rgba(C.moon, 0.72);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.roundRect(cx - half - 4, cy - half - 4, box + 8, box + 8, radius + 3);
+    ctx.stroke();
   }
+
+  ctx.fillStyle = rgba(col, hovered ? 0.2 : 0.14);
+  ctx.strokeStyle = rgba(col, hovered ? 1 : 0.9);
+  ctx.lineWidth = hovered ? 1.3 : 1;
+  ctx.beginPath();
+  ctx.roundRect(cx - half, cy - half, box, box, radius);
   ctx.fill();
   ctx.stroke();
+
+  ctx.fillStyle = rgba(col, 0.96);
+  ctx.font = `700 ${Math.max(10, Math.round(box * 0.55))}px "JetBrains Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(nodeIconGlyph(typeId), cx, cy + 0.5);
+  ctx.textBaseline = 'alphabetic';
+  ctx.restore();
 }
 
 export function workflowLabelPlacement(
@@ -166,104 +167,6 @@ export function structureLabel(node: TopologyNode): string {
   return humanizeObservatoryText(node.label);
 }
 
-function drawStructureGlyph(
-  ctx: CanvasRenderingContext2D,
-  typeId: 'realm' | 'cluster' | 'namespace' | 'host',
-  x: number,
-  y: number,
-): void {
-  ctx.save();
-  switch (typeId) {
-    case 'realm': {
-      ctx.strokeStyle = rgba(C.indigo, 0.62);
-      ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      ctx.arc(x, y, 5.7, Math.PI * 0.18, Math.PI * 1.82);
-      ctx.stroke();
-      ctx.strokeStyle = rgba(C.ice, 0.7);
-      ctx.lineWidth = 0.8;
-      ctx.beginPath();
-      ctx.arc(x + 1.2, y - 0.8, 3.1, Math.PI * 0.28, Math.PI * 1.78);
-      ctx.stroke();
-      ctx.fillStyle = rgba(C.frost, 0.9);
-      ctx.beginPath();
-      ctx.arc(x - 1.6, y + 0.9, 1.15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = rgba(C.indigo, 0.9);
-      ctx.beginPath();
-      ctx.arc(x + 4.9, y - 2.3, 1.1, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    }
-    case 'cluster': {
-      const points = [
-        { x, y: y - 4.5 },
-        { x: x - 4.5, y: y + 3.5 },
-        { x: x + 4.5, y: y + 3.5 },
-      ];
-      ctx.strokeStyle = rgba(C.indigo, 0.68);
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(points[0]!.x, points[0]!.y);
-      ctx.lineTo(points[1]!.x, points[1]!.y);
-      ctx.lineTo(points[2]!.x, points[2]!.y);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = rgba(C.ice, 0.86);
-      for (const point of points) {
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      break;
-    }
-    case 'namespace': {
-      ctx.strokeStyle = rgba(C.ice, 0.68);
-      ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      ctx.roundRect(x - 5, y - 4, 10, 8, 2);
-      ctx.stroke();
-      ctx.strokeStyle = rgba(C.indigo, 0.56);
-      ctx.beginPath();
-      ctx.moveTo(x - 2.8, y - 1.2);
-      ctx.lineTo(x + 2.8, y - 1.2);
-      ctx.moveTo(x - 2.8, y + 1.6);
-      ctx.lineTo(x + 2.8, y + 1.6);
-      ctx.stroke();
-      break;
-    }
-    case 'host': {
-      ctx.strokeStyle = rgba(C.moon, 0.76);
-      ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      ctx.arc(x, y, 4.8, Math.PI * 0.16, Math.PI * 1.88);
-      ctx.stroke();
-      ctx.strokeStyle = rgba(C.moon, 0.68);
-      ctx.lineWidth = 0.85;
-      ctx.beginPath();
-      ctx.moveTo(x - 2.8, y - 1.8);
-      ctx.lineTo(x + 1.9, y - 1.8);
-      ctx.moveTo(x - 2.8, y + 0.2);
-      ctx.lineTo(x + 1.9, y + 0.2);
-      ctx.moveTo(x - 2.8, y + 2.2);
-      ctx.lineTo(x + 1.9, y + 2.2);
-      ctx.stroke();
-      ctx.fillStyle = rgba(C.frost, 0.9);
-      ctx.beginPath();
-      ctx.arc(x + 2.9, y - 1.8, 0.72, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(x + 2.9, y + 0.2, 0.72, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(x + 2.9, y + 2.2, 0.72, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    }
-  }
-  ctx.restore();
-}
-
 function drawStructureLabel(
   ctx: CanvasRenderingContext2D,
   node: TopologyNode,
@@ -283,13 +186,13 @@ function drawStructureLabel(
   const metrics = ctx.measureText?.(label);
   const textWidth = metrics?.width ?? label.length * 7.2;
   const glyphGap = 8;
-  const glyphWidth = 12;
+  const glyphWidth = 16;
   const startX = x - (textWidth + glyphGap + glyphWidth) / 2;
   const glyphX = startX + glyphWidth / 2;
   const textX = startX + glyphWidth + glyphGap;
 
   ctx.save();
-  drawStructureGlyph(ctx, node.typeId as 'realm' | 'cluster' | 'namespace' | 'host', glyphX, y - 4);
+  drawNodeSwatch(ctx, node.typeId, glyphX, y - 4, NODE_SIZE[node.typeId] ?? 6, false);
   ctx.fillStyle = color;
   ctx.font = font;
   ctx.textAlign = 'left';
@@ -335,7 +238,7 @@ export function getStructureLabelBounds(
 
   const label = node.typeId === 'realm' ? structureLabel(node).toUpperCase() : structureLabel(node);
   const glyphGap = 8;
-  const glyphWidth = 12;
+  const glyphWidth = 16;
   const charWidth = node.typeId === 'realm' ? 7.8 : 7.2;
   const textWidth = Math.max(label.length * charWidth, 18);
   const totalWidth = glyphWidth + glyphGap + textWidth;
@@ -488,7 +391,7 @@ export function nodeEdgeRadius(node: TopologyNode | undefined): number {
   if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
   if (node.typeId === 'run') return 50;
-  return (NODE_SIZE[node.typeId] ?? 6) + 3;
+  return nodeSwatchSize(node.typeId) / 2 + 3;
 }
 
 export function trimToNodeBoundary(
@@ -727,6 +630,56 @@ export function edgeProfile(
   }
 }
 
+export function edgeRelationLane(edge: TopologyEdge): number {
+  switch (edge.relationType ?? edge.kind) {
+    case 'signals_to':
+      return -4;
+    case 'manages':
+      return -3;
+    case 'writes':
+      return -2;
+    case 'member_of':
+      return -1;
+    case 'uses':
+    case 'observes':
+      return 1;
+    case 'reads':
+    case 'exposes':
+      return 2;
+    case 'routes_to':
+      return 3;
+    case 'run':
+      return 0;
+    default:
+      return edgeHash(edge.id) % 2 === 0 ? 1 : -1;
+  }
+}
+
+export function edgeDrawPriority(edge: TopologyEdge): number {
+  switch (edge.relationType ?? edge.kind) {
+    case 'contains':
+      return -1;
+    case 'member_of':
+    case 'soft':
+    case 'uses':
+    case 'exposes':
+      return 0;
+    case 'observes':
+    case 'reads':
+      return 1;
+    case 'routes_to':
+    case 'writes':
+      return 2;
+    case 'manages':
+    case 'signals_to':
+      return 3;
+    case 'run':
+      return 4;
+    default:
+      return 1;
+  }
+}
+
 function drawEdge(
   ctx: CanvasRenderingContext2D,
   edge: TopologyEdge,
@@ -775,7 +728,7 @@ function drawEdge(
     (edge.kind === 'soft' || edge.kind === 'solid' || Boolean(edge.relationType));
   const offset = Math.min(
     profile.bend *
-      (sameRunFlow ? 0.32 : sameContainerEdge ? 0.18 : sameParent ? 1.2 : 1) *
+      (sameRunFlow ? 0.32 : sameContainerEdge ? 0.8 : sameParent ? 1.2 : 1) *
       (directParentChild ? 0.7 : 1),
     length * 0.28,
   );
@@ -815,14 +768,18 @@ function drawEdge(
   if (sameRunFlow) {
     points.push(end);
   } else if (sameContainerEdge) {
+    const lane = edgeRelationLane(edge);
+    const laneSign = lane === 0 ? sign : Math.sign(lane);
+    const laneWidth = Math.min(18, Math.abs(lane) * 5);
+    const bow = Math.min(64, Math.max(20, length * 0.16)) * laneSign + laneWidth * laneSign;
     points.push(
       {
-        x: start.x + (end.x - start.x) * 0.34,
-        y: start.y + (end.y - start.y) * 0.24,
+        x: start.x + (end.x - start.x) * 0.3 + nx * bow,
+        y: start.y + (end.y - start.y) * 0.3 + ny * bow,
       },
       {
-        x: start.x + (end.x - start.x) * 0.68,
-        y: start.y + (end.y - start.y) * 0.76,
+        x: start.x + (end.x - start.x) * 0.7 + nx * bow,
+        y: start.y + (end.y - start.y) * 0.7 + ny * bow,
       },
     );
     points.push(end);
@@ -881,7 +838,11 @@ export function drawEdges(
 ): void {
   ctx.save();
   const nodeById = new Map(topology.nodes.map((node) => [node.id, node]));
-  for (const edge of topology.edges) {
+  const edges = [...topology.edges].sort((a, b) => {
+    const priority = edgeDrawPriority(a) - edgeDrawPriority(b);
+    return priority === 0 ? a.id.localeCompare(b.id) : priority;
+  });
+  for (const edge of edges) {
     drawEdge(ctx, edge, nodeById, positions, now);
   }
   ctx.restore();
@@ -995,157 +956,6 @@ export function drawMimir(
 
 // ── Generic nodes ─────────────────────────────────────────────────────────────
 
-function drawShape(
-  ctx: CanvasRenderingContext2D,
-  typeId: string,
-  cx: number,
-  cy: number,
-  size: number,
-  col: readonly [number, number, number],
-): void {
-  switch (typeId) {
-    case 'ting':
-      drawServiceBadge(ctx, 'rounded', cx, cy, size, col);
-      return;
-
-    case 'volundr':
-      drawServiceBadge(ctx, 'hex', cx, cy, size, col);
-      return;
-
-    case 'bifrost': {
-      drawServiceBadge(ctx, 'diamond', cx, cy, size, col);
-      return;
-    }
-
-    case 'ravn_long':
-      drawServiceBadge(ctx, 'diamond', cx, cy, size, col);
-      return;
-
-    case 'warden':
-      drawServiceBadge(ctx, 'pentagon', cx, cy, size, col);
-      return;
-
-    case 'ravn_run':
-      drawServiceBadge(ctx, 'diamond', cx, cy, size, col);
-      return;
-
-    case 'trigger':
-      ctx.strokeStyle = rgba(col, 0.92);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = rgba(col, 0.78);
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(2.6, size * 0.38), 0, Math.PI * 2);
-      ctx.fill();
-      return;
-
-    case 'end':
-      ctx.strokeStyle = rgba(col, 0.92);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.max(2.6, size - 3), 0, Math.PI * 2);
-      ctx.stroke();
-      return;
-
-    case 'stage':
-      ctx.fillStyle = rgba(col, 0.18);
-      ctx.strokeStyle = rgba(col, 0.88);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.roundRect(cx - size * 1.45, cy - size * 0.92, size * 2.9, size * 1.84, size * 0.7);
-      ctx.fill();
-      ctx.stroke();
-      return;
-
-    case 'gate':
-      ctx.fillStyle = 'rgba(9,9,11,0.7)';
-      ctx.strokeStyle = rgba(col, 0.9);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - size);
-      ctx.lineTo(cx + size, cy);
-      ctx.lineTo(cx, cy + size);
-      ctx.lineTo(cx - size, cy);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      return;
-
-    case 'cond':
-      ctx.strokeStyle = rgba(col, 0.9);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - size);
-      ctx.lineTo(cx + size, cy);
-      ctx.lineTo(cx, cy + size);
-      ctx.lineTo(cx - size, cy);
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fillStyle = rgba(col, 0.18);
-      ctx.fill();
-      return;
-
-    case 'resource':
-      ctx.fillStyle = rgba(col, 0.14);
-      ctx.strokeStyle = rgba(col, 0.88);
-      ctx.lineWidth = 1.1;
-      ctx.beginPath();
-      ctx.moveTo(cx - size * 0.85, cy - size);
-      ctx.lineTo(cx + size * 0.3, cy - size);
-      ctx.lineTo(cx + size, cy - size * 0.3);
-      ctx.lineTo(cx + size, cy + size);
-      ctx.lineTo(cx - size * 0.85, cy + size);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      return;
-
-    case 'skuld':
-      drawServiceBadge(ctx, 'hex', cx, cy, size, col);
-      return;
-
-    case 'valkyrie':
-      drawServiceBadge(ctx, 'pentagon', cx, cy, size, col);
-      return;
-
-    case 'beacon':
-      ctx.strokeStyle = rgba(col, 0.6);
-      ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = rgba(col, 0.6);
-      ctx.beginPath();
-      ctx.arc(cx, cy, 2, 0, Math.PI * 2);
-      ctx.fill();
-      return;
-
-    case 'printer':
-    case 'vaettir':
-      ctx.strokeStyle = rgba(col, 0.9);
-      ctx.lineWidth = 1.3;
-      ctx.strokeRect(cx - size, cy - size, size * 2, size * 2);
-      ctx.fillStyle = rgba(col, 0.25);
-      ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
-      return;
-
-    default:
-      // service, model, run, …
-      ctx.fillStyle = rgba(col, 0.85);
-      ctx.beginPath();
-      ctx.arc(cx, cy, size, 0, Math.PI * 2);
-      ctx.fill();
-      return;
-  }
-}
-
 export function drawNode(
   ctx: CanvasRenderingContext2D,
   node: TopologyNode,
@@ -1196,33 +1006,8 @@ export function drawNode(
 
   const { x, y } = pos;
   const size = NODE_SIZE[node.typeId] ?? 6;
-  const col = nodeColour(node.typeId);
 
-  // Hover ring
-  if (hovered) {
-    ctx.strokeStyle = rgba(C.moon, 0.8);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x, y, size + 5, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.save();
-  drawShape(ctx, node.typeId, x, y, size, col);
-  ctx.restore();
-
-  // Identity rune for primary coordinators
-  const rune = identityRune(node.typeId);
-  if (rune) {
-    ctx.save();
-    ctx.fillStyle = rgba(C.moon, 0.96);
-    ctx.font = '700 11px "JetBrains Mono", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(rune, x, y + 1);
-    ctx.textBaseline = 'alphabetic';
-    ctx.restore();
-  }
+  drawNodeSwatch(ctx, node.typeId, x, y, size, hovered);
 
   // Label below node for key types and hovered nodes
   const showLabel =

@@ -132,6 +132,7 @@ describe('ConnectionLegend', () => {
 
     expect(screen.getByTestId('legend-node-mimir')).toHaveTextContent('Mimir');
     expect(screen.getByTestId('legend-node-warden')).toHaveTextContent('Warden');
+    expect(screen.getByTestId('legend-node-warden')).toHaveTextContent('ᚹ');
     expect(screen.getByTestId('legend-node-warden')).toHaveTextContent('2');
     expect(screen.queryByTestId('legend-node-ting')).not.toBeInTheDocument();
   });

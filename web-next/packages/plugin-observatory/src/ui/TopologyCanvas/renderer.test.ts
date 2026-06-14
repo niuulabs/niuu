@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { drawStars, drawZones, drawEdges, drawNode, drawMimir, drawMinimap } from './renderer';
+import {
+  drawStars,
+  drawZones,
+  drawEdges,
+  drawNode,
+  drawMimir,
+  drawMinimap,
+  nodeIconGlyph,
+} from './renderer';
 import type { Topology, TopologyNode } from '../../domain';
 import type { NodePosition } from './layoutEngine';
 import { makeCtxMock } from './test-helpers';
@@ -396,9 +404,24 @@ describe('drawNode', () => {
       status: 'healthy',
     };
     drawNode(ctx, node, pos, true);
-    // A hover ring arc should be drawn before the shape
-    expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    // Hovered nodes use the same rounded swatch vocabulary as the legend.
+    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
     expect(ctx.stroke).toHaveBeenCalled();
+  });
+
+  it('draws generic nodes with the shared legend swatch glyph', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const node: TopologyNode = {
+      id: 'svc-0',
+      typeId: 'service',
+      label: 'observatory',
+      parentId: null,
+      status: 'healthy',
+    };
+    drawNode(ctx, node, pos, false);
+    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+    expect(calls.some(([text]) => text === nodeIconGlyph('service'))).toBe(true);
   });
 
   it('draws the canonical sidebar rune for ting', () => {

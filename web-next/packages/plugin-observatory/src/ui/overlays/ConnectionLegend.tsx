@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { EdgeRelationType, Registry, Topology } from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
-import { identityRune, nodeColour, rgba } from '../TopologyCanvas/renderer';
+import { nodeColour, nodeIconGlyph, rgba } from '../TopologyCanvas/renderer';
 import './ConnectionLegend.css';
 
 type EdgeLegendKey = Exclude<EdgeRelationType, 'contains'> | 'run';
@@ -79,7 +79,6 @@ export function ConnectionLegend({ topology = null, registry = null }: Connectio
         <ul className="obs-conn-legend__list" aria-label="Node types">
           {nodeEntries.map(({ typeId, label, count }) => {
             const col = nodeColour(typeId);
-            const rune = identityRune(typeId);
             return (
               <li
                 key={typeId}
@@ -97,7 +96,7 @@ export function ConnectionLegend({ topology = null, registry = null }: Connectio
                   }
                   aria-hidden="true"
                 >
-                  {rune || typeId.slice(0, 1).toUpperCase()}
+                  {nodeIconGlyph(typeId)}
                 </span>
                 <span className="obs-conn-legend__label">{label}</span>
                 {count != null && count > 1 && (

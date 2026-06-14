@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { TopologyNode } from '../../domain';
 import {
   bundleWaypoint,
+  edgeDrawPriority,
   edgeHash,
   edgeProfile,
+  edgeRelationLane,
   identityRune,
   nodeColour,
   nodeEdgeRadius,
+  nodeIconGlyph,
+  nodeSwatchSize,
   parentChain,
   rgba,
   sharedAncestor,
@@ -56,6 +60,9 @@ describe('renderer helpers', () => {
     expect(identityRune('warden')).toBe('ᚹ');
     expect(identityRune('service')).not.toBe(identityRune('ravn_long'));
     expect(identityRune('unknown')).toBe('');
+    expect(nodeIconGlyph('ting')).toBe('ᚦ');
+    expect(nodeIconGlyph('unknown')).toBe('U');
+    expect(nodeSwatchSize('service')).toBe(20);
     expect(structureLabel(realm)).toBe('asgard_realm');
   });
 
@@ -85,6 +92,7 @@ describe('renderer helpers', () => {
     expect(nodeEdgeRadius({ ...realm, typeId: 'mimir' })).toBeGreaterThan(20);
     expect(nodeEdgeRadius(hostNode)).toBeGreaterThan(20);
     expect(nodeEdgeRadius(runNode)).toBe(50);
+    expect(nodeEdgeRadius({ ...realm, typeId: 'service' })).toBe(nodeSwatchSize('service') / 2 + 3);
 
     expect(
       trimToNodeBoundary(
@@ -140,5 +148,30 @@ describe('renderer helpers', () => {
     expect(edgeProfile('soft', 10)).toMatchObject({ lineWidth: 0.85 });
     expect(edgeProfile('run', 10)).toMatchObject({ bend: 34 });
     expect(edgeProfile('mystery', 10)).toMatchObject({ lineWidth: 0.9 });
+    expect(
+      edgeRelationLane({
+        id: 'write-edge',
+        sourceId: 'a',
+        targetId: 'b',
+        kind: 'dashed-long',
+        relationType: 'writes',
+      }),
+    ).toBe(-2);
+    expect(
+      edgeDrawPriority({
+        id: 'run-edge',
+        sourceId: 'a',
+        targetId: 'b',
+        kind: 'run',
+      }),
+    ).toBeGreaterThan(
+      edgeDrawPriority({
+        id: 'read-edge',
+        sourceId: 'a',
+        targetId: 'b',
+        kind: 'dashed-long',
+        relationType: 'reads',
+      }),
+    );
   });
 });
