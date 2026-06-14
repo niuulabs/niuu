@@ -128,3 +128,34 @@ async def test_discovery_uses_http_transport_and_cache() -> None:
     assert not any(node["id"] == "mutated" for node in second["nodes"])
     assert second["nodes"][0]["id"] == "service:guild"
     assert events[0]["service"] == "guild"
+
+
+@pytest.mark.asyncio
+async def test_discovery_forwards_request_auth_headers_to_guild() -> None:
+    payload = {
+        "timestamp": "2026-05-17T12:00:00Z",
+        "nodes": [{"id": "service:guild", "typeId": "service", "label": "Guild"}],
+        "edges": [],
+        "events": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("authorization") == "Bearer request-token"
+        assert request.headers.get("x-auth-user-id") == "user-123"
+        return httpx.Response(200, json=payload)
+
+    service = ObservatoryDiscoveryService(
+        guild_url="http://guild.test",
+        auth=NoAuthHeaderAdapter(),
+        ttl_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    topology = await service.get_topology_snapshot(
+        headers={
+            "authorization": "Bearer request-token",
+            "x-auth-user-id": "user-123",
+        }
+    )
+
+    assert topology["nodes"][0]["id"] == "service:guild"

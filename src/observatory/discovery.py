@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -49,8 +49,7 @@ class ObservatoryDiscoveryService:
         self._transport = transport
         self._fetch_json = fetch_json
         self._lock = asyncio.Lock()
-        self._cached_at: datetime | None = None
-        self._cached_snapshot: DiscoverySnapshot | None = None
+        self._cached: dict[str, tuple[datetime, DiscoverySnapshot]] = {}
 
     @property
     def guild_url(self) -> str:
@@ -62,42 +61,48 @@ class ObservatoryDiscoveryService:
         """Backwards-compatible alias for callers that still read base_url."""
         return self._guild_url
 
-    async def get_topology_snapshot(self) -> ObservatorySnapshot:
-        return deepcopy((await self._get_snapshot()).topology)
+    async def get_topology_snapshot(
+        self,
+        headers: Mapping[str, str] | None = None,
+    ) -> ObservatorySnapshot:
+        return deepcopy((await self._get_snapshot(headers=headers)).topology)
 
-    async def get_events(self) -> list[dict[str, str]]:
-        return deepcopy((await self._get_snapshot()).events)
+    async def get_events(
+        self,
+        headers: Mapping[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        return deepcopy((await self._get_snapshot(headers=headers)).events)
 
-    async def _get_snapshot(self) -> DiscoverySnapshot:
+    async def _get_snapshot(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
         now = _utc_now()
-        if (
-            self._cached_snapshot is not None
-            and self._cached_at is not None
-            and now - self._cached_at < self._ttl
-        ):
-            return self._cached_snapshot
+        cache_key = "request" if headers else "default"
+        cached = self._cached.get(cache_key)
+        if cached is not None:
+            cached_at, cached_snapshot = cached
+            if now - cached_at < self._ttl:
+                return cached_snapshot
 
         async with self._lock:
             now = _utc_now()
-            if (
-                self._cached_snapshot is not None
-                and self._cached_at is not None
-                and now - self._cached_at < self._ttl
-            ):
-                return self._cached_snapshot
+            cached = self._cached.get(cache_key)
+            if cached is not None:
+                cached_at, cached_snapshot = cached
+                if now - cached_at < self._ttl:
+                    return cached_snapshot
 
-            snapshot = await self._discover()
-            self._cached_snapshot = snapshot
-            self._cached_at = now
+            snapshot = await self._discover(headers=headers)
+            self._cached[cache_key] = (now, snapshot)
             return snapshot
 
-    async def _discover(self) -> DiscoverySnapshot:
+    async def _discover(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
         if self._fetch_json is not None:
             payload = await self._safe_fetch(
                 self._fetch_json,
                 "/api/v1/niuu/observatory/snapshot",
             )
         else:
+            outbound_headers = self._auth.headers()
+            outbound_headers.update(dict(headers or {}))
             async with httpx.AsyncClient(
                 base_url=self._guild_url,
                 timeout=self._timeout,
@@ -105,7 +110,7 @@ class ObservatoryDiscoveryService:
             ) as client:
 
                 async def client_fetch(path: str) -> Any:
-                    response = await client.get(path, headers=self._auth.headers())
+                    response = await client.get(path, headers=outbound_headers)
                     response.raise_for_status()
                     return response.json()
 

@@ -30,6 +30,13 @@ from observatory.registry import (
 )
 
 KEEPALIVE_INTERVAL = 15.0
+FORWARDED_AUTH_HEADERS = (
+    "authorization",
+    "x-auth-user-id",
+    "x-auth-email",
+    "x-auth-tenant",
+    "x-auth-roles",
+)
 
 
 def _to_sse(payload: object, *, event: str | None = None) -> str:
@@ -55,11 +62,23 @@ def _create_http_auth_adapter(config) -> HttpAuthPort:
     return cls(**kwargs)
 
 
-async def _topology_stream(discovery: ObservatoryDiscoveryService) -> AsyncGenerator[str, None]:
+def _forward_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for name in FORWARDED_AUTH_HEADERS:
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    return headers
+
+
+async def _topology_stream(
+    discovery: ObservatoryDiscoveryService,
+    headers: dict[str, str] | None = None,
+) -> AsyncGenerator[str, None]:
     """Yield topology snapshots whenever the local view changes."""
     last_timestamp: str | None = None
     while True:
-        snapshot = await discovery.get_topology_snapshot()
+        snapshot = await discovery.get_topology_snapshot(headers=headers)
         timestamp = str(snapshot.get("timestamp") or "")
         if timestamp != last_timestamp:
             last_timestamp = timestamp
@@ -69,12 +88,15 @@ async def _topology_stream(discovery: ObservatoryDiscoveryService) -> AsyncGener
         await asyncio.sleep(KEEPALIVE_INTERVAL)
 
 
-async def _events_stream(discovery: ObservatoryDiscoveryService) -> AsyncGenerator[str, None]:
+async def _events_stream(
+    discovery: ObservatoryDiscoveryService,
+    headers: dict[str, str] | None = None,
+) -> AsyncGenerator[str, None]:
     """Replay current events, then emit fresh ones whenever they change."""
     seen_ids: set[str] = set()
     while True:
         emitted = False
-        for item in await discovery.get_events():
+        for item in await discovery.get_events(headers=headers):
             event_id = str(item.get("id") or "")
             if event_id in seen_ids:
                 continue
@@ -212,7 +234,7 @@ def create_router() -> APIRouter:
     @router.get("/topology/stream", summary="Stream live topology snapshots")
     async def topology(request: Request) -> StreamingResponse:
         return StreamingResponse(
-            _topology_stream(_discovery(request)),
+            _topology_stream(_discovery(request), headers=_forward_headers(request)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -225,7 +247,7 @@ def create_router() -> APIRouter:
     @router.get("/events/stream", summary="Stream observatory events")
     async def events(request: Request) -> StreamingResponse:
         return StreamingResponse(
-            _events_stream(_discovery(request)),
+            _events_stream(_discovery(request), headers=_forward_headers(request)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

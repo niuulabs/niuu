@@ -21,7 +21,11 @@ class _FakeDiscoveryService:
     guild_url = "http://guild.test"
     base_url = "http://guild.test"
 
-    async def get_topology_snapshot(self) -> dict[str, object]:
+    async def get_topology_snapshot(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del headers
         return {
             "nodes": [
                 {
@@ -36,7 +40,11 @@ class _FakeDiscoveryService:
             "timestamp": "2026-05-13T12:00:00Z",
         }
 
-    async def get_events(self) -> list[dict[str, str]]:
+    async def get_events(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        del headers
         return [
             {
                 "id": "ev-1",
@@ -56,7 +64,11 @@ class _SequenceDiscoveryService:
         self._topology_calls = 0
         self._events_calls = 0
 
-    async def get_topology_snapshot(self) -> dict[str, object]:
+    async def get_topology_snapshot(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del headers
         self._topology_calls += 1
         return {
             "nodes": [{"id": "realm:test"}],
@@ -64,7 +76,11 @@ class _SequenceDiscoveryService:
             "timestamp": "2026-05-13T12:00:00Z",
         }
 
-    async def get_events(self) -> list[dict[str, str]]:
+    async def get_events(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        del headers
         self._events_calls += 1
         return [
             {
