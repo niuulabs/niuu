@@ -19,6 +19,9 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -53,6 +56,9 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

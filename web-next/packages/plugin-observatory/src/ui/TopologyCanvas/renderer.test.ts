@@ -254,6 +254,57 @@ describe('drawEdges', () => {
       ),
     ).toBe(true);
   });
+
+  it('keeps same-namespace semantic edge labels between the connected entities', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      timestamp: TOPOLOGY.timestamp,
+      nodes: [
+        {
+          id: 'namespace-ymir-volundr',
+          typeId: 'namespace',
+          label: 'volundr',
+          parentId: 'cluster-ymir',
+          status: 'healthy',
+        },
+        {
+          id: 'warden',
+          typeId: 'warden',
+          label: 'warden',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+        {
+          id: 'mimir',
+          typeId: 'mimir',
+          label: 'mimir',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+      ],
+      edges: [
+        {
+          id: 'edge:writes',
+          sourceId: 'warden',
+          targetId: 'mimir',
+          kind: 'dashed-long',
+          relationType: 'writes',
+          label: 'writes',
+        },
+      ],
+    };
+    const positions = new Map<string, NodePosition>([
+      ['namespace-ymir-volundr', { x: 100, y: 300 }],
+      ['warden', { x: 0, y: 0 }],
+      ['mimir', { x: 200, y: 0 }],
+    ]);
+
+    drawEdges(ctx, topo, positions, 0);
+
+    const labelBoxCall = (ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    expect(labelBoxCall?.[0]).toBeCloseTo(59.5);
+    expect(labelBoxCall?.[1]).toBeCloseTo(-8);
+  });
 });
 
 // ── drawNode ──────────────────────────────────────────────────────────────────

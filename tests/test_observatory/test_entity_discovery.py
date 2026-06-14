@@ -11,8 +11,11 @@ from observatory.entity_discovery import (
     CompositeDiscoveryAdapter,
     DiscoveredEntity,
     DiscoveryResult,
+    FluxHelmReleaseSessionDiscoveryAdapter,
     HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    StaticRelationshipDiscoveryAdapter,
+    VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
     topology_from_discovery,
 )
@@ -420,6 +423,222 @@ async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
     assert [entity.id for entity in result.entities] == ["cluster-valhalla"]
     assert result.entities[0].cluster == "valhalla"
     assert json.loads(json.dumps(result.events))[0]["id"] == "event-1"
+
+
+@pytest.mark.asyncio
+async def test_static_relationship_adapter_resolves_cross_cluster_refs() -> None:
+    result = await CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:service:observatory",
+                            kind="service",
+                            name="observatory",
+                            cluster="ymir",
+                            namespace="volundr",
+                            status="healthy",
+                        ),
+                        DiscoveredEntity(
+                            id="runtime:noatun:volundr:service:observatory",
+                            kind="service",
+                            name="observatory",
+                            cluster="noatun",
+                            namespace="volundr",
+                            status="healthy",
+                        ),
+                    ]
+                )
+            ),
+            StaticRelationshipDiscoveryAdapter(
+                relationships=[
+                    {
+                        "source": "service:observatory@ymir/volundr",
+                        "target": "service:observatory@noatun/volundr",
+                        "relation_type": "observes",
+                    }
+                ]
+            ),
+        ]
+    ).discover()
+
+    snapshot = topology_from_discovery(result)
+
+    assert snapshot["edges"] == [
+        {
+            "id": (
+                "edge:observes:service-observatory-ymir-volundr:"
+                "service-observatory-noatun-volundr"
+            ),
+            "sourceId": "runtime:ymir:volundr:service:observatory",
+            "targetId": "runtime:noatun:volundr:service:observatory",
+            "kind": "dashed-anim",
+            "relationType": "observes",
+            "label": "observes",
+            "confidence": "declared",
+            "evidence": {
+                "adapter": "StaticRelationshipDiscoveryAdapter",
+                "field": "observatory.discovery.relationships",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_volundr_sessions_adapter_projects_running_sessions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/forge/sessions"
+        assert request.url.params["status"] == "running"
+        assert request.headers["x-auth-user-id"] == "observatory"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "0025dea5-74c6-451f-af4f-980210a07367",
+                    "name": "openviking",
+                    "status": "running",
+                    "model": "codex",
+                    "tokens_used": 2048,
+                    "chat_endpoint": "wss://sessions.example/session",
+                }
+            ],
+        )
+
+    result = await CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:noatun:volundr:volundr:volundr",
+                            kind="volundr",
+                            name="volundr",
+                            cluster="noatun",
+                            namespace="volundr",
+                            status="healthy",
+                        )
+                    ]
+                )
+            ),
+            VolundrSessionsDiscoveryAdapter(
+                base_url="https://noatun.example",
+                cluster="noatun",
+                headers={"x-auth-user-id": "observatory", "x-auth-roles": "admin"},
+                transport=httpx.MockTransport(handler),
+            ),
+        ]
+    ).discover()
+
+    snapshot = topology_from_discovery(result)
+    session = next(node for node in snapshot["nodes"] if node["typeId"] == "skuld")
+
+    assert session["label"] == "openviking"
+    assert session["parentId"] == "namespace-noatun-skuld"
+    assert session["status"] == "healthy"
+    assert session["tokens"] == 2048
+    assert snapshot["edges"] == [
+        {
+            "id": (
+                "edge:manages:volundr-volundr-noatun-volundr:"
+                "runtime-noatun-skuld-skuld-0025dea5-74c6-451f-af4f-980210a07367"
+            ),
+            "sourceId": "runtime:noatun:volundr:volundr:volundr",
+            "targetId": "runtime:noatun:skuld:skuld:0025dea5-74c6-451f-af4f-980210a07367",
+            "kind": "solid",
+            "relationType": "manages",
+            "label": "manages",
+            "confidence": "observed",
+            "evidence": {
+                "adapter": "VolundrSessionsDiscoveryAdapter",
+                "field": "GET /api/v1/forge/sessions",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_flux_helmrelease_session_adapter_projects_ready_dev_sessions(
+    tmp_path, monkeypatch
+) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def release(name: str, tag: str, ready: bool = True) -> dict[str, object]:
+        session_id = name.removeprefix("skuld-")
+        return {
+            "metadata": {"name": name, "namespace": "skuld", "uid": f"uid-{name}"},
+            "spec": {
+                "values": {
+                    "image": {"tag": tag},
+                    "session": {
+                        "id": session_id,
+                        "name": f"session-{session_id[:4]}",
+                        "model": "gpt-5.5",
+                    },
+                }
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True" if ready else "False",
+                    }
+                ]
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer token"
+        assert request.url.path == "/apis/helm.toolkit.fluxcd.io/v2/namespaces/skuld/helmreleases"
+        assert request.url.params["labelSelector"] == "app.kubernetes.io/managed-by=volundr"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    release("skuld-0025dea5-74c6-451f-af4f-980210a07367", "dev"),
+                    release("skuld-4eab4167-7bd2-4a6f-aabe-ba31fe40f98c", "old-branch"),
+                    release("skuld-failed", "dev", ready=False),
+                ]
+            },
+        )
+
+    result = await CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:noatun:volundr:volundr:volundr",
+                            kind="volundr",
+                            name="volundr",
+                            cluster="noatun",
+                            namespace="volundr",
+                            status="healthy",
+                        )
+                    ]
+                )
+            ),
+            FluxHelmReleaseSessionDiscoveryAdapter(
+                cluster="noatun",
+                image_tags=["dev"],
+                service_account_root=str(service_account),
+                transport=httpx.MockTransport(handler),
+            ),
+        ]
+    ).discover()
+
+    snapshot = topology_from_discovery(result)
+
+    session_nodes = [node for node in snapshot["nodes"] if node["typeId"] == "skuld"]
+    assert [node["label"] for node in session_nodes] == ["session-0025"]
+    assert session_nodes[0]["parentId"] == "namespace-noatun-skuld"
+    assert session_nodes[0]["model"] == "gpt-5.5"
+    assert len(snapshot["edges"]) == 1
+    assert snapshot["edges"][0]["relationType"] == "manages"
 
 
 @pytest.mark.asyncio

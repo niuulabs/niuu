@@ -670,13 +670,13 @@ function drawEdge(
     srcNode.parentId === dstNode?.parentId &&
     srcNode.parentId !== null;
   const sameRunFlow = sameParent && sharedParentNode?.typeId === 'run';
-  const sameClusterSoft =
+  const sameContainerEdge =
     sameParent &&
-    sharedParentNode?.typeId === 'cluster' &&
-    (edge.kind === 'soft' || edge.kind === 'solid');
+    (sharedParentNode?.typeId === 'cluster' || sharedParentNode?.typeId === 'namespace') &&
+    (edge.kind === 'soft' || edge.kind === 'solid' || Boolean(edge.relationType));
   const offset = Math.min(
     profile.bend *
-      (sameRunFlow ? 0.32 : sameClusterSoft ? 0.18 : sameParent ? 1.2 : 1) *
+      (sameRunFlow ? 0.32 : sameContainerEdge ? 0.18 : sameParent ? 1.2 : 1) *
       (directParentChild ? 0.7 : 1),
     length * 0.28,
   );
@@ -685,7 +685,7 @@ function drawEdge(
   let cx = midX + nx * offset * sign;
   let cy = midY + ny * offset * sign;
 
-  if (ancestorNode && !sameRunFlow && !sameClusterSoft) {
+  if (ancestorNode && !sameRunFlow && !sameContainerEdge) {
     const ancestorPos = positions.get(ancestorNode.id);
     if (ancestorPos && !directParentChild) {
       const awayX = midX - ancestorPos.x;
@@ -703,7 +703,7 @@ function drawEdge(
     .curve(
       sameRunFlow
         ? curveLinear
-        : sameClusterSoft
+        : sameContainerEdge
           ? curveCatmullRom.alpha(0.5)
           : ancestorNode && !directParentChild && !sameRunFlow
             ? curveBundle.beta(profile.bundleStrength)
@@ -715,7 +715,7 @@ function drawEdge(
   const ancestorPos = ancestorNode ? positions.get(ancestorNode.id) : undefined;
   if (sameRunFlow) {
     points.push(end);
-  } else if (sameClusterSoft) {
+  } else if (sameContainerEdge) {
     points.push(
       {
         x: start.x + (end.x - start.x) * 0.34,
@@ -759,7 +759,7 @@ function drawEdge(
   edgeLine(points);
   ctx.stroke();
 
-  if (sameParent && !directParentChild && ancestorPos && !sameRunFlow) {
+  if (sameParent && !directParentChild && ancestorPos && !sameRunFlow && !sameContainerEdge) {
     const awayX = midX - ancestorPos.x;
     const awayY = midY - ancestorPos.y;
     const awayLen = Math.hypot(awayX, awayY) || 1;
@@ -772,8 +772,10 @@ function drawEdge(
   }
 
   if (edge.label && !sameRunFlow) {
-    const labelX = ancestorPos && !directParentChild && !sameRunFlow ? cx : midX;
-    const labelY = ancestorPos && !directParentChild && !sameRunFlow ? cy : midY;
+    const labelX =
+      ancestorPos && !directParentChild && !sameRunFlow && !sameContainerEdge ? cx : midX;
+    const labelY =
+      ancestorPos && !directParentChild && !sameRunFlow && !sameContainerEdge ? cy : midY;
     ctx.font = '500 9px "JetBrains Mono", monospace';
     const metrics = ctx.measureText(edge.label);
     const width = Math.max(metrics.width + 10, 30);

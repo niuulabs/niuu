@@ -54,7 +54,7 @@ _COMPONENT_TYPES = {
     "web": "volundr",
     "web-next": "volundr",
 }
-_STATUS_RANK = {"failed": 3, "healthy": 2, "observing": 1, "unknown": 0}
+_STATUS_RANK = {"failed": 4, "healthy": 3, "observing": 2, "idle": 1, "unknown": 0}
 _RELATION_TO_EDGE_KIND = {
     "manages": "solid",
     "uses": "soft",
@@ -166,6 +166,30 @@ def _status_from_k8s(kind: str, payload: dict[str, Any]) -> str:
             return "failed"
         return "unknown"
     return "healthy"
+
+
+def _status_from_session(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized == "running":
+        return "healthy"
+    if normalized in {"starting", "provisioning", "created"}:
+        return "observing"
+    if normalized == "failed":
+        return "failed"
+    if normalized in {"stopped", "archived"}:
+        return "idle"
+    return "unknown"
+
+
+def _condition_status(payload: dict[str, Any], condition_type: str) -> bool:
+    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    conditions = status.get("conditions") if isinstance(status.get("conditions"), list) else []
+    return any(
+        isinstance(condition, dict)
+        and str(condition.get("type") or "") == condition_type
+        and str(condition.get("status") or "").lower() == "true"
+        for condition in conditions
+    )
 
 
 def _merge_status(left: str, right: str) -> str:
@@ -426,6 +450,308 @@ class WardenSpecDiscoveryAdapter:
         return DiscoveryResult(entities=entities, edges=edges)
 
 
+class StaticRelationshipDiscoveryAdapter:
+    """Emit declarative relationships from Observatory configuration."""
+
+    def __init__(self, relationships: list[dict[str, Any]] | None = None) -> None:
+        self._relationships = relationships or []
+
+    async def discover(self) -> DiscoveryResult:
+        edges: list[ObservatoryEdge] = []
+        for item in self._relationships:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("sourceId") or item.get("source") or "").strip()
+            target = str(item.get("targetId") or item.get("target") or "").strip()
+            relation_type = str(
+                item.get("relationType") or item.get("relation_type") or ""
+            ).strip()
+            if not source or not target or not relation_type:
+                continue
+            edge = _edge(
+                source_id=source,
+                target_id=target,
+                relation_type=relation_type,
+                source_adapter=self.__class__.__name__,
+                evidence_field=str(item.get("evidence") or "observatory.discovery.relationships"),
+                confidence=str(item.get("confidence") or "declared"),
+                label=str(item.get("label") or ""),
+            )
+            if item.get("id"):
+                edge["id"] = str(item["id"])
+            if item.get("kind"):
+                edge["kind"] = str(item["kind"])
+            edges.append(edge)
+        return DiscoveryResult(edges=edges)
+
+
+class VolundrSessionsDiscoveryAdapter:
+    """Discover live Volundr sessions as first-class Observatory entities."""
+
+    def __init__(
+        self,
+        base_url: str,
+        cluster: str = "",
+        namespace: str = "skuld",
+        volundr_namespace: str = "volundr",
+        status_filter: str = "running",
+        timeout_seconds: float = 5.0,
+        headers: dict[str, str] | None = None,
+        auth_header_env: str = "",
+        include_manager_edge: bool = True,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._cluster = cluster
+        self._namespace = namespace
+        self._volundr_namespace = volundr_namespace
+        self._status_filter = status_filter
+        self._timeout_seconds = timeout_seconds
+        self._headers = dict(headers or {})
+        self._auth_header_env = auth_header_env
+        self._include_manager_edge = include_manager_edge
+        self._transport = transport
+
+    async def discover(self) -> DiscoveryResult:
+        headers = dict(self._headers)
+        if self._auth_header_env:
+            token = os.environ.get(self._auth_header_env, "").strip()
+            if token:
+                headers.setdefault("Authorization", token)
+        params = {"status": self._status_filter} if self._status_filter else None
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                follow_redirects=True,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    self._sessions_url(),
+                    headers=headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            return DiscoveryResult(events=[_adapter_warning("volundr-sessions", str(exc))])
+        if not isinstance(payload, list):
+            return DiscoveryResult()
+
+        entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
+        for session in payload:
+            if not isinstance(session, dict):
+                continue
+            session_id = str(session.get("id") or "").strip()
+            if not session_id:
+                continue
+            cluster = self._cluster or str(session.get("cluster") or "")
+            namespace = self._namespace or "skuld"
+            entity_id = (
+                f"runtime:{_slug(cluster or 'local')}:"
+                f"{_slug(namespace)}:skuld:{_slug(session_id)}"
+            )
+            endpoints = {
+                key: str(value)
+                for key, value in {
+                    "chat": session.get("chat_endpoint"),
+                    "code": session.get("code_endpoint"),
+                }.items()
+                if value
+            }
+            entities.append(
+                DiscoveredEntity(
+                    id=entity_id,
+                    kind="skuld",
+                    name=str(session.get("name") or session_id[:8]),
+                    cluster=cluster,
+                    namespace=namespace,
+                    status=_status_from_session(str(session.get("status") or "")),
+                    source_adapter=self.__class__.__name__,
+                    source_kind="volundr-session",
+                    source_uid=session_id,
+                    endpoints=endpoints,
+                    metadata={
+                        "sessionId": session_id,
+                        "model": str(session.get("model") or ""),
+                        "tokens": int(session.get("tokens_used") or 0),
+                        "ownerId": str(session.get("owner_id") or ""),
+                        "tenantId": str(session.get("tenant_id") or ""),
+                        "activity": str(session.get("activity_state") or ""),
+                        "createdAt": str(session.get("created_at") or ""),
+                        "lastActive": str(session.get("last_active") or ""),
+                        "workloadType": str(session.get("workload_type") or "session"),
+                    },
+                )
+            )
+            if self._include_manager_edge and cluster:
+                edges.append(
+                    _edge(
+                        source_id=f"volundr:volundr@{cluster}/{self._volundr_namespace}",
+                        target_id=entity_id,
+                        relation_type="manages",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="GET /api/v1/forge/sessions",
+                        confidence="observed",
+                    )
+                )
+        return DiscoveryResult(entities=entities, edges=edges)
+
+    def _sessions_url(self) -> str:
+        if self._base_url.endswith("/api/v1/forge"):
+            return f"{self._base_url}/sessions"
+        return f"{self._base_url}/api/v1/forge/sessions"
+
+
+class FluxHelmReleaseSessionDiscoveryAdapter:
+    """Discover Volundr-managed Skuld sessions from Flux HelmRelease resources."""
+
+    def __init__(
+        self,
+        cluster: str = "",
+        namespace: str = "skuld",
+        volundr_namespace: str = "volundr",
+        label_selector: str = "app.kubernetes.io/managed-by=volundr",
+        name_prefix: str = "skuld-",
+        image_tags: list[str] | None = None,
+        timeout_seconds: float = 10.0,
+        service_account_root: str = "",
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._cluster = cluster
+        self._namespace = namespace
+        self._volundr_namespace = volundr_namespace
+        self._label_selector = label_selector
+        self._name_prefix = name_prefix
+        self._image_tags = {str(item) for item in image_tags or [] if str(item)}
+        self._timeout_seconds = timeout_seconds
+        self._service_account_root = (
+            Path(service_account_root) if service_account_root else _SERVICE_ACCOUNT_ROOT
+        )
+        self._transport = transport
+
+    async def discover(self) -> DiscoveryResult:
+        token_path = self._service_account_root / "token"
+        ca_path = self._service_account_root / "ca.crt"
+        if not token_path.exists():
+            return DiscoveryResult(
+                events=[
+                    _adapter_warning(
+                        "flux-sessions",
+                        "Kubernetes service account token not mounted",
+                    )
+                ]
+            )
+
+        host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+        port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+        base_url = f"https://{host}:{port}"
+        headers = {"Authorization": f"Bearer {token_path.read_text(encoding='utf-8').strip()}"}
+        params = {"labelSelector": self._label_selector} if self._label_selector else None
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                verify=str(ca_path) if ca_path.exists() else True,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"{base_url}{self._path()}",
+                    headers=headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            return DiscoveryResult(events=[_adapter_warning("flux-sessions", str(exc))])
+
+        entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
+        for item in payload.get("items", []) if isinstance(payload, dict) else []:
+            if not isinstance(item, dict) or not self._include_helmrelease(item):
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            values = (
+                item.get("spec", {}).get("values", {})
+                if isinstance(item.get("spec"), dict)
+                else {}
+            )
+            session_values = (
+                values.get("session", {}) if isinstance(values.get("session"), dict) else {}
+            )
+            image_values = values.get("image", {}) if isinstance(values.get("image"), dict) else {}
+            session_id = str(session_values.get("id") or "").strip()
+            if not session_id:
+                name = str(metadata.get("name") or "")
+                session_id = name.removeprefix(self._name_prefix)
+            if not session_id:
+                continue
+            entity_id = (
+                f"runtime:{_slug(self._cluster or 'local')}:"
+                f"{_slug(self._namespace)}:skuld:{_slug(session_id)}"
+            )
+            entities.append(
+                DiscoveredEntity(
+                    id=entity_id,
+                    kind="skuld",
+                    name=str(session_values.get("name") or session_id[:8]),
+                    cluster=self._cluster,
+                    namespace=self._namespace,
+                    status="healthy",
+                    source_adapter=self.__class__.__name__,
+                    source_kind="flux-helmrelease",
+                    source_uid=str(metadata.get("uid") or ""),
+                    metadata={
+                        "sessionId": session_id,
+                        "model": str(session_values.get("model") or ""),
+                        "imageTag": str(image_values.get("tag") or ""),
+                        "resources": [
+                            {
+                                "kind": "helmrelease",
+                                "name": str(metadata.get("name") or ""),
+                                "uid": str(metadata.get("uid") or ""),
+                                "generation": metadata.get("generation"),
+                            }
+                        ],
+                    },
+                )
+            )
+            if self._cluster:
+                edges.append(
+                    _edge(
+                        source_id=f"volundr:volundr@{self._cluster}/{self._volundr_namespace}",
+                        target_id=entity_id,
+                        relation_type="manages",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="HelmRelease.spec.values.session",
+                        confidence="observed",
+                    )
+                )
+        return DiscoveryResult(entities=entities, edges=edges)
+
+    def _path(self) -> str:
+        namespace = quote(self._namespace, safe="")
+        return (
+            "/apis/helm.toolkit.fluxcd.io/v2/"
+            f"namespaces/{namespace}/helmreleases"
+        )
+
+    def _include_helmrelease(self, item: dict[str, Any]) -> bool:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        name = str(metadata.get("name") or "")
+        if self._name_prefix and not name.startswith(self._name_prefix):
+            return False
+        if not _condition_status(item, "Ready"):
+            return False
+        values = (
+            item.get("spec", {}).get("values", {})
+            if isinstance(item.get("spec"), dict)
+            else {}
+        )
+        image = values.get("image", {}) if isinstance(values.get("image"), dict) else {}
+        image_tag = str(image.get("tag") or "")
+        return not self._image_tags or image_tag in self._image_tags
+
+
 class HttpObservatoryDiscoveryAdapter:
     """Merge topology from another Observatory HTTP endpoint."""
 
@@ -608,7 +934,12 @@ class KubernetesDiscoveryAdapter:
         )
         if not name:
             return None
-        cluster = labels.get("niuu.world/cluster") or self._cluster or "unknown"
+        cluster_label = labels.get("niuu.world/cluster") or ""
+        cluster = (
+            self._cluster
+            if cluster_label.lower() in {"", "unknown"}
+            else cluster_label
+        ) or "unknown"
         component = (
             labels.get("niuu.world/kind")
             or labels.get("observatory.niuu.world/type")
