@@ -228,6 +228,21 @@ class TestDeploymentTemplate:
         before_volume = deployment_yaml.split("credential-files")[0].split("homeVolume")[-1]
         assert "broker.cliType" not in before_volume
 
+    def test_codex_home_is_session_local_but_seeded_from_shared_home(
+        self, deployment_yaml
+    ):
+        """Codex auth/config is copied without sharing sqlite runtime state."""
+        assert (
+            'CODEX_STATE_DIR="{{ printf "%s/.codex" '
+            '(include "skuld.workspacePath" .) }}"'
+        ) in deployment_yaml
+        assert 'if [ "$DEST_DIR" = ".codex" ]; then' in deployment_yaml
+        assert "for name in auth.json config.toml version.json models_cache.json" in deployment_yaml
+        assert 'cp -f "$HOME_DIR/$DEST_DIR/$name" "$CODEX_STATE_DIR/$name"' in deployment_yaml
+        assert "sqlite" not in deployment_yaml.split("Codex auth/config seeded")[0].split(
+            "for name in auth.json"
+        )[1]
+
 
 class TestServiceTemplate:
     """Tests for service.yaml template structure."""
