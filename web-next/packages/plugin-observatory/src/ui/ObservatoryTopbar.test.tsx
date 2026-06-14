@@ -100,6 +100,7 @@ describe('ObservatoryTopbar', () => {
         { id: 'r1', typeId: 'ravn_long', label: 'r1', parentId: null, status: 'healthy' },
         { id: 'r2', typeId: 'ravn_run', label: 'r2', parentId: null, status: 'healthy' },
         { id: 'r3', typeId: 'service', label: 'r3', parentId: null, status: 'healthy' },
+        { id: 'w1', typeId: 'warden', label: 'w1', parentId: null, status: 'healthy' },
       ],
     };
     vi.mocked(useTopology).mockReturnValue(topo);

@@ -72,17 +72,17 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
     assert {node["id"] for node in snapshot["nodes"]} == {
         "cluster-ymir",
         "namespace-ymir-volundr",
-        "runtime:ymir:volundr:ravn-long:ravn-api",
+        "runtime:ymir:volundr:service:ravn-api",
     }
     ravn = next(node for node in snapshot["nodes"] if node["id"].endswith("ravn-api"))
     namespace = next(node for node in snapshot["nodes"] if node["id"] == "namespace-ymir-volundr")
     cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-ymir")
-    assert ravn["typeId"] == "ravn_long"
+    assert ravn["typeId"] == "service"
     assert "resourceKind" not in ravn
     assert [resource["kind"] for resource in ravn["resources"]] == ["deployment"]
     assert ravn["clusterName"] == "ymir"
     assert ravn["namespace"] == "volundr"
-    assert ravn["layoutHints"]["packGroup"] == "ravn_long"
+    assert ravn["layoutHints"]["packGroup"] == "service"
     assert namespace["typeId"] == "namespace"
     assert namespace["layoutHints"]["packGroup"] == "namespace"
     assert cluster["layoutHints"]["packGroup"] == "cluster"

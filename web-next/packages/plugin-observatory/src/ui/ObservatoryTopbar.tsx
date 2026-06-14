@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useTopology } from '../application/useTopology';
 import './ObservatoryTopbar.css';
 
-const RAVN_KINDS = new Set(['ravn_long', 'ravn_run', 'warden']);
+const RAVN_KINDS = new Set(['ravn_long', 'ravn_run']);
 
 /**
  * ObservatoryTopbar — topbar-right slot for the Observatory plugin.

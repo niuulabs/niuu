@@ -53,6 +53,8 @@ describe('renderer helpers', () => {
     expect(nodeColour('ting')).toEqual([125, 211, 252]);
     expect(nodeColour('unknown-type')).toEqual([148, 163, 184]);
     expect(identityRune('ravn_long')).toBeTruthy();
+    expect(identityRune('warden')).toBe('ᚹ');
+    expect(identityRune('service')).not.toBe(identityRune('ravn_long'));
     expect(identityRune('unknown')).toBe('');
     expect(structureLabel(realm)).toBe('asgard_realm');
   });

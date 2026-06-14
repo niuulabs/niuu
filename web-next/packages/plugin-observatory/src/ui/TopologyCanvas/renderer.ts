@@ -73,13 +73,14 @@ export function nodeColour(typeId: string): readonly [number, number, number] {
 }
 
 export function identityRune(typeId: string): string {
+  if (typeId === 'warden') return 'ᚹ';
+
   const direct = SERVICE_RUNES[typeId as keyof typeof SERVICE_RUNES];
   if (direct) return direct;
 
   const alias: Partial<Record<string, keyof typeof SERVICE_RUNES>> = {
     ravn_long: 'ravn',
     ravn_run: 'ravn',
-    warden: 'ravn',
   };
   const key = alias[typeId];
   return key ? SERVICE_RUNES[key] : '';
