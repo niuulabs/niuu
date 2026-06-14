@@ -32,7 +32,6 @@ service:
   port: 80
   targetPort: 8084
   annotations: {}
-  extraPorts: []
 
 config:
   host: "0.0.0.0"

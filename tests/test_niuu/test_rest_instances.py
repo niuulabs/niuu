@@ -34,7 +34,6 @@ def _instance(
     enabled: bool = True,
     is_default: bool = False,
     base_url: str = "https://registry.example.com",
-    config: dict[str, Any] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
     return RegisteredInstance(
@@ -48,7 +47,7 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config=config or {"region": "ca-central-1"},
+        config={"region": "ca-central-1"},
         created_at=now,
         updated_at=now,
     )
@@ -496,9 +495,6 @@ def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
             "ravn-1",
             kind=InstanceKind.RAVN,
             base_url="https://ravn.example.com/api/v1/ravn",
-            config={
-                "discovery_base_url": "http://niuu-ravn-app.volundr.svc.cluster.local:8084/api/v1/ravn"
-            },
         ),
         _instance(
             "mimir-1",
@@ -509,9 +505,7 @@ def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
     client = _client(service)
     respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
     respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
-    respx.get(
-        "http://niuu-ravn-app.volundr.svc.cluster.local:8084/api/v1/ravn/wardens"
-    ).mock(
+    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
         return_value=Response(
             200,
             json=[
