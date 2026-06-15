@@ -56,6 +56,11 @@ class FailingGuildRegistry:
         raise RuntimeError("guild unavailable")
 
 
+class StaticAuth:
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": "Bearer service-token"}
+
+
 @pytest.mark.asyncio
 async def test_for_principal_discovers_targets_from_guild_registry() -> None:
     registry = StubGuildRegistry(
@@ -171,6 +176,29 @@ async def test_target_without_configured_credential_is_allowed_for_request_time_
 
     assert len(result) == 1
     assert result[0]._api_key is None
+
+
+@pytest.mark.asyncio
+async def test_passes_target_service_auth_to_resolved_adapters() -> None:
+    target_auth = StaticAuth()
+    factory = VolundrAdapterFactory(
+        StubGuildRegistry(
+            [
+                _make_instance(
+                    instance_id="system-1",
+                    name="System Alpha",
+                    base_url="http://alpha:8000",
+                )
+            ]
+        ),
+        StubCredentialStore(),
+        target_auth=target_auth,
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 1
+    assert result[0]._auth is target_auth
 
 
 @pytest.mark.asyncio

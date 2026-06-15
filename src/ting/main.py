@@ -437,6 +437,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     guild_registry_client,
                     credential_store,
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
+                    target_auth=_create_http_auth_adapter(settings.volundr.auth),
                 )
             # Default Volundr adapter for code paths that don't have a per-owner
             # context (e.g. the Telegram webhook router's _get_volundr). In

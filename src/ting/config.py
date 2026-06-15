@@ -73,6 +73,7 @@ class VolundrConfig(BaseModel):
     """Volundr API connection configuration."""
 
     url: str = Field(default="http://localhost:8080")
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
     use_connection_factory_in_dev: bool = Field(
         default=False,
         description=(

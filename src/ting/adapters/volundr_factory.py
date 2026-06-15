@@ -6,6 +6,7 @@ import logging
 
 from niuu.domain.models import Principal, RegisteredInstance
 from niuu.ports.credentials import CredentialStorePort
+from niuu.ports.http_auth import HttpAuthPort
 from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import VolundrPort
@@ -47,10 +48,12 @@ class VolundrAdapterFactory:
         credential_store: CredentialStorePort,
         *,
         allow_unauthenticated: bool = False,
+        target_auth: HttpAuthPort | None = None,
     ) -> None:
         self._registry = registry
         self._credential_store = credential_store
         self._allow_unauthenticated = allow_unauthenticated
+        self._target_auth = target_auth
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         """Return all authenticated VolundrHTTPAdapter instances for *owner_id*.
@@ -118,6 +121,7 @@ class VolundrAdapterFactory:
                         name=instance.name,
                         target_id=instance.id,
                         tags=instance.tags,
+                        auth=self._target_auth,
                     )
                 )
             except Exception:

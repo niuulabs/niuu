@@ -287,6 +287,10 @@ auth:
 
 volundr:
   url: "http://volundr:8000"
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+    secretKwargs: []
 
 guildRegistry:
   baseUrl: ""

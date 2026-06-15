@@ -72,6 +72,13 @@ spec:
                   key: {{ .Values.database.passwordKey | default "password" }}
             - name: VOLUNDR_URL
               value: {{ .Values.volundr.url | quote }}
+            {{- range .Values.volundr.auth.secretKwargs }}
+            - name: VOLUNDR_AUTH_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
             {{- if and .Values.pat .Values.pat.issuerSecretName }}
             - name: PAT__TOKEN_ISSUER_KWARGS__CLIENT_SECRET
               valueFrom:

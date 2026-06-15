@@ -42,6 +42,17 @@ data:
 
     volundr:
       url: {{ .Values.volundr.url | quote }}
+      auth:
+        adapter: {{ .Values.volundr.auth.adapter | quote }}
+        kwargs: {{ .Values.volundr.auth.kwargs | default dict | toJson }}
+        {{- if .Values.volundr.auth.secretKwargs }}
+        secret_kwargs_env:
+          {{- range .Values.volundr.auth.secretKwargs }}
+          {{ .kwarg }}: VOLUNDR_AUTH_SK_{{ .kwarg | upper }}
+          {{- end }}
+        {{- else }}
+        secret_kwargs_env: {}
+        {{- end }}
 
     guild_registry:
       base_url: {{ .Values.guildRegistry.baseUrl | quote }}
