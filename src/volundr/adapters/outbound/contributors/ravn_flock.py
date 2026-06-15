@@ -42,7 +42,7 @@ _DEFAULT_BASE_PORT = 7480
 _DEFAULT_MAX_CONCURRENT_TASKS = 3
 _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
-_WORKSPACE_VOLUME_NAME = "workspace"
+_WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
 _RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/ravn:latest"
 _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
@@ -897,6 +897,7 @@ class RavnFlockContributor(SessionContributor):
                 {
                     "name": _WORKSPACE_VOLUME_NAME,
                     "mountPath": _WORKSPACE_MOUNT_PATH,
+                    "subPath": f"{session.id}/workspace",
                     "readOnly": True,
                 },
                 {

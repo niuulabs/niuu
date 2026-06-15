@@ -224,9 +224,7 @@ class TestDeploymentTemplate:
                 "envVars": [{"name": "MESH_ENABLED", "value": "true"}],
                 "mesh": {
                     "enabled": True,
-                    "peerPorts": [
-                        {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"}
-                    ],
+                    "peerPorts": [{"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"}],
                 },
                 "extraInitContainers": [
                     {
@@ -240,6 +238,14 @@ class TestDeploymentTemplate:
                         "name": "ravn-coder",
                         "image": "ghcr.io/niuulabs/ravn:test",
                         "env": [{"name": "RAVN_PERSONA", "value": "coder"}],
+                        "volumeMounts": [
+                            {
+                                "name": "sessions",
+                                "mountPath": "/workspace",
+                                "subPath": "session-1/workspace",
+                                "readOnly": True,
+                            }
+                        ],
                     }
                 ],
             },
@@ -257,6 +263,11 @@ class TestDeploymentTemplate:
         assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
             "skuld"
         ]["ports"]
+        volumes = {volume["name"] for volume in pod_spec["volumes"]}
+        assert "sessions" in volumes
+        for container in pod_spec["containers"]:
+            for mount in container.get("volumeMounts", []):
+                assert mount["name"] in volumes
 
     def test_deployment_has_no_per_provider_api_fields(self, deployment_yaml):
         """Test deployment does not contain old per-provider api fields."""
@@ -272,21 +283,21 @@ class TestDeploymentTemplate:
         before_volume = deployment_yaml.split("credential-files")[0].split("homeVolume")[-1]
         assert "broker.cliType" not in before_volume
 
-    def test_codex_home_is_session_local_but_seeded_from_shared_home(
-        self, deployment_yaml
-    ):
+    def test_codex_home_is_session_local_but_seeded_from_shared_home(self, deployment_yaml):
         """Codex auth/config is copied without sharing sqlite runtime state."""
         assert (
-            'CODEX_STATE_DIR="{{ printf "%s/.codex" '
-            '(include "skuld.workspacePath" .) }}"'
+            'CODEX_STATE_DIR="{{ printf "%s/.codex" (include "skuld.workspacePath" .) }}"'
         ) in deployment_yaml
         assert 'if [ "$DEST_DIR" = ".codex" ]; then' in deployment_yaml
         assert 'chown "$TARGET_UID:$TARGET_GID" "$(dirname "$CODEX_STATE_DIR")"' in deployment_yaml
         assert "for name in auth.json config.toml version.json models_cache.json" in deployment_yaml
         assert 'cp -f "$HOME_DIR/$DEST_DIR/$name" "$CODEX_STATE_DIR/$name"' in deployment_yaml
-        assert "sqlite" not in deployment_yaml.split("Codex auth/config seeded")[0].split(
-            "for name in auth.json"
-        )[1]
+        assert (
+            "sqlite"
+            not in deployment_yaml.split("Codex auth/config seeded")[0].split(
+                "for name in auth.json"
+            )[1]
+        )
 
 
 class TestServiceTemplate:

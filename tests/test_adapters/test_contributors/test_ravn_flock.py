@@ -349,6 +349,8 @@ class TestContributorOutput:
 
         ravn_ctr = result.pod_spec.extra_containers[0]
         ws_mount = next(m for m in ravn_ctr["volumeMounts"] if m["mountPath"] == "/workspace")
+        assert ws_mount["name"] == "sessions"
+        assert ws_mount["subPath"] == f"{session.id}/workspace"
         assert ws_mount.get("readOnly") is True
 
     async def test_sleipnir_publish_urls_in_skuld_env(self, session, flock_template):
