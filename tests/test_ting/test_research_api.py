@@ -115,11 +115,21 @@ class InMemoryWorkflowCampaignRepository(WorkflowCampaignRepository):
 
 
 class RecordingVolundrPort(VolundrPort):
-    def __init__(self) -> None:
+    def __init__(self, *, name: str = "local", target_id: str | None = None) -> None:
+        self._name = name
+        self._target_id = target_id or name
         self.requests: list[SpawnRequest] = []
         self.sessions: dict[str, VolundrSession] = {}
         self.get_session_principals: list[Principal | None] = []
         self.raise_on_get_session = False
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def target_id(self) -> str:
+        return self._target_id
 
     async def spawn_session(
         self,
@@ -133,7 +143,7 @@ class RecordingVolundrPort(VolundrPort):
             name=request.name,
             status="running",
             tracker_issue_id=request.tracker_issue_id,
-            cluster_name="local",
+            cluster_name=self._name,
             repo=request.repo,
             branch=request.branch,
             base_branch=request.base_branch,
@@ -182,24 +192,26 @@ class RecordingVolundrPort(VolundrPort):
 
 
 class RecordingVolundrFactory:
-    def __init__(self, port: RecordingVolundrPort) -> None:
-        self._port = port
+    def __init__(self, port: RecordingVolundrPort, *ports: RecordingVolundrPort) -> None:
+        self._ports = [port, *ports]
         self.primary_owner_calls: list[str] = []
         self.primary_principal_calls: list[Principal] = []
+        self.for_principal_calls: list[Principal] = []
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
-        return [self._port]
+        return self._ports
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         self.primary_owner_calls.append(owner_id)
-        return self._port
+        return self._ports[0]
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
-        return [self._port]
+        self.for_principal_calls.append(principal)
+        return self._ports
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         self.primary_principal_calls.append(principal)
-        return self._port
+        return self._ports[0]
 
 
 def _headers() -> dict[str, str]:
@@ -401,6 +413,60 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
     assert campaigns[0]["metadata"]["mode"] == "exploratory"
 
 
+def test_create_campaign_uses_selected_volundr_target(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    workflow_repo = InMemoryWorkflowRepository([workflow])
+    campaign_repo = InMemoryWorkflowCampaignRepository()
+    noatun = RecordingVolundrPort(name="noatun", target_id="volundr-noatun")
+    valhalla = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
+    client = _make_client(
+        workflow_repo,
+        campaign_repo,
+        RecordingVolundrFactory(noatun, valhalla),
+    )
+
+    response = client.post(
+        "/api/v1/ting/research/campaigns",
+        headers=_headers(),
+        json={
+            "question": "Can research choose a remote execution target?",
+            "mode": "exploratory",
+            "repo": "niuulabs/volundr",
+            "branch": "dev",
+            "connectionId": "volundr-valhalla",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert noatun.requests == []
+    assert len(valhalla.requests) == 1
+    assert valhalla.requests[0].workload_type == "ravn_flock"
+    assert body["metadata"]["connection_id"] == "volundr-valhalla"
+    assert body["metadata"]["cluster_name"] == "valhalla"
+
+
+def test_create_campaign_rejects_unknown_volundr_target(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        InMemoryWorkflowCampaignRepository(),
+        RecordingVolundrFactory(RecordingVolundrPort(target_id="volundr-noatun")),
+    )
+
+    response = client.post(
+        "/api/v1/ting/research/campaigns",
+        headers=_headers(),
+        json={
+            "question": "Should unknown targets silently fall back?",
+            "connectionId": "missing-target",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Volundr target not found: missing-target"
+
+
 def test_list_campaigns_refreshes_runtime_with_authenticated_principal(tmp_path: Path) -> None:
     workflow = _research_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, slug="active-research")
@@ -422,6 +488,37 @@ def test_list_campaigns_refreshes_runtime_with_authenticated_principal(tmp_path:
     assert factory.primary_owner_calls == []
     assert [principal.user_id for principal in factory.primary_principal_calls] == ["user-1"]
     assert [principal.user_id for principal in volundr_port.get_session_principals] == ["user-1"]
+
+
+def test_list_campaigns_refreshes_runtime_from_campaign_target(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign = _campaign_for_workflow(workflow, slug="remote-research")
+    campaign = WorkflowCampaign(
+        **{
+            **campaign.__dict__,
+            "metadata": {**campaign.metadata, "connection_id": "volundr-valhalla"},
+        }
+    )
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    noatun = RecordingVolundrPort(name="noatun", target_id="volundr-noatun")
+    valhalla = RecordingVolundrPort(name="valhalla", target_id="volundr-valhalla")
+    valhalla.sessions[campaign.session_id] = VolundrSession(
+        id=campaign.session_id,
+        name="Valhalla Research Runtime",
+        status="running",
+        tracker_issue_id=None,
+        cluster_name="valhalla",
+    )
+    factory = RecordingVolundrFactory(noatun, valhalla)
+    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, factory)
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["sessionName"] == "Valhalla Research Runtime"
+    assert noatun.get_session_principals == []
+    assert [principal.user_id for principal in valhalla.get_session_principals] == ["user-1"]
+    assert [principal.user_id for principal in factory.for_principal_calls] == ["user-1"]
 
 
 def test_list_campaigns_tolerates_runtime_refresh_failure(tmp_path: Path) -> None:

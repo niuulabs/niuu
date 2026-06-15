@@ -656,6 +656,7 @@ function toWorkflowLaunchBody(request: WorkflowLaunchRequest): Record<string, un
     sessionName: request.sessionName,
     repo: request.repo,
     branch: request.branch,
+    connectionId: request.connectionId,
   };
 }
 
@@ -747,6 +748,7 @@ function toResearchCampaignCreateBody(
     success: request.success,
     constraints: request.constraints,
     monitoringCadence: request.monitoringCadence,
+    connectionId: request.connectionId,
   };
 }
 

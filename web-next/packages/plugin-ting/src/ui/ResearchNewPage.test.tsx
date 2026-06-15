@@ -4,7 +4,7 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { RepoRecord } from '@niuulabs/ui';
 import { describe, expect, it, vi } from 'vitest';
 import type { CreateResearchCampaignRequest, IResearchService, IWorkflowService } from '../ports';
-import { createMockResearchService } from '../adapters/mock';
+import { createMockDispatchBus, createMockResearchService } from '../adapters/mock';
 import type { Workflow } from '../domain/workflow';
 import { ResearchNewPage } from './ResearchNewPage';
 
@@ -82,6 +82,7 @@ describe('ResearchNewPage', () => {
       wrapper: wrap({
         'ting.research': createMockResearchService(),
         'ting.workflows': workflowService,
+        'ting.dispatch': createMockDispatchBus(),
         'niuu.repos': repoCatalog,
       }),
     });
@@ -92,6 +93,8 @@ describe('ResearchNewPage', () => {
     );
     expect(screen.getByRole('option', { name: /Research Campaign/i })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /Incident triage/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Execution target')).toHaveValue('cluster-mini'));
+    expect(screen.getByRole('option', { name: /MacBook Pro/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /All workflows/i }));
     await waitFor(() => expect(screen.getByText(/Showing all 2 workflows/i)).toBeInTheDocument());
@@ -219,6 +222,7 @@ describe('ResearchNewPage', () => {
       wrapper: wrap({
         'ting.research': researchService,
         'ting.workflows': noTagWorkflowService,
+        'ting.dispatch': createMockDispatchBus(),
         'niuu.repos': emptyRepoCatalog,
       }),
     });
@@ -237,6 +241,10 @@ describe('ResearchNewPage', () => {
       target: { value: 'https://github.com/niuulabs/niuu.git' },
     });
     fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'feature/research' } });
+    await waitFor(() => expect(screen.getByLabelText('Execution target')).not.toBeDisabled());
+    fireEvent.change(screen.getByLabelText('Execution target'), {
+      target: { value: 'cluster-macbook' },
+    });
     fireEvent.click(screen.getByRole('button', { name: /Launch campaign/i }));
 
     await waitFor(() => expect(requests).toHaveLength(1));
@@ -244,6 +252,7 @@ describe('ResearchNewPage', () => {
       workflowId: 'workflow-ops',
       repo: 'https://github.com/niuulabs/niuu.git',
       branch: 'feature/research',
+      connectionId: 'cluster-macbook',
     });
 
     fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
@@ -315,6 +324,7 @@ describe('ResearchNewPage', () => {
       wrapper: wrap({
         'ting.research': researchService,
         'ting.workflows': emptyWorkflowService,
+        'ting.dispatch': createMockDispatchBus(),
         'niuu.repos': repoCatalog,
       }),
     });
@@ -352,6 +362,7 @@ describe('ResearchNewPage', () => {
       wrapper: wrap({
         'ting.research': createMockResearchService(),
         'ting.workflows': workflowService,
+        'ting.dispatch': createMockDispatchBus(),
         'niuu.repos': branchAwareRepos,
       }),
     });
@@ -414,6 +425,7 @@ describe('ResearchNewPage', () => {
       wrapper: wrap({
         'ting.research': createMockResearchService(),
         'ting.workflows': mixedWorkflowService,
+        'ting.dispatch': createMockDispatchBus(),
         'niuu.repos': repoCatalog,
       }),
     });

@@ -246,6 +246,7 @@ export interface WorkflowLaunchRequest {
   sessionName?: string;
   repo?: string;
   branch?: string;
+  connectionId?: string;
 }
 
 export interface WorkflowLaunchResult {
@@ -278,6 +279,7 @@ export interface CreateResearchCampaignRequest {
   success?: string;
   constraints?: string[];
   monitoringCadence?: string;
+  connectionId?: string;
 }
 
 export interface UpdateResearchCampaignRequest {

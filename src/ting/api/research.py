@@ -67,6 +67,7 @@ class ResearchCampaignCreateBody(BaseModel):
     success: str = Field(default="", max_length=500)
     constraints: list[str] = Field(default_factory=list)
     monitoring_cadence: str | None = Field(default=None, alias="monitoringCadence", max_length=255)
+    connection_id: str | None = Field(default=None, alias="connectionId", max_length=255)
 
     model_config = {"populate_by_name": True}
 
@@ -197,6 +198,7 @@ def create_research_router() -> APIRouter:
             sessionName=session_name,
             repo=body.repo,
             branch=body.branch,
+            connectionId=body.connection_id,
         )
         execution = await launch_workflow_execution(
             request=request,
@@ -234,6 +236,8 @@ def create_research_router() -> APIRouter:
                 "monitoring_cadence": body.monitoring_cadence,
                 "repo": body.repo,
                 "branch": body.branch,
+                "connection_id": body.connection_id,
+                "cluster_name": execution.session.cluster_name,
             },
             created_at=now,
             updated_at=now,
@@ -511,7 +515,11 @@ async def _refresh_campaign_runtime(
     volundr_factory: VolundrFactory,
     principal: Principal,
 ) -> WorkflowCampaign:
-    adapter = await volundr_factory.primary_for_principal(principal)
+    adapter = await _resolve_campaign_volundr_adapter(
+        volundr_factory=volundr_factory,
+        principal=principal,
+        campaign=campaign,
+    )
     if adapter is None:
         return campaign
     try:
@@ -550,6 +558,36 @@ async def _refresh_campaign_runtime(
         event_name = "workflow.campaign.failed"
     await _emit_campaign_event(request, event_name, saved)
     return saved
+
+
+async def _resolve_campaign_volundr_adapter(
+    *,
+    volundr_factory: VolundrFactory,
+    principal: Principal,
+    campaign: WorkflowCampaign,
+):
+    connection_id = str(campaign.metadata.get("connection_id") or "").strip()
+    if not connection_id:
+        return await volundr_factory.primary_for_principal(principal)
+
+    try:
+        adapters = await volundr_factory.for_principal(principal)
+    except Exception:
+        logger.warning(
+            "Skipping runtime refresh for research campaign %s; failed to load Volundr targets",
+            campaign.slug,
+            exc_info=True,
+        )
+        return None
+    for adapter in adapters:
+        if connection_id in {adapter.target_id, adapter.name}:
+            return adapter
+    logger.warning(
+        "Skipping runtime refresh for research campaign %s; Volundr target %s is not visible",
+        campaign.slug,
+        connection_id,
+    )
+    return None
 
 
 def _campaign_status_from_session(

@@ -1765,6 +1765,10 @@ export function createMockResearchService(): IResearchService {
           constraints: request.constraints ?? [],
           repo: request.repo ?? '',
           branch: request.branch ?? '',
+          connection_id: request.connectionId ?? '',
+          cluster_name:
+            SEED_DISPATCH_CLUSTERS.find((cluster) => cluster.connectionId === request.connectionId)
+              ?.name ?? 'Mac mini',
         },
         createdAt,
         updatedAt: createdAt,

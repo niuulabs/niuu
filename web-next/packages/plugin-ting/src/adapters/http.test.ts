@@ -1506,6 +1506,7 @@ describe('buildResearchHttpAdapter', () => {
       success: 'Clear decision',
       constraints: 'One day',
       monitoringCadence: 'daily',
+      connectionId: 'cluster-mini',
     });
     const updated = await service.updateCampaign('research/council-human-v1', {
       name: 'Updated Name',
@@ -1526,6 +1527,7 @@ describe('buildResearchHttpAdapter', () => {
       success: 'Clear decision',
       constraints: 'One day',
       monitoringCadence: 'daily',
+      connectionId: 'cluster-mini',
     });
     expect(client.patch).toHaveBeenCalledWith('/research/campaigns/research%2Fcouncil-human-v1', {
       name: 'Updated Name',
