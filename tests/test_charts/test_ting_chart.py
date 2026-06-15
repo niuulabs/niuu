@@ -64,8 +64,8 @@ class TestConfigMapTemplate:
         assert "config.yaml: |" in template_yaml
         assert "database:" in template_yaml
         assert "volundr:" in template_yaml
-        assert "niuu:" in template_yaml
-        assert ".Values.registry.instances" in template_yaml
+        assert "guild_registry:" in template_yaml
+        assert ".Values.guildRegistry.baseUrl" in template_yaml
 
 
 class TestMigrationConfigMap:

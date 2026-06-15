@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from ting.config import Settings
+from ting.config import AuthConfig, Settings
 from ting.main import create_app
 
 
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client with mocked database pool."""
-    settings = Settings()
+    settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
     app = create_app(settings)
 
     mock_pool = AsyncMock()
