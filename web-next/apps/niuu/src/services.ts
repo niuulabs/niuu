@@ -246,7 +246,11 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
 }
 
 function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  return resolveDirectServiceBase(config, 'volundr');
+  const explicitBase = resolveDirectServiceBase(config, 'volundr');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/volundr` : null;
 }
 
 function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -289,8 +293,40 @@ function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | n
   const explicitBase = resolveDirectServiceBase(config, 'filesystem');
   if (explicitBase) return explicitBase;
 
-  const forgeBase = resolveForgeServiceBase(config);
-  return forgeBase;
+  return resolveVolundrServiceBase(config);
+}
+
+function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
+  if (explicit.mode === 'live') return explicit;
+
+  const explicitVolundrBase = resolveDirectServiceBase(config, 'volundr');
+  if (explicitVolundrBase) {
+    return {
+      mode: 'live',
+      transport: 'http',
+      target: explicitVolundrBase,
+      source: 'volundr',
+    };
+  }
+
+  const sharedBase = resolveSharedApiBase(config);
+  if (sharedBase) {
+    return {
+      mode: 'live',
+      transport: 'http',
+      target: `${sharedBase}/volundr`,
+      source: 'shared-api',
+    };
+  }
+
+  return {
+    mode: 'mock',
+    transport: 'mock',
+    target: null,
+    source: 'mock',
+    note: 'No live filesystem API is wired yet.',
+  };
 }
 
 function resolveTingServiceBase(
@@ -585,26 +621,7 @@ export function buildServiceBackendStatus(
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
-    filesystem: (() => {
-      const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
-      if (explicit.mode === 'live') return explicit;
-      const derivedBase = resolveFilesystemBase(config);
-      if (derivedBase) {
-        return {
-          mode: 'live',
-          transport: 'http',
-          target: derivedBase,
-          source: 'forge',
-        } satisfies ServiceBackendStatus;
-      }
-      return {
-        mode: 'mock',
-        transport: 'mock',
-        target: null,
-        source: 'mock',
-        note: 'No live filesystem API is wired yet.',
-      } satisfies ServiceBackendStatus;
-    })(),
+    filesystem: resolveFilesystemStatus(config),
   };
 }
 

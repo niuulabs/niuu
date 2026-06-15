@@ -353,7 +353,9 @@ describe('__testables', () => {
       'http://host/api/v1/forge',
     );
     expect(deriveCanonicalForgeBasePath('http://host/api/v1')).toBe('http://host/api/v1/forge');
-    expect(deriveCanonicalForgeBasePath('http://host/api/v1/volundr')).toBeNull();
+    expect(deriveCanonicalForgeBasePath('http://host/api/v1/volundr')).toBe(
+      'http://host/api/v1/forge',
+    );
 
     expect(deriveCanonicalVolundrBasePath()).toBeNull();
     expect(deriveCanonicalVolundrBasePath('http://host/api/v1/volundr/')).toBe(
@@ -1223,7 +1225,7 @@ describe('buildVolundrHttpAdapter', () => {
 
     expect(client.get).toHaveBeenCalledWith('/session-definitions');
     expect(client.get).toHaveBeenCalledWith('/launch-specs?scope=system');
-    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/forge',
     );
   });

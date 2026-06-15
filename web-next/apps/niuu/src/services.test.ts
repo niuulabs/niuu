@@ -639,7 +639,7 @@ describe('buildServiceBackendStatus', () => {
     });
   });
 
-  it('derives a live filesystem backend from the forge host when available', () => {
+  it('derives a live filesystem backend from the shared Volundr route', () => {
     const status = buildServiceBackendStatus({
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
@@ -649,8 +649,8 @@ describe('buildServiceBackendStatus', () => {
     expect(status.filesystem).toEqual({
       mode: 'live',
       transport: 'http',
-      target: 'http://localhost:8080/api/v1/forge',
-      source: 'forge',
+      target: 'http://localhost:8080/api/v1/volundr',
+      source: 'shared-api',
     });
   });
 
@@ -852,7 +852,7 @@ describe('buildServices', () => {
     });
   });
 
-  it('falls back to the Forge host when only the canonical Forge base is live', () => {
+  it('falls back to canonical shared routes when only the Forge base is live', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
@@ -874,7 +874,7 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1',
     });
     expect(volundrMocks.buildVolundrFileSystemHttpAdapter).toHaveBeenCalledWith({
-      baseUrl: 'http://localhost:8080/api/v1/forge',
+      baseUrl: 'http://localhost:8080/api/v1/volundr',
     });
   });
 
@@ -920,7 +920,7 @@ describe('buildServices', () => {
     );
   });
 
-  it('prefers an explicit filesystem base over the derived forge host', () => {
+  it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
       theme: 'ice',
       plugins: {},

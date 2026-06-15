@@ -582,7 +582,8 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
-  return null;
+  const sharedBasePath = deriveSharedApiBasePath(normalized);
+  return sharedBasePath ? `${sharedBasePath}/forge` : null;
 }
 
 function deriveCanonicalVolundrBasePath(basePath?: string): string | null {
