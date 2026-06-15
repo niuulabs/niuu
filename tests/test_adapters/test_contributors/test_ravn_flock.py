@@ -1,5 +1,6 @@
 """Tests for RavnFlockContributor."""
 
+import json
 import logging
 from unittest.mock import MagicMock
 
@@ -301,6 +302,29 @@ class TestContributorOutput:
         assert env_names["SKULD__MESH__PEER_ID"].startswith("skuld-")
         assert env_names["SKULD__MESH__NNG__PUB_SUB_ADDRESS"].endswith(":7480")
         assert env_names["SKULD__MESH__NNG__REQ_REP_ADDRESS"].endswith(":7481")
+
+    async def test_skuld_static_mesh_peers_in_env(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        adapters = json.loads(env_names["SKULD__MESH__ADAPTERS"])
+        peers = adapters[0]["peers"]
+
+        assert adapters[0]["adapter"] == "static"
+        assert {peer["peer_id"] for peer in peers} == {
+            env_names["SKULD__MESH__PEER_ID"],
+            "flock-coordinator",
+            "flock-reviewer",
+        }
+        assert {peer["pub_address"] for peer in peers} == {
+            "tcp://127.0.0.1:7480",
+            "tcp://127.0.0.1:7482",
+            "tcp://127.0.0.1:7484",
+        }
 
     async def test_skuld_workflow_trigger_env_present_when_graph_has_trigger(self, session):
         template = LaunchSpec(
@@ -673,6 +697,30 @@ class TestConfigGeneration:
             cfg = _extract_mounted_config(result.pod_spec, persona)
             assert "mesh:" in cfg
             assert "enabled: true" in cfg
+
+    async def test_mounted_config_has_static_mesh_peers(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        for persona in ("coordinator", "reviewer"):
+            cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))
+            adapters = cfg["discovery"]["adapters"]
+            peers = adapters[0]["peers"]
+
+            assert adapters[0]["adapter"] == "static"
+            assert {peer["peer_id"] for peer in peers} == {
+                f"skuld-{str(session.id)[:8]}",
+                "flock-coordinator",
+                "flock-reviewer",
+            }
+            assert {peer["pub_address"] for peer in peers} == {
+                "tcp://127.0.0.1:7480",
+                "tcp://127.0.0.1:7482",
+                "tcp://127.0.0.1:7484",
+            }
 
     async def test_mounted_config_has_mimir_instances(self, session, flock_template):
         provider = MagicMock()

@@ -374,6 +374,59 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
     return instance
 
 
+def _mesh_peer_entry(
+    *,
+    peer_id: str,
+    persona: str,
+    index: int,
+    base_port: int,
+    consumes_event_types: list[str] | None = None,
+    emits_event_types: list[str] | None = None,
+) -> dict[str, Any]:
+    pub, rep, hs = _ports_for(index, base_port)
+    return {
+        "peer_id": peer_id,
+        "persona": persona,
+        "pub_address": f"tcp://127.0.0.1:{pub}",
+        "rep_address": f"tcp://127.0.0.1:{rep}",
+        "handshake_port": hs,
+        "consumes_event_types": list(consumes_event_types or []),
+        "emits_event_types": list(emits_event_types or []),
+    }
+
+
+def _build_static_mesh_peers(
+    *,
+    persona_dicts: list[dict[str, Any]],
+    skuld_peer_id: str,
+    base_port: int,
+) -> list[dict[str, Any]]:
+    peers = [
+        _mesh_peer_entry(
+            peer_id=skuld_peer_id,
+            persona="Skuld",
+            index=0,
+            base_port=base_port,
+            emits_event_types=["code.changed"],
+        )
+    ]
+    for i, persona_dict in enumerate(persona_dicts, start=1):
+        persona = str(persona_dict["name"])
+        consumes = [str(item) for item in persona_dict.get("consumes_event_types") or []]
+        emits = [str(item) for item in persona_dict.get("emits_event_types") or []]
+        peers.append(
+            _mesh_peer_entry(
+                peer_id=f"flock-{persona}",
+                persona=persona,
+                index=i,
+                base_port=base_port,
+                consumes_event_types=consumes,
+                emits_event_types=emits,
+            )
+        )
+    return peers
+
+
 def _build_ravn_config(
     *,
     persona: str,
@@ -384,6 +437,7 @@ def _build_ravn_config(
     base_port: int,
     all_personas: list[str],
     skuld_peer_id: str,
+    static_mesh_peers: list[dict[str, Any]],
     mimir_config: dict[str, Any],
     sleipnir_publish_urls: list[str],
     daily_budget_usd: float | None = None,
@@ -424,7 +478,16 @@ def _build_ravn_config(
             },
             "peers": peers,
         },
-        "discovery": {"enabled": True, "adapter": "static"},
+        "discovery": {
+            "enabled": True,
+            "adapters": [
+                {
+                    "adapter": "static",
+                    "peers": static_mesh_peers,
+                    "poll_interval_s": 0,
+                }
+            ],
+        },
         "cascade": {"enabled": True},
         "gateway": {
             "enabled": True,
@@ -751,6 +814,11 @@ class RavnFlockContributor(SessionContributor):
         # Skuld (index 0) + ravn nodes start at index 1
         skuld_peer_id = f"skuld-{session_id[:8]}"
         skuld_pub, skuld_rep, skuld_hs = _ports_for(0, base_port)
+        static_mesh_peers = _build_static_mesh_peers(
+            persona_dicts=persona_dicts,
+            skuld_peer_id=skuld_peer_id,
+            base_port=base_port,
+        )
 
         skuld_env: list[dict] = [
             {"name": "SKULD__MESH__ENABLED", "value": "true"},
@@ -763,6 +831,18 @@ class RavnFlockContributor(SessionContributor):
             {
                 "name": "SKULD__MESH__NNG__REQ_REP_ADDRESS",
                 "value": f"tcp://{self._mesh_host}:{skuld_rep}",
+            },
+            {
+                "name": "SKULD__MESH__ADAPTERS",
+                "value": json.dumps(
+                    [
+                        {
+                            "adapter": "static",
+                            "peers": static_mesh_peers,
+                            "poll_interval_s": 0,
+                        }
+                    ]
+                ),
             },
         ]
         workflow_trigger = _workflow_trigger_config(workflow)
@@ -906,6 +986,7 @@ class RavnFlockContributor(SessionContributor):
                 base_port=base_port,
                 all_personas=all_personas,
                 skuld_peer_id=skuld_peer_id,
+                static_mesh_peers=static_mesh_peers,
                 mimir_config=mimir_config,
                 sleipnir_publish_urls=sleipnir_publish_urls,
                 daily_budget_usd=daily_budget_usd,
