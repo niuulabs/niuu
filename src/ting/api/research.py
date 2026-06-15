@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
+logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
 )
@@ -512,7 +514,15 @@ async def _refresh_campaign_runtime(
     adapter = await volundr_factory.primary_for_principal(principal)
     if adapter is None:
         return campaign
-    session = await adapter.get_session(campaign.session_id)
+    try:
+        session = await adapter.get_session(campaign.session_id, principal=principal)
+    except Exception:
+        logger.warning(
+            "Skipping runtime refresh for research campaign %s",
+            campaign.slug,
+            exc_info=True,
+        )
+        return campaign
     if session is None:
         return campaign
     next_status = _campaign_status_from_session(session.status, fallback=campaign.status)

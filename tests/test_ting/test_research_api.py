@@ -118,6 +118,8 @@ class RecordingVolundrPort(VolundrPort):
     def __init__(self) -> None:
         self.requests: list[SpawnRequest] = []
         self.sessions: dict[str, VolundrSession] = {}
+        self.get_session_principals: list[Principal | None] = []
+        self.raise_on_get_session = False
 
     async def spawn_session(
         self,
@@ -142,6 +144,9 @@ class RecordingVolundrPort(VolundrPort):
         return session
 
     async def get_session(self, session_id: str, *, auth_token=None, principal=None):
+        self.get_session_principals.append(principal)
+        if self.raise_on_get_session:
+            raise RuntimeError("remote volundr unavailable")
         return self.sessions.get(session_id)
 
     async def list_sessions(self, *, auth_token=None, principal=None):
@@ -416,6 +421,27 @@ def test_list_campaigns_refreshes_runtime_with_authenticated_principal(tmp_path:
     assert response.json()[0]["sessionName"] == "Active Research Runtime"
     assert factory.primary_owner_calls == []
     assert [principal.user_id for principal in factory.primary_principal_calls] == ["user-1"]
+    assert [principal.user_id for principal in volundr_port.get_session_principals] == ["user-1"]
+
+
+def test_list_campaigns_tolerates_runtime_refresh_failure(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign = _campaign_for_workflow(workflow, slug="stale-research")
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    volundr_port = RecordingVolundrPort()
+    volundr_port.raise_on_get_session = True
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(volundr_port),
+    )
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["slug"] == "stale-research"
+    assert body[0]["sessionName"] == "stale-research"
 
 
 def test_create_campaign_normalizes_long_session_names_for_volundr(tmp_path: Path) -> None:
