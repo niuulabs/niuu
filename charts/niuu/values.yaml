@@ -30,7 +30,7 @@ ingress:
       - path: /api/v1/niuu/observatory
         service: guild
       - path: /api/v1/tokens
-        service: niuu-shared
+        service: volundr
       - path: /api/v1/identity
         service: niuu-shared
       - path: /api/v1/features

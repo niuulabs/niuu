@@ -10,7 +10,9 @@ from fastapi import FastAPI
 
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
+from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.cors import apply_cors_middleware
+from niuu.domain.services.pat import PATService
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -33,6 +35,7 @@ from niuu.service_settings import Settings
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
 from volundr.adapters.inbound.rest_audit import (
@@ -842,7 +845,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             pat_repository = PostgresPATRepository(pool)
             pat_validator = _create_pat_validator(settings, pat_repository)
+            token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
+            token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
+            pat_service = PATService(
+                repo=pat_repository,
+                token_issuer=token_issuer,
+                ttl_days=settings.pat.ttl_days,
+                validator=pat_validator,
+            )
             app.state.pat_validator = pat_validator
+            app.state.pat_service = pat_service
+            app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
 
             git_router = create_git_router(
                 git_workflow_service,

@@ -30,6 +30,16 @@ class TestValuesDefaults:
 
         assert forge_route["service"] == "forge-api"
 
+    def test_tokens_route_uses_target_volundr_backend(self, values_yaml: dict) -> None:
+        """PATs must be created against the target Volundr database."""
+        tokens_route = next(
+            route
+            for route in values_yaml["ingress"]["routeSets"]["api"]
+            if route["path"] == "/api/v1/tokens"
+        )
+
+        assert tokens_route["service"] == "volundr"
+
 
 class TestIngressTemplate:
     """Tests for ingress backend resolution."""
@@ -56,6 +66,12 @@ class TestIngressTemplate:
         rendered = _render_niuu_chart("--set", "guild.enabled=false")
 
         assert _service_for_path(rendered, "/api/v1/forge") == "niuu-test-volundr"
+
+    def test_renders_tokens_route_to_volundr(self) -> None:
+        """Render proof that target-local PAT management reaches Volundr."""
+        rendered = _render_niuu_chart()
+
+        assert _service_for_path(rendered, "/api/v1/tokens") == "niuu-test-volundr"
 
 
 def _render_niuu_chart(*extra_args: str) -> str:

@@ -224,11 +224,13 @@ class TestLifespan:
                 paths = client.get("/openapi.json").json()["paths"]
 
         assert "/api/v1/credentials/user" in paths
+        assert "/api/v1/tokens" in paths
         assert "/api/v1/integrations" in paths
         assert "/api/v1/integrations/catalog" in paths
         assert "/api/v1/tracker/status" in paths
         assert "/api/v1/tracker/issues" in paths
         assert "/api/v1/audit/events" in paths
+        assert hasattr(app.state, "pat_service")
 
     def test_lifespan_seeds_integrations_and_starts_audit_subscriber(self):
         """Lifespan runs the shared seeders and audit subscriber when enabled."""
