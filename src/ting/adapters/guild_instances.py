@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from niuu.ports.http_auth import HttpAuthPort
 from ting.adapters.inbound.auth import current_bearer_token
 
 logger = logging.getLogger(__name__)
@@ -22,9 +24,16 @@ logger = logging.getLogger(__name__)
 class GuildInstanceRegistryClient:
     """Discover registered runtime instances from Guild's shared registry API."""
 
-    def __init__(self, base_url: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = 30.0,
+        auth: HttpAuthPort | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout)
+        self._auth = auth
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -33,7 +42,10 @@ class GuildInstanceRegistryClient:
         response = await self._client.get(
             "/api/v1/niuu/instances",
             params={"kind": InstanceKind.VOLUNDR.value, "enabledOnly": "true"},
-            headers=_principal_headers(principal),
+            headers=_principal_headers(
+                principal,
+                auth_headers=self._auth.headers() if self._auth else None,
+            ),
         )
         response.raise_for_status()
         payload = response.json()
@@ -53,8 +65,13 @@ class GuildInstanceRegistryClient:
         return None
 
 
-def _principal_headers(principal: Principal) -> dict[str, str]:
-    headers = {
+def _principal_headers(
+    principal: Principal,
+    *,
+    auth_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    headers = dict(auth_headers or {})
+    principal_headers = {
         "x-auth-user-id": principal.user_id,
         "x-auth-email": principal.email,
         "x-auth-tenant": principal.tenant_id,
@@ -62,7 +79,9 @@ def _principal_headers(principal: Principal) -> dict[str, str]:
     }
     token = current_bearer_token()
     if token:
+        headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
         headers["authorization"] = f"Bearer {token}"
+    headers.update(principal_headers)
     return headers
 
 

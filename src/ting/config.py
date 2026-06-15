@@ -25,7 +25,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
-from niuu.config import CorsConfig, InstanceRegistryConfig
+from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
 from volundr.config import SessionDefinitionConfig, _default_session_definitions
 
 
@@ -111,6 +111,7 @@ class GuildRegistryConfig(BaseModel):
 
     base_url: str = Field(default="")
     timeout_seconds: float = Field(default=30.0)
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
 class ReviewConfig(BaseModel):

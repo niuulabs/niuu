@@ -100,6 +100,13 @@ from ting.system_workflows import seed_system_workflows
 logger = logging.getLogger(__name__)
 
 
+def _create_http_auth_adapter(config):
+    """Create a dynamic outbound HTTP auth adapter."""
+    cls = import_class(config.adapter)
+    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    return cls(**kwargs)
+
+
 def _use_local_volundr_factory(settings: Settings) -> bool:
     """Return True when Ting should force the single local Volundr adapter."""
     return settings.auth.allow_anonymous_dev and not settings.volundr.use_connection_factory_in_dev
@@ -419,6 +426,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 guild_registry_client = GuildInstanceRegistryClient(
                     settings.guild_registry.base_url,
                     timeout=settings.guild_registry.timeout_seconds,
+                    auth=_create_http_auth_adapter(settings.guild_registry.auth),
                 )
                 app.state.instance_registry = guild_registry_client
                 logger.info(

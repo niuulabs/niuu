@@ -291,6 +291,10 @@ volundr:
 guildRegistry:
   baseUrl: ""
   timeoutSeconds: 30.0
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+    secretKwargs: []
 
 migrations:
   enabled: true
