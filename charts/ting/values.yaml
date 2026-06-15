@@ -288,6 +288,10 @@ auth:
 volundr:
   url: "http://volundr:8000"
 
+registry:
+  instances: []
+  catalog: []
+
 migrations:
   enabled: true
   image:

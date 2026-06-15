@@ -7,29 +7,14 @@ import { createMockDispatcherService } from '../adapters/mock';
 import { ResearchCenterPage } from './ResearchCenterPage';
 
 const mockNavigate = vi.fn();
-
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  private listeners = new Map<string, Array<() => void>>();
-
-  constructor() {
-    MockEventSource.instances.push(this);
-  }
-
-  addEventListener = vi.fn((event: string, listener: () => void) => {
-    const existing = this.listeners.get(event) ?? [];
-    existing.push(listener);
-    this.listeners.set(event, existing);
-  });
-  close = vi.fn();
-
-  emit(event: string) {
-    for (const listener of this.listeners.get(event) ?? []) listener();
-  }
-}
+const mockOpenEventStream = vi.hoisted(() => vi.fn());
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
+}));
+
+vi.mock('@niuulabs/query', () => ({
+  openEventStream: mockOpenEventStream,
 }));
 
 const now = '2026-05-25T12:00:00.000Z';
@@ -288,8 +273,8 @@ function wrap(services: Record<string, unknown>) {
 describe('ResearchCenterPage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
-    vi.stubGlobal('EventSource', MockEventSource);
-    MockEventSource.instances = [];
+    mockOpenEventStream.mockReset();
+    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
   });
 
   it('renders the research dashboard and can switch to table mode', async () => {
@@ -685,7 +670,10 @@ describe('ResearchCenterPage', () => {
       params: { slug: 'rag-landscape' },
     });
 
-    MockEventSource.instances[0]?.emit('workflow.campaign.updated');
+    mockOpenEventStream.mock.calls[0]?.[1].onEvent?.({
+      event: 'workflow.campaign.updated',
+      data: '{}',
+    });
 
     await waitFor(() => expect(listCampaigns.mock.calls.length).toBeGreaterThan(initialCalls));
   });

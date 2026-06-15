@@ -43,6 +43,22 @@ data:
     volundr:
       url: {{ .Values.volundr.url | quote }}
 
+    niuu:
+      {{- if .Values.registry.instances }}
+      instances:
+        {{- range .Values.registry.instances }}
+        - {{ . | toJson }}
+        {{- end }}
+      {{- else }}
+      instances: []
+      {{- end }}
+      {{- if .Values.registry.catalog }}
+      catalog:
+        {{- range .Values.registry.catalog }}
+        - {{ . | toJson }}
+        {{- end }}
+      {{- end }}
+
     dispatch:
       default_system_prompt: {{ .Values.dispatch.defaultSystemPrompt | quote }}
       default_model: {{ .Values.dispatch.defaultModel | quote }}
