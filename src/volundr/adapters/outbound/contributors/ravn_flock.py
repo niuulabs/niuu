@@ -504,6 +504,9 @@ def _build_ravn_config(
             "instances": mimir_instances,
             "write_routing": mimir_write_routing,
         },
+        "permission": {
+            "workspace_root": _WORKSPACE_MOUNT_PATH,
+        },
         "logging": {"level": "INFO"},
     }
 

@@ -583,6 +583,19 @@ class TestMountedConfig:
             assert env["HOME"] == "/workspace"
             assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
 
+    async def test_ravn_config_uses_workspace_mount_root(
+        self, session, flock_template
+    ):
+        """Ravn sidecars must run tools and Codex transports from the writable workspace."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="ravn-flock"))
+
+        reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
+
+        assert reviewer_cfg["permission"]["workspace_root"] == "/workspace"
+
     async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
         """Each Ravn API server must bind its own port inside the shared pod netns."""
         provider = MagicMock()
