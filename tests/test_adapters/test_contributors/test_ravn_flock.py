@@ -527,7 +527,8 @@ class TestMountedConfig:
             assert env["HOST"] == "0.0.0.0"
             ports.append(env["PORT"])
 
-        assert ports == ["7681", "7682"]
+        assert ports == ["7781", "7782"]
+        assert "7681" not in ports
 
     async def test_per_sidecar_config_volume(self, session, flock_template):
         """Each persona gets its own config emptyDir volume."""

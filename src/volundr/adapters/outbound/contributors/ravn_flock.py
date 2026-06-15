@@ -14,7 +14,7 @@ Port allocation (mirrors ravn/cli/flock.py via niuu.mesh):
   pub       = base_port + index * 2
   rep       = base_port + index * 2 + 1
   handshake = base_port + 100 + index
-  gateway   = base_port + 200 + index
+  gateway   = base_port + 300 + index
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from volundr.domain.ports import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_PORT = 7480
+_RAVN_GATEWAY_PORT_OFFSET = 100
 _DEFAULT_MAX_CONCURRENT_TASKS = 3
 _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
@@ -67,6 +68,16 @@ _PERSONA_CM_VOLUME_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_MOUNT_PATH = "/etc/ravn/personas"
 _PERSONA_TOKEN_ENV = "RAVN_VOLUNDR_TOKEN"
+
+
+def _ravn_gateway_port_for(index: int, base_port: int) -> int:
+    """Return the Ravn HTTP port inside Skuld pods.
+
+    Skuld pods already reserve 7681 for the devrunner terminal sidecar. The
+    shared niuu.mesh helper returns 7681 for the first Ravn node, so Volundr
+    shifts only Ravn sidecar HTTP ports out of that range.
+    """
+    return _gateway_port_for(index, base_port) + _RAVN_GATEWAY_PORT_OFFSET
 
 
 def _normalize_personas(raw: list) -> list[dict]:
@@ -355,7 +366,7 @@ def _build_ravn_config(
     embedded in the sidecar YAML so that ravn can apply them at runtime.
     """
     pub, rep, _hs = _ports_for(index, base_port)
-    gw = _gateway_port_for(index, base_port)
+    gw = _ravn_gateway_port_for(index, base_port)
 
     peers: list[dict[str, str]] = [{"peer_id": skuld_peer_id}] + [
         {"peer_id": f"flock-{p}"} for p in all_personas if p != persona
@@ -848,7 +859,7 @@ class RavnFlockContributor(SessionContributor):
             ravn_index = i + 1
             peer_id = f"flock-{persona}"
             pub, rep, hs = _ports_for(ravn_index, base_port)
-            gw = _gateway_port_for(ravn_index, base_port)
+            gw = _ravn_gateway_port_for(ravn_index, base_port)
 
             config_yaml = _build_ravn_config(
                 persona=persona,
