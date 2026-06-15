@@ -1040,11 +1040,11 @@ class TestCommitSaga:
 
 
 class TestAssignTarget:
-    class _StubInstanceService:
+    class _StubInstanceRegistry:
         def __init__(self, instance: object | None) -> None:
             self.instance = instance
 
-        async def get_visible(self, principal: Principal, instance_id: str) -> object | None:
+        async def get_volundr_target(self, principal: Principal, instance_id: str) -> object | None:
             return self.instance
 
     def test_assigns_visible_target_and_returns_instance_name(
@@ -1057,7 +1057,7 @@ class TestAssignTarget:
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
         app.state.settings = _dev_settings()
-        app.state.instance_service = self._StubInstanceService(
+        app.state.instance_registry = self._StubInstanceRegistry(
             RegisteredInstance(
                 id="volundr-1",
                 kind=InstanceKind.VOLUNDR,
@@ -1127,7 +1127,7 @@ class TestAssignTarget:
             json={"instance_id": "volundr-1"},
         )
 
-        app.state.instance_service = self._StubInstanceService(None)
+        app.state.instance_registry = self._StubInstanceRegistry(None)
         missing_target = client.put(
             f"/api/v1/ting/sagas/{saga_id}/target",
             json={"instance_id": "volundr-1"},

@@ -288,9 +288,9 @@ auth:
 volundr:
   url: "http://volundr:8000"
 
-registry:
-  instances: []
-  catalog: []
+guildRegistry:
+  baseUrl: ""
+  timeoutSeconds: 30.0
 
 migrations:
   enabled: true

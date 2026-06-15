@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from bifrost.config import BifrostConfig, ManagedModelConfig
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 from ting.api.dispatch import (
     create_dispatch_router,
     resolve_dispatch_service,
@@ -1051,6 +1051,41 @@ class TestResolveTargetAdapter:
 
 
 class TestListClusters:
+    class _StubInstanceRegistry:
+        def __init__(self, instances: list[RegisteredInstance]) -> None:
+            self.instances = list(instances)
+            self.principals: list[Principal] = []
+
+        async def list_volundr_targets(self, principal: Principal) -> list[RegisteredInstance]:
+            self.principals.append(principal)
+            return list(self.instances)
+
+    @staticmethod
+    def _instance(
+        *,
+        instance_id: str,
+        name: str,
+        base_url: str,
+        enabled: bool,
+        tags: list[str] | None = None,
+    ) -> RegisteredInstance:
+        return RegisteredInstance(
+            id=instance_id,
+            kind=InstanceKind.VOLUNDR,
+            slug=instance_id,
+            name=name,
+            base_url=base_url,
+            visibility=InstanceVisibility.SYSTEM,
+            owner_id=None,
+            tenant_id=None,
+            enabled=enabled,
+            is_default=False,
+            config={},
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            tags=[] if tags is None else tags,
+        )
+
     def test_returns_empty_when_no_integration_repo(self):
         volundr = MockVolundr()
         factory = MockVolundrFactory(adapters=[volundr])
@@ -1061,82 +1096,73 @@ class TestListClusters:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_returns_clusters_from_code_forge_connections(self):
-        from tests.test_ting.conftest import StubIntegrationRepo
-
-        now = datetime.now(UTC)
-        connections = [
-            IntegrationConnection(
-                id="conn-1",
-                owner_id="dev-user",
-                integration_type=IntegrationType.CODE_FORGE,
-                adapter="ting.adapters.volundr_http.VolundrHTTPAdapter",
-                credential_name="pat-a",
-                config={"url": "http://cluster-a:8000", "name": "alpha"},
-                enabled=True,
-                created_at=now,
-                updated_at=now,
-            ),
-            IntegrationConnection(
-                id="conn-2",
-                owner_id="dev-user",
-                integration_type=IntegrationType.CODE_FORGE,
-                adapter="ting.adapters.volundr_http.VolundrHTTPAdapter",
-                credential_name="pat-b",
-                config={"url": "http://cluster-b:8000", "name": "beta"},
-                enabled=False,
-                created_at=now,
-                updated_at=now,
-            ),
-        ]
-        integration_repo = StubIntegrationRepo(connections=connections)
-
+    def test_returns_clusters_from_guild_registry(self):
         volundr = MockVolundr()
         factory = MockVolundrFactory(adapters=[volundr])
         app = _make_test_app(MockTracker(), MockSagaRepo(), volundr, factory, MockDispatcherRepo())
-        app.state.integration_repo = integration_repo
+        app.state.instance_registry = self._StubInstanceRegistry(
+            [
+                self._instance(
+                    instance_id="volundr-1",
+                    name="alpha",
+                    base_url="http://cluster-a:8000",
+                    enabled=True,
+                    tags=["gpu"],
+                ),
+                self._instance(
+                    instance_id="volundr-2",
+                    name="beta",
+                    base_url="http://cluster-b:8000",
+                    enabled=False,
+                ),
+            ]
+        )
         client = TestClient(app)
 
         resp = client.get("/api/v1/ting/dispatch/clusters")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
-        assert data[0]["connection_id"] == "conn-1"
+        assert data[0]["connection_id"] == "volundr-1"
+        assert data[0]["instance_id"] == "volundr-1"
         assert data[0]["name"] == "alpha"
         assert data[0]["url"] == "http://cluster-a:8000"
         assert data[0]["enabled"] is True
-        assert data[1]["connection_id"] == "conn-2"
+        assert data[0]["tags"] == ["gpu"]
+        assert data[1]["connection_id"] == "volundr-2"
         assert data[1]["name"] == "beta"
         assert data[1]["enabled"] is False
 
-    def test_cluster_name_falls_back_to_id(self):
-        from tests.test_ting.conftest import StubIntegrationRepo
-
-        now = datetime.now(UTC)
-        connections = [
-            IntegrationConnection(
-                id="conn-x",
-                owner_id="dev-user",
-                integration_type=IntegrationType.CODE_FORGE,
-                adapter="ting.adapters.volundr_http.VolundrHTTPAdapter",
-                credential_name="pat-x",
-                config={"url": "http://cluster-x:8000"},
-                enabled=True,
-                created_at=now,
-                updated_at=now,
-            ),
-        ]
-        integration_repo = StubIntegrationRepo(connections=connections)
-
+    def test_forwards_principal_to_guild_registry(self):
         volundr = MockVolundr()
         factory = MockVolundrFactory(adapters=[volundr])
         app = _make_test_app(MockTracker(), MockSagaRepo(), volundr, factory, MockDispatcherRepo())
-        app.state.integration_repo = integration_repo
+        registry = self._StubInstanceRegistry(
+            [
+                self._instance(
+                    instance_id="volundr-x",
+                    name="Cluster X",
+                    base_url="http://cluster-x:8000",
+                    enabled=True,
+                ),
+            ]
+        )
+        app.state.instance_registry = registry
         client = TestClient(app)
 
-        resp = client.get("/api/v1/ting/dispatch/clusters")
-        data = resp.json()
-        assert data[0]["name"] == "conn-x"
+        resp = client.get(
+            "/api/v1/ting/dispatch/clusters",
+            headers={
+                "x-auth-user-id": "user-1",
+                "x-auth-email": "user-1@example.com",
+                "x-auth-tenant": "tenant-a",
+                "x-auth-roles": "volundr:developer",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert registry.principals[0].user_id == "user-1"
+        assert registry.principals[0].tenant_id == "tenant-a"
 
 
 class TestDispatchAliases:

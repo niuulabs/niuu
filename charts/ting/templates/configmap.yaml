@@ -43,21 +43,9 @@ data:
     volundr:
       url: {{ .Values.volundr.url | quote }}
 
-    niuu:
-      {{- if .Values.registry.instances }}
-      instances:
-        {{- range .Values.registry.instances }}
-        - {{ . | toJson }}
-        {{- end }}
-      {{- else }}
-      instances: []
-      {{- end }}
-      {{- if .Values.registry.catalog }}
-      catalog:
-        {{- range .Values.registry.catalog }}
-        - {{ . | toJson }}
-        {{- end }}
-      {{- end }}
+    guild_registry:
+      base_url: {{ .Values.guildRegistry.baseUrl | quote }}
+      timeout_seconds: {{ .Values.guildRegistry.timeoutSeconds | default 30.0 }}
 
     dispatch:
       default_system_prompt: {{ .Values.dispatch.defaultSystemPrompt | quote }}

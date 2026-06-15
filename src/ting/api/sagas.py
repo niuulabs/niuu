@@ -20,7 +20,7 @@ except ImportError:
     _catalog_saga_created = None  # type: ignore[assignment]
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import InstanceKind, Principal
+from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.tracker import resolve_trackers
 from ting.config import ReviewConfig
@@ -64,10 +64,10 @@ async def _resolve_instance_name(
 ) -> str | None:
     if not instance_id:
         return None
-    instance_service = getattr(request.app.state, "instance_service", None)
-    if instance_service is None:
+    instance_registry = getattr(request.app.state, "instance_registry", None)
+    if instance_registry is None:
         return None
-    instance = await instance_service.get_visible(principal, instance_id)
+    instance = await instance_registry.get_volundr_target(principal, instance_id)
     return instance.name if instance is not None else None
 
 
@@ -967,14 +967,14 @@ def create_sagas_router() -> APIRouter:
 
         instance_name: str | None = None
         if instance_id:
-            instance_service = getattr(request.app.state, "instance_service", None)
-            if instance_service is None:
+            instance_registry = getattr(request.app.state, "instance_registry", None)
+            if instance_registry is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Instance registry not configured",
                 )
-            instance = await instance_service.get_visible(principal, instance_id)
-            if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+            instance = await instance_registry.get_volundr_target(principal, instance_id)
+            if instance is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Target not found: {instance_id}",

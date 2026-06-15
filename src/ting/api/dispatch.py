@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from niuu.domain.models import InstanceKind, IntegrationType, Principal
+from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.flock_config import FlockPersonaResponse
 from ting.api.tracker import resolve_trackers
@@ -213,15 +213,6 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
     )
 
 
-def _config_tags(config: dict[str, object]) -> list[str]:
-    tags = config.get("tags") or []
-    if isinstance(tags, str):
-        return [tags]
-    if isinstance(tags, list):
-        return [str(tag) for tag in tags]
-    return []
-
-
 def _result_to_response(result: ServiceDispatchResult) -> DispatchResultResponse:
     return DispatchResultResponse(
         issue_id=result.issue_id,
@@ -413,49 +404,21 @@ def create_dispatch_router() -> APIRouter:
         return [_result_to_response(r) for r in results]
 
     async def _list_targets(request: Request, principal: Principal) -> list[ClusterInfo]:
-        instance_service = getattr(request.app.state, "instance_service", None)
-        if instance_service is not None:
-            instances = await instance_service.list_visible(
-                principal,
-                kind=InstanceKind.VOLUNDR,
-                enabled_only=False,
-            )
-            if instances:
-                return [
-                    ClusterInfo(
-                        connection_id=instance.id,
-                        instance_id=instance.id,
-                        name=instance.name,
-                        url=instance.base_url,
-                        enabled=instance.enabled,
-                        tags=instance.tags,
-                    )
-                    for instance in instances
-                ]
-
-        integration_repo = getattr(request.app.state, "integration_repo", None)
-        if integration_repo is None:
+        instance_registry = getattr(request.app.state, "instance_registry", None)
+        if instance_registry is None:
             return []
-
-        connections = await integration_repo.list_connections(
-            principal.user_id,
-            integration_type=IntegrationType.CODE_FORGE,
-        )
-        clusters: list[ClusterInfo] = []
-        for conn in connections:
-            name = conn.config.get("name", "") or conn.slug or conn.id
-            url = conn.config.get("url", "")
-            clusters.append(
-                ClusterInfo(
-                    connection_id=conn.id,
-                    instance_id=None,
-                    name=name,
-                    url=url,
-                    enabled=conn.enabled,
-                    tags=_config_tags(conn.config),
-                )
+        instances = await instance_registry.list_volundr_targets(principal)
+        return [
+            ClusterInfo(
+                connection_id=instance.id,
+                instance_id=instance.id,
+                name=instance.name,
+                url=instance.base_url,
+                enabled=instance.enabled,
+                tags=instance.tags,
             )
-        return clusters
+            for instance in instances
+        ]
 
     @router.get("/targets", response_model=list[ClusterInfo])
     async def list_targets(

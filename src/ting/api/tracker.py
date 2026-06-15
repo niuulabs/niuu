@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import InstanceKind, Principal
+from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from ting.adapters.inbound.auth import extract_principal
 from ting.domain.models import (
@@ -367,14 +367,14 @@ def _build_tracker_router(
 
         instance_name: str | None = None
         if body.instance_id and not target_tags:
-            instance_service = getattr(request.app.state, "instance_service", None)
-            if instance_service is None:
+            instance_registry = getattr(request.app.state, "instance_registry", None)
+            if instance_registry is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Instance registry not configured",
                 )
-            instance = await instance_service.get_visible(principal, body.instance_id)
-            if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+            instance = await instance_registry.get_volundr_target(principal, body.instance_id)
+            if instance is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Target not found: {body.instance_id}",

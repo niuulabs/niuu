@@ -13,19 +13,16 @@ from fastapi import Depends, FastAPI, Request, Response
 
 from niuu.adapters.http_integrations import HTTPIntegrationRepository
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
-from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
-from niuu.domain.services.instances import InstanceService
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.ports.integrations import IntegrationRepository
-from niuu.service_databases import apply_service_database_settings
-from niuu.service_instances import seed_configured_instances
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
 from ting.adapters.github_git import GitHubGitAdapter
+from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
@@ -378,11 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application lifecycle."""
         settings = app.state.settings
-        instance_settings = apply_service_database_settings(settings, "guild")
-        async with (
-            database_pool(settings.database) as pool,
-            database_pool(instance_settings.database) as instance_pool,
-        ):
+        async with database_pool(settings.database) as pool:
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
@@ -398,14 +391,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 integration_repo = PostgresIntegrationRepository(pool)
                 logger.info("Integration repository: local postgres")
-            instance_repo = PostgresInstanceRepository(instance_pool)
-            await instance_repo.ensure_schema()
-            instance_service = InstanceService(instance_repo)
-            logger.info(
-                "Instance registry: guild postgres (%s)",
-                instance_settings.database.name,
-            )
-
             cs_cfg = settings.credential_store
             cs_cls = import_class(cs_cfg.adapter)
             cs_kwargs = resolve_secret_kwargs(cs_cfg.kwargs, cs_cfg.secret_kwargs_env)
@@ -414,30 +399,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Expose shared infrastructure on app.state for REST routers
             app.state.integration_repo = integration_repo
-            app.state.instance_service = instance_service
             app.state.credential_store = credential_store
 
-            if settings.niuu.instances:
-                seeded = await seed_configured_instances(
-                    instance_service,
-                    list(settings.niuu.instances),
-                )
-                if seeded:
-                    logger.info("Seeded %d shared instance(s) from config", seeded)
-
             # Wire adapter factories (used by autonomous dispatcher)
+            guild_registry_client: GuildInstanceRegistryClient | None = None
             if _use_local_volundr_factory(settings):
                 from ting.adapters.volundr_factory import LocalVolundrAdapterFactory
 
                 app.state.volundr_factory = LocalVolundrAdapterFactory(
                     url=settings.volundr.url,
                 )
+                app.state.instance_registry = None
                 logger.info("Volundr factory: local (no PAT required)")
             else:
+                if not settings.guild_registry.base_url:
+                    raise RuntimeError(
+                        "Ting requires guild_registry.base_url outside anonymous local mode"
+                    )
+                guild_registry_client = GuildInstanceRegistryClient(
+                    settings.guild_registry.base_url,
+                    timeout=settings.guild_registry.timeout_seconds,
+                )
+                app.state.instance_registry = guild_registry_client
+                logger.info(
+                    "Instance registry: Guild HTTP (%s)",
+                    settings.guild_registry.base_url,
+                )
                 app.state.volundr_factory = VolundrAdapterFactory(
-                    integration_repo,
+                    guild_registry_client,
                     credential_store,
-                    instance_repo,
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
                 )
             # Default Volundr adapter for code paths that don't have a per-owner
@@ -596,7 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                     raise HTTPException(
                         status_code=503,
-                        detail="No Volundr adapter available — configure a CODE_FORGE integration",
+                        detail="No Volundr adapter available from Guild registry",
                     )
                 return adapter
 
@@ -959,6 +949,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await telegram_reply_client.close()
             if isinstance(integration_repo, HTTPIntegrationRepository):
                 await integration_repo.close()
+            if guild_registry_client is not None:
+                await guild_registry_client.close()
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
             await subscriber.stop()

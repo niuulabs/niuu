@@ -76,10 +76,8 @@ class VolundrConfig(BaseModel):
     use_connection_factory_in_dev: bool = Field(
         default=False,
         description=(
-            "When True, anonymous dev mode still resolves Volundr adapters from "
-            "stored CODE_FORGE connections instead of forcing the single local "
-            "Volundr adapter. Useful for a local Ting controlling multiple remote "
-            "Volundr instances."
+            "When True, anonymous dev mode resolves Volundr adapters through "
+            "Guild discovery instead of forcing the single local Volundr adapter."
         ),
     )
     trusted_connection_test_urls: list[str] = Field(
@@ -103,6 +101,13 @@ class CredentialStoreConfig(BaseModel):
 
 class SharedIntegrationsConfig(BaseModel):
     """Configuration for consuming shared integration connections."""
+
+    base_url: str = Field(default="")
+    timeout_seconds: float = Field(default=30.0)
+
+
+class GuildRegistryConfig(BaseModel):
+    """Configuration for discovering runtime instances from Guild."""
 
     base_url: str = Field(default="")
     timeout_seconds: float = Field(default=30.0)
@@ -1070,6 +1075,7 @@ class Settings(BaseSettings):
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
+    guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)

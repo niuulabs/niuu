@@ -226,17 +226,17 @@ class VolundrPort(ABC):
 class VolundrFactory(Protocol):
     """Protocol for resolving per-owner Volundr adapters.
 
-    Returns all configured **authenticated** Volundr connections for an
-    owner.  Never falls back to an unauthenticated adapter — callers must
-    handle the empty-list / ``None`` case explicitly.
+    Returns all Guild-discovered Volundr targets visible to an owner.
+    Never falls back to an unauthenticated adapter unless the concrete
+    factory is explicitly configured for anonymous local development.
     """
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         """Return all authenticated Volundr adapters for *owner_id*.
 
-        Returns an empty list when no per-user CODE_FORGE connections are
-        configured.  Callers must treat an empty result as a hard error
-        or skip the operation with an explicit warning.
+        Returns an empty list when Guild has no visible Volundr targets.
+        Callers must treat an empty result as a hard error or skip the
+        operation with an explicit warning.
         """
         raise NotImplementedError
 
