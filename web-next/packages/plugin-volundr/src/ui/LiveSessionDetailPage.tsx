@@ -1445,9 +1445,29 @@ function TelemetryStateStack({
   );
 }
 
-function TelemetryTaskRow({ node, depth }: { node: TelemetrySpanNode; depth: number }) {
+function TelemetryTaskRow({
+  node,
+  depth,
+  stageStartedAtMs,
+  stageDurationMs,
+}: {
+  node: TelemetrySpanNode;
+  depth: number;
+  stageStartedAtMs: number;
+  stageDurationMs: number;
+}) {
   const tone = timelineRowTone(node.span);
   const durationMs = node.span.durationMs ?? 0;
+  const safeStageDurationMs = Math.max(stageDurationMs, 1);
+  const taskStartOffsetMs = Math.max(0, new Date(node.span.startedAt).getTime() - stageStartedAtMs);
+  const clampedTaskStartOffsetMs = Math.min(taskStartOffsetMs, safeStageDurationMs);
+  const clampedTaskDurationMs = Math.max(
+    0,
+    Math.min(clampedTaskStartOffsetMs + durationMs, safeStageDurationMs) -
+      clampedTaskStartOffsetMs,
+  );
+  const taskLeftPercent = (clampedTaskStartOffsetMs / safeStageDurationMs) * 100;
+  const taskWidthPercent = Math.max((clampedTaskDurationMs / safeStageDurationMs) * 100, 1);
   return (
     <>
       <div className="niuu-live-telemetry__breakdown-task-row">
@@ -1466,13 +1486,19 @@ function TelemetryTaskRow({ node, depth }: { node: TelemetrySpanNode; depth: num
           {formatCompactDurationMs(durationMs)}
         </div>
         <div className="niuu-live-telemetry__breakdown-task-visual">
-          <TelemetryStateStack
-            activeMs={tone === 'active' ? durationMs : 0}
-            waitMs={tone === 'wait' ? durationMs : 0}
-            blockedMs={tone === 'blocked' ? durationMs : 0}
-            totalMs={durationMs}
-            compact
-          />
+          <div className="niuu-live-telemetry__breakdown-task-track" aria-hidden="true">
+            <span
+              data-testid={`telemetry-breakdown-task-segment-${node.span.id}`}
+              className={cn(
+                'niuu-live-telemetry__breakdown-task-segment',
+                `niuu-live-telemetry__breakdown-task-segment--${tone}`,
+              )}
+              style={{
+                left: `${taskLeftPercent}%`,
+                width: `${taskWidthPercent}%`,
+              }}
+            />
+          </div>
           {tone === 'blocked' ? (
             <span className="niuu-live-telemetry__breakdown-task-warning">
               blocked {formatCompactDurationMs(durationMs)}
@@ -1481,7 +1507,13 @@ function TelemetryTaskRow({ node, depth }: { node: TelemetrySpanNode; depth: num
         </div>
       </div>
       {node.children.map((child) => (
-        <TelemetryTaskRow key={child.span.id} node={child} depth={depth + 1} />
+        <TelemetryTaskRow
+          key={child.span.id}
+          node={child}
+          depth={depth + 1}
+          stageStartedAtMs={stageStartedAtMs}
+          stageDurationMs={stageDurationMs}
+        />
       ))}
     </>
   );
@@ -1609,7 +1641,13 @@ function TelemetryStageBreakdown({
               {isExpanded && stage.node.children.length > 0 ? (
                 <div className="niuu-live-telemetry__breakdown-stage-children">
                   {stage.node.children.map((child) => (
-                    <TelemetryTaskRow key={child.span.id} node={child} depth={1} />
+                    <TelemetryTaskRow
+                      key={child.span.id}
+                      node={child}
+                      depth={1}
+                      stageStartedAtMs={new Date(stage.row.startedAt).getTime()}
+                      stageDurationMs={stage.row.durationMs}
+                    />
                   ))}
                 </div>
               ) : null}

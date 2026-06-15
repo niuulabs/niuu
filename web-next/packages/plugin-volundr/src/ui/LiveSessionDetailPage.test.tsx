@@ -1049,6 +1049,26 @@ describe('LiveSessionDetailPage', () => {
       expect(await screen.findByText(/tool · write/i)).toBeInTheDocument();
     });
 
+    it('positions expanded stage task bars within the parent stage window', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /execution trace details/i,
+        }),
+      );
+
+      const nestedToolSegment = await screen.findByTestId(
+        'telemetry-breakdown-task-segment-turn-2-tool',
+      );
+      expect(nestedToolSegment).toHaveStyle({
+        left: `${(178_000 / 520_000) * 100}%`,
+        width: `${(38_000 / 520_000) * 100}%`,
+      });
+    });
+
     it('renders the turn-by-turn timing shell with all-turns list by default', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
