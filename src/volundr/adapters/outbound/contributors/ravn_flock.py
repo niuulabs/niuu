@@ -45,7 +45,7 @@ _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
 _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
-_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/niuu:dev"
+_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/skuld:dev"
 _RAVN_COMMAND = [
     "python",
     "-c",

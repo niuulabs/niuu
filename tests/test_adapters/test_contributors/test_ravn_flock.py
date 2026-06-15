@@ -234,7 +234,7 @@ class TestContributorOutput:
         assert "ravn-coordinator" in names
         assert "ravn-reviewer" in names
 
-    async def test_ravn_containers_use_deployable_runtime_image(self, session, flock_template):
+    async def test_ravn_containers_use_skuld_cli_runtime_image(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(launch_spec_provider=provider)
@@ -243,7 +243,7 @@ class TestContributorOutput:
         result = await c.contribute(session, ctx)
 
         for ctr in result.pod_spec.extra_containers:
-            assert ctr["image"] == "ghcr.io/niuulabs/niuu:dev"
+            assert ctr["image"] == "ghcr.io/niuulabs/skuld:dev"
             assert ctr["command"][:2] == ["python", "-c"]
             assert "'-m'," in ctr["command"][2]
             assert "'ravn'," in ctr["command"][2]
