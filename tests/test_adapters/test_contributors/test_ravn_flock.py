@@ -247,6 +247,22 @@ class TestContributorOutput:
             assert "'-m', 'ravn.main'" in ctr["command"][2]
             assert "/workspace/.flock/logs" in ctr["command"][2]
 
+    async def test_ravn_containers_run_as_workspace_owner(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+
+        result = await c.contribute(session, ctx)
+
+        for ctr in result.pod_spec.extra_containers:
+            assert ctr["securityContext"] == {
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+            }
+
     async def test_ravn_image_can_be_overridden(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template

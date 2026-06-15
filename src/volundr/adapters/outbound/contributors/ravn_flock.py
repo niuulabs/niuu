@@ -78,6 +78,12 @@ _INIT_WRITER_SECURITY_CONTEXT = {
     "runAsNonRoot": True,
     "allowPrivilegeEscalation": False,
 }
+_RAVN_SECURITY_CONTEXT = {
+    "runAsUser": 1000,
+    "runAsGroup": 1000,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": False,
+}
 
 # Persona source modes
 _PERSONA_SOURCE_FILESYSTEM = "filesystem"
@@ -964,6 +970,7 @@ class RavnFlockContributor(SessionContributor):
                 "name": f"ravn-{persona}",
                 "image": self._ravn_image,
                 "command": list(_RAVN_COMMAND),
+                "securityContext": _RAVN_SECURITY_CONTEXT.copy(),
                 "env": ravn_env,
                 "ports": [
                     {"containerPort": pub, "name": f"r{ravn_index}-pub", "protocol": "TCP"},
