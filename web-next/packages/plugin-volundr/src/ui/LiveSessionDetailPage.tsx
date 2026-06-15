@@ -1463,8 +1463,7 @@ function TelemetryTaskRow({
   const clampedTaskStartOffsetMs = Math.min(taskStartOffsetMs, safeStageDurationMs);
   const clampedTaskDurationMs = Math.max(
     0,
-    Math.min(clampedTaskStartOffsetMs + durationMs, safeStageDurationMs) -
-      clampedTaskStartOffsetMs,
+    Math.min(clampedTaskStartOffsetMs + durationMs, safeStageDurationMs) - clampedTaskStartOffsetMs,
   );
   const taskLeftPercent = (clampedTaskStartOffsetMs / safeStageDurationMs) * 100;
   const taskWidthPercent = Math.max((clampedTaskDurationMs / safeStageDurationMs) * 100, 1);
