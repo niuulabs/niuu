@@ -251,6 +251,8 @@ class TestContributorOutput:
             assert "'--config'," in ctr["command"][2]
             assert "'--persona'," in ctr["command"][2]
             assert "/workspace/.flock/logs" in ctr["command"][2]
+            assert "proc.stdout.readline" in ctr["command"][2]
+            assert "read(8192)" not in ctr["command"][2]
 
     async def test_ravn_containers_run_as_workspace_owner(self, session, flock_template):
         provider = MagicMock()

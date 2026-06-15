@@ -70,10 +70,10 @@ _RAVN_COMMAND = [
         ")\n"
         "with log.open('ab', buffering=0) as handle:\n"
         "    assert proc.stdout is not None\n"
-        "    for chunk in iter(lambda: proc.stdout.read(8192), b''):\n"
-        "        sys.stdout.buffer.write(chunk)\n"
+        "    for line in iter(proc.stdout.readline, b''):\n"
+        "        sys.stdout.buffer.write(line)\n"
         "        sys.stdout.buffer.flush()\n"
-        "        handle.write(chunk)\n"
+        "        handle.write(line)\n"
         "sys.exit(proc.wait())\n"
     ),
 ]
