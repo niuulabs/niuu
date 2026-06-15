@@ -243,8 +243,8 @@ class TestContributorOutput:
 
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:dev"
-            assert ctr["command"][:2] == ["sh", "-c"]
-            assert "python -m ravn.main" in ctr["command"][2]
+            assert ctr["command"][:2] == ["python", "-c"]
+            assert "'-m', 'ravn.main'" in ctr["command"][2]
             assert "/workspace/.flock/logs" in ctr["command"][2]
 
     async def test_ravn_image_can_be_overridden(self, session, flock_template):
@@ -260,8 +260,8 @@ class TestContributorOutput:
 
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:1.2.3"
-            assert ctr["command"][:2] == ["sh", "-c"]
-            assert "python -m ravn.main" in ctr["command"][2]
+            assert ctr["command"][:2] == ["python", "-c"]
+            assert "'-m', 'ravn.main'" in ctr["command"][2]
 
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()

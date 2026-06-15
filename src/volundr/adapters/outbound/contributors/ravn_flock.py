@@ -47,16 +47,25 @@ _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
 _RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/niuu:dev"
 _RAVN_COMMAND = [
-    "sh",
+    "python",
     "-c",
     (
-        'mkdir -p /workspace/.flock/logs; '
-        'log="/workspace/.flock/logs/${RAVN_PERSONA:-ravn}.log"; '
-        'python -m ravn.main >> "$log" 2>&1 & pid=$!; '
-        'tail -n +1 -F "$log" & tail_pid=$!; '
-        'wait "$pid"; status=$?; '
-        'kill "$tail_pid" 2>/dev/null || true; '
-        'exit "$status"'
+        "import os, pathlib, subprocess, sys\n"
+        "persona = os.environ.get('RAVN_PERSONA') or 'ravn'\n"
+        "log = pathlib.Path('/workspace/.flock/logs') / f'{persona}.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "proc = subprocess.Popen(\n"
+        "    [sys.executable, '-m', 'ravn.main'],\n"
+        "    stdout=subprocess.PIPE,\n"
+        "    stderr=subprocess.STDOUT,\n"
+        ")\n"
+        "with log.open('ab', buffering=0) as handle:\n"
+        "    assert proc.stdout is not None\n"
+        "    for chunk in iter(lambda: proc.stdout.read(8192), b''):\n"
+        "        sys.stdout.buffer.write(chunk)\n"
+        "        sys.stdout.buffer.flush()\n"
+        "        handle.write(chunk)\n"
+        "sys.exit(proc.wait())\n"
     ),
 ]
 _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
