@@ -425,14 +425,17 @@ class TestFluxPodManagerSpecValues:
         sample_session: Session,
         mock_api,
     ):
-        """PodSpecAdditions translate to extraVolumes/Mounts/serviceAccountName."""
+        """PodSpecAdditions translate to Skuld Helm values."""
         pm = FluxPodManager(
             namespace="test-ns",
             base_domain="volundr.example.com",
         )
         pod_spec = PodSpecAdditions(
+            env=({"name": "MESH_ENABLED", "value": "true"},),
             volumes=({"name": "csi-vol", "csi": {"driver": "secrets-store.csi.k8s.io"}},),
             volume_mounts=({"name": "csi-vol", "mountPath": "/run/secrets/user"},),
+            init_containers=({"name": "write-ravn-cfg-coder", "image": "busybox"},),
+            extra_containers=({"name": "ravn-coder", "image": "ghcr.io/niuulabs/ravn:test"},),
             service_account="skuld-user-1",
         )
         spec = SessionSpec(
@@ -444,11 +447,47 @@ class TestFluxPodManagerSpecValues:
 
         body = mock_api.create_namespaced_custom_object.call_args[1]["body"]
         values = body["spec"]["values"]
+        assert values["envVars"] == [{"name": "MESH_ENABLED", "value": "true"}]
         assert len(values["extraVolumes"]) == 1
         assert values["extraVolumes"][0]["name"] == "csi-vol"
         assert len(values["extraVolumeMounts"]) == 1
         assert values["extraVolumeMounts"][0]["mountPath"] == "/run/secrets/user"
+        assert values["extraInitContainers"] == [
+            {"name": "write-ravn-cfg-coder", "image": "busybox"}
+        ]
+        assert values["extraContainers"] == [
+            {"name": "ravn-coder", "image": "ghcr.io/niuulabs/ravn:test"}
+        ]
         assert values["serviceAccountName"] == "skuld-user-1"
+
+    async def test_pod_spec_env_overrides_matching_default_env_var(
+        self,
+        sample_session: Session,
+        mock_api,
+    ):
+        """PodSpec env can replace matching default envVars by name."""
+        pm = FluxPodManager(
+            namespace="test-ns",
+            base_domain="volundr.example.com",
+            session_defaults={
+                "envVars": [
+                    {"name": "SKULD__CLAUDE_AUTH", "value": "api_key"},
+                    {"name": "MESH_ENABLED", "value": "false"},
+                ]
+            },
+        )
+        spec = SessionSpec(
+            values={"session": {"id": str(sample_session.id)}},
+            pod_spec=PodSpecAdditions(env=({"name": "MESH_ENABLED", "value": "true"},)),
+        )
+        with patch.object(pm, "_get_api", return_value=mock_api):
+            await pm.start(sample_session, spec)
+
+        body = mock_api.create_namespaced_custom_object.call_args[1]["body"]
+        assert body["spec"]["values"]["envVars"] == [
+            {"name": "SKULD__CLAUDE_AUTH", "value": "api_key"},
+            {"name": "MESH_ENABLED", "value": "true"},
+        ]
 
     async def test_empty_pod_spec_no_extra_values(
         self,

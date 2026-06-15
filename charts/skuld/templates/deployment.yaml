@@ -48,7 +48,7 @@ spec:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         fsGroup: {{ .Values.securityContext.fsGroup }}
       {{- include "skuld.imagePullSecrets" . | nindent 6 }}
-      {{- if or .Values.git.repoUrl .Values.homeVolume.enabled }}
+      {{- if or .Values.git.repoUrl .Values.homeVolume.enabled .Values.extraInitContainers }}
       initContainers:
         {{- if .Values.homeVolume.enabled }}
         - name: home-setup
@@ -215,6 +215,9 @@ spec:
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}
         {{- end }}
+        {{- range .Values.extraInitContainers }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- end }}
       containers:
         # Nginx - single entry point, routes all traffic internally
@@ -271,6 +274,9 @@ spec:
             - name: broker
               containerPort: 8081
               protocol: TCP
+            {{- range .Values.mesh.peerPorts }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
           env:
             # WORKSPACE_DIR is computed from template helpers — kept as env var
             - name: WORKSPACE_DIR
@@ -343,6 +349,9 @@ spec:
             {{- range .Values.extraVolumeMounts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
+        {{- range .Values.extraContainers }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
         {{- if .Values.localServices.enabled }}
         # Devrunner - minimal runtime for local service testing
         - name: devrunner

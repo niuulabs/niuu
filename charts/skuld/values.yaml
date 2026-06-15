@@ -390,11 +390,23 @@ runtimeClassName: ""
 # -- Service account name for the pod (set by secret injection contributor)
 serviceAccountName: ""
 
+# -- Additional init containers to add to the session pod.
+extraInitContainers: []
+
+# -- Additional sidecar containers to add to the session pod.
+extraContainers: []
+
 # -- Extra volumes to add to the pod (e.g., CSI secret volumes)
 extraVolumes: []
 
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
+
+# -- Mesh configuration for session-local agent flocks.
+mesh:
+  enabled: false
+  transport: nng
+  peerPorts: []
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

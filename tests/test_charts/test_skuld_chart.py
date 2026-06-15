@@ -1,5 +1,7 @@
 """Tests for Skuld Helm chart templates."""
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -214,6 +216,48 @@ class TestDeploymentTemplate:
         """Test deployment injects plain env vars via generic range loop."""
         assert "range .Values.envVars" in deployment_yaml
 
+    def test_deployment_renders_flock_pod_additions(self, tmp_path):
+        """Render proof for Flux-provided flock sidecars and config writers."""
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "envVars": [{"name": "MESH_ENABLED", "value": "true"}],
+                "mesh": {
+                    "enabled": True,
+                    "peerPorts": [
+                        {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"}
+                    ],
+                },
+                "extraInitContainers": [
+                    {
+                        "name": "write-ravn-cfg-coder",
+                        "image": "busybox:latest",
+                        "command": ["sh", "-c", "echo ok"],
+                    }
+                ],
+                "extraContainers": [
+                    {
+                        "name": "ravn-coder",
+                        "image": "ghcr.io/niuulabs/ravn:test",
+                        "env": [{"name": "RAVN_PERSONA", "value": "coder"}],
+                    }
+                ],
+            },
+        )
+        deployment = _deployment_from_rendered(rendered)
+        pod_spec = deployment["spec"]["template"]["spec"]
+
+        assert [container["name"] for container in pod_spec["initContainers"]] == [
+            "write-ravn-cfg-coder"
+        ]
+        containers = {container["name"]: container for container in pod_spec["containers"]}
+        assert "skuld" in containers
+        assert "ravn-coder" in containers
+        assert {"name": "MESH_ENABLED", "value": "true"} in containers["skuld"]["env"]
+        assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
+            "skuld"
+        ]["ports"]
+
     def test_deployment_has_no_per_provider_api_fields(self, deployment_yaml):
         """Test deployment does not contain old per-provider api fields."""
         assert "anthropicApiKeySecret" not in deployment_yaml
@@ -315,3 +359,27 @@ class TestHelpersTemplate:
     def test_has_labels_helper(self, helpers_tpl):
         """Test helpers has labels function."""
         assert 'define "skuld.labels"' in helpers_tpl
+
+
+def _render_skuld_chart(tmp_path: Path, values: dict) -> str:
+    helm = shutil.which("helm")
+    if not helm:
+        pytest.skip("helm is not installed")
+
+    values_file = tmp_path / "values.yaml"
+    values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+    result = subprocess.run(
+        [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return result.stdout
+
+
+def _deployment_from_rendered(rendered_yaml: str) -> dict:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if isinstance(document, dict) and document.get("kind") == "Deployment":
+            return document
+    pytest.fail("Deployment was not rendered")
