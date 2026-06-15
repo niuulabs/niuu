@@ -209,7 +209,7 @@ describe('LaunchWizard', () => {
     await waitFor(() => {
       expect(repoService.getBranches).toHaveBeenCalledWith('github.com/niuulabs/custom');
     });
-    expect(screen.getByTestId('branch-select')).toBeInTheDocument();
+    expect(await screen.findByTestId('branch-select')).toBeInTheDocument();
   });
 
   it('starts booting on forge session click', async () => {
