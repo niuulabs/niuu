@@ -1279,6 +1279,8 @@ class Broker:
                     emits=["code.changed"],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
+                    participant_kind="mesh",
+                    heartbeat_ttl_s=0.0,
                 )
             has_peers = discovery is not None and hasattr(discovery, "peers")
             if self._room_bridge is not None and has_peers:
@@ -1290,6 +1292,8 @@ class Broker:
                         subscribes_to=list(getattr(peer, "consumes_event_types", [])),
                         emits=list(getattr(peer, "emits_event_types", [])),
                         tools=list(getattr(peer, "capabilities", [])),
+                        participant_kind="mesh",
+                        heartbeat_ttl_s=0.0,
                     )
 
             # Start room mesh bridge so outcomes from any mesh peer flow to the
@@ -1346,6 +1350,15 @@ class Broker:
                 peer_ids.add(participant.peer_id)
         return peer_ids
 
+    def _workflow_trigger_peer_ready(self, peer_id: str) -> bool:
+        """Return True when a workflow-trigger consumer can receive mesh events."""
+        if self._room_bridge is None:
+            return True
+        participant = self._room_bridge.participants.get(peer_id)
+        if participant is not None and getattr(participant, "participant_kind", "") == "mesh":
+            return True
+        return bool(self._room_bridge.is_connected(peer_id))
+
     async def _wait_for_workflow_trigger_consumers(
         self,
         event_type: str,
@@ -1367,7 +1380,9 @@ class Broker:
 
         deadline = time.monotonic() + max(0.0, timeout_s)
         missing = {
-            peer_id for peer_id in required_peers if not self._room_bridge.is_connected(peer_id)
+            peer_id
+            for peer_id in required_peers
+            if not self._workflow_trigger_peer_ready(peer_id)
         }
         if missing:
             logger.info(
@@ -1380,7 +1395,9 @@ class Broker:
         while missing and time.monotonic() < deadline:
             await asyncio.sleep(poll_interval_s)
             missing = {
-                peer_id for peer_id in required_peers if not self._room_bridge.is_connected(peer_id)
+                peer_id
+                for peer_id in required_peers
+                if not self._workflow_trigger_peer_ready(peer_id)
             }
 
         if missing:

@@ -359,6 +359,9 @@ class TestContributorOutput:
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
         assert env_names["SKULD__MESH__CONSUMES_EVENT_TYPES"] == "[]"
+        assert env_names["SKULD__ROOM__ENABLED"] == "true"
+        assert env_names["SKULD__ROOM__MAX_PARTICIPANTS"] == "2"
+        assert env_names["SKULD__ROOM__PRESENCE_SWEEP_INTERVAL_S"] == "0"
         assert env_names["SKULD__WORKFLOW_TRIGGER__ENABLED"] == "true"
         assert env_names["SKULD__WORKFLOW_TRIGGER__EVENT_TYPE"] == "code.requested"
         assert env_names["SKULD__WORKFLOW_TRIGGER__NODE_ID"] == "trigger-1"

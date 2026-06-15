@@ -824,6 +824,15 @@ class RavnFlockContributor(SessionContributor):
             {"name": "SKULD__MESH__ENABLED", "value": "true"},
             {"name": "SKULD__MESH__TRANSPORT", "value": mesh_transport},
             {"name": "SKULD__MESH__PEER_ID", "value": skuld_peer_id},
+            {"name": "SKULD__ROOM__ENABLED", "value": "true"},
+            {
+                "name": "SKULD__ROOM__MAX_PARTICIPANTS",
+                "value": str(len(persona_dicts) + 1),
+            },
+            {
+                "name": "SKULD__ROOM__PRESENCE_SWEEP_INTERVAL_S",
+                "value": "0",
+            },
             {
                 "name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS",
                 "value": f"tcp://{self._mesh_host}:{skuld_pub}",
