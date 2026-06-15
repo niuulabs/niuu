@@ -618,6 +618,22 @@ def test_get_mcp_server_proxies_to_credentials_surface() -> None:
         ),
         (
             "get",
+            "/sessions/s2/trace",
+            "/sessions/s2/trace",
+            {"spans": [{"id": "span-1"}], "lanes": [{"key": "skuld"}]},
+            200,
+            {"spans": [{"id": "span-1"}], "lanes": [{"key": "skuld"}]},
+        ),
+        (
+            "get",
+            "/sessions/s2/trace/summary",
+            "/sessions/s2/trace/summary",
+            {"turn_count": 1, "tool_call_count": 2},
+            200,
+            {"turn_count": 1, "tool_call_count": 2},
+        ),
+        (
+            "get",
             "/chronicles/s2/timeline?limit=3",
             "/chronicles/s2/timeline?limit=3",
             [{"message": "chronicle"}],
