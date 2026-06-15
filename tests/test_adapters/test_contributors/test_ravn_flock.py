@@ -233,6 +233,33 @@ class TestContributorOutput:
         assert "ravn-coordinator" in names
         assert "ravn-reviewer" in names
 
+    async def test_ravn_containers_use_deployable_runtime_image(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+
+        result = await c.contribute(session, ctx)
+
+        for ctr in result.pod_spec.extra_containers:
+            assert ctr["image"] == "ghcr.io/niuulabs/niuu:dev"
+            assert ctr["command"] == ["python", "-m", "ravn.main"]
+
+    async def test_ravn_image_can_be_overridden(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(
+            launch_spec_provider=provider,
+            ravn_image="ghcr.io/niuulabs/niuu:1.2.3",
+        )
+        ctx = SessionContext(launch_spec="ravn-flock")
+
+        result = await c.contribute(session, ctx)
+
+        for ctr in result.pod_spec.extra_containers:
+            assert ctr["image"] == "ghcr.io/niuulabs/niuu:1.2.3"
+            assert ctr["command"] == ["python", "-m", "ravn.main"]
+
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template

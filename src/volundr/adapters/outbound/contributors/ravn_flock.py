@@ -44,7 +44,8 @@ _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
 _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
-_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/ravn:latest"
+_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/niuu:dev"
+_RAVN_COMMAND = ["python", "-m", "ravn.main"]
 _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
 _RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
 _RAVN_CONFIG_DIR = "/etc/ravn"
@@ -923,6 +924,7 @@ class RavnFlockContributor(SessionContributor):
             container: dict[str, Any] = {
                 "name": f"ravn-{persona}",
                 "image": self._ravn_image,
+                "command": list(_RAVN_COMMAND),
                 "env": ravn_env,
                 "ports": [
                     {"containerPort": pub, "name": f"r{ravn_index}-pub", "protocol": "TCP"},
