@@ -1225,9 +1225,7 @@ describe('buildVolundrHttpAdapter', () => {
 
     expect(client.get).toHaveBeenCalledWith('/session-definitions');
     expect(client.get).toHaveBeenCalledWith('/launch-specs?scope=system');
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/forge',
-    );
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
   });
 
   it('uses the provided client directly when no canonical api base can be derived', async () => {
