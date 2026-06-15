@@ -712,6 +712,17 @@ class RavnFlockContributor(SessionContributor):
             {"name": "MESH_PUB_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_pub}"},
             {"name": "MESH_REP_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_rep}"},
             {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
+            {"name": "SKULD__MESH__ENABLED", "value": "true"},
+            {"name": "SKULD__MESH__TRANSPORT", "value": mesh_transport},
+            {"name": "SKULD__MESH__PEER_ID", "value": skuld_peer_id},
+            {
+                "name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS",
+                "value": f"tcp://{self._mesh_host}:{skuld_pub}",
+            },
+            {
+                "name": "SKULD__MESH__NNG__REQ_REP_ADDRESS",
+                "value": f"tcp://{self._mesh_host}:{skuld_rep}",
+            },
         ]
         workflow_trigger = _workflow_trigger_config(workflow)
         if workflow_trigger is None:

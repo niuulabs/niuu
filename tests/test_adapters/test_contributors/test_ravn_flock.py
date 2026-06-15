@@ -272,6 +272,11 @@ class TestContributorOutput:
         assert "MESH_PEER_ID" in env_names
         assert "MESH_PUB_ADDRESS" in env_names
         assert "MESH_REP_ADDRESS" in env_names
+        assert env_names["SKULD__MESH__ENABLED"] == "true"
+        assert env_names["SKULD__MESH__TRANSPORT"] == "nng"
+        assert env_names["SKULD__MESH__PEER_ID"] == env_names["MESH_PEER_ID"]
+        assert env_names["SKULD__MESH__NNG__PUB_SUB_ADDRESS"] == env_names["MESH_PUB_ADDRESS"]
+        assert env_names["SKULD__MESH__NNG__REQ_REP_ADDRESS"] == env_names["MESH_REP_ADDRESS"]
 
     async def test_skuld_workflow_trigger_env_present_when_graph_has_trigger(self, session):
         template = LaunchSpec(
