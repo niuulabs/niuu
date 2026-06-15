@@ -90,6 +90,13 @@ class TestValuesDefaults:
         defaults = values_yaml["sessionDefinitions"]["skuldCodex"]["defaults"]
         assert defaults["image"]["repository"] == "ghcr.io/niuulabs/skuld"
 
+    def test_session_definition_defaults_do_not_own_volundr_api_url(self, values_yaml):
+        """Deployment config owns Volundr API URLs through podManager.session_defaults."""
+        for definition in values_yaml["sessionDefinitions"].values():
+            defaults = definition.get("defaults") or {}
+            volundr = defaults.get("volundr") or {}
+            assert "apiUrl" not in volundr
+
     def test_skuld_claude_helm_repo_configured(self, values_yaml):
         """Test skuld-claude helm repo is configured for OCI."""
         helm = values_yaml["sessionDefinitions"]["skuldClaude"]["helm"]

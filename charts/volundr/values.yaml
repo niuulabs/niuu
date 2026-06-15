@@ -904,11 +904,6 @@ sessionDefinitions:
       # -- Runtime class name for session pods (e.g., "nvidia", "kata", "gvisor")
       runtimeClassName: ""
 
-      # -- Volundr API URL for session pods to report token usage
-      # Overridden in the session definition template with the in-cluster URL
-      volundr:
-        apiUrl: ""
-
   # Skuld-Claude Interactive session definition (Claude Code REPL in tmux).
   # This runtime uses the interactive subscription path and captures tmux pane
   # output/events instead of the Agent SDK stream-json protocol.
@@ -1033,10 +1028,6 @@ sessionDefinitions:
       # -- Runtime class name for session pods (e.g., "nvidia", "kata", "gvisor")
       runtimeClassName: ""
 
-      # -- Volundr API URL for session pods to report token usage
-      volundr:
-        apiUrl: ""
-
   # Skuld-Codex session definition (OpenAI Codex)
   # Uses the merged skuld image (ships both Claude Code and Codex CLIs).
   skuldCodex:
@@ -1139,9 +1130,6 @@ sessionDefinitions:
 
       runtimeClassName: ""
 
-      volundr:
-        apiUrl: ""
-
   # Skuld-OpenCode session definition (OpenCode — model-neutral)
   # Supports Claude, OpenAI, Gemini, Ollama, and other providers.
   skuldOpenCode:
@@ -1217,9 +1205,6 @@ sessionDefinitions:
         fsGroup: 1000
 
       runtimeClassName: ""
-
-      volundr:
-        apiUrl: ""
 
   # Skuld-Reviewer session definition (lightweight LLM reviewer — no IDE)
   skuldReviewer:
