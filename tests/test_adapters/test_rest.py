@@ -652,6 +652,42 @@ class TestSessionLogAggregationProxy:
     """Tests for aggregated session log proxy endpoints."""
 
     @pytest.mark.asyncio
+    async def test_get_session_logs_success_forwards_auth(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(session.id)
+
+        response_payload = {"session_id": str(session.id), "lines": [{"message": "ready"}]}
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = response_payload
+        mock_response.raise_for_status.return_value = None
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(
+                f"/api/v1/forge/sessions/{session.id}/logs?lines=20&level=INFO",
+                headers={"Authorization": "Bearer caller-token"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == response_payload
+        mock_client.get.assert_awaited_once_with(
+            f"http://localhost:8080/s/{session.id}/api/logs",
+            params={"lines": 20, "level": "INFO"},
+            headers={"Authorization": "Bearer caller-token"},
+        )
+
+    @pytest.mark.asyncio
     async def test_get_session_logs_aggregate_success(
         self,
         client: TestClient,
@@ -695,7 +731,8 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh",
+                headers={"Authorization": "Bearer caller-token"},
             )
 
         assert response.status_code == 200
@@ -708,6 +745,7 @@ class TestSessionLogAggregationProxy:
                 "participants": "coder",
                 "query": "mesh",
             },
+            headers={"Authorization": "Bearer caller-token"},
         )
 
     @pytest.mark.asyncio

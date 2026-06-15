@@ -1880,6 +1880,7 @@ def create_router(
         tags=["Sessions"],
     )
     async def get_session_logs(
+        request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         lines: int = Query(
             default=100,
@@ -1911,10 +1912,15 @@ def create_router(
             )
 
         try:
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     _session_proxy_url(base_url, "api", "logs"),
                     params={"lines": lines, "level": level},
+                    headers=headers,
                 )
                 response.raise_for_status()
                 return response.json()
@@ -1944,6 +1950,7 @@ def create_router(
         tags=["Sessions"],
     )
     async def get_session_logs_aggregate(
+        request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         lines: int = Query(
             default=200,
@@ -1975,6 +1982,10 @@ def create_router(
         try:
             if session.chat_endpoint:
                 _, base_url = await forge.get_session_proxy_target(session_id)
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
                         _session_proxy_url(base_url, "api", "logs", "aggregate"),
@@ -1984,6 +1995,7 @@ def create_router(
                             "participants": participants,
                             "query": query,
                         },
+                        headers=headers,
                     )
                     response.raise_for_status()
                     return response.json()
