@@ -118,9 +118,8 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
       if (node.children === undefined) {
         try {
           const children = await filesystem.expandDirectory(sessionId, node.path);
-          queryClient.setQueryData<FileTreeNode[]>(
-            ['volundr', 'filetree', sessionId],
-            (current) => mergeDirectoryChildren(current ?? [], node.path, children),
+          queryClient.setQueryData<FileTreeNode[]>(['volundr', 'filetree', sessionId], (current) =>
+            mergeDirectoryChildren(current ?? [], node.path, children),
           );
         } catch (err) {
           setErrorMessage(err instanceof Error ? err.message : 'Failed to load directory');
