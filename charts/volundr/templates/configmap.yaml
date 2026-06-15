@@ -377,9 +377,16 @@ data:
 
     {{- if .Values.sessionContributors }}
     session_contributors:
+      {{- $root := . }}
       {{- range $i, $contributor := .Values.sessionContributors }}
+      {{- $kwargs := deepCopy ($contributor.kwargs | default dict) }}
+      {{- if eq $contributor.adapter "volundr.adapters.outbound.contributors.core.CoreSessionContributor" }}
+        {{- if not (hasKey $kwargs "base_domain") }}
+          {{- $_ := set $kwargs "base_domain" ($root.Values.podManager.kwargs.base_domain | default "volundr.local") }}
+        {{- end }}
+      {{- end }}
       - adapter: {{ $contributor.adapter | quote }}
-        kwargs: {{ $contributor.kwargs | default dict | toJson }}
+        kwargs: {{ $kwargs | toJson }}
         {{- if $contributor.secretKwargs }}
         secret_kwargs_env:
           {{- range $contributor.secretKwargs }}

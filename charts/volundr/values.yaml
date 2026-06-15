@@ -234,7 +234,7 @@ database:
 #       source_ref_namespace: ""
 #       timeout: "5m"
 #       interval: "5m"
-#       base_domain: "skuld.valhalla.asgard.niuu.world"
+#       base_domain: "skuld.example.com"
 #       chat_scheme: "wss"
 #       code_scheme: "https"
 #       chat_path: "/session"
@@ -280,7 +280,7 @@ podManager:
     chart_version: "0.1.0"
     source_ref_kind: "HelmRepository"
     source_ref_name: "skuld"
-    base_domain: "skuld.valhalla.asgard.niuu.world"
+    base_domain: "skuld.example.com"
     chat_scheme: "wss"
     code_scheme: "https"
     chat_path: "/session"
@@ -597,7 +597,7 @@ credentialStore:
 #       openbao_url: "https://openbao.ymir.niuu.world"
 #       namespace: "skuld"
 #       mount_path: "volundr"
-#       auth_path: "jwt-valhalla"
+#       auth_path: "jwt-example"
 #       audience: "https://kubernetes.default.svc.cluster.local"
 #
 secretInjection:
@@ -620,7 +620,7 @@ secretInjection:
 #       namespace: "volundr"               # namespace where sessions run
 #       gateway_name: "volundr-gateway"     # must match sessionGateway.name
 #       gateway_namespace: "volundr"        # must match release namespace
-#       gateway_domain: "sessions.valhalla.asgard.niuu.world"
+#       gateway_domain: "sessions.example.com"
 #       issuer_url: "https://idp.example.com"
 #       audience: "volundr"
 #       jwks_uri: "https://idp.example.com/.well-known/jwks"
@@ -649,7 +649,6 @@ gateway:
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:
-      base_domain: "skuld.valhalla.asgard.niuu.world"
       ingress_enabled: true
     secretKwargs: []
   - adapter: "volundr.adapters.outbound.contributors.launch_spec.LaunchSpecContributor"

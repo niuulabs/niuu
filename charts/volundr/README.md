@@ -222,7 +222,7 @@ Selects how Volundr deploys session pods. Uses the [dynamic adapter pattern](#ar
 | `podManager.kwargs.chart_version` | string | `"0.1.0"` | Helm chart version |
 | `podManager.kwargs.source_ref_kind` | string | `"HelmRepository"` | Source reference kind |
 | `podManager.kwargs.source_ref_name` | string | `"skuld"` | Source reference name |
-| `podManager.kwargs.base_domain` | string | `"skuld.valhalla.asgard.niuu.world"` | Base domain for session endpoint URLs |
+| `podManager.kwargs.base_domain` | string | `"skuld.example.com"` | Base domain for session endpoint URLs |
 | `podManager.kwargs.chat_scheme` | string | `"wss"` | WebSocket scheme for chat endpoints |
 | `podManager.kwargs.code_scheme` | string | `"https"` | HTTPS scheme for code-server endpoints |
 | `podManager.kwargs.chat_path` | string | `"/session"` | Path for chat WebSocket endpoint |
@@ -510,7 +510,7 @@ secretInjection:
     openbao_url: "https://openbao.ymir.niuu.world"
     namespace: "skuld"
     mount_path: "volundr"
-    auth_path: "jwt-valhalla"
+    auth_path: "jwt-example"
     audience: "https://kubernetes.default.svc.cluster.local"
 ```
 
@@ -542,7 +542,7 @@ gateway:
     namespace: "volundr"
     gateway_name: "volundr-gateway"
     gateway_namespace: "volundr"
-    gateway_domain: "sessions.valhalla.asgard.niuu.world"
+    gateway_domain: "sessions.example.com"
     issuer_url: "https://idp.example.com"
     audience: "volundr"
     jwks_uri: "https://idp.example.com/.well-known/jwks"
@@ -561,7 +561,7 @@ The shared `Gateway` resource that all session `HTTPRoute`s attach to. Requires 
 | `sessionGateway.enabled` | bool | `false` | Enable the shared Gateway resource |
 | `sessionGateway.name` | string | `"volundr-gateway"` | Gateway resource name |
 | `sessionGateway.gatewayClassName` | string | `"eg"` | GatewayClass to use (Envoy Gateway default: `"eg"`) |
-| `sessionGateway.hostname` | string | `"sessions.valhalla.asgard.niuu.world"` | Hostname for the HTTPS listener (wildcard for session routing). external-dns creates a DNS record automatically |
+| `sessionGateway.hostname` | string | `""` | Hostname for the HTTPS listener (wildcard for session routing). external-dns creates a DNS record automatically |
 | `sessionGateway.certIssuer` | string | `"letsencrypt-prod"` | cert-manager ClusterIssuer name for TLS certificate provisioning |
 | `sessionGateway.tlsSecretName` | string | `""` | TLS secret name (defaults to `"{name}-tls"` if not set) |
 | `sessionGateway.allowedRouteNamespaces` | string | `"All"` | Which namespaces can attach HTTPRoutes (`"All"`, `"Same"`, `"Selector"`) |
@@ -1019,7 +1019,7 @@ podManager:
     source_ref_name: "skuld"
     timeout: "5m"
     interval: "5m"
-    base_domain: "skuld.valhalla.asgard.niuu.world"
+    base_domain: "skuld.example.com"
     chat_scheme: "wss"
     code_scheme: "https"
     session_defaults:
