@@ -244,7 +244,11 @@ class TestContributorOutput:
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:dev"
             assert ctr["command"][:2] == ["python", "-c"]
-            assert "'-m', 'ravn.main'" in ctr["command"][2]
+            assert "'-m'," in ctr["command"][2]
+            assert "'ravn'," in ctr["command"][2]
+            assert "'daemon'," in ctr["command"][2]
+            assert "'--config'," in ctr["command"][2]
+            assert "'--persona'," in ctr["command"][2]
             assert "/workspace/.flock/logs" in ctr["command"][2]
 
     async def test_ravn_containers_run_as_workspace_owner(self, session, flock_template):
@@ -277,7 +281,8 @@ class TestContributorOutput:
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:1.2.3"
             assert ctr["command"][:2] == ["python", "-c"]
-            assert "'-m', 'ravn.main'" in ctr["command"][2]
+            assert "'ravn'," in ctr["command"][2]
+            assert "'daemon'," in ctr["command"][2]
 
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()
