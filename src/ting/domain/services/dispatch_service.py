@@ -774,14 +774,6 @@ class DispatchService:
                 for item in items
             ]
 
-        # Query Volundr for the user's integration IDs
-        integration_ids = await self._fetch_integration_ids(
-            volundr,
-            auth_token,
-            owner_id,
-            principal=principal,
-        )
-
         # Pre-resolve all Volundr adapters for connection_id targeting
         if principal is not None and hasattr(self._volundr_factory, "for_principal"):
             all_volundr = await self._volundr_factory.for_principal(principal)
@@ -793,6 +785,8 @@ class DispatchService:
                 adapter_by_target[a.target_id] = a
             if a.name:
                 adapter_by_target[a.name] = a
+
+        integration_ids_by_target: dict[int, list[str]] = {}
 
         # Build lookups
         sagas = await self._saga_repo.list_sagas(owner_id=owner_id)
@@ -836,6 +830,16 @@ class DispatchService:
                     adapter_by_target,
                     volundr,
                 )
+            integration_cache_key = id(target_volundr)
+            integration_ids = integration_ids_by_target.get(integration_cache_key)
+            if integration_ids is None:
+                integration_ids = await self._fetch_integration_ids(
+                    target_volundr,
+                    auth_token,
+                    owner_id,
+                    principal=principal,
+                )
+                integration_ids_by_target[integration_cache_key] = integration_ids
             workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)
             if workflow_error:
                 logger.warning(

@@ -808,6 +808,75 @@ class TestDispatchIssues:
         assert len(assigned.spawned) == 1
 
     @pytest.mark.asyncio
+    async def test_fetches_integration_ids_from_selected_target(
+        self,
+        tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+    ):
+        class TargetVolundr(MockVolundr):
+            def __init__(self, target_id: str) -> None:
+                super().__init__()
+                self._target_id = target_id
+
+            @property
+            def name(self) -> str:
+                return self._target_id
+
+            @property
+            def target_id(self) -> str:
+                return self._target_id
+
+        default = TargetVolundr("default-instance")
+        assigned = TargetVolundr("assigned-instance")
+        default.integration_ids = ["default-integration"]
+        assigned.integration_ids = ["assigned-integration"]
+        saga = saga_repo.sagas[0]
+        saga_repo.sagas[0] = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type=saga.tracker_type,
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            base_branch=saga.base_branch,
+            owner_id=saga.owner_id,
+            workflow_id=saga.workflow_id,
+            workflow_version=saga.workflow_version,
+            workflow_snapshot=saga.workflow_snapshot,
+            instance_id="assigned-instance",
+        )
+        svc = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[default, assigned]),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(),
+        )
+
+        results = await svc.dispatch_issues(
+            owner_id="dev-user",
+            items=[
+                DispatchItem(
+                    saga_id=str(saga_repo.sagas[0].id),
+                    issue_id="i-1",
+                    repo="org/repo-a",
+                )
+            ],
+            auth_token="user-token",
+        )
+
+        assert results[0].status == "spawned"
+        assert default.spawned == []
+        assert default.last_auth_token is None
+        assert assigned.last_auth_token == "user-token"
+        assert assigned.spawned[0].integration_ids == ["assigned-integration"]
+
+    @pytest.mark.asyncio
     async def test_no_volundr_returns_all_failed(
         self,
         tracker: MockTracker,
