@@ -1,10 +1,24 @@
 """Session definition contributor — merges definition defaults into Helm values."""
 
+from copy import deepcopy
 from typing import Any
 
 from volundr.config import SessionDefinitionConfig
 from volundr.domain.models import Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
+
+
+def _drop_empty_deployment_owned_defaults(values: dict[str, Any]) -> dict[str, Any]:
+    """Remove empty values for fields that deployment defaults own."""
+    volundr = values.get("volundr")
+    if not isinstance(volundr, dict):
+        return values
+
+    if volundr.get("apiUrl") == "":
+        volundr.pop("apiUrl")
+    if not volundr:
+        values.pop("volundr")
+    return values
 
 
 class SessionDefinitionContributor(SessionContributor):
@@ -44,7 +58,8 @@ class SessionDefinitionContributor(SessionContributor):
         if not defn or not defn.enabled:
             return SessionContribution()
 
-        values: dict[str, Any] = dict(defn.defaults)
+        values: dict[str, Any] = deepcopy(defn.defaults)
+        values = _drop_empty_deployment_owned_defaults(values)
         if defn.default_model and "model" not in values:
             values["model"] = defn.default_model
         return SessionContribution(values=values)

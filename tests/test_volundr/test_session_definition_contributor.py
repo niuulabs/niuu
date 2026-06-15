@@ -69,6 +69,25 @@ class TestSessionDefinitionContributor:
         assert "transportAdapter" in result.values["broker"]
 
     @pytest.mark.asyncio
+    async def test_drops_empty_definition_api_url(self):
+        definitions = {
+            "skuldCodex": SessionDefinitionConfig(
+                enabled=True,
+                defaults={
+                    "broker": {"cliType": "codex-ws"},
+                    "volundr": {"apiUrl": ""},
+                },
+            )
+        }
+        contributor = SessionDefinitionContributor(definitions=definitions)
+        context = SessionContext(definition="skuldCodex")
+
+        result = await contributor.contribute(_mock_session(), context)
+
+        assert result.values["broker"]["cliType"] == "codex-ws"
+        assert "volundr" not in result.values
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_definition(self):
         contributor = SessionDefinitionContributor(definitions=DEFINITIONS)
         context = SessionContext()
