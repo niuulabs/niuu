@@ -508,6 +508,22 @@ class TestMountedConfig:
             env = {e["name"]: e["value"] for e in ctr["env"]}
             assert env["RAVN_CONFIG"] == "/etc/ravn/config.yaml"
 
+    async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
+        """Each Ravn API server must bind its own port inside the shared pod netns."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        ports: list[str] = []
+        for ctr in result.pod_spec.extra_containers:
+            env = {e["name"]: e["value"] for e in ctr["env"]}
+            assert env["HOST"] == "0.0.0.0"
+            ports.append(env["PORT"])
+
+        assert ports == ["7681", "7682"]
+
     async def test_per_sidecar_config_volume(self, session, flock_template):
         """Each persona gets its own config emptyDir volume."""
         provider = MagicMock()

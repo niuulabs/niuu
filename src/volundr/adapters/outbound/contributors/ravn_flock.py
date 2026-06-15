@@ -889,6 +889,8 @@ class RavnFlockContributor(SessionContributor):
                 {"name": "RAVN_PERSONA", "value": persona},
                 {"name": "RAVN_PEER_ID", "value": peer_id},
                 {"name": "RAVN_CONFIG", "value": _RAVN_CONFIG_MOUNT_PATH},
+                {"name": "HOST", "value": self._mesh_host},
+                {"name": "PORT", "value": str(gw)},
             ]
 
             if sleipnir_publish_urls:
