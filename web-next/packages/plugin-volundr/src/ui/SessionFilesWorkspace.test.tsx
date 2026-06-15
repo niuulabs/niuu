@@ -161,6 +161,85 @@ describe('SessionFilesWorkspace', () => {
     );
   });
 
+  it('loads nested directories on demand while navigating workspace artifacts', async () => {
+    const filesystem = createFilesystem();
+    filesystem.listTree = vi.fn().mockResolvedValue([
+      {
+        name: 'research',
+        path: '/workspace/research',
+        kind: 'directory',
+        children: [
+          {
+            name: 'campaigns',
+            path: '/workspace/research/campaigns',
+            kind: 'directory',
+          },
+        ],
+      },
+    ]);
+    filesystem.expandDirectory = vi.fn(async (_sessionId: string, path: string) => {
+      if (path === '/workspace/research/campaigns') {
+        return [
+          {
+            name: 'flock-proof',
+            path: '/workspace/research/campaigns/flock-proof',
+            kind: 'directory',
+          },
+        ];
+      }
+      if (path === '/workspace/research/campaigns/flock-proof') {
+        return [
+          {
+            name: 'brief.md',
+            path: '/workspace/research/campaigns/flock-proof/brief.md',
+            kind: 'file',
+            size: 128,
+          },
+          {
+            name: 'plan.md',
+            path: '/workspace/research/campaigns/flock-proof/plan.md',
+            kind: 'file',
+            size: 256,
+          },
+        ];
+      }
+      return [];
+    });
+
+    renderWorkspace(filesystem);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('file-browser-row-/workspace/research')).toBeVisible(),
+    );
+    fireEvent.doubleClick(screen.getByTestId('file-browser-row-/workspace/research'));
+    fireEvent.doubleClick(screen.getByTestId('file-browser-row-/workspace/research/campaigns'));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('file-browser-row-/workspace/research/campaigns/flock-proof'),
+      ).toBeVisible(),
+    );
+    fireEvent.doubleClick(
+      screen.getByTestId('file-browser-row-/workspace/research/campaigns/flock-proof'),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('file-browser-row-/workspace/research/campaigns/flock-proof/brief.md'),
+      ).toBeVisible(),
+    );
+    expect(
+      screen.getByTestId('file-browser-row-/workspace/research/campaigns/flock-proof/plan.md'),
+    ).toBeVisible();
+    expect(filesystem.expandDirectory).toHaveBeenCalledWith(
+      'sess-1',
+      '/workspace/research/campaigns',
+    );
+    expect(filesystem.expandDirectory).toHaveBeenCalledWith(
+      'sess-1',
+      '/workspace/research/campaigns/flock-proof',
+    );
+  });
+
   it('downloads selected files, uploads new files, creates folders, and deletes selections', async () => {
     const { filesystem, container } = renderWorkspace();
     const downloadClick = vi

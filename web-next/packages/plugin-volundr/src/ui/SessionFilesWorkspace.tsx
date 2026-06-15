@@ -115,6 +115,18 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
 
   async function handleRowDoubleClick(node: BrowserNode) {
     if (node.kind === 'directory') {
+      if (node.children === undefined) {
+        try {
+          const children = await filesystem.expandDirectory(sessionId, node.path);
+          queryClient.setQueryData<FileTreeNode[]>(
+            ['volundr', 'filetree', sessionId],
+            (current) => mergeDirectoryChildren(current ?? [], node.path, children),
+          );
+        } catch (err) {
+          setErrorMessage(err instanceof Error ? err.message : 'Failed to load directory');
+          return;
+        }
+      }
       setCurrentDir(node.path);
       clearSelection();
       resetViewer();
@@ -698,6 +710,26 @@ export function cloneNode(node: FileTreeNode): BrowserNode {
     ...node,
     children: node.children?.map(cloneNode),
   };
+}
+
+export function mergeDirectoryChildren(
+  nodes: FileTreeNode[],
+  path: string,
+  children: FileTreeNode[],
+): FileTreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.path === path) {
+      changed = true;
+      return { ...node, children: children.map(cloneNode) };
+    }
+    if (!node.children) return node;
+    const mergedChildren = mergeDirectoryChildren(node.children, path, children);
+    if (mergedChildren === node.children) return node;
+    changed = true;
+    return { ...node, children: mergedChildren };
+  });
+  return changed ? next : nodes;
 }
 
 export function buildIndex(nodes: BrowserNode[]): Map<string, BrowserNode> {
