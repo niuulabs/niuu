@@ -293,20 +293,20 @@ function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | n
   const explicitBase = resolveDirectServiceBase(config, 'filesystem');
   if (explicitBase) return explicitBase;
 
-  return resolveVolundrServiceBase(config);
+  return resolveForgeServiceBase(config);
 }
 
 function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
   const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
   if (explicit.mode === 'live') return explicit;
 
-  const explicitVolundrBase = resolveDirectServiceBase(config, 'volundr');
-  if (explicitVolundrBase) {
+  const explicitForgeBase = resolveDirectServiceBase(config, 'forge');
+  if (explicitForgeBase) {
     return {
       mode: 'live',
       transport: 'http',
-      target: explicitVolundrBase,
-      source: 'volundr',
+      target: explicitForgeBase,
+      source: 'forge',
     };
   }
 
@@ -315,7 +315,7 @@ function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceB
     return {
       mode: 'live',
       transport: 'http',
-      target: `${sharedBase}/volundr`,
+      target: `${sharedBase}/forge`,
       source: 'shared-api',
     };
   }

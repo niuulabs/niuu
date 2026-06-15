@@ -639,7 +639,7 @@ describe('buildServiceBackendStatus', () => {
     });
   });
 
-  it('derives a live filesystem backend from the shared Volundr route', () => {
+  it('derives a live filesystem backend from the Forge facade route', () => {
     const status = buildServiceBackendStatus({
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
@@ -649,8 +649,8 @@ describe('buildServiceBackendStatus', () => {
     expect(status.filesystem).toEqual({
       mode: 'live',
       transport: 'http',
-      target: 'http://localhost:8080/api/v1/volundr',
-      source: 'shared-api',
+      target: 'http://localhost:8080/api/v1/forge',
+      source: 'forge',
     });
   });
 
@@ -874,7 +874,7 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1',
     });
     expect(volundrMocks.buildVolundrFileSystemHttpAdapter).toHaveBeenCalledWith({
-      baseUrl: 'http://localhost:8080/api/v1/volundr',
+      baseUrl: 'http://localhost:8080/api/v1/forge',
     });
   });
 

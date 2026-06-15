@@ -610,6 +610,14 @@ def test_get_mcp_server_proxies_to_credentials_surface() -> None:
         ),
         (
             "get",
+            "/sessions/s2/workflow/gates",
+            "/sessions/s2/workflow/gates",
+            {"gates": [{"id": "approval"}]},
+            200,
+            {"gates": [{"id": "approval"}]},
+        ),
+        (
+            "get",
             "/chronicles/s2/timeline?limit=3",
             "/chronicles/s2/timeline?limit=3",
             [{"message": "chronicle"}],
@@ -668,6 +676,34 @@ def test_proxy_routes_forward_to_session_owner(
     else:
         assert response.content == b""
     assert route.called
+
+
+@respx.mock
+def test_resolve_workflow_gate_proxies_to_owner_with_encoded_gate_id_and_intent() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    route = respx.post(
+        "http://beta/api/v1/forge/sessions/s2/workflow/gates/prd%20review%3Fstep%3D1/resolve"
+    ).mock(return_value=Response(200, json={"status": "resolved"}))
+
+    response = client.post(
+        "/api/v1/forge/sessions/s2/workflow/gates/prd%20review%3Fstep%3D1/resolve",
+        headers={**_headers(), "x-niuu-workflow-gate-intent": "resolve"},
+        json={"decision": "approved", "notes": "looks good"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "resolved"}
+    assert route.called
+    assert route.calls.last.request.headers["x-niuu-workflow-gate-intent"] == "resolve"
+    import json as _json
+
+    assert _json.loads(route.calls.last.request.content) == {
+        "decision": "approved",
+        "notes": "looks good",
+    }
 
 
 @respx.mock
