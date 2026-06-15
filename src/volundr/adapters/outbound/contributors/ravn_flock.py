@@ -557,7 +557,7 @@ class RavnFlockContributor(SessionContributor):
 
     Resolves the launch spec from the session context, reads
     workload_config.personas + mesh/mimir/sleipnir settings, then:
-      - Emits skuld mesh env vars (MESH_ENABLED, MESH_PEER_ID, nng addresses)
+      - Emits Skuld mesh env vars (SKULD__MESH__*, nng addresses)
       - Emits one ravn sidecar container per persona with RAVN_CONFIG env
       - Emits per-sidecar initContainer + emptyDir volume for mounted config
       - Emits a Mimir emptyDir volume
@@ -706,12 +706,6 @@ class RavnFlockContributor(SessionContributor):
         skuld_pub, skuld_rep, skuld_hs = _ports_for(0, base_port)
 
         skuld_env: list[dict] = [
-            {"name": "MESH_ENABLED", "value": "true"},
-            {"name": "MESH_TRANSPORT", "value": mesh_transport},
-            {"name": "MESH_PEER_ID", "value": skuld_peer_id},
-            {"name": "MESH_PUB_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_pub}"},
-            {"name": "MESH_REP_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_rep}"},
-            {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
             {"name": "SKULD__MESH__ENABLED", "value": "true"},
             {"name": "SKULD__MESH__TRANSPORT", "value": mesh_transport},
             {"name": "SKULD__MESH__PEER_ID", "value": skuld_peer_id},

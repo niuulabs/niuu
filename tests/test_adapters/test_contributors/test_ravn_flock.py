@@ -268,15 +268,15 @@ class TestContributorOutput:
         result = await c.contribute(session, ctx)
 
         env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
-        assert env_names.get("MESH_ENABLED") == "true"
-        assert "MESH_PEER_ID" in env_names
-        assert "MESH_PUB_ADDRESS" in env_names
-        assert "MESH_REP_ADDRESS" in env_names
+        assert env_names.get("SKULD__MESH__ENABLED") == "true"
+        assert "SKULD__MESH__PEER_ID" in env_names
+        assert "SKULD__MESH__NNG__PUB_SUB_ADDRESS" in env_names
+        assert "SKULD__MESH__NNG__REQ_REP_ADDRESS" in env_names
         assert env_names["SKULD__MESH__ENABLED"] == "true"
         assert env_names["SKULD__MESH__TRANSPORT"] == "nng"
-        assert env_names["SKULD__MESH__PEER_ID"] == env_names["MESH_PEER_ID"]
-        assert env_names["SKULD__MESH__NNG__PUB_SUB_ADDRESS"] == env_names["MESH_PUB_ADDRESS"]
-        assert env_names["SKULD__MESH__NNG__REQ_REP_ADDRESS"] == env_names["MESH_REP_ADDRESS"]
+        assert env_names["SKULD__MESH__PEER_ID"].startswith("skuld-")
+        assert env_names["SKULD__MESH__NNG__PUB_SUB_ADDRESS"].endswith(":7480")
+        assert env_names["SKULD__MESH__NNG__REQ_REP_ADDRESS"].endswith(":7481")
 
     async def test_skuld_workflow_trigger_env_present_when_graph_has_trigger(self, session):
         template = LaunchSpec(
@@ -779,7 +779,7 @@ class TestNngPortAllocation:
         all_ports: list[int] = []
         # Skuld ports from env
         skuld_env = {e["name"]: e["value"] for e in result.pod_spec.env}
-        for key in ("MESH_PUB_ADDRESS", "MESH_REP_ADDRESS"):
+        for key in ("SKULD__MESH__NNG__PUB_SUB_ADDRESS", "SKULD__MESH__NNG__REQ_REP_ADDRESS"):
             addr = skuld_env.get(key, "")
             port = int(addr.rsplit(":", 1)[-1])
             all_ports.append(port)
@@ -846,8 +846,8 @@ class TestContributorPipelineMerge:
         spec = SessionSpec.merge(contributions)
 
         env_names = {e["name"] for e in spec.pod_spec.env}
-        assert "MESH_ENABLED" in env_names
-        assert "MESH_PEER_ID" in env_names
+        assert "SKULD__MESH__ENABLED" in env_names
+        assert "SKULD__MESH__PEER_ID" in env_names
 
     async def test_non_flock_session_no_ravn_containers(self, session, session_template):
         template_provider = MagicMock()

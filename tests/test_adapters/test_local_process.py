@@ -1234,11 +1234,11 @@ class TestProcessSpawning:
             values={},
             pod_spec=PodSpecAdditions(
                 env=(
-                    {"name": "MESH_ENABLED", "value": "true"},
-                    {"name": "MESH_PUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
-                    {"name": "MESH_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
-                    {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                    {"name": "SKULD__MESH__ENABLED", "value": "true"},
+                    {"name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
+                    {"name": "SKULD__MESH__NNG__REQ_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
+                    {"name": "SKULD__MESH__HANDSHAKE_PORT", "value": "7580"},
+                    {"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},
                 ),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
@@ -1299,7 +1299,7 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
@@ -1355,7 +1355,7 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-claude-mimir-researcher"},
                     {"name": "ravn-codex-mimir-researcher"},
@@ -1420,7 +1420,7 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
@@ -1485,7 +1485,7 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
@@ -1579,7 +1579,7 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-coder"},),
             ),
         )
@@ -1702,7 +1702,7 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-coder"},
                     {"name": "ravn-reviewer"},
@@ -2396,11 +2396,11 @@ class TestLocalFlockMeshMode:
             values={},
             pod_spec=PodSpecAdditions(
                 env=(
-                    {"name": "MESH_ENABLED", "value": "true"},
-                    {"name": "MESH_PUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
-                    {"name": "MESH_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
-                    {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                    {"name": "SKULD__MESH__ENABLED", "value": "true"},
+                    {"name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
+                    {"name": "SKULD__MESH__NNG__REQ_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
+                    {"name": "SKULD__MESH__HANDSHAKE_PORT", "value": "7580"},
+                    {"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},
                 ),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
@@ -2460,7 +2460,7 @@ class TestLocalFlockMeshMode:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
@@ -2524,7 +2524,7 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
@@ -2582,7 +2582,7 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=({"name": "MESH_PEER_ID", "value": "skuld-test"},),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=({"name": "ravn-reviewer"},),
             ),
         )

@@ -913,22 +913,12 @@ class LocalProcessPodManager(PodManager):
         # Configure Skuld via env vars
         env = self._build_env(spec, workspace)
 
-        # Inject pod_spec env vars from RavnFlockContributor.
-        # Map K8s-style names (MESH_ENABLED) to Skuld pydantic env (SKULD__MESH__ENABLED).
-        skuld_env_map = {
-            "MESH_ENABLED": "SKULD__MESH__ENABLED",
-            "MESH_TRANSPORT": "SKULD__MESH__TRANSPORT",
-            "MESH_PEER_ID": "SKULD__MESH__PEER_ID",
-            "MESH_PUB_ADDRESS": "SKULD__MESH__NNG__PUB_SUB_ADDRESS",
-            "MESH_REP_ADDRESS": "SKULD__MESH__NNG__REQ_REP_ADDRESS",
-            "MESH_HANDSHAKE_PORT": "SKULD__MESH__HANDSHAKE_PORT",
-        }
+        # Inject pod_spec env vars from session contributors.
         flock_dir = workspace / ".flock"
         if spec.pod_spec and spec.pod_spec.env:
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
-                    skuld_name = skuld_env_map.get(name, name)
-                    env[skuld_name] = entry.get("value", "")
+                    env[name] = entry.get("value", "")
 
             # Enable room mode so the web UI shows multi-participant view
             env["SKULD__ROOM__ENABLED"] = "true"
@@ -1077,7 +1067,7 @@ class LocalProcessPodManager(PodManager):
                 for entry in spec.pod_spec.env:
                     name = entry.get("name", "")
                     value = entry.get("value", "")
-                    if name == "MESH_PEER_ID":
+                    if name == "SKULD__MESH__PEER_ID":
                         skuld_peer_id = value
 
             if skuld_peer_id and skuld_pub:

@@ -221,7 +221,7 @@ class TestDeploymentTemplate:
         rendered = _render_skuld_chart(
             tmp_path,
             {
-                "envVars": [{"name": "MESH_ENABLED", "value": "true"}],
+                "envVars": [{"name": "SKULD__MESH__ENABLED", "value": "true"}],
                 "mesh": {
                     "enabled": True,
                     "peerPorts": [{"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"}],
@@ -271,7 +271,7 @@ class TestDeploymentTemplate:
         containers = {container["name"]: container for container in pod_spec["containers"]}
         assert "skuld" in containers
         assert "ravn-coder" in containers
-        assert {"name": "MESH_ENABLED", "value": "true"} in containers["skuld"]["env"]
+        assert {"name": "SKULD__MESH__ENABLED", "value": "true"} in containers["skuld"]["env"]
         assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
             "skuld"
         ]["ports"]
