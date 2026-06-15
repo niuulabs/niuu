@@ -355,7 +355,7 @@ function resolveTingServiceBase(
     case 'ting.workflows':
       return explicitBase.replace(/\/workflows\/?$/, '');
     case 'ting.research':
-      return explicitBase;
+      return explicitBase.replace(/\/research\/?$/, '');
     default:
       return explicitBase;
   }

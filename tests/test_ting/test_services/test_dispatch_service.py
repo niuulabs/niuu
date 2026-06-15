@@ -1440,7 +1440,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             }
@@ -1491,7 +1492,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },
@@ -1503,7 +1505,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },
@@ -1515,7 +1518,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport")
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },

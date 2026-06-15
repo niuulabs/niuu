@@ -200,6 +200,8 @@ def _resolve_workflow_execution(
                     executor_kwargs["transport_kwargs"] = {
                         "turn_timeout_s": _WORKFLOW_CLI_TURN_TIMEOUT_S
                     }
+                elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
+                    executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
                 runtime_persona["executor"] = {
                     "adapter": _CLI_TRANSPORT_EXECUTOR,
                     "kwargs": executor_kwargs,
