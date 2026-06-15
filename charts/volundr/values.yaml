@@ -1260,6 +1260,9 @@ web:
   # -- Number of web replicas
   replicaCount: 1
 
+  # -- Annotations to apply to the Volundr web UI pod template
+  podAnnotations: {}
+
   image:
     # -- Web UI image registry
     registry: ghcr.io
@@ -1326,6 +1329,9 @@ webNext:
 
   # -- Number of web-next replicas
   replicaCount: 1
+
+  # -- Annotations to apply to the composable Niuu web UI pod template
+  podAnnotations: {}
 
   image:
     # -- Web UI image registry

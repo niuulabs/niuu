@@ -93,7 +93,9 @@ describe('ResearchNewPage', () => {
     );
     expect(screen.getByRole('option', { name: /Research Campaign/i })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /Incident triage/i })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText('Execution target')).toHaveValue('cluster-mini'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Execution target')).toHaveValue('cluster-mini'),
+    );
     expect(screen.getByRole('option', { name: /MacBook Pro/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /All workflows/i }));
