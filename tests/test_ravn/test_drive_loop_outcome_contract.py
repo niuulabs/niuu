@@ -789,6 +789,48 @@ page_path: council
         assert alias_event.payload["event_type"] == "council.b.opinion.submitted"
 
     @pytest.mark.asyncio
+    async def test_workflow_mimir_artifacts_are_materialized_into_workspace(
+        self,
+        tmp_path,
+    ) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._settings.permission.workspace_root = str(tmp_path)
+        dl._mimir = AsyncMock()
+        dl._mimir.get_page = AsyncMock(return_value=SimpleNamespace(content="# Brief\n\nReady."))
+        dl._persona_config = SimpleNamespace(
+            name="research-framer",
+            produces=SimpleNamespace(
+                event_type="research.framed",
+                event_type_map={"framed": "research.framed"},
+            ),
+        )
+
+        task = _make_agent_task(task_id="task-research-artifact")
+        task.session_id = "sess-research-artifact"
+        task.workflow_node_id = "research-framer"
+        response_text = """\
+---outcome---
+verdict: framed
+summary: Research brief framed.
+brief_path: research/campaigns/example/brief.md
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        materialized = tmp_path / "research" / "campaigns" / "example" / "brief.md"
+        assert materialized.read_text(encoding="utf-8") == "# Brief\n\nReady."
+        dl._mimir.get_page.assert_awaited_once_with("research/campaigns/example/brief.md")
+        event = mesh.publish.await_args_list[0].args[0]
+        assert event.payload["fields"]["workspace_paths"] == [
+            "research/campaigns/example/brief.md"
+        ]
+
+    @pytest.mark.asyncio
     async def test_split_outcome_markers_still_route_alias_for_wrapped_codex_output(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()

@@ -1122,6 +1122,68 @@ class DriveLoop:
             paths,
         )
 
+    async def _maybe_materialize_workflow_artifacts(
+        self,
+        task: AgentTask,
+        outcome_fields: dict[str, object],
+    ) -> None:
+        """Mirror workflow-authored Mimir artifacts into the live workspace."""
+        if self._mimir is None:
+            return
+        if not str(task.workflow_node_id or "").strip():
+            return
+        paths = self._artifact_publish_paths(outcome_fields)
+        if not paths:
+            return
+
+        from ravn.adapters.tools.file_security import (  # noqa: PLC0415
+            PathSecurityError,
+            resolve_safe,
+        )
+
+        workspace_root = Path(
+            str(getattr(getattr(self._settings, "permission", None), "workspace_root", "")).strip()
+            or Path.cwd()
+        )
+        materialized: list[str] = []
+        for path in paths:
+            if Path(path).is_absolute():
+                logger.warning(
+                    "drive_loop: refusing to materialize absolute workflow artifact path %s",
+                    path,
+                )
+                continue
+            try:
+                target = resolve_safe(workspace_root / path, workspace_root)
+            except PathSecurityError:
+                logger.warning(
+                    "drive_loop: refusing to materialize unsafe workflow artifact path %s",
+                    path,
+                )
+                continue
+            try:
+                page = await self._mimir.get_page(path)
+            except Exception as exc:
+                logger.debug(
+                    "drive_loop: workflow artifact %s is not readable from Mimir for task %s: %s",
+                    path,
+                    task.task_id,
+                    exc,
+                )
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(getattr(page, "content", "") or ""), encoding="utf-8")
+            materialized.append(path)
+
+        if not materialized:
+            return
+        outcome_fields.setdefault("workspace_paths", materialized)
+        logger.info(
+            "drive_loop: materialized workflow artifacts into workspace for task %s: %s",
+            task.task_id,
+            materialized,
+        )
+
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
 
@@ -2031,6 +2093,7 @@ class DriveLoop:
             valid = True
 
         await self._maybe_publish_workflow_artifacts(task, outcome_fields)
+        await self._maybe_materialize_workflow_artifacts(task, outcome_fields)
 
         base_payload: dict[str, object] = {
             "persona": self._persona_config.name,
