@@ -740,6 +740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             chronicle_repository = PostgresChronicleRepository(pool)
             timeline_repository = PostgresTimelineRepository(pool)
+            session_event_log = PostgresSessionEventLog(pool)
             chronicle_service = ChronicleService(
                 chronicle_repository,
                 session_service,
@@ -752,8 +753,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 storage_adapter,
                 archive_store,
                 chronicle_service=chronicle_service,
+                event_log_repository=session_event_log,
             )
             app.state.archive_service = archive_service
+            app.state.session_event_log = session_event_log
 
             tracker_service = TrackerService(
                 default_tracker,
@@ -1007,7 +1010,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(events_router)
 
             # Durable full-fidelity transcript log: ingest (skuld) + cursor replay
-            session_event_log = PostgresSessionEventLog(pool)
             session_log_router = create_session_log_router(
                 session_event_log,
                 session_service=session_service,

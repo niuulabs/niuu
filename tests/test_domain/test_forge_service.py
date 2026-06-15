@@ -321,7 +321,7 @@ async def test_with_workspace_service_enables_workspace_calls() -> None:
 @pytest.mark.asyncio
 async def test_get_session_proxy_target_normalizes_chat_endpoint() -> None:
     session_service = AsyncMock(spec=SessionService)
-    session_service.get_session.return_value = SimpleNamespace(
+    session_service.reconcile_session_if_active.return_value = SimpleNamespace(
         chat_endpoint="wss://example.test/session",
     )
     forge = ForgeService(session_service)
@@ -335,7 +335,7 @@ async def test_get_session_proxy_target_normalizes_chat_endpoint() -> None:
 @pytest.mark.asyncio
 async def test_get_session_proxy_target_requires_active_endpoint() -> None:
     session_service = AsyncMock(spec=SessionService)
-    session_service.get_session.return_value = SimpleNamespace(chat_endpoint=None)
+    session_service.reconcile_session_if_active.return_value = SimpleNamespace(chat_endpoint=None)
     forge = ForgeService(session_service)
 
     with pytest.raises(ValueError, match="has no active endpoint"):

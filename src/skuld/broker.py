@@ -1125,6 +1125,12 @@ class Broker:
         """Append a turn and persist to disk."""
         self._conversation_turns.append(turn)
         self._save_conversation_history()
+        self._enqueue_event_log(
+            {
+                "type": "conversation.turn",
+                "turn": asdict(turn),
+            }
+        )
 
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
         """Save any accumulated assistant content as a conversation turn."""

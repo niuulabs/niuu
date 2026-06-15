@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from skuld.broker import Broker
+from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
 
 
@@ -63,6 +63,21 @@ class TestEnqueue:
         # only the newest 3 survive, but seq keeps climbing (never reused)
         assert len(b._event_log_buffer) == 3
         assert [e["seq"] for e in b._event_log_buffer] == [3, 4, 5]
+
+    def test_append_turn_mirrors_conversation_turn_to_event_log(self, tmp_path):
+        b = _broker(tmp_path)
+        b._append_turn(
+            ConversationTurn(
+                id="turn-1",
+                role="assistant",
+                content="hello from flock",
+                participant_id="flock-researcher",
+            )
+        )
+
+        assert b._event_log_buffer[-1]["kind"] == "conversation.turn"
+        assert b._event_log_buffer[-1]["payload"]["turn"]["content"] == "hello from flock"
+        assert b._event_log_buffer[-1]["payload"]["turn"]["participant_id"] == "flock-researcher"
 
 
 class TestFlush:

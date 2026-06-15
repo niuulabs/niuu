@@ -138,7 +138,7 @@ class ForgeService:
         return None
 
     async def get_session(self, session_id: UUID) -> Session | None:
-        return await self._session_service.get_session(session_id)
+        return await self._session_service.reconcile_session_if_active(session_id)
 
     async def ensure_access(
         self,

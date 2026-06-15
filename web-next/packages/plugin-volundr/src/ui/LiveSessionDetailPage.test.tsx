@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
 import * as chatHooks from './hooks/useSkuldChat';
 import {
   createMockVolundrService,
@@ -1002,6 +1002,21 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
     });
 
+    it('keeps active child work visible as timeline segments', () => {
+      const rows = buildTelemetryTimelineRows(TELEMETRY_TRACE);
+      const executionRow = rows.find((row) => row.label === 'execution');
+
+      expect(executionRow?.childSegments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'turn-2-tool',
+            tone: 'active',
+            durationMs: 38_000,
+          }),
+        ]),
+      );
+    });
+
     it('shows a hover card with span details for a trace row', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
@@ -1014,8 +1029,8 @@ describe('LiveSessionDetailPage', () => {
 
       const tooltip = await screen.findByTestId('telemetry-tooltip-workflow');
       expect(tooltip).toHaveTextContent('child spans');
-      expect(tooltip).toHaveTextContent('active 8m 40s');
-      expect(tooltip).toHaveTextContent('wait 0s');
+      expect(tooltip).toHaveTextContent('active 8m 16s');
+      expect(tooltip).toHaveTextContent('wait 24s');
       expect(tooltip).toHaveTextContent('blocked 0s');
       expect(tooltip).toHaveTextContent('1');
     });

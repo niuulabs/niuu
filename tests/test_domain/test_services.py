@@ -80,6 +80,37 @@ class TestSessionServiceGet:
         assert result.id == created.id
         assert result.name == "test"
 
+    async def test_reconcile_session_if_active_clears_dead_runtime(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """A running record whose runtime is gone is returned as stopped."""
+
+        class StoppedPodManager(MockPodManager):
+            async def status(self, session):
+                return SessionStatus.STOPPED
+
+        service = SessionService(repository, StoppedPodManager())
+        created = await service.create_session(
+            name="stale",
+            model="claude-3-opus",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        running = created.model_copy(
+            update={
+                "status": SessionStatus.RUNNING,
+                "chat_endpoint": "wss://dead.example/session",
+                "code_endpoint": "https://dead.example/session",
+            }
+        )
+        await repository.update(running)
+
+        result = await service.reconcile_session_if_active(created.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.STOPPED
+        assert result.chat_endpoint is None
+        assert result.code_endpoint is None
+
     async def test_get_nonexistent_session(self, repository: Repo, pod_manager: Pods):
         """Getting a nonexistent session returns None."""
         service = SessionService(repository, pod_manager)

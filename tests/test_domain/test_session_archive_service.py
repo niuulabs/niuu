@@ -18,6 +18,7 @@ from volundr.adapters.outbound.local_storage_adapter import LocalStorageAdapter
 from volundr.domain.models import (
     LocalMountSource,
     Session,
+    SessionLogEntry,
     SessionStatus,
     TimelineEvent,
     TimelineEventType,
@@ -57,6 +58,32 @@ def chronicle_service(session_service):
         session_service,
         timeline_repository=InMemoryTimelineRepository(),
     )
+
+
+class InMemorySessionEventLog:
+    def __init__(self, entries: list[SessionLogEntry] | None = None):
+        self._entries = sorted(entries or [], key=lambda entry: entry.seq)
+
+    async def append(self, entries: list[SessionLogEntry]) -> int:
+        self._entries.extend(entries)
+        self._entries.sort(key=lambda entry: entry.seq)
+        return len(entries)
+
+    async def read_after(
+        self,
+        session_id,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> list[SessionLogEntry]:
+        return [
+            entry
+            for entry in self._entries
+            if entry.session_id == session_id and entry.seq > after_seq
+        ][:limit]
+
+    async def latest_seq(self, session_id) -> int:
+        values = [entry.seq for entry in self._entries if entry.session_id == session_id]
+        return max(values, default=0)
 
 
 @pytest.mark.asyncio
@@ -239,6 +266,76 @@ async def test_session_archive_service_uses_local_mount_source_fallback(
     transcript = await archive_service.get_transcript(session.id)
 
     assert transcript["turns"][0]["content"] == "from mount"
+
+
+@pytest.mark.asyncio
+async def test_session_archive_service_uses_durable_event_log_when_workspace_missing(
+    session_repository,
+    archive_store,
+):
+    session = Session(
+        name="event-log-fallback",
+        model="gpt-5.5",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    session_service = SessionService(
+        repository=session_repository,
+        pod_manager=MockPodManager(),
+        validate_repos=False,
+    )
+    event_log = InMemorySessionEventLog(
+        [
+            SessionLogEntry(
+                session_id=session.id,
+                seq=1,
+                kind="assistant",
+                payload={"message": {"content": "raw frame"}},
+                ts=datetime.now(UTC),
+            ),
+            SessionLogEntry(
+                session_id=session.id,
+                seq=2,
+                kind="conversation.turn",
+                payload={
+                    "turn": {
+                        "id": "turn-1",
+                        "role": "assistant",
+                        "content": "durable flock reply",
+                        "participant_id": "flock-researcher",
+                    }
+                },
+                ts=datetime.now(UTC),
+                role="assistant",
+            ),
+        ]
+    )
+    archive_service = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        archive_store,
+        event_log_repository=event_log,
+    )
+
+    transcript = await archive_service.get_transcript(session.id)
+
+    assert transcript["is_active"] is False
+    assert transcript["turns"] == [
+        {
+            "id": "turn-1",
+            "role": "assistant",
+            "content": "durable flock reply",
+            "participant_id": "flock-researcher",
+        }
+    ]
 
 
 @pytest.mark.asyncio

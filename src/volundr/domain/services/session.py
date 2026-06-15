@@ -1258,6 +1258,40 @@ class SessionService:
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
 
+    async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
+        """Reconcile one active session against the pod manager and return it."""
+        session = await self._repository.get(session_id)
+        if session is None:
+            return None
+        if session.status not in {SessionStatus.STARTING, SessionStatus.RUNNING}:
+            return session
+
+        actual_status = await self._pod_manager.status(session)
+        if actual_status == session.status:
+            return session
+
+        logger.info(
+            "Reconciling session %s from %s to %s",
+            session.id,
+            session.status.value,
+            actual_status.value,
+        )
+        if actual_status == SessionStatus.STOPPED:
+            updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+        elif actual_status == SessionStatus.FAILED:
+            updated = (
+                session.with_status(SessionStatus.FAILED)
+                .with_cleared_endpoints()
+                .with_error("Session runtime is no longer available")
+            )
+        else:
+            updated = session.with_status(actual_status)
+
+        final = await self._repository.update(updated)
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(final)
+        return final
+
 
 def _communication_route_id(
     *,
