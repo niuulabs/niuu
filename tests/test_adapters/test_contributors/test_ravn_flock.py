@@ -519,6 +519,22 @@ class TestMountedConfig:
             mounts = {m["name"]: m["mountPath"] for m in ic["volumeMounts"]}
             assert mounts[vol_name] == "/etc/ravn"
 
+    async def test_init_container_runs_non_root(self, session, flock_template):
+        """Config writer init containers satisfy Skuld's non-root pod policy."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        for ic in result.pod_spec.init_containers:
+            assert ic["securityContext"] == {
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+            }
+
     async def test_sidecar_mounts_config_readonly(self, session, flock_template):
         """Sidecar mounts the config volume read-only at /etc/ravn."""
         provider = MagicMock()

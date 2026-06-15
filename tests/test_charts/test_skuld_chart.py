@@ -231,6 +231,12 @@ class TestDeploymentTemplate:
                         "name": "write-ravn-cfg-coder",
                         "image": "busybox:latest",
                         "command": ["sh", "-c", "echo ok"],
+                        "securityContext": {
+                            "runAsUser": 1000,
+                            "runAsGroup": 1000,
+                            "runAsNonRoot": True,
+                            "allowPrivilegeEscalation": False,
+                        },
                     }
                 ],
                 "extraContainers": [
@@ -256,6 +262,12 @@ class TestDeploymentTemplate:
         assert [container["name"] for container in pod_spec["initContainers"]] == [
             "write-ravn-cfg-coder"
         ]
+        assert pod_spec["initContainers"][0]["securityContext"] == {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": True,
+            "allowPrivilegeEscalation": False,
+        }
         containers = {container["name"]: container for container in pod_spec["containers"]}
         assert "skuld" in containers
         assert "ravn-coder" in containers

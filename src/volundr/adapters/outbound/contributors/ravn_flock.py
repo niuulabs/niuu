@@ -49,6 +49,12 @@ _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
 _RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
 _RAVN_CONFIG_DIR = "/etc/ravn"
 _INIT_WRITER_IMAGE = "busybox:latest"
+_INIT_WRITER_SECURITY_CONTEXT = {
+    "runAsUser": 1000,
+    "runAsGroup": 1000,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": False,
+}
 
 # Persona source modes
 _PERSONA_SOURCE_FILESYSTEM = "filesystem"
@@ -871,6 +877,7 @@ class RavnFlockContributor(SessionContributor):
                     "name": f"write-ravn-cfg-{persona}",
                     "image": _INIT_WRITER_IMAGE,
                     "command": ["sh", "-c", heredoc],
+                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
                     "volumeMounts": [
                         {"name": cfg_vol_name, "mountPath": _RAVN_CONFIG_DIR},
                     ],
