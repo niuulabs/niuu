@@ -162,6 +162,7 @@ def create_research_router() -> APIRouter:
                 campaign=campaign,
                 repo=repo,
                 volundr_factory=volundr_factory,
+                principal=principal,
             )
             for campaign in campaigns
         ]
@@ -257,6 +258,7 @@ def create_research_router() -> APIRouter:
             campaign=campaign,
             repo=repo,
             volundr_factory=volundr_factory,
+            principal=principal,
         )
         artifacts, canonical = await _load_campaign_artifacts(
             refreshed,
@@ -505,8 +507,9 @@ async def _refresh_campaign_runtime(
     campaign: WorkflowCampaign,
     repo: WorkflowCampaignRepository,
     volundr_factory: VolundrFactory,
+    principal: Principal,
 ) -> WorkflowCampaign:
-    adapter = await volundr_factory.primary_for_owner(campaign.owner_id)
+    adapter = await volundr_factory.primary_for_principal(principal)
     if adapter is None:
         return campaign
     session = await adapter.get_session(campaign.session_id)

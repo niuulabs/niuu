@@ -179,15 +179,22 @@ class RecordingVolundrPort(VolundrPort):
 class RecordingVolundrFactory:
     def __init__(self, port: RecordingVolundrPort) -> None:
         self._port = port
+        self.primary_owner_calls: list[str] = []
+        self.primary_principal_calls: list[Principal] = []
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         return [self._port]
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
+        self.primary_owner_calls.append(owner_id)
         return self._port
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         return [self._port]
+
+    async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
+        self.primary_principal_calls.append(principal)
+        return self._port
 
 
 def _headers() -> dict[str, str]:
@@ -387,6 +394,28 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
     assert len(campaigns) == 1
     assert campaigns[0]["slug"] == body["slug"]
     assert campaigns[0]["metadata"]["mode"] == "exploratory"
+
+
+def test_list_campaigns_refreshes_runtime_with_authenticated_principal(tmp_path: Path) -> None:
+    workflow = _research_workflow(tmp_path)
+    campaign = _campaign_for_workflow(workflow, slug="active-research")
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    volundr_port = RecordingVolundrPort()
+    volundr_port.sessions[campaign.session_id] = VolundrSession(
+        id=campaign.session_id,
+        name="Active Research Runtime",
+        status="running",
+        tracker_issue_id=None,
+    )
+    factory = RecordingVolundrFactory(volundr_port)
+    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, factory)
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["sessionName"] == "Active Research Runtime"
+    assert factory.primary_owner_calls == []
+    assert [principal.user_id for principal in factory.primary_principal_calls] == ["user-1"]
 
 
 def test_create_campaign_normalizes_long_session_names_for_volundr(tmp_path: Path) -> None:
