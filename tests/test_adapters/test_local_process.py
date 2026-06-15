@@ -1026,11 +1026,11 @@ class TestProcessSpawning:
         assert env["FOO"] == "bar"
         assert env["NUM"] == "42"
 
-    def test_build_env_sets_workspace_dir(self) -> None:
-        """WORKSPACE_DIR is set in the environment."""
+    def test_build_env_sets_structured_workspace_dir(self) -> None:
+        """The Skuld workspace is set through structured broker config."""
         spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
         env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
-        assert env["WORKSPACE_DIR"] == "/tmp/ws"
+        assert env["SKULD__SESSION__WORKSPACE_DIR"] == "/tmp/ws"
 
     def test_build_env_includes_broker_overrides(self) -> None:
         """Broker values from session definitions are mapped to Skuld env vars."""

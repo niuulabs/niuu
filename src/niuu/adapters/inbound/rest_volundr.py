@@ -171,9 +171,22 @@ async def _request_remote(
     path: str,
     remote_prefix: str = "/api/v1/forge",
     json_body: Any | None = None,
+    content_body: bytes | None = None,
     params: list[tuple[str, str]] | None = None,
+    extra_headers: dict[str, str] | None = None,
     embedded_app: ASGIApp | None = None,
 ) -> httpx.Response:
+    headers = _forward_headers(request)
+    if extra_headers:
+        headers.update(extra_headers)
+    request_kwargs: dict[str, Any] = {
+        "headers": headers,
+        "params": params,
+    }
+    if content_body is not None:
+        request_kwargs["content"] = content_body
+    elif json_body is not None:
+        request_kwargs["json"] = json_body
     if _uses_embedded_transport(instance):
         if embedded_app is None:
             raise HTTPException(
@@ -189,9 +202,7 @@ async def _request_remote(
             return await client.request(
                 method,
                 remote_url,
-                headers=_forward_headers(request),
-                params=params,
-                json=json_body,
+                **request_kwargs,
             )
 
     try:
@@ -203,9 +214,7 @@ async def _request_remote(
         response = await client.request(
             method,
             remote_url,
-            headers=_forward_headers(request),
-            params=params,
-            json=json_body,
+            **request_kwargs,
         )
     return response
 
@@ -1110,6 +1119,147 @@ def create_volundr_router(
         _ensure_remote_success(response)
         payload = response.json()
         return payload if isinstance(payload, dict) else {"lines": []}
+
+    async def _proxy_session_file_api(
+        request: Request,
+        principal: Principal,
+        session_id: str,
+        *,
+        method: str,
+        path: str,
+    ) -> httpx.Response:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        extra_headers: dict[str, str] = {}
+        for name in ("content-type", "accept"):
+            value = request.headers.get(name)
+            if value:
+                extra_headers[name] = value
+        body = await request.body()
+        return await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=path,
+            params=_query_params(request),
+            content_body=body if body else None,
+            extra_headers=extra_headers,
+            embedded_app=embedded_forge_app,
+        )
+
+    @router.get("/sessions/{session_id}/files")
+    async def list_session_files(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="GET",
+            path=f"/sessions/{session_id}/files",
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.get("/sessions/{session_id}/files/download")
+    async def download_session_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="GET",
+            path=f"/sessions/{session_id}/files/download",
+        )
+        _ensure_remote_success(response)
+        headers: dict[str, str] = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
+    @router.post("/sessions/{session_id}/files/upload")
+    async def upload_session_files(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="POST",
+            path=f"/sessions/{session_id}/files/upload",
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.put("/sessions/{session_id}/files/upload")
+    async def write_session_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="PUT",
+            path=f"/sessions/{session_id}/files/upload",
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/sessions/{session_id}/files/mkdir")
+    async def mkdir_session_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="POST",
+            path=f"/sessions/{session_id}/files/mkdir",
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.delete("/sessions/{session_id}/files")
+    async def delete_session_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="DELETE",
+            path=f"/sessions/{session_id}/files",
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.get("/chronicles/{session_id}/timeline")
     async def get_chronicle(

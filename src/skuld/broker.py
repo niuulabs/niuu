@@ -1579,7 +1579,7 @@ class Broker:
         if self.volundr_api_url:
             logger.info("Token usage reporting enabled: %s", self.volundr_api_url)
         else:
-            logger.warning("VOLUNDR_API_URL not set — token usage will not be reported")
+            logger.warning("SKULD__VOLUNDR_API_URL not set — token usage will not be reported")
 
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
@@ -5494,6 +5494,58 @@ async def get_aggregate_logs(
         participants=requested_participants,
         query=query,
     )
+    if not any(item.get("id") == "skuld" for item in payload.get("available_participants", [])):
+        min_level = getattr(logging, level.upper(), logging.DEBUG)
+        query_lower = query.casefold()
+        broker_lines = []
+        for index, entry in enumerate(_log_buffer):
+            entry_level = str(entry.get("level") or "INFO").upper()
+            entry_level_no = getattr(logging, entry_level, logging.INFO)
+            message = str(entry.get("message") or "")
+            source = str(entry.get("logger") or "skuld")
+            if entry_level_no < min_level:
+                continue
+            if requested_participants and "skuld" not in requested_participants:
+                continue
+            if query_lower and not (
+                query_lower in "skuld"
+                or query_lower in source.casefold()
+                or query_lower in message.casefold()
+            ):
+                continue
+            created = entry.get("timestamp")
+            timestamp = (
+                datetime.fromtimestamp(float(created), tz=UTC)
+                if isinstance(created, (int, float))
+                else datetime.now(UTC)
+            )
+            broker_lines.append(
+                {
+                    "id": f"skuld-buffer-{index}",
+                    "timestamp": timestamp.isoformat(),
+                    "level": entry_level,
+                    "participant": "skuld",
+                    "participant_label": "Skuld",
+                    "participant_kind": "broker",
+                    "source": source,
+                    "message": message,
+                    "sequence": index,
+                    "stream": "memory",
+                }
+            )
+
+        if _log_buffer:
+            payload.setdefault("available_participants", []).insert(
+                0,
+                {"id": "skuld", "label": "Skuld", "kind": "broker"},
+            )
+        if broker_lines:
+            all_lines = [*payload.get("lines", []), *broker_lines]
+            all_lines.sort(key=lambda item: (str(item.get("timestamp") or ""), item.get("id", "")))
+            payload["lines"] = all_lines[-lines:]
+            payload["returned"] = len(payload["lines"])
+            payload["filtered"] = int(payload.get("filtered") or 0) + len(broker_lines)
+        payload["total"] = int(payload.get("total") or 0) + len(_log_buffer)
     payload["session_id"] = broker.session_id
     return payload
 

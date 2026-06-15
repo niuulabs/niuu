@@ -46,7 +46,19 @@ _MIMIR_MOUNT_PATH = "/mimir/local"
 _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
 _RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/niuu:dev"
-_RAVN_COMMAND = ["python", "-m", "ravn.main"]
+_RAVN_COMMAND = [
+    "sh",
+    "-c",
+    (
+        'mkdir -p /workspace/.flock/logs; '
+        'log="/workspace/.flock/logs/${RAVN_PERSONA:-ravn}.log"; '
+        'python -m ravn.main >> "$log" 2>&1 & pid=$!; '
+        'tail -n +1 -F "$log" & tail_pid=$!; '
+        'wait "$pid"; status=$?; '
+        'kill "$tail_pid" 2>/dev/null || true; '
+        'exit "$status"'
+    ),
+]
 _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
 _RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
 _RAVN_CONFIG_DIR = "/etc/ravn"
@@ -924,7 +936,7 @@ class RavnFlockContributor(SessionContributor):
                     "name": _WORKSPACE_VOLUME_NAME,
                     "mountPath": _WORKSPACE_MOUNT_PATH,
                     "subPath": f"{session.id}/workspace",
-                    "readOnly": True,
+                    "readOnly": False,
                 },
                 {
                     "name": cfg_vol_name,

@@ -2725,7 +2725,7 @@ class TestPublishMeshOutcome:
 
     @pytest.mark.asyncio
     async def test_payload_omits_empty_fields(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("SESSION_INITIAL_PROMPT", raising=False)
+        monkeypatch.delenv("SKULD__SESSION__INITIAL_PROMPT", raising=False)
         settings = SkuldSettings(
             session={
                 "id": "test-mesh-empty",

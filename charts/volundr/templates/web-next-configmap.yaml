@@ -14,7 +14,7 @@
   "forge" (dict "mode" "http" "baseUrl" "/api/v1/forge")
   "forge.pty" (dict "mode" "ws" "wsUrl" "/s/{sessionId}/session")
   "ting" (dict "mode" "http" "baseUrl" "/api/v1/ting")
-  "filesystem" (dict "mode" "http" "baseUrl" "/")
+  "filesystem" (dict "mode" "http" "baseUrl" "/api/v1/forge")
 }}
 {{- $services := mergeOverwrite (deepCopy $defaultServices) (.Values.webNext.config.services | default dict) }}
 apiVersion: v1

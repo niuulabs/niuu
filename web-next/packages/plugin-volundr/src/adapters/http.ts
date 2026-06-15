@@ -1052,7 +1052,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   const baseUrl = trimTrailingSlash(options.baseUrl);
 
   function sessionApi(sessionId: string): string {
-    return `${baseUrl}/s/${encodeURIComponent(sessionId)}/api`;
+    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}`;
   }
 
   function withAuthHeaders(headers: HeadersInit = {}): Headers {

@@ -10,8 +10,6 @@ Config file locations (first found wins):
 Environment variable override format:
 - Use SKULD__ prefix with double underscore nesting:
   SKULD__TRANSPORT=subprocess, SKULD__SESSION__MODEL=opus
-- Flat legacy env vars are also supported for backward compatibility:
-  SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
 import json
@@ -265,9 +263,6 @@ class SkuldSettings(BaseSettings):
     - SKULD__TRANSPORT=subprocess -> settings.transport
     - SKULD__SESSION__MODEL=opus -> settings.session.model
 
-    Legacy flat env vars are also supported (lowest priority, backward compat):
-    - SESSION_ID, SESSION_NAME, MODEL, HOST, PORT, VOLUNDR_API_URL,
-      SERVICE_USER_ID, SERVICE_TENANT_ID, WORKSPACE_DIR
     """
 
     model_config = SettingsConfigDict(
@@ -328,75 +323,6 @@ class SkuldSettings(BaseSettings):
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
     workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
-
-    @model_validator(mode="after")
-    def _apply_legacy_env_vars(self) -> "SkuldSettings":
-        """Apply flat legacy env vars as fallbacks.
-
-        Only overrides fields that still hold their default values, so
-        SKULD__* prefixed vars and YAML always take precedence.
-        """
-        if self.cli_type == "claude":
-            val = os.environ.get("CLI_TYPE")
-            if val:
-                self.cli_type = val
-
-        if self.session.id == "unknown":
-            val = os.environ.get("SESSION_ID")
-            if val:
-                self.session.id = val
-
-        if self.session.name == "unknown":
-            val = os.environ.get("SESSION_NAME")
-            if val:
-                self.session.name = val
-
-        if self.session.model == "claude-opus-4-8":
-            val = os.environ.get("MODEL")
-            if val:
-                self.session.model = val
-
-        if self.session.workspace_dir is None:
-            val = os.environ.get("WORKSPACE_DIR")
-            if val:
-                self.session.workspace_dir = val
-
-        if not self.session.system_prompt:
-            val = os.environ.get("SESSION_SYSTEM_PROMPT")
-            if val:
-                self.session.system_prompt = val
-
-        if not self.session.initial_prompt:
-            val = os.environ.get("SESSION_INITIAL_PROMPT")
-            if val:
-                self.session.initial_prompt = val
-
-        if self.host == "0.0.0.0":
-            val = os.environ.get("HOST")
-            if val:
-                self.host = val
-
-        if self.port == 8081:
-            val = os.environ.get("PORT")
-            if val:
-                self.port = int(val)
-
-        if self.volundr_api_url == "":
-            val = os.environ.get("VOLUNDR_API_URL")
-            if val:
-                self.volundr_api_url = val
-
-        if self.service_user_id == "skuld-broker":
-            val = os.environ.get("SERVICE_USER_ID")
-            if val:
-                self.service_user_id = val
-
-        if self.service_tenant_id == "default":
-            val = os.environ.get("SERVICE_TENANT_ID")
-            if val:
-                self.service_tenant_id = val
-
-        return self
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":

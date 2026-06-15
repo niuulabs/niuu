@@ -53,7 +53,7 @@ class TestValuesDefaults:
         assert values_yaml["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_broker_cli_type_defaults_to_claude(self, values_yaml):
-        """Test legacy broker cliType defaults to claude (backward compat)."""
+        """Test broker cliType defaults to claude."""
         assert values_yaml["broker"]["cliType"] == "claude"
 
     def test_env_secrets_default_has_anthropic_key(self, values_yaml):
@@ -145,11 +145,11 @@ class TestConfigMapTemplate:
         assert ".Values.broker.transportAdapter" in configmap_yaml
 
     def test_configmap_has_cli_type(self, configmap_yaml):
-        """Test configmap includes legacy cli_type field for backward compat."""
+        """Test configmap includes cli_type field."""
         assert "cli_type" in configmap_yaml
 
     def test_configmap_cli_type_driven_by_values(self, configmap_yaml):
-        """Test configmap legacy cli_type reads from broker.cliType."""
+        """Test configmap cli_type reads from broker.cliType."""
         assert ".Values.broker.cliType" in configmap_yaml
 
     def test_configmap_cli_type_has_default_fallback(self, configmap_yaml):

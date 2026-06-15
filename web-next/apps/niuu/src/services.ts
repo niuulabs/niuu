@@ -290,7 +290,7 @@ function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | n
   if (explicitBase) return explicitBase;
 
   const forgeBase = resolveForgeServiceBase(config);
-  return forgeBase ? toHostBase(forgeBase) : null;
+  return forgeBase;
 }
 
 function resolveTingServiceBase(
@@ -594,7 +594,7 @@ export function buildServiceBackendStatus(
           mode: 'live',
           transport: 'http',
           target: derivedBase,
-          source: 'forge-host',
+          source: 'forge',
         } satisfies ServiceBackendStatus;
       }
       return {

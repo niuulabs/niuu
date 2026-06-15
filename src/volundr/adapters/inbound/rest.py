@@ -12,7 +12,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -2021,6 +2021,132 @@ def create_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
             ) from None
+
+    async def _proxy_session_api(
+        request: Request,
+        session_id: UUID,
+        *path_segments: str,
+        timeout: float = 30.0,
+    ) -> httpx.Response:
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            ) from None
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            ) from None
+
+        headers: dict[str, str] = {}
+        for name in ("authorization", "content-type", "accept"):
+            value = request.headers.get(name)
+            if value:
+                headers[name] = value
+        body = await request.body()
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.request(
+                    request.method,
+                    _session_proxy_url(base_url, "api", *path_segments),
+                    params=list(request.query_params.multi_items()),
+                    headers=headers,
+                    content=body if body else None,
+                )
+                response.raise_for_status()
+                return response
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                "Session API proxy failed for session %s path=%s status=%d",
+                _sanitize_log(session_id),
+                _sanitize_log("/".join(path_segments)),
+                e.response.status_code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch session API: {e.response.status_code}",
+            ) from None
+        except httpx.RequestError as e:
+            logger.warning(
+                "Session API proxy connection failed for session %s path=%s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log("/".join(path_segments)),
+                _sanitize_log(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not connect to session pod: {e}",
+            ) from None
+
+    @router.get("/sessions/{session_id}/files", tags=["Sessions"])
+    async def list_session_files(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """List files in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.get("/sessions/{session_id}/files/download", tags=["Sessions"])
+    async def download_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Download a file from a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "download")
+        headers = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
+    @router.post("/sessions/{session_id}/files/upload", tags=["Sessions"])
+    async def upload_session_files(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Upload one or more files to a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "upload")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.put("/sessions/{session_id}/files/upload", tags=["Sessions"])
+    async def write_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Write a file body to a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "upload")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/sessions/{session_id}/files/mkdir", tags=["Sessions"])
+    async def mkdir_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Create a directory in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "mkdir")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.delete("/sessions/{session_id}/files", tags=["Sessions"])
+    async def delete_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Delete a file in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.post(
         "/sessions/{session_id}/messages",

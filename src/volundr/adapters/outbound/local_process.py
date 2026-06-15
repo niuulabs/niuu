@@ -1412,7 +1412,7 @@ class LocalProcessPodManager(PodManager):
     def _build_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
         """Build environment variables for the Skuld process."""
         env = dict(os.environ)
-        env["WORKSPACE_DIR"] = str(workspace)
+        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
         for key in (
             "SKULD__SKIP_PERMISSIONS",
             "SKULD__APPROVAL_POLICY",

@@ -59,6 +59,6 @@
     "ting.audit": { "mode": "http", "baseUrl": "/api/v1/audit" },
     "ting.workflows": { "mode": "http", "baseUrl": "/api/v1/ting/workflows" },
     "ting.research": { "mode": "http", "baseUrl": "/api/v1/ting/research" },
-    "filesystem": { "mode": "http", "baseUrl": "/" }
+    "filesystem": { "mode": "http", "baseUrl": "/api/v1/forge" }
   }
 }

@@ -701,7 +701,7 @@ describe('buildVolundrFileSystemHttpAdapter', () => {
     await fs.listTree('sess-1');
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://sessions.example.com/s/sess-1/api/files?root=workspace',
+      'https://sessions.example.com/sessions/sess-1/files?root=workspace',
       expect.objectContaining({
         headers: expect.any(Headers),
       }),

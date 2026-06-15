@@ -278,9 +278,16 @@ spec:
             - {{- toYaml . | nindent 14 }}
             {{- end }}
           env:
-            # WORKSPACE_DIR is computed from template helpers — kept as env var
-            - name: WORKSPACE_DIR
+            - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
+            {{- if .Values.volundr.apiUrl }}
+            - name: SKULD__VOLUNDR_API_URL
+              value: {{ .Values.volundr.apiUrl | quote }}
+            {{- end }}
+            - name: SKULD__SERVICE_USER_ID
+              value: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
+            - name: SKULD__SERVICE_TENANT_ID
+              value: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
             {{- if .Values.homeVolume.enabled }}
             - name: HOME
               value: {{ .Values.homeVolume.mountPath | quote }}
@@ -313,11 +320,11 @@ spec:
                   key: {{ .Values.git.credentials.tokenKey | default "token" }}
             {{- end }}
             {{- if .Values.session.systemPrompt }}
-            - name: SESSION_SYSTEM_PROMPT
+            - name: SKULD__SESSION__SYSTEM_PROMPT
               value: {{ .Values.session.systemPrompt | quote }}
             {{- end }}
             {{- if .Values.session.initialPrompt }}
-            - name: SESSION_INITIAL_PROMPT
+            - name: SKULD__SESSION__INITIAL_PROMPT
               value: {{ .Values.session.initialPrompt | quote }}
             {{- end }}
           resources:

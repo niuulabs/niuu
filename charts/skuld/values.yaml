@@ -231,8 +231,7 @@ broker:
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
   # -- URL of the Volundr API service (set by session definition).
-  # Use the -internal service to bypass Envoy JWT validation:
-  #   http://volundr-internal.volundr.svc.cluster.local
+  # This should be the Envoy-routed API origin, not an internal service bypass.
   apiUrl: ""
   # -- Service identity for internal API calls (x-auth-user-id header)
   serviceUserId: "skuld-broker"

@@ -243,7 +243,9 @@ class TestContributorOutput:
 
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:dev"
-            assert ctr["command"] == ["python", "-m", "ravn.main"]
+            assert ctr["command"][:2] == ["sh", "-c"]
+            assert "python -m ravn.main" in ctr["command"][2]
+            assert "/workspace/.flock/logs" in ctr["command"][2]
 
     async def test_ravn_image_can_be_overridden(self, session, flock_template):
         provider = MagicMock()
@@ -258,7 +260,8 @@ class TestContributorOutput:
 
         for ctr in result.pod_spec.extra_containers:
             assert ctr["image"] == "ghcr.io/niuulabs/niuu:1.2.3"
-            assert ctr["command"] == ["python", "-m", "ravn.main"]
+            assert ctr["command"][:2] == ["sh", "-c"]
+            assert "python -m ravn.main" in ctr["command"][2]
 
     async def test_skuld_mesh_enabled_in_env(self, session, flock_template):
         provider = MagicMock()
@@ -372,18 +375,22 @@ class TestContributorOutput:
         mount_paths = {m["mountPath"] for m in ravn_ctr["volumeMounts"]}
         assert "/workspace" in mount_paths
 
-    async def test_ravn_container_workspace_readonly(self, session, flock_template):
+    async def test_ravn_containers_share_writable_workspace_mount(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
         c = RavnFlockContributor(launch_spec_provider=provider)
         ctx = SessionContext(launch_spec="ravn-flock")
         result = await c.contribute(session, ctx)
 
-        ravn_ctr = result.pod_spec.extra_containers[0]
-        ws_mount = next(m for m in ravn_ctr["volumeMounts"] if m["mountPath"] == "/workspace")
-        assert ws_mount["name"] == "sessions"
-        assert ws_mount["subPath"] == f"{session.id}/workspace"
-        assert ws_mount.get("readOnly") is True
+        workspace_mounts = []
+        for ravn_ctr in result.pod_spec.extra_containers:
+            ws_mount = next(m for m in ravn_ctr["volumeMounts"] if m["mountPath"] == "/workspace")
+            workspace_mounts.append(ws_mount)
+        assert workspace_mounts
+        for ws_mount in workspace_mounts:
+            assert ws_mount["name"] == "sessions"
+            assert ws_mount["subPath"] == f"{session.id}/workspace"
+            assert ws_mount.get("readOnly") is False
 
     async def test_sleipnir_publish_urls_in_skuld_env(self, session, flock_template):
         provider = MagicMock()

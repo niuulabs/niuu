@@ -649,8 +649,8 @@ describe('buildServiceBackendStatus', () => {
     expect(status.filesystem).toEqual({
       mode: 'live',
       transport: 'http',
-      target: 'http://localhost:8080',
-      source: 'forge-host',
+      target: 'http://localhost:8080/api/v1/forge',
+      source: 'forge',
     });
   });
 
@@ -874,7 +874,7 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1',
     });
     expect(volundrMocks.buildVolundrFileSystemHttpAdapter).toHaveBeenCalledWith({
-      baseUrl: 'http://localhost:8080',
+      baseUrl: 'http://localhost:8080/api/v1/forge',
     });
   });
 
