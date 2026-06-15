@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     inotify-tools \
     git \
     tmux \
+    vim \
     zsh \
     fish \
     zsh-autosuggestions \
