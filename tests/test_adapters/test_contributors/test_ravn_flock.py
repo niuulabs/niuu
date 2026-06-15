@@ -541,6 +541,19 @@ class TestMountedConfig:
             env = {e["name"]: e["value"] for e in ctr["env"]}
             assert env["RAVN_CONFIG"] == "/etc/ravn/config.yaml"
 
+    async def test_ravn_sidecars_use_workspace_home(self, session, flock_template):
+        """Ravn daemon sidecars resolve ~/.ravn under the writable workspace."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        ctx = SessionContext(launch_spec="ravn-flock")
+        result = await c.contribute(session, ctx)
+
+        for ctr in result.pod_spec.extra_containers:
+            env = {e["name"]: e["value"] for e in ctr["env"]}
+            assert env["HOME"] == "/workspace"
+            assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
+
     async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
         """Each Ravn API server must bind its own port inside the shared pod netns."""
         provider = MagicMock()

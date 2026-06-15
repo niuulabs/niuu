@@ -941,6 +941,8 @@ class RavnFlockContributor(SessionContributor):
                 {"name": "RAVN_PERSONA", "value": persona},
                 {"name": "RAVN_PEER_ID", "value": peer_id},
                 {"name": "RAVN_CONFIG", "value": _RAVN_CONFIG_MOUNT_PATH},
+                {"name": "HOME", "value": _WORKSPACE_MOUNT_PATH},
+                {"name": "RAVN_STATE_DIR", "value": f"{_WORKSPACE_MOUNT_PATH}/.ravn"},
                 {"name": "HOST", "value": self._mesh_host},
                 {"name": "PORT", "value": str(gw)},
             ]
