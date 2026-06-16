@@ -2009,16 +2009,16 @@ def room_closed(
     )
 
 
-def _severity_urgency(severity: str) -> float:
+def _severity_urgency(severity_name: str) -> float:
     return {
         "critical": 0.95,
         "error": 0.8,
         "warning": 0.6,
         "info": 0.3,
-    }.get(severity, 0.4)
+    }.get(severity_name, 0.4)
 
 
-def _attention_urgency(attention_tier: str) -> float:
+def _attention_urgency(tier_name: str) -> float:
     return {
         "urgent": 0.95,
         "present": 0.75,
@@ -2028,4 +2028,4 @@ def _attention_urgency(attention_tier: str) -> float:
         "silent": 0.25,
         "record": 0.25,
         "suppress": 0.1,
-    }.get(attention_tier, 0.4)
+    }.get(tier_name, 0.4)

@@ -460,15 +460,15 @@ def _decision_for(tier: str, action_authorization: str, has_action: bool) -> str
     return "no_op"
 
 
-def _escalation_path(decision: str, case: _CourtCase) -> str:
-    if decision == "notify":
+def _escalation_path(outcome: str, case: _CourtCase) -> str:
+    if outcome == "notify":
         return _first_target_surface(case) or "surface:default"
     return {
         "autonomous_action": "action_executor",
         "draft_for_review": "review_queue",
         "open_huddle": "huddle",
         "record_only": "mimir",
-    }.get(decision, "none")
+    }.get(outcome, "none")
 
 
 def _first_target_surface(case: _CourtCase) -> str:

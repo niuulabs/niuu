@@ -316,8 +316,8 @@ class SkillManageTool(ToolPort):
     def parallelisable(self) -> bool:
         return False
 
-    async def execute(self, input: dict) -> ToolResult:  # noqa: A002
-        action = (input.get("action") or "").strip()
+    async def execute(self, payload: dict) -> ToolResult:
+        action = (payload.get("action") or "").strip()
         try:
             if action in {
                 "create",
@@ -329,59 +329,59 @@ class SkillManageTool(ToolPort):
                 "pin",
                 "unpin",
                 "promote",
-            } and input.get("autonomy_mode"):
-                return await self._execute_autonomous_mutation(action, input)
+            } and payload.get("autonomy_mode"):
+                return await self._execute_autonomous_mutation(action, payload)
 
             match action:
                 case "create":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "update" | "patch":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "archive" | "delete":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "restore":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "pin" | "unpin":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "promote":
-                    return _json_result(await self._apply_mutation(action, input))
+                    return _json_result(await self._apply_mutation(action, payload))
                 case "show":
                     data = await self._manager.show(
-                        (input.get("name") or "").strip(),
-                        include_archived=bool(input.get("include_archived")),
+                        (payload.get("name") or "").strip(),
+                        include_archived=bool(payload.get("include_archived")),
                     )
                     return _json_result(data)
                 case "list":
                     rows = await self._manager.list_skills(
-                        input.get("query") or None,
-                        include_archived=bool(input.get("include_archived")),
+                        payload.get("query") or None,
+                        include_archived=bool(payload.get("include_archived")),
                     )
                     return _json_result({"skills": rows})
                 case "validate":
                     SkillManagementRegistry._validate_name_content(
-                        input.get("name") or "",
-                        input.get("content") or "",
+                        payload.get("name") or "",
+                        payload.get("content") or "",
                     )
                     return _json_result({"status": "valid"})
                 case "telemetry":
                     meta = await self._manager.record_usage(
-                        (input.get("name") or "").strip(),
-                        success=bool(input.get("success", True)),
-                        environment_id=input.get("environment_id") or "",
-                        domain=input.get("domain") or "",
-                        action_safety_class=input.get("action_safety_class") or "",
+                        (payload.get("name") or "").strip(),
+                        success=bool(payload.get("success", True)),
+                        environment_id=payload.get("environment_id") or "",
+                        domain=payload.get("domain") or "",
+                        action_safety_class=payload.get("action_safety_class") or "",
                     )
                     return _json_result({"status": "recorded", "metadata": meta})
                 case "proposals":
-                    store = self._store_for_input(input)
+                    store = self._store_for_input(payload)
                     proposals = store.list(
-                        status=input.get("status") or None,
-                        environment_id=input.get("environment_id") or None,
+                        status=payload.get("status") or None,
+                        environment_id=payload.get("environment_id") or None,
                     )
                     return _json_result({"proposals": proposals})
                 case "rollback":
-                    store = self._store_for_input(input)
-                    proposal_id = (input.get("proposal_id") or "").strip()
+                    store = self._store_for_input(payload)
+                    proposal_id = (payload.get("proposal_id") or "").strip()
                     proposal = await store.rollback(proposal_id, self._rollback_skill_change)
                     return _json_result({"status": "rolled_back", "proposal": proposal})
                 case _:
@@ -424,26 +424,26 @@ class SkillManageTool(ToolPort):
             }
         )
 
-    async def _apply_mutation(self, action: str, input: dict) -> dict:
-        name = (input.get("name") or "").strip()
+    async def _apply_mutation(self, action: str, payload: dict) -> dict:
+        name = (payload.get("name") or "").strip()
         match action:
             case "create":
                 skill = await self._manager.create(
                     name=name,
-                    content=input.get("content") or "",
-                    description=input.get("description") or "",
-                    scope=input.get("scope") or "private",
-                    environment_id=input.get("environment_id") or "",
-                    domain=input.get("domain") or "",
-                    source=input.get("source") or "manual",
-                    action_safety_class=input.get("action_safety_class") or "read_only",
+                    content=payload.get("content") or "",
+                    description=payload.get("description") or "",
+                    scope=payload.get("scope") or "private",
+                    environment_id=payload.get("environment_id") or "",
+                    domain=payload.get("domain") or "",
+                    source=payload.get("source") or "manual",
+                    action_safety_class=payload.get("action_safety_class") or "read_only",
                 )
                 return {"status": "created", "skill": skill.name}
             case "update" | "patch":
                 skill = await self._manager.update(
                     name=name,
-                    content=input.get("content"),
-                    description=input.get("description"),
+                    content=payload.get("content"),
+                    description=payload.get("description"),
                 )
                 return {"status": "updated", "skill": skill.name}
             case "archive" | "delete":
@@ -458,9 +458,9 @@ class SkillManageTool(ToolPort):
             case "promote":
                 meta = await self._manager.promote(
                     name,
-                    scope=input.get("scope") or "environment",
-                    environment_id=input.get("environment_id") or "",
-                    domain=input.get("domain") or "",
+                    scope=payload.get("scope") or "environment",
+                    environment_id=payload.get("environment_id") or "",
+                    domain=payload.get("domain") or "",
                 )
                 return {"status": "promoted", "metadata": meta, "skill": name}
             case _:
