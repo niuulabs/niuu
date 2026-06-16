@@ -81,7 +81,7 @@ jobs:
           build-args: ${{ inputs.build-args }}
           labels: ${{ inputs.labels }}
           cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.container }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.container }}-${{ matrix.platform }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
