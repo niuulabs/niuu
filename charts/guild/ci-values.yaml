@@ -1,5 +1,5 @@
 # CI smoke-test values — minimal config for kind cluster validation.
-# Used by the helm-smoke-test CI job to verify charts install and pods start.
+# Used by the helm-smoke-test CI job to verify Guild starts as Ting's registry owner.
 
 replicaCount: 1
 revisionHistoryLimit: 1
@@ -17,7 +17,7 @@ serviceAccount:
 service:
   type: ClusterIP
   port: 80
-  targetPort: 8081
+  targetPort: 8084
 
 ingress:
   enabled: false
@@ -26,11 +26,14 @@ config:
   logLevel: info
   logFormat: json
   host: "0.0.0.0"
-  port: 8081
-  workers: 1
+  port: 8084
+  cors:
+    allowedOrigins:
+      - "*"
+    allowCredentials: true
 
 database:
-  name: ting
+  name: guild
   createSecret: true
   username: postgres
   password: test
@@ -44,23 +47,18 @@ database:
 envoy:
   enabled: false
 
-credentialStore:
-  adapter: "niuu.adapters.memory_credential_store.MemoryCredentialStore"
-  kwargs: {}
-
-cerbos:
-  url: "http://localhost:3592"
-
-auth:
-  patSigningKey: "ci-test-signing-key-not-for-production"
-  patTtlDays: 1
-
-volundr:
-  url: "http://volundr:80"
-
-guildRegistry:
-  baseUrl: "http://guild:80"
-  timeoutSeconds: 10.0
+registry:
+  instances:
+    - kind: volundr
+      slug: ci-volundr
+      name: CI Volundr
+      base_url: http://volundr:80
+      visibility: system
+      enabled: true
+      is_default: true
+      tags:
+        - ci
+  catalog: []
 
 migrations:
   enabled: true
