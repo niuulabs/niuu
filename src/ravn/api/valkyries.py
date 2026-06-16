@@ -3504,9 +3504,7 @@ def create_valkyrie_router(
         if skuld_room is None:
             logger.warning(
                 "valkyrie controls: no Skuld room client configured; "
-                "%s capability for %r not enforced",
-                capability,
-                participant_id or "anonymous",
+                "operator capabilities are not enforced",
             )
             return
         if not participant_id:

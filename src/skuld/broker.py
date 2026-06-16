@@ -1386,9 +1386,7 @@ class Broker:
 
         deadline = time.monotonic() + max(0.0, timeout_s)
         missing = {
-            peer_id
-            for peer_id in required_peers
-            if not self._workflow_trigger_peer_ready(peer_id)
+            peer_id for peer_id in required_peers if not self._workflow_trigger_peer_ready(peer_id)
         }
         if missing:
             logger.info(
@@ -2900,17 +2898,13 @@ class Broker:
         )
         num_channels = self._channels.count
         logger.debug(
-            "_handle_cli_event: type=%s, forwarding to %d channel(s) suppress=%s",
-            event_type,
+            "_handle_cli_event: forwarding to %d channel(s) suppress=%s",
             num_channels,
             suppress_channel_broadcast,
         )
 
         if num_channels == 0:
-            logger.warning(
-                "_handle_cli_event: no channels to forward type=%s",
-                event_type,
-            )
+            logger.warning("_handle_cli_event: no channels to forward event")
 
         if not suppress_channel_broadcast:
             await self._channels.broadcast(data)
@@ -4042,7 +4036,7 @@ class Broker:
                 response.text[:200],
             )
         except Exception:
-            logger.debug("Failed to start trace span kind=%s name=%s", kind, name, exc_info=True)
+            logger.debug("Failed to start trace span", exc_info=True)
         return None
 
     async def _finish_trace_span(
@@ -4260,7 +4254,11 @@ class Broker:
         except Exception:
             logger.debug("remote-control URL broadcast failed", exc_info=True)
         safe_url_for_log = url.replace("\r", "").replace("\n", "")
-        logger.info("Remote control pairing URL surfaced for session %s: %s", self.session_id, safe_url_for_log)
+        logger.info(
+            "Remote control pairing URL surfaced for session %s: %s",
+            self.session_id,
+            safe_url_for_log,
+        )
 
     async def _event_log_flush_loop(self) -> None:
         """Background worker: drain the event-log buffer to Volundr with retry."""
@@ -4431,12 +4429,7 @@ class Broker:
             try:
                 response = await client.post(url, json=payload)
                 if response.status_code < 300:
-                    logger.info(
-                        "Reported usage: model=%s tokens=%d cost=%s",
-                        model_id,
-                        tokens,
-                        cost,
-                    )
+                    logger.info("Reported usage")
                 else:
                     logger.warning(
                         "Usage report failed (%d): %s",
@@ -4444,7 +4437,7 @@ class Broker:
                         response.text[:200],
                     )
             except Exception:
-                logger.warning("Failed to report usage for %s", model_id, exc_info=True)
+                logger.warning("Failed to report usage", exc_info=True)
 
     async def _report_timeline_event(self, event: dict) -> None:
         """Report a single timeline event to the Volundr API.
@@ -4461,11 +4454,7 @@ class Broker:
         try:
             response = await client.post(url, json=event)
             if response.status_code < 300:
-                logger.debug(
-                    "Timeline event reported: type=%s, t=%d",
-                    event.get("type"),
-                    event.get("t", 0),
-                )
+                logger.debug("Timeline event reported")
             else:
                 logger.debug(
                     "Timeline event report failed (%d): %s",
@@ -4473,11 +4462,7 @@ class Broker:
                     response.text[:200],
                 )
         except Exception:
-            logger.debug(
-                "Failed to report timeline event: type=%s",
-                event.get("type"),
-                exc_info=True,
-            )
+            logger.debug("Failed to report timeline event", exc_info=True)
 
     @staticmethod
     def _classify_pipeline_event(tool_ev: dict) -> str:
@@ -5979,7 +5964,10 @@ async def mkdir(body: MkdirRequest) -> dict:
     sanitized = _sanitize_relative(body.path)
     base_real = os.path.realpath(str(base))
     target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, target_real)
+    if not target_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if target_real != base_real and not target_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if os.path.exists(target_real):
         raise HTTPException(409, "Path already exists")
