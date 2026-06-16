@@ -4259,7 +4259,8 @@ class Broker:
             await self._channels.broadcast(frame)
         except Exception:
             logger.debug("remote-control URL broadcast failed", exc_info=True)
-        logger.info("Remote control pairing URL surfaced for session %s: %s", self.session_id, url)
+        safe_url_for_log = url.replace("\r", "").replace("\n", "")
+        logger.info("Remote control pairing URL surfaced for session %s: %s", self.session_id, safe_url_for_log)
 
     async def _event_log_flush_loop(self) -> None:
         """Background worker: drain the event-log buffer to Volundr with retry."""
