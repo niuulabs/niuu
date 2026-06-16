@@ -16,7 +16,9 @@ from mimir.adapters.markdown import MarkdownMimirAdapter
 from niuu.domain.mimir import MimirPage
 from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
+from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.mimir.http import HttpMimirAdapter
+from ravn.domain.mimir import MimirAuth
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import (
@@ -867,12 +869,35 @@ def _resolve_campaign_mimir_port(campaign: WorkflowCampaign, settings: Any) -> M
             if path:
                 return MarkdownMimirAdapter(root=path)
             if url:
-                return HttpMimirAdapter(base_url=url)
+                return HttpMimirAdapter(base_url=url, auth=_mimir_http_auth(settings))
 
     hosted_url = str(settings.dispatch.flock.mimir_hosted_url or "").strip()
     if hosted_url:
-        return HttpMimirAdapter(base_url=hosted_url)
+        return HttpMimirAdapter(base_url=hosted_url, auth=_mimir_http_auth(settings))
     return None
+
+
+def _mimir_http_auth(settings: Any) -> MimirAuth | None:
+    config = getattr(getattr(settings, "volundr", None), "auth", None)
+    if config is None:
+        return None
+
+    try:
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        adapter = cls(**kwargs)
+        header = str(adapter.headers().get("Authorization") or "")
+    except Exception as exc:
+        logger.warning("Unable to build Mimir HTTP auth from Ting outbound auth: %s", exc)
+        return None
+
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return None
+    token = header[len(prefix) :].strip()
+    if not token:
+        return None
+    return MimirAuth(type="bearer", token=token)
 
 
 def _campaign_owns_path(slug: str, path: str) -> bool:
