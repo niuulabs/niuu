@@ -25,6 +25,8 @@ from sleipnir.domain.events import SleipnirEvent
 NATS_URL = os.environ.get("TEST_NATS_URL", "nats://localhost:4222")
 RABBITMQ_URL = os.environ.get("TEST_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379")
+TEST_NATS_MAX_BYTES = int(os.environ.get("TEST_NATS_MAX_BYTES", str(8 * 1024 * 1024)))
+TEST_NATS_MAX_AGE_SECONDS = int(os.environ.get("TEST_NATS_MAX_AGE_SECONDS", "300"))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,6 +89,8 @@ async def nats_transport():
         subject_prefix=stream_name,
         max_reconnect_attempts=3,
         connect_timeout_s=5.0,
+        max_bytes=TEST_NATS_MAX_BYTES,
+        max_age_seconds=TEST_NATS_MAX_AGE_SECONDS,
     )
     async with transport:
         yield transport
