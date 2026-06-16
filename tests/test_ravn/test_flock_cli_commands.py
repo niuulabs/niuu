@@ -328,7 +328,7 @@ def test_peers_queries_a_live_node(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     import ravn.config as config_mod
 
     monkeypatch.setattr(commands_mod, "_run_peers", _fake_run_peers)
-    monkeypatch.setattr(config_mod, "Settings", lambda: object())
+    monkeypatch.setattr(config_mod, "Settings", object)
 
     result = runner.invoke(flock_app, ["peers", "--flock-dir", str(tmp_path), "--verbose"])
 

@@ -2010,30 +2010,22 @@ def room_closed(
 
 
 def _severity_urgency(severity: str) -> float:
-    match severity:
-        case "critical":
-            return 0.95
-        case "error":
-            return 0.8
-        case "warning":
-            return 0.6
-        case "info":
-            return 0.3
-        case _:
-            return 0.4
+    return {
+        "critical": 0.95,
+        "error": 0.8,
+        "warning": 0.6,
+        "info": 0.3,
+    }.get(severity, 0.4)
 
 
 def _attention_urgency(attention_tier: str) -> float:
-    match attention_tier:
-        case "urgent":
-            return 0.95
-        case "present" | "review":
-            return 0.75
-        case "ambient" | "watch":
-            return 0.5
-        case "silent" | "record":
-            return 0.25
-        case "suppress":
-            return 0.1
-        case _:
-            return 0.4
+    return {
+        "urgent": 0.95,
+        "present": 0.75,
+        "review": 0.75,
+        "ambient": 0.5,
+        "watch": 0.5,
+        "silent": 0.25,
+        "record": 0.25,
+        "suppress": 0.1,
+    }.get(attention_tier, 0.4)

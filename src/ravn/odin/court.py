@@ -461,19 +461,14 @@ def _decision_for(tier: str, action_authorization: str, has_action: bool) -> str
 
 
 def _escalation_path(decision: str, case: _CourtCase) -> str:
-    match decision:
-        case "autonomous_action":
-            return "action_executor"
-        case "draft_for_review":
-            return "review_queue"
-        case "open_huddle":
-            return "huddle"
-        case "notify":
-            return _first_target_surface(case) or "surface:default"
-        case "record_only":
-            return "mimir"
-        case _:
-            return "none"
+    if decision == "notify":
+        return _first_target_surface(case) or "surface:default"
+    return {
+        "autonomous_action": "action_executor",
+        "draft_for_review": "review_queue",
+        "open_huddle": "huddle",
+        "record_only": "mimir",
+    }.get(decision, "none")
 
 
 def _first_target_surface(case: _CourtCase) -> str:

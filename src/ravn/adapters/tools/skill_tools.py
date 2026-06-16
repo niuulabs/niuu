@@ -390,6 +390,7 @@ class SkillManageTool(ToolPort):
                         content=f"Error: unsupported skill_manage action {action!r}.",
                         is_error=True,
                     )
+            raise AssertionError("unreachable skill_manage action dispatch")
         except Exception as exc:
             logger.warning("skill_manage action %r failed: %s", action, exc)
             return ToolResult(tool_call_id="", content=f"Error: {exc}", is_error=True)
@@ -464,6 +465,7 @@ class SkillManageTool(ToolPort):
                 return {"status": "promoted", "metadata": meta, "skill": name}
             case _:
                 raise ValueError(f"unsupported mutation action: {action}")
+        raise AssertionError("unreachable skill mutation dispatch")
 
     def _proposal_from_input(self, action: str, input: dict) -> SelfImprovementProposal:
         name = (input.get("name") or "").strip()

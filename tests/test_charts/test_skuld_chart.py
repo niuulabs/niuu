@@ -406,3 +406,4 @@ def _deployment_from_rendered(rendered_yaml: str) -> dict:
         if isinstance(document, dict) and document.get("kind") == "Deployment":
             return document
     pytest.fail("Deployment was not rendered")
+    raise AssertionError("Deployment was not rendered")
