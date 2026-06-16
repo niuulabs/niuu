@@ -140,9 +140,9 @@ class KubernetesInspectTool(ToolPort):
             config.load_incluster_config()
         else:
             kubeconfig = self._kubeconfig_path or os.environ.get(self._kubeconfig_env, "")
-            loaded = config.load_kube_config(config_file=kubeconfig or None)
-            if inspect.isawaitable(loaded):
-                await loaded
+            maybe_loaded = config.load_kube_config(config_file=kubeconfig or None)
+            if inspect.isawaitable(maybe_loaded):
+                _ = await maybe_loaded
         self._core_v1 = client.CoreV1Api()
         self._apps_v1 = client.AppsV1Api()
         self._batch_v1 = client.BatchV1Api()

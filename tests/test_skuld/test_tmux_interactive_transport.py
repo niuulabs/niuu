@@ -146,7 +146,7 @@ async def test_send_message_pastes_text_and_synthesizes_chat_turn(tmp_path: Path
         transport._panes["%1"],  # noqa: SLF001
         b"\x1b[32mClaude says hi\x1b[0m\r\n",
     )
-    await send_task
+    _ = await send_task
     await transport.stop()
 
     command_names = _command_names(transport)

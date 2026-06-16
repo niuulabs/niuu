@@ -241,9 +241,14 @@ async def test_relational_arm_injects_entities_when_fts_misses(tmp_path: Path) -
         async def search(self, query: str, limit: int = 10):
             return []
 
-        async def index(self, *a, **k): ...
-        async def remove(self, *a): ...
-        async def rebuild(self): ...
+        async def index(self, *a, **k):
+            return None
+
+        async def remove(self, *a):
+            return None
+
+        async def rebuild(self):
+            return None
 
     adapter = _graph_adapter(tmp_path)
     adapter._search_port = EmptySearchPort()  # type: ignore[assignment]
@@ -270,9 +275,14 @@ async def test_ranking_disabled_preserves_legacy_behavior(tmp_path: Path) -> Non
                 )
             ]
 
-        async def index(self, *a, **k): ...
-        async def remove(self, *a): ...
-        async def rebuild(self): ...
+        async def index(self, *a, **k):
+            return None
+
+        async def remove(self, *a):
+            return None
+
+        async def rebuild(self):
+            return None
 
     adapter = _graph_adapter(tmp_path)
     adapter._search_port = OneHitPort()  # type: ignore[assignment]

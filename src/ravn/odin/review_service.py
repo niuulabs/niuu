@@ -45,7 +45,8 @@ class ReviewDecisionPublisher(Protocol):
     async def publish_review_decision(
         self,
         item: ReviewItem,
-    ) -> tuple[dict[str, Any], SleipnirEvent | None]: ...
+    ) -> tuple[dict[str, Any], SleipnirEvent | None]:
+        pass
 
 
 class OdinReviewService:
