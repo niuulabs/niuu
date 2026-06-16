@@ -1865,6 +1865,12 @@ page_path: council/demo/opinion-b.md
       set_model: true,
       set_thinking_tokens: true,
       rewind_files: true,
+      slash_commands: false,
+      terminal_input: false,
+      terminal_keys: false,
+      terminal_output: false,
+      terminal_panes: false,
+      terminal_resize: false,
     });
     expect(result.current.messages.slice(1).map((message) => message.content)).toEqual([
       'Session initialized · claude-sonnet-4-6',

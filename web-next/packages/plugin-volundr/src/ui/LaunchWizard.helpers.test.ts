@@ -3,10 +3,10 @@ import type {
   ClusterResourceInfo,
   IntegrationConnection,
   VolundrModel,
-  VolundrPreset,
+  VolundrLaunchSpec,
+  VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
-import type { Template } from '../domain/template';
 import {
   aggregateResourceCapacity,
   buildPresetComparisonPayload,
@@ -18,19 +18,25 @@ import {
   definitionToTaskType,
   deriveCliTool,
   deriveSessionName,
+  filterModelsForDefinition,
   formatIntegrationLabel,
   formatIntegrationMeta,
   formatModelOption,
   formatResourceValue,
   getDefinitionRune,
   getResourceErrors,
+  getTargetTagOptions,
   hasPresetBackedRuntime,
+  isModelCompatibleWithDefinition,
+  getMatchingTargets,
   normalizeDefinitionKey,
   normalizeEnvVars,
   normalizeRepoUrl,
   parseResourceValue,
   pickDefaultModel,
+  pickDefaultModelForDefinition,
   slugifySessionName,
+  targetMatchesTags,
   validateSessionName,
   workspaceLabel,
   type WizardForm,
@@ -38,7 +44,6 @@ import {
 
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
   return {
-    templateId: 'tpl-default',
     presetId: '',
     sourcetype: 'git',
     repo: 'github.com/niuulabs/volundr',
@@ -62,6 +67,9 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     gpu: '0',
     cluster: '',
     instanceId: '',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
     ...overrides,
@@ -73,11 +81,14 @@ describe('LaunchWizard helpers', () => {
     expect(getDefinitionRune('skuld-codex')).toBe('ᚲ');
     expect(getDefinitionRune('unknown')).toBe('ᚠ');
     expect(deriveCliTool('skuld-gemini')).toBe('gemini');
+    expect(deriveCliTool('skuld-claude-interactive')).toBe('claude');
     expect(deriveCliTool('codex')).toBe('codex');
     expect(deriveCliTool('skuld-custom')).toBe('custom');
     expect(deriveCliTool(' bespoke-tool ')).toBe('bespoke-tool');
     expect(normalizeDefinitionKey(' skuld-opencode ')).toBe('skuldOpenCode');
+    expect(normalizeDefinitionKey('skuld-claude-interactive')).toBe('skuldClaudeInteractive');
     expect(normalizeDefinitionKey('custom-tool')).toBe('custom-tool');
+    expect(definitionToTaskType('skuldClaudeInteractive')).toBe('skuld-claude-interactive');
     expect(definitionToTaskType('skuldOpenCode')).toBe('skuld-opencode');
     expect(definitionToTaskType('raw-task')).toBe('raw-task');
   });
@@ -146,6 +157,108 @@ describe('LaunchWizard helpers', () => {
     ).toBeNull();
   });
 
+  it('filters Bifrost models by selected session runtime', () => {
+    const models: Record<string, VolundrModel> = {
+      'claude-sonnet': {
+        name: 'Claude Sonnet',
+        vendor: 'anthropic',
+        provider: 'cloud',
+        tier: 'balanced',
+        sessionDefinition: 'skuldClaude',
+      } as VolundrModel,
+      'gpt-5.5': {
+        name: 'GPT-5.5',
+        vendor: 'openai',
+        provider: 'cloud',
+        tier: 'frontier',
+        sessionDefinition: 'skuldCodex',
+      } as VolundrModel,
+      'llama3.2:latest': {
+        name: 'Llama 3.2',
+        vendor: 'local',
+        provider: 'local',
+        tier: 'balanced',
+        sessionDefinition: 'skuldOpenCode',
+      } as VolundrModel,
+    };
+    const definitions = [
+      {
+        key: 'skuldClaude',
+        displayName: 'Claude Code',
+        description: '',
+        labels: [],
+        defaultModel: 'claude-sonnet',
+        compatibleProviders: ['anthropic'],
+      },
+      {
+        key: 'skuldCodex',
+        displayName: 'Codex',
+        description: '',
+        labels: [],
+        defaultModel: '',
+        compatibleProviders: ['openai'],
+      },
+      {
+        key: 'skuldOpenCode',
+        displayName: 'OpenCode',
+        description: '',
+        labels: [],
+        defaultModel: '',
+        compatibleProviders: [],
+      },
+    ];
+
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldClaude', definitions))).toEqual([
+      'claude-sonnet',
+    ]);
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldCodex', definitions))).toEqual([
+      'gpt-5.5',
+    ]);
+    expect(Object.keys(filterModelsForDefinition(models, 'skuldOpenCode', definitions))).toEqual([
+      'claude-sonnet',
+      'gpt-5.5',
+      'llama3.2:latest',
+    ]);
+    expect(isModelCompatibleWithDefinition(models['gpt-5.5']!, 'skuldClaude', definitions)).toBe(
+      false,
+    );
+    expect(pickDefaultModelForDefinition(models, 'skuldClaude', definitions)).toBe('claude-sonnet');
+    expect(pickDefaultModelForDefinition(models, 'skuldCodex', definitions)).toBe('gpt-5.5');
+  });
+
+  it('matches forge targets by tags', () => {
+    const targets: VolundrTarget[] = [
+      {
+        id: 'forge-alpha',
+        slug: 'forge-alpha',
+        name: 'Forge Alpha',
+        baseUrl: 'https://alpha.example.test',
+        enabled: true,
+        isDefault: true,
+        visibility: 'system',
+        tags: ['gpu', 'prod'],
+      },
+      {
+        id: 'forge-beta',
+        slug: 'forge-beta',
+        name: 'Forge Beta',
+        baseUrl: 'https://beta.example.test',
+        enabled: true,
+        isDefault: false,
+        visibility: 'system',
+        tags: ['batch'],
+      },
+    ];
+
+    expect(getTargetTagOptions(targets)).toEqual(['batch', 'gpu', 'prod']);
+    expect(targetMatchesTags(targets[0]!, ['gpu', 'prod'], 'all')).toBe(true);
+    expect(targetMatchesTags(targets[1]!, ['gpu', 'prod'], 'all')).toBe(false);
+    expect(getMatchingTargets(targets, ['gpu', 'batch'], 'any').map((target) => target.id)).toEqual(
+      ['forge-alpha', 'forge-beta'],
+    );
+    expect(getMatchingTargets(targets, ['gpu', 'batch'], 'all')).toEqual([]);
+  });
+
   it('parses, formats, and validates resource values', () => {
     expect(parseResourceValue('500m', 'cores')).toBe(0.5);
     expect(parseResourceValue(' 2 ', 'cores')).toBe(2);
@@ -212,37 +325,20 @@ describe('LaunchWizard helpers', () => {
     expect(validateSessionName('good-name')).toBeNull();
   });
 
-  it('derives session names from explicit, git, local mount, and template sources', () => {
-    const template: Template = {
-      id: 'tpl-default',
-      name: 'Release Train',
-      description: '',
-      source: { kind: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
-      resources: { cpu: '2', memory: '8Gi' },
-      prompts: { system: '', initial: '' },
-      metadata: {},
-    };
-
-    expect(deriveSessionName(makeForm({ sessionName: 'My Session' }), template)).toBe('my-session');
-    expect(deriveSessionName(makeForm({ sessionName: '', branch: 'feat/add-nav' }), template)).toBe(
+  it('derives session names from explicit, git, and local mount sources', () => {
+    expect(deriveSessionName(makeForm({ sessionName: 'My Session' }))).toBe('my-session');
+    expect(deriveSessionName(makeForm({ sessionName: '', branch: 'feat/add-nav' }))).toBe(
       'add-nav',
     );
     expect(
       deriveSessionName(
         makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~/code/niuu/app' }),
-        template,
       ),
     ).toBe('app');
     expect(
-      deriveSessionName(
-        makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~' }),
-        template,
-      ),
+      deriveSessionName(makeForm({ sourcetype: 'local_mount', sessionName: '', mountPath: '~' })),
     ).toBe('home');
-    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }), template)).toBe(
-      'release-train',
-    );
-    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }), undefined)).toBe(
+    expect(deriveSessionName(makeForm({ sourcetype: 'blank', sessionName: '' }))).toBe(
       'forge-session',
     );
   });
@@ -352,11 +448,15 @@ describe('LaunchWizard helpers', () => {
   });
 
   it('copies existing preset state into comparison payloads', () => {
-    const preset: VolundrPreset = {
+    const preset: VolundrLaunchSpec = {
       id: 'preset-1',
+      scope: 'user',
       name: 'Saved preset',
       description: 'desc',
       isDefault: false,
+      sessionDefinition: null,
+      repos: [],
+      workspaceLayout: {},
       cliTool: 'claude',
       workloadType: 'skuld-claude',
       model: 'sonnet-primary',

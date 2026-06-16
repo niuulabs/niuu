@@ -62,6 +62,13 @@ const MOCK_TOPOLOGY: Topology = {
       parentId: 'cluster-valaskjalf',
       status: 'healthy',
     },
+    {
+      id: 'mimir-1',
+      typeId: 'mimir',
+      label: 'mimir',
+      parentId: 'cluster-valaskjalf',
+      status: 'healthy',
+    },
     { id: 'ravn-huginn', typeId: 'ravn_long', label: 'huginn', parentId: null, status: 'healthy' },
     {
       id: 'run-1',
@@ -110,9 +117,9 @@ describe('ObservatorySubnav', () => {
 
   it('renders correct total count for "all" filter', () => {
     render(<ObservatorySubnav />);
-    // 8 nodes total
+    // 9 nodes total
     const allBtn = screen.getByTestId('filter-all');
-    expect(allBtn).toHaveTextContent('8');
+    expect(allBtn).toHaveTextContent('9');
   });
 
   it('renders agents filter with correct count', () => {
@@ -126,6 +133,12 @@ describe('ObservatorySubnav', () => {
     render(<ObservatorySubnav />);
     const runsBtn = screen.getByTestId('filter-runs');
     expect(runsBtn).toHaveTextContent('1');
+  });
+
+  it('counts only service nodes as services', () => {
+    render(<ObservatorySubnav />);
+    const servicesBtn = screen.getByTestId('filter-services');
+    expect(servicesBtn).toHaveTextContent('1');
   });
 
   it('renders both realms in the realms section', () => {

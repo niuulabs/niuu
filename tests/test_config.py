@@ -1002,3 +1002,19 @@ class TestEventPipelineConfig:
         assert isinstance(settings.event_pipeline, EventPipelineConfig)
         assert settings.event_pipeline.rabbitmq.enabled is False
         assert settings.event_pipeline.otel.enabled is False
+
+
+def test_builtin_remote_control_definitions_present():
+    """Remote Control session types ship as built-ins like the other skuld*
+    definitions, wired to the remote-control transports."""
+    from volundr.config import _default_session_definitions
+
+    defs = _default_session_definitions()
+    claude_rc = defs["skuldClaudeRemote"]
+    assert claude_rc.defaults["broker"]["transportAdapter"] == (
+        "skuld.transports.remote_control.RemoteControlTransport"
+    )
+    codex_rc = defs["skuldCodexRemote"]
+    assert codex_rc.defaults["broker"]["transportAdapter"] == (
+        "skuld.transports.remote_control.CodexRemoteControlTransport"
+    )

@@ -4,18 +4,15 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import {
   createMockVolundrService,
   createMockClusterAdapter,
-  createMockTemplateStore,
   createMockSessionStore,
 } from '../adapters/mock';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { IClusterAdapter } from '../ports/IClusterAdapter';
-import type { ITemplateStore } from '../ports/ITemplateStore';
 import type { ISessionStore } from '../ports/ISessionStore';
 
 export interface RenderWithVolundrOptions {
   service?: IVolundrService;
   clusterAdapter?: IClusterAdapter;
-  templateStore?: ITemplateStore;
   sessionStore?: ISessionStore;
 }
 
@@ -26,7 +23,6 @@ export function renderWithVolundr(
   const {
     service = createMockVolundrService(),
     clusterAdapter = createMockClusterAdapter(),
-    templateStore = createMockTemplateStore(),
     sessionStore = createMockSessionStore(),
   } = options;
 
@@ -54,7 +50,6 @@ export function renderWithVolundr(
           'niuu.repos': repoCatalog,
           volundr: service,
           'volundr.clusters': clusterAdapter,
-          'volundr.templates': templateStore,
           'volundr.sessions': sessionStore,
           sessionStore,
         }}

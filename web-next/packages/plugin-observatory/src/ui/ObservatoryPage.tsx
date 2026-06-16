@@ -6,7 +6,7 @@ import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
 import { EntityDrawer } from './overlays/EntityDrawer';
 import { EventLog } from './overlays/EventLog';
-import { Minimap } from './overlays/Minimap';
+import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
 
 /**
@@ -49,7 +49,6 @@ export function ObservatoryPage() {
       <TopologyCanvas
         topology={topology}
         onNodeClick={handleNodeClick}
-        showMinimap={false}
         className="niuu:flex-1 niuu:min-h-0"
       />
 
@@ -68,8 +67,7 @@ export function ObservatoryPage() {
         ))}
       </ul>
 
-      {/* Canvas overlays — legend is hidden to match web2 canvas view */}
-      <Minimap topology={topology} selectedNodeId={selectedNode?.id} />
+      <ConnectionLegend topology={topology} registry={registry ?? null} />
       <EventLog events={events} />
       <EntityDrawer
         node={selectedNode}

@@ -190,6 +190,40 @@ class TestHandshake:
         assert init_event["session_id"] == "thread-abc-123"
 
     @pytest.mark.asyncio
+    async def test_handshake_resumes_seeded_thread(self, tmp_path):
+        """A seeded resume id reattaches via thread/resume instead of thread/start."""
+        t = _make_transport(tmp_path, resume_session_id="thread-imported-1")
+        t._ws = FakeWebSocket()
+        t._alive = True
+
+        calls = []
+
+        async def fake_send_rpc(method, params=None):
+            calls.append((method, params))
+            if method == "initialize":
+                return {"userAgent": "codex"}
+            if method == "thread/resume":
+                return {"thread": {"id": "thread-imported-1"}}
+            return {}
+
+        t._send_rpc = fake_send_rpc
+        t._send_notification = AsyncMock()
+        emit = _collect_emits(t)
+
+        await t._handshake()
+
+        methods = [method for method, _ in calls]
+        assert "thread/resume" in methods
+        assert "thread/start" not in methods
+        resume_params = calls[1][1]
+        assert resume_params["threadId"] == "thread-imported-1"
+        assert t._thread_id == "thread-imported-1"
+
+        init_event = emit.call_args[0][0]
+        assert init_event["type"] == "system"
+        assert init_event["session_id"] == "thread-imported-1"
+
+    @pytest.mark.asyncio
     async def test_handshake_with_system_prompt(self, tmp_path):
         t = _make_transport(tmp_path, system_prompt="Be helpful")
         t._ws = FakeWebSocket()
@@ -317,15 +351,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {"PATH": "/tmp/shims:/usr/bin"}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {"PATH": "/tmp/shims:/usr/bin"}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -340,9 +378,7 @@ class TestSpawnAppServer:
             assert t._codex_socket_path is not None
             assert call_args[3] == f"unix://{t._codex_socket_path}"
             assert "-c" in call_args
-            assert any(
-                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
-            )
+            assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
             assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
 
     @pytest.mark.asyncio
@@ -357,15 +393,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -383,15 +423,19 @@ class TestSpawnAppServer:
         mock_process.stderr = None
         mock_process.pid = 12345
 
-        with patch(
-            "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex_ws.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
-        ), patch(
-            "skuld.transports.codex_ws.ensure_codex_tool_shims",
-            return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex_ws.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
         ):
             mock_exec.return_value = mock_process
             await t._spawn_app_server()
@@ -2529,3 +2573,34 @@ class TestConfigIntegration:
 
         settings = SkuldSettings(cli_type="codex")
         assert settings.transport_adapter == "skuld.transports.codex.CodexSubprocessTransport"
+
+
+class TestResumeInitialPromptSkip:
+    @pytest.mark.asyncio
+    async def test_start_skips_initial_prompt_on_resume(self, tmp_path):
+        """On resume the prior thread already contains the initial prompt."""
+        t = _make_transport(
+            tmp_path,
+            initial_prompt="kick off",
+            resume_session_id="thread-resume-1",
+        )
+        t._spawn_app_server = AsyncMock()
+        t._connect_ws = AsyncMock()
+        t._handshake = AsyncMock()
+        t.send_message = AsyncMock()
+
+        await t.start()
+
+        t.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_sends_initial_prompt_without_resume(self, tmp_path):
+        t = _make_transport(tmp_path, initial_prompt="kick off")
+        t._spawn_app_server = AsyncMock()
+        t._connect_ws = AsyncMock()
+        t._handshake = AsyncMock()
+        t.send_message = AsyncMock()
+
+        await t.start()
+
+        t.send_message.assert_awaited_once_with("kick off")

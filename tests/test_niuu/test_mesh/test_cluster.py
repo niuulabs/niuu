@@ -17,6 +17,20 @@ class TestReadClusterPubAddresses:
         result = read_cluster_pub_addresses([{"adapter": "static"}])
         assert result == []
 
+    def test_reads_inline_pub_addresses(self):
+        result = read_cluster_pub_addresses(
+            [
+                {
+                    "adapter": "static",
+                    "peers": [
+                        {"peer_id": "alpha", "pub_address": "tcp://127.0.0.1:7480"},
+                        {"peer_id": "beta", "pub_address": "tcp://127.0.0.1:7482"},
+                    ],
+                }
+            ]
+        )
+        assert result == ["tcp://127.0.0.1:7480", "tcp://127.0.0.1:7482"]
+
     def test_nonexistent_cluster_file_skipped(self, tmp_path):
         cfg = [{"cluster_file": str(tmp_path / "missing.yaml")}]
         assert read_cluster_pub_addresses(cfg) == []

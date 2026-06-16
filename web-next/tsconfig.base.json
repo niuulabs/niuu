@@ -33,6 +33,7 @@
       "@niuulabs/plugin-ravn": ["packages/plugin-ravn/src/index.ts"],
       "@niuulabs/plugin-sdk": ["packages/plugin-sdk/src/index.ts"],
       "@niuulabs/plugin-ting": ["packages/plugin-ting/src/index.ts"],
+      "@niuulabs/plugin-valkyrie": ["packages/plugin-valkyrie/src/index.tsx"],
       "@niuulabs/plugin-volundr": ["packages/plugin-volundr/src/index.ts"],
       "@niuulabs/query": ["packages/query/src/index.ts"],
       "@niuulabs/shell": ["packages/shell/src/index.ts"],

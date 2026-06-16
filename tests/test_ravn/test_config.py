@@ -22,7 +22,9 @@ from ravn.config import (
     MemoryConfig,
     PermissionConfig,
     PermissionRuleConfig,
+    ResidentEvolutionConfig,
     Settings,
+    SignalSourceConfig,
     ThreadConfig,
     ToolAdapterConfig,
     ToolsConfig,
@@ -85,6 +87,39 @@ class TestLLMConfig:
         )
         assert len(c.fallbacks) == 2
         assert c.fallbacks[0].adapter == "pkg.FallbackA"
+
+
+class TestReflectionModelFallbacks:
+    def test_memory_reflection_model_can_use_effective_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.memory.reflection_model = "same-as-agent"
+
+        assert settings.effective_memory_reflection_model() == "Qwen/Qwen3.6-35B-A3B-FP8"
+
+    def test_memory_reflection_model_keeps_explicit_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.memory.reflection_model = "claude-haiku-4-5-20251001"
+
+        assert settings.effective_memory_reflection_model() == "claude-haiku-4-5-20251001"
+
+    def test_post_session_reflection_config_can_use_effective_agent_model(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "agent"
+
+        resolved = settings.effective_post_session_reflection_config()
+
+        assert resolved.llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert settings.reflection.llm_alias == "agent"
+
+    def test_post_session_reflection_config_keeps_explicit_alias(self) -> None:
+        settings = Settings()
+        settings.llm.model = "Qwen/Qwen3.6-35B-A3B-FP8"
+        settings.reflection.llm_alias = "fast"
+
+        assert settings.effective_post_session_reflection_config() is settings.reflection
 
 
 class TestToolAdapterConfig:
@@ -259,10 +294,54 @@ class TestChannelConfig:
         assert "webhook" in c.kwargs
 
 
+class TestSignalSourceConfig:
+    def test_adapter_kwargs_and_secret_env_mapping(self) -> None:
+        c = SignalSourceConfig(
+            id="nats-upstream-signals",
+            name="Upstream NATS Signals",
+            kind="webhook",
+            adapter="ravn.adapters.environment_signals.NatsSignalAdapter",
+            kwargs={
+                "servers_env": "NATS_URL",
+                "subjects": ["external.cluster.events"],
+            },
+            secret_kwargs_env={"token": "UPSTREAM_NATS_TOKEN"},
+        )
+
+        assert c.adapter.endswith("NatsSignalAdapter")
+        assert c.kwargs["subjects"] == ["external.cluster.events"]
+        assert c.secret_kwargs_env == {"token": "UPSTREAM_NATS_TOKEN"}
+
+    def test_config_is_not_an_alias_for_kwargs(self) -> None:
+        c = SignalSourceConfig.model_validate(
+            {
+                "id": "canonical",
+                "adapter": "pkg.Adapter",
+                "config": {"path": "/tmp/signals.jsonl"},
+            }
+        )
+
+        assert c.kwargs == {}
+
+
 class TestLoggingConfig:
     def test_defaults(self) -> None:
         c = LoggingConfig()
         assert c.level in ("debug", "info", "warning", "error", "critical")
+
+
+class TestResidentEvolutionConfig:
+    def test_defaults_route_missing_capabilities_to_the_investigation_loop(self) -> None:
+        # The classifier micro-dream is retired: a missing capability defers to
+        # the build_tool investigation loop (NIU-1051), and tools are authored
+        # inline unless a Forge/Ting build backend is configured.
+        c = ResidentEvolutionConfig()
+        assert c.tool_build_adapter == ""
+        assert c.learned_tool_execution_backend == "local"
+
+    def test_learned_tool_execution_backend_can_select_forge(self) -> None:
+        c = ResidentEvolutionConfig(learned_tool_execution_backend="forge")
+        assert c.learned_tool_execution_backend == "forge"
 
 
 class TestSettings:

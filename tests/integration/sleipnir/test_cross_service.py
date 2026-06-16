@@ -19,7 +19,15 @@ from sleipnir.domain.events import SleipnirEvent
 from volundr.adapters.outbound.sleipnir_event_sink import SleipnirEventSink
 from volundr.domain.models import SessionEvent, SessionEventType
 
-from .conftest import NATS_URL, RABBITMQ_URL, REDIS_URL, collect_events, make_event
+from .conftest import (
+    NATS_URL,
+    RABBITMQ_URL,
+    REDIS_URL,
+    TEST_NATS_MAX_AGE_SECONDS,
+    TEST_NATS_MAX_BYTES,
+    collect_events,
+    make_event,
+)
 
 pytestmark = pytest.mark.broker
 
@@ -66,6 +74,8 @@ async def _make_nats():
         subject_prefix=name,
         max_reconnect_attempts=3,
         connect_timeout_s=5.0,
+        max_bytes=TEST_NATS_MAX_BYTES,
+        max_age_seconds=TEST_NATS_MAX_AGE_SECONDS,
     )
 
 

@@ -78,67 +78,16 @@ class VolundrPlugin(ServicePlugin):
                 ),
             ),
             APIRouteDomain(
-                name="forge-api",
-                prefixes=(
-                    "/api/v1/forge/sessions",
-                    "/api/v1/forge/chronicles",
-                    "/api/v1/forge/events",
-                    "/api/v1/forge/spans",
-                    "/api/v1/forge/templates",
-                    "/api/v1/forge/presets",
-                    "/api/v1/forge/profiles",
-                    "/api/v1/forge/session-definitions",
-                    "/api/v1/forge/workspaces",
-                    "/api/v1/forge/resources",
-                    "/api/v1/forge/models",
-                    "/api/v1/forge/stats",
-                    "/api/v1/forge/prompts",
-                    "/api/v1/forge/cluster",
-                    "/api/v1/forge/git",
-                ),
-                description="Forge session, workspace, template, repo, and execution routes.",
-            ),
-            APIRouteDomain(
-                name="session-api",
-                prefixes=(
-                    "/api/v1/forge/sessions",
-                    "/api/v1/forge/chronicles",
-                    "/api/v1/forge/events",
-                    "/api/v1/forge/spans",
-                ),
-                description=(
-                    "Session lifecycle, messaging, logs, chronicle, "
-                    "and session-bound workflow routes."
-                ),
-            ),
-            APIRouteDomain(
-                name="workspace-api",
-                prefixes=("/api/v1/forge/workspaces",),
-                description="User workspace inventory and workspace deletion routes.",
-            ),
-            APIRouteDomain(
                 name="catalog-api",
                 prefixes=(
-                    "/api/v1/forge/templates",
-                    "/api/v1/forge/presets",
-                    "/api/v1/forge/profiles",
-                    "/api/v1/forge/session-definitions",
-                    "/api/v1/forge/resources",
-                    "/api/v1/forge/prompts",
+                    "/api/v1/volundr/launch-specs",
+                    "/api/v1/volundr/session-definitions",
+                    "/api/v1/volundr/resources",
+                    "/api/v1/volundr/prompts",
                 ),
                 description=(
-                    "Templates, presets, profiles, session definitions, prompts, "
-                    "and resource catalog routes."
+                    "Launch specs, session definitions, prompts, and resource catalog routes."
                 ),
-            ),
-            APIRouteDomain(
-                name="git-api",
-                prefixes=(
-                    "/api/v1/forge/repos/branches",
-                    "/api/v1/forge/repos/prs",
-                    "/api/v1/forge/git",
-                ),
-                description="Git workflow routes without the deprecated repo-catalog surface.",
             ),
         )
 

@@ -34,6 +34,8 @@ def _instance(
     enabled: bool = True,
     is_default: bool = False,
     base_url: str = "https://registry.example.com",
+    config: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
 ) -> RegisteredInstance:
     now = datetime.now(UTC)
     return RegisteredInstance(
@@ -47,9 +49,10 @@ def _instance(
         tenant_id=tenant_id,
         enabled=enabled,
         is_default=is_default,
-        config={"region": "ca-central-1"},
+        config=config if config is not None else {"region": "ca-central-1"},
         created_at=now,
         updated_at=now,
+        tags=list(tags or []),
     )
 
 
@@ -430,58 +433,143 @@ def test_observatory_snapshot_builds_registry_backed_topology() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["nodes"][0]["id"] == "service:guild"
-    assert payload["layoutHints"]["mode"] == "hybrid"
-    assert payload["nodes"][0]["layoutHints"]["anchor"]["pinned"] is True
-    assert any(node["id"] == "realm-vanaheim" for node in payload["nodes"])
-    assert (
-        len(
-            [
-                node
-                for node in payload["nodes"]
-                if node["typeId"] == "cluster" and node["parentId"] == "realm-asgard"
-            ]
-        )
-        >= 3
-    )
-    assert (
-        len(
-            [
-                node
-                for node in payload["nodes"]
-                if node["typeId"] == "host" and node["parentId"] == "realm-vanaheim"
-            ]
-        )
-        >= 3
-    )
+    assert payload["layoutHints"]["mode"] == "pack"
+    assert any(node["id"] == "cluster-unknown" for node in payload["nodes"])
+    assert not any(node["id"].startswith("realm-") for node in payload["nodes"])
     assert any(node.get("svcType") == "volundr" for node in payload["nodes"])
     assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
+    assert not any(node["id"] == "mimir-well" for node in payload["nodes"])
     assert any(
-        node["id"] == "mimir-well" and node["parentId"] == "cluster-valaskjalf"
-        for node in payload["nodes"]
+        node.get("layoutHints", {}).get("packGroup") == "volundr" for node in payload["nodes"]
     )
+    assert not any(node["id"].startswith("run-") for node in payload["nodes"])
     assert any(
-        node["id"] == "run-curate" and node.get("flockId") == "workflow-curate"
-        for node in payload["nodes"]
+        edge.get("relationType") == "uses"
+        and edge.get("label") == "uses"
+        and edge.get("evidence", {}).get("adapter") == "rest_instances"
+        for edge in payload["edges"]
     )
-    assert any(
-        node["id"] == "run-curate-mimir" and node["parentId"] == "run-curate"
-        for node in payload["nodes"]
-    )
-    assert any(
-        node.get("layoutHints", {}).get("pack_group") == "volundr" for node in payload["nodes"]
-    )
-    assert any(
-        node["typeId"] == "stage" and node.get("flockId") == "workflow-refactor"
-        for node in payload["nodes"]
-    )
-    assert any(
-        node["typeId"] == "trigger" and node["parentId"] == "run-migrate"
-        for node in payload["nodes"]
-    )
-    assert any(edge.get("label") == "code.requested -> code.requested" for edge in payload["edges"])
-    assert any(edge.get("label") == "memory.ready -> review.requested" for edge in payload["edges"])
-    assert any(edge.get("label") == "canary.green -> rollout.begin" for edge in payload["edges"])
     assert any(event["service"] == "volundr" for event in payload["events"])
     assert any(event["service"] == "bifrost" for event in payload["events"])
     assert any(event["service"] == "mimir" for event in payload["events"])
+
+
+@respx.mock
+def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance(
+            "ravn-1",
+            kind=InstanceKind.RAVN,
+            base_url="https://ravn.example.com/api/v1/ravn",
+        ),
+        _instance(
+            "mimir-1",
+            kind=InstanceKind.MIMIR,
+            base_url="https://mimir.example.com",
+        ),
+    ]
+    client = _client(service)
+    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
+    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
+    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": "mimir-shared-warden",
+                    "name": "Mimir Shared Warden",
+                    "persona": "mimir-warden",
+                    "deployment": "kubernetes",
+                    "mimir": {
+                        "mount_names": ["shared"],
+                        "write_mount": "shared",
+                    },
+                    "schedules": {
+                        "dream_cycle_cron_expression": "*/15 * * * *",
+                    },
+                    "runtime": {"state": "active"},
+                    "supervisor": {
+                        "observation": {
+                            "status": "running",
+                            "source": "kubernetes",
+                        }
+                    },
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(node["id"] == "warden:mimir-shared-warden" for node in payload["nodes"])
+    assert any(
+        edge["id"] == "edge:warden:mimir-shared-warden:mimir"
+        for edge in payload["edges"]
+    )
+
+
+@respx.mock
+def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance(
+            "ravn-1",
+            kind=InstanceKind.RAVN,
+            base_url="https://ravn.example.com/api/v1/ravn",
+            config={
+                "labels": {
+                    "niuu.world/cluster": "ymir",
+                    "niuu.world/namespace": "volundr",
+                }
+            },
+        ),
+        _instance(
+            "mimir-1",
+            kind=InstanceKind.MIMIR,
+            base_url="https://mimir.example.com",
+            config={"environment": "ymir", "namespace": "volundr"},
+        ),
+    ]
+    client = _client(service)
+    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
+    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
+    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": "mimir-shared-warden",
+                    "name": "Mimir Shared Warden",
+                    "runtime": {"state": "active"},
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(
+        node["id"] == "cluster-ymir"
+        and node["label"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "instance:ravn:ravn-1-slug"
+        and node["parentId"] == "cluster-ymir"
+        and node["clusterName"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
+    )
+    assert any(
+        node["id"] == "warden:mimir-shared-warden"
+        and node["parentId"] == "cluster-ymir"
+        and node["clusterName"] == "ymir"
+        and node["namespace"] == "volundr"
+        for node in payload["nodes"]
+    )

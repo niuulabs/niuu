@@ -20,6 +20,9 @@ import { buildServiceBackendStatus, buildServices } from './services';
 
 const DEFAULT_CONFIG_ENDPOINT = '/config.json';
 const LIVE_CONFIG_ENDPOINT = '/config.live.json';
+const PRODUCTION_CONFIG_ENDPOINT = import.meta.env.PROD
+  ? LIVE_CONFIG_ENDPOINT
+  : DEFAULT_CONFIG_ENDPOINT;
 const CONFIG_ENDPOINT_QUERY_KEY = 'config';
 const CONFIG_ENDPOINT_STORAGE_KEY = 'niuu.config.endpoint';
 type ConfigMode = 'default' | 'live';
@@ -93,7 +96,7 @@ export function resolveConfigEndpoint(
 
   const stored = normalizeConfigMode(storage.getItem(CONFIG_ENDPOINT_STORAGE_KEY));
   if (stored === 'live') return LIVE_CONFIG_ENDPOINT;
-  return DEFAULT_CONFIG_ENDPOINT;
+  return PRODUCTION_CONFIG_ENDPOINT;
 }
 
 export function App() {

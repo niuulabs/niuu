@@ -22,6 +22,16 @@ class ParticipantMeta:
         subscribes_to: Event types this participant listens for.
         emits: Event types this participant can publish.
         tools: Tool names available to this participant.
+        environment_id: Environment this participant belongs to.
+        participant_kind: Operator-facing kind: human, valkyrie, tool, surface, ravn, skuld.
+        capabilities: Action/approval/attention capabilities exposed by this participant.
+        surfaces: Attention surfaces this participant can receive or render.
+        wakefulness: wakeful, watching, dreaming, sleeping, or unknown.
+        attention_state: available, busy, offline, suppressed, etc.
+        heartbeat_ttl_s: Seconds before a missed heartbeat marks the participant expired.
+        last_heartbeat_at: Wall-clock timestamp of the most recent heartbeat.
+        authority_role: Operator authority role for approvals/actions.
+        room_ids: Current room/huddle memberships.
     """
 
     peer_id: str
@@ -34,6 +44,16 @@ class ParticipantMeta:
     emits: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
     status: str = "idle"
+    environment_id: str = ""
+    participant_kind: str = ""
+    capabilities: tuple[str, ...] = ()
+    surfaces: tuple[str, ...] = ()
+    wakefulness: str = "unknown"
+    attention_state: str = "available"
+    heartbeat_ttl_s: float = 90.0
+    last_heartbeat_at: float | None = None
+    authority_role: str = ""
+    room_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

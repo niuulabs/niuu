@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -84,6 +84,7 @@ class RegisteredInstance:
     config: dict
     created_at: datetime
     updated_at: datetime
+    tags: list[str] = field(default_factory=list)
 
 
 class SecretType(StrEnum):

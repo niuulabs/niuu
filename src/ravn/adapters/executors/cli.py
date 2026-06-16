@@ -31,8 +31,7 @@ class _TransportBinding:
 def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
     """Return true for transports whose native CLI profile owns permissions."""
     return (
-        cls.__module__ == "skuld.transports.codex_ws"
-        and cls.__name__ == "CodexWebSocketTransport"
+        cls.__module__ == "skuld.transports.codex_ws" and cls.__name__ == "CodexWebSocketTransport"
     )
 
 

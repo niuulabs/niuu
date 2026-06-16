@@ -119,7 +119,7 @@ class ServicePlugin(ABC):
     def register_commands(self, app: typer.Typer) -> None:
         """Register CLI commands on the given Typer app."""
 
-    def create_api_app(self) -> Any:
+    def create_api_app(self, **_context: Any) -> Any:
         """Create a FastAPI/ASGI sub-application for this plugin.
 
         Returned app is mounted into the root server. Routes should use

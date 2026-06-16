@@ -9,7 +9,8 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.alias_generators import to_camel
 
 from niuu.domain import models as shared_models
 
@@ -383,9 +384,9 @@ class Session(BaseModel):
         default=None,
         description="Web URL for the linked issue in the tracker",
     )
-    preset_id: UUID | None = Field(
+    launch_spec_id: UUID | None = Field(
         default=None,
-        description="Preset used to configure this session",
+        description="User launch spec used to configure this session",
     )
     archived_at: datetime | None = Field(
         default=None,
@@ -414,6 +415,25 @@ class Session(BaseModel):
     workload_type: str = Field(
         default="session",
         description="Workload type used to launch the session",
+    )
+    origin: str = Field(
+        default="volundr",
+        max_length=50,
+        description="Where the session originated (volundr, claude, codex)",
+    )
+    external_session_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Native CLI session/thread id for imported sessions",
+    )
+    cli_session_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "CLI/agent conversation id (Claude session UUID or Codex thread id) "
+            "captured at runtime, used to resume the prior conversation when the "
+            "session is restarted."
+        ),
     )
 
     model_config = {"frozen": False}
@@ -502,6 +522,56 @@ class Session(BaseModel):
                 "updated_at": now,
             }
         )
+
+
+class ExternalSessionRecord(BaseModel):
+    """A CLI session discovered outside Volundr (Claude Code, Codex, ...).
+
+    External sessions live in the harness's own on-disk store (e.g.
+    ``~/.claude/projects`` or ``~/.codex/sessions``). They can be imported
+    into Volundr, which creates a stopped Session that resumes the native
+    session when started.
+    """
+
+    provider: str = Field(description="Provider key that discovered the session")
+    harness: str = Field(description="CLI harness that owns the session (claude, codex)")
+    external_id: str = Field(description="Native session/thread identifier")
+    workspace_path: str = Field(
+        default="",
+        description="Working directory the session ran in",
+    )
+    title: str = Field(
+        default="",
+        description="Short human-readable summary (first prompt or similar)",
+    )
+    model: str = Field(
+        default="",
+        description="Model the session used, when known",
+    )
+    created_at: datetime | None = Field(
+        default=None,
+        description="When the session started, when known",
+    )
+    updated_at: datetime | None = Field(
+        default=None,
+        description="Last activity in the session store",
+    )
+    live: bool = Field(
+        default=False,
+        description="Whether the session appears to be actively running",
+    )
+    workspace_exists: bool = Field(
+        default=False,
+        description="Whether the workspace directory still exists on disk",
+    )
+    workspace_allowed: bool = Field(
+        default=True,
+        description="Whether the workspace passes the allowed mount prefix policy",
+    )
+    imported_session_id: UUID | None = Field(
+        default=None,
+        description="Volundr session id when this session was already imported",
+    )
 
 
 @dataclass(frozen=True)
@@ -788,6 +858,32 @@ class SessionEvent:
     cost: Decimal | None = None
     duration_ms: int | None = None
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionLogEntry:
+    """One full-fidelity, append-only frame in a session's durable event log.
+
+    Unlike :class:`SessionEvent` (analytics previews), this preserves the
+    COMPLETE agent output verbatim — assistant text, thinking, tool_use,
+    tool_result, deltas — ordered by a monotonic per-session ``seq``. It is the
+    source of truth for transcript replay: any client can resume from a cursor
+    (``seq``) and reconstruct the full conversation regardless of whether a
+    socket was attached when the frames were produced.
+
+    ``kind`` is the open-vocabulary wire frame type (e.g. ``assistant``,
+    ``content_block_delta``, ``tool_use``, ``tool_result``, ``result``,
+    ``user``). ``payload`` is the raw frame, preserved without truncation.
+    ``request_id`` correlates frames to the turn that produced them.
+    """
+
+    session_id: UUID
+    seq: int
+    kind: str
+    payload: dict
+    ts: datetime
+    role: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1218,247 +1314,56 @@ class SecretInfo:
             object.__setattr__(self, "keys", tuple(self.keys))
 
 
-class ForgeProfile(BaseModel):
-    """Argument template for workload instantiation.
+class LaunchScope(StrEnum):
+    """Ownership/mutability scope for a launch spec."""
 
-    .. deprecated::
-        ForgeProfile fields have been merged into WorkspaceTemplate.
-        Use WorkspaceTemplate directly for new code. This class is kept
-        for backward compatibility during migration.
+    SYSTEM = "system"  # config-seeded, read-only (replaces profiles + templates)
+    USER = "user"  # DB-stored, CRUD-managed (replaces presets)
 
-    Defines the base set of values that Volundr assembles into session specs.
-    The Helm chart for the target task_type gives these values meaning.
+
+class LaunchSpec(BaseModel):
+    """Unified blueprint for launching a session.
+
+    The single concept that replaces the former ForgeProfile / WorkspaceTemplate
+    / Preset trio. A ``system`` spec is config-seeded and read-only; a ``user``
+    spec is DB-stored and fully CRUD-managed. ``session-definition`` (the runtime
+    type) remains a separate concept that a launch spec references.
     """
 
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Profile name used as a reference key",
-    )
-    description: str = Field(
-        default="",
-        description="Human-readable description of the profile",
-    )
-    workload_type: str = Field(
-        default="session",
-        description="Workload type this profile targets",
-    )
-    model: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Default LLM model identifier",
-    )
-    system_prompt: str | None = Field(
-        default=None,
-        description="System prompt injected into the LLM context",
-    )
-    resource_config: dict = Field(
-        default_factory=dict,
-        description="Resource allocation config (cpu, memory, gpu)",
-    )
-    mcp_servers: list[dict] = Field(
-        default_factory=list,
-        description="MCP server configurations to attach",
-    )
-    env_vars: dict[str, str] = Field(
-        default_factory=dict,
-        description="Environment variables for the session pod",
-    )
-    env_secret_refs: list[str] = Field(
-        default_factory=list,
-        description="K8s secret names to mount as env vars",
-    )
-    workload_config: dict = Field(
-        default_factory=dict,
-        description="Additional workload-specific configuration",
-    )
-    is_default: bool = Field(
-        default=False,
-        description="Whether this is the default profile",
-    )
+    name: str = Field(..., min_length=1, max_length=255, description="Reference key")
+    scope: LaunchScope = Field(default=LaunchScope.SYSTEM, description="Ownership scope")
+    id: UUID | None = Field(default=None, description="Stable id (user scope; DB)")
+    description: str = Field(default="", description="Human-readable description")
+    is_default: bool = Field(default=False, description="Default within its scope")
     session_definition: str | None = Field(
-        default=None,
-        description="Skuld session definition CRD name to use",
+        default=None, description="Session definition (runtime type) to launch on"
     )
+    workload_type: str = Field(default="session", description="Workload type")
+    # Runtime config (the fields the contributor pipeline merges)
+    model: str | None = Field(default=None, max_length=100, description="LLM model id")
+    system_prompt: str | None = Field(default=None, description="System prompt")
+    resource_config: dict = Field(default_factory=dict, description="cpu/memory/gpu")
+    mcp_servers: list[dict] = Field(default_factory=list, description="MCP servers")
+    env_vars: dict[str, str] = Field(default_factory=dict, description="Env vars")
+    env_secret_refs: list[str] = Field(default_factory=list, description="Secret refs")
+    workload_config: dict = Field(default_factory=dict, description="Workload config")
+    # Workspace
+    repos: list[dict] = Field(default_factory=list, description="Git repos to clone")
+    source: SessionSource | None = Field(default=None, description="Workspace source")
+    setup_scripts: list[str] = Field(default_factory=list, description="Setup scripts")
+    workspace_layout: dict = Field(default_factory=dict, description="Layout config")
+    # User-scope extras (from preset)
+    cli_tool: str = Field(default="", description="Target CLI tool")
+    terminal_sidecar: dict = Field(default_factory=dict, description="Terminal sidecar")
+    skills: list[dict] = Field(default_factory=list, description="Skill definitions")
+    rules: list[dict] = Field(default_factory=list, description="Rule definitions")
+    integration_ids: list[str] = Field(default_factory=list, description="Integrations")
+    created_at: datetime = Field(default_factory=_utc_now, description="Created")
+    updated_at: datetime = Field(default_factory=_utc_now, description="Updated")
 
-    model_config = {"frozen": False}
-
-
-class Preset(BaseModel):
-    """A portable runtime configuration preset (DB-stored).
-
-    Presets capture runtime config (model, MCP servers, resources, etc.)
-    independently from workspace templates (which are CRD/config-driven).
-    """
-
-    id: UUID = Field(
-        default_factory=uuid4,
-        description="Unique preset identifier",
-    )
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Human-readable preset name",
-    )
-    description: str = Field(
-        default="",
-        description="Description of the preset purpose",
-    )
-    is_default: bool = Field(
-        default=False,
-        description="Whether this is the default preset for its CLI tool",
-    )
-    cli_tool: str = Field(
-        default="",
-        description="CLI tool this preset targets (e.g. claude, aider)",
-    )
-    workload_type: str = Field(
-        default="session",
-        description="Workload type (e.g. session)",
-    )
-    model: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Default LLM model identifier",
-    )
-    system_prompt: str | None = Field(
-        default=None,
-        description="System prompt injected into the LLM context",
-    )
-    resource_config: dict = Field(
-        default_factory=dict,
-        description="Resource allocation config (cpu, memory, gpu)",
-    )
-    mcp_servers: list[dict] = Field(
-        default_factory=list,
-        description="MCP server configurations to attach",
-    )
-    terminal_sidecar: dict = Field(
-        default_factory=dict,
-        description="Terminal sidecar container configuration",
-    )
-    skills: list[dict] = Field(
-        default_factory=list,
-        description="Skill definitions available to the session",
-    )
-    rules: list[dict] = Field(
-        default_factory=list,
-        description="Rule definitions for session behavior",
-    )
-    env_vars: dict[str, str] = Field(
-        default_factory=dict,
-        description="Environment variables for the session pod",
-    )
-    env_secret_refs: list[str] = Field(
-        default_factory=list,
-        description="K8s secret names to mount as env vars",
-    )
-    source: SessionSource | None = Field(
-        default=None,
-        description="Workspace source configuration (git or local mount)",
-    )
-    integration_ids: list[str] = Field(
-        default_factory=list,
-        description="Integration connection IDs to attach to sessions",
-    )
-    setup_scripts: list[str] = Field(
-        default_factory=list,
-        description="Shell scripts to run during workspace setup",
-    )
-    workload_config: dict = Field(
-        default_factory=dict,
-        description="Additional workload-specific configuration",
-    )
-    created_at: datetime = Field(
-        default_factory=_utc_now,
-        description="Timestamp when the preset was created",
-    )
-    updated_at: datetime = Field(
-        default_factory=_utc_now,
-        description="Timestamp of the last preset update",
-    )
-
-    model_config = {"frozen": False}
-
-
-class WorkspaceTemplate(BaseModel):
-    """Complete session blueprint combining workspace and runtime config.
-
-    Templates are configuration-driven — loaded from YAML config or
-    Kubernetes CRDs rather than stored in a database. Each template
-    is a self-contained session blueprint with all config needed to
-    launch a session.
-    """
-
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=255,
-        description="Template name used as a reference key",
-    )
-    description: str = Field(
-        default="",
-        description="Human-readable description of the template",
-    )
-    # Workspace config
-    repos: list[dict] = Field(
-        default_factory=list,
-        description="Git repositories to clone into the workspace",
-    )
-    setup_scripts: list[str] = Field(
-        default_factory=list,
-        description="Shell scripts to run during workspace setup",
-    )
-    workspace_layout: dict = Field(
-        default_factory=dict,
-        description="Directory layout configuration",
-    )
-    is_default: bool = Field(
-        default=False,
-        description="Whether this is the default template",
-    )
-    # Runtime config (merged from ForgeProfile)
-    workload_type: str = Field(
-        default="session",
-        description="Workload type (e.g. session)",
-    )
-    model: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Default LLM model identifier",
-    )
-    system_prompt: str | None = Field(
-        default=None,
-        description="System prompt injected into the LLM context",
-    )
-    resource_config: dict = Field(
-        default_factory=dict,
-        description="Resource allocation config (cpu, memory, gpu)",
-    )
-    mcp_servers: list[dict] = Field(
-        default_factory=list,
-        description="MCP server configurations to attach",
-    )
-    env_vars: dict[str, str] = Field(
-        default_factory=dict,
-        description="Environment variables for the session pod",
-    )
-    env_secret_refs: list[str] = Field(
-        default_factory=list,
-        description="K8s secret names to mount as env vars",
-    )
-    workload_config: dict = Field(
-        default_factory=dict,
-        description="Additional workload-specific configuration",
-    )
-    session_definition: str | None = Field(
-        default=None,
-        description="Skuld session definition CRD name to use",
-    )
-
-    model_config = {"frozen": False}
+    # Serialize/accept camelCase over the wire (web-next convention) while keeping
+    # snake_case attribute access internally.
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class ResourceCategory(StrEnum):

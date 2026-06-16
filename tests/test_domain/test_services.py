@@ -80,6 +80,37 @@ class TestSessionServiceGet:
         assert result.id == created.id
         assert result.name == "test"
 
+    async def test_reconcile_session_if_active_clears_dead_runtime(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """A running record whose runtime is gone is returned as stopped."""
+
+        class StoppedPodManager(MockPodManager):
+            async def status(self, session):
+                return SessionStatus.STOPPED
+
+        service = SessionService(repository, StoppedPodManager())
+        created = await service.create_session(
+            name="stale",
+            model="claude-3-opus",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        running = created.model_copy(
+            update={
+                "status": SessionStatus.RUNNING,
+                "chat_endpoint": "wss://dead.example/session",
+                "code_endpoint": "https://dead.example/session",
+            }
+        )
+        await repository.update(running)
+
+        result = await service.reconcile_session_if_active(created.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.STOPPED
+        assert result.chat_endpoint is None
+        assert result.code_endpoint is None
+
     async def test_get_nonexistent_session(self, repository: Repo, pod_manager: Pods):
         """Getting a nonexistent session returns None."""
         service = SessionService(repository, pod_manager)
@@ -252,6 +283,80 @@ class TestSessionServiceDelete:
         assert result is True
         assert len(pod_manager.stop_calls) == 1
 
+    async def test_delete_failed_stops_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting a failed session still asks the pod manager to clean up."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        failed = created.with_status(SessionStatus.FAILED)
+        await repository.update(failed)
+
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert await repository.get(created.id) is None
+        assert len(pod_manager.stop_calls) == 1
+        assert pod_manager.stop_calls[0].id == created.id
+
+    async def test_delete_transitional_statuses_stop_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting sessions that may have in-flight resources stops infrastructure."""
+        service = SessionService(repository, pod_manager)
+
+        for status in (
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.STOPPING,
+        ):
+            created = await service.create_session(
+                name=f"test-{status.value}",
+                model="claude-3-opus",
+                source=GitSource(
+                    repo="https://github.com/org/repo",
+                    branch="main",
+                ),
+            )
+            await repository.update(created.with_status(status))
+
+            result = await service.delete_session(created.id)
+
+            assert result is True
+
+        assert [call.status for call in pod_manager.stop_calls] == [
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.STOPPING,
+        ]
+
+    async def test_delete_created_does_not_stop_infrastructure(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Deleting a never-started session does not call the pod manager."""
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert pod_manager.stop_calls == []
+
     async def test_delete_running_succeeds_when_pod_stop_fails(
         self, repository: Repo, failing_pod_manager: Pods
     ):
@@ -275,6 +380,28 @@ class TestSessionServiceDelete:
         await repository.update(running)
 
         # Delete should succeed even though pod_manager.stop() raises an exception
+        result = await service.delete_session(created.id)
+
+        assert result is True
+        assert await repository.get(created.id) is None
+        assert len(failing_pod_manager.stop_calls) == 1
+
+    async def test_delete_failed_succeeds_when_infrastructure_cleanup_fails(
+        self, repository: Repo, failing_pod_manager: Pods
+    ):
+        """Deleting a failed session keeps DB cleanup resilient to K8s cleanup errors."""
+        service = SessionService(repository, failing_pod_manager)
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+
+        await repository.update(created.with_status(SessionStatus.FAILED))
+
         result = await service.delete_session(created.id)
 
         assert result is True
@@ -1015,23 +1142,29 @@ class TestRepoService:
 # ---------------------------------------------------------------------------
 
 
-class InMemoryTemplateProvider:
-    """Simple in-memory TemplateProvider for testing."""
+class InMemoryLaunchSpecProvider:
+    """Simple in-memory LaunchSpecProvider for testing."""
 
-    def __init__(self, templates: list | None = None):
-        from volundr.domain.models import WorkspaceTemplate
+    def __init__(self, specs: list | None = None):
+        from volundr.domain.models import LaunchSpec
 
-        self._templates: dict[str, WorkspaceTemplate] = {}
-        for t in templates or []:
-            self._templates[t.name] = t
+        self._specs: dict[str, LaunchSpec] = {}
+        for s in specs or []:
+            self._specs[s.name] = s
 
     def get(self, name: str):
-        return self._templates.get(name)
+        return self._specs.get(name)
 
     def list(self, workload_type: str | None = None):
         if workload_type is None:
-            return list(self._templates.values())
-        return [t for t in self._templates.values() if t.workload_type == workload_type]
+            return list(self._specs.values())
+        return [s for s in self._specs.values() if s.workload_type == workload_type]
+
+    def get_default(self, workload_type: str):
+        for s in self._specs.values():
+            if s.workload_type == workload_type and s.is_default:
+                return s
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1046,20 +1179,20 @@ class TestSessionServiceCreateWithTemplate:
         self, repository: Repo, pod_manager: Pods
     ):
         """create_session with template_name resolves repo, branch, and model defaults."""
-        from volundr.domain.models import WorkspaceTemplate
+        from volundr.domain.models import LaunchSpec
 
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="fullstack",
             model="claude-opus-4-20250514",
             repos=[
                 {"url": "https://github.com/org/fullstack-app", "branch": "develop"},
             ],
         )
-        template_provider = InMemoryTemplateProvider([template])
+        launch_spec_provider = InMemoryLaunchSpecProvider([template])
         service = SessionService(
             repository,
             pod_manager,
-            template_provider=template_provider,
+            launch_spec_provider=launch_spec_provider,
         )
 
         # Pass empty strings for repo/model to simulate "no explicit value"
@@ -1067,7 +1200,7 @@ class TestSessionServiceCreateWithTemplate:
             name="my-session",
             model="",
             source=GitSource(repo="", branch="main"),
-            template_name="fullstack",
+            launch_spec="fullstack",
         )
 
         assert session.repo == "https://github.com/org/fullstack-app"
@@ -1078,20 +1211,20 @@ class TestSessionServiceCreateWithTemplate:
         self, repository: Repo, pod_manager: Pods
     ):
         """create_session with template_name but explicit values override template defaults."""
-        from volundr.domain.models import WorkspaceTemplate
+        from volundr.domain.models import LaunchSpec
 
-        template = WorkspaceTemplate(
+        template = LaunchSpec(
             name="fullstack",
             model="claude-opus-4-20250514",
             repos=[
                 {"url": "https://github.com/org/fullstack-app", "branch": "develop"},
             ],
         )
-        template_provider = InMemoryTemplateProvider([template])
+        launch_spec_provider = InMemoryLaunchSpecProvider([template])
         service = SessionService(
             repository,
             pod_manager,
-            template_provider=template_provider,
+            launch_spec_provider=launch_spec_provider,
         )
 
         # Caller provides explicit repo, branch, and model — they should win.
@@ -1099,7 +1232,7 @@ class TestSessionServiceCreateWithTemplate:
             name="my-session",
             model="claude-sonnet-4-20250514",
             source=GitSource(repo="https://github.com/other/repo", branch="main"),
-            template_name="fullstack",
+            launch_spec="fullstack",
         )
 
         assert session.repo == "https://github.com/other/repo"

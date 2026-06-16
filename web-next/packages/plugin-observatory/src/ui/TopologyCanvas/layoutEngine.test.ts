@@ -811,6 +811,68 @@ describe('computeLayout', () => {
     expect(positions.get('service-root')).toBeDefined();
   });
 
+  it('sizes namespace containers around discovered workloads and wardens', () => {
+    const topology: Topology = {
+      timestamp: '2026-06-14T00:00:00Z',
+      nodes: [
+        {
+          id: 'cluster-ymir',
+          typeId: 'cluster',
+          label: 'ymir',
+          parentId: null,
+          status: 'healthy',
+        },
+        {
+          id: 'namespace-ymir-volundr',
+          typeId: 'namespace',
+          label: 'volundr',
+          parentId: 'cluster-ymir',
+          status: 'healthy',
+        },
+        {
+          id: 'k8s:ymir:volundr:deployment:niuu-mimir-shared',
+          typeId: 'mimir',
+          label: 'niuu-mimir-shared',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+        {
+          id: 'k8s:ymir:volundr:deployment:mimir-shared-warden-agent',
+          typeId: 'ravn_long',
+          label: 'mimir-shared-warden-agent',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+        {
+          id: 'k8s:ymir:volundr:service:niuu-ravn',
+          typeId: 'ravn_long',
+          label: 'niuu-ravn',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+    const namespace = positions.get('namespace-ymir-volundr')!;
+    const namespaceRadius = Math.max(
+      (namespace.containerWidth ?? 0) / 2,
+      (namespace.containerHeight ?? 0) / 2,
+    );
+    const warden = positions.get('k8s:ymir:volundr:deployment:mimir-shared-warden-agent')!;
+    const mimir = positions.get('k8s:ymir:volundr:deployment:niuu-mimir-shared')!;
+
+    expect(namespace.containerWidth).toBeGreaterThanOrEqual(LAYOUT.NAMESPACE_INNER_RADIUS * 2);
+    expect(Math.hypot(warden.x - namespace.x, warden.y - namespace.y)).toBeLessThanOrEqual(
+      namespaceRadius,
+    );
+    expect(Math.hypot(mimir.x - namespace.x, mimir.y - namespace.y)).toBeLessThanOrEqual(
+      namespaceRadius,
+    );
+    expect(Math.hypot(warden.x - mimir.x, warden.y - mimir.y)).toBeGreaterThan(0);
+  });
+
   it('scatters fallback children around already-positioned non-container parents', () => {
     const topology: Topology = {
       timestamp: '2026-04-19T00:00:00Z',

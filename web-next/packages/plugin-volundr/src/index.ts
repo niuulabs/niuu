@@ -4,7 +4,7 @@ import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { SessionsPage } from './ui/SessionsPage';
 import { VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
-import { TemplatesPage } from './ui/TemplatesPage';
+import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
 
 export const volundrPlugin = definePlugin({
@@ -15,7 +15,7 @@ export const volundrPlugin = definePlugin({
   tabs: [
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
-    { id: 'templates', label: 'Templates', path: '/volundr/templates' },
+    { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
   ],
   routes: (rootRoute) => [
     createRoute({
@@ -61,8 +61,8 @@ export const volundrPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/volundr/templates',
-      component: TemplatesPage,
+      path: '/volundr/catalog',
+      component: LaunchCatalogPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -98,7 +98,6 @@ export const volundrPlugin = definePlugin({
 export { createMockVolundrService } from './adapters/mock';
 export { createMockClusterAdapter } from './adapters/mock';
 export { createMockSessionStore } from './adapters/mock';
-export { createMockTemplateStore } from './adapters/mock';
 export { createMockPtyStream } from './adapters/mock';
 export { createMockMetricsStream } from './adapters/mock';
 export { createMockFileSystemPort } from './adapters/mock';
@@ -109,7 +108,6 @@ export { buildVolundrPtyWsAdapter, buildVolundrMetricsSseAdapter } from './adapt
 export type { IVolundrService } from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
 export type { ISessionStore, SessionFilters } from './ports/ISessionStore';
-export type { ITemplateStore } from './ports/ITemplateStore';
 export type { IPtyStream } from './ports/IPtyStream';
 export type { IMetricsStream, MetricPoint } from './ports/IMetricsStream';
 export type { IFileSystemPort, FileTreeNode } from './ports/IFileSystemPort';
@@ -141,7 +139,6 @@ export { toLifecycleState } from './ui/utils/toLifecycleState';
 export type { ExecEntry, ExecStatus } from './domain/exec';
 export { appendExecEntry, updateExecEntry } from './domain/exec';
 export type { PodSpec, Mount, MountSource, ResourceSpec, MountKind } from './domain/pod';
-export type { Template } from './domain/template';
 export type { Cluster, ClusterNode, ClusterCapacity, NodeStatus } from './domain/cluster';
 export type { Quota, QuotaLimit, QuotaScope } from './domain/quota';
 
@@ -155,8 +152,8 @@ export type {
   VolundrLog,
   VolundrAggregatedLog,
   VolundrLogParticipant,
-  VolundrTemplate,
-  VolundrPreset,
+  VolundrLaunchSpec,
+  LaunchScope,
   SessionChronicle,
   PullRequest,
   MergeResult,
@@ -167,4 +164,7 @@ export type {
   SecretType,
   SessionSource,
   SessionDefinition,
+  SessionOrigin,
+  ExternalSession,
+  ExternalSessionHarness,
 } from './models/volundr.model';

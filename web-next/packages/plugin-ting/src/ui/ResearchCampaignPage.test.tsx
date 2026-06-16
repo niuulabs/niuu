@@ -9,6 +9,7 @@ import { ResearchCampaignPage } from './ResearchCampaignPage';
 
 const mockNavigate = vi.fn();
 const mockSetTweak = vi.fn();
+const mockOpenEventStream = vi.hoisted(() => vi.fn());
 let mockSlug = 'local-model-serving';
 
 vi.mock('@tanstack/react-router', () => ({
@@ -16,10 +17,9 @@ vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ slug: mockSlug }),
 }));
 
-class MockEventSource {
-  addEventListener = vi.fn();
-  close = vi.fn();
-}
+vi.mock('@niuulabs/query', () => ({
+  openEventStream: mockOpenEventStream,
+}));
 
 const now = '2026-05-25T12:00:00.000Z';
 
@@ -758,9 +758,10 @@ describe('ResearchCampaignPage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockSetTweak.mockClear();
+    mockOpenEventStream.mockReset();
+    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
     mockSlug = 'local-model-serving';
     window.history.replaceState({}, '', '/');
-    vi.stubGlobal('EventSource', MockEventSource);
     vi.stubGlobal(
       'confirm',
       vi.fn(() => true),

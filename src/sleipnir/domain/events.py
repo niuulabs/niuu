@@ -26,6 +26,16 @@ EVENT_NAMESPACES: dict[str, str] = {
     "skuld": "Skuld broker events (session pod activity, tool use, token updates)",
     "mimir": "Mimir knowledge-base events (page writes, dream cycles)",
     "github": "GitHub webhook events (PR opened/merged, push to main, issue opened)",
+    "environment": "Environment lifecycle and operational-state events",
+    "signal": "Normalized external signals consumed by resident Valkyries",
+    "valkyrie": "Resident Valkyrie state, judgment, and action events",
+    "odin": "ODIN court deliberation and resolution events",
+    "attention": "Attention-routing, escalation, and notification decisions",
+    "feedback": "Human or system feedback on signals, judgments, actions, and attention",
+    "learning": "Private, Environment, Flock, domain, and shared learning events",
+    "flock": "Flock membership, learning exchange, canary, and adoption events",
+    "participant": "Human, agent, tool, and surface presence events",
+    "room": "Replayable huddle/room lifecycle and transcript events",
 }
 
 #: Known high-level domain tags for events.

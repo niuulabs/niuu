@@ -213,6 +213,11 @@ __marimo__/
 # MCP
 .mcp.json
 
+# Local agent/runtime state
+.flock/
+.skuld-tools/
+.volundr/
+
 # Worktrees
 .claude/worktrees
 

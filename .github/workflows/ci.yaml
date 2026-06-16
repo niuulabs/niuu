@@ -37,7 +37,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
@@ -74,7 +74,7 @@ jobs:
               regex = re.compile(pattern)
               return any(regex.search(path) for path in changed)
 
-          all_containers = ["skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
+          all_containers = ["agent", "skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
 
           if full_tier:
               outputs = {
@@ -90,6 +90,7 @@ jobs:
               web_changed = matches(r"^web-next/")
               helm_changed = matches(r"^charts/")
               container_triggers = {
+                  "agent": r"^containers/agent/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/devrunner/",
                   "volundr-web": r"^containers/volundr-web/|^web-next/",
@@ -170,7 +171,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -210,7 +211,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -254,7 +255,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # NATS requires --jetstream flag which GHA service containers can't pass.
       # Start it manually with docker run instead.
@@ -307,7 +308,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Playwright temporarily disabled
         run: echo "Skipping Playwright until visual baselines are stabilized."
@@ -339,7 +340,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
@@ -380,7 +381,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
@@ -501,7 +502,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install Helm
         run: |
@@ -526,7 +527,7 @@ jobs:
               --set auth.postgresPassword=test \
               --set auth.database=volundr \
               --set primary.persistence.enabled=false \
-              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting;" \
+              --set primary.initdb.scripts."init\.sql"="CREATE DATABASE ting; CREATE DATABASE guild;" \
               --wait --timeout 120s; then
               exit 0
             fi
@@ -555,6 +556,14 @@ jobs:
             --set image.tag="pr-${{ github.event.number }}" \
             --wait --timeout 120s
 
+      - name: Install Guild chart
+        run: |
+          helm install guild charts/guild/ \
+            -f charts/guild/ci-values.yaml \
+            --set global.imagePullSecrets[0]=ghcr-pull-secret \
+            --set image.tag="pr-${{ github.event.number }}" \
+            --wait --timeout 120s
+
       - name: Install Ting chart
         run: |
           helm install ting charts/ting/ \
@@ -574,6 +583,9 @@ jobs:
       - name: Verify Volundr pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s
 
+      - name: Verify Guild pods are ready
+        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=guild --timeout=60s
+
       - name: Verify Ting pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ting --timeout=60s
 
@@ -586,6 +598,14 @@ jobs:
           PF_PID=$!
           sleep 3
           curl -sf http://localhost:8080/health
+          kill $PF_PID || true
+
+      - name: Health check Guild
+        run: |
+          kubectl port-forward svc/guild 8084:80 &
+          PF_PID=$!
+          sleep 3
+          curl -sf http://localhost:8084/health
           kill $PF_PID || true
 
       - name: Health check Ting
@@ -614,6 +634,8 @@ jobs:
         run: |
           echo "=== Volundr logs ==="
           kubectl logs -l app.kubernetes.io/name=volundr --tail=50 || true
+          echo "=== Guild logs ==="
+          kubectl logs -l app.kubernetes.io/name=guild --all-containers --tail=50 || true
           echo "=== Ting logs ==="
           kubectl logs -l app.kubernetes.io/name=ting --tail=50 || true
           echo "=== Skuld logs ==="
@@ -659,7 +681,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install Helm
         run: |
@@ -674,7 +696,7 @@ jobs:
         run: |
           VERSION="0.0.0-pr.${{ github.event.number }}"
 
-          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -682,6 +704,7 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
+          helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/volundr -d .helm-packages/
@@ -700,6 +723,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/agent-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/bifrost-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/ravn-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
           helm push .helm-packages/skuld-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
@@ -737,12 +761,16 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
           # npm 11.13.0 is the current pinned bootstrap version and still bundles
           # this advisory through its internal socks -> ip-address dependency chain.
-          # Keep dependency review strict elsewhere while allowing this upstream-only case.
-          allow-ghsas: GHSA-v2v4-37r5-5v8g
+          # GHSA-rrmf-rvhw-rf47: low-severity torch.jit.script memory corruption with
+          # NO patched release (<= 2.12.0 covers every published torch); torch arrives
+          # via the optional mimir embeddings extra and jit.script is never invoked on
+          # untrusted input (inference only). Remove once upstream ships a fix.
+          # Keep dependency review strict elsewhere while allowing these upstream-only cases.
+          allow-ghsas: GHSA-v2v4-37r5-5v8g, GHSA-rrmf-rvhw-rf47

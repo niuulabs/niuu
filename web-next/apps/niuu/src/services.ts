@@ -46,7 +46,6 @@ import {
 import {
   createMockVolundrService,
   createMockClusterAdapter,
-  createMockTemplateStore,
   createMockSessionStore,
   buildVolundrHttpAdapter,
   buildVolundrFileSystemHttpAdapter,
@@ -59,13 +58,16 @@ import {
   type Cluster,
   type IVolundrService,
   type ISessionStore,
-  type ITemplateStore,
   type Session,
   type SessionFilters,
-  type Template,
   type VolundrSession,
-  type VolundrTemplate,
 } from '@niuulabs/plugin-volundr';
+import {
+  buildOdinReviewHttpAdapter,
+  buildValkyrieHttpAdapter,
+  createMockOdinReviewService,
+  createMockValkyrieService,
+} from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
 import {
   buildFeatureCatalogAdapter,
@@ -163,7 +165,7 @@ function resolveDirectServiceStatus(
 }
 
 export function toSharedApiBase(baseUrl: string): string {
-  return baseUrl.replace(/\/(?:ting|forge)\/?$/, '');
+  return baseUrl.replace(/\/(?:ting|forge|volundr)\/?$/, '');
 }
 
 export function toHostBase(baseUrl: string): string {
@@ -208,7 +210,7 @@ export function resolveCanonicalServiceBase(
 }
 
 export function resolveForgeServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  return resolveDirectServiceBase(config, 'forge', 'volundr');
+  return resolveDirectServiceBase(config, 'forge');
 }
 
 function resolveRepoCatalogBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -244,7 +246,11 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
 }
 
 function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  return resolveDirectServiceBase(config, 'volundr', 'forge');
+  const explicitBase = resolveDirectServiceBase(config, 'volundr');
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/volundr` : null;
 }
 
 function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -272,7 +278,7 @@ function resolveIntegrationsServiceBase(config: Pick<NiuuConfig, 'services'>): s
 }
 
 function resolveForgeStreamWsUrl(config: Pick<NiuuConfig, 'services'>): string | null {
-  const explicitWsUrl = resolveDirectServiceWsUrl(config, 'forge.pty', 'volundr.pty');
+  const explicitWsUrl = resolveDirectServiceWsUrl(config, 'forge.pty');
   if (explicitWsUrl) return explicitWsUrl;
 
   const forgeBase = resolveForgeServiceBase(config);
@@ -280,15 +286,47 @@ function resolveForgeStreamWsUrl(config: Pick<NiuuConfig, 'services'>): string |
 }
 
 function resolveForgeMetricsBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  return resolveDirectServiceBase(config, 'forge.metrics', 'volundr.metrics');
+  return resolveDirectServiceBase(config, 'forge.metrics');
 }
 
 function resolveFilesystemBase(config: Pick<NiuuConfig, 'services'>): string | null {
   const explicitBase = resolveDirectServiceBase(config, 'filesystem');
   if (explicitBase) return explicitBase;
 
-  const forgeBase = resolveForgeServiceBase(config);
-  return forgeBase ? toHostBase(forgeBase) : null;
+  return resolveForgeServiceBase(config);
+}
+
+function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
+  if (explicit.mode === 'live') return explicit;
+
+  const explicitForgeBase = resolveDirectServiceBase(config, 'forge');
+  if (explicitForgeBase) {
+    return {
+      mode: 'live',
+      transport: 'http',
+      target: explicitForgeBase,
+      source: 'forge',
+    };
+  }
+
+  const sharedBase = resolveSharedApiBase(config);
+  if (sharedBase) {
+    return {
+      mode: 'live',
+      transport: 'http',
+      target: `${sharedBase}/forge`,
+      source: 'shared-api',
+    };
+  }
+
+  return {
+    mode: 'mock',
+    transport: 'mock',
+    target: null,
+    source: 'mock',
+    note: 'No live filesystem API is wired yet.',
+  };
 }
 
 function resolveTingServiceBase(
@@ -317,7 +355,7 @@ function resolveTingServiceBase(
     case 'ting.workflows':
       return explicitBase.replace(/\/workflows\/?$/, '');
     case 'ting.research':
-      return explicitBase;
+      return explicitBase.replace(/\/research\/?$/, '');
     default:
       return explicitBase;
   }
@@ -341,6 +379,21 @@ function resolveObservatoryServiceBase(
   if (serviceKey === 'observatory.registry') return groupedBase;
   if (serviceKey === 'observatory.topology') return `${groupedBase}/topology`;
   return `${groupedBase}/events`;
+}
+
+function resolveValkyrieServiceBase(
+  config: Pick<NiuuConfig, 'services'>,
+  serviceKey: 'valkyrie' | 'valkyrie.reviews',
+): string | null {
+  const explicitBase = resolveDirectServiceBase(config, serviceKey);
+  if (explicitBase) return explicitBase;
+
+  const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
+  if (!groupedBase) return null;
+  // The review queue lives beside the dashboard API under /ravn/odin.
+  return serviceKey === 'valkyrie.reviews'
+    ? groupedBase.replace(/\/valkyrie\/?$/, '/odin')
+    : groupedBase;
 }
 
 export function resolveSettingsServiceBase(
@@ -525,7 +578,7 @@ function resolveObservatoryServiceStatus(
 export function buildServiceBackendStatus(
   config: Pick<NiuuConfig, 'services'>,
 ): Record<string, ServiceBackendStatus> {
-  const forgePtyStatus = resolveDirectServiceStatus(config, 'ws', 'forge.pty', 'volundr.pty');
+  const forgePtyStatus = resolveDirectServiceStatus(config, 'ws', 'forge.pty');
   const derivedForgeBase = resolveForgeServiceBase(config);
 
   return {
@@ -543,8 +596,10 @@ export function buildServiceBackendStatus(
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
+    valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
+    'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
     'niuu.repos': resolveRepoCatalogStatus(config),
-    forge: resolveDirectServiceStatus(config, 'http', 'forge', 'volundr'),
+    forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
       forgePtyStatus.mode === 'live'
         ? forgePtyStatus
@@ -556,7 +611,7 @@ export function buildServiceBackendStatus(
               source: 'forge',
             }
           : forgePtyStatus,
-    'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics', 'volundr.metrics'),
+    'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics'),
     ting: resolveDirectServiceStatus(config, 'http', 'ting'),
     'ting.dispatcher': resolveDirectServiceStatus(config, 'http', 'ting.dispatcher', 'ting'),
     'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),
@@ -566,26 +621,7 @@ export function buildServiceBackendStatus(
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
-    filesystem: (() => {
-      const explicit = resolveDirectServiceStatus(config, 'http', 'filesystem');
-      if (explicit.mode === 'live') return explicit;
-      const derivedBase = resolveFilesystemBase(config);
-      if (derivedBase) {
-        return {
-          mode: 'live',
-          transport: 'http',
-          target: derivedBase,
-          source: 'forge-host',
-        } satisfies ServiceBackendStatus;
-      }
-      return {
-        mode: 'mock',
-        transport: 'mock',
-        target: null,
-        source: 'mock',
-        note: 'No live filesystem API is wired yet.',
-      } satisfies ServiceBackendStatus;
-    })(),
+    filesystem: resolveFilesystemStatus(config),
   };
 }
 
@@ -699,133 +735,56 @@ function toDomainSession(session: VolundrSession): Session {
     tokensOut: 0,
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
+    origin: session.origin,
   };
 }
 
-function mergeVolundrSessions(
-  primarySessions: VolundrSession[],
-  aggregateSessions: VolundrSession[],
-): VolundrSession[] {
-  const byId = new Map<string, VolundrSession>();
-  for (const session of [...primarySessions, ...aggregateSessions]) {
-    byId.set(session.id, session);
-  }
-  return Array.from(byId.values());
-}
-
-async function safeVolundrSessionList(
-  loader: () => Promise<VolundrSession[]>,
-): Promise<VolundrSession[]> {
-  try {
-    return await loader();
-  } catch {
-    return [];
-  }
-}
-
-async function safeVolundrSessionDetail(
-  loader: () => Promise<VolundrSession | null>,
-): Promise<VolundrSession | null> {
-  try {
-    return await loader();
-  } catch {
-    return null;
-  }
-}
-
-async function serviceOwnsSession(service: IVolundrService, sessionId: string): Promise<boolean> {
-  const [active, archived] = await Promise.all([
-    safeVolundrSessionList(() => service.getSessions()),
-    safeVolundrSessionList(() => service.listArchivedSessions()),
-  ]);
-  return [...active, ...archived].some((session) => session.id === sessionId);
-}
-
-function buildMultiVolundrService(
-  primary: IVolundrService,
-  aggregate: IVolundrService,
+function buildSplitVolundrService(
+  catalog: IVolundrService,
+  forge: IVolundrService,
 ): IVolundrService {
-  const subscribeMerged = (callback: (sessions: VolundrSession[]) => void) => {
-    let latestPrimary: VolundrSession[] = [];
-    let latestAggregate: VolundrSession[] = [];
-    const publish = () => {
-      callback(mergeVolundrSessions(latestPrimary, latestAggregate));
-    };
-    const unsubscribePrimary = primary.subscribe((sessions) => {
-      latestPrimary = sessions;
-      publish();
-    });
-    const unsubscribeAggregate = aggregate.subscribe((sessions) => {
-      latestAggregate = sessions;
-      publish();
-    });
-    return () => {
-      unsubscribePrimary();
-      unsubscribeAggregate();
-    };
-  };
-
-  const resolveSessionMutationTarget = async (sessionId: string): Promise<IVolundrService> => {
-    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
-    if (await serviceOwnsSession(primary, sessionId)) return primary;
-    return aggregate;
-  };
-
-  const resolveSessionReadTarget = async (sessionId: string): Promise<IVolundrService> => {
-    if (await serviceOwnsSession(aggregate, sessionId)) return aggregate;
-    if (await serviceOwnsSession(primary, sessionId)) return primary;
-    return aggregate;
-  };
-
   return {
-    ...primary,
-    getTargets: () => aggregate.getTargets(),
-    getSessions: async () =>
-      mergeVolundrSessions(
-        await safeVolundrSessionList(() => primary.getSessions()),
-        await safeVolundrSessionList(() => aggregate.getSessions()),
-      ),
-    getSession: async (id) =>
-      safeVolundrSessionDetail(() =>
-        resolveSessionReadTarget(id).then((svc) => svc.getSession(id)),
-      ),
-    getActiveSessions: async () =>
-      mergeVolundrSessions(
-        await safeVolundrSessionList(() => primary.getActiveSessions()),
-        await safeVolundrSessionList(() => aggregate.getActiveSessions()),
-      ),
-    getStats: () => aggregate.getStats(),
-    startSession: (config) => aggregate.startSession(config),
-    subscribe: subscribeMerged,
-    subscribeStats: (callback) => aggregate.subscribeStats(callback),
-    stopSession: async (sessionId) =>
-      (await resolveSessionMutationTarget(sessionId)).stopSession(sessionId),
-    deleteSession: async (sessionId, cleanup) =>
-      (await resolveSessionMutationTarget(sessionId)).deleteSession(sessionId, cleanup),
-    archiveSession: async (sessionId) =>
-      (await resolveSessionMutationTarget(sessionId)).archiveSession(sessionId),
-    restoreSession: async (sessionId) =>
-      (await resolveSessionMutationTarget(sessionId)).restoreSession(sessionId),
-    listArchivedSessions: async () =>
-      mergeVolundrSessions(
-        await safeVolundrSessionList(() => primary.listArchivedSessions()),
-        await safeVolundrSessionList(() => aggregate.listArchivedSessions()),
-      ),
-    getMessages: async (sessionId) =>
-      (await resolveSessionReadTarget(sessionId)).getMessages(sessionId),
-    sendMessage: async (sessionId, content) =>
-      (await resolveSessionReadTarget(sessionId)).sendMessage(sessionId, content),
-    subscribeMessages: (sessionId, callback) => aggregate.subscribeMessages(sessionId, callback),
-    getLogs: async (sessionId, limit) =>
-      (await resolveSessionReadTarget(sessionId)).getLogs(sessionId, limit),
-    subscribeLogs: (sessionId, callback) => aggregate.subscribeLogs(sessionId, callback),
-    getAggregatedLogs: async (sessionId, options) =>
-      (await resolveSessionReadTarget(sessionId)).getAggregatedLogs(sessionId, options),
+    ...catalog,
+    getFeatures: () => forge.getFeatures(),
+    getSessions: () => forge.getSessions(),
+    getSession: (id) => forge.getSession(id),
+    getActiveSessions: () => forge.getActiveSessions(),
+    getStats: () => forge.getStats(),
+    getRepos: () => forge.getRepos(),
+    getTargets: () => forge.getTargets(),
+    subscribe: (callback) => forge.subscribe(callback),
+    subscribeStats: (callback) => forge.subscribeStats(callback),
+    getAvailableMcpServers: () => forge.getAvailableMcpServers(),
+    getAvailableSecrets: () => forge.getAvailableSecrets(),
+    createSecret: (name, data) => forge.createSecret(name, data),
+    getClusterResources: () => forge.getClusterResources(),
+    getAdminSettings: () => forge.getAdminSettings(),
+    updateAdminSettings: (data) => forge.updateAdminSettings(data),
+    startSession: (config) => forge.startSession(config),
+    evaluatePermissionAutoApproval: (sessionId, request) =>
+      forge.evaluatePermissionAutoApproval(sessionId, request),
+    connectSession: (config) => forge.connectSession(config),
+    updateSession: (sessionId, updates) => forge.updateSession(sessionId, updates),
+    stopSession: (sessionId) => forge.stopSession(sessionId),
+    resumeSession: (sessionId) => forge.resumeSession(sessionId),
+    deleteSession: (sessionId, cleanup) => forge.deleteSession(sessionId, cleanup),
+    archiveSession: (sessionId) => forge.archiveSession(sessionId),
+    archiveStoppedSessions: () => forge.archiveStoppedSessions(),
+    restoreSession: (sessionId) => forge.restoreSession(sessionId),
+    listArchivedSessions: () => forge.listArchivedSessions(),
+    listExternalSessions: () => forge.listExternalSessions(),
+    importExternalSession: (provider, externalId, name) =>
+      forge.importExternalSession(provider, externalId, name),
+    getMessages: (sessionId) => forge.getMessages(sessionId),
+    sendMessage: (sessionId, content) => forge.sendMessage(sessionId, content),
+    subscribeMessages: (sessionId, callback) => forge.subscribeMessages(sessionId, callback),
+    getLogs: (sessionId, limit) => forge.getLogs(sessionId, limit),
+    subscribeLogs: (sessionId, callback) => forge.subscribeLogs(sessionId, callback),
+    getAggregatedLogs: (sessionId, options) => forge.getAggregatedLogs(sessionId, options),
     subscribeAggregatedLogs: (sessionId, options, callback) =>
-      aggregate.subscribeAggregatedLogs(sessionId, options, callback),
-    getChronicle: async (sessionId) =>
-      (await resolveSessionReadTarget(sessionId)).getChronicle(sessionId),
-    subscribeChronicle: (sessionId, callback) => aggregate.subscribeChronicle(sessionId, callback),
+      forge.subscribeAggregatedLogs(sessionId, options, callback),
+    getChronicle: (sessionId) => forge.getChronicle(sessionId),
+    subscribeChronicle: (sessionId, callback) => forge.subscribeChronicle(sessionId, callback),
   };
 }
 
@@ -900,16 +859,6 @@ function buildVolundrSessionStore(volundr: IVolundrService): ISessionStore {
   };
 }
 
-type ForgeTemplateRecord = VolundrTemplate & {
-  createdAt?: string;
-  updatedAt?: string;
-  env_vars?: Record<string, string>;
-  env_secret_refs?: string[];
-  resource_config?: Record<string, unknown>;
-  mcp_servers?: Array<Record<string, unknown>>;
-  workload_config?: Record<string, unknown>;
-};
-
 function parseMemoryToMi(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'string') return fallback;
@@ -951,21 +900,6 @@ function parseIntegerResource(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function toStringRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object') return {};
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, string] => typeof entry[1] === 'string',
-    ),
-  );
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : [];
-}
-
 type ClusterResourceRecord = {
   resourceTypes?: Array<{ name?: string; resourceKey?: string }>;
   nodes?: Array<{
@@ -976,170 +910,6 @@ type ClusterResourceRecord = {
     available?: Record<string, string>;
   }>;
 };
-
-function toTemplateSpec(raw: ForgeTemplateRecord): Template['spec'] {
-  const workloadConfig =
-    raw.workloadConfig && typeof raw.workloadConfig === 'object'
-      ? raw.workloadConfig
-      : raw.workload_config;
-  const resourceConfig =
-    raw.resourceConfig && typeof raw.resourceConfig === 'object'
-      ? raw.resourceConfig
-      : raw.resource_config;
-  const env = toStringRecord(raw.envVars ?? raw.env_vars);
-  const envSecretRefs = toStringArray(raw.envSecretRefs ?? raw.env_secret_refs);
-  const tools = toStringArray((workloadConfig as Record<string, unknown> | undefined)?.tools);
-  const ttlSec = Number((workloadConfig as Record<string, unknown> | undefined)?.ttlSec ?? 3600);
-  const idleTimeoutSec = Number(
-    (workloadConfig as Record<string, unknown> | undefined)?.idleTimeoutSec ?? 600,
-  );
-  const imageValue = (workloadConfig as Record<string, unknown> | undefined)?.image;
-  const imageRef =
-    typeof imageValue === 'string' && imageValue.length > 0
-      ? imageValue
-      : 'ghcr.io/niuulabs/skuld:latest';
-  const imageTagIndex = imageRef.lastIndexOf(':');
-  const image =
-    imageTagIndex > imageRef.lastIndexOf('/') ? imageRef.slice(0, imageTagIndex) : imageRef;
-  const tag =
-    imageTagIndex > imageRef.lastIndexOf('/') ? imageRef.slice(imageTagIndex + 1) : 'latest';
-
-  const mounts: Template['spec']['mounts'] = Array.isArray(raw.repos)
-    ? raw.repos.reduce<Template['spec']['mounts']>((acc, repo, index) => {
-        if (!repo || typeof repo !== 'object') return acc;
-        const url = typeof repo.url === 'string' ? repo.url : null;
-        if (!url) return acc;
-        const branch = typeof repo.branch === 'string' ? repo.branch : 'main';
-        const name =
-          typeof repo.name === 'string'
-            ? repo.name
-            : typeof repo.repo === 'string'
-              ? repo.repo
-              : `repo-${index + 1}`;
-        const mountPath =
-          typeof repo.path === 'string'
-            ? repo.path
-            : `/workspace/${name.replace(/[^a-zA-Z0-9._-]+/g, '-')}`;
-        acc.push({
-          name,
-          mountPath,
-          source: { kind: 'git', repo: url, branch },
-          readOnly: false,
-        });
-        return acc;
-      }, [])
-    : [];
-
-  const resourceMap = (resourceConfig as Record<string, unknown> | undefined) ?? {};
-  const mcpServers: NonNullable<Template['spec']['mcpServers']> = Array.isArray(
-    raw.mcpServers ?? raw.mcp_servers,
-  )
-    ? (raw.mcpServers ?? raw.mcp_servers)!.reduce<NonNullable<Template['spec']['mcpServers']>>(
-        (acc, server, index) => {
-          const record =
-            server && typeof server === 'object'
-              ? (server as unknown as Record<string, unknown>)
-              : {};
-          const transport = typeof record.transport === 'string' ? record.transport : 'stdio';
-          const connectionString =
-            typeof record.connectionString === 'string'
-              ? record.connectionString
-              : typeof record.command === 'string'
-                ? record.command
-                : typeof record.url === 'string'
-                  ? record.url
-                  : '';
-          acc.push({
-            name: typeof record.name === 'string' ? record.name : `server-${index + 1}`,
-            transport,
-            connectionString,
-            tools: toStringArray(record.tools),
-          });
-          return acc;
-        },
-        [],
-      )
-    : [];
-
-  return {
-    image,
-    tag,
-    mounts,
-    env,
-    envSecretRefs,
-    tools,
-    mcpServers,
-    resources: {
-      cpuRequest: String(
-        resourceMap.cpuRequest ?? resourceMap.cpu_request ?? resourceMap.cpu ?? '1',
-      ),
-      cpuLimit: String(resourceMap.cpuLimit ?? resourceMap.cpu_limit ?? resourceMap.cpu ?? '2'),
-      memRequestMi: parseMemoryToMi(
-        resourceMap.memRequestMi ??
-          resourceMap.memoryRequestMi ??
-          resourceMap.memory_request ??
-          resourceMap.memory,
-        1024,
-      ),
-      memLimitMi: parseMemoryToMi(
-        resourceMap.memLimitMi ??
-          resourceMap.memoryLimitMi ??
-          resourceMap.memory_limit ??
-          resourceMap.memory,
-        2048,
-      ),
-      gpuCount: Number(resourceMap.gpuCount ?? resourceMap.gpu ?? 0),
-    },
-    ttlSec: Number.isFinite(ttlSec) ? ttlSec : 3600,
-    idleTimeoutSec: Number.isFinite(idleTimeoutSec) ? idleTimeoutSec : 600,
-    clusterAffinity: toStringArray(
-      (workloadConfig as Record<string, unknown> | undefined)?.clusterAffinity ??
-        (workloadConfig as Record<string, unknown> | undefined)?.cluster_affinity,
-    ),
-    tolerations: toStringArray(
-      (workloadConfig as Record<string, unknown> | undefined)?.tolerations,
-    ),
-  };
-}
-
-function toDomainTemplate(raw: ForgeTemplateRecord): Template {
-  return {
-    id: raw.name,
-    name: raw.name,
-    description: raw.description || undefined,
-    version: 1,
-    spec: toTemplateSpec(raw),
-    createdAt: raw.createdAt ?? new Date(0).toISOString(),
-    updatedAt: raw.updatedAt ?? new Date(0).toISOString(),
-  };
-}
-
-function buildVolundrTemplateStore(volundr: IVolundrService): ITemplateStore {
-  return {
-    async getTemplate(id: string) {
-      const template = (await volundr.getTemplate(id)) as ForgeTemplateRecord | null;
-      return template ? toDomainTemplate(template) : null;
-    },
-    async listTemplates() {
-      return ((await volundr.getTemplates()) as ForgeTemplateRecord[]).map(toDomainTemplate);
-    },
-    async createTemplate() {
-      throw new Error(
-        'Template creation is not yet supported through the live forge template adapter.',
-      );
-    },
-    async updateTemplate() {
-      throw new Error(
-        'Template updates are not yet supported through the live forge template adapter.',
-      );
-    },
-    async deleteTemplate() {
-      throw new Error(
-        'Template deletion is not yet supported through the live forge template adapter.',
-      );
-    },
-  };
-}
 
 function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status'] {
   switch (session.status) {
@@ -1292,25 +1062,20 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildBifrostHttpAdapter(createApiClient(bifrostBase))
     : createMockBifrostService();
 
-  // ── Völundr request/response ──
+  // ── Völundr catalog + Forge runtime ──
   const forgeBase = resolveForgeServiceBase(config);
   const volundrBase = resolveVolundrServiceBase(config);
-  const primaryVolundr = volundrBase
+  const forgeVolundr = forgeBase
+    ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
+        niuuBasePath: resolveNiuuRegistryBase(config),
+      })
+    : createMockVolundrService();
+  const catalogVolundr = volundrBase
     ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
     : createMockVolundrService();
-  const niuuRegistryBase = resolveNiuuRegistryBase(config);
-  const aggregateVolundr =
-    niuuRegistryBase != null
-      ? buildVolundrHttpAdapter(createApiClient(`${niuuRegistryBase}/volundr`), undefined, {
-          niuuBasePath: niuuRegistryBase,
-        })
-      : null;
-  const volundr =
-    aggregateVolundr != null
-      ? buildMultiVolundrService(primaryVolundr, aggregateVolundr)
-      : primaryVolundr;
+  const volundr = buildSplitVolundrService(catalogVolundr, forgeVolundr);
   const repoCatalogBase = resolveRepoCatalogBase(config);
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))
@@ -1319,8 +1084,6 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const clusterAdapter = forgeBase
     ? buildVolundrClusterAdapter(volundr)
     : createMockClusterAdapter();
-  const templateStore = forgeBase ? buildVolundrTemplateStore(volundr) : createMockTemplateStore();
-
   // ── Völundr streams: keyed as separate services so they can be flipped
   //    independently (e.g. mock PTY with live metrics during bring-up). ──
   const forgePtyWsUrl = resolveForgeStreamWsUrl(config);
@@ -1349,6 +1112,15 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
     : createMockEventStream();
+  // ── Valkyrie ──
+  const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
+  const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
+  const valkyrie = valkyrieBase
+    ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
+    : createMockValkyrieService();
+  const valkyrieReviews = valkyrieReviewsBase
+    ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
+    : createMockOdinReviewService();
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1422,9 +1194,8 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     features: featureCatalogService,
     identity: identityService,
     filesystem,
-    // NIU-678 pages (ClustersPage, TemplatesPage, HistoryPage)
+    // NIU-678 pages (ClustersPage, HistoryPage)
     'volundr.clusters': clusterAdapter,
-    'volundr.templates': templateStore,
     'volundr.sessions': sessionStore,
     // VolundrPage overview hooks (useVolundrClusters, useSessionStore)
     clusterAdapter,
@@ -1432,5 +1203,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.registry': observatoryRegistry,
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
+    valkyrie,
+    'valkyrie.reviews': valkyrieReviews,
   };
 }

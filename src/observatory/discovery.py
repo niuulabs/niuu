@@ -1,9 +1,9 @@
-"""Guild-backed discovery for Observatory topology and event streams."""
+"""Adapter-backed discovery for Observatory topology and event streams."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,6 +13,11 @@ import httpx
 
 from niuu.ports.http_auth import HttpAuthPort
 from observatory.contracts import ObservatorySnapshot
+from observatory.entity_discovery import (
+    DiscoveryAdapter,
+    DiscoveryResult,
+    topology_from_discovery,
+)
 
 JsonFetcher = Callable[[str], Awaitable[Any]]
 
@@ -30,7 +35,7 @@ def _utc_now() -> datetime:
 
 
 class ObservatoryDiscoveryService:
-    """Reads Observatory discovery data from the Guild snapshot endpoint."""
+    """Materializes Observatory topology from configured discovery adapters."""
 
     def __init__(
         self,
@@ -41,6 +46,7 @@ class ObservatoryDiscoveryService:
         timeout_seconds: float = 4.0,
         transport: httpx.AsyncBaseTransport | None = None,
         fetch_json: JsonFetcher | None = None,
+        discovery_adapter: DiscoveryAdapter | None = None,
     ) -> None:
         self._guild_url = guild_url.rstrip("/")
         self._auth = auth
@@ -48,9 +54,9 @@ class ObservatoryDiscoveryService:
         self._timeout = timeout_seconds
         self._transport = transport
         self._fetch_json = fetch_json
+        self._discovery_adapter = discovery_adapter
         self._lock = asyncio.Lock()
-        self._cached_at: datetime | None = None
-        self._cached_snapshot: DiscoverySnapshot | None = None
+        self._cached: dict[str, tuple[datetime, DiscoverySnapshot]] = {}
 
     @property
     def guild_url(self) -> str:
@@ -62,71 +68,58 @@ class ObservatoryDiscoveryService:
         """Backwards-compatible alias for callers that still read base_url."""
         return self._guild_url
 
-    async def get_topology_snapshot(self) -> ObservatorySnapshot:
-        return deepcopy((await self._get_snapshot()).topology)
+    async def get_topology_snapshot(
+        self,
+        headers: Mapping[str, str] | None = None,
+    ) -> ObservatorySnapshot:
+        return deepcopy((await self._get_snapshot(headers=headers)).topology)
 
-    async def get_events(self) -> list[dict[str, str]]:
-        return deepcopy((await self._get_snapshot()).events)
+    async def get_events(
+        self,
+        headers: Mapping[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        return deepcopy((await self._get_snapshot(headers=headers)).events)
 
-    async def _get_snapshot(self) -> DiscoverySnapshot:
+    async def _get_snapshot(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
         now = _utc_now()
-        if (
-            self._cached_snapshot is not None
-            and self._cached_at is not None
-            and now - self._cached_at < self._ttl
-        ):
-            return self._cached_snapshot
+        cache_key = "request" if headers else "default"
+        cached = self._cached.get(cache_key)
+        if cached is not None:
+            cached_at, cached_snapshot = cached
+            if now - cached_at < self._ttl:
+                return cached_snapshot
 
         async with self._lock:
             now = _utc_now()
-            if (
-                self._cached_snapshot is not None
-                and self._cached_at is not None
-                and now - self._cached_at < self._ttl
-            ):
-                return self._cached_snapshot
+            cached = self._cached.get(cache_key)
+            if cached is not None:
+                cached_at, cached_snapshot = cached
+                if now - cached_at < self._ttl:
+                    return cached_snapshot
 
-            snapshot = await self._discover()
-            self._cached_snapshot = snapshot
-            self._cached_at = now
+            snapshot = await self._discover(headers=headers)
+            self._cached[cache_key] = (now, snapshot)
             return snapshot
 
-    async def _discover(self) -> DiscoverySnapshot:
-        if self._fetch_json is not None:
-            payload = await self._safe_fetch(
-                self._fetch_json,
-                "/api/v1/niuu/observatory/snapshot",
+    async def _discover(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
+        if self._discovery_adapter is None:
+            result = DiscoveryResult(
+                events=[
+                    {
+                        "id": "observatory:discovery:not-configured",
+                        "type": "warning",
+                        "service": "observatory",
+                        "subject": "discovery",
+                        "body": "No Observatory discovery adapters are configured",
+                        "message": "No Observatory discovery adapters are configured",
+                        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
+                    }
+                ]
             )
         else:
-            async with httpx.AsyncClient(
-                base_url=self._guild_url,
-                timeout=self._timeout,
-                transport=self._transport,
-            ) as client:
-
-                async def client_fetch(path: str) -> Any:
-                    response = await client.get(path, headers=self._auth.headers())
-                    response.raise_for_status()
-                    return response.json()
-
-                payload = await self._safe_fetch(client_fetch, "/api/v1/niuu/observatory/snapshot")
-
-        if not isinstance(payload, dict):
-            payload = {}
-        events = payload.get("events")
-        topology: ObservatorySnapshot = {
-            key: value for key, value in payload.items() if key != "events"
-        }
-        if not isinstance(events, list):
-            events = []
-        if "nodes" not in topology or not isinstance(topology.get("nodes"), list):
-            topology.setdefault("nodes", [])
-        if "edges" not in topology or not isinstance(topology.get("edges"), list):
-            topology.setdefault("edges", [])
-        if "layoutHints" in topology and not isinstance(topology.get("layoutHints"), dict):
-            topology.pop("layoutHints", None)
-        if "timestamp" not in topology:
-            topology["timestamp"] = _utc_now().isoformat().replace("+00:00", "Z")
+            result = await self._discovery_adapter.discover()
+        topology = topology_from_discovery(result)
+        events = topology.pop("events", [])
         return DiscoverySnapshot(topology=topology, events=events)
 
     async def _safe_fetch(self, fetch: JsonFetcher, path: str) -> Any:

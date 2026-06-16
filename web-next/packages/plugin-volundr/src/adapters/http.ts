@@ -33,8 +33,7 @@ import type {
   CIStatusValue,
   McpServer,
   McpServerConfig,
-  VolundrPreset,
-  VolundrTemplate,
+  VolundrLaunchSpec,
   TrackerIssue,
   ProjectRepoMapping,
   VolundrIdentity,
@@ -66,6 +65,7 @@ import type {
   VolundrSessionTraceLane,
   VolundrSessionTraceSpan,
   VolundrSessionTraceSummary,
+  ExternalSession,
 } from '../models/volundr.model';
 
 /** Minimal HTTP client — structurally compatible with ApiClient from @niuulabs/query. */
@@ -112,6 +112,8 @@ type SessionPayload = {
   pod_name?: string | null;
   error?: string | null;
   origin?: VolundrSession['origin'];
+  externalSessionId?: string | null;
+  external_session_id?: string | null;
   hostname?: string;
   chatEndpoint?: string | null;
   chat_endpoint?: string | null;
@@ -136,6 +138,21 @@ type SessionPayload = {
   instance_id?: string | null;
   instanceName?: string | null;
   instance_name?: string | null;
+};
+
+type ExternalSessionPayload = {
+  provider: string;
+  harness: ExternalSession['harness'];
+  external_id: string;
+  workspace_path: string;
+  title?: string | null;
+  model?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  live?: boolean;
+  workspace_exists?: boolean;
+  workspace_allowed?: boolean;
+  imported_session_id?: string | null;
 };
 
 type StatsPayload = {
@@ -354,6 +371,7 @@ type InstanceTargetPayload = {
   isDefault?: boolean;
   is_default?: boolean;
   visibility?: string;
+  tags?: string[];
 };
 
 type SessionDefinitionPayload = {
@@ -410,10 +428,12 @@ function buildStartSessionBody(
     source: config.source,
     model: config.model,
     definition: config.definition,
-    template_name: config.templateName,
-    preset_id: config.presetId,
+    launch_spec: config.launchSpec,
+    launch_spec_id: config.launchSpecId,
     terminal_restricted: Boolean(config.terminalRestricted),
     instance_id: config.instanceId ?? null,
+    target_tags: config.targetTags?.length ? config.targetTags : undefined,
+    target_match: config.targetMatch ?? undefined,
     workspace_id: config.workspaceId,
     credential_names: config.credentialNames,
     integration_ids: config.integrationIds,
@@ -473,6 +493,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     podName: session.podName ?? session.pod_name ?? undefined,
     error: session.error ?? undefined,
     origin: session.origin,
+    externalSessionId: session.externalSessionId ?? session.external_session_id ?? null,
     hostname: session.hostname,
     chatEndpoint: session.chatEndpoint ?? session.chat_endpoint ?? undefined,
     codeEndpoint: session.codeEndpoint ?? session.code_endpoint ?? undefined,
@@ -487,6 +508,23 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   };
 }
 
+function normalizeExternalSession(payload: ExternalSessionPayload): ExternalSession {
+  return {
+    provider: payload.provider,
+    harness: payload.harness,
+    externalId: payload.external_id,
+    workspacePath: payload.workspace_path,
+    title: payload.title ?? '',
+    model: payload.model ?? '',
+    createdAt: payload.created_at ?? null,
+    updatedAt: payload.updated_at ?? null,
+    live: Boolean(payload.live),
+    workspaceExists: Boolean(payload.workspace_exists),
+    workspaceAllowed: payload.workspace_allowed ?? true,
+    importedSessionId: payload.imported_session_id ?? null,
+  };
+}
+
 function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
   return {
     id: payload.id,
@@ -496,6 +534,7 @@ function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
     enabled: payload.enabled,
     isDefault: payload.isDefault ?? payload.is_default ?? false,
     visibility: payload.visibility,
+    tags: payload.tags ?? [],
   };
 }
 
@@ -522,7 +561,7 @@ function deriveCanonicalCredentialsBasePath(basePath?: string): string | null {
   if (normalized.endsWith('/api/v1/credentials')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/credentials`;
 
-  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1/credentials');
+  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1/credentials');
   return derived === normalized ? null : derived;
 }
 
@@ -532,10 +571,8 @@ function deriveSharedApiBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1')) return normalized;
   if (normalized.endsWith('/api/v1/niuu')) return normalized.replace(/\/niuu$/, '');
-  if (normalized.endsWith('/api/v1/niuu/volundr'))
-    return normalized.replace(/\/niuu\/volundr$/, '');
 
-  const derived = normalized.replace(/\/api\/v1\/forge$/, '/api/v1');
+  const derived = normalized.replace(/\/api\/v1\/(?:forge|volundr)$/, '/api/v1');
   return derived === normalized ? null : derived;
 }
 
@@ -545,8 +582,16 @@ function deriveCanonicalForgeBasePath(basePath?: string): string | null {
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/forge')) return normalized;
   if (normalized.endsWith('/api/v1')) return `${normalized}/forge`;
-  if (normalized.endsWith('/api/v1/niuu/volundr'))
-    return normalized.replace(/\/niuu\/volundr$/, '/forge');
+  const sharedBasePath = deriveSharedApiBasePath(normalized);
+  return sharedBasePath ? `${sharedBasePath}/forge` : null;
+}
+
+function deriveCanonicalVolundrBasePath(basePath?: string): string | null {
+  if (!basePath) return null;
+
+  const normalized = basePath.replace(/\/$/, '');
+  if (normalized.endsWith('/api/v1/volundr')) return normalized;
+  if (normalized.endsWith('/api/v1')) return `${normalized}/volundr`;
   return null;
 }
 
@@ -555,7 +600,6 @@ function deriveNiuuBasePath(basePath?: string): string | null {
 
   const normalized = basePath.replace(/\/$/, '');
   if (normalized.endsWith('/api/v1/niuu')) return normalized;
-  if (normalized.endsWith('/api/v1/niuu/volundr')) return normalized.replace(/\/volundr$/, '');
 
   const sharedBasePath = deriveSharedApiBasePath(normalized);
   return sharedBasePath ? `${sharedBasePath}/niuu` : null;
@@ -963,12 +1007,14 @@ export const __testables = {
   toEpochMs,
   toDate,
   normalizeSession,
+  normalizeExternalSession,
   normalizeTarget,
   normalizeStats,
   normalizeMessageRole,
   deriveCanonicalCredentialsBasePath,
   deriveSharedApiBasePath,
   deriveCanonicalForgeBasePath,
+  deriveCanonicalVolundrBasePath,
   deriveNiuuBasePath,
   normalizeStoredCredential,
   normalizeSecretTypeInfo,
@@ -1007,7 +1053,7 @@ export function buildVolundrFileSystemHttpAdapter(options: {
   const baseUrl = trimTrailingSlash(options.baseUrl);
 
   function sessionApi(sessionId: string): string {
-    return `${baseUrl}/s/${encodeURIComponent(sessionId)}/api`;
+    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}`;
   }
 
   function withAuthHeaders(headers: HeadersInit = {}): Headers {
@@ -1114,6 +1160,12 @@ export function buildVolundrHttpAdapter(
     const forgeBasePath = deriveCanonicalForgeBasePath(client.basePath);
     return forgeBasePath && forgeBasePath !== client.basePath
       ? createApiClient(forgeBasePath)
+      : client;
+  })();
+  const catalogClient = (() => {
+    const volundrBasePath = deriveCanonicalVolundrBasePath(client.basePath);
+    return volundrBasePath && volundrBasePath !== client.basePath
+      ? createApiClient(volundrBasePath)
       : client;
   })();
   const credentialsClient = (() => {
@@ -1381,7 +1433,7 @@ export function buildVolundrHttpAdapter(
   return {
     getFeatures: () => sharedClient.get<VolundrFeatures>('/features'),
     getSessionDefinitions: async () => {
-      const payload = await forgeClient.get<SessionDefinitionPayload[]>('/session-definitions');
+      const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);
     },
     getSessions: () => loadSessions('/sessions'),
@@ -1429,17 +1481,18 @@ export function buildVolundrHttpAdapter(
       };
     },
 
-    getTemplates: () => forgeClient.get<VolundrTemplate[]>('/templates'),
-    getTemplate: (name) => forgeClient.get<VolundrTemplate | null>(`/templates/${name}`),
-    saveTemplate: (template) => forgeClient.post<VolundrTemplate>('/templates', template),
-
-    getPresets: () => forgeClient.get<VolundrPreset[]>('/presets'),
-    getPreset: (id) => forgeClient.get<VolundrPreset | null>(`/presets/${id}`),
-    savePreset: (preset) =>
-      preset.id
-        ? forgeClient.put<VolundrPreset>(`/presets/${preset.id}`, preset)
-        : forgeClient.post<VolundrPreset>('/presets', preset),
-    deletePreset: (id) => forgeClient.delete<void>(`/presets/${id}`),
+    // Unified launch specs. scope=system (read-only, config-seeded) or scope=user
+    // (DB-stored, CRUD). Omitting scope returns both.
+    getLaunchSpecs: (scope) =>
+      catalogClient.get<VolundrLaunchSpec[]>(
+        scope ? `/launch-specs?scope=${scope}` : '/launch-specs',
+      ),
+    getLaunchSpec: (ref) => catalogClient.get<VolundrLaunchSpec | null>(`/launch-specs/${ref}`),
+    saveLaunchSpec: (spec) =>
+      spec.id
+        ? catalogClient.put<VolundrLaunchSpec>(`/launch-specs/${spec.id}`, spec)
+        : catalogClient.post<VolundrLaunchSpec>('/launch-specs', spec),
+    deleteLaunchSpec: (id) => catalogClient.delete<void>(`/launch-specs/${id}`),
 
     getAvailableMcpServers: () => forgeClient.get<McpServerConfig[]>('/mcp-servers'),
     getAvailableSecrets: () => client.get<string[]>('/secrets'),
@@ -1483,6 +1536,19 @@ export function buildVolundrHttpAdapter(
       forgeClient
         .get<SessionPayload[]>('/sessions?status=archived')
         .then((sessions) => sessions.map(normalizeSession)),
+
+    listExternalSessions: () =>
+      forgeClient
+        .get<ExternalSessionPayload[]>('/external-sessions')
+        .then((sessions) => sessions.map(normalizeExternalSession)),
+    importExternalSession: async (provider, externalId, name) =>
+      normalizeSession(
+        await forgeClient.post<SessionPayload>('/sessions/import', {
+          provider,
+          external_id: externalId,
+          ...(name ? { name } : {}),
+        }),
+      ),
 
     getConversationHistory: (sessionId) =>
       forgeClient

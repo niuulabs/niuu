@@ -89,6 +89,16 @@ interface RawUsageResponse {
   records: RawUsageRecord[];
 }
 
+interface RawCacheStats {
+  hits?: number;
+  misses?: number;
+  hit_rate?: number;
+  saved_tokens?: number;
+  saved_input_tokens?: number;
+  saved_output_tokens?: number;
+  entries?: number;
+}
+
 function toUsageBucket(raw?: RawUsageBucket): BifrostUsageBucket {
   return {
     requests: raw?.requests ?? 0,
@@ -191,6 +201,18 @@ function toUsage(raw: RawUsageResponse): BifrostUsageResponse {
   };
 }
 
+function toCacheStats(raw: RawCacheStats): BifrostCacheStats {
+  return {
+    hits: raw.hits ?? 0,
+    misses: raw.misses ?? 0,
+    hitRate: raw.hit_rate ?? 0,
+    savedTokens: raw.saved_tokens ?? 0,
+    savedInputTokens: raw.saved_input_tokens ?? 0,
+    savedOutputTokens: raw.saved_output_tokens ?? 0,
+    entries: raw.entries ?? 0,
+  };
+}
+
 export function buildBifrostHttpAdapter(client: ApiClient): IBifrostService {
   return {
     async listModels() {
@@ -213,8 +235,9 @@ export function buildBifrostHttpAdapter(client: ApiClient): IBifrostService {
       const payload = await client.get<RawUsageResponse>(`/v1/usage?limit=${limit}`);
       return toUsage(payload);
     },
-    getCacheStats() {
-      return client.get<BifrostCacheStats>('/v1/cache/stats');
+    async getCacheStats() {
+      const payload = await client.get<RawCacheStats>('/v1/cache/stats');
+      return toCacheStats(payload);
     },
   };
 }

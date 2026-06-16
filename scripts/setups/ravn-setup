@@ -45,6 +45,7 @@ SETUPS=(
   "sleipnir|infra|Daemon + Sleipnir event backbone (RabbitMQ)"
   "flock-mdns|flock|Mesh peers with nng transport + mDNS discovery"
   "flock-sleipnir|flock|Mesh peers with Sleipnir transport + discovery"
+  "environment-nats|flock|Environment-resident Valkyries over NATS JetStream"
   "pi|deployment|Raspberry Pi: Bifrost Ollama + daemon + Telegram"
   "kitchen-sink|deployment|Everything enabled — the full monty"
   "vaka-full|vaka|All MF features + daemon + Qwen3 on Valaskjalf vLLM (zero Anthropic)"
@@ -159,7 +160,7 @@ cmd_describe() {
 
   # Also check for common env var references
   local api_keys
-  api_keys=$(grep -oE 'TELEGRAM_BOT_TOKEN|SLEIPNIR_AMQP_URL|DISCORD_BOT_TOKEN|SLACK_BOT_TOKEN|SLACK_APP_TOKEN|MIMIR_BEARER_TOKEN' "$config_file" 2>/dev/null | sort -u || true)
+  api_keys=$(grep -oE 'TELEGRAM_BOT_TOKEN|SLEIPNIR_AMQP_URL|NATS_URL|DISCORD_BOT_TOKEN|SLACK_BOT_TOKEN|SLACK_APP_TOKEN|MIMIR_BEARER_TOKEN|RAVN_ENVIRONMENT_ID|RAVN_ENVIRONMENT_TYPE' "$config_file" 2>/dev/null | sort -u || true)
   if [[ -n "$api_keys" ]]; then
     echo "$api_keys" | while read -r key; do
       _info "  $key"
@@ -175,6 +176,9 @@ cmd_describe() {
   fi
   if grep -q 'amqp' "$config_file" 2>/dev/null; then
     _info "  RabbitMQ (SLEIPNIR_AMQP_URL)"
+  fi
+  if grep -q 'NATS_URL\|adapter: nats' "$config_file" 2>/dev/null; then
+    _info "  NATS JetStream (NATS_URL, defaults to nats://localhost:4222)"
   fi
   if grep -q 'bifrost' "$config_file" 2>/dev/null || [[ -f "$bifrost_file" ]]; then
     _info "  Bifrost gateway"
@@ -245,6 +249,15 @@ cmd_check() {
     else
       _warn "SLEIPNIR_AMQP_URL not set"
       all_ok=false
+    fi
+  fi
+
+  # Check NATS if needed
+  if grep -q 'NATS_URL\|adapter: nats' "$config_file" 2>/dev/null; then
+    if [[ -n "${NATS_URL:-}" ]]; then
+      _ok "NATS_URL is set"
+    else
+      _warn "NATS_URL not set — default nats://localhost:4222 will be used"
     fi
   fi
 

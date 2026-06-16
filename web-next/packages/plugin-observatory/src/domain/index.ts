@@ -53,6 +53,22 @@ export interface Registry extends Omit<TypeRegistry, 'types'> {
 /** The 5 connection styles in the topology edge taxonomy. */
 export type EdgeKind = 'solid' | 'dashed-anim' | 'dashed-long' | 'soft' | 'run';
 
+/** Semantic relationship represented by a visible topology edge. */
+export type EdgeRelationType =
+  | 'contains'
+  | 'manages'
+  | 'uses'
+  | 'reads'
+  | 'writes'
+  | 'routes_to'
+  | 'exposes'
+  | 'observes'
+  | 'signals_to'
+  | 'member_of';
+
+/** Strength/source of evidence for a relationship edge. */
+export type EdgeConfidence = 'declared' | 'observed' | 'inferred';
+
 /** Higher-level layout strategy hint attached to a node or snapshot. */
 export type LayoutMode = 'manual' | 'orbit' | 'pack' | 'force' | 'hybrid';
 
@@ -190,6 +206,9 @@ export interface TopologyEdge {
   targetId: string;
   kind: EdgeKind;
   label?: string;
+  relationType?: EdgeRelationType;
+  confidence?: EdgeConfidence;
+  evidence?: Record<string, string>;
 }
 
 /** Point-in-time snapshot of the live topology graph. */

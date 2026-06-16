@@ -22,6 +22,9 @@ def _make_config(
     task_description: str = "Nightly dream cycle: enrich, lint, cross-reference",
     token_budget_usd: float = 0.50,
     poll_interval_seconds: int = 60,
+    autonomy_mode: str = "guarded",
+    environment_id: str = "",
+    proposal_store_path: str = "~/.ravn/autonomy_proposals.json",
 ) -> DreamCycleTriggerConfig:
     return DreamCycleTriggerConfig(
         enabled=enabled,
@@ -30,6 +33,9 @@ def _make_config(
         task_description=task_description,
         token_budget_usd=token_budget_usd,
         poll_interval_seconds=poll_interval_seconds,
+        autonomy_mode=autonomy_mode,
+        environment_id=environment_id,
+        proposal_store_path=proposal_store_path,
     )
 
 
@@ -224,6 +230,28 @@ class TestDreamCycleTriggerTaskContent:
             await trigger._poll_once(_enqueue)
 
         assert "$1.25" in enqueued[0].initiative_context
+
+    @pytest.mark.asyncio
+    async def test_task_context_includes_autonomy_policy(self) -> None:
+        config = _make_config(
+            autonomy_mode="yolo",
+            environment_id="cluster-a",
+            proposal_store_path="/tmp/proposals.json",
+        )
+        trigger = _make_trigger(config=config)
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> None:
+            enqueued.append(task)
+
+        with patch.object(trigger, "_is_due", return_value=True):
+            await trigger._poll_once(_enqueue)
+
+        context = enqueued[0].initiative_context
+        assert "Autonomy mode: yolo" in context
+        assert "Environment: cluster-a" in context
+        assert "Proposal store: /tmp/proposals.json" in context
+        assert "call `skill_manage`" in context
 
     @pytest.mark.asyncio
     async def test_task_context_includes_all_seven_steps(self) -> None:

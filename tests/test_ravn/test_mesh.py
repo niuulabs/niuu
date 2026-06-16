@@ -12,6 +12,7 @@ Coverage targets:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -99,6 +100,13 @@ class _FakeSleipnirTransport:
         return pattern == event_type
 
 
+class _FailingSleipnirTransport(_FakeSleipnirTransport):
+    """Fake transport that fails publishes for observability tests."""
+
+    async def publish(self, event: Any) -> None:
+        raise RuntimeError("broker unavailable")
+
+
 # ---------------------------------------------------------------------------
 # MeshPort Protocol
 # ---------------------------------------------------------------------------
@@ -168,6 +176,36 @@ class TestSleipnirMeshAdapterUnit:
         assert sleipnir_event.payload["ravn_source"] == "flock-coder"
 
     @pytest.mark.asyncio
+    async def test_publish_failure_logs_environment_context(self, caplog) -> None:
+        transport = _FailingSleipnirTransport()
+        adapter = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="valkyrie-a",
+            environment_id="cluster-a",
+        )
+        event = RavnEvent(
+            type=RavnEventType.DECISION,
+            source="valkyrie-a",
+            payload={"signal": "pod/restarted"},
+            timestamp=datetime.now(UTC),
+            urgency=0.8,
+            correlation_id="corr-env",
+            session_id="session-env",
+            root_correlation_id="root-env",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"):
+            await adapter.publish(event, "signal.kubernetes.pod")
+
+        assert "publish failed" in caplog.text
+        assert "peer=valkyrie-a" in caplog.text
+        assert "environment=cluster-a" in caplog.text
+        assert "topic=signal.kubernetes.pod" in caplog.text
+        assert "correlation_id=corr-env" in caplog.text
+        assert "root_correlation_id=root-env" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_subscribe_registers_handler(
         self, adapter: SleipnirMeshAdapter, transport: _FakeSleipnirTransport
     ) -> None:
@@ -205,6 +243,42 @@ class TestSleipnirMeshAdapterUnit:
 
         assert len(received_events) == 1
         assert received_events[0].type == RavnEventType.THOUGHT
+
+    @pytest.mark.asyncio
+    async def test_handler_failure_logs_environment_context(
+        self, transport: _FakeSleipnirTransport, caplog
+    ) -> None:
+        adapter = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="valkyrie-b",
+            environment_id="cluster-b",
+        )
+
+        async def failing_handler(event: RavnEvent) -> None:
+            raise ValueError("bad handler")
+
+        await adapter.subscribe("signal.kubernetes.pod", failing_handler)
+        event = RavnEvent(
+            type=RavnEventType.DECISION,
+            source="valkyrie-a",
+            payload={"signal": "pod/restarted"},
+            timestamp=datetime.now(UTC),
+            urgency=0.8,
+            correlation_id="corr-handler",
+            session_id="session-env",
+            root_correlation_id="root-handler",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="ravn.adapters.mesh.sleipnir_mesh"):
+            await adapter.publish(event, "signal.kubernetes.pod")
+
+        assert "handler failed" in caplog.text
+        assert "peer=valkyrie-b" in caplog.text
+        assert "environment=cluster-b" in caplog.text
+        assert "topic=signal.kubernetes.pod" in caplog.text
+        assert "correlation_id=corr-handler" in caplog.text
+        assert "root_correlation_id=root-handler" in caplog.text
 
     @pytest.mark.asyncio
     async def test_unsubscribe_removes_handler(

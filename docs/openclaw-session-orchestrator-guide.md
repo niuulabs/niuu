@@ -105,6 +105,8 @@ When you fetch or receive session state, these fields are the most important:
 - `activity_state`
 - `activity_metadata`
 - `workload_type`
+- `origin` — where the session came from: `volundr` (created through the API), `claude`, or `codex` (imported from an external CLI store)
+- `external_session_id` — the native CLI session/thread id for imported sessions; `null` otherwise
 
 You should cache the latest session object keyed by `session_id`.
 
@@ -119,6 +121,7 @@ Preferred control-plane endpoints:
 | `POST` | `/api/v1/forge/sessions` | Create and start a session |
 | `PUT` | `/api/v1/forge/sessions/{id}` | Update mutable fields |
 | `POST` | `/api/v1/forge/sessions/{id}/start` | Restart a stopped or failed session |
+| `POST` | `/api/v1/forge/sessions/{id}/resume` | Alias of `start`; for imported sessions this resumes the native CLI session |
 | `POST` | `/api/v1/forge/sessions/{id}/stop` | Stop a running session |
 | `PATCH` | `/api/v1/forge/sessions/{id}/archive` | Archive a session |
 | `PATCH` | `/api/v1/forge/sessions/{id}/restore` | Restore an archived session |
@@ -173,6 +176,12 @@ Volundr's Forge session-create API uses `definition` to pick the runtime, for ex
 - `skuldClaude`
 - `skuldCodex`
 - `skuldOpenCode`
+- `skuldClaudeRemote` — Claude Code Remote Control: the broker launches
+  `claude remote-control` and surfaces a pairing URL
+  (`https://claude.ai/code?environment=env_...`) as an assistant turn and as a
+  structured `remote_control` event. The NATIVE app drives the conversation —
+  the broker cannot send turns into these sessions.
+- `skuldCodexRemote` — fails fast until the standalone Codex install exists.
 
 Example:
 
@@ -211,6 +220,77 @@ After creation:
 ### Config notes for OpenClaw-oriented deployments
 
 If you are deploying Volundr in mini mode or a self-hosted remote setup, these config behaviors matter:
+
+#### Running the stack locally (mini mode)
+
+The fastest way to a working control plane on a developer host:
+
+```bash
+./start-dev     # builds web assets, starts embedded PostgreSQL, boots the platform on :8080
+./stop-dev      # stops everything
+```
+
+`start-dev` wraps `uv run niuu platform up --host-profile full`. The platform
+CLI defaults to `mode: mini`, which means:
+
+- the embedded PostgreSQL starts automatically and migrations are applied
+- `LOCAL_MOUNTS__ENABLED=true` and `LOCAL_MOUNTS__MINI_MODE=true` are set
+- sessions run as local Skuld broker subprocesses on the host, not Kubernetes pods
+- external session discovery (next section) is enabled by default
+
+Probe capabilities before relying on host-only features:
+
+```http
+GET /api/v1/forge/feature-flags
+```
+
+```json
+{
+  "local_mounts_enabled": true,
+  "file_manager_enabled": true,
+  "mini_mode": true,
+  "local_mounts_allowed_prefixes": []
+}
+```
+
+`mini_mode: true` tells you the deployment runs on a host with direct access to
+local workspaces and CLI session stores. An empty
+`local_mounts_allowed_prefixes` means any host directory may be used as a
+session workspace; a non-empty list restricts workspaces (and external session
+imports) to those path prefixes.
+
+#### Defaults worth knowing (and their switches)
+
+- **Default model** is `claude-opus-4-8` platform-wide; Claude sessions run at
+  model-aware reasoning effort (`xhigh` on Opus 4.7/4.8, `max` on 4.6), Codex
+  at `high`. Pick cheaper models/efforts explicitly when cost matters.
+- **Stop summarization is OFF** by default — stopping a session no longer burns
+  an LLM pass to write a chronicle summary. Re-enable with
+  `SKULD__CHRONICLE_ON_STOP_ENABLED=true`.
+- **The chronicle watcher is OFF** by default (it tailed session JSONL and
+  posted timeline events most deployments never read). Re-enable with
+  `SKULD__CHRONICLE_WATCHER_ENABLED=true`.
+- **Liveness reconciliation is OFF** by default. When enabled, a background
+  reconciler marks `running` sessions with no activity heartbeat for
+  `stale_after_seconds` as `stopped`, clears their endpoints, and stamps a
+  `liveness:` error (which the next heartbeat or restart clears). Brokers
+  currently report activity only on STATE CHANGES, so use a generous threshold
+  or a quiet-but-alive session may be falsely reaped:
+
+  ```yaml
+  session_liveness:
+    enabled: true
+    stale_after_seconds: 7200
+    check_interval_seconds: 120
+  ```
+
+- **Human-in-the-loop AskUserQuestion is OFF** by default. When
+  `SKULD__ASK_USER_QUESTION_ENABLED=true`, Claude tool permissions route over
+  the control protocol: every tool is auto-allowed EXCEPT `AskUserQuestion`,
+  which is emitted to clients as an `ask_user_question` event and BLOCKS the
+  turn until some client sends `ask_user_answer` over the session WebSocket.
+  Only enable this when your controller (or a human UI) actually answers those
+  events — otherwise a questioning agent hangs its turn forever.
 
 #### `session_definitions` overrides are partial now
 
@@ -276,7 +356,147 @@ Practical effect:
 - `definition: skuldCodex` with no `model` will not inject `claude-sonnet-4-6` into the Skuld session env.
 - definition defaults can provide the runtime-specific model when desired.
 
-## 7. Real-time session SSE
+## 7. Discover and import external CLI sessions
+
+Volundr can adopt coding sessions that were started outside the platform —
+directly with the Claude Code CLI or the Codex CLI on the same host. Discovery
+scans the harnesses' native stores (`~/.claude/projects`, `~/.codex/sessions`),
+and an imported session becomes a normal Volundr session that, when started,
+resumes the native conversation with full history (`claude --resume` for
+Claude, the `thread/resume` RPC for Codex).
+
+This is a host-local feature. It is enabled by default in mini mode and
+disabled in cluster deployments unless `external_sessions.enabled: true` is
+configured. If `GET /api/v1/forge/external-sessions` returns `503`, treat the
+feature as unavailable and do not retry.
+
+### List discoverable sessions
+
+```http
+GET /api/v1/forge/external-sessions
+GET /api/v1/forge/external-sessions?provider=claude-code
+GET /api/v1/forge/external-sessions?provider=codex
+```
+
+Each record:
+
+```json
+{
+  "provider": "claude-code",
+  "harness": "claude",
+  "external_id": "5554a0e2-e8db-4c32-b18d-007591620d1e",
+  "workspace_path": "/Users/dev/code/acme",
+  "title": "Fix the login bug",
+  "model": "claude-sonnet-4-6",
+  "created_at": "2026-06-10T12:53:22Z",
+  "updated_at": "2026-06-10T12:55:26Z",
+  "live": false,
+  "workspace_exists": true,
+  "workspace_allowed": true,
+  "imported_session_id": null,
+  "importable": true
+}
+```
+
+Field semantics for a controller:
+
+- `live` — the session shows recent activity in its store and is probably
+  running in a terminal right now. You can still import it; resuming while the
+  human is mid-conversation is rude, so prefer dead sessions unless told
+  otherwise.
+- `importable` — derived flag: the workspace still exists on disk, passes the
+  mount prefix policy, and the session has not been imported yet. Gate your
+  import action on this.
+- `imported_session_id` — set when a Volundr session already wraps this
+  external session; use that id with the normal lifecycle API instead of
+  importing again.
+- `workspace_allowed` — `false` when the session's working directory falls
+  outside `local_mounts.allowed_prefixes`. Imports of such sessions are
+  rejected.
+
+Results are sorted newest-first and capped per provider (default 200, see the
+`max_sessions` adapter kwarg). Listing is read-only and cheap to poll.
+
+### Import a session
+
+```http
+POST /api/v1/forge/sessions/import
+```
+
+```json
+{
+  "provider": "claude-code",
+  "external_id": "5554a0e2-e8db-4c32-b18d-007591620d1e",
+  "name": "adopted-login-fix"
+}
+```
+
+`name` is optional; a `<harness>-import-<prefix>` name is derived when omitted.
+
+The `201` response is a regular session object with `origin` set to the
+harness (`claude` or `codex`), `external_session_id` recorded, and a
+`local_mount` source pointing at the session's original working directory. The
+session is created in a non-running state — importing never launches anything.
+
+Error contract:
+
+| Status | Meaning | Controller action |
+|---|---|---|
+| `404` | Unknown provider or external id | Re-list and reconcile |
+| `409` | Already imported | Extract the existing session id from the listing's `imported_session_id` |
+| `403` | Workspace outside allowed mount prefixes | Do not retry; surface to operator |
+| `422` | Workspace directory no longer exists | Do not retry; the session is dead on disk |
+| `503` | Discovery not enabled on this deployment | Stop using the feature |
+
+### Resume an imported session
+
+Start the imported session like any other:
+
+```http
+POST /api/v1/forge/sessions/{id}/resume
+```
+
+(`/resume` and `/start` are aliases.) For sessions with an
+`external_session_id`, Volundr pins a resume-capable transport and hands the
+native session id to the broker, so the CLI reattaches to the original
+conversation — prior context, decisions, and file state knowledge included.
+From that point the session behaves like any Volundr session: SSE updates,
+live chat over `chat_endpoint`, stop/archive lifecycle, chronicles.
+
+Recommended controller flow:
+
+1. `GET /external-sessions`, filter `importable == true` (and usually `live == false`)
+2. `POST /sessions/import` with provider + external id
+3. `POST /sessions/{id}/resume`, then wait for `status=running` via SSE
+4. Interact over the normal chat transport; the resumed agent already has the
+   conversation history, so you can ask "where did you leave off?" instead of
+   re-briefing from scratch
+
+### Configuration reference
+
+Defaults need nothing. To override:
+
+```yaml
+external_sessions:
+  enabled: true            # default null = follow local_mounts.mini_mode
+  providers:
+    - adapter: "volundr.adapters.outbound.external_sessions.ClaudeCodeSessionProvider"
+      kwargs:
+        projects_dir: "~/.claude/projects"
+        live_threshold_seconds: 120
+        max_sessions: 200
+    - adapter: "volundr.adapters.outbound.external_sessions.CodexSessionProvider"
+      kwargs:
+        sessions_dir: "~/.codex/sessions"
+
+local_mounts:
+  allowed_prefixes: []     # non-empty restricts workspaces and imports
+```
+
+Environment variable equivalents use nested `__` delimiters, for example
+`EXTERNAL_SESSIONS__ENABLED=true`.
+
+## 8. Real-time session SSE
 
 Subscribe here:
 
@@ -368,7 +588,7 @@ Recommended timeout strategy:
 - if the stream goes silent beyond your liveness threshold, reconnect
 - after reconnect, refresh all sessions you still care about
 
-## 8. Live chat transport
+## 9. Live chat transport
 
 The live agent stream does not come from the Volundr API server. It comes from the session broker reachable at `chat_endpoint`.
 
@@ -399,7 +619,7 @@ Use the HTTP proxy endpoints when you only need:
 - conversation history after the fact
 - compatibility with simpler HTTP-only workers
 
-## 9. WebSocket protocol for the live session
+## 10. WebSocket protocol for the live session
 
 Connect to:
 
@@ -412,6 +632,24 @@ If needed:
 ```text
 <chat_endpoint>?access_token=<token>
 ```
+
+### Human-in-the-loop question frames (optional)
+
+When the deployment runs with `SKULD__ASK_USER_QUESTION_ENABLED=true`, the
+broker may emit:
+
+```json
+{"type": "ask_user_question", "request_id": "q-1", "question": "...", "options": [...]}
+```
+
+The turn blocks until a client answers:
+
+```json
+{"type": "ask_user_answer", "request_id": "q-1", "answer": "beta"}
+```
+
+A controller that cannot meaningfully answer should surface the question to a
+human rather than auto-answering.
 
 ### What to send
 
@@ -551,7 +789,7 @@ If you want richer internal event visibility on the WebSocket, you can send:
 
 This is optional for controllers, but useful for debugging or agent analytics.
 
-## 10. Simpler HTTP-only interaction mode
+## 11. Simpler HTTP-only interaction mode
 
 If your controller does not want to maintain a direct WebSocket, you can still drive a session through HTTP.
 
@@ -574,6 +812,30 @@ Expected response:
   "session_id": "<id>"
 }
 ```
+
+### Durable event-log replay (full fidelity)
+
+Every CLI frame a session produces — assistant text, thinking, tool_use,
+tool_result, deltas — is durably captured to an append-only per-session event
+log, whether or not any client socket was attached. This is the
+strongest-fidelity transcript source and the right way to reconstruct history
+after a reconnect:
+
+```http
+GET /api/v1/forge/sessions/{id}/log/head     -> {"latest_seq": 726}
+GET /api/v1/forge/sessions/{id}/log?after=0  -> [ {seq, kind, role, payload, ts}, ... ]
+```
+
+Controller rules:
+
+- Replay returns a JSON LIST ordered by `seq`; page with `after=<last seq>`
+  until you reach `latest_seq`.
+- `ts` is the EMISSION time stamped by the broker at capture, so replayed
+  timelines reflect when things actually happened.
+- Human turns are mirrored into the log too, so a pure log replay shows the
+  full dialogue.
+- History survives session deletion (no FK); there is currently NO retention
+  policy, so operators of busy deployments should plan pruning.
 
 ### Read conversation history
 
@@ -629,7 +891,7 @@ GET /api/v1/forge/sessions/{session_id}/archive
 
 Useful for post-run harvesters.
 
-## 11. Broker-side HTTP endpoints derived from `chat_endpoint`
+## 12. Broker-side HTTP endpoints derived from `chat_endpoint`
 
 If you have a live `chat_endpoint`, you can derive the live broker base URL:
 
@@ -655,7 +917,7 @@ Useful live-broker endpoints:
 
 Use the broker endpoints only when the session is running.
 
-## 12. Event-history API
+## 13. Event-history API
 
 Use the event repository when you want durable evidence instead of transient SSE.
 
@@ -719,7 +981,7 @@ Use these events to answer questions like:
 - Did it call a git or shell tool?
 - How much token budget did it burn?
 
-## 13. PR, diff, and git inspection
+## 14. PR, diff, and git inspection
 
 ### PR status
 
@@ -759,7 +1021,7 @@ Useful endpoints:
 
 Use diff endpoints when you want fast post-run inspection without reading the entire transcript.
 
-## 14. Chronicles and timeline
+## 15. Chronicles and timeline
 
 Chronicles are the durable narrative summary of a session.
 
@@ -808,7 +1070,7 @@ Use timeline data for:
 - building agent scorecards
 - classifying sessions as coding, review, research, or failure-heavy
 
-## 15. How to decide whether a session has finished its work
+## 16. How to decide whether a session has finished its work
 
 This is the most important section.
 
@@ -950,7 +1212,7 @@ async def evaluate_completion(api, session_id, latest_activity):
     return {"state": "running", "confidence": 0.0}
 ```
 
-## 16. Special case: flock or workflow sessions
+## 17. Special case: flock or workflow sessions
 
 Be careful with:
 
@@ -966,7 +1228,7 @@ Use a stricter rule:
 
 If you are binding OpenClaw to this system, model flock sessions separately from ordinary coding sessions.
 
-## 17. Recommended controller state machine
+## 18. Recommended controller state machine
 
 Use this state machine in your orchestrator:
 
@@ -992,7 +1254,7 @@ Meaning:
 - `FAILED`: terminal runtime or outcome failure
 - `ABANDONED`: operator stopped it or evidence is too weak
 
-## 18. Recommended runtime loop
+## 19. Recommended runtime loop
 
 A robust loop looks like this:
 
@@ -1009,7 +1271,7 @@ A robust loop looks like this:
 11. If complete, fetch chronicle, transcript, events, diff, and PR status.
 12. Stop or archive the session if your operating policy requires it.
 
-## 19. Recovery rules
+## 20. Recovery rules
 
 ### SSE disconnect
 
@@ -1040,7 +1302,7 @@ Interpret this as:
 
 Do not try to chat until `chat_endpoint` is present.
 
-## 20. What to persist in OpenClaw
+## 21. What to persist in OpenClaw
 
 For each tracked session, persist:
 
@@ -1057,7 +1319,7 @@ For each tracked session, persist:
 
 This allows crash recovery without depending on SSE durability.
 
-## 21. Minimum viable implementation
+## 22. Minimum viable implementation
 
 If you want the smallest useful controller:
 
@@ -1074,7 +1336,7 @@ If you want the smallest useful controller:
 
 That is enough to implement a basic Tyr-like controller loop.
 
-## 22. Recommended full implementation
+## 23. Recommended full implementation
 
 For production behavior, support all of:
 
@@ -1090,7 +1352,7 @@ For production behavior, support all of:
 - reconnection and rehydration logic
 - confidence-based completion
 
-## 23. Final guidance for an AI orchestrator
+## 24. Final guidance for an AI orchestrator
 
 If you are the controller:
 

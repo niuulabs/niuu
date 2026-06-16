@@ -39,10 +39,18 @@ from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_JUDGMENT_REJECTED,
+    is_valkyrie_outcome_event,
+    normalize_valkyrie_outcome,
+    validate_valkyrie_outcome,
+)
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
 from ravn.prompt_builder import build_initiative_prompt
+from ravn.reflex import ReflexInjector, build_reflex_injector
+from sleipnir.domain.events import SleipnirEvent
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
@@ -75,6 +83,9 @@ _SUCCESS_VERDICT_PREFERENCE = (
 _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
+_RAVN_TASK_STARTED = "ravn.task.started"
+_RAVN_TASK_DROPPED = "ravn.task.dropped"
+_RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
 
 def _default_success_verdict(produces: object) -> str:
@@ -205,6 +216,143 @@ def _parse_outcome_for_persona(
     return parse_outcome_block(response_text)
 
 
+def _outcome_parse_errors(errors: list[str]) -> list[str]:
+    """Keep only errors that mean the outcome block itself was not parseable."""
+    return [
+        error
+        for error in errors
+        if error.startswith("YAML parse error:") or "did not parse as a YAML mapping" in error
+    ]
+
+
+def _dedupe_errors(errors: list[str]) -> list[str]:
+    """Return validation errors without duplicates, preserving order."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for error in errors:
+        if error in seen:
+            continue
+        seen.add(error)
+        deduped.append(error)
+    return deduped
+
+
+def _validate_normalized_persona_schema(
+    fields: dict[str, object],
+    persona_config: PersonaConfig | None,
+) -> list[str]:
+    """Validate normalized fields against the persona outcome schema."""
+    produces = getattr(persona_config, "produces", None)
+    schema_fields = getattr(produces, "schema", None)
+    if not isinstance(schema_fields, dict):
+        return []
+
+    errors: list[str] = []
+    for name, field_def in schema_fields.items():
+        required = bool(getattr(field_def, "required", True))
+        if name not in fields:
+            if required:
+                errors.append(f"required field '{name}' is missing")
+            continue
+
+        value = fields[name]
+        field_type = str(getattr(field_def, "type", "") or "")
+        if field_type == "enum":
+            enum_values = getattr(field_def, "enum_values", None) or []
+            if str(value) not in enum_values:
+                errors.append(
+                    f"field '{name}': value {value!r} not in allowed values {enum_values}"
+                )
+        elif field_type == "number":
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                errors.append(f"field '{name}': expected number, got {type(value).__name__}")
+        elif field_type == "boolean":
+            if not isinstance(value, bool):
+                errors.append(f"field '{name}': expected boolean, got {type(value).__name__}")
+        elif field_type == "array":
+            if not isinstance(value, list):
+                errors.append(f"field '{name}': expected array, got {type(value).__name__}")
+        elif field_type == "object":
+            if not isinstance(value, dict):
+                errors.append(f"field '{name}': expected object, got {type(value).__name__}")
+        elif field_type == "string" and not isinstance(value, str):
+            errors.append(f"field '{name}': expected string, got {type(value).__name__}")
+    return errors
+
+
+def _resident_valkyrie_validation_result(
+    response_text: str,
+    persona_config: PersonaConfig | None,
+) -> tuple[str, dict[str, object], list[str]]:
+    """Parse and validate a resident Valkyrie response against its canonical contract."""
+    produces = getattr(persona_config, "produces", None)
+    canonical_event_type = str(getattr(produces, "event_type", "") or "")
+    if not canonical_event_type or not is_valkyrie_outcome_event(canonical_event_type):
+        return "", {}, []
+
+    parsed = _parse_outcome_for_persona(response_text, persona_config)
+    outcome_fields = dict(parsed.fields) if parsed is not None else {}
+    outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
+
+    validation_errors: list[str] = []
+    if parsed is None:
+        validation_errors.append("resident Valkyrie outcome block is missing")
+    elif not parsed.valid:
+        validation_errors.extend(_outcome_parse_errors(parsed.errors))
+    validation_errors.extend(_validate_normalized_persona_schema(outcome_fields, persona_config))
+    validation_errors.extend(validate_valkyrie_outcome(canonical_event_type, outcome_fields))
+    return canonical_event_type, outcome_fields, _dedupe_errors(validation_errors)
+
+
+def _build_resident_valkyrie_schema_repair_prompt(
+    *,
+    task: AgentTask,
+    original_response: str,
+    validation_errors: list[str],
+    outcome_fields: dict[str, object],
+) -> str:
+    """Build a narrow repair instruction for malformed resident Valkyrie outcomes."""
+    return (
+        "[SCHEMA REPAIR - resident Valkyrie outcome]\n"
+        "Your previous answer did not satisfy the resident Valkyrie outcome contract.\n"
+        "Do not call tools. Do not explain. Return exactly one valid YAML outcome block.\n\n"
+        "Validation errors:\n"
+        f"{json.dumps(validation_errors, indent=2)}\n\n"
+        "Fields parsed from the invalid attempt, if any:\n"
+        f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
+        "Original autonomous task context:\n"
+        "<initiative_context>\n"
+        f"{task.initiative_context}\n"
+        "</initiative_context>\n\n"
+        "Previous response:\n"
+        "<previous_response>\n"
+        f"{original_response[:4000]}\n"
+        "</previous_response>\n\n"
+        "Required block shape:\n"
+        "---outcome---\n"
+        "decision: ignore | watch | investigate | propose_action | escalate | learn | blocked\n"
+        "environment_id: <environment id from the task context>\n"
+        "environment_type: k8s\n"
+        "valkyrie_id: <resident peer id from the task context>\n"
+        "signal_refs: [<signal event id or stable ref>]\n"
+        "tier: silent | ambient | present | urgent\n"
+        "confidence: <number from 0.0 to 1.0>\n"
+        "operational_state: nominal | watching | investigating | degraded | "
+        "remediating | blocked | dreaming\n"
+        "wakefulness: sleeping | watching | wakeful | dreaming\n"
+        "rationale: <concise reason grounded in evidence>\n"
+        "evidence: [{event_id: <id>, source_id: <source>, severity: <severity>}]\n"
+        "recommended_action: <specific next step, or none>\n"
+        "action_authority: autonomous | yolo_allowed | court_required | human_review_required\n"
+        "action_capability: <capability name, or none>\n"
+        "target_surfaces: []\n"
+        'expires_at: ""\n'
+        "dissent_refs: []\n"
+        "correlation_ids: {root: <root correlation id>, signal: <signal id>}\n"
+        "---end---"
+    )
+
+
 def _coerce_nonnegative_int(value: object) -> int | None:
     """Return *value* as a non-negative integer, or None when it cannot be parsed."""
     if isinstance(value, bool):
@@ -222,6 +370,43 @@ def _coerce_nonnegative_int(value: object) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _coerce_float(value: object, *, default: float) -> float:
+    """Return *value* as a float, or *default* when it cannot be parsed."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(str(value or "").strip())
+    except ValueError:
+        return default
+
+
+def _clean_string(value: object, *, default: str = "") -> str:
+    """Return a useful string while avoiding mocked config object reprs in tests."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip() or default
+    if value.__class__.__module__.startswith("unittest.mock"):
+        return default
+    raw = str(value).strip()
+    return raw or default
+
+
+def _json_safe(value: object) -> object:
+    """Return a msgpack/JSON-safe copy of nested telemetry payload data."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _extract_mimir_dream_counts(
@@ -626,6 +811,8 @@ class DriveLoop:
             Callable[[AgentTask, PersonaConfig], set[str] | None] | None
         ) = None
         self._fan_in = FanInBuffer()
+        self._reflex_injector: ReflexInjector | None = None
+        self._reflex_initialised = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
             default=None,
@@ -679,6 +866,7 @@ class DriveLoop:
                 task.task_id,
                 task.title,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="deadline_exceeded")
             return
 
         if self._queue.full():
@@ -687,6 +875,7 @@ class DriveLoop:
                 self._config.task_queue_max,
                 task.task_id,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="queue_full")
             return
 
         counter = self._next_counter()
@@ -933,6 +1122,68 @@ class DriveLoop:
             paths,
         )
 
+    async def _maybe_materialize_workflow_artifacts(
+        self,
+        task: AgentTask,
+        outcome_fields: dict[str, object],
+    ) -> None:
+        """Mirror workflow-authored Mimir artifacts into the live workspace."""
+        if self._mimir is None:
+            return
+        if not str(task.workflow_node_id or "").strip():
+            return
+        paths = self._artifact_publish_paths(outcome_fields)
+        if not paths:
+            return
+
+        from ravn.adapters.tools.file_security import (  # noqa: PLC0415
+            PathSecurityError,
+            resolve_safe,
+        )
+
+        workspace_root = Path(
+            str(getattr(getattr(self._settings, "permission", None), "workspace_root", "")).strip()
+            or Path.cwd()
+        )
+        materialized: list[str] = []
+        for path in paths:
+            if Path(path).is_absolute():
+                logger.warning(
+                    "drive_loop: refusing to materialize absolute workflow artifact path %s",
+                    path,
+                )
+                continue
+            try:
+                target = resolve_safe(workspace_root / path, workspace_root)
+            except PathSecurityError:
+                logger.warning(
+                    "drive_loop: refusing to materialize unsafe workflow artifact path %s",
+                    path,
+                )
+                continue
+            try:
+                page = await self._mimir.get_page(path)
+            except Exception as exc:
+                logger.debug(
+                    "drive_loop: workflow artifact %s is not readable from Mimir for task %s: %s",
+                    path,
+                    task.task_id,
+                    exc,
+                )
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(getattr(page, "content", "") or ""), encoding="utf-8")
+            materialized.append(path)
+
+        if not materialized:
+            return
+        outcome_fields.setdefault("workspace_paths", materialized)
+        logger.info(
+            "drive_loop: materialized workflow artifacts into workspace for task %s: %s",
+            task.task_id,
+            materialized,
+        )
+
     async def handle_rpc(self, message: dict) -> dict:
         """Dispatch an incoming mesh RPC message to the registered handler.
 
@@ -1125,9 +1376,7 @@ class DriveLoop:
                 name=f"initiative:{task.task_id}",
             )
             self._active_tasks[task.task_id] = asyncio_task
-            asyncio_task.add_done_callback(
-                lambda _t, tid=task.task_id: self._on_task_done(tid, _t)
-            )
+            asyncio_task.add_done_callback(lambda _t, tid=task.task_id: self._on_task_done(tid, _t))
             self._queue.task_done()
 
     def _on_task_done(self, task_id: str, finished_task: asyncio.Task[Any]) -> None:
@@ -1155,6 +1404,33 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
+    def _retrieval_reflex_injector(self) -> ReflexInjector | None:
+        """Lazily build the retrieval reflex injector from mimir.reflex config."""
+        if self._reflex_initialised:
+            return self._reflex_injector
+        self._reflex_initialised = True
+        self._reflex_injector = build_reflex_injector(getattr(self._settings, "mimir", None))
+        return self._reflex_injector
+
+    async def _apply_retrieval_reflex(self, prompt: str, task: AgentTask) -> str:
+        """Prefix known Mímir entity pointers onto the turn prompt (NIU-1059).
+
+        Fail-open: any reflex failure logs an ERROR and returns the prompt
+        unchanged — the reflex must never crash or block a turn.
+        """
+        try:
+            injector = self._retrieval_reflex_injector()
+            if injector is None:
+                return prompt
+            return await injector.apply(prompt, task.session_id or task.task_id)
+        except Exception:
+            logger.error(
+                "drive_loop: retrieval reflex failed for task %s — continuing without pointers",
+                task.task_id,
+                exc_info=True,
+            )
+            return prompt
+
     async def _run_task(self, task: AgentTask) -> None:
         """Execute a single initiative task."""
         # Budget pre-check: skip when daily cap is reached.
@@ -1169,6 +1445,7 @@ class DriveLoop:
                 self._budget.spent_today_usd,
                 self._budget.remaining_usd,
             )
+            await self._emit_sleipnir_task_dropped(task, reason="budget_cap_reached")
             return
 
         try:
@@ -1208,6 +1485,7 @@ class DriveLoop:
             agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
             logger.info("drive_loop: task %s building prompt", task.task_id)
             prompt = build_initiative_prompt(task)
+            prompt = await self._apply_retrieval_reflex(prompt, task)
             logger.info("drive_loop: task %s setup complete", task.task_id)
         except Exception as exc:
             logger.error("drive_loop: task %s failed during setup: %s", task.task_id, exc)
@@ -1219,6 +1497,7 @@ class DriveLoop:
             task.title,
             task.triggered_by,
         )
+        await self._emit_sleipnir_task_started(task)
 
         await channel.emit(
             RavnEvent.task_started(
@@ -1257,11 +1536,19 @@ class DriveLoop:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
                 self._record_task_cost(task, turn_result)
-                await self._maybe_publish_budget_warning(task)
-                self._save_task_output(task, capture_channel or channel)
                 response_text = (
                     capture_channel.response_text if capture_channel else turn_result.response
                 )
+                repair_result = await self._maybe_repair_resident_valkyrie_outcome(
+                    agent=agent,
+                    task=task,
+                    response_text=response_text,
+                )
+                if repair_result is not None:
+                    self._record_task_cost(task, repair_result)
+                    response_text = repair_result.response
+                await self._maybe_publish_budget_warning(task)
+                self._save_task_output(task, capture_channel or channel)
                 if response_text:
                     logger.info(
                         "drive_loop: task %s output: %s",
@@ -1371,6 +1658,66 @@ class DriveLoop:
             )
         return f"{type(exc).__name__}: {exc}"
 
+    async def _maybe_repair_resident_valkyrie_outcome(
+        self,
+        *,
+        agent: object,
+        task: AgentTask,
+        response_text: str,
+    ) -> object | None:
+        """Ask the same agent for one strict contract repair when a resident output is invalid."""
+        if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
+            return None
+        canonical_event_type, outcome_fields, validation_errors = (
+            _resident_valkyrie_validation_result(response_text, self._persona_config)
+        )
+        if not canonical_event_type or not validation_errors:
+            return None
+        run_turn = getattr(agent, "run_turn", None)
+        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+            return None
+
+        logger.warning(
+            "drive_loop: repairing invalid resident Valkyrie outcome "
+            "event_type=%s task_id=%s errors=%s",
+            canonical_event_type,
+            task.task_id,
+            validation_errors,
+        )
+        repair_prompt = _build_resident_valkyrie_schema_repair_prompt(
+            task=task,
+            original_response=response_text,
+            validation_errors=validation_errors,
+            outcome_fields=outcome_fields,
+        )
+        try:
+            repair_result = await run_turn(repair_prompt)
+        except Exception:
+            logger.warning(
+                "drive_loop: resident Valkyrie schema repair failed; "
+                "continuing with original response",
+                exc_info=True,
+            )
+            return None
+
+        repaired_text = str(getattr(repair_result, "response", "") or "")
+        _, _, repaired_errors = _resident_valkyrie_validation_result(
+            repaired_text,
+            self._persona_config,
+        )
+        if repaired_errors:
+            logger.warning(
+                "drive_loop: resident Valkyrie schema repair still invalid task_id=%s errors=%s",
+                task.task_id,
+                repaired_errors,
+            )
+        else:
+            logger.info(
+                "drive_loop: resident Valkyrie schema repair succeeded task_id=%s",
+                task.task_id,
+            )
+        return repair_result
+
     async def _emit_sleipnir_task_completed(
         self,
         task: AgentTask,
@@ -1393,10 +1740,11 @@ class DriveLoop:
             )
             if task.session_id:
                 event.payload["session_id"] = task.session_id
+            event.payload.update(self._sleipnir_task_context_payload(task))
 
             parsed = _parse_outcome_for_persona(response_text, self._persona_config)
             if parsed is not None:
-                event.payload["structured_outcome"] = parsed.fields
+                event.payload["structured_outcome"] = _json_safe(parsed.fields)
                 event.payload["outcome_valid"] = parsed.valid
                 for key in (
                     "verdict",
@@ -1407,10 +1755,68 @@ class DriveLoop:
                     "files_changed",
                 ):
                     if key in parsed.fields:
-                        event.payload[key] = parsed.fields[key]
+                        event.payload[key] = _json_safe(parsed.fields[key])
+            safe_payload = _json_safe(event.payload)
+            if isinstance(safe_payload, dict):
+                event.payload.clear()
+                event.payload.update(safe_payload)
             await self._sleipnir_publisher.publish(event)
         except Exception:
             logger.warning("Failed to emit ravn.task.completed; continuing.", exc_info=True)
+
+    async def _emit_sleipnir_task_started(self, task: AgentTask) -> None:
+        """Publish ravn.task.started so resident queues are observable from NATS."""
+        payload = {
+            **self._sleipnir_task_context_payload(task),
+            "task_id": task.task_id,
+            "title": task.title,
+            "persona": task.persona or "",
+            "triggered_by": task.triggered_by,
+            "priority": task.priority,
+            "queue_size": self._queue.qsize(),
+            "active_count": len(self._active_tasks),
+        }
+        event = SleipnirEvent(
+            event_type=_RAVN_TASK_STARTED,
+            source=self._source_id,
+            payload=payload,
+            summary=f"Ravn task {task.task_id} started: {task.title}",
+            urgency=0.3,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=task.root_correlation_id or task.session_id or task.task_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=payload.get("tenant_id") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=_RAVN_TASK_STARTED)
+
+    async def _emit_sleipnir_task_dropped(self, task: AgentTask, *, reason: str) -> None:
+        """Publish ravn.task.dropped for capacity/deadline/budget loss accounting."""
+        payload = {
+            **self._sleipnir_task_context_payload(task),
+            "task_id": task.task_id,
+            "title": task.title,
+            "persona": task.persona or "",
+            "triggered_by": task.triggered_by,
+            "priority": task.priority,
+            "reason": reason,
+            "queue_size": self._queue.qsize(),
+            "queue_max": self._config.task_queue_max,
+            "active_count": len(self._active_tasks),
+        }
+        event = SleipnirEvent(
+            event_type=_RAVN_TASK_DROPPED,
+            source=self._source_id,
+            payload=payload,
+            summary=f"Ravn task {task.task_id} dropped: {reason}",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=task.root_correlation_id or task.session_id or task.task_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=payload.get("tenant_id") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=_RAVN_TASK_DROPPED)
 
     async def _emit_sleipnir_mimir_dream_completed(
         self,
@@ -1569,6 +1975,8 @@ class DriveLoop:
         if canonical_event_type == "mimir.source.ingested":
             for key, value in self._default_mimir_mount_fields().items():
                 outcome_fields.setdefault(key, value)
+        if is_valkyrie_outcome_event(canonical_event_type):
+            outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
 
         event_type_map = self._persona_config.produces.event_type_map
         success_verdict = _default_success_verdict(self._persona_config.produces)
@@ -1579,7 +1987,9 @@ class DriveLoop:
             allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
 
         page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
-        verdict = str(outcome_fields.get("verdict", "") or "").strip()
+        verdict = str(
+            outcome_fields.get("verdict", "") or outcome_fields.get("decision", "") or ""
+        ).strip()
         valid = bool(parsed.valid) if parsed is not None else False
         synthesized_from_tool_write = False
         if not verdict and page_write_fields:
@@ -1602,16 +2012,88 @@ class DriveLoop:
             outcome_fields.setdefault("verdict", verdict)
             synthesized_pass = True
         elif verdict:
+            outcome_fields.setdefault("verdict", verdict)
             normalized_verdict = _normalize_outcome_verdict(verdict, self._persona_config.produces)
             if normalized_verdict != verdict:
                 verdict = normalized_verdict
                 outcome_fields["verdict"] = normalized_verdict
+        outcome_fields = _json_safe(outcome_fields)  # type: ignore[assignment]
         summary = str(outcome_fields.get("summary", "") or "").strip()
         files_changed = outcome_fields.get("files_changed")
         if (synthesized_pass or synthesized_from_tool_write) and not valid:
             valid = True
 
+        if is_valkyrie_outcome_event(canonical_event_type):
+            _, outcome_fields, validation_errors = _resident_valkyrie_validation_result(
+                response_text,
+                self._persona_config,
+            )
+            if validation_errors:
+                reject_payload: dict[str, object] = {
+                    "persona": self._persona_config.name,
+                    "success": False,
+                    "event_type": VALKYRIE_JUDGMENT_REJECTED,
+                    "canonical_event_type": canonical_event_type,
+                    "outcome": outcome_fields,
+                    "fields": outcome_fields,
+                    "valid": False,
+                    "errors": validation_errors,
+                    "task_id": task.task_id,
+                    "workflow_node_id": task.workflow_node_id,
+                    "bubble_up": True,
+                    "room_bridge_skip": self._skuld_channel is not None,
+                }
+                if task.workflow_parent_event_id:
+                    reject_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
+                reject_event = RavnEvent(
+                    type=RavnEventType.OUTCOME,
+                    source=self._source_id,
+                    payload=reject_payload,
+                    timestamp=datetime.now(UTC),
+                    urgency=0.8,
+                    correlation_id=task.task_id,
+                    session_id=task.session_id or "",
+                    task_id=task.task_id,
+                    root_correlation_id=root_corr,
+                )
+                logger.warning(
+                    "drive_loop: rejecting invalid resident Valkyrie outcome "
+                    "event_type=%s task_id=%s errors=%s",
+                    canonical_event_type,
+                    task.task_id,
+                    validation_errors,
+                )
+                if self._mesh is not None:
+                    try:
+                        await self._mesh.publish(reject_event, topic=VALKYRIE_JUDGMENT_REJECTED)
+                    except Exception:
+                        logger.warning(
+                            "Failed to publish resident Valkyrie rejected outcome; continuing.",
+                            exc_info=True,
+                        )
+                if self._skuld_channel is not None:
+                    try:
+                        await self._skuld_channel.emit(reject_event)
+                    except Exception:
+                        logger.warning(
+                            "Failed to emit resident Valkyrie rejected outcome to skuld; "
+                            "continuing.",
+                            exc_info=True,
+                        )
+                await self._emit_sleipnir_valkyrie_outcome(
+                    VALKYRIE_JUDGMENT_REJECTED,
+                    outcome_fields,
+                    task,
+                    root_corr,
+                    valid=False,
+                    errors=validation_errors,
+                    canonical_event_type=canonical_event_type,
+                )
+                return
+            valid = True
+
         await self._maybe_publish_workflow_artifacts(task, outcome_fields)
+        await self._maybe_materialize_workflow_artifacts(task, outcome_fields)
 
         base_payload: dict[str, object] = {
             "persona": self._persona_config.name,
@@ -1689,6 +2171,15 @@ class DriveLoop:
                     "Failed to emit canonical outcome to skuld; continuing.",
                     exc_info=True,
                 )
+
+        if is_valkyrie_outcome_event(canonical_event_type):
+            await self._emit_sleipnir_valkyrie_outcome(
+                canonical_event_type,
+                outcome_fields,
+                task,
+                root_corr,
+                valid=valid,
+            )
 
         if self._mesh is None:
             mesh_available = False
@@ -1787,6 +2278,107 @@ class DriveLoop:
                     "Failed to emit routing outcome alias to skuld; continuing.",
                     exc_info=True,
                 )
+
+    async def _emit_sleipnir_valkyrie_outcome(
+        self,
+        event_type: str,
+        outcome_fields: dict[str, object],
+        task: AgentTask,
+        root_correlation_id: str,
+        *,
+        valid: bool,
+        errors: list[str] | None = None,
+        canonical_event_type: str = "",
+    ) -> None:
+        """Mirror validated resident Valkyrie outcomes onto Sleipnir/NATS."""
+        payload: dict[str, object] = {
+            **self._sleipnir_task_context_payload(task),
+            **outcome_fields,
+            "task_id": task.task_id,
+            "persona": task.persona or getattr(self._persona_config, "name", "") or "",
+            "valid": valid,
+        }
+        if errors:
+            payload["errors"] = errors
+        if canonical_event_type:
+            payload["canonical_event_type"] = canonical_event_type
+        payload = _json_safe(payload)  # type: ignore[assignment]
+
+        environment_id = str(payload.get("environment_id") or payload.get("environmentId") or "")
+        valkyrie_id = str(payload.get("valkyrie_id") or payload.get("valkyrieId") or "")
+        confidence = _coerce_float(payload.get("confidence"), default=0.5)
+        tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
+        urgency = max(0.2, min(1.0, confidence if tier == "urgent" else confidence * 0.8))
+        event = SleipnirEvent(
+            event_type=event_type,
+            source=f"ravn:valkyrie:{environment_id or 'unknown'}",
+            payload=payload,
+            summary=self._valkyrie_outcome_summary(
+                event_type,
+                environment_id=environment_id,
+                valkyrie_id=valkyrie_id,
+                payload=payload,
+            ),
+            urgency=urgency if valid else 0.8,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            correlation_id=root_correlation_id,
+            causation_id=task.workflow_parent_event_id,
+            tenant_id=str(payload.get("tenant_id") or "") or None,
+        )
+        await self._publish_sleipnir_event(event, log_label=event_type)
+
+    @staticmethod
+    def _valkyrie_outcome_summary(
+        event_type: str,
+        *,
+        environment_id: str,
+        valkyrie_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        if event_type == VALKYRIE_JUDGMENT_REJECTED:
+            return f"Valkyrie {valkyrie_id or 'unknown'} judgment rejected"
+        if event_type.startswith("valkyrie.judgment."):
+            tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
+            action = str(payload.get("recommended_action") or "observe")
+            return (
+                f"Valkyrie {valkyrie_id or 'unknown'} judgment in {environment_id}: {tier}/{action}"
+            )
+        if event_type.startswith("valkyrie.action."):
+            capability = str(
+                payload.get("capability") or payload.get("recommended_action") or "action"
+            )
+            return f"Valkyrie {valkyrie_id or 'unknown'} action in {environment_id}: {capability}"
+        return f"Valkyrie {valkyrie_id or 'unknown'} outcome in {environment_id}"
+
+    def _sleipnir_task_context_payload(self, task: AgentTask) -> dict[str, object]:
+        """Return shared task/environment metadata for durable telemetry events."""
+        environment = getattr(self._settings, "environment", None)
+        mesh = getattr(self._settings, "mesh", None)
+        env_id = _clean_string(getattr(environment, "id", ""), default="")
+        env_type = _clean_string(getattr(environment, "type", ""), default="")
+        env_name = _clean_string(getattr(environment, "name", ""), default=env_id)
+        valkyrie_id = _clean_string(getattr(mesh, "own_peer_id", ""), default="")
+        tenant_id = env_id
+        return {
+            "environment_id": env_id,
+            "environment_name": env_name,
+            "environment_type": env_type,
+            "tenant_id": tenant_id,
+            "valkyrie_id": valkyrie_id,
+            "session_id": task.session_id or "",
+            "root_correlation_id": task.root_correlation_id or task.task_id,
+            "workflow_parent_event_id": task.workflow_parent_event_id or "",
+            "workflow_node_id": task.workflow_node_id or "",
+        }
+
+    async def _publish_sleipnir_event(self, event: SleipnirEvent, *, log_label: str) -> None:
+        if self._sleipnir_publisher is None:
+            return
+        try:
+            await self._sleipnir_publisher.publish(event)
+        except Exception:
+            logger.warning("Failed to emit %s; continuing.", log_label, exc_info=True)
 
     def _save_task_output(self, task: AgentTask, channel: ChannelPort) -> None:
         """Persist agent response to ``task.output_path`` when set (cron tasks)."""

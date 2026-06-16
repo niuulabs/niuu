@@ -175,3 +175,39 @@ class TestCliEventActivityIntegration:
 
             idle_calls = [c for c in mock_report.call_args_list if c[0][0] == "idle"]
             assert len(idle_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_report_activity_rides_cli_session_id(self, test_broker):
+        """The transport's conversation id rides on the activity report so
+        Volundr can persist it and resume the session after a restart."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+        transport = MagicMock()
+        transport.session_id = "claude-sess-42"
+        test_broker._transport = transport
+
+        await test_broker._report_activity_state("active")
+
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["metadata"]["cli_session_id"] == "claude-sess-42"
+
+    @pytest.mark.asyncio
+    async def test_report_activity_omits_cli_session_id_when_absent(self, test_broker):
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+        transport = MagicMock()
+        transport.session_id = None
+        test_broker._transport = transport
+
+        await test_broker._report_activity_state("active")
+
+        payload = mock_client.post.call_args[1]["json"]
+        assert "cli_session_id" not in payload["metadata"]

@@ -66,7 +66,7 @@ export interface ClusterResourceInfo {
 
 export type ModelTier = 'frontier' | 'balanced' | 'execution' | 'reasoning';
 export type ModelProvider = 'cloud' | 'local';
-export type SessionOrigin = 'managed' | 'manual';
+export type SessionOrigin = 'managed' | 'manual' | 'volundr' | 'claude' | 'codex';
 
 export interface VolundrModel {
   name: string;
@@ -154,6 +154,7 @@ export interface VolundrSession {
   podName?: string;
   error?: string;
   origin?: SessionOrigin;
+  externalSessionId?: string | null;
   hostname?: string;
   chatEndpoint?: string;
   codeEndpoint?: string;
@@ -165,6 +166,29 @@ export interface VolundrSession {
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
+}
+
+// ---------------------------------------------------------------------------
+// External CLI sessions (Claude Code / Codex discovered on the host)
+// ---------------------------------------------------------------------------
+
+export type ExternalSessionHarness = 'claude' | 'codex';
+
+export interface ExternalSession {
+  provider: string;
+  harness: ExternalSessionHarness;
+  externalId: string;
+  workspacePath: string;
+  title: string;
+  model: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  live: boolean;
+  workspaceExists: boolean;
+  /** Whether the workspace passes the server's allowed mount prefix policy. */
+  workspaceAllowed: boolean;
+  /** Volundr session id when the session has already been imported. */
+  importedSessionId: string | null;
 }
 
 export type WorkflowGateStatus = 'pending' | 'approved' | 'changes_requested';
@@ -216,6 +240,7 @@ export interface VolundrTarget {
   enabled: boolean;
   isDefault: boolean;
   visibility?: string;
+  tags: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +439,7 @@ export interface SessionDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Templates and presets
+// Launch specs
 // ---------------------------------------------------------------------------
 
 export interface ResourceConfig {
@@ -453,49 +478,36 @@ export interface TerminalSidecarConfig {
 
 export type CliTool = 'claude' | 'codex' | 'gemini' | 'aider';
 
-export interface VolundrTemplate {
+/** Ownership scope of a launch spec. */
+export type LaunchScope = 'system' | 'user';
+
+/** Launch specs are the catalog blueprint used to start Forge sessions. */
+export interface VolundrLaunchSpec {
   name: string;
+  scope: LaunchScope;
+  id: string | null;
   description: string;
   isDefault: boolean;
+  sessionDefinition: string | null;
+  workloadType: string;
+  model: string | null;
+  systemPrompt: string | null;
+  resourceConfig: ResourceConfig;
+  mcpServers: McpServerConfig[];
+  envVars: Record<string, string>;
+  envSecretRefs: string[];
+  workloadConfig: WorkloadConfig;
   repos: TemplateRepo[];
+  source: SessionSource | null;
   setupScripts: string[];
   workspaceLayout: Record<string, unknown>;
   cliTool: CliTool;
-  workloadType: string;
-  model: string | null;
-  systemPrompt: string | null;
-  resourceConfig: ResourceConfig;
-  mcpServers: McpServerConfig[];
-  envVars: Record<string, string>;
-  envSecretRefs: string[];
-  workloadConfig: WorkloadConfig;
   terminalSidecar: TerminalSidecarConfig;
   skills: SkillConfig[];
   rules: RuleConfig[];
-}
-
-export interface VolundrPreset {
-  id: string;
-  name: string;
-  description: string;
-  isDefault: boolean;
+  integrationIds: string[];
   createdAt: string;
   updatedAt: string;
-  cliTool: CliTool;
-  workloadType: string;
-  model: string | null;
-  systemPrompt: string | null;
-  resourceConfig: ResourceConfig;
-  mcpServers: McpServerConfig[];
-  terminalSidecar: TerminalSidecarConfig;
-  skills: SkillConfig[];
-  rules: RuleConfig[];
-  envVars: Record<string, string>;
-  envSecretRefs: string[];
-  source: SessionSource | null;
-  integrationIds: string[];
-  setupScripts: string[];
-  workloadConfig: WorkloadConfig;
 }
 
 // ---------------------------------------------------------------------------

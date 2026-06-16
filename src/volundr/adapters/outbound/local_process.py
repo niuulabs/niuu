@@ -55,7 +55,10 @@ logger = logging.getLogger(__name__)
 # Default configuration values
 DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 DEFAULT_CLAUDE_BINARY = "claude"
-DEFAULT_MAX_CONCURRENT = 4
+# Capable hosts run many sessions comfortably (each ~0.5 GB); the practical
+# ceiling is the Claude/Codex *subscription* concurrency, not the box. Deployments
+# override this via pod_manager.max_concurrent in config.yaml.
+DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_SDK_PORT_START = 9100
 DEFAULT_STOP_TIMEOUT = 10
 DEFAULT_STATE_FILE = "~/.niuu/forge-state.json"
@@ -437,9 +440,7 @@ class LocalProcessPodManager(PodManager):
         self._state_file = Path(str(state_file)).expanduser()
         if isinstance(allowed_mount_prefixes, str):
             allowed_mount_prefixes = [
-                prefix.strip()
-                for prefix in allowed_mount_prefixes.split(",")
-                if prefix.strip()
+                prefix.strip() for prefix in allowed_mount_prefixes.split(",") if prefix.strip()
             ]
         self._allowed_mount_prefixes = allowed_mount_prefixes or DEFAULT_ALLOWED_MOUNT_PREFIXES
 
@@ -481,8 +482,26 @@ class LocalProcessPodManager(PodManager):
         """Provision workspace, spawn Claude process, return endpoints."""
         session_id = str(session.id)
 
-        if len(self._active_sessions()) >= self._max_concurrent:
+        active = self._reconcile_active()
+        if len(active) >= self._max_concurrent:
+            detail = ", ".join(
+                f"{sid[:8]}:{self._processes[sid].state.value}(pid={self._processes[sid].pid})"
+                for sid in active
+            )
+            logger.warning(
+                "Max concurrent reached: %d/%d slots in use [%s] — rejecting new session %s",
+                len(active),
+                self._max_concurrent,
+                detail,
+                session_id[:8],
+            )
             raise RuntimeError(f"Max concurrent sessions ({self._max_concurrent}) reached")
+        logger.info(
+            "Provisioning session %s (%d/%d concurrent slots in use)",
+            session_id[:8],
+            len(active),
+            self._max_concurrent,
+        )
 
         workspace = await self._provision_workspace(session, spec)
         port = self._port_allocator.allocate()
@@ -494,9 +513,7 @@ class LocalProcessPodManager(PodManager):
                 if container.get("name", "").startswith("ravn-")
             )
             if persona_count > 0:
-                flock_plan = self._flock_port_plan(
-                    self._pick_flock_base_port(persona_count)
-                )
+                flock_plan = self._flock_port_plan(self._pick_flock_base_port(persona_count))
 
         info = ProcessInfo(
             session_id=session_id,
@@ -656,15 +673,17 @@ class LocalProcessPodManager(PodManager):
             workspace = Path(session.source.local_path)
             if not workspace.is_dir():
                 raise RuntimeError(f"local path {workspace!r} is not a directory")
+            if not self._is_allowed_mount(workspace):
+                raise RuntimeError(
+                    f"local path {workspace!r} is not under any allowed mount prefix"
+                )
             self._write_claude_md(workspace, spec)
             return workspace
         if isinstance(session.source, GitSource) and session.source.repo:
             local_workspace = _local_workspace_from_repo(session.source.repo)
             if local_workspace is not None:
                 if not local_workspace.is_dir():
-                    raise RuntimeError(
-                        f"local repo path {local_workspace!r} is not a directory"
-                    )
+                    raise RuntimeError(f"local repo path {local_workspace!r} is not a directory")
                 workspace = local_workspace.resolve()
                 self._write_claude_md(workspace, spec)
                 return workspace
@@ -843,21 +862,18 @@ class LocalProcessPodManager(PodManager):
         )
 
     @staticmethod
-    def _write_claude_md(workspace: Path, spec: SessionSpec) -> None:
-        """Write CLAUDE.md with system prompt and session config."""
-        session_vals = spec.values.get("session", {})
-        system_prompt = session_vals.get("systemPrompt", "")
-        initial_prompt = session_vals.get("initialPrompt", "")
+    def _write_claude_md(_workspace: Path, _spec: SessionSpec) -> None:
+        """No-op (deactivated in our pipeline).
 
-        parts: list[str] = []
-        if system_prompt:
-            parts.append(system_prompt)
-        if initial_prompt:
-            parts.append(f"\n## Initial Task\n\n{initial_prompt}")
-
-        if parts:
-            claude_md = workspace / "CLAUDE.md"
-            claude_md.write_text("\n".join(parts), encoding="utf-8")
+        The system prompt AND the initial task are both delivered to the agent
+        through the transport — the Claude SDK ``system_prompt`` option and
+        ``--append-system-prompt`` for the subprocess transports, plus
+        ``send_message`` for the initial prompt. The previous behavior wrote them
+        into the workspace ``CLAUDE.md``, which CLOBBERED any real project
+        CLAUDE.md and left a stale ``## Initial Task`` that bled into every later
+        session — and any other Claude Code agent — that ran in the same folder.
+        """
+        return
 
     # ------------------------------------------------------------------
     # Process spawning & monitoring
@@ -897,22 +913,12 @@ class LocalProcessPodManager(PodManager):
         # Configure Skuld via env vars
         env = self._build_env(spec, workspace)
 
-        # Inject pod_spec env vars from RavnFlockContributor.
-        # Map K8s-style names (MESH_ENABLED) to Skuld pydantic env (SKULD__MESH__ENABLED).
-        skuld_env_map = {
-            "MESH_ENABLED": "SKULD__MESH__ENABLED",
-            "MESH_TRANSPORT": "SKULD__MESH__TRANSPORT",
-            "MESH_PEER_ID": "SKULD__MESH__PEER_ID",
-            "MESH_PUB_ADDRESS": "SKULD__MESH__NNG__PUB_SUB_ADDRESS",
-            "MESH_REP_ADDRESS": "SKULD__MESH__NNG__REQ_REP_ADDRESS",
-            "MESH_HANDSHAKE_PORT": "SKULD__MESH__HANDSHAKE_PORT",
-        }
+        # Inject pod_spec env vars from session contributors.
         flock_dir = workspace / ".flock"
         if spec.pod_spec and spec.pod_spec.env:
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
-                    skuld_name = skuld_env_map.get(name, name)
-                    env[skuld_name] = entry.get("value", "")
+                    env[name] = entry.get("value", "")
 
             # Enable room mode so the web UI shows multi-participant view
             env["SKULD__ROOM__ENABLED"] = "true"
@@ -1061,7 +1067,7 @@ class LocalProcessPodManager(PodManager):
                 for entry in spec.pod_spec.env:
                     name = entry.get("name", "")
                     value = entry.get("value", "")
-                    if name == "MESH_PEER_ID":
+                    if name == "SKULD__MESH__PEER_ID":
                         skuld_peer_id = value
 
             if skuld_peer_id and skuld_pub:
@@ -1406,7 +1412,7 @@ class LocalProcessPodManager(PodManager):
     def _build_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
         """Build environment variables for the Skuld process."""
         env = dict(os.environ)
-        env["WORKSPACE_DIR"] = str(workspace)
+        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
         for key in (
             "SKULD__SKIP_PERMISSIONS",
             "SKULD__APPROVAL_POLICY",
@@ -1440,6 +1446,10 @@ class LocalProcessPodManager(PodManager):
             transport_adapter = broker.get("transportAdapter")
             if transport_adapter:
                 env["SKULD__TRANSPORT_ADAPTER"] = str(transport_adapter)
+
+            resume_session_id = broker.get("resumeSessionId")
+            if resume_session_id:
+                env["SKULD__SESSION__RESUME_SESSION_ID"] = str(resume_session_id)
 
             if "skipPermissions" in broker:
                 env["SKULD__SKIP_PERMISSIONS"] = str(bool(broker["skipPermissions"])).lower()
@@ -1636,3 +1646,34 @@ class LocalProcessPodManager(PodManager):
             for sid, info in self._processes.items()
             if info.state in (ProcessState.RUNNING, ProcessState.STARTING)
         ]
+
+    def _reconcile_active(self) -> list[str]:
+        """Active session IDs, after reaping entries whose process is dead.
+
+        ``_monitor_process`` only reaps a session when its broker exits while the
+        monitor task is alive. Brokers orphaned by a hard kill (or a dead monitor)
+        keep their RUNNING/STARTING slot forever, which eventually trips the
+        concurrent-session cap with *phantom* sessions ("Max concurrent reached"
+        with nothing really running). Verify pid liveness here so the cap reflects
+        real in-flight work. A STARTING entry with no pid yet is mid-spawn — left
+        alone.
+        """
+        reaped: list[str] = []
+        for sid, info in self._processes.items():
+            if info.state not in (ProcessState.RUNNING, ProcessState.STARTING):
+                continue
+            if info.pid is not None and not self._is_process_alive(info.pid):
+                info.state = ProcessState.STOPPED
+                if info.port is not None:
+                    self._port_allocator.release(info.port)
+                if info.flock_base_port is not None:
+                    self._allocated_flock_base_ports.discard(info.flock_base_port)
+                reaped.append(sid)
+        if reaped:
+            self._persist_state()
+            logger.warning(
+                "Reaped %d phantom session(s) holding concurrent slots (process dead): %s",
+                len(reaped),
+                ", ".join(s[:8] for s in reaped),
+            )
+        return self._active_sessions()

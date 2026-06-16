@@ -5,6 +5,7 @@ Multi-node, production event transport using NATS JetStream (nats-py client).
 Architecture
 ------------
 - :class:`NatsPublisher` — connects to NATS and publishes events to JetStream.
+- :class:`NatsCorePublisher` — publishes live control events over core NATS.
 - :class:`NatsSubscriber` — connects to NATS and subscribes from JetStream,
   with consumer group support and replay from offset.
 - :class:`NatsTransport` — combined publisher + subscriber (two connections).
@@ -56,6 +57,7 @@ Configuration example
       servers: ["nats://nats:4222"]
       stream:
         name: "sleipnir"
+        jetstream_domain: ""       # optional; empty uses the server default
         retention: "limits"        # or "interest", "workqueue"
         max_age: "7d"
         max_bytes: "1GB"
@@ -64,10 +66,13 @@ Configuration example
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import ssl
 from collections import deque
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 try:
@@ -84,6 +89,7 @@ from sleipnir.adapters._subscriber_support import (
     enqueue_with_overflow,
 )
 from sleipnir.adapters.serialization import deserialize, serialize
+from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent, match_event_type
 from sleipnir.ports.events import EventHandler, SleipnirPublisher, SleipnirSubscriber, Subscription
 
@@ -113,6 +119,80 @@ DEFAULT_CONNECT_TIMEOUT_S = 10.0
 #: Maximum reconnect attempts before giving up (-1 = unlimited).
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 60
 
+#: Hard deadline for one JetStream publish (seconds).
+DEFAULT_PUBLISH_TIMEOUT_S = 10.0
+
+
+def _build_tls_context(
+    *,
+    tls_ca_file: str = "",
+    tls_cert_file: str = "",
+    tls_key_file: str = "",
+    tls_insecure_skip_verify: bool = False,
+) -> ssl.SSLContext | None:
+    """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
+    if not tls_ca_file and not tls_cert_file and not tls_key_file and not tls_insecure_skip_verify:
+        return None
+    context = ssl.create_default_context(cafile=tls_ca_file or None)
+    if tls_insecure_skip_verify:
+        logger.warning(
+            "NATS TLS certificate verification is DISABLED "
+            "(tls_insecure_skip_verify=true) — connections are vulnerable to "
+            "man-in-the-middle attacks; never use this outside development"
+        )
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    if tls_cert_file or tls_key_file:
+        context.load_cert_chain(certfile=tls_cert_file, keyfile=tls_key_file or None)
+    return context
+
+
+def _read_optional_file(path: str) -> str:
+    if not path:
+        return ""
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
+def _connect_options(
+    *,
+    tls_ca_file: str = "",
+    tls_cert_file: str = "",
+    tls_key_file: str = "",
+    tls_hostname: str = "",
+    tls_handshake_first: bool = False,
+    tls_insecure_skip_verify: bool = False,
+    user: str = "",
+    password: str = "",
+    token: str = "",
+    nkeys_seed_file: str = "",
+    nkeys_seed: str = "",
+) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    tls_context = _build_tls_context(
+        tls_ca_file=tls_ca_file,
+        tls_cert_file=tls_cert_file,
+        tls_key_file=tls_key_file,
+        tls_insecure_skip_verify=tls_insecure_skip_verify,
+    )
+    if tls_context is not None:
+        options["tls"] = tls_context
+    if tls_hostname:
+        options["tls_hostname"] = tls_hostname
+    if tls_handshake_first:
+        options["tls_handshake_first"] = True
+    if user:
+        options["user"] = user
+    if password:
+        options["password"] = password
+    if token:
+        options["token"] = token
+    if nkeys_seed_file:
+        options["nkeys_seed"] = nkeys_seed_file
+    elif nkeys_seed:
+        options["nkeys_seed_str"] = nkeys_seed
+    return options
+
+
 #: Maximum number of event IDs held in the deduplication cache.
 DEFAULT_DEDUP_CACHE_SIZE = 10_000
 
@@ -140,6 +220,40 @@ def _nats_subject_for_event(event_type: str, prefix: str) -> str:
     return f"{prefix}.{event_type}"
 
 
+def _additional_nats_subjects(event: SleipnirEvent) -> list[str]:
+    """Return explicit extra NATS subjects requested by the event payload."""
+
+    raw = event.payload.get("additional_nats_subjects")
+    if isinstance(raw, str):
+        candidates: list[Any] = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+    subjects: list[str] = []
+    for candidate in candidates:
+        subject = str(candidate).strip()
+        if subject:
+            subjects.append(subject)
+    return subjects
+
+
+def _extra_subscription_matches(
+    extra_subscription: dict[str, Any],
+    event_types: list[str],
+) -> bool:
+    """Return whether an extra stream subscription belongs to this logical subscriber."""
+
+    scoped_event_types = extra_subscription.get("event_types")
+    if not scoped_event_types:
+        return True
+    return any(
+        match_event_type(scoped_pattern, event_type)
+        for scoped_pattern in scoped_event_types
+        for event_type in event_types
+    )
+
+
 def _nats_subjects_for_patterns(patterns: list[str], prefix: str) -> list[str]:
     """Translate Sleipnir fnmatch patterns to NATS subject filter strings.
 
@@ -165,6 +279,20 @@ def _nats_subjects_for_patterns(patterns: list[str], prefix: str) -> list[str]:
         else:
             subjects.append(f"{prefix}.{pattern}")
     return subjects or [f"{prefix}.>"]
+
+
+def _durable_name_for_subject(consumer_group: str, subject: str) -> str:
+    """Return a stable JetStream durable name for a consumer group and filter subject.
+
+    JetStream durables are bound to their filter subject.  A single logical
+    service group may subscribe to RPC plus several event subjects, so each
+    filter needs its own durable while replicas sharing the same filter still
+    share work.
+    """
+    safe_group = "".join(ch if ch.isalnum() or ch in ("_", "-") else "-" for ch in consumer_group)
+    safe_group = safe_group.strip("-_") or "group"
+    digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:12]
+    return f"{safe_group[:48]}-{digest}"
 
 
 def _parse_retention(retention_str: str) -> Any:
@@ -222,12 +350,18 @@ async def _ensure_stream(
         try:
             await js.add_stream(config=config)
             logger.info("NATS stream %r created", stream_name)
-        except Exception:
-            logger.warning(
-                "NATS stream %r could not be created; it may already exist",
-                stream_name,
-                exc_info=True,
-            )
+        except Exception as create_exc:
+            # add_stream may legitimately lose a creation race; only continue
+            # when the stream verifiably exists. Anything else fails loudly at
+            # the cause instead of cryptically at first publish.
+            try:
+                await js.stream_info(stream_name)
+                logger.debug("NATS stream %r created concurrently", stream_name)
+            except Exception as info_exc:
+                raise RuntimeError(
+                    f"NATS stream {stream_name!r} does not exist and could not "
+                    f"be created: {create_exc}"
+                ) from info_exc
 
 
 # ---------------------------------------------------------------------------
@@ -284,21 +418,51 @@ class NatsPublisher(SleipnirPublisher):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
     ) -> None:
         _require_nats()
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+        self._jetstream_domain = jetstream_domain.strip()
         self._retention = retention
         self._max_age_seconds = max_age_seconds
         self._max_bytes = max_bytes
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._ensure_stream = ensure_stream
+        self._publish_timeout_s = publish_timeout_s
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
         self._client: Any = None
         self._js: Any = None
 
@@ -308,20 +472,24 @@ class NatsPublisher(SleipnirPublisher):
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
         )
-        self._js = self._client.jetstream()
-        await _ensure_stream(
-            self._js,
-            self._stream_name,
-            self._subject_prefix,
-            self._retention,
-            self._max_age_seconds,
-            self._max_bytes,
-        )
+        js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
+        self._js = self._client.jetstream(**js_options)
+        if self._ensure_stream:
+            await _ensure_stream(
+                self._js,
+                self._stream_name,
+                self._subject_prefix,
+                self._retention,
+                self._max_age_seconds,
+                self._max_bytes,
+            )
         logger.debug(
-            "NatsPublisher: connected to %s, stream=%r",
+            "NatsPublisher: connected to %s, stream=%r, jetstream_domain=%r",
             self._servers,
             self._stream_name,
+            self._jetstream_domain,
         )
 
     async def stop(self) -> None:
@@ -355,7 +523,117 @@ class NatsPublisher(SleipnirPublisher):
             raise RuntimeError("NatsPublisher is not started. Call start() first.")
         subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
         payload = serialize(event)
-        await self._js.publish(subject, payload)
+        await self._publish_with_timeout(subject, payload)
+        for additional_subject in _additional_nats_subjects(event):
+            if additional_subject != subject:
+                await self._publish_with_timeout(additional_subject, payload)
+
+    async def _publish_with_timeout(self, subject: str, payload: bytes) -> None:
+        """Publish with a hard deadline so a slow broker cannot hang callers."""
+        try:
+            await asyncio.wait_for(
+                self._js.publish(subject, payload),
+                timeout=self._publish_timeout_s,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"NATS publish to {subject!r} timed out after {self._publish_timeout_s}s"
+            ) from exc
+
+    async def publish_batch(self, events: list[SleipnirEvent]) -> None:
+        for event in events:
+            await self.publish(event)
+
+
+# ---------------------------------------------------------------------------
+# NatsCorePublisher
+# ---------------------------------------------------------------------------
+
+
+class NatsCorePublisher(SleipnirPublisher):
+    """Core NATS publisher for live control subjects."""
+
+    def __init__(
+        self,
+        servers: list[str] | None = None,
+        subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
+    ) -> None:
+        _require_nats()
+        self._servers = servers or DEFAULT_SERVERS
+        self._subject_prefix = subject_prefix
+        self._connect_timeout_s = connect_timeout_s
+        self._max_reconnect_attempts = max_reconnect_attempts
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
+        self._client: Any = None
+
+    async def start(self) -> None:
+        self._client = await nats.connect(
+            servers=self._servers,
+            connect_timeout=self._connect_timeout_s,
+            max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
+        )
+        logger.debug(
+            "NatsCorePublisher: connected to %s, subject_prefix=%r",
+            self._servers,
+            self._subject_prefix,
+        )
+
+    async def stop(self) -> None:
+        if self._client is not None:
+            with suppress(Exception):
+                await self._client.drain()
+            with suppress(Exception):
+                await self._client.close()
+            self._client = None
+            logger.debug("NatsCorePublisher: closed")
+
+    async def __aenter__(self) -> NatsCorePublisher:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.stop()
+
+    async def publish(self, event: SleipnirEvent) -> None:
+        if event.ttl is not None and event.ttl <= 0:
+            logger.debug(
+                "Dropping expired event %s (%s): ttl=%d",
+                event.event_id,
+                event.event_type,
+                event.ttl,
+            )
+            return
+        if self._client is None:
+            raise RuntimeError("NatsCorePublisher is not started. Call start() first.")
+        subject = _nats_subject_for_event(event.event_type, self._subject_prefix)
+        await self._client.publish(subject, serialize(event))
+        await self._client.flush()
 
     async def publish_batch(self, events: list[SleipnirEvent]) -> None:
         for event in events:
@@ -395,6 +673,7 @@ class NatsSubscriber(SleipnirSubscriber):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -404,6 +683,20 @@ class NatsSubscriber(SleipnirSubscriber):
         ring_buffer_depth: int = DEFAULT_RING_BUFFER_DEPTH,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
+        extra_subscriptions: list[dict[str, str]] | None = None,
+        core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         if ring_buffer_depth < 1:
@@ -411,6 +704,7 @@ class NatsSubscriber(SleipnirSubscriber):
         self._servers = servers or DEFAULT_SERVERS
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+        self._jetstream_domain = jetstream_domain.strip()
         self._retention = retention
         self._max_age_seconds = max_age_seconds
         self._max_bytes = max_bytes
@@ -420,11 +714,61 @@ class NatsSubscriber(SleipnirSubscriber):
         self._ring_buffer_depth = ring_buffer_depth
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._ensure_stream = ensure_stream
+        self._connect_options = _connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
+        self._extra_subscriptions = [
+            {
+                "subject": str(entry.get("subject") or "").strip(),
+                "stream_name": str(
+                    entry.get("stream_name") or entry.get("streamName") or ""
+                ).strip(),
+                "event_types": [
+                    str(event_type).strip()
+                    for event_type in (
+                        entry.get("event_types")
+                        or entry.get("eventTypes")
+                        or entry.get("patterns")
+                        or []
+                    )
+                    if str(event_type).strip()
+                ],
+            }
+            for entry in extra_subscriptions or []
+            if str(entry.get("subject") or "").strip()
+        ]
+        self._core_subscriptions = [
+            str(entry.get("subject") if isinstance(entry, dict) else entry).strip()
+            for entry in core_subscriptions or []
+            if str(entry.get("subject") if isinstance(entry, dict) else entry).strip()
+        ]
         self._client: Any = None
         self._js: Any = None
         self._nats_subs: list[Any] = []
         self._subscriptions: list[_BaseSubscription] = []
         self._running = False
+        self._stats: dict[str, int] = {
+            "ack_failures": 0,
+            "decode_failures": 0,
+            "dlq_published": 0,
+            "dlq_publish_failures": 0,
+            "ring_buffer_overflows": 0,
+        }
+
+    def stats(self) -> dict[str, int]:
+        """Counters for the failure paths this subscriber has survived."""
+        return dict(self._stats)
 
     async def start(self) -> None:
         """Connect to NATS and ensure the JetStream stream exists."""
@@ -432,22 +776,26 @@ class NatsSubscriber(SleipnirSubscriber):
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
+            **self._connect_options,
         )
-        self._js = self._client.jetstream()
-        await _ensure_stream(
-            self._js,
-            self._stream_name,
-            self._subject_prefix,
-            self._retention,
-            self._max_age_seconds,
-            self._max_bytes,
-        )
+        js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
+        self._js = self._client.jetstream(**js_options)
+        if self._ensure_stream:
+            await _ensure_stream(
+                self._js,
+                self._stream_name,
+                self._subject_prefix,
+                self._retention,
+                self._max_age_seconds,
+                self._max_bytes,
+            )
         self._running = True
         logger.debug(
-            "NatsSubscriber: connected to %s, stream=%r, group=%r",
+            "NatsSubscriber: connected to %s, stream=%r, group=%r, jetstream_domain=%r",
             self._servers,
             self._stream_name,
             self._consumer_group,
+            self._jetstream_domain,
         )
 
     async def stop(self) -> None:
@@ -491,14 +839,69 @@ class NatsSubscriber(SleipnirSubscriber):
         )
         self._subscriptions.append(sub)
 
-        config = self._build_consumer_config()
-        subjects = _nats_subjects_for_patterns(event_types, self._subject_prefix)
+        subscriptions = [
+            {"subject": subject, "stream_name": self._stream_name}
+            for subject in _nats_subjects_for_patterns(event_types, self._subject_prefix)
+        ]
+        subscriptions.extend(
+            extra_subscription
+            for extra_subscription in self._extra_subscriptions
+            if _extra_subscription_matches(extra_subscription, event_types)
+        )
 
-        for subject in subjects:
-            nats_sub = await self._create_nats_subscription(subject, event_types, sub, config)
+        seen: set[tuple[str, str]] = set()
+        for subscription in subscriptions:
+            subject = subscription["subject"]
+            stream_name = subscription.get("stream_name") or self._stream_name
+            key = (stream_name, subject)
+            if key in seen:
+                continue
+            seen.add(key)
+            nats_sub = await self._create_nats_subscription(
+                subject,
+                event_types,
+                sub,
+                # A fresh ConsumerConfig per subscription: nats-py push
+                # subscribe stamps deliver_subject onto the config object, so
+                # sharing one config makes every consumer push to the same
+                # inbox and each message fan out to every callback.
+                self._build_consumer_config(),
+                stream_name=stream_name,
+            )
+            self._nats_subs.append(nats_sub)
+
+        for subject in self._core_subscriptions:
+            nats_sub = await self._create_core_subscription(subject, event_types, sub)
             self._nats_subs.append(nats_sub)
 
         return sub
+
+    async def _create_core_subscription(
+        self,
+        subject: str,
+        patterns: list[str],
+        sub: _BaseSubscription,
+    ) -> Any:
+        """Create a core NATS subscription for live control subjects."""
+
+        async def _on_message(msg: Any) -> None:
+            if not self._running:
+                return
+            event = _decode_nats_message(msg.data)
+            if event is None:
+                self._stats["decode_failures"] += 1
+                return
+            if event.ttl is not None and event.ttl <= 0:
+                return
+            if not any(match_event_type(p, event.event_type) for p in patterns):
+                return
+            overflowed = await enqueue_with_overflow(
+                sub._queue, event, self._ring_buffer_depth, logger
+            )
+            if overflowed:
+                self._stats["ring_buffer_overflows"] += 1
+
+        return await self._client.subscribe(subject, cb=_on_message)
 
     async def _create_nats_subscription(
         self,
@@ -506,6 +909,7 @@ class NatsSubscriber(SleipnirSubscriber):
         patterns: list[str],
         sub: _BaseSubscription,
         config: Any,
+        stream_name: str | None = None,
     ) -> Any:
         """Create a JetStream push subscription for *subject*."""
 
@@ -515,22 +919,82 @@ class NatsSubscriber(SleipnirSubscriber):
                     return
                 event = _decode_nats_message(msg.data)
                 if event is None:
+                    self._stats["decode_failures"] += 1
+                    await self._publish_dlq(msg, reason="deserialization failed")
                     return
                 if event.ttl is not None and event.ttl <= 0:
                     return
                 if not any(match_event_type(p, event.event_type) for p in patterns):
                     return
-                await enqueue_with_overflow(sub._queue, event, self._ring_buffer_depth, logger)
+                overflowed = await enqueue_with_overflow(
+                    sub._queue, event, self._ring_buffer_depth, logger
+                )
+                if overflowed:
+                    self._stats["ring_buffer_overflows"] += 1
             finally:
-                with suppress(Exception):
+                try:
                     await msg.ack()
+                except Exception:
+                    self._stats["ack_failures"] += 1
+                    logger.warning(
+                        "NatsSubscriber: ack failed for subject=%s "
+                        "(message will be redelivered); ack_failures=%d",
+                        getattr(msg, "subject", "?"),
+                        self._stats["ack_failures"],
+                        exc_info=True,
+                    )
 
-        kwargs: dict[str, Any] = {"stream": self._stream_name, "config": config}
+        kwargs: dict[str, Any] = {"stream": stream_name or self._stream_name, "config": config}
         if self._consumer_group is not None:
-            kwargs["durable"] = self._consumer_group
-            kwargs["queue"] = self._consumer_group
+            durable = _durable_name_for_subject(self._consumer_group, subject)
+            kwargs["durable"] = durable
+            kwargs["queue"] = durable
 
         return await self._js.subscribe(subject, cb=_on_message, **kwargs)
+
+    async def _publish_dlq(self, msg: Any, *, reason: str) -> None:
+        """Dead-letter an unprocessable message instead of dropping it.
+
+        The record is itself a valid Sleipnir event (``system.dlq.message``)
+        carrying the raw bytes base64-encoded, published under the configured
+        prefix so the main stream retains it. DLQ records are never
+        dead-lettered again — a poison DLQ entry is dropped with an error log.
+        """
+        subject = str(getattr(msg, "subject", "") or "")
+        dlq_subject = _nats_subject_for_event(registry.SYSTEM_DLQ_MESSAGE, self._subject_prefix)
+        if subject == dlq_subject:
+            logger.error(
+                "NatsSubscriber: DLQ record on %s is itself unprocessable; dropping",
+                subject,
+            )
+            return
+        import base64  # noqa: PLC0415
+
+        record = SleipnirEvent(
+            event_type=registry.SYSTEM_DLQ_MESSAGE,
+            source="sleipnir:nats-subscriber",
+            payload={
+                "reason": reason,
+                "original_subject": subject,
+                "stream": self._stream_name,
+                "raw_base64": base64.b64encode(bytes(msg.data)).decode("ascii"),
+                "raw_bytes": len(msg.data),
+            },
+            summary=f"Dead-lettered message from {subject or 'unknown subject'}: {reason}",
+            urgency=0.7,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+        )
+        try:
+            await self._js.publish(dlq_subject, serialize(record))
+            self._stats["dlq_published"] += 1
+        except Exception:
+            self._stats["dlq_publish_failures"] += 1
+            logger.exception(
+                "NatsSubscriber: failed to dead-letter message from %s; "
+                "raw payload is lost after ack",
+                subject,
+            )
 
     def _build_consumer_config(self) -> Any:
         """Build the :class:`~nats.js.api.ConsumerConfig` for this subscriber.
@@ -586,6 +1050,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         servers: list[str] | None = None,
         stream_name: str = DEFAULT_STREAM_NAME,
         subject_prefix: str = DEFAULT_SUBJECT_PREFIX,
+        jetstream_domain: str = "",
         retention: str = DEFAULT_RETENTION,
         max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -595,22 +1060,52 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         ring_buffer_depth: int = DEFAULT_RING_BUFFER_DEPTH,
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        ensure_stream: bool = True,
+        publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
+        tls_ca_file: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
+        extra_subscriptions: list[dict[str, str]] | None = None,
+        core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
         _require_nats()
         self._publisher = NatsPublisher(
             servers=servers,
             stream_name=stream_name,
             subject_prefix=subject_prefix,
+            jetstream_domain=jetstream_domain,
             retention=retention,
             max_age_seconds=max_age_seconds,
             max_bytes=max_bytes,
             connect_timeout_s=connect_timeout_s,
             max_reconnect_attempts=max_reconnect_attempts,
+            ensure_stream=ensure_stream,
+            publish_timeout_s=publish_timeout_s,
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
         )
         self._subscriber = NatsSubscriber(
             servers=servers,
             stream_name=stream_name,
             subject_prefix=subject_prefix,
+            jetstream_domain=jetstream_domain,
             retention=retention,
             max_age_seconds=max_age_seconds,
             max_bytes=max_bytes,
@@ -620,6 +1115,20 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             ring_buffer_depth=ring_buffer_depth,
             connect_timeout_s=connect_timeout_s,
             max_reconnect_attempts=max_reconnect_attempts,
+            ensure_stream=ensure_stream,
+            tls_ca_file=tls_ca_file,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+            extra_subscriptions=extra_subscriptions,
+            core_subscriptions=core_subscriptions,
         )
 
     async def start(self) -> None:
@@ -631,6 +1140,10 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         """Graceful shutdown: stop subscriber first, then publisher."""
         await self._subscriber.stop()
         await self._publisher.stop()
+
+    def stats(self) -> dict[str, int]:
+        """Failure-path counters from the subscriber side of the transport."""
+        return self._subscriber.stats()
 
     async def __aenter__(self) -> NatsTransport:
         await self.start()

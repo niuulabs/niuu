@@ -62,7 +62,7 @@ class ClusterResourceInfoResponse(BaseModel):
 def create_resources_router(
     resource_provider: ResourceProvider,
     *,
-    prefix: str = "/api/v1/forge",
+    prefix: str = "/api/v1/volundr",
 ) -> APIRouter:
     """Create the resources REST router."""
 

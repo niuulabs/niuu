@@ -1,5 +1,7 @@
 """Tests for Skuld Helm chart templates."""
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -51,7 +53,7 @@ class TestValuesDefaults:
         assert values_yaml["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_broker_cli_type_defaults_to_claude(self, values_yaml):
-        """Test legacy broker cliType defaults to claude (backward compat)."""
+        """Test broker cliType defaults to claude."""
         assert values_yaml["broker"]["cliType"] == "claude"
 
     def test_env_secrets_default_has_anthropic_key(self, values_yaml):
@@ -63,9 +65,11 @@ class TestValuesDefaults:
         assert env_secrets[0]["secretName"] == "anthropic-api-key"
         assert env_secrets[0]["secretKey"] == "api-key"
 
-    def test_env_vars_defaults_to_empty_list(self, values_yaml):
-        """Test envVars defaults to an empty list."""
-        assert values_yaml["envVars"] == []
+    def test_env_vars_default_pins_api_key_auth(self, values_yaml):
+        """Cluster pods have no ~/.claude login — Claude transports must keep
+        the injected ANTHROPIC_API_KEY rather than the subscription default."""
+        env_vars = values_yaml["envVars"]
+        assert env_vars == [{"name": "SKULD__CLAUDE_AUTH", "value": "api_key"}]
 
     def test_service_exposes_single_entry_port(self, values_yaml):
         """Test service configuration has single nginx entry port."""
@@ -141,11 +145,11 @@ class TestConfigMapTemplate:
         assert ".Values.broker.transportAdapter" in configmap_yaml
 
     def test_configmap_has_cli_type(self, configmap_yaml):
-        """Test configmap includes legacy cli_type field for backward compat."""
+        """Test configmap includes cli_type field."""
         assert "cli_type" in configmap_yaml
 
     def test_configmap_cli_type_driven_by_values(self, configmap_yaml):
-        """Test configmap legacy cli_type reads from broker.cliType."""
+        """Test configmap cli_type reads from broker.cliType."""
         assert ".Values.broker.cliType" in configmap_yaml
 
     def test_configmap_cli_type_has_default_fallback(self, configmap_yaml):
@@ -212,6 +216,71 @@ class TestDeploymentTemplate:
         """Test deployment injects plain env vars via generic range loop."""
         assert "range .Values.envVars" in deployment_yaml
 
+    def test_deployment_renders_flock_pod_additions(self, tmp_path):
+        """Render proof for Flux-provided flock sidecars and config writers."""
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "envVars": [{"name": "SKULD__MESH__ENABLED", "value": "true"}],
+                "mesh": {
+                    "enabled": True,
+                    "peerPorts": [{"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"}],
+                },
+                "extraInitContainers": [
+                    {
+                        "name": "write-ravn-cfg-coder",
+                        "image": "busybox:latest",
+                        "command": ["sh", "-c", "echo ok"],
+                        "securityContext": {
+                            "runAsUser": 1000,
+                            "runAsGroup": 1000,
+                            "runAsNonRoot": True,
+                            "allowPrivilegeEscalation": False,
+                        },
+                    }
+                ],
+                "extraContainers": [
+                    {
+                        "name": "ravn-coder",
+                        "image": "ghcr.io/niuulabs/ravn:test",
+                        "env": [{"name": "RAVN_PERSONA", "value": "coder"}],
+                        "volumeMounts": [
+                            {
+                                "name": "sessions",
+                                "mountPath": "/workspace",
+                                "subPath": "session-1/workspace",
+                                "readOnly": True,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        deployment = _deployment_from_rendered(rendered)
+        pod_spec = deployment["spec"]["template"]["spec"]
+
+        assert [container["name"] for container in pod_spec["initContainers"]] == [
+            "write-ravn-cfg-coder"
+        ]
+        assert pod_spec["initContainers"][0]["securityContext"] == {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": True,
+            "allowPrivilegeEscalation": False,
+        }
+        containers = {container["name"]: container for container in pod_spec["containers"]}
+        assert "skuld" in containers
+        assert "ravn-coder" in containers
+        assert {"name": "SKULD__MESH__ENABLED", "value": "true"} in containers["skuld"]["env"]
+        assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
+            "skuld"
+        ]["ports"]
+        volumes = {volume["name"] for volume in pod_spec["volumes"]}
+        assert "sessions" in volumes
+        for container in pod_spec["containers"]:
+            for mount in container.get("volumeMounts", []):
+                assert mount["name"] in volumes
+
     def test_deployment_has_no_per_provider_api_fields(self, deployment_yaml):
         """Test deployment does not contain old per-provider api fields."""
         assert "anthropicApiKeySecret" not in deployment_yaml
@@ -225,6 +294,22 @@ class TestDeploymentTemplate:
         # Credential volume wiring must not reference broker.cliType
         before_volume = deployment_yaml.split("credential-files")[0].split("homeVolume")[-1]
         assert "broker.cliType" not in before_volume
+
+    def test_codex_home_is_session_local_but_seeded_from_shared_home(self, deployment_yaml):
+        """Codex auth/config is copied without sharing sqlite runtime state."""
+        assert (
+            'CODEX_STATE_DIR="{{ printf "%s/.codex" (include "skuld.workspacePath" .) }}"'
+        ) in deployment_yaml
+        assert 'if [ "$DEST_DIR" = ".codex" ]; then' in deployment_yaml
+        assert 'chown "$TARGET_UID:$TARGET_GID" "$(dirname "$CODEX_STATE_DIR")"' in deployment_yaml
+        assert "for name in auth.json config.toml version.json models_cache.json" in deployment_yaml
+        assert 'cp -f "$HOME_DIR/$DEST_DIR/$name" "$CODEX_STATE_DIR/$name"' in deployment_yaml
+        assert (
+            "sqlite"
+            not in deployment_yaml.split("Codex auth/config seeded")[0].split(
+                "for name in auth.json"
+            )[1]
+        )
 
 
 class TestServiceTemplate:
@@ -297,3 +382,28 @@ class TestHelpersTemplate:
     def test_has_labels_helper(self, helpers_tpl):
         """Test helpers has labels function."""
         assert 'define "skuld.labels"' in helpers_tpl
+
+
+def _render_skuld_chart(tmp_path: Path, values: dict) -> str:
+    helm = shutil.which("helm")
+    if not helm:
+        pytest.skip("helm is not installed")
+
+    values_file = tmp_path / "values.yaml"
+    values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+    result = subprocess.run(
+        [helm, "template", "skuld-test", str(CHART_DIR), "-f", str(values_file)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return result.stdout
+
+
+def _deployment_from_rendered(rendered_yaml: str) -> dict:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if isinstance(document, dict) and document.get("kind") == "Deployment":
+            return document
+    pytest.fail("Deployment was not rendered")
+    raise AssertionError("Deployment was not rendered")

@@ -57,6 +57,9 @@ export const LAYOUT = {
   /** Visual radius drawn for cluster circles. */
   CLUSTER_INNER_RADIUS: 138,
 
+  /** Minimum visual radius drawn for namespace containers. */
+  NAMESPACE_INNER_RADIUS: 86,
+
   /** Base orbit for child nodes inside a cluster. */
   CLUSTER_CHILD_ORBIT: 132,
 
@@ -114,6 +117,7 @@ export const HIT_RADIUS: Record<string, number> = {
   volundr: 16,
   valkyrie: 12,
   ravn_long: 12,
+  warden: 12,
   ravn_run: 9,
   skuld: 9,
   trigger: 9,
@@ -123,6 +127,7 @@ export const HIT_RADIUS: Record<string, number> = {
   end: 9,
   resource: 10,
   host: 24,
+  namespace: 28,
   service: 7,
   model: 7,
   printer: 9,
@@ -139,6 +144,7 @@ export const NODE_SIZE: Record<string, number> = {
   volundr: 13,
   valkyrie: 10,
   ravn_long: 9,
+  warden: 10,
   ravn_run: 6,
   skuld: 7,
   trigger: 7,
@@ -148,6 +154,7 @@ export const NODE_SIZE: Record<string, number> = {
   end: 7,
   resource: 8,
   host: 8,
+  namespace: 8,
   service: 4,
   model: 5,
   printer: 7,

@@ -14,7 +14,7 @@ Port allocation (mirrors ravn/cli/flock.py via niuu.mesh):
   pub       = base_port + index * 2
   rep       = base_port + index * 2 + 1
   handshake = base_port + 100 + index
-  gateway   = base_port + 200 + index
+  gateway   = base_port + 300 + index
 """
 
 from __future__ import annotations
@@ -28,28 +28,71 @@ import yaml
 from niuu.domain.llm_merge import _SECURITY_KEYS, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
-from volundr.domain.models import ForgeProfile, PodSpecAdditions, Session, WorkspaceTemplate
+from volundr.domain.models import LaunchSpec, PodSpecAdditions, Session
 from volundr.domain.ports import (
-    ProfileProvider,
+    LaunchSpecProvider,
     SessionContext,
     SessionContribution,
     SessionContributor,
-    TemplateProvider,
 )
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_PORT = 7480
+_RAVN_GATEWAY_PORT_OFFSET = 100
 _DEFAULT_MAX_CONCURRENT_TASKS = 3
 _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
-_WORKSPACE_VOLUME_NAME = "workspace"
+_WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
-_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/ravn:latest"
+_RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/skuld:dev"
+_RAVN_COMMAND = [
+    "python",
+    "-c",
+    (
+        "import os, pathlib, subprocess, sys\n"
+        "persona = os.environ.get('RAVN_PERSONA') or 'ravn'\n"
+        "log = pathlib.Path('/workspace/.flock/logs') / f'{persona}.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "proc = subprocess.Popen(\n"
+        "    [\n"
+        "        sys.executable,\n"
+        "        '-m',\n"
+        "        'ravn',\n"
+        "        'daemon',\n"
+        "        '--config',\n"
+        "        os.environ.get('RAVN_CONFIG', '/etc/ravn/config.yaml'),\n"
+        "        '--persona',\n"
+        "        persona,\n"
+        "    ],\n"
+        "    stdout=subprocess.PIPE,\n"
+        "    stderr=subprocess.STDOUT,\n"
+        ")\n"
+        "with log.open('ab', buffering=0) as handle:\n"
+        "    assert proc.stdout is not None\n"
+        "    for line in iter(proc.stdout.readline, b''):\n"
+        "        sys.stdout.buffer.write(line)\n"
+        "        sys.stdout.buffer.flush()\n"
+        "        handle.write(line)\n"
+        "sys.exit(proc.wait())\n"
+    ),
+]
 _RAVN_CONFIG_MOUNT_PATH = "/etc/ravn/config.yaml"
 _RAVN_CONFIG_VOLUME_PREFIX = "ravn-cfg"
 _RAVN_CONFIG_DIR = "/etc/ravn"
 _INIT_WRITER_IMAGE = "busybox:latest"
+_INIT_WRITER_SECURITY_CONTEXT = {
+    "runAsUser": 1000,
+    "runAsGroup": 1000,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": False,
+}
+_RAVN_SECURITY_CONTEXT = {
+    "runAsUser": 1000,
+    "runAsGroup": 1000,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": False,
+}
 
 # Persona source modes
 _PERSONA_SOURCE_FILESYSTEM = "filesystem"
@@ -61,6 +104,16 @@ _PERSONA_CM_VOLUME_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_MOUNT_PATH = "/etc/ravn/personas"
 _PERSONA_TOKEN_ENV = "RAVN_VOLUNDR_TOKEN"
+
+
+def _ravn_gateway_port_for(index: int, base_port: int) -> int:
+    """Return the Ravn HTTP port inside Skuld pods.
+
+    Skuld pods already reserve 7681 for the devrunner terminal sidecar. The
+    shared niuu.mesh helper returns 7681 for the first Ravn node, so Volundr
+    shifts only Ravn sidecar HTTP ports out of that range.
+    """
+    return _gateway_port_for(index, base_port) + _RAVN_GATEWAY_PORT_OFFSET
 
 
 def _normalize_personas(raw: list) -> list[dict]:
@@ -321,6 +374,59 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
     return instance
 
 
+def _mesh_peer_entry(
+    *,
+    peer_id: str,
+    persona: str,
+    index: int,
+    base_port: int,
+    consumes_event_types: list[str] | None = None,
+    emits_event_types: list[str] | None = None,
+) -> dict[str, Any]:
+    pub, rep, hs = _ports_for(index, base_port)
+    return {
+        "peer_id": peer_id,
+        "persona": persona,
+        "pub_address": f"tcp://127.0.0.1:{pub}",
+        "rep_address": f"tcp://127.0.0.1:{rep}",
+        "handshake_port": hs,
+        "consumes_event_types": list(consumes_event_types or []),
+        "emits_event_types": list(emits_event_types or []),
+    }
+
+
+def _build_static_mesh_peers(
+    *,
+    persona_dicts: list[dict[str, Any]],
+    skuld_peer_id: str,
+    base_port: int,
+) -> list[dict[str, Any]]:
+    peers = [
+        _mesh_peer_entry(
+            peer_id=skuld_peer_id,
+            persona="Skuld",
+            index=0,
+            base_port=base_port,
+            emits_event_types=["code.changed"],
+        )
+    ]
+    for i, persona_dict in enumerate(persona_dicts, start=1):
+        persona = str(persona_dict["name"])
+        consumes = [str(item) for item in persona_dict.get("consumes_event_types") or []]
+        emits = [str(item) for item in persona_dict.get("emits_event_types") or []]
+        peers.append(
+            _mesh_peer_entry(
+                peer_id=f"flock-{persona}",
+                persona=persona,
+                index=i,
+                base_port=base_port,
+                consumes_event_types=consumes,
+                emits_event_types=emits,
+            )
+        )
+    return peers
+
+
 def _build_ravn_config(
     *,
     persona: str,
@@ -331,6 +437,7 @@ def _build_ravn_config(
     base_port: int,
     all_personas: list[str],
     skuld_peer_id: str,
+    static_mesh_peers: list[dict[str, Any]],
     mimir_config: dict[str, Any],
     sleipnir_publish_urls: list[str],
     daily_budget_usd: float | None = None,
@@ -349,7 +456,7 @@ def _build_ravn_config(
     embedded in the sidecar YAML so that ravn can apply them at runtime.
     """
     pub, rep, _hs = _ports_for(index, base_port)
-    gw = _gateway_port_for(index, base_port)
+    gw = _ravn_gateway_port_for(index, base_port)
 
     peers: list[dict[str, str]] = [{"peer_id": skuld_peer_id}] + [
         {"peer_id": f"flock-{p}"} for p in all_personas if p != persona
@@ -371,7 +478,16 @@ def _build_ravn_config(
             },
             "peers": peers,
         },
-        "discovery": {"enabled": True, "adapter": "static"},
+        "discovery": {
+            "enabled": True,
+            "adapters": [
+                {
+                    "adapter": "static",
+                    "peers": static_mesh_peers,
+                    "poll_interval_s": 0,
+                }
+            ],
+        },
         "cascade": {"enabled": True},
         "gateway": {
             "enabled": True,
@@ -387,6 +503,9 @@ def _build_ravn_config(
             "enabled": True,
             "instances": mimir_instances,
             "write_routing": mimir_write_routing,
+        },
+        "permission": {
+            "workspace_root": _WORKSPACE_MOUNT_PATH,
         },
         "logging": {"level": "INFO"},
     }
@@ -549,9 +668,9 @@ def _default_flock_trigger_config(
 class RavnFlockContributor(SessionContributor):
     """Contributes flock pod spec when workload_type == 'ravn_flock'.
 
-    Resolves the profile or template from the session context, reads
+    Resolves the launch spec from the session context, reads
     workload_config.personas + mesh/mimir/sleipnir settings, then:
-      - Emits skuld mesh env vars (MESH_ENABLED, MESH_PEER_ID, nng addresses)
+      - Emits Skuld mesh env vars (SKULD__MESH__*, nng addresses)
       - Emits one ravn sidecar container per persona with RAVN_CONFIG env
       - Emits per-sidecar initContainer + emptyDir volume for mounted config
       - Emits a Mimir emptyDir volume
@@ -563,8 +682,7 @@ class RavnFlockContributor(SessionContributor):
     def __init__(
         self,
         *,
-        template_provider: TemplateProvider | None = None,
-        profile_provider: ProfileProvider | None = None,
+        launch_spec_provider: LaunchSpecProvider | None = None,
         ravn_image: str = _RAVN_IMAGE_DEFAULT,
         base_port: int = _DEFAULT_BASE_PORT,
         mesh_host: str = "0.0.0.0",
@@ -575,8 +693,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_http_base_url: str = "",
         **_extra: object,
     ) -> None:
-        self._template_provider = template_provider
-        self._profile_provider = profile_provider
+        self._launch_spec_provider = launch_spec_provider
         self._ravn_image = ravn_image
         self._base_port = base_port
         self._mesh_host = mesh_host
@@ -662,22 +779,16 @@ class RavnFlockContributor(SessionContributor):
 
         return SessionContribution(values=values, pod_spec=pod_spec)
 
-    def _resolve_source(self, context: SessionContext) -> WorkspaceTemplate | ForgeProfile | None:
-        if context.template_name and self._template_provider is not None:
-            template = self._template_provider.get(context.template_name)
-            if template is not None:
-                return template
+    def _resolve_source(self, context: SessionContext) -> LaunchSpec | None:
+        if self._launch_spec_provider is None:
+            return None
 
-        if self._profile_provider is not None:
-            if context.profile_name:
-                profile = self._profile_provider.get(context.profile_name)
-                if profile is not None:
-                    return profile
-            default = self._profile_provider.get_default("ravn_flock")
-            if default is not None:
-                return default
+        if context.launch_spec:
+            spec = self._launch_spec_provider.get(context.launch_spec)
+            if spec is not None:
+                return spec
 
-        return None
+        return self._launch_spec_provider.get_default("ravn_flock")
 
     def _build_flock_spec(
         self,
@@ -706,14 +817,45 @@ class RavnFlockContributor(SessionContributor):
         # Skuld (index 0) + ravn nodes start at index 1
         skuld_peer_id = f"skuld-{session_id[:8]}"
         skuld_pub, skuld_rep, skuld_hs = _ports_for(0, base_port)
+        static_mesh_peers = _build_static_mesh_peers(
+            persona_dicts=persona_dicts,
+            skuld_peer_id=skuld_peer_id,
+            base_port=base_port,
+        )
 
         skuld_env: list[dict] = [
-            {"name": "MESH_ENABLED", "value": "true"},
-            {"name": "MESH_TRANSPORT", "value": mesh_transport},
-            {"name": "MESH_PEER_ID", "value": skuld_peer_id},
-            {"name": "MESH_PUB_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_pub}"},
-            {"name": "MESH_REP_ADDRESS", "value": f"tcp://{self._mesh_host}:{skuld_rep}"},
-            {"name": "MESH_HANDSHAKE_PORT", "value": str(skuld_hs)},
+            {"name": "SKULD__MESH__ENABLED", "value": "true"},
+            {"name": "SKULD__MESH__TRANSPORT", "value": mesh_transport},
+            {"name": "SKULD__MESH__PEER_ID", "value": skuld_peer_id},
+            {"name": "SKULD__ROOM__ENABLED", "value": "true"},
+            {
+                "name": "SKULD__ROOM__MAX_PARTICIPANTS",
+                "value": str(len(persona_dicts) + 1),
+            },
+            {
+                "name": "SKULD__ROOM__PRESENCE_SWEEP_INTERVAL_S",
+                "value": "0",
+            },
+            {
+                "name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS",
+                "value": f"tcp://{self._mesh_host}:{skuld_pub}",
+            },
+            {
+                "name": "SKULD__MESH__NNG__REQ_REP_ADDRESS",
+                "value": f"tcp://{self._mesh_host}:{skuld_rep}",
+            },
+            {
+                "name": "SKULD__MESH__ADAPTERS",
+                "value": json.dumps(
+                    [
+                        {
+                            "adapter": "static",
+                            "peers": static_mesh_peers,
+                            "poll_interval_s": 0,
+                        }
+                    ]
+                ),
+            },
         ]
         workflow_trigger = _workflow_trigger_config(workflow)
         if workflow_trigger is None:
@@ -845,7 +987,7 @@ class RavnFlockContributor(SessionContributor):
             ravn_index = i + 1
             peer_id = f"flock-{persona}"
             pub, rep, hs = _ports_for(ravn_index, base_port)
-            gw = _gateway_port_for(ravn_index, base_port)
+            gw = _ravn_gateway_port_for(ravn_index, base_port)
 
             config_yaml = _build_ravn_config(
                 persona=persona,
@@ -856,6 +998,7 @@ class RavnFlockContributor(SessionContributor):
                 base_port=base_port,
                 all_personas=all_personas,
                 skuld_peer_id=skuld_peer_id,
+                static_mesh_peers=static_mesh_peers,
                 mimir_config=mimir_config,
                 sleipnir_publish_urls=sleipnir_publish_urls,
                 daily_budget_usd=daily_budget_usd,
@@ -880,6 +1023,7 @@ class RavnFlockContributor(SessionContributor):
                     "name": f"write-ravn-cfg-{persona}",
                     "image": _INIT_WRITER_IMAGE,
                     "command": ["sh", "-c", heredoc],
+                    "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
                     "volumeMounts": [
                         {"name": cfg_vol_name, "mountPath": _RAVN_CONFIG_DIR},
                     ],
@@ -890,6 +1034,10 @@ class RavnFlockContributor(SessionContributor):
                 {"name": "RAVN_PERSONA", "value": persona},
                 {"name": "RAVN_PEER_ID", "value": peer_id},
                 {"name": "RAVN_CONFIG", "value": _RAVN_CONFIG_MOUNT_PATH},
+                {"name": "HOME", "value": _WORKSPACE_MOUNT_PATH},
+                {"name": "RAVN_STATE_DIR", "value": f"{_WORKSPACE_MOUNT_PATH}/.ravn"},
+                {"name": "HOST", "value": self._mesh_host},
+                {"name": "PORT", "value": str(gw)},
             ]
 
             if sleipnir_publish_urls:
@@ -906,7 +1054,8 @@ class RavnFlockContributor(SessionContributor):
                 {
                     "name": _WORKSPACE_VOLUME_NAME,
                     "mountPath": _WORKSPACE_MOUNT_PATH,
-                    "readOnly": True,
+                    "subPath": f"{session.id}/workspace",
+                    "readOnly": False,
                 },
                 {
                     "name": cfg_vol_name,
@@ -924,6 +1073,8 @@ class RavnFlockContributor(SessionContributor):
             container: dict[str, Any] = {
                 "name": f"ravn-{persona}",
                 "image": self._ravn_image,
+                "command": list(_RAVN_COMMAND),
+                "securityContext": _RAVN_SECURITY_CONTEXT.copy(),
                 "env": ravn_env,
                 "ports": [
                     {"containerPort": pub, "name": f"r{ravn_index}-pub", "protocol": "TCP"},

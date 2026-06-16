@@ -207,6 +207,51 @@ def test_validate_boolean_rejected_for_number_field(simple_schema: OutcomeSchema
     assert any("findings_count" in e for e in result.errors)
 
 
+def test_validate_array_and_object_fields_pass() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "signal_refs": OutcomeField(type="array", description="signal refs"),
+            "correlation_ids": OutcomeField(type="object", description="correlations"),
+        }
+    )
+    text = """\
+---outcome---
+signal_refs:
+  - evt-1
+  - evt-2
+correlation_ids:
+  root: corr-1
+  task: task-1
+---end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is True
+    assert result.fields["signal_refs"] == ["evt-1", "evt-2"]
+    assert result.fields["correlation_ids"] == {"root": "corr-1", "task": "task-1"}
+
+
+def test_validate_wrong_type_for_array_and_object_fields() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "signal_refs": OutcomeField(type="array", description="signal refs"),
+            "correlation_ids": OutcomeField(type="object", description="correlations"),
+        }
+    )
+    text = """\
+---outcome---
+signal_refs: evt-1
+correlation_ids:
+  - corr-1
+---end---
+"""
+    result = parse_outcome_block(text, schema)
+    assert result is not None
+    assert result.valid is False
+    assert any("signal_refs" in e and "array" in e for e in result.errors)
+    assert any("correlation_ids" in e and "object" in e for e in result.errors)
+
+
 def test_soft_wrapped_scalar_before_next_key_uses_schema_to_recover_verdict() -> None:
     schema = OutcomeSchema(
         fields={
@@ -336,10 +381,7 @@ inion-b.md
     assert result.valid is True
     assert result.fields["verdict"] == "opinion_submitted"
     assert result.fields["summary"].startswith("Wrote Opinion B recommending Qwen3. 6-35B-A3B")
-    assert (
-        result.fields["page_path"]
-        == "council/niu-929-local-model-eval/opinions/opinion-b.md"
-    )
+    assert result.fields["page_path"] == "council/niu-929-local-model-eval/opinions/opinion-b.md"
 
 
 def test_validate_boolean_field() -> None:
@@ -443,6 +485,65 @@ def test_parse_soft_wrapped_mapping_keeps_fragment_as_scalar_when_next_key_is_ex
     }
 
 
+def test_parse_outcome_block_salvages_yaml_colons_in_scalar_values() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "environment_id": OutcomeField(type="string", description="environment id"),
+            "valkyrie_id": OutcomeField(type="string", description="valkyrie id"),
+            "signal_refs": OutcomeField(type="array", description="signal refs"),
+            "tier": OutcomeField(
+                type="enum",
+                description="attention tier",
+                enum_values=["silent", "ambient", "present", "urgent"],
+            ),
+            "confidence": OutcomeField(type="number", description="confidence"),
+            "operational_state": OutcomeField(type="string", description="state"),
+            "rationale": OutcomeField(type="string", description="rationale"),
+            "evidence": OutcomeField(type="array", description="evidence"),
+            "recommended_action": OutcomeField(type="string", description="action"),
+            "action_authority": OutcomeField(
+                type="enum",
+                description="authority",
+                enum_values=["autonomous", "yolo_allowed", "court_required"],
+            ),
+            "target_surfaces": OutcomeField(type="array", description="surfaces"),
+            "expires_at": OutcomeField(type="string", description="expiry"),
+            "dissent_refs": OutcomeField(type="array", description="dissent"),
+            "correlation_ids": OutcomeField(type="object", description="correlation"),
+        }
+    )
+    text = """\
+---outcome---
+environment_id: valhalla
+valkyrie_id: k8s-valkyrie
+signal_refs:
+  - evt1
+tier: urgent
+confidence: 0.8
+operational_state: degraded
+rationale: Pod is in CrashLoopBackOff. Root cause: container fails on startup
+evidence:
+  - event_id: evt1
+recommended_action: Inspect pod logs. Root cause: check container config
+action_authority: autonomous
+target_surfaces:
+  - surface:ops
+expires_at:
+dissent_refs: []
+correlation_ids:
+  root: corr1
+---end---
+"""
+
+    result = parse_outcome_block(text, schema)
+
+    assert result is not None
+    assert result.fields["environment_id"] == "valhalla"
+    assert result.fields["rationale"].endswith("container fails on startup")
+    assert result.fields["recommended_action"].endswith("check container config")
+    assert result.fields["signal_refs"] == ["evt1"]
+
+
 def test_optional_field_can_be_missing() -> None:
     schema = OutcomeSchema(
         fields={
@@ -495,6 +596,18 @@ def test_generate_instruction_boolean_hint() -> None:
     schema = OutcomeSchema(fields={"ok": OutcomeField(type="boolean", description="ok flag")})
     instruction = generate_outcome_instruction(schema)
     assert "true | false" in instruction
+
+
+def test_generate_instruction_array_and_object_hints() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "items": OutcomeField(type="array", description="items"),
+            "metadata": OutcomeField(type="object", description="metadata"),
+        }
+    )
+    instruction = generate_outcome_instruction(schema)
+    assert "items: [<item>, ...]" in instruction
+    assert "metadata: {key: value}" in instruction
 
 
 def test_generate_instruction_string_uses_description() -> None:

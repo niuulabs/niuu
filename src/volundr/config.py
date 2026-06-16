@@ -28,6 +28,7 @@ from pydantic_settings import (
 from bifrost.config import BifrostConfig
 from niuu.config import (
     CorsConfig,
+    DynamicAdapterConfig,
     GitHubConfig,
     GitHubInstance,
     GitLabConfig,
@@ -86,6 +87,58 @@ class LocalMountsConfig(BaseModel):
     default_read_only: bool = Field(
         default=True,
         description="Default read_only flag for new mount mappings.",
+    )
+
+
+class ExternalSessionProviderConfig(BaseModel):
+    """Configuration for a single external session provider.
+
+    The ``adapter`` key is a fully-qualified class path. All other
+    fields are forwarded as **kwargs to the adapter constructor.
+
+    Example YAML::
+
+        external_sessions:
+          enabled: true
+          providers:
+            - adapter: "volundr.adapters.outbound.external_sessions.ClaudeCodeSessionProvider"
+              projects_dir: "~/.claude/projects"
+            - adapter: "volundr.adapters.outbound.external_sessions.CodexSessionProvider"
+              sessions_dir: "~/.codex/sessions"
+    """
+
+    adapter: str
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+def _default_external_session_providers() -> list[ExternalSessionProviderConfig]:
+    """Built-in providers: Claude Code and Codex local stores."""
+    return [
+        ExternalSessionProviderConfig(
+            adapter="volundr.adapters.outbound.external_sessions.ClaudeCodeSessionProvider",
+        ),
+        ExternalSessionProviderConfig(
+            adapter="volundr.adapters.outbound.external_sessions.CodexSessionProvider",
+        ),
+    ]
+
+
+class ExternalSessionsConfig(BaseModel):
+    """Configuration for discovering and importing external CLI sessions.
+
+    When ``enabled`` is left unset, discovery follows ``local_mounts.mini_mode``
+    — host session stores are only reachable when Volundr runs on the host.
+    """
+
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Enable external session discovery. None (default) follows local_mounts.mini_mode."
+        ),
+    )
+    providers: list[ExternalSessionProviderConfig] = Field(
+        default_factory=_default_external_session_providers,
+        description="External session provider adapters (dynamic adapter pattern).",
     )
 
 
@@ -267,13 +320,35 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             display_name="Claude Code",
             description="Anthropic Claude — full IDE with terminal, tools, and MCP",
             labels=["session", "claude"],
-            default_model="claude-sonnet-4-6",
+            default_model="claude-opus-4-8",
             compatible_providers=["anthropic"],
             defaults={
                 "broker": {
                     "cliType": "claude",
                     "transport": "sdk",
                     "transportAdapter": "skuld.transports.sdk.SDKTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldClaudeInteractive": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Code Interactive",
+            description=(
+                "Anthropic Claude Code through a tmux-backed interactive terminal "
+                "for subscription sessions, slash commands, and terminal controls"
+            ),
+            labels=["session", "claude", "interactive"],
+            default_model="claude-sonnet-4-6",
+            compatible_providers=["anthropic"],
+            defaults={
+                "broker": {
+                    "cliType": "claude",
+                    "transport": "tmux-interactive",
+                    "transportAdapter": (
+                        "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+                    ),
+                    "skipPermissions": True,
                     "agentTeams": False,
                 },
             },
@@ -325,6 +400,44 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldClaudeRemote": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Claude Remote Control",
+            description=(
+                "Claude Code in Remote Control mode — pair with the Claude app or "
+                "claude.ai/code; the native app drives the session"
+            ),
+            labels=["session", "claude", "remote-control"],
+            default_model="",
+            compatible_providers=["anthropic"],
+            defaults={
+                "broker": {
+                    "cliType": "claude",
+                    "transportAdapter": "skuld.transports.remote_control.RemoteControlTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldCodexRemote": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Codex Remote Control",
+            description=(
+                "Codex Remote Control — requires the standalone Codex install; "
+                "fails fast with guidance until it exists"
+            ),
+            labels=["session", "codex", "remote-control"],
+            default_model="",
+            compatible_providers=["openai"],
+            defaults={
+                "broker": {
+                    "cliType": "codex",
+                    "transportAdapter": (
+                        "skuld.transports.remote_control.CodexRemoteControlTransport"
+                    ),
+                    "agentTeams": False,
+                },
+            },
+        ),
     }
 
 
@@ -372,12 +485,18 @@ def merge_session_definitions(
     return merged
 
 
-class ProfileConfig(BaseModel):
-    """Configuration for a single forge profile."""
+class LaunchSpecConfig(BaseModel):
+    """Configuration for a single system-scope launch spec.
+
+    The unified blueprint replacing ProfileConfig + TemplateConfig.
+    """
 
     name: str
     description: str = ""
+    is_default: bool = False
+    session_definition: str | None = None
     workload_type: str = "session"
+    # Runtime config
     model: str | None = None
     system_prompt: str | None = None
     resource_config: dict[str, Any] = Field(default_factory=dict)
@@ -385,39 +504,43 @@ class ProfileConfig(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     env_secret_refs: list[str] = Field(default_factory=list)
     workload_config: dict[str, Any] = Field(default_factory=dict)
-    is_default: bool = False
-    session_definition: str | None = None
-
-
-class TemplateConfig(BaseModel):
-    """Configuration for a single workspace template (unified blueprint)."""
-
-    name: str
-    description: str = ""
-    # Workspace config
+    # Workspace
     repos: list[dict[str, Any]] = Field(default_factory=list)
     setup_scripts: list[str] = Field(default_factory=list)
     workspace_layout: dict[str, Any] = Field(default_factory=dict)
-    is_default: bool = False
-    # Runtime config (merged from ProfileConfig)
-    workload_type: str = "session"
-    model: str | None = None
-    system_prompt: str | None = None
-    resource_config: dict[str, Any] = Field(default_factory=dict)
-    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
-    env_vars: dict[str, str] = Field(default_factory=dict)
-    env_secret_refs: list[str] = Field(default_factory=list)
-    workload_config: dict[str, Any] = Field(default_factory=dict)
-    session_definition: str | None = None
-    # Deprecated: kept for backward compatibility during migration
-    profile_name: str | None = None
+    cli_tool: str = ""
+
+
+def _default_launch_specs() -> list[LaunchSpecConfig]:
+    """Built-in launch catalog used when no config preloads specs."""
+    return [
+        LaunchSpecConfig(
+            name="standard-claude",
+            description="Default Claude Code session with modest resources.",
+            is_default=True,
+            session_definition="skuldClaude",
+            workload_type="session",
+            model="claude-sonnet-4-6",
+            resource_config={"cpu": "1", "memory": "2Gi"},
+            cli_tool="claude",
+        ),
+        LaunchSpecConfig(
+            name="standard-codex",
+            description="Default Codex session for OpenAI-backed coding work.",
+            session_definition="skuldCodex",
+            workload_type="session",
+            model="gpt-5.4",
+            resource_config={"cpu": "1", "memory": "2Gi"},
+            cli_tool="codex",
+        ),
+    ]
 
 
 class ChronicleConfig(BaseModel):
     """Chronicle feature configuration."""
 
     auto_create_on_stop: bool = Field(default=True)
-    summary_model: str = Field(default="claude-haiku-4-5-20251001")
+    summary_model: str = Field(default="claude-opus-4-8")
     summary_max_tokens: int = Field(default=2000)
     retention_days: int | None = Field(default=None)  # None = keep forever
 
@@ -481,6 +604,27 @@ class EventPipelineConfig(BaseModel):
     postgres_buffer_size: int = Field(default=1, ge=1)
     rabbitmq: RabbitMQConfig = Field(default_factory=RabbitMQConfig)
     otel: OtelConfig = Field(default_factory=OtelConfig)
+
+
+class SessionLivenessConfig(BaseModel):
+    """Liveness reconciliation for running sessions.
+
+    A session whose broker has died can otherwise sit in ``running`` forever
+    with a stale ``chat_endpoint`` (clients then open a socket to a tombstone and
+    see nothing). The reconciler marks running sessions that have gone silent —
+    no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
+    their endpoints, so the list reflects reality and clients stop dialing dead
+    brokers.
+
+    Disabled by default: brokers currently report activity only on STATE
+    CHANGES, so a quiet-but-alive session can go silent for long stretches and
+    would be falsely reaped. Enable with a generous stale_after_seconds (or
+    once periodic broker heartbeats land).
+    """
+
+    enabled: bool = Field(default=False)
+    stale_after_seconds: int = Field(default=600, ge=30)
+    check_interval_seconds: int = Field(default=120, ge=10)
 
 
 class SleipnirConfig(BaseModel):
@@ -725,7 +869,7 @@ class SessionContributorConfig(BaseModel):
         session_contributors:
           - adapter: "volundr.adapters.outbound.contributors.CoreSessionContributor"
             base_domain: "volundr.local"
-          - adapter: "volundr.adapters.outbound.contributors.TemplateContributor"
+          - adapter: "volundr.adapters.outbound.contributors.LaunchSpecContributor"
     """
 
     adapter: str
@@ -1353,6 +1497,7 @@ class ObservatoryConfig(BaseModel):
     """Observatory plugin configuration."""
 
     guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
+    discovery: list[DynamicAdapterConfig] = Field(default_factory=list)
 
 
 class Settings(BaseSettings):
@@ -1384,6 +1529,7 @@ class Settings(BaseSettings):
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
+    session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
@@ -1405,6 +1551,7 @@ class Settings(BaseSettings):
     )
     local_git: LocalGitConfig = Field(default_factory=LocalGitConfig)
     local_mounts: LocalMountsConfig = Field(default_factory=LocalMountsConfig)
+    external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
@@ -1416,8 +1563,10 @@ class Settings(BaseSettings):
         default="skuldClaude",
         description="Fallback definition key when no explicit definition is specified.",
     )
-    profiles: list[ProfileConfig] = Field(default_factory=list)
-    templates: list[TemplateConfig] = Field(default_factory=list)
+    launch_specs: list[LaunchSpecConfig] = Field(
+        default_factory=_default_launch_specs,
+        description="System-scope launch specs preloaded into the launch catalog.",
+    )
     mcp_servers: list[MCPServerEntry] = Field(default_factory=list)
     features: list[FeatureModuleConfig] = Field(
         default_factory=_default_feature_modules,

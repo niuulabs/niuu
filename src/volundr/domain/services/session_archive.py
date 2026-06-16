@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from volundr.domain.models import Session
-    from volundr.domain.ports import ArchiveStorePort, StoragePort
+    from volundr.domain.ports import ArchiveStorePort, SessionEventLogRepository, StoragePort
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.session import SessionService
 
@@ -33,11 +33,13 @@ class SessionArchiveService:
         archive_store: ArchiveStorePort,
         *,
         chronicle_service: ChronicleService | None = None,
+        event_log_repository: SessionEventLogRepository | None = None,
     ) -> None:
         self._session_service = session_service
         self._storage = storage
         self._archive_store = archive_store
         self._chronicle_service = chronicle_service
+        self._event_log_repository = event_log_repository
 
     async def resolve_workspace_dir(self, session_id: UUID) -> Path:
         """Resolve the first accessible workspace path for a session."""
@@ -65,6 +67,10 @@ class SessionArchiveService:
         archived = self._archive_store.load_transcript(session_id=session_id_str)
         if archived is not None:
             return archived
+
+        event_log_transcript = await self._load_event_log_transcript(session_id)
+        if event_log_transcript is not None:
+            return event_log_transcript
 
         for candidate in candidates:
             if not candidate.exists():
@@ -262,6 +268,49 @@ class SessionArchiveService:
                 add_candidate(pvc_path)
 
         return session, candidates
+
+    async def _load_event_log_transcript(self, session_id: UUID) -> dict[str, Any] | None:
+        """Build a stopped-session transcript from durable conversation turns."""
+        if self._event_log_repository is None:
+            return None
+
+        turns: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        after_seq = 0
+        limit = 5000
+
+        while True:
+            entries = await self._event_log_repository.read_after(
+                session_id,
+                after_seq=after_seq,
+                limit=limit,
+            )
+            if not entries:
+                break
+            for entry in entries:
+                after_seq = max(after_seq, int(entry.seq))
+                if entry.kind != "conversation.turn":
+                    continue
+                payload = entry.payload if isinstance(entry.payload, dict) else {}
+                turn = payload.get("turn")
+                if not isinstance(turn, dict):
+                    continue
+                turn_id = str(turn.get("id") or "").strip()
+                if turn_id and turn_id in seen_ids:
+                    continue
+                if turn_id:
+                    seen_ids.add(turn_id)
+                turns.append(turn)
+            if len(entries) < limit:
+                break
+
+        if not turns:
+            return None
+        return {
+            "turns": turns,
+            "is_active": False,
+            "last_activity": "",
+        }
 
     def _transcript_artifact_path(
         self,

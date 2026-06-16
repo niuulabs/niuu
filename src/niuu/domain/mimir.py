@@ -168,6 +168,10 @@ class MimirPageMeta:
     thread_next_action_hint: str | None = None
     thread_resolved_artifact_path: str | None = None
     thread_weight_signals: dict | None = None
+    # Populated by search only (NIU-1057): final ranking score and per-boost
+    # attribution for debuggability. None outside search results.
+    search_score: float | None = None
+    score_breakdown: dict[str, float] | None = None
 
 
 @dataclass

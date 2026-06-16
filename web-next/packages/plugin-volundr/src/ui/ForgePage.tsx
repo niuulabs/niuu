@@ -6,12 +6,12 @@ import { CliBadge, ConnectionTypeBadge, MiniBar } from './atoms';
 import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
 import { useSessionList } from './hooks/useSessionStore';
-import { useTemplates } from './useTemplates';
+import { useLaunchSpecs } from './useLaunchSpecs';
 import { LaunchWizard } from './LaunchWizard';
 import { money, tokens } from './utils/formatters';
 import type { Cluster, ClusterKind } from '../domain/cluster';
 import type { Session, SessionState } from '../domain/session';
-import type { Template } from '../domain/template';
+import type { VolundrLaunchSpec } from '../models/volundr.model';
 import './ForgePage.css';
 
 const INFLIGHT_STATES: SessionState[] = ['provisioning', 'requested', 'running', 'idle'];
@@ -44,13 +44,6 @@ const FORGE_CLUSTER_DISPLAY: Record<string, { name: string; realm: string; kind?
   'cl-brokkr': { name: 'Eitri', realm: 'svartalfheim', kind: 'local' },
   'cl-glitnir': { name: 'Glitnir', realm: 'midgard', kind: 'observ' },
   'cl-jarnvidr': { name: 'Járnviðr', realm: 'jotunheim', kind: 'media' },
-};
-
-const TEMPLATE_TOOL: Record<string, string> = {
-  'tpl-platform': 'claude',
-  'tpl-web': 'claude',
-  'tpl-bifrost': 'codex',
-  'tpl-mimir': 'claude',
 };
 
 const SHOWCASE_SESSION_IDS = new Set([
@@ -101,21 +94,14 @@ function compactAge(timestamp: number) {
   return `${days}d`;
 }
 
-function formatGi(mi: number) {
-  if (mi >= 1024) return `${Math.round(mi / 1024)}Gi`;
-  return `${mi}Mi`;
-}
-
-function formatTemplateSpec(template: Template) {
-  const cpu = `${template.spec.resources.cpuRequest}c`;
-  const mem = formatGi(template.spec.resources.memRequestMi);
-  const gpu = template.spec.resources.gpuCount > 0 ? `gpu ${template.spec.resources.gpuCount}` : '';
-  const usage = `${template.usageCount ?? 0}×`;
-  return [cpu, mem, gpu, usage].filter(Boolean).join('  ');
-}
-
-function templateCli(template: Template) {
-  return TEMPLATE_TOOL[template.id] ?? 'claude';
+function formatSpecResources(spec: VolundrLaunchSpec) {
+  const cpu = spec.resourceConfig.cpu ? `${spec.resourceConfig.cpu}c` : '';
+  const mem = spec.resourceConfig.memory ? spec.resourceConfig.memory : '';
+  const gpu =
+    spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0'
+      ? `gpu ${spec.resourceConfig.gpu}`
+      : '';
+  return [cpu, mem, gpu, spec.scope].filter(Boolean).join('  ');
 }
 
 function displayCluster(session: Session, clusterMap: Map<string, ForgeClusterView>) {
@@ -350,11 +336,11 @@ function ForgeLoadRow({ cluster }: { cluster: ForgeClusterView }) {
 }
 
 function QuickLaunchCard({
-  template,
+  spec,
   isDefault,
   onClick,
 }: {
-  template: Template;
+  spec: VolundrLaunchSpec;
   isDefault: boolean;
   onClick: () => void;
 }) {
@@ -366,16 +352,14 @@ function QuickLaunchCard({
       data-testid="quick-launch-card"
     >
       <div className="vol-forge__launch-head">
-        <CliBadge cli={templateCli(template)} />
+        <CliBadge cli={spec.cliTool} />
         {isDefault ? <span className="vol-forge__launch-default">DEFAULT</span> : null}
       </div>
-      <div className="vol-forge__launch-name">{template.name}</div>
-      <div className="vol-forge__launch-desc">{template.description}</div>
+      <div className="vol-forge__launch-name">{spec.name}</div>
+      <div className="vol-forge__launch-desc">{spec.description || 'catalog launch spec'}</div>
       <div className="vol-forge__launch-foot">
-        <span>{formatTemplateSpec(template)}</span>
-        {template.usageCount !== undefined ? (
-          <span data-testid="usage-count">{template.usageCount}×</span>
-        ) : null}
+        <span>{formatSpecResources(spec)}</span>
+        {spec.model ? <span>{spec.model}</span> : null}
       </div>
     </button>
   );
@@ -409,10 +393,10 @@ export function ForgePage() {
   const stats = useVolundrStats();
   const clusters = useVolundrClusters();
   const sessionsQuery = useSessionList();
-  const templates = useTemplates();
+  const launchSpecs = useLaunchSpecs('system');
 
   const [launchOpen, setLaunchOpen] = useState(false);
-  const [launchTemplateId, setLaunchTemplateId] = useState<string | null>(null);
+  const [launchSpecRef, setLaunchSpecRef] = useState<string | null>(null);
 
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const dashboardSessions = useMemo(() => {
@@ -509,10 +493,10 @@ export function ForgePage() {
   const projectedCost = stats.data ? Math.round(stats.data.costToday * 1.07) : 0;
 
   const isLoading =
-    stats.isLoading || clusters.isLoading || sessionsQuery.isLoading || templates.isLoading;
+    stats.isLoading || clusters.isLoading || sessionsQuery.isLoading || launchSpecs.isLoading;
 
-  function openWizard(templateId?: string) {
-    setLaunchTemplateId(templateId ?? null);
+  function openWizard(specRef?: string) {
+    setLaunchSpecRef(specRef ?? null);
     setLaunchOpen(true);
   }
 
@@ -627,17 +611,17 @@ export function ForgePage() {
             <header className="vol-forge__panel-head">
               <div className="vol-forge__panel-title">
                 <h2>Quick launch</h2>
-                <span>from a template</span>
+                <span>from catalog</span>
               </div>
             </header>
 
             <div className="vol-forge__launch-grid">
-              {(templates.data ?? []).slice(0, 4).map((template, index) => (
+              {(launchSpecs.data ?? []).slice(0, 4).map((spec, index) => (
                 <QuickLaunchCard
-                  key={template.id}
-                  template={template}
-                  isDefault={index === 0}
-                  onClick={() => openWizard(template.id)}
+                  key={spec.id ?? spec.name}
+                  spec={spec}
+                  isDefault={spec.isDefault || index === 0}
+                  onClick={() => openWizard(spec.id ?? spec.name)}
                 />
               ))}
             </div>
@@ -700,10 +684,10 @@ export function ForgePage() {
       </div>
 
       <LaunchWizard
-        key={launchTemplateId ?? 'forge-custom'}
+        key={launchSpecRef ?? 'forge-custom'}
         open={launchOpen}
         onOpenChange={setLaunchOpen}
-        initialTemplateId={launchTemplateId ?? undefined}
+        initialLaunchSpecRef={launchSpecRef ?? undefined}
       />
     </>
   );

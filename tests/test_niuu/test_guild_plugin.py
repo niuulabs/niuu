@@ -37,19 +37,54 @@ def test_guild_plugin_create_api_app() -> None:
         assert plugin.create_api_app() is sentinel
 
 
-def test_guild_plugin_route_domains() -> None:
+def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> None:
     plugin = GuildPlugin()
     route_domains = plugin.api_route_domains()
     assert [route_domain.name for route_domain in route_domains] == [
         "guild-instances-api",
-        "guild-volundr-api",
+        "forge-api",
+        "session-api",
     ]
     assert route_domains[0].prefixes == (
         "/api/v1/niuu/instances",
         "/api/v1/niuu/targets",
         "/api/v1/niuu/observatory",
     )
-    assert route_domains[1].prefixes == ("/api/v1/niuu/volundr",)
+    assert route_domains[1].prefixes == ("/api/v1/forge",)
+    assert route_domains[2].prefixes == (
+        "/api/v1/forge/sessions",
+        "/api/v1/forge/chronicles",
+    )
+
+
+def test_guild_plugin_route_domains_with_configured_workers(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+niuu:
+  instances:
+    - kind: volundr
+      slug: alpha
+      name: Alpha
+      base_url: http://127.0.0.1:8181
+      enabled: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NIUU_CONFIG", str(config_path))
+
+    route_domains = GuildPlugin().api_route_domains()
+
+    assert [route_domain.name for route_domain in route_domains] == [
+        "guild-instances-api",
+        "forge-api",
+        "session-api",
+    ]
+    assert route_domains[1].prefixes == ("/api/v1/forge",)
+    assert route_domains[2].prefixes == (
+        "/api/v1/forge/sessions",
+        "/api/v1/forge/chronicles",
+    )
 
 
 def test_guild_plugin_create_api_client() -> None:

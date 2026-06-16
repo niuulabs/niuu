@@ -10,7 +10,9 @@ image:
   pullPolicy: IfNotPresent
 
 command:
-  - observatory
+  - python
+  - -m
+  - observatory.main
 args: []
 
 nameOverride: ""
@@ -88,6 +90,14 @@ guild:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
     secretKwargs: []
+
+discovery:
+  adapters: []
+
+rbac:
+  discovery:
+    enabled: false
+    clusterWide: true
 
 envoy:
   enabled: false
@@ -189,3 +199,6 @@ global:
   imagePullSecrets: []
   image:
     registry: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown

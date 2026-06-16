@@ -10,12 +10,11 @@ import {
   Field,
   Input,
   RepoSelect,
+  SegmentedFilter,
   type RepoRecord,
   Textarea,
 } from '@niuulabs/ui';
 import './LaunchWizard.css';
-import { useTemplates } from './useTemplates';
-import type { Template } from '../domain/template';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type {
   ClusterResourceInfo,
@@ -26,7 +25,7 @@ import type {
   VolundrTarget,
   StoredCredential,
   TrackerIssue,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrWorkspace,
 } from '../models/volundr.model';
 import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
@@ -35,17 +34,17 @@ import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
 // Types
 // ---------------------------------------------------------------------------
 
-type WizardStep = 'template' | 'source' | 'runtime' | 'confirm' | 'booting';
+type WizardStep = 'source' | 'runtime' | 'confirm' | 'booting';
 
 type RuntimeModelDescriptor = Pick<
   BifrostModel,
   'name' | 'provider' | 'vendor' | 'tier' | 'color' | 'vram' | 'sessionDefinition'
 > & {
   cost?: string | number;
+  providerKeys?: string[];
 };
 
 export interface WizardForm {
-  templateId: string;
   presetId: string;
   sourcetype: 'git' | 'local_mount' | 'blank';
   repo: string;
@@ -69,14 +68,16 @@ export interface WizardForm {
   gpu: string;
   cluster: string;
   instanceId: string;
+  targetMode: 'instance' | 'tags';
+  targetTags: string[];
+  targetMatch: 'all' | 'any';
   yamlMode: boolean;
   yamlContent: string;
 }
 
-const STEPS: WizardStep[] = ['template', 'source', 'runtime', 'confirm'];
+const STEPS: WizardStep[] = ['source', 'runtime', 'confirm'];
 
 const STEP_LABELS: Record<string, string> = {
-  template: 'Template',
   source: 'Source',
   runtime: 'Runtime',
   confirm: 'Confirm',
@@ -85,11 +86,13 @@ const STEP_LABELS: Record<string, string> = {
 /** Map definition keys to runes for visual branding. */
 const DEFINITION_RUNES: Record<string, string> = {
   skuldClaude: '\u16D7',
+  skuldClaudeInteractive: '\u16D7',
   skuldCodex: '\u16B2',
   skuldGemini: '\u16C7',
   skuldAider: '\u16A8',
   skuldOpenCode: '\u16A0',
   'skuld-claude': '\u16D7',
+  'skuld-claude-interactive': '\u16D7',
   'skuld-codex': '\u16B2',
   'skuld-gemini': '\u16C7',
   'skuld-aider': '\u16A8',
@@ -106,6 +109,14 @@ const FALLBACK_SESSION_DEFINITIONS: SessionDefinition[] = [
     displayName: 'Claude Code',
     description: '',
     labels: [],
+    defaultModel: '',
+    compatibleProviders: ['anthropic'],
+  },
+  {
+    key: 'skuldClaudeInteractive',
+    displayName: 'Claude Code Interactive',
+    description: '',
+    labels: ['interactive'],
     defaultModel: '',
     compatibleProviders: ['anthropic'],
   },
@@ -148,6 +159,7 @@ export function normalizeDefinitionKey(definitionKey: string): string {
     aider: 'skuldAider',
     opencode: 'skuldOpenCode',
     'skuld-claude': 'skuldClaude',
+    'skuld-claude-interactive': 'skuldClaudeInteractive',
     'skuld-codex': 'skuldCodex',
     'skuld-gemini': 'skuldGemini',
     'skuld-aider': 'skuldAider',
@@ -161,6 +173,7 @@ export function deriveCliTool(definitionKey: string): string {
   const normalized = normalizeDefinitionKey(definitionKey);
   const cliToolMap: Record<string, string> = {
     skuldClaude: 'claude',
+    skuldClaudeInteractive: 'claude',
     skuldCodex: 'codex',
     skuldGemini: 'gemini',
     skuldAider: 'aider',
@@ -175,6 +188,7 @@ export function definitionToTaskType(definitionKey: string): string {
   const normalized = normalizeDefinitionKey(definitionKey);
   const taskTypeMap: Record<string, string> = {
     skuldClaude: 'skuld-claude',
+    skuldClaudeInteractive: 'skuld-claude-interactive',
     skuldCodex: 'skuld-codex',
     skuldGemini: 'skuld-gemini',
     skuldAider: 'skuld-aider',
@@ -224,7 +238,7 @@ function WizardSelect({
       onChange={(event) => onChange(event.target.value)}
       data-testid={testId}
       aria-label={placeholder}
-      className="niuu-form-control niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary outline-none niuu:focus:border-brand"
+      className="niuu-form-control niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
     >
       {options.map((option) => (
         <option key={option.value} value={option.value}>
@@ -238,7 +252,7 @@ function WizardSelect({
 export interface LaunchWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  initialTemplateId?: string;
+  initialLaunchSpecRef?: string;
 }
 
 export function workspaceLabel(workspace: VolundrWorkspace): string {
@@ -260,6 +274,127 @@ export function normalizeRepoUrl(url: string): string {
 export function pickDefaultModel(models: Record<string, RuntimeModelDescriptor>): string {
   if ('sonnet-primary' in models) return 'sonnet-primary';
   return Object.keys(models)[0] ?? '';
+}
+
+function normalizeModelProvider(value: string | undefined | null): string {
+  const provider = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  const aliases: Record<string, string> = {
+    anthropic: 'anthropic',
+    claude: 'anthropic',
+    openai: 'openai',
+    codex: 'openai',
+    google: 'google',
+    gemini: 'google',
+    ollama: 'local',
+    local: 'local',
+  };
+  return aliases[provider] ?? provider;
+}
+
+function findSessionDefinition(
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): SessionDefinition | null {
+  const normalized = normalizeDefinitionKey(definitionKey);
+  return (
+    sessionDefinitions.find(
+      (definition) => normalizeDefinitionKey(definition.key) === normalized,
+    ) ?? null
+  );
+}
+
+function modelProviderTokens(model: RuntimeModelDescriptor): Set<string> {
+  return new Set(
+    [model.vendor, model.provider, ...(model.providerKeys ?? [])]
+      .map(normalizeModelProvider)
+      .filter(Boolean),
+  );
+}
+
+export function isModelCompatibleWithDefinition(
+  model: RuntimeModelDescriptor,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): boolean {
+  const normalizedDefinition = normalizeDefinitionKey(definitionKey);
+  if (
+    model.sessionDefinition &&
+    normalizeDefinitionKey(model.sessionDefinition) === normalizedDefinition
+  ) {
+    return true;
+  }
+
+  const definition = findSessionDefinition(definitionKey, sessionDefinitions);
+  if (!definition) return true;
+
+  const compatibleProviders = (definition.compatibleProviders ?? [])
+    .map(normalizeModelProvider)
+    .filter(Boolean);
+  if (compatibleProviders.length === 0) return true;
+
+  const tokens = modelProviderTokens(model);
+  return compatibleProviders.some((provider) => tokens.has(provider));
+}
+
+export function filterModelsForDefinition(
+  models: Record<string, RuntimeModelDescriptor>,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): Record<string, RuntimeModelDescriptor> {
+  return Object.fromEntries(
+    Object.entries(models).filter(([, model]) =>
+      isModelCompatibleWithDefinition(model, definitionKey, sessionDefinitions),
+    ),
+  );
+}
+
+export function pickDefaultModelForDefinition(
+  models: Record<string, RuntimeModelDescriptor>,
+  definitionKey: string,
+  sessionDefinitions: SessionDefinition[],
+): string {
+  const definition = findSessionDefinition(definitionKey, sessionDefinitions);
+  const compatibleModels = filterModelsForDefinition(models, definitionKey, sessionDefinitions);
+  if (definition?.defaultModel && compatibleModels[definition.defaultModel]) {
+    return definition.defaultModel;
+  }
+  return pickDefaultModel(compatibleModels);
+}
+
+export function getTargetTagOptions(targets: VolundrTarget[]): string[] {
+  return Array.from(new Set(targets.flatMap((target) => target.tags ?? []))).sort((a, b) =>
+    a.localeCompare(b),
+  );
+}
+
+export function targetMatchesTags(
+  target: VolundrTarget,
+  tags: string[],
+  match: 'all' | 'any',
+): boolean {
+  if (tags.length === 0) return true;
+  const have = new Set(target.tags ?? []);
+  if (match === 'any') return tags.some((tag) => have.has(tag));
+  return tags.every((tag) => have.has(tag));
+}
+
+export function getMatchingTargets(
+  targets: VolundrTarget[],
+  tags: string[],
+  match: 'all' | 'any',
+): VolundrTarget[] {
+  return targets.filter((target) => target.enabled && targetMatchesTags(target, tags, match));
+}
+
+export function launchSpecRef(spec: VolundrLaunchSpec): string {
+  return spec.id ?? spec.name;
+}
+
+export function launchSpecLabel(spec: VolundrLaunchSpec): string {
+  const scope = spec.scope === 'system' ? 'catalog' : 'saved';
+  return `${spec.name} · ${scope}${spec.isDefault ? ' · default' : ''}`;
 }
 
 export function formatModelOption(id: string, model?: RuntimeModelDescriptor): string {
@@ -401,7 +536,7 @@ export function validateSessionName(name: string): string | null {
   return null;
 }
 
-export function deriveSessionName(form: WizardForm, template?: Template): string {
+export function deriveSessionName(form: WizardForm): string {
   const explicit = slugifySessionName(form.sessionName);
   if (explicit) return explicit;
 
@@ -416,8 +551,7 @@ export function deriveSessionName(form: WizardForm, template?: Template): string
     if (mountName) return mountName;
   }
 
-  const templateName = slugifySessionName(template?.name ?? '');
-  return templateName || 'forge-session';
+  return 'forge-session';
 }
 
 export function buildSessionSource(form: WizardForm): SessionSource {
@@ -468,12 +602,13 @@ export function normalizeEnvVars(
 export function buildPresetRuntimePayload(
   form: WizardForm,
   presetName?: string,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return {
     name: (presetName ?? form.presetId) || 'launch-preset',
     description: '',
     isDefault: false,
-    cliTool: deriveCliTool(form.definition) as VolundrPreset['cliTool'],
+    sessionDefinition: form.definition || null,
+    cliTool: deriveCliTool(form.definition) as VolundrLaunchSpec['cliTool'],
     workloadType: definitionToTaskType(form.definition),
     model: form.model || null,
     systemPrompt: form.systemPrompt || null,
@@ -500,7 +635,9 @@ export function buildPresetRuntimePayload(
             }
           : null,
     integrationIds: form.selectedIntegrations,
+    repos: [],
     setupScripts: form.setupScripts.filter((script) => script.trim()),
+    workspaceLayout: {},
     workloadConfig: {},
   };
 }
@@ -508,17 +645,18 @@ export function buildPresetRuntimePayload(
 export function buildPresetPayload(
   form: WizardForm,
   presetName: string,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return buildPresetRuntimePayload(form, presetName);
 }
 
 export function buildPresetComparisonPayload(
-  preset: VolundrPreset,
-): Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> {
+  preset: VolundrLaunchSpec,
+): Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> {
   return {
     name: preset.name,
     description: preset.description,
     isDefault: preset.isDefault,
+    sessionDefinition: preset.sessionDefinition,
     cliTool: preset.cliTool,
     workloadType: preset.workloadType,
     model: preset.model,
@@ -532,7 +670,9 @@ export function buildPresetComparisonPayload(
     envSecretRefs: preset.envSecretRefs,
     source: preset.source,
     integrationIds: preset.integrationIds,
+    repos: preset.repos,
     setupScripts: preset.setupScripts,
+    workspaceLayout: preset.workspaceLayout,
     workloadConfig: preset.workloadConfig,
   };
 }
@@ -613,48 +753,6 @@ export function StepIndicator({ current, steps }: { current: WizardStep; steps: 
           )}
         </div>
       ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step: Template
-// ---------------------------------------------------------------------------
-
-export function TemplateStep({
-  templates,
-  selectedId,
-  onSelect,
-}: {
-  templates: Template[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="step-template-content">
-      <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-secondary">Choose a template</h3>
-      <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            className={`niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-lg niuu:border niuu:p-3 niuu:text-left ${
-              selectedId === t.id
-                ? 'niuu:border-brand niuu:bg-bg-tertiary'
-                : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:hover:border-brand'
-            }`}
-            onClick={() => onSelect(t.id)}
-            data-testid="wizard-template-card"
-          >
-            <span className="niuu:font-mono niuu:text-sm niuu:text-text-primary">{t.name}</span>
-            <span className="niuu:text-xs niuu:text-text-muted">
-              {t.spec.image}:{t.spec.tag}
-            </span>
-            <span className="niuu:font-mono niuu:text-xs niuu:text-text-faint">
-              {t.spec.resources.cpuRequest}c · {t.spec.resources.memRequestMi}Mi
-            </span>
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -895,17 +993,23 @@ export function RuntimeStep({
   credentials: StoredCredential[];
   integrations: IntegrationConnection[];
   clusterResources: ClusterResourceInfo | null;
-  presets: VolundrPreset[];
-  selectedPreset: VolundrPreset | null;
+  presets: VolundrLaunchSpec[];
+  selectedPreset: VolundrLaunchSpec | null;
   availableMcpServers: McpServerConfig[];
   sessionDefinitions: SessionDefinition[];
-  onApplyPreset: (presetId: string) => void;
+  onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
 }) {
-  const modelOptions = Object.entries(models).map(([id, model]) => ({
+  const compatibleModels = filterModelsForDefinition(models, form.definition, sessionDefinitions);
+  const modelOptions = Object.entries(compatibleModels).map(([id, model]) => ({
     value: id,
     label: formatModelOption(id, model),
   }));
+  const selectedDefinition =
+    findSessionDefinition(form.definition, sessionDefinitions)?.displayName ?? form.definition;
+  const totalModelCount = Object.keys(models).length;
+  const targetTagOptions = getTargetTagOptions(targets);
+  const matchingTagTargets = getMatchingTargets(targets, form.targetTags, form.targetMatch);
   const filteredWorkspaces = workspaces.filter((workspace) => {
     if (form.sourcetype !== 'git' || !form.repo.trim() || !workspace.sourceUrl) return true;
     return normalizeRepoUrl(workspace.sourceUrl) === normalizeRepoUrl(form.repo);
@@ -1042,15 +1146,18 @@ export function RuntimeStep({
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-runtime-content">
       {presets.length > 0 ? (
-        <SectionCard title="Preset" description="Load and save reusable forge configurations.">
+        <SectionCard
+          title="Launch spec"
+          description="Load catalog specs or save reusable forge configurations."
+        >
           <div className="niuu:grid niuu:grid-cols-[2fr_1fr] niuu:gap-4">
-            <Field label="Load preset">
+            <Field label="Load launch spec">
               <WizardSelect
                 options={[
-                  { value: NO_PRESET_VALUE, label: 'Custom (no preset)' },
+                  { value: NO_PRESET_VALUE, label: 'Custom launch' },
                   ...presets.map((preset) => ({
-                    value: preset.id,
-                    label: `${preset.name}${preset.isDefault ? ' (default)' : ''}`,
+                    value: launchSpecRef(preset),
+                    label: launchSpecLabel(preset),
                   })),
                 ]}
                 value={form.presetId || NO_PRESET_VALUE}
@@ -1061,7 +1168,7 @@ export function RuntimeStep({
               <Input
                 value={presetName}
                 onChange={(e) => setPresetName(e.target.value)}
-                placeholder="save as preset"
+                placeholder="save as launch spec"
               />
               <button
                 type="button"
@@ -1079,12 +1186,13 @@ export function RuntimeStep({
             <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
               loaded{' '}
               <span className="niuu:font-mono niuu:text-text-primary">{selectedPreset.name}</span>
+              <span> · {selectedPreset.scope === 'system' ? 'catalog' : 'saved'}</span>
               {selectedPreset.description ? ` · ${selectedPreset.description}` : ''}
             </div>
           ) : (
             <div className="niuu:rounded-lg niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
-              No preset loaded. Advanced runtime values will be materialized into a preset at launch
-              if needed.
+              No launch spec loaded. Advanced runtime values will be materialized into a saved
+              launch spec at launch if needed.
             </div>
           )}
         </SectionCard>
@@ -1106,12 +1214,17 @@ export function RuntimeStep({
                 }`}
                 onClick={() => {
                   const patch: Partial<WizardForm> = { definition: def.key };
-                  if (def.defaultModel && models[def.defaultModel]) {
-                    patch.model = def.defaultModel;
+                  const defaultModel = pickDefaultModelForDefinition(
+                    models,
+                    def.key,
+                    sessionDefinitions,
+                  );
+                  if (defaultModel) {
+                    patch.model = defaultModel;
                   }
                   update(patch);
                 }}
-                data-testid={`cli-option-${deriveCliTool(def.key)}`}
+                data-testid={`runtime-option-${def.key}`}
                 title={def.description || undefined}
               >
                 <span className="niuu:font-mono niuu:text-base">{getDefinitionRune(def.key)}</span>
@@ -1136,6 +1249,13 @@ export function RuntimeStep({
                   placeholder="sonnet-primary"
                 />
               )}
+              {totalModelCount > 0 ? (
+                <div className="niuu:text-xs niuu:text-text-faint">
+                  {modelOptions.length === totalModelCount
+                    ? `Showing all ${totalModelCount} Bifrost models for ${selectedDefinition}.`
+                    : `Showing ${modelOptions.length} of ${totalModelCount} Bifrost models compatible with ${selectedDefinition}.`}
+                </div>
+              ) : null}
             </Field>
           </div>
           {workspaceOptions.length > 1 ? (
@@ -1152,16 +1272,81 @@ export function RuntimeStep({
           ) : null}
           {targets.length > 0 ? (
             <Field label="Forge">
-              <WizardSelect
-                options={targets.map((target) => ({
-                  value: target.id,
-                  label: `${target.name}${target.isDefault ? ' (default)' : ''}`,
-                }))}
-                value={form.instanceId}
-                onChange={(value) => update({ instanceId: value })}
-                placeholder="Select forge"
-                testId="forge-target-select"
-              />
+              <div className="niuu:space-y-3">
+                <SegmentedFilter<WizardForm['targetMode']>
+                  aria-label="Forge routing mode"
+                  value={form.targetMode}
+                  onChange={(targetMode) => update({ targetMode })}
+                  options={[
+                    { value: 'instance', label: 'Specific Forge' },
+                    {
+                      value: 'tags',
+                      label: 'Match tags',
+                      count: targetTagOptions.length,
+                      disabled: targetTagOptions.length === 0,
+                    },
+                  ]}
+                />
+                {form.targetMode === 'tags' ? (
+                  <div className="niuu:space-y-3 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
+                    <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+                      {targetTagOptions.map((tag) => {
+                        const selected = form.targetTags.includes(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            className={`niuu:rounded-full niuu:border niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono ${
+                              selected
+                                ? 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary'
+                                : 'niuu:border-border-subtle niuu:bg-bg-secondary niuu:text-text-faint niuu:hover:border-brand'
+                            }`}
+                            onClick={() =>
+                              update({
+                                targetTags: selected
+                                  ? form.targetTags.filter((item) => item !== tag)
+                                  : [...form.targetTags, tag],
+                              })
+                            }
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <WizardSelect
+                      options={[
+                        { value: 'all', label: 'Match all selected tags' },
+                        { value: 'any', label: 'Match any selected tag' },
+                      ]}
+                      value={form.targetMatch}
+                      onChange={(value) => update({ targetMatch: value === 'any' ? 'any' : 'all' })}
+                      placeholder="Tag match"
+                      testId="forge-target-match-select"
+                    />
+                    <div className="niuu:text-xs niuu:text-text-faint">
+                      {form.targetTags.length === 0
+                        ? 'No tags selected; Guild will route to the default enabled Forge.'
+                        : `${matchingTagTargets.length} matching Forge${matchingTagTargets.length === 1 ? '' : 's'}: ${
+                            matchingTagTargets.map((target) => target.name).join(', ') || 'none'
+                          }`}
+                    </div>
+                  </div>
+                ) : (
+                  <WizardSelect
+                    options={targets.map((target) => ({
+                      value: target.id,
+                      label: `${target.name}${target.isDefault ? ' (default)' : ''}${
+                        target.tags.length ? ` · ${target.tags.join(', ')}` : ''
+                      }`,
+                    }))}
+                    value={form.instanceId}
+                    onChange={(value) => update({ instanceId: value })}
+                    placeholder="Select forge"
+                    testId="forge-target-select"
+                  />
+                )}
+              </div>
             </Field>
           ) : null}
           <RuntimePanel
@@ -1346,7 +1531,7 @@ export function RuntimeStep({
               onChange={(e) => update({ yamlContent: e.target.value })}
               rows={20}
               spellCheck={false}
-              placeholder="Preset YAML"
+              placeholder="Launch spec YAML"
             />
             {yamlError ? <div className="niuu:text-xs niuu:text-danger">{yamlError}</div> : null}
           </div>
@@ -1367,7 +1552,7 @@ export function RuntimeStep({
 
             <RuntimePanel
               title="MCP servers"
-              description="Attach preset-backed tools and custom MCP definitions."
+              description="Attach launch-spec tools and custom MCP definitions."
             >
               <div className="niuu:flex niuu:flex-col niuu:gap-2">
                 {form.mcpServers.length > 0 ? (
@@ -1679,25 +1864,26 @@ export function RuntimeStep({
 
 export function ConfirmStep({
   form,
-  templates,
   models,
   integrations,
   sessionDefinitions,
   targets,
 }: {
   form: WizardForm;
-  templates: Template[];
   models: Record<string, RuntimeModelDescriptor>;
   integrations: IntegrationConnection[];
   sessionDefinitions: SessionDefinition[];
   targets: VolundrTarget[];
 }) {
-  const tpl = templates.find((t) => t.id === form.templateId);
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
     sessionDefinitions.find((d) => d.key === form.definition)?.displayName ?? form.definition;
   const targetLabel =
-    targets.find((target) => target.id === form.instanceId)?.name || form.instanceId || 'default';
+    form.targetMode === 'tags'
+      ? `tags(${form.targetMatch}): ${form.targetTags.join(', ')}`
+      : targets.find((target) => target.id === form.instanceId)?.name ||
+        form.instanceId ||
+        'default';
   const integrationLabels = form.selectedIntegrations.map((id) => {
     const integration = integrations.find((item) => item.id === id);
     return integration ? formatIntegrationLabel(integration) : id;
@@ -1709,8 +1895,7 @@ export function ConfirmStep({
         description="Final review before Forge provisions the session."
       >
         <div className="niuu:flex niuu:flex-col niuu:divide-y niuu:divide-border-subtle">
-          <ConfirmRow label="session" value={deriveSessionName(form, tpl)} />
-          <ConfirmRow label="template" value={tpl?.name ?? form.templateId} />
+          <ConfirmRow label="session" value={deriveSessionName(form)} />
           <ConfirmRow label="forge" value={targetLabel} />
           <ConfirmRow label="definition" value={definitionLabel} />
           <ConfirmRow label="model" value={modelLabel} />
@@ -1927,14 +2112,12 @@ export function BootingStep({ bootStep, progress }: { bootStep: number; progress
 // ---------------------------------------------------------------------------
 
 /** 4-step modal wizard for launching new Volundr sessions. */
-export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWizardProps) {
+export function LaunchWizard({ open, onOpenChange, initialLaunchSpecRef }: LaunchWizardProps) {
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const templates = useTemplates();
-  const allTemplates = useMemo(() => templates.data ?? [], [templates.data]);
   const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [manualBranches, setManualBranches] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, RuntimeModelDescriptor>>({});
@@ -1942,17 +2125,16 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationConnection[]>([]);
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
-  const [presets, setPresets] = useState<VolundrPreset[]>([]);
+  const [presets, setPresets] = useState<VolundrLaunchSpec[]>([]);
   const [targets, setTargets] = useState<VolundrTarget[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
 
-  const [step, setStep] = useState<WizardStep>('template');
+  const [step, setStep] = useState<WizardStep>('source');
   const [form, setForm] = useState<WizardForm>(() => ({
-    templateId: initialTemplateId ?? allTemplates[0]?.id ?? '',
-    presetId: '',
+    presetId: initialLaunchSpecRef ?? '',
     sourcetype: 'git',
     repo: '',
     branch: '',
@@ -1975,6 +2157,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     gpu: '0',
     cluster: '',
     instanceId: '',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
   }));
@@ -1999,7 +2184,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       volundr.getCredentials().catch(() => []),
       volundr.getIntegrations().catch(() => []),
       volundr.getClusterResources().catch(() => null),
-      volundr.getPresets().catch(() => []),
+      volundr.getLaunchSpecs().catch(() => []),
       volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
@@ -2036,15 +2221,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
       cancelled = true;
     };
   }, [bifrost, open, repoCatalog, volundr]);
-
-  // Update template ID when templates load
-  useEffect(() => {
-    if (allTemplates.length > 0 && !form.templateId) {
-      queueMicrotask(() => {
-        setForm((f) => ({ ...f, templateId: allTemplates[0]!.id }));
-      });
-    }
-  }, [allTemplates, form.templateId]);
 
   useEffect(() => {
     if (!open || form.sourcetype !== 'git' || !form.repo.trim()) {
@@ -2096,8 +2272,17 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           }
         }
 
-        if (Object.keys(models).length > 0 && !models[current.model]) {
-          next.model = pickDefaultModel(models);
+        const compatibleModels = filterModelsForDefinition(
+          models,
+          current.definition,
+          sessionDefinitions,
+        );
+        if (Object.keys(compatibleModels).length > 0 && !compatibleModels[current.model]) {
+          next.model = pickDefaultModelForDefinition(
+            models,
+            current.definition,
+            sessionDefinitions,
+          );
           changed = true;
         }
 
@@ -2107,12 +2292,16 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
             next.instanceId = targets.find((target) => target.isDefault)?.id ?? targets[0]!.id;
             changed = true;
           }
+          if (current.targetMode === 'tags' && getTargetTagOptions(targets).length === 0) {
+            next.targetMode = 'instance';
+            changed = true;
+          }
         }
 
         return changed ? next : current;
       });
     });
-  }, [repos, models, targets]);
+  }, [repos, models, sessionDefinitions, targets]);
 
   useEffect(() => {
     const query = form.trackerQuery.trim();
@@ -2149,18 +2338,18 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   }, [form.trackerQuery, form.trackerIssue, open, volundr]);
 
   const handleApplyPreset = useCallback(
-    (presetId: string) => {
-      if (!presetId) {
+    (ref: string) => {
+      if (!ref) {
         setForm((current) => ({ ...current, presetId: '' }));
         return;
       }
 
-      const preset = presets.find((item) => item.id === presetId);
+      const preset = presets.find((item) => launchSpecRef(item) === ref);
       if (!preset) return;
 
       setForm((current) => ({
         ...current,
-        presetId,
+        presetId: ref,
         definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
@@ -2191,14 +2380,23 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     [presets],
   );
 
+  useEffect(() => {
+    if (!open || !initialLaunchSpecRef || presets.length === 0) return;
+    if (presets.some((preset) => launchSpecRef(preset) === initialLaunchSpecRef)) {
+      queueMicrotask(() => {
+        handleApplyPreset(initialLaunchSpecRef);
+      });
+    }
+  }, [handleApplyPreset, initialLaunchSpecRef, open, presets]);
+
   const handleSavePreset = useCallback(
     async (name: string) => {
-      const saved = await volundr.savePreset(buildPresetPayload(form, name));
+      const saved = await volundr.saveLaunchSpec(buildPresetPayload(form, name));
       setPresets((current) => {
         const next = current.filter((preset) => preset.id !== saved.id);
         return [...next, saved];
       });
-      setForm((current) => ({ ...current, presetId: saved.id }));
+      setForm((current) => ({ ...current, presetId: launchSpecRef(saved) }));
     },
     [form, volundr],
   );
@@ -2248,10 +2446,16 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   const stepIdx = STEPS.indexOf(step as (typeof STEPS)[number]);
   const canGoBack = stepIdx > 0 && step !== 'booting';
   const isLastStep = step === 'confirm';
-  const selectedTemplate = allTemplates.find((template) => template.id === form.templateId);
-  const effectiveSessionName = deriveSessionName(form, selectedTemplate);
+  const effectiveSessionName = deriveSessionName(form);
   const sessionNameError = validateSessionName(effectiveSessionName);
   const resourceErrors = getResourceErrors(form, clusterResources);
+  const matchingTargets = getMatchingTargets(targets, form.targetTags, form.targetMatch);
+  const targetRoutingError =
+    form.targetMode === 'tags' && form.targetTags.length === 0
+      ? 'Select at least one Forge tag.'
+      : form.targetMode === 'tags' && matchingTargets.length === 0
+        ? 'No enabled Forge target matches the selected tags.'
+        : null;
   const sourceReady =
     form.sourcetype === 'blank' ||
     (form.sourcetype === 'git'
@@ -2261,6 +2465,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     Boolean(form.model.trim()) &&
     sourceReady &&
     !sessionNameError &&
+    !targetRoutingError &&
     !launching &&
     !resourceErrors.cpu &&
     !resourceErrors.memory &&
@@ -2268,7 +2473,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
 
   async function handleLaunch() {
     if (!canLaunch) {
-      setLaunchError(sessionNameError ?? 'Fill in the required launch fields first.');
+      setLaunchError(
+        sessionNameError ?? targetRoutingError ?? 'Fill in the required launch fields first.',
+      );
       return;
     }
 
@@ -2280,8 +2487,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
     setLaunching(true);
 
     try {
-      let presetId = form.presetId || undefined;
-      const selectedPreset = presets.find((preset) => preset.id === form.presetId);
+      let launchSpec: string | undefined;
+      let launchSpecId: string | undefined;
+      const selectedPreset = presets.find((preset) => launchSpecRef(preset) === form.presetId);
       const currentPresetPayload = buildPresetRuntimePayload(
         form,
         selectedPreset?.name ?? `${effectiveSessionName}-runtime`,
@@ -2293,26 +2501,33 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           JSON.stringify(buildPresetComparisonPayload(selectedPreset)) !==
             JSON.stringify(currentPresetPayload))
       ) {
-        const savedPreset = await volundr.savePreset(currentPresetPayload);
-        presetId = savedPreset.id;
+        const savedPreset = await volundr.saveLaunchSpec(currentPresetPayload);
+        launchSpecId = savedPreset.id ?? undefined;
+        launchSpec = undefined;
         setPresets((current) => {
           const next = current.filter((preset) => preset.id !== savedPreset.id);
           return [...next, savedPreset];
         });
-        setForm((current) => ({ ...current, presetId: savedPreset.id }));
+        setForm((current) => ({ ...current, presetId: launchSpecRef(savedPreset) }));
+      } else if (selectedPreset?.scope === 'system') {
+        launchSpec = selectedPreset.name;
+      } else if (selectedPreset?.id) {
+        launchSpecId = selectedPreset.id;
       }
 
       const session = await volundr.startSession({
         name: effectiveSessionName,
         source: buildSessionSource(form),
         model: form.model.trim(),
-        templateName: selectedTemplate?.name,
-        presetId,
+        launchSpec,
+        launchSpecId,
         definition: form.definition,
         taskType: definitionToTaskType(form.definition),
         trackerIssue: form.trackerIssue ?? undefined,
         terminalRestricted: false,
-        instanceId: form.instanceId || undefined,
+        instanceId: form.targetMode === 'instance' ? form.instanceId || undefined : undefined,
+        targetTags: form.targetMode === 'tags' ? form.targetTags : undefined,
+        targetMatch: form.targetMode === 'tags' ? form.targetMatch : undefined,
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,
         integrationIds: form.selectedIntegrations.length ? form.selectedIntegrations : undefined,
@@ -2356,7 +2571,7 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
   useEffect(() => {
     if (open) {
       queueMicrotask(() => {
-        setStep('template');
+        setStep('source');
         setBootStep(0);
         setBootProgress(0);
         setLaunchError(null);
@@ -2378,13 +2593,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           {step !== 'booting' && <StepIndicator current={step} steps={STEPS} />}
 
           {/* Step content */}
-          {step === 'template' && (
-            <TemplateStep
-              templates={allTemplates}
-              selectedId={form.templateId}
-              onSelect={(id) => update({ templateId: id })}
-            />
-          )}
           {step === 'source' && (
             <SourceStep
               form={form}
@@ -2410,7 +2618,9 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
               integrations={integrations}
               clusterResources={clusterResources}
               presets={presets}
-              selectedPreset={presets.find((preset) => preset.id === form.presetId) ?? null}
+              selectedPreset={
+                presets.find((preset) => launchSpecRef(preset) === form.presetId) ?? null
+              }
               availableMcpServers={availableMcpServers}
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
@@ -2422,7 +2632,6 @@ export function LaunchWizard({ open, onOpenChange, initialTemplateId }: LaunchWi
           {step === 'confirm' && (
             <ConfirmStep
               form={form}
-              templates={allTemplates}
               models={models}
               integrations={integrations}
               sessionDefinitions={

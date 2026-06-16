@@ -7,15 +7,21 @@ Re-exports all public names for backward compatibility so that
 from __future__ import annotations
 
 from .chronicle import ChronicleNotFoundError, ChronicleService
+from .external_sessions import (
+    ExternalSessionAlreadyImportedError,
+    ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
+    ExternalSessionProviderNotFoundError,
+    ExternalSessionService,
+    ExternalSessionWorkspaceError,
+)
 from .feature import FeatureModule, FeatureService, UserFeaturePreference
 from .forge import ForgeService
 from .git_workflow import ConfidenceScorer, GitWorkflowService
-from .preset import PresetDuplicateNameError, PresetNotFoundError, PresetService
-from .profile import (
-    ForgeProfileService,
-    ProfileNotFoundError,
-    ProfileReadOnlyError,
-    ProfileValidationError,
+from .launch_spec import (
+    LaunchSpecDuplicateNameError,
+    LaunchSpecNotFoundError,
+    LaunchSpecService,
 )
 from .prompt import PromptNotFoundError, PromptService
 from .repo import ProviderInfo, RepoService
@@ -36,11 +42,13 @@ from .workspace import WorkspaceService
 __all__ = [
     # Exceptions
     "ChronicleNotFoundError",
-    "PresetDuplicateNameError",
-    "PresetNotFoundError",
-    "ProfileNotFoundError",
-    "ProfileReadOnlyError",
-    "ProfileValidationError",
+    "ExternalSessionAlreadyImportedError",
+    "ExternalSessionNotFoundError",
+    "ExternalSessionPathNotAllowedError",
+    "ExternalSessionProviderNotFoundError",
+    "ExternalSessionWorkspaceError",
+    "LaunchSpecDuplicateNameError",
+    "LaunchSpecNotFoundError",
     "PromptNotFoundError",
     "RepoValidationError",
     "SessionAccessDeniedError",
@@ -52,12 +60,12 @@ __all__ = [
     "TrackerIssueNotFoundError",
     "TrackerMappingNotFoundError",
     # Services
+    "ExternalSessionService",
     "FeatureService",
     "ForgeService",
     "ChronicleService",
     "ConfidenceScorer",
-    "ForgeProfileService",
-    "PresetService",
+    "LaunchSpecService",
     "GitWorkflowService",
     "PromptService",
     "RepoService",

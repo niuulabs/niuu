@@ -38,6 +38,7 @@ export BIFROST__URL="${BIFROST__URL:-http://${NIUU_SERVER__HOST}:8080}"
 UI_VARIANT="${UI_VARIANT:-new}"
 export UI_VARIANT
 PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"
+VALKYRIE_URL="http://${NIUU_SERVER__HOST}:8080/api/v1/ravn/valkyrie/dashboard"
 
 mkdir -p "${LOG_DIR}"
 
@@ -241,14 +242,7 @@ if [[ -x "${PG_CTL}" ]]; then
   "${PG_CTL}" -D "${PG_DATA}" stop -m fast >/dev/null 2>&1 || true
 fi
 
-# Old UI uses the legacy /api/v1/volundr/* routes (e.g. /api/v1/volundr/models),
-# which only get mounted under the full-compat host profile. New UI uses the
-# split canonical routes that ship in the default 'full' profile.
-if [[ "${UI_VARIANT}" == "old" ]]; then
-  HOST_PROFILE="full-compat"
-else
-  HOST_PROFILE="full"
-fi
+HOST_PROFILE="full"
 export ROOT_DIR PLATFORM_LOG PLATFORM_PID_FILE UI_VARIANT HOST_PROFILE
 
 echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
@@ -281,6 +275,7 @@ with open(pid_path, "w", encoding="utf-8") as pid_file:
     pid_file.write(str(process.pid))
 PY
 wait_for_platform "$(cat "${PLATFORM_PID_FILE}")" "${PLATFORM_URL}"
+wait_for_url "${VALKYRIE_URL}" "Valkyrie dashboard"
 
 trap - ERR
 
@@ -291,9 +286,11 @@ UI:
   variant: web-next
   http://${NIUU_SERVER__HOST}:8080/?config=/config.live.json
   http://${NIUU_SERVER__HOST}:8080/volundr?config=/config.live.json
+  http://${NIUU_SERVER__HOST}:8080/valkyries?config=/config.live.json
 
 API:
   http://${NIUU_SERVER__HOST}:8080/health
+  ${VALKYRIE_URL}
 
 Logs:
   ${PLATFORM_LOG}

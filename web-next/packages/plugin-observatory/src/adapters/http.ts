@@ -13,7 +13,7 @@
  */
 
 import type { ApiClient, EventStreamHandle } from '@niuulabs/query';
-import { openEventStream } from '@niuulabs/query';
+import { getAuthHeaders, openEventStream } from '@niuulabs/query';
 import type {
   IRegistryRepository,
   ILiveTopologyStream,
@@ -94,6 +94,19 @@ export function buildObservatoryRegistryHttpAdapter(client: ApiClient): IRegistr
   };
 }
 
+function topologySnapshotUrl(streamUrl: string): string {
+  const base = streamUrl.replace(/\/+$/, '').replace(/\/stream$/, '');
+  return `${base}/snapshot`;
+}
+
+async function loadTopologySnapshot(streamUrl: string): Promise<Topology | null> {
+  const response = await fetch(topologySnapshotUrl(streamUrl), {
+    headers: getAuthHeaders({ Accept: 'application/json' }),
+  });
+  if (!response.ok) return null;
+  return (await response.json()) as Topology;
+}
+
 /**
  * Wrap an SSE topology stream so it satisfies the ILiveTopologyStream contract:
  * - `getSnapshot()` returns the most recent snapshot ever received.
@@ -105,15 +118,35 @@ export function buildObservatoryTopologySseStream(url: string): ILiveTopologyStr
   let current: Topology | null = null;
   const listeners = new Set<TopologyListener>();
   let handle: EventStreamHandle | null = null;
+  let snapshotLoad: Promise<void> | null = null;
+
+  function publish(snapshot: Topology): void {
+    current = snapshot;
+    for (const l of listeners) l(snapshot);
+  }
+
+  function ensureSnapshotLoaded(): void {
+    if (snapshotLoad || current) return;
+    snapshotLoad = loadTopologySnapshot(url)
+      .then((snapshot) => {
+        if (snapshot) publish(snapshot);
+      })
+      .catch(() => {
+        // The SSE connection remains authoritative; snapshot seeding is a fast first paint.
+      })
+      .finally(() => {
+        snapshotLoad = null;
+      });
+  }
 
   function ensureOpen(): void {
+    ensureSnapshotLoaded();
     if (handle) return;
     handle = openEventStream(url, {
       onMessage: (raw) => {
         try {
           const snapshot = JSON.parse(raw) as Topology;
-          current = snapshot;
-          for (const l of listeners) l(snapshot);
+          publish(snapshot);
         } catch {
           // Malformed frame — drop it. A future revision can add logging.
         }

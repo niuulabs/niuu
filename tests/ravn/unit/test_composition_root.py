@@ -126,6 +126,14 @@ class TestBuildExecutor:
 
 
 class TestBuildMemory:
+    def test_none_backend_returns_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_memory
+
+        settings.memory.backend = "none"
+
+        mem = _build_memory(settings)
+        assert mem is None
+
     def test_sqlite_backend_returns_adapter(self, settings: Settings) -> None:
         from ravn.cli.commands import _build_memory
 
@@ -261,6 +269,49 @@ class TestBuildTools:
             persona_config=None,
         )
         assert tools == []
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_build_tools_loads_persisted_resident_agent_tools(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+        from ravn.valkyrie_evolution.learned_tools import (
+            write_learned_tool,
+            write_learned_tool_artifact,
+        )
+        from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+
+        artifact = LearnedToolArtifact(
+            artifact_id="learned-tool:persisted_metric_window",
+            manifest=LearnedToolManifest(
+                name="persisted_metric_window",
+                description="Read a persisted metric window.",
+                input_schema={"type": "object"},
+                required_permission="mimir:read",
+                declared_reach=[],
+            ),
+            tool_code="def run(input):\n    return {'ok': True}\n",
+        )
+        tools_dir = tmp_path / ".ravn" / "learned_tools"
+        artifacts_dir = tmp_path / ".ravn" / "learned_tool_artifacts"
+        write_learned_tool(tools_dir=tools_dir, artifact=artifact)
+        write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        assert "persisted_metric_window" in {tool.name for tool in tools}
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_memory_tools_added_when_memory_present(
@@ -572,6 +623,37 @@ class TestFilterTools:
         persona = MagicMock(allowed_tools=["a"], forbidden_tools=None)
         result = _filter_tools(tools, settings, persona)
         assert [t.name for t in result] == ["a"]
+
+    def test_mimir_alias_expands_to_dynamic_tools(self, settings: Settings) -> None:
+        from ravn.cli.commands import _filter_tools, _groups_for_persona
+
+        tools = [
+            self._make_tool("mimir_query"),
+            self._make_tool("mimir_read_source"),
+            self._make_tool("mimir_lint"),
+            self._make_tool("web_fetch"),
+        ]
+        persona = MagicMock(allowed_tools=["mimir"], forbidden_tools=None)
+
+        assert "mimir" in _groups_for_persona(persona)
+        result = _filter_tools(tools, settings, persona)
+        assert [t.name for t in result] == [
+            "mimir_query",
+            "mimir_read_source",
+            "mimir_lint",
+        ]
+
+    def test_explicit_mimir_tools_enable_dynamic_group(self) -> None:
+        from ravn.cli.commands import _groups_for_persona
+
+        persona = MagicMock(
+            allowed_tools=["mimir_query", "mimir_write", "web_search"],
+            forbidden_tools=None,
+        )
+
+        groups = _groups_for_persona(persona)
+        assert "mimir" in groups
+        assert "extended" in groups
 
 
 # ---------------------------------------------------------------------------

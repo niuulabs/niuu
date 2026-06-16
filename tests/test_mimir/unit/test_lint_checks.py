@@ -457,6 +457,44 @@ def test_l11_in_sync_index_not_flagged(tmp_path: Path) -> None:
     assert "L11" not in _issue_ids(report)
 
 
+def test_l11_index_parse_tolerates_bracketed_titles_and_summary_links(tmp_path: Path) -> None:
+    """Regression: 'Run fixes' did nothing because the index parser
+    mis-read two real-world entry shapes.
+
+    - A page whose H1 (and thus index title) contains brackets — its catalog
+      entry was dropped, so the real page read as perpetually "missing".
+    - An entry whose summary embeds another markdown link — that link was
+      scraped as a catalog path, so it read as perpetually "stale".
+
+    Both make L11 un-clearable: the rebuild re-emits the same index, so the
+    next lint flags it again. With the entries recognised correctly, the
+    in-sync index is clean and a single fix converges.
+    """
+    adapter = _adapter(tmp_path)
+    # Page with a bracketed title (directive-style H1).
+    _run(
+        adapter.upsert_page(
+            "memory/directive.md",
+            "---\ntype: directive\n---\n# [INITIATIVE TASK — triggered by: mesh:outcome]\nBody.",
+        )
+    )
+    # Page whose summary will embed a markdown link to the first page.
+    _run(
+        adapter.upsert_page(
+            "technical/arch.md",
+            "---\ntype: topic\n---\n# Architecture\n"
+            "Implements the [directive](../memory/directive.md) pattern.",
+        )
+    )
+
+    # Both pages are genuinely in the index now → no missing, no stale.
+    indexed = adapter._read_indexed_paths()
+    assert indexed == {"memory/directive.md", "technical/arch.md"}
+
+    report = _run(adapter.lint())
+    assert "L11" not in _issue_ids(report)
+
+
 # ---------------------------------------------------------------------------
 # L12 — invalid frontmatter
 # ---------------------------------------------------------------------------

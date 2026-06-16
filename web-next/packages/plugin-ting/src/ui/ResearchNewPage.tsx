@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { BranchSelect, RepoSelect, type RepoRecord } from '@niuulabs/ui';
+import type { IDispatchBus } from '../ports';
 import { useCreateResearchCampaign } from './useResearch';
 import { useWorkflows } from './useWorkflows';
 
@@ -17,13 +18,19 @@ function hasResearchTag(tags: string[] | undefined): boolean {
 export function ResearchNewPage() {
   const navigate = useNavigate();
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
+  const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const createCampaign = useCreateResearchCampaign();
   const workflowsQuery = useWorkflows();
   const reposQuery = useQuery({
     queryKey: ['niuu', 'repos'],
     queryFn: () => repoCatalog.getRepos(),
   });
+  const targetsQuery = useQuery({
+    queryKey: ['ting', 'dispatch', 'targets'],
+    queryFn: () => dispatchBus.getClusters(),
+  });
   const [question, setQuestion] = useState('');
+  const [title, setTitle] = useState('');
   const [mode, setMode] = useState('exploratory');
   const [audience, setAudience] = useState('');
   const [deliverable, setDeliverable] = useState('');
@@ -33,6 +40,7 @@ export function ResearchNewPage() {
   const [branch, setBranch] = useState('dev');
   const [showAllWorkflows, setShowAllWorkflows] = useState(false);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedConnectionId, setSelectedConnectionId] = useState('');
 
   const workflows = useMemo(() => workflowsQuery.data ?? [], [workflowsQuery.data]);
   const taggedWorkflows = useMemo(
@@ -50,11 +58,23 @@ export function ResearchNewPage() {
   const selectedWorkflow =
     visibleWorkflows.find((workflow) => workflow.id === effectiveSelectedWorkflowId) ?? null;
   const repos = reposQuery.data ?? [];
+  const targets = useMemo(
+    () => (targetsQuery.data ?? []).filter((target) => target.enabled),
+    [targetsQuery.data],
+  );
+  const effectiveConnectionId =
+    targets.find((target) => target.connectionId === selectedConnectionId)?.connectionId ??
+    targets[0]?.connectionId ??
+    '';
+  const selectedTarget =
+    targets.find((target) => target.connectionId === effectiveConnectionId) ?? null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedTitle = title.trim();
     const campaign = await createCampaign.mutateAsync({
       question,
+      name: trimmedTitle || undefined,
       workflowId: effectiveSelectedWorkflowId || undefined,
       mode,
       audience,
@@ -66,6 +86,7 @@ export function ResearchNewPage() {
         .filter(Boolean),
       repo,
       branch,
+      connectionId: effectiveConnectionId || undefined,
     });
     void navigate({ to: '/ting/research/$slug', params: { slug: campaign.slug } });
   }
@@ -75,7 +96,7 @@ export function ResearchNewPage() {
       <div className="niuu:mx-auto niuu:max-w-4xl niuu:px-6 niuu:py-8">
         <form
           onSubmit={handleSubmit}
-          className="niuu:rounded-3xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6 niuu:flex niuu:flex-col niuu:gap-5"
+          className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-6 niuu:flex niuu:flex-col niuu:gap-5"
         >
           <div>
             <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.24em] niuu:text-text-faint">
@@ -90,7 +111,7 @@ export function ResearchNewPage() {
             </p>
           </div>
 
-          <div className="niuu:rounded-2xl niuu:border niuu:border-border-subtle niuu:bg-bg-primary/50 niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3">
+          <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary/50 niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3">
             <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
               <div className="niuu:flex niuu:flex-col niuu:gap-1">
                 <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
@@ -139,7 +160,7 @@ export function ResearchNewPage() {
                 aria-label="Workflow"
                 value={effectiveSelectedWorkflowId}
                 onChange={(event) => setSelectedWorkflowId(event.target.value)}
-                className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
               >
                 {visibleWorkflows.length > 0 ? (
                   visibleWorkflows.map((workflow) => (
@@ -155,7 +176,7 @@ export function ResearchNewPage() {
             </label>
 
             {selectedWorkflow ? (
-              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3">
+              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3">
                 <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:flex-wrap">
                   <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
                     {selectedWorkflow.name}
@@ -181,7 +202,7 @@ export function ResearchNewPage() {
                 ) : null}
               </div>
             ) : (
-              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3">
+              <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3">
                 <div className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
                   Default research workflow
                 </div>
@@ -193,6 +214,53 @@ export function ResearchNewPage() {
             )}
           </div>
 
+          <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-primary/50 niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3">
+            <div className="niuu:flex niuu:flex-col niuu:gap-1">
+              <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                Execution target
+              </span>
+              <span className="niuu:text-xs niuu:text-text-faint">
+                {targetsQuery.isLoading
+                  ? 'Loading Volundr targets'
+                  : selectedTarget
+                    ? `${selectedTarget.name}${selectedTarget.tags?.length ? ` · ${selectedTarget.tags.join(', ')}` : ''}`
+                    : 'Backend default target'}
+              </span>
+            </div>
+            <label className="niuu:flex niuu:flex-col niuu:gap-2">
+              <select
+                aria-label="Execution target"
+                value={effectiveConnectionId}
+                onChange={(event) => setSelectedConnectionId(event.target.value)}
+                disabled={targetsQuery.isLoading || targets.length === 0}
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary niuu:disabled:opacity-60"
+              >
+                {targets.length > 0 ? (
+                  targets.map((target) => (
+                    <option key={target.connectionId} value={target.connectionId}>
+                      {target.name}
+                      {target.tags?.length ? ` · ${target.tags.join(', ')}` : ''}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">Backend default target</option>
+                )}
+              </select>
+            </label>
+          </div>
+
+          <label className="niuu:flex niuu:flex-col niuu:gap-2">
+            <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+              Campaign title
+            </span>
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+              placeholder="Short name for the campaign"
+            />
+          </label>
+
           <label className="niuu:flex niuu:flex-col niuu:gap-2">
             <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">Question</span>
             <textarea
@@ -200,7 +268,7 @@ export function ResearchNewPage() {
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
               rows={5}
-              className="niuu:rounded-2xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-4 niuu:text-sm niuu:text-text-primary"
+              className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-4 niuu:text-sm niuu:text-text-primary"
               placeholder="What should this campaign answer?"
             />
           </label>
@@ -211,7 +279,7 @@ export function ResearchNewPage() {
               <select
                 value={mode}
                 onChange={(event) => setMode(event.target.value)}
-                className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
               >
                 <option value="exploratory">Exploratory</option>
                 <option value="evaluative">Evaluative</option>
@@ -224,7 +292,7 @@ export function ResearchNewPage() {
               <input
                 value={audience}
                 onChange={(event) => setAudience(event.target.value)}
-                className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
                 placeholder="Who is this for?"
               />
             </label>
@@ -235,7 +303,7 @@ export function ResearchNewPage() {
               <input
                 value={deliverable}
                 onChange={(event) => setDeliverable(event.target.value)}
-                className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
                 placeholder="memo, source pack, decision brief…"
               />
             </label>
@@ -246,7 +314,7 @@ export function ResearchNewPage() {
               <input
                 value={success}
                 onChange={(event) => setSuccess(event.target.value)}
-                className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
                 placeholder="How will we know this is done?"
               />
             </label>
@@ -260,7 +328,7 @@ export function ResearchNewPage() {
               value={constraints}
               onChange={(event) => setConstraints(event.target.value)}
               rows={4}
-              className="niuu:rounded-2xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-4 niuu:text-sm niuu:text-text-primary"
+              className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-4 niuu:text-sm niuu:text-text-primary"
               placeholder="One per line"
             />
           </label>
@@ -285,7 +353,7 @@ export function ResearchNewPage() {
                 <input
                   value={repo}
                   onChange={(event) => setRepo(event.target.value)}
-                  className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                  className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
                   placeholder="optional repository context"
                 />
               )}
@@ -305,7 +373,7 @@ export function ResearchNewPage() {
                 <input
                   value={branch}
                   onChange={(event) => setBranch(event.target.value)}
-                  className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
+                  className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2.5 niuu:text-sm niuu:text-text-primary"
                 />
               )}
             </label>

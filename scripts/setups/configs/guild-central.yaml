@@ -48,6 +48,7 @@ niuu:
       visibility: system
       enabled: true
       is_default: true
+      tags: ["gpu", "us-west"]
     - kind: volundr
       slug: guild-beta
       name: Guild Beta
@@ -55,3 +56,4 @@ niuu:
       visibility: system
       enabled: true
       is_default: false
+      tags: ["cpu"]

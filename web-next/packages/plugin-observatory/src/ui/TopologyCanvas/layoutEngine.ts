@@ -51,21 +51,23 @@ const TYPE_PRIORITY: Record<string, number> = {
   mimir: 0,
   realm: 1,
   cluster: 2,
-  host: 3,
-  ting: 4,
-  bifrost: 5,
-  volundr: 6,
-  ravn_long: 7,
-  ravn_run: 8,
-  run: 9,
-  trigger: 10,
-  resource: 11,
-  stage: 12,
-  gate: 13,
-  cond: 14,
-  end: 15,
-  service: 16,
-  model: 17,
+  namespace: 3,
+  host: 4,
+  ting: 5,
+  bifrost: 6,
+  volundr: 7,
+  ravn_long: 8,
+  warden: 8,
+  ravn_run: 9,
+  run: 10,
+  trigger: 11,
+  resource: 12,
+  stage: 13,
+  gate: 14,
+  cond: 15,
+  end: 16,
+  service: 17,
+  model: 18,
 };
 
 export function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
@@ -88,6 +90,7 @@ export function sortedNodes(nodes: TopologyNode[]): TopologyNode[] {
 function nodeExtent(node: TopologyNode): number {
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H) + 12;
   if (node.typeId === 'run') return 72;
+  if (node.typeId === 'namespace') return LAYOUT.NAMESPACE_INNER_RADIUS;
   return (NODE_SIZE[node.typeId] ?? 8) + 18;
 }
 
@@ -348,6 +351,24 @@ function placePackedChildren(
     }),
     anchor,
   );
+}
+
+function withNestedContainer(
+  node: TopologyNode,
+  pos: NodePosition,
+  nestedLayouts: Map<string, PackedLayout>,
+): NodePosition {
+  const layout = nestedLayouts.get(node.id);
+  if (!layout) return pos;
+  const radius =
+    node.typeId === 'namespace'
+      ? Math.max(layout.radius, LAYOUT.NAMESPACE_INNER_RADIUS)
+      : layout.radius;
+  return {
+    ...pos,
+    containerWidth: radius * 2,
+    containerHeight: radius * 2,
+  };
 }
 
 function packedRadius(
@@ -632,7 +653,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
       });
       continue;
     }
-    positions.set(node.id, pos);
+    positions.set(node.id, withNestedContainer(node, pos, nestedLayouts));
   }
 
   for (const realm of realmNodes) {
@@ -663,7 +684,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
           });
           continue;
         }
-        positions.set(node.id, pos);
+        positions.set(node.id, withNestedContainer(node, pos, nestedLayouts));
       }
     }
   }
@@ -700,7 +721,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
         });
         continue;
       }
-      positions.set(child.id, pos);
+      positions.set(child.id, withNestedContainer(child, pos, nestedLayouts));
     }
   }
 
@@ -815,6 +836,9 @@ export function computeLayoutBounds(
       const radius = pos.zoneRadius ?? zoneRadius(node.typeId);
       extentX = radius + 36;
       extentY = radius + 48;
+    } else if (node.typeId === 'namespace') {
+      extentX = Math.max((pos.containerWidth ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2, 48) + 28;
+      extentY = Math.max((pos.containerHeight ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2, 48) + 38;
     } else if (node.typeId === 'host' || node.typeId === 'run') {
       extentX = (pos.containerWidth ?? HOST_HALF_W * 2) / 2 + 18;
       extentY = (pos.containerHeight ?? HOST_HALF_H * 2) / 2 + 24;

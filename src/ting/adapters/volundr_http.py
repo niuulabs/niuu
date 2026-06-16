@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from niuu.domain.models import Principal
+from niuu.ports.http_auth import HttpAuthPort
 from ting.domain.models import PRStatus
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 
@@ -43,12 +44,16 @@ class VolundrHTTPAdapter(VolundrPort):
         timeout: float = 30.0,
         name: str = "",
         target_id: str | None = None,
+        tags: list[str] | None = None,
+        auth: HttpAuthPort | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         self._name = name
         self._target_id = target_id or name
+        self._tags = list(tags or [])
+        self._auth = auth
 
     @property
     def name(self) -> str:
@@ -58,14 +63,21 @@ class VolundrHTTPAdapter(VolundrPort):
     def target_id(self) -> str:
         return self._target_id
 
+    @property
+    def tags(self) -> list[str]:
+        return self._tags
+
     def _headers(
         self,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> dict[str, str]:
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = self._auth.headers() if self._auth else {}
         token = auth_token or self._api_key
         if token:
+            headers = {
+                key: value for key, value in headers.items() if key.lower() != "authorization"
+            }
             headers["Authorization"] = f"Bearer {token}"
         if principal is not None:
             headers["x-auth-user-id"] = principal.user_id
@@ -123,7 +135,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "definition": request.definition,
                     "workload_type": request.workload_type,
                     "workload_config": request.workload_config,
-                    "profile_name": request.profile,
+                    "launch_spec": request.profile,
                     "integration_ids": request.integration_ids,
                 },
             )

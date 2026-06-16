@@ -606,12 +606,39 @@ describe('buildTingHttpAdapter', () => {
         instance_name: 'Cluster Two',
       });
 
-      const saga = await buildTingHttpAdapter(client).assignTarget('saga-1', 'cluster-2');
+      const saga = await buildTingHttpAdapter(client).assignTarget('saga-1', {
+        mode: 'instance',
+        instanceId: 'cluster-2',
+      });
 
       expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/target', {
         instance_id: 'cluster-2',
+        target_tags: [],
+        target_match: 'all',
       });
       expect(saga.instanceName).toBe('Cluster Two');
+    });
+
+    it('assigns saga tag targets', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue({
+        ...rawSaga,
+        target_tags: ['gpu', 'valhalla'],
+        target_match: 'all',
+      });
+
+      const saga = await buildTingHttpAdapter(client).assignTarget('saga-1', {
+        mode: 'tags',
+        tags: ['gpu', 'valhalla'],
+        match: 'all',
+      });
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/target', {
+        instance_id: null,
+        target_tags: ['gpu', 'valhalla'],
+        target_match: 'all',
+      });
+      expect(saga.targetTags).toEqual(['gpu', 'valhalla']);
     });
   });
 
@@ -1157,7 +1184,42 @@ describe('buildTrackerHttpAdapter', () => {
       project_id: 'proj-1',
       repos: ['niuulabs/volundr'],
       base_branch: 'main',
+      repo_refs: undefined,
       instance_id: null,
+      target_tags: [],
+      target_match: 'all',
+    });
+  });
+
+  it('sends repo refs and tag target selectors when importing a project', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawSaga);
+
+    await buildTrackerHttpAdapter(client).importProject(
+      'proj-1',
+      ['niuulabs/volundr'],
+      'main',
+      null,
+      {
+        repoRefs: [
+          { repo: 'niuulabs/volundr', branch: 'main' },
+          { repo: 'niuulabs/infrastructure', branch: 'prod' },
+        ],
+        target: { mode: 'tags', tags: ['gpu', 'valhalla'], match: 'all' },
+      },
+    );
+
+    expect(client.post).toHaveBeenCalledWith('/tracker/import', {
+      project_id: 'proj-1',
+      repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+      base_branch: 'main',
+      repo_refs: [
+        { repo: 'niuulabs/volundr', branch: 'main' },
+        { repo: 'niuulabs/infrastructure', branch: 'prod' },
+      ],
+      instance_id: null,
+      target_tags: ['gpu', 'valhalla'],
+      target_match: 'all',
     });
   });
 
@@ -1229,6 +1291,7 @@ describe('buildDispatchBusHttpAdapter', () => {
       name: 'Mac mini',
       url: 'http://mac-mini.local:8000',
       enabled: true,
+      tags: [],
     });
   });
 
@@ -1370,7 +1433,7 @@ describe('buildResearchHttpAdapter', () => {
 
     const [campaign] = await buildResearchHttpAdapter(client).listCampaigns();
 
-    expect(client.get).toHaveBeenCalledWith('/campaigns');
+    expect(client.get).toHaveBeenCalledWith('/research/campaigns');
     expect(campaign).toMatchObject({
       ownerId: 'user-1',
       workflowId: rawWorkflow.id,
@@ -1402,7 +1465,7 @@ describe('buildResearchHttpAdapter', () => {
 
     const detail = await buildResearchHttpAdapter(client).getCampaign('research/council-human-v1');
 
-    expect(client.get).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1');
+    expect(client.get).toHaveBeenCalledWith('/research/campaigns/research%2Fcouncil-human-v1');
     expect(detail?.artifacts[0]).toEqual({
       path: 'reports/final.md',
       title: 'Final Report',
@@ -1443,6 +1506,7 @@ describe('buildResearchHttpAdapter', () => {
       success: 'Clear decision',
       constraints: 'One day',
       monitoringCadence: 'daily',
+      connectionId: 'cluster-mini',
     });
     const updated = await service.updateCampaign('research/council-human-v1', {
       name: 'Updated Name',
@@ -1451,7 +1515,7 @@ describe('buildResearchHttpAdapter', () => {
     });
     await service.deleteCampaign('research/council-human-v1');
 
-    expect(client.post).toHaveBeenCalledWith('/campaigns', {
+    expect(client.post).toHaveBeenCalledWith('/research/campaigns', {
       question: 'Which rollout should we pick?',
       name: 'Council Human Research',
       workflowId: rawWorkflow.id,
@@ -1463,13 +1527,14 @@ describe('buildResearchHttpAdapter', () => {
       success: 'Clear decision',
       constraints: 'One day',
       monitoringCadence: 'daily',
+      connectionId: 'cluster-mini',
     });
-    expect(client.patch).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1', {
+    expect(client.patch).toHaveBeenCalledWith('/research/campaigns/research%2Fcouncil-human-v1', {
       name: 'Updated Name',
       status: 'complete',
       metadata: { approved: true },
     });
-    expect(client.delete).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1');
+    expect(client.delete).toHaveBeenCalledWith('/research/campaigns/research%2Fcouncil-human-v1');
     expect(updated.status).toBe('complete');
   });
 
@@ -1487,7 +1552,9 @@ describe('buildResearchHttpAdapter', () => {
       'research/council-human-v1',
     );
 
-    expect(client.get).toHaveBeenCalledWith('/campaigns/research%2Fcouncil-human-v1/artifacts');
+    expect(client.get).toHaveBeenCalledWith(
+      '/research/campaigns/research%2Fcouncil-human-v1/artifacts',
+    );
     expect(artifact).toEqual({
       path: 'notes/scratch.md',
       title: 'Scratch Notes',
@@ -1514,7 +1581,7 @@ describe('buildResearchHttpAdapter', () => {
 
     expect(client.get).toHaveBeenNthCalledWith(
       1,
-      '/campaigns/research%2Fcouncil-human-v1/artifact?path=reports%2Ffinal.md',
+      '/research/campaigns/research%2Fcouncil-human-v1/artifact?path=reports%2Ffinal.md',
     );
     expect(found?.content).toBe('# Final Report');
     expect(missing).toBeNull();

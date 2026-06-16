@@ -117,4 +117,4 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert "/api/v1/tracker/issues" in paths
         assert "/api/v1/tracker/repo-mappings" in paths
         assert "/api/v1/niuu/instances" not in paths
-        assert "/api/v1/niuu/volundr/sessions" not in paths
+        assert "/api/v1/forge/sessions" not in paths

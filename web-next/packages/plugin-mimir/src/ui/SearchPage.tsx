@@ -49,12 +49,17 @@ function highlightText(text: string, query: string): React.ReactNode {
 // SearchPage — matches web2 mimir/design/views.jsx SearchView layout
 // ---------------------------------------------------------------------------
 
-export function SearchPage() {
+export interface SearchPageProps {
+  /** Start with the retrieval-workbench debug toggle enabled. */
+  initialDebug?: boolean;
+}
+
+export function SearchPage({ initialDebug = false }: SearchPageProps = {}) {
   const navigate = useNavigate();
   const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
-  const { query, mode, setQuery, setMode, results, isLoading, isError, error } =
-    useSearch(mountName);
+  const { query, mode, debug, setQuery, setMode, setDebug, results, isLoading, isError, error } =
+    useSearch(mountName, initialDebug);
   const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;
   const placeholder =
     activeMount === 'all' ? 'Search pages across all mounts…' : `Search pages in ${activeMount}…`;
@@ -103,6 +108,21 @@ export function SearchPage() {
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          className={[
+            'niuu:px-2.5 niuu:py-1 niuu:rounded-sm niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-wider niuu:cursor-pointer niuu:border niuu:border-solid niuu:transition-colors',
+            debug
+              ? 'niuu:bg-bg-elevated niuu:text-brand-300 niuu:border-border'
+              : 'niuu:bg-bg-tertiary niuu:text-text-muted niuu:border-border-subtle niuu:hover:text-text-secondary',
+          ].join(' ')}
+          onClick={() => setDebug(!debug)}
+          aria-pressed={debug}
+          data-testid="debug-toggle"
+        >
+          debug
+        </button>
         <div className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-0.5">
           <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
             {results.length} results
@@ -152,7 +172,7 @@ export function SearchPage() {
                 <span className="niuu:font-medium niuu:text-sm niuu:text-text-primary niuu:flex-1">
                   {highlightText(result.title, query)}
                 </span>
-                {result.score !== undefined && (
+                {typeof result.score === 'number' && (
                   <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint niuu:shrink-0">
                     score {result.score.toFixed(2)}
                   </span>
@@ -187,6 +207,22 @@ export function SearchPage() {
                   </span>
                 ))}
               </div>
+
+              {/* Debug: per-factor score breakdown */}
+              {debug && result.scoreBreakdown && (
+                <div
+                  className="niuu:flex niuu:items-center niuu:flex-wrap niuu:gap-1 niuu:mt-1.5"
+                  data-testid="score-breakdown"
+                  aria-label={`Score breakdown for ${result.path}`}
+                >
+                  {Object.entries(result.scoreBreakdown).map(([factor, value]) => (
+                    <span key={factor} className={`mm-chip${factor === 'final' ? ' accent' : ''}`}>
+                      <span className="mm-chip-k">{factor}</span>{' '}
+                      {typeof value === 'number' ? value.toFixed(2) : '—'}
+                    </span>
+                  ))}
+                </div>
+              )}
             </button>
           ))}
         </div>

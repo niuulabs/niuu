@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from ting.config import Settings
+from ting.config import AuthConfig, Settings
 from ting.main import create_app
 
 
@@ -23,7 +23,7 @@ def _database_pool_stub(pool):
 @pytest.fixture
 def app():
     """Create app instance."""
-    return create_app(Settings())
+    return create_app(Settings(auth=AuthConfig(allow_anonymous_dev=True)))
 
 
 @pytest.fixture

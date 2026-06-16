@@ -21,8 +21,8 @@ import type {
   CIStatusValue,
   McpServer,
   McpServerConfig,
-  VolundrPreset,
-  VolundrTemplate,
+  VolundrLaunchSpec,
+  LaunchScope,
   TrackerIssue,
   ProjectRepoMapping,
   VolundrIdentity,
@@ -53,6 +53,7 @@ import type {
   VolundrWorkflowGate,
   VolundrSessionTrace,
   VolundrSessionTraceSummary,
+  ExternalSession,
 } from '../models/volundr.model';
 
 export interface VolundrConversationTurn {
@@ -123,18 +124,13 @@ export interface IVolundrService {
   /** Subscribe to live stats updates via SSE. Returns an unsubscribe function. */
   subscribeStats(callback: (stats: VolundrStats) => void): () => void;
 
-  // Templates
-  getTemplates(): Promise<VolundrTemplate[]>;
-  getTemplate(name: string): Promise<VolundrTemplate | null>;
-  saveTemplate(template: VolundrTemplate): Promise<VolundrTemplate>;
-
-  // Presets
-  getPresets(): Promise<VolundrPreset[]>;
-  getPreset(id: string): Promise<VolundrPreset | null>;
-  savePreset(
-    preset: Omit<VolundrPreset, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
-  ): Promise<VolundrPreset>;
-  deletePreset(id: string): Promise<void>;
+  // Launch specs (scope = system | user)
+  getLaunchSpecs(scope?: LaunchScope): Promise<VolundrLaunchSpec[]>;
+  getLaunchSpec(ref: string): Promise<VolundrLaunchSpec | null>;
+  saveLaunchSpec(
+    spec: Omit<VolundrLaunchSpec, 'id' | 'scope' | 'createdAt' | 'updatedAt'> & { id?: string },
+  ): Promise<VolundrLaunchSpec>;
+  deleteLaunchSpec(id: string): Promise<void>;
 
   // Cluster resources
   getAvailableMcpServers(): Promise<McpServerConfig[]>;
@@ -150,13 +146,15 @@ export interface IVolundrService {
     name: string;
     source: SessionSource;
     model: string;
-    templateName?: string;
-    presetId?: string;
+    launchSpec?: string;
+    launchSpecId?: string;
     definition?: string;
     taskType?: string;
     trackerIssue?: TrackerIssue;
     terminalRestricted?: boolean;
     instanceId?: string | null;
+    targetTags?: string[];
+    targetMatch?: 'all' | 'any';
     workspaceId?: string;
     credentialNames?: string[];
     integrationIds?: string[];
@@ -181,6 +179,16 @@ export interface IVolundrService {
   archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
   listArchivedSessions(): Promise<VolundrSession[]>;
+
+  // External CLI sessions (Claude Code / Codex discovered on the host).
+  // listExternalSessions rejects with a 503-status error when discovery is
+  // not enabled on the server — callers treat that as "feature unavailable".
+  listExternalSessions(): Promise<ExternalSession[]>;
+  importExternalSession(
+    provider: string,
+    externalId: string,
+    name?: string,
+  ): Promise<VolundrSession>;
 
   // Messaging
   getConversationHistory(sessionId: string): Promise<VolundrConversationHistory>;

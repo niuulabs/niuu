@@ -16,6 +16,36 @@ from ravn.cli.commands import _resolve_transport_kwargs
 from ravn.config import Settings
 
 
+def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "servers": servers or ["nats://localhost:4222"],
+        "stream_name": "ravn_environment",
+        "jetstream_domain": "",
+        "subject_prefix": "ravn.environment",
+        "retention": "limits",
+        "max_age_seconds": 604800,
+        "max_bytes": 1073741824,
+        "ring_buffer_depth": 1000,
+        "connect_timeout_s": 10.0,
+        "max_reconnect_attempts": 60,
+        "ensure_stream": True,
+        "publish_timeout_s": 10.0,
+        "tls_ca_file": "",
+        "tls_cert_file": "",
+        "tls_key_file": "",
+        "tls_hostname": "",
+        "tls_handshake_first": False,
+        "tls_insecure_skip_verify": False,
+        "user": "",
+        "password": "",
+        "token": "",
+        "nkeys_seed_file": "",
+        "nkeys_seed": "",
+        "extra_subscriptions": [],
+        "core_subscriptions": [],
+    }
+
+
 def _make_settings(**overrides: Any) -> Settings:
     """Create a minimal Settings with sensible defaults for transport tests."""
     s = Settings()
@@ -79,13 +109,75 @@ class TestResolveTransportKwargs:
         settings = _make_settings()
         with patch.dict("os.environ", {"NATS_URL": "nats://custom:4222"}):
             kwargs = _resolve_transport_kwargs(settings, "nats")
-        assert kwargs == {"servers": ["nats://custom:4222"]}
+        assert kwargs == _default_nats_kwargs(["nats://custom:4222"])
 
     def test_nats_kwargs_default(self):
         settings = _make_settings()
         with patch.dict("os.environ", {}, clear=True):
             kwargs = _resolve_transport_kwargs(settings, "nats")
-        assert kwargs == {"servers": ["nats://localhost:4222"]}
+        assert kwargs == _default_nats_kwargs()
+
+    def test_nats_kwargs_supports_multiple_servers_and_replay(self):
+        settings = _make_settings(
+            **{
+                "mesh.nats.servers_env": "VALKYRIE_NATS_URLS",
+                "mesh.nats.stream_name": "valkyrie_signals",
+                "mesh.nats.subject_prefix": "odin.valkyrie",
+                "mesh.nats.consumer_group": "k8s-watchers",
+                "mesh.nats.replay_from_sequence": 42,
+                "mesh.nats.ring_buffer_depth": 2048,
+            }
+        )
+        with patch.dict(
+            "os.environ",
+            {"VALKYRIE_NATS_URLS": "nats://a:4222, nats://b:4222"},
+            clear=True,
+        ):
+            kwargs = _resolve_transport_kwargs(settings, "nats")
+        assert kwargs == {
+            **_default_nats_kwargs(["nats://a:4222", "nats://b:4222"]),
+            "stream_name": "valkyrie_signals",
+            "subject_prefix": "odin.valkyrie",
+            "consumer_group": "k8s-watchers",
+            "replay_from_sequence": 42,
+            "ring_buffer_depth": 2048,
+        }
+
+    def test_nats_kwargs_supports_gitops_managed_tls_and_auth(self):
+        settings = _make_settings(
+            **{
+                "mesh.nats.servers_env": "VALKYRIE_NATS_URL",
+                "mesh.nats.ensure_stream": False,
+                "mesh.nats.tls_ca_file": "/etc/nats/ca.crt",
+                "mesh.nats.tls_hostname": "nats-valhalla.nats.svc.cluster.local",
+                "mesh.nats.tls_handshake_first": True,
+                "mesh.nats.tls_insecure_skip_verify": True,
+                "mesh.nats.user": "valkyrie-valhalla",
+                "mesh.nats.password_env": "VALKYRIE_NATS_PASSWORD",
+                "mesh.nats.nkeys_seed_file": "/etc/nats/user.nk",
+            }
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "VALKYRIE_NATS_URL": "tls://nats-valhalla.nats.svc.cluster.local:4222",
+                "VALKYRIE_NATS_PASSWORD": "secret",
+            },
+            clear=True,
+        ):
+            kwargs = _resolve_transport_kwargs(settings, "nats")
+
+        assert kwargs == {
+            **_default_nats_kwargs(["tls://nats-valhalla.nats.svc.cluster.local:4222"]),
+            "ensure_stream": False,
+            "tls_ca_file": "/etc/nats/ca.crt",
+            "tls_hostname": "nats-valhalla.nats.svc.cluster.local",
+            "tls_handshake_first": True,
+            "tls_insecure_skip_verify": True,
+            "user": "valkyrie-valhalla",
+            "password": "secret",
+            "nkeys_seed_file": "/etc/nats/user.nk",
+        }
 
     def test_redis_kwargs(self):
         settings = _make_settings()

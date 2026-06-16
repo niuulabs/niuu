@@ -54,7 +54,7 @@ const ALL_CATEGORIES: EntityCategory[] = [
 ];
 
 const INPUT_CLS =
-  'niuu:w-full niuu:px-3 niuu:py-2 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu-box-border';
+  'niuu:w-full niuu:px-3 niuu:py-2 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu:box-border';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -811,7 +811,7 @@ function RegistryEditorInner({
                 placeholder="filter types…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="niuu:h-8 niuu:px-3 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu-box-border"
+                className="niuu:h-8 niuu:px-3 niuu:bg-bg-tertiary niuu:border niuu:border-border niuu:rounded-sm niuu:text-text-primary niuu:text-sm niuu:font-sans niuu:box-border"
                 style={{ width: 220 }}
               />
               <button

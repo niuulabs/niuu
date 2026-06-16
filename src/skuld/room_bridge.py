@@ -18,14 +18,17 @@ Wire events emitted to browsers:
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
@@ -52,6 +55,52 @@ _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "decision": "thinking",
 }
 
+HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
+    {"observer", "teacher", "approver", "debugger", "owner"}
+)
+
+HUMAN_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "observer": ("view", "reply"),
+    "teacher": ("view", "reply", "teach", "correct"),
+    "approver": ("view", "reply", "approve", "authorize_action"),
+    "debugger": ("view", "reply", "debug", "teach", "correct"),
+    "owner": (
+        "view",
+        "reply",
+        "approve",
+        "teach",
+        "correct",
+        "debug",
+        "change_autonomy",
+        "authorize_action",
+    ),
+}
+
+#: Capability verbs that only make sense when the Environment declares action
+#: capabilities requiring human or court review.
+_APPROVAL_CAPABILITIES: frozenset[str] = frozenset({"approve", "authorize_action"})
+
+#: Environment action authorities that imply something can be approved.
+_REVIEWABLE_AUTHORITIES: frozenset[str] = frozenset({"court_required", "human_review_required"})
+
+
+def _effective_role_capabilities(
+    role: str,
+    *,
+    environment_action_authorities: list[str] | None,
+) -> tuple[str, ...]:
+    """Intersect static role grants with what the Environment declares.
+
+    Approval verbs are stripped when the Environment has no action capability
+    requiring review — a human cannot authorize actions that do not exist.
+    """
+    grants = HUMAN_ROLE_CAPABILITIES[role]
+    if environment_action_authorities is None:
+        return grants
+    if _REVIEWABLE_AUTHORITIES & set(environment_action_authorities):
+        return grants
+    return tuple(grant for grant in grants if grant not in _APPROVAL_CAPABILITIES)
+
 
 class RoomBridge:
     """Bridges Ravn WebSocket connections into the multi-agent room.
@@ -72,18 +121,96 @@ class RoomBridge:
         append_turn: Callable[[Any], None] | None = None,
         report_timeline_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         observe_peer_event: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None,
+        publish_presence_event: Callable[[Any], Awaitable[None]] | None = None,
+        environment_id: str | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._config = config
         self._channels = channels
         self._append_turn = append_turn
         self._report_timeline_event = report_timeline_event
         self._observe_peer_event = observe_peer_event
+        self._publish_presence_event = publish_presence_event
+        self._environment_id = environment_id or os.environ.get("RAVN_ENVIRONMENT_ID", "local")
+        self._clock = clock or time.time
         self._participants: dict[str, ParticipantMeta] = {}
         self._websockets: dict[str, WebSocket] = {}
         self._pending_help_context: dict[str, dict[str, Any]] = {}
+        self._room_event_log: dict[str, list[dict[str, Any]]] = {}
+        self._room_context_snapshots: dict[str, dict[str, Any]] = {}
+        self._room_sequence = 0
         self._color_cycle = itertools.cycle(list(config.participant_colors))
         self._timeline_started_at = time.monotonic()
         self._known_files: set[str] = set()
+        self._presence_sweep_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    # Presence sweep — evict participants whose heartbeats expired
+    # ------------------------------------------------------------------
+
+    def start_presence_sweep(self) -> None:
+        """Run the heartbeat-expiry sweep on the configured interval."""
+        interval = getattr(self._config, "presence_sweep_interval_s", 0.0)
+        if interval <= 0 or self._presence_sweep_task is not None:
+            return
+        self._presence_sweep_task = asyncio.create_task(
+            self._presence_sweep_loop(interval), name="room_presence_sweep"
+        )
+
+    async def stop_presence_sweep(self) -> None:
+        if self._presence_sweep_task is None:
+            return
+        self._presence_sweep_task.cancel()
+        await asyncio.gather(self._presence_sweep_task, return_exceptions=True)
+        self._presence_sweep_task = None
+
+    async def _presence_sweep_loop(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.sweep_expired_participants()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("RoomBridge: presence sweep failed")
+
+    async def sweep_expired_participants(self) -> list[str]:
+        """Evict participants whose heartbeat TTL has lapsed.
+
+        Participants with a live WebSocket are never evicted — an open
+        connection is stronger evidence of liveness than an application-level
+        heartbeat. Each eviction broadcasts ``participant_left`` with the
+        ``heartbeat_timeout`` reason so rosters and escalation decisions stop
+        counting on a peer that is gone.
+        """
+        now = self._clock()
+        expired = [
+            peer_id
+            for peer_id, meta in self._participants.items()
+            if peer_id not in self._websockets and self._heartbeat_expired(meta, now)
+        ]
+        for peer_id in expired:
+            meta = self._participants.pop(peer_id)
+            logger.warning(
+                "RoomBridge: evicting participant %s after heartbeat timeout (ttl=%ss)",
+                peer_id,
+                meta.heartbeat_ttl_s,
+            )
+            await self._channels.broadcast(
+                {
+                    "type": "participant_left",
+                    "participantId": peer_id,
+                    "reason": "heartbeat_timeout",
+                }
+            )
+            await self._publish_participant_left(meta, reason="heartbeat_timeout")
+        return expired
+
+    @staticmethod
+    def _heartbeat_expired(meta: ParticipantMeta, now: float) -> bool:
+        if meta.last_heartbeat_at is None or meta.heartbeat_ttl_s <= 0:
+            return False
+        return now - meta.last_heartbeat_at > meta.heartbeat_ttl_s
 
     # ------------------------------------------------------------------
     # Participant management
@@ -99,6 +226,15 @@ class RoomBridge:
         subscribes_to: list[str] | None = None,
         emits: list[str] | None = None,
         tools: list[str] | None = None,
+        environment_id: str | None = None,
+        participant_kind: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        wakefulness: str = "unknown",
+        attention_state: str = "available",
+        heartbeat_ttl_s: float = 90.0,
+        authority_role: str = "",
+        room_ids: list[str] | None = None,
     ) -> ParticipantMeta:
         """Register a new Ravn participant and broadcast ``participant_joined``.
 
@@ -108,6 +244,11 @@ class RoomBridge:
         subs = tuple(subscribes_to or ())
         emit_types = tuple(emits or ())
         tool_names = tuple(tools or ())
+        capability_names = tuple(capabilities or tools or ())
+        surface_names = tuple(surfaces or ())
+        room_membership = tuple(room_ids or ())
+        effective_environment_id = environment_id or self._environment_id
+        effective_kind = participant_kind or "ravn"
 
         if peer_id not in self._participants:
             color = next(self._color_cycle)
@@ -121,20 +262,37 @@ class RoomBridge:
                 emits=emit_types,
                 tools=tool_names,
                 status="idle",
+                environment_id=effective_environment_id,
+                participant_kind=effective_kind,
+                capabilities=capability_names,
+                surfaces=surface_names,
+                wakefulness=wakefulness,
+                attention_state=attention_state,
+                heartbeat_ttl_s=heartbeat_ttl_s,
+                last_heartbeat_at=self._clock(),
+                authority_role=authority_role,
+                room_ids=room_membership,
             )
             self._participants[peer_id] = meta
         else:
             old = self._participants[peer_id]
-            meta = ParticipantMeta(
-                peer_id=peer_id,
+            meta = replace(
+                old,
                 persona=persona,
-                color=old.color,
-                participant_type=old.participant_type,
                 display_name=display_name or old.display_name,
                 subscribes_to=subs or old.subscribes_to,
                 emits=emit_types or old.emits,
                 tools=tool_names or old.tools,
-                status=old.status,
+                environment_id=effective_environment_id or old.environment_id,
+                participant_kind=participant_kind or old.participant_kind,
+                capabilities=capability_names or old.capabilities,
+                surfaces=surface_names or old.surfaces,
+                wakefulness=wakefulness if wakefulness != "unknown" else old.wakefulness,
+                attention_state=attention_state or old.attention_state,
+                heartbeat_ttl_s=heartbeat_ttl_s or old.heartbeat_ttl_s,
+                last_heartbeat_at=self._clock(),
+                authority_role=authority_role or old.authority_role,
+                room_ids=room_membership or old.room_ids,
             )
             self._participants[peer_id] = meta
 
@@ -142,6 +300,7 @@ class RoomBridge:
         logger.info("RoomBridge: participant registered peer_id=%s persona=%s", peer_id, persona)
 
         await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
         return meta
 
     async def register_mesh_peer(
@@ -154,6 +313,15 @@ class RoomBridge:
         emits: list[str] | None = None,
         tools: list[str] | None = None,
         participant_type: str = "ravn",
+        environment_id: str | None = None,
+        participant_kind: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        wakefulness: str = "watching",
+        attention_state: str = "available",
+        heartbeat_ttl_s: float = 90.0,
+        authority_role: str = "",
+        room_ids: list[str] | None = None,
     ) -> ParticipantMeta:
         """Register a mesh-discovered peer (no WebSocket connection).
 
@@ -174,21 +342,600 @@ class RoomBridge:
             emits=tuple(emits or ()),
             tools=tuple(tools or ()),
             status="idle",
+            environment_id=environment_id or self._environment_id,
+            participant_kind=participant_kind or participant_type,
+            capabilities=tuple(capabilities or tools or ()),
+            surfaces=tuple(surfaces or ()),
+            wakefulness=wakefulness,
+            attention_state=attention_state,
+            heartbeat_ttl_s=heartbeat_ttl_s,
+            last_heartbeat_at=self._clock(),
+            authority_role=authority_role,
+            room_ids=tuple(room_ids or ()),
         )
         self._participants[peer_id] = meta
         logger.info("RoomBridge: mesh peer registered peer_id=%s persona=%s", peer_id, persona)
 
         await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
         return meta
+
+    async def join_human_environment(
+        self,
+        participant_id: str,
+        *,
+        display_name: str,
+        environment_id: str,
+        role: str = "observer",
+        room_id: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        heartbeat_ttl_s: float = 300.0,
+        environment_action_authorities: list[str] | None = None,
+    ) -> ParticipantMeta:
+        """Register or update a human participant inside a live Environment.
+
+        ``environment_action_authorities`` is the set of authority levels the
+        Environment declares on its action capabilities (for example
+        ``["autonomous", "court_required"]`` from
+        ``Environment.action_capabilities[].authority``). When provided, role
+        grants are intersected with what the Environment actually supports: an
+        approver in an Environment with nothing to approve gets no approval
+        powers. When omitted (legacy callers) the static role grants apply.
+        """
+        participant_id = participant_id.strip()
+        if not participant_id:
+            raise ValueError("participant_id is required")
+        if not environment_id.strip():
+            raise ValueError("environment_id is required")
+        role = role.strip() or "observer"
+        if role not in HUMAN_ENVIRONMENT_ROLES:
+            raise PermissionError(f"Unknown Environment role: {role}")
+
+        role_capabilities = _effective_role_capabilities(
+            role,
+            environment_action_authorities=environment_action_authorities,
+        )
+        requested_capabilities = tuple(capabilities or role_capabilities)
+        disallowed = sorted(set(requested_capabilities) - set(role_capabilities))
+        if disallowed:
+            raise PermissionError(f"Role {role} cannot claim capabilities: {', '.join(disallowed)}")
+
+        room_membership = tuple(room_id for room_id in [room_id] if room_id)
+        if participant_id in self._participants:
+            old = self._participants[participant_id]
+            color = old.color
+            existing_rooms = tuple(dict.fromkeys([*old.room_ids, *room_membership]))
+        else:
+            color = next(self._color_cycle)
+            existing_rooms = room_membership
+
+        meta = ParticipantMeta(
+            peer_id=participant_id,
+            persona=display_name or participant_id,
+            color=color,
+            participant_type="human",
+            display_name=display_name or participant_id,
+            subscribes_to=("room.message", "room.direct", "participant.*"),
+            emits=("room.message", "room.direct", "feedback.recorded"),
+            tools=(),
+            status="idle",
+            environment_id=environment_id,
+            participant_kind="human",
+            capabilities=requested_capabilities,
+            surfaces=tuple(surfaces or ("skuld.room",)),
+            wakefulness="wakeful",
+            attention_state="available",
+            heartbeat_ttl_s=heartbeat_ttl_s,
+            last_heartbeat_at=self._clock(),
+            authority_role=role,
+            room_ids=existing_rooms,
+        )
+        self._participants[participant_id] = meta
+        await self._channels.broadcast({"type": "participant_joined", "participant": asdict(meta)})
+        await self._publish_participant_joined(meta)
+        return meta
+
+    async def leave_human_environment(
+        self,
+        participant_id: str,
+        *,
+        reason: str = "left",
+    ) -> None:
+        """Remove a human participant from an Environment huddle."""
+        meta = self._participants.get(participant_id)
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        if meta.participant_type != "human":
+            raise PermissionError(f"Participant is not human: {participant_id}")
+        self._participants.pop(participant_id, None)
+        await self._channels.broadcast(
+            {"type": "participant_left", "participantId": participant_id}
+        )
+        await self._publish_participant_left(meta, reason=reason)
+
+    def require_participant_capability(self, participant_id: str, capability: str) -> None:
+        """Raise if a participant is missing a control capability."""
+        meta = self._participants.get(participant_id)
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        if capability not in meta.capabilities:
+            raise PermissionError(f"Participant {participant_id} lacks capability: {capability}")
+
+    # ------------------------------------------------------------------
+    # Environment huddles and replay
+    # ------------------------------------------------------------------
+
+    async def open_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        purpose: str,
+        environment_id: str | None = None,
+        root_correlation_id: str = "",
+        active_state: dict[str, Any] | None = None,
+        signal_refs: list[str] | None = None,
+        judgment_refs: list[str] | None = None,
+        action_refs: list[str] | None = None,
+        transcript_targets: list[str] | None = None,
+        participants: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Open a replayable huddle scoped to an Environment."""
+        environment = environment_id or self._environment_id
+        participant_ids = participants or [
+            meta.peer_id
+            for meta in self._participants.values()
+            if (meta.environment_id or self._environment_id) == environment
+        ]
+        opened = {
+            "type": "room_opened",
+            "roomId": room_id,
+            "environmentId": environment,
+            "purpose": purpose,
+            "participants": participant_ids,
+        }
+        await self._channels.broadcast(opened)
+        await self._publish_room_opened(environment, room_id, purpose, participant_ids)
+        self._append_huddle_event(room_id, opened)
+        await self.record_huddle_context_snapshot(
+            room_id=room_id,
+            environment_id=environment,
+            root_correlation_id=root_correlation_id or room_id,
+            active_state=active_state or {},
+            signal_refs=signal_refs or [],
+            judgment_refs=judgment_refs or [],
+            action_refs=action_refs or [],
+            transcript_targets=transcript_targets or ["mimir"],
+            participant_ids=participant_ids,
+        )
+        return opened
+
+    async def record_huddle_context_snapshot(
+        self,
+        *,
+        room_id: str,
+        environment_id: str,
+        root_correlation_id: str,
+        active_state: dict[str, Any],
+        signal_refs: list[str],
+        judgment_refs: list[str],
+        action_refs: list[str],
+        participant_ids: list[str],
+        transcript_targets: list[str],
+    ) -> dict[str, Any]:
+        """Record current huddle context for late-join replay."""
+        snapshot = {
+            "type": "room_context_snapshot",
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "rootCorrelationId": root_correlation_id,
+            "activeState": dict(active_state),
+            "signalRefs": list(signal_refs),
+            "judgmentRefs": list(judgment_refs),
+            "actionRefs": list(action_refs),
+            "participantIds": list(participant_ids),
+            "transcriptTargets": list(transcript_targets),
+        }
+        self._room_context_snapshots[room_id] = snapshot
+        self._append_huddle_event(room_id, snapshot)
+        await self._publish_room_context_snapshot(snapshot)
+        return snapshot
+
+    async def record_huddle_message(
+        self,
+        *,
+        room_id: str,
+        environment_id: str,
+        message_id: str,
+        participant_id: str,
+        role: str,
+        content: str,
+        visibility: str = "public",
+        thread_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append a room message to replay state and publish the canonical event."""
+        message = {
+            "type": "room_message",
+            "id": message_id,
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "participantId": participant_id,
+            "role": role,
+            "content": content,
+            "visibility": visibility,
+            "threadId": thread_id,
+            "metadata": metadata or {},
+        }
+        self._append_huddle_event(room_id, message)
+        await self._publish_room_message_recorded(message)
+        return message
+
+    def replay_huddle(self, room_id: str, *, from_sequence: int = 0) -> list[dict[str, Any]]:
+        """Return ordered huddle events after *from_sequence* for late joiners."""
+        return [
+            dict(event)
+            for event in self._room_event_log.get(room_id, [])
+            if int(event.get("sequence", 0)) > from_sequence
+        ]
+
+    def _append_huddle_event(self, room_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        self._room_sequence += 1
+        stored = {
+            "sequence": self._room_sequence,
+            "recordedAt": datetime.now(UTC).isoformat(),
+            **event,
+        }
+        self._room_event_log.setdefault(room_id, []).append(stored)
+        return stored
+
+    def build_huddle_transcript(self, room_id: str) -> str:
+        """Render a Markdown transcript from recorded huddle messages."""
+        lines = [f"# Huddle Transcript: {room_id}", ""]
+        snapshot = self._room_context_snapshots.get(room_id)
+        if snapshot:
+            lines.extend(
+                [
+                    f"- Environment: {snapshot.get('environmentId', '')}",
+                    f"- Root correlation: {snapshot.get('rootCorrelationId', '')}",
+                    "",
+                ]
+            )
+        for event in self._room_event_log.get(room_id, []):
+            if event.get("type") != "room_message":
+                continue
+            participant = event.get("participantId", "")
+            content = str(event.get("content", "")).strip()
+            if not content:
+                continue
+            lines.append(f"## {participant}")
+            lines.append(content)
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
+
+    async def close_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        reason: str = "closed",
+        summary: str = "",
+    ) -> dict[str, Any]:
+        """Close a replayable huddle, publishing its transcript and terminal event.
+
+        The rendered transcript travels in the ``room.transcript.recorded``
+        payload so any Mimir-holding consumer (the resident Ravn daemon's
+        transcript archiver) can persist it — the broker itself has no Mimir
+        access.
+        """
+        snapshot = self._room_context_snapshots.get(room_id, {})
+        environment_id = str(snapshot.get("environmentId") or self._environment_id)
+        transcript_ref = f"huddles/{environment_id}/{room_id}.md"
+        content = self.build_huddle_transcript(room_id)
+        message_refs = [
+            str(event.get("id"))
+            for event in self._room_event_log.get(room_id, [])
+            if event.get("type") == "room_message" and event.get("id")
+        ]
+        await self._publish_room_transcript_recorded(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_ref,
+            message_refs=message_refs,
+            summary=summary or f"{len(message_refs)} huddle messages recorded",
+            transcript_content=content,
+        )
+        closed = {
+            "type": "room_closed",
+            "roomId": room_id,
+            "environmentId": environment_id,
+            "reason": reason,
+            "transcriptRef": transcript_ref,
+        }
+        self._append_huddle_event(room_id, closed)
+        await self._channels.broadcast(closed)
+        await self._publish_room_closed(
+            environment_id=environment_id,
+            room_id=room_id,
+            reason=reason,
+            transcript_ref=transcript_ref,
+        )
+        return closed
 
     async def unregister(self, peer_id: str) -> None:
         """Remove a participant and broadcast ``participant_left``."""
-        self._participants.pop(peer_id, None)
+        meta = self._participants.pop(peer_id, None)
         self._websockets.pop(peer_id, None)
         self._pending_help_context.pop(peer_id, None)
         logger.info("RoomBridge: participant unregistered peer_id=%s", peer_id)
 
         await self._channels.broadcast({"type": "participant_left", "participantId": peer_id})
+        if meta is not None:
+            await self._publish_participant_left(meta, reason="left")
+
+    async def heartbeat(
+        self,
+        peer_id: str,
+        *,
+        status: str | None = None,
+        wakefulness: str | None = None,
+        attention_state: str | None = None,
+    ) -> ParticipantMeta | None:
+        """Record a participant heartbeat and publish canonical presence."""
+        meta = self._participants.get(peer_id)
+        if meta is None:
+            return None
+        updated = replace(
+            meta,
+            status=status or meta.status,
+            wakefulness=wakefulness or meta.wakefulness,
+            attention_state=attention_state or meta.attention_state,
+            last_heartbeat_at=self._clock(),
+        )
+        self._participants[peer_id] = updated
+        await self._channels.broadcast(
+            {
+                "type": "participant_heartbeat",
+                "participantId": peer_id,
+                "participant": asdict(updated),
+            }
+        )
+        await self._publish_participant_heartbeat(updated)
+        return updated
+
+    async def update_participant_capabilities(
+        self,
+        peer_id: str,
+        *,
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        tools: list[str] | None = None,
+    ) -> ParticipantMeta | None:
+        """Update capabilities/tools/surfaces on the existing participant model."""
+        meta = self._participants.get(peer_id)
+        if meta is None:
+            return None
+        updated = replace(
+            meta,
+            capabilities=tuple(capabilities) if capabilities is not None else meta.capabilities,
+            surfaces=tuple(surfaces) if surfaces is not None else meta.surfaces,
+            tools=tuple(tools) if tools is not None else meta.tools,
+            last_heartbeat_at=self._clock(),
+        )
+        self._participants[peer_id] = updated
+        await self._channels.broadcast(
+            {
+                "type": "participant_capabilities_changed",
+                "participantId": peer_id,
+                "participant": asdict(updated),
+            }
+        )
+        await self._publish_participant_capabilities_changed(updated)
+        return updated
+
+    async def expire_heartbeats(self, *, now: float | None = None) -> list[ParticipantMeta]:
+        """Mark participants whose heartbeat TTL has elapsed as expired."""
+        now_ts = self._clock() if now is None else now
+        expired: list[ParticipantMeta] = []
+        for peer_id, meta in list(self._participants.items()):
+            if meta.last_heartbeat_at is None or meta.status == "expired":
+                continue
+            if now_ts - meta.last_heartbeat_at <= meta.heartbeat_ttl_s:
+                continue
+            updated = replace(meta, status="expired", attention_state="offline")
+            self._participants[peer_id] = updated
+            expired.append(updated)
+            await self._channels.broadcast(
+                {
+                    "type": "participant_heartbeat_expired",
+                    "participantId": peer_id,
+                    "participant": asdict(updated),
+                }
+            )
+            await self._publish_participant_heartbeat(updated)
+        return expired
+
+    async def _publish_participant_joined(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_joined
+
+        await self._publish_presence(
+            participant_joined(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                capabilities=list(meta.capabilities or meta.tools),
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_left(self, meta: ParticipantMeta, *, reason: str) -> None:
+        from sleipnir.domain.catalog import participant_left
+
+        await self._publish_presence(
+            participant_left(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                reason=reason,
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_heartbeat(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_heartbeat
+
+        await self._publish_presence(
+            participant_heartbeat(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                status=meta.status,
+                wakefulness=meta.wakefulness,
+                attention_state=meta.attention_state,
+                heartbeat_ttl_s=meta.heartbeat_ttl_s,
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_participant_capabilities_changed(self, meta: ParticipantMeta) -> None:
+        from sleipnir.domain.catalog import participant_capabilities_changed
+
+        await self._publish_presence(
+            participant_capabilities_changed(
+                environment_id=meta.environment_id or self._environment_id,
+                participant_id=meta.peer_id,
+                participant_type=meta.participant_kind or meta.participant_type,
+                display_name=meta.display_name or meta.persona,
+                capabilities=list(meta.capabilities),
+                surfaces=list(meta.surfaces),
+                tools=list(meta.tools),
+                source="skuld:room_bridge",
+                correlation_id=meta.environment_id or self._environment_id,
+            )
+        )
+
+    async def _publish_room_opened(
+        self,
+        environment_id: str,
+        room_id: str,
+        purpose: str,
+        participants: list[str],
+    ) -> None:
+        from sleipnir.domain.catalog import room_opened
+
+        await self._publish_presence(
+            room_opened(
+                environment_id=environment_id,
+                room_id=room_id,
+                purpose=purpose,
+                participants=participants,
+                source="skuld:room_bridge",
+                correlation_id=room_id,
+            )
+        )
+
+    async def _publish_room_context_snapshot(self, snapshot: dict[str, Any]) -> None:
+        from sleipnir.domain.catalog import room_context_snapshot_recorded
+
+        await self._publish_presence(
+            room_context_snapshot_recorded(
+                environment_id=str(snapshot.get("environmentId") or self._environment_id),
+                room_id=str(snapshot.get("roomId") or ""),
+                root_correlation_id=str(snapshot.get("rootCorrelationId") or ""),
+                active_state=dict(snapshot.get("activeState") or {}),
+                signal_refs=list(snapshot.get("signalRefs") or []),
+                judgment_refs=list(snapshot.get("judgmentRefs") or []),
+                action_refs=list(snapshot.get("actionRefs") or []),
+                participant_ids=list(snapshot.get("participantIds") or []),
+                transcript_targets=list(snapshot.get("transcriptTargets") or []),
+                source="skuld:room_bridge",
+                correlation_id=str(
+                    snapshot.get("rootCorrelationId") or snapshot.get("roomId") or ""
+                ),
+            )
+        )
+
+    async def _publish_room_message_recorded(self, message: dict[str, Any]) -> None:
+        from sleipnir.domain.catalog import room_message_recorded
+
+        await self._publish_presence(
+            room_message_recorded(
+                environment_id=str(message.get("environmentId") or self._environment_id),
+                room_id=str(message.get("roomId") or ""),
+                message_id=str(message.get("id") or ""),
+                participant_id=str(message.get("participantId") or ""),
+                role=str(message.get("role") or ""),
+                content=str(message.get("content") or ""),
+                visibility=str(message.get("visibility") or "public"),
+                thread_id=str(message.get("threadId") or ""),
+                metadata=dict(message.get("metadata") or {}),
+                source="skuld:room_bridge",
+                correlation_id=str(message.get("roomId") or ""),
+            )
+        )
+
+    async def _publish_room_transcript_recorded(
+        self,
+        *,
+        environment_id: str,
+        room_id: str,
+        transcript_ref: str,
+        message_refs: list[str],
+        summary: str,
+        transcript_content: str = "",
+    ) -> None:
+        from sleipnir.domain.catalog import room_transcript_recorded
+
+        event = room_transcript_recorded(
+            environment_id=environment_id,
+            room_id=room_id,
+            transcript_ref=transcript_ref,
+            message_refs=message_refs,
+            summary=summary,
+            source="skuld:room_bridge",
+            correlation_id=room_id,
+        )
+        if transcript_content:
+            event.payload["transcript_content"] = transcript_content
+        await self._publish_presence(event)
+
+    async def _publish_room_closed(
+        self,
+        *,
+        environment_id: str,
+        room_id: str,
+        reason: str,
+        transcript_ref: str,
+    ) -> None:
+        from sleipnir.domain.catalog import room_closed
+
+        await self._publish_presence(
+            room_closed(
+                environment_id=environment_id,
+                room_id=room_id,
+                reason=reason,
+                transcript_ref=transcript_ref,
+                source="skuld:room_bridge",
+                correlation_id=room_id,
+            )
+        )
+
+    async def _publish_presence(self, event: Any) -> None:
+        if self._publish_presence_event is None:
+            return
+        try:
+            await self._publish_presence_event(event)
+        except Exception:
+            logger.warning(
+                "RoomBridge: failed to publish presence event type=%s",
+                getattr(event, "event_type", "-"),
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Event translation
@@ -319,6 +1066,19 @@ class RoomBridge:
             )
             self._append_turn(turn)
 
+        for room_id in meta.room_ids:
+            await self.record_huddle_message(
+                room_id=room_id,
+                environment_id=meta.environment_id or self._environment_id,
+                message_id=msg_id,
+                participant_id=meta.peer_id,
+                role="assistant",
+                content=content,
+                visibility=room_event["visibility"],
+                thread_id=thread_id or "",
+                metadata=frame.get("metadata", {}),
+            )
+
     async def _handle_activity_frame(
         self,
         meta: ParticipantMeta,
@@ -326,17 +1086,10 @@ class RoomBridge:
         detail: Any,
     ) -> None:
         """Translate a thought/tool frame into a room_activity event."""
-        self._participants[meta.peer_id] = ParticipantMeta(
-            peer_id=meta.peer_id,
-            persona=meta.persona,
-            color=meta.color,
-            participant_type=meta.participant_type,
-            display_name=meta.display_name,
-            gateway_url=meta.gateway_url,
-            subscribes_to=meta.subscribes_to,
-            emits=meta.emits,
-            tools=meta.tools,
+        self._participants[meta.peer_id] = replace(
+            meta,
             status=activity_type,
+            last_heartbeat_at=self._clock(),
         )
         event: dict = {
             "type": "room_activity",
@@ -580,12 +1333,23 @@ class RoomBridge:
     # Room state
     # ------------------------------------------------------------------
 
-    def get_room_state_event(self) -> dict:
+    def get_room_state_event(self, *, environment_id: str | None = None) -> dict:
         """Return a ``room_state`` event with the current participant list."""
         return {
             "type": "room_state",
-            "participants": [asdict(p) for p in self._participants.values()],
+            "participants": self.environment_roster(environment_id=environment_id),
         }
+
+    def environment_roster(self, *, environment_id: str | None = None) -> list[dict[str, Any]]:
+        """Return current participants, optionally filtered to one Environment."""
+        participants = self._participants.values()
+        if environment_id is not None:
+            participants = [
+                meta
+                for meta in participants
+                if (meta.environment_id or self._environment_id) == environment_id
+            ]
+        return [asdict(p) for p in participants]
 
     @property
     def participant_count(self) -> int:

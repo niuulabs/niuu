@@ -7,17 +7,32 @@ falls back to allow-all with a default identity only when
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 from fastapi import HTTPException, Request, status
 
 from niuu.domain.models import Principal
+
+_current_bearer_token: ContextVar[str | None] = ContextVar(
+    "ting_current_bearer_token",
+    default=None,
+)
+
+
+def current_bearer_token() -> str | None:
+    """Return the bearer token for the current request context, if available."""
+    return _current_bearer_token.get()
 
 
 def extract_bearer_token(request: Request) -> str | None:
     """Extract Bearer token from the Authorization header, or None."""
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
+        _current_bearer_token.set(None)
         return None
-    return auth[7:]
+    token = auth[7:]
+    _current_bearer_token.set(token)
+    return token
 
 
 async def extract_principal(request: Request) -> Principal:
@@ -26,6 +41,7 @@ async def extract_principal(request: Request) -> Principal:
     When ``auth.allow_anonymous_dev`` is True in settings, missing headers fall
     back to a default developer identity. Otherwise returns 401.
     """
+    extract_bearer_token(request)
     user_id = request.headers.get("x-auth-user-id", "")
     if not user_id:
         settings = getattr(request.app.state, "settings", None)

@@ -230,9 +230,9 @@ Configuration for reporting token usage and session events back to the Volundr c
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `volundr.apiUrl` | string | `""` | URL of the Volundr API service (set by session definition). Skuld sends the user JWT for authentication |
-| `volundr.serviceUserId` | string | `"skuld-broker"` | Service identity for internal API calls (`x-auth-user-id` header) |
-| `volundr.serviceTenantId` | string | `"default"` | Tenant ID for internal API calls (`x-auth-tenant` header) |
+| `volundr.apiUrl` | string | `""` | Envoy-routed Volundr API origin for session event, trace, and usage reporting |
+| `volundr.serviceUserId` | string | `"skuld-broker"` | Service identity header for control-plane callbacks (`x-auth-user-id`) |
+| `volundr.serviceTenantId` | string | `"default"` | Tenant header for control-plane callbacks (`x-auth-tenant`) |
 
 ### Environment Variables
 

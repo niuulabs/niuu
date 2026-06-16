@@ -122,7 +122,7 @@ function CanvasWithOverlaysDemo() {
       </div>
 
       {/* Overlays */}
-      <ConnectionLegend />
+      <ConnectionLegend topology={topology} registry={registry ?? null} />
       <EventLog events={events} />
       <Minimap topology={topology} selectedNodeId={selectedNode?.id} />
       <EntityDrawer

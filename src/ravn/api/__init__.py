@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,8 +55,16 @@ from ravn.api.runtime_data import (
 from ravn.api.runtime_data import (
     list_triggers as list_runtime_triggers,
 )
+from ravn.api.valkyries import (
+    ValkyrieDashboardProjection,
+    build_nats_review_command_publisher_from_env,
+    build_nats_telemetry_subscription_from_env,
+    create_valkyrie_router,
+)
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.config import Settings
 from ravn.ports.warden_deployer import WardenDeploymentError
+from ravn.ports.warden_discovery import WardenDiscoveryPort
 from ravn.warden import (
     WardenConsoleConfig,
     WardenFeatures,
@@ -65,10 +74,16 @@ from ravn.warden import (
     build_warden_store,
     resolve_deployment_adapter,
 )
+from ravn.warden.discovery import build_warden_discovery
 from ravn.warden.observability import synthetic_warden_dream_logs
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from ravn.ports.persona import PersonaRegistryPort
+
+
+logger = logging.getLogger(__name__)
 
 
 class TriggerCreateRequest(BaseModel):
@@ -117,6 +132,8 @@ _LOG_LINE_RE = re.compile(
 def create_app(
     persona_loader: PersonaRegistryPort | None = None,
     warden_store: WardenStore | None = None,
+    settings: Settings | None = None,
+    warden_discovery: WardenDiscoveryPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -130,6 +147,11 @@ def create_app(
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
     store = warden_store or build_warden_store()
+    if warden_discovery is None:
+        loaded_settings = settings or Settings()
+        discovery = build_warden_discovery(loaded_settings.warden_discovery, store=store)
+    else:
+        discovery = warden_discovery
     stream_broker = WardenStreamBroker()
 
     async def publish_warden_update(event: str, warden: WardenSpec) -> None:
@@ -177,6 +199,30 @@ def create_app(
         merged = [entry for group in groups for entry in group]
         merged.sort(key=lambda entry: (_entry_sort_timestamp(entry.timestamp), entry.id))
         return merged[-limit:]
+
+    async def list_known_wardens() -> list[WardenSpec]:
+        return await discovery.list_wardens()
+
+    async def get_known_warden(warden_id: str) -> WardenSpec | None:
+        stored = store.get(warden_id)
+        if stored is not None:
+            return stored
+        for warden in await list_known_wardens():
+            if warden.id == warden_id:
+                return warden
+        return None
+
+    async def raise_discovery_managed_if_present(warden_id: str) -> None:
+        discovered = await get_known_warden(warden_id)
+        if discovered is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Warden not found",
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="Warden is discovery-managed; change it through its source of truth",
+        )
 
     def _entry_sort_timestamp(raw: str | None) -> datetime:
         if not raw:
@@ -270,8 +316,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
-        """List persisted wardens."""
-        return store.list()
+        """List known wardens from configured discovery adapters."""
+        return await list_known_wardens()
 
     @app.post("/api/v1/ravn/wardens", response_model=WardenSpec, status_code=201)
     async def create_warden_endpoint(body: WardenCreateRequest) -> WardenSpec:
@@ -304,8 +350,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens/{warden_id}", response_model=WardenSpec)
     async def get_warden_endpoint(warden_id: str) -> WardenSpec:
-        """Return one persisted warden."""
-        warden = store.get(warden_id)
+        """Return one known warden."""
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -319,8 +365,8 @@ def create_app(
         stream: str = "stdout",
         limit: int = 200,
     ) -> list[WardenLogEntry]:
-        """Return recent warden log lines for one persisted warden."""
-        warden = store.get(warden_id)
+        """Return recent warden log lines for one known warden."""
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -361,7 +407,7 @@ def create_app(
         warden_id: str, limit: int = 200
     ) -> list[WardenLogEntry]:
         """Return recent parsed activity entries from both warden log streams."""
-        warden = store.get(warden_id)
+        warden = await get_known_warden(warden_id)
         if warden is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -386,8 +432,8 @@ def create_app(
 
     @app.get("/api/v1/ravn/wardens/{warden_id}/stream")
     async def stream_warden_endpoint(warden_id: str, request: Request) -> StreamingResponse:
-        """Stream SSE updates for one persisted warden."""
-        if store.get(warden_id) is None:
+        """Stream SSE updates for one known warden."""
+        if await get_known_warden(warden_id) is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Warden not found",
@@ -433,6 +479,8 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if observed is None:
+            observed = await get_known_warden(warden_id)
+        if observed is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Warden not found",
@@ -451,10 +499,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if warden is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.installed", warden)
         return warden
 
@@ -463,10 +508,7 @@ def create_app(
         """Mark an installed warden as started."""
         existing = store.get(warden_id)
         if existing is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         if not existing.supervisor.installed:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -480,10 +522,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if started is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.started", started)
         return started
 
@@ -492,10 +531,7 @@ def create_app(
         """Stop an installed warden."""
         existing = store.get(warden_id)
         if existing is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         if not existing.supervisor.installed:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -509,10 +545,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if stopped is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.stopped", stopped)
         return stopped
 
@@ -527,10 +560,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
         if uninstalled is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Warden not found",
-            )
+            await raise_discovery_managed_if_present(warden_id)
         await publish_warden_update("warden.uninstalled", uninstalled)
         return uninstalled
 
@@ -613,5 +643,82 @@ def create_app(
         from ravn.api.personas import create_personas_router
 
         app.include_router(create_personas_router(persona_loader))
+
+    import contextlib  # noqa: PLC0415
+
+    from ravn.api.odin_reviews import (  # noqa: PLC0415
+        build_review_queue_store_from_env,
+        build_review_ttls_from_env,
+        create_odin_review_router,
+        review_sweep_interval_from_env,
+    )
+    from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
+    from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
+
+    valkyrie_projection = ValkyrieDashboardProjection()
+    valkyrie_learning_commands = build_nats_review_command_publisher_from_env()
+    review_ttls, review_default_ttl = build_review_ttls_from_env()
+    odin_review_service = OdinReviewService(
+        build_review_queue_store_from_env(),
+        publisher=valkyrie_learning_commands,
+        ttl_seconds_by_kind=review_ttls,
+        default_ttl_seconds=review_default_ttl,
+    )
+    valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
+        valkyrie_projection,
+        review_ingest=odin_review_service.ingest_event,
+    )
+    review_sweep_interval = review_sweep_interval_from_env()
+
+    async def _run_review_sweep() -> None:
+        while True:
+            await asyncio.sleep(review_sweep_interval)
+            try:
+                await odin_review_service.sweep_expired()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("odin review: expiry sweep failed")
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+        review_sweep_task = asyncio.create_task(
+            _run_review_sweep(),
+            name="odin_review_sweep",
+        )
+        if valkyrie_telemetry is not None:
+            try:
+                await valkyrie_telemetry.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("valkyrie telemetry subscription did not start: %s", exc)
+        try:
+            await valkyrie_learning_commands.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valkyrie learning command publisher did not start: %s", exc)
+        try:
+            yield
+        finally:
+            review_sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                _ = await review_sweep_task
+            if valkyrie_telemetry is not None:
+                await valkyrie_telemetry.stop()
+            await valkyrie_learning_commands.stop()
+
+    app.router.lifespan_context = lifespan
+
+    app.include_router(
+        create_valkyrie_router(
+            valkyrie_projection,
+            review_command_publisher=valkyrie_learning_commands,
+            review_service=odin_review_service,
+        )
+    )
+    app.include_router(
+        create_odin_review_router(
+            odin_review_service,
+            room_client=build_skuld_room_client_from_env(),
+        )
+    )
 
     return app

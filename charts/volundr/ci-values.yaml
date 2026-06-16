@@ -114,8 +114,7 @@ git:
 chronicle:
   autoCreateOnStop: false
 
-profiles: []
-templates: []
+launchSpecs: []
 
 migrations:
   enabled: false

@@ -8,9 +8,10 @@
     "ting": { "enabled": true, "order": 4 },
     "mimir": { "enabled": true, "order": 5 },
     "ravn": { "enabled": true, "order": 6 },
-    "observatory": { "enabled": true, "order": 7 },
-    "bifrost": { "enabled": true, "order": 8 },
-    "settings": { "enabled": true, "order": 9 }
+    "valkyrie": { "enabled": true, "order": 7 },
+    "observatory": { "enabled": true, "order": 8 },
+    "bifrost": { "enabled": true, "order": 9 },
+    "settings": { "enabled": true, "order": 10 }
   },
   "services": {
     "identity": { "mode": "http", "baseUrl": "/api/v1" },
@@ -19,6 +20,7 @@
     "features": { "mode": "http", "baseUrl": "/api/v1" },
     "tracker": { "mode": "http", "baseUrl": "/api/v1" },
     "audit": { "mode": "http", "baseUrl": "/api/v1" },
+    "niuu": { "mode": "http", "baseUrl": "/api/v1/niuu" },
     "bifrost": { "mode": "http", "baseUrl": "/api/v1/bifrost" },
     "mimir": { "mode": "http", "baseUrl": "/api/v1/mimir" },
     "observatory": { "mode": "http", "baseUrl": "/api/v1/observatory" },
@@ -40,7 +42,9 @@
     "ravn.sessions": { "mode": "http", "baseUrl": "/api/v1/ravn/sessions" },
     "ravn.triggers": { "mode": "http", "baseUrl": "/api/v1/ravn/triggers" },
     "ravn.budget": { "mode": "http", "baseUrl": "/api/v1/ravn/budget" },
+    "valkyrie": { "mode": "http", "baseUrl": "/api/v1/ravn/valkyrie" },
     "forge": { "mode": "http", "baseUrl": "/api/v1/forge" },
+    "volundr": { "mode": "http", "baseUrl": "/api/v1/volundr" },
     "forge.pty": { "mode": "ws", "wsUrl": "/s/{sessionId}/session" },
     "forge.metrics": { "mode": "http", "baseUrl": "/api/v1/forge/metrics" },
     "ting": { "mode": "http", "baseUrl": "/api/v1/ting" },
@@ -55,6 +59,6 @@
     "ting.audit": { "mode": "http", "baseUrl": "/api/v1/audit" },
     "ting.workflows": { "mode": "http", "baseUrl": "/api/v1/ting/workflows" },
     "ting.research": { "mode": "http", "baseUrl": "/api/v1/ting/research" },
-    "filesystem": { "mode": "http", "baseUrl": "/" }
+    "filesystem": { "mode": "http", "baseUrl": "/api/v1/forge" }
   }
 }

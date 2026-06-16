@@ -1,0 +1,35 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent.fullname" . }}-data
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.workspace.enabled (not .Values.workspace.emptyDir) (not .Values.workspace.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agent.fullname" . }}-workspace
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.workspace.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.workspace.size | quote }}
+  {{- if .Values.workspace.storageClass }}
+  storageClassName: {{ .Values.workspace.storageClass | quote }}
+  {{- end }}
+{{- end }}

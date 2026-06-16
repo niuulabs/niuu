@@ -13,6 +13,9 @@ global:
     tag: ""
 
 # Session configuration (set by Volundr at deployment time)
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
 session:
   # -- Session identifier (UUID, set by Volundr)
   id: ""
@@ -228,8 +231,7 @@ broker:
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
   # -- URL of the Volundr API service (set by session definition).
-  # Use the -internal service to bypass Envoy JWT validation:
-  #   http://volundr-internal.volundr.svc.cluster.local
+  # This should be the Envoy-routed API origin, not an internal service bypass.
   apiUrl: ""
   # -- Service identity for internal API calls (x-auth-user-id header)
   serviceUserId: "skuld-broker"
@@ -246,7 +248,12 @@ envSecrets:
 
 # -- Plain environment variables injected into the skuld broker container.
 # Use for non-secret configuration like proxy URLs or auth tokens.
-envVars: []
+envVars:
+  # Cluster pods have no ~/.claude login, so Claude transports must keep the
+  # injected ANTHROPIC_API_KEY. Host/mini-mode deployments default to the
+  # host's claude.ai subscription instead (see skuld.transports.claude_env).
+  - name: SKULD__CLAUDE_AUTH
+    value: "api_key"
 # Example: Anthropic-compatible proxy endpoint (replaces api.baseUrl/authToken)
 # - name: ANTHROPIC_BASE_URL
 #   value: "https://proxy.example.com"
@@ -382,11 +389,23 @@ runtimeClassName: ""
 # -- Service account name for the pod (set by secret injection contributor)
 serviceAccountName: ""
 
+# -- Additional init containers to add to the session pod.
+extraInitContainers: []
+
+# -- Additional sidecar containers to add to the session pod.
+extraContainers: []
+
 # -- Extra volumes to add to the pod (e.g., CSI secret volumes)
 extraVolumes: []
 
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
+
+# -- Mesh configuration for session-local agent flocks.
+mesh:
+  enabled: false
+  transport: nng
+  peerPorts: []
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

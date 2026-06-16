@@ -6,7 +6,6 @@ import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { SessionsPage } from './SessionsPage';
 import {
   createMockSessionStore,
-  createMockTemplateStore,
   createMockVolundrService,
   createMockPtyStream,
   createMockFileSystemPort,
@@ -60,14 +59,12 @@ function wrap(
   volundr: IVolundrService = createMockVolundrService(),
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const templateStore = createMockTemplateStore();
   return render(
     <QueryClientProvider client={client}>
       <ServicesProvider
         services={{
           bifrost: createMockBifrostService(),
           volundr,
-          'volundr.templates': templateStore,
           'niuu.repos': { getRepos: volundr.getRepos.bind(volundr) },
           sessionStore,
           ptyStream: createMockPtyStream(),
@@ -115,6 +112,7 @@ function makeSession(
     files: overrides.files,
     sagaId: overrides.sagaId,
     runId: overrides.runId,
+    origin: overrides.origin,
   };
 }
 
@@ -405,6 +403,95 @@ describe('SessionsPage', () => {
     await waitFor(() => expect(deleteSession).toHaveBeenCalledTimes(2));
     expect(deleteSession).toHaveBeenCalledWith('stopped-1');
     expect(deleteSession).toHaveBeenCalledWith('stopped-2');
+  });
+
+  it('shows an origin badge on imported sessions but not on volundr-native ones', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'imp-1', personaName: 'imported claude', state: 'idle', origin: 'claude' }),
+      makeSession({ id: 'imp-2', personaName: 'imported codex', state: 'idle', origin: 'codex' }),
+      makeSession({ id: 'native-1', personaName: 'native', state: 'running', origin: 'volundr' }),
+      makeSession({ id: 'native-2', personaName: 'legacy', state: 'running' }),
+    ]);
+
+    wrap(store);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('session-origin-badge-imp-1')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('session-origin-badge-imp-1')).toHaveTextContent('claude');
+    expect(screen.getByTestId('session-origin-badge-imp-2')).toHaveTextContent('codex');
+    expect(screen.queryByTestId('session-origin-badge-native-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('session-origin-badge-native-2')).not.toBeInTheDocument();
+  });
+
+  it('opens the import dialog from the sidebar import button', async () => {
+    wrap();
+
+    await waitFor(() => expect(screen.getByTestId('pod-import-button')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('pod-import-button'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('import-external-sessions-panel')).toBeInTheDocument(),
+    );
+    expect(screen.getByText('Import CLI Sessions')).toBeInTheDocument();
+  });
+
+  it('hides the import affordance when discovery is unavailable (503)', async () => {
+    const volundr = createMockVolundrService();
+    volundr.listExternalSessions = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('not available'), { status: 503 }));
+
+    wrap(createMockSessionStore(), volundr);
+
+    await waitFor(() => expect(screen.getByTestId('pod-launch-button')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('pod-import-button')).not.toBeInTheDocument());
+  });
+
+  it('keeps the import affordance for non-503 discovery errors', async () => {
+    const volundr = createMockVolundrService();
+    volundr.listExternalSessions = vi.fn().mockRejectedValue(new Error('boom'));
+
+    wrap(createMockSessionStore(), volundr);
+
+    await waitFor(() => expect(screen.getByTestId('pod-import-button')).toBeInTheDocument());
+  });
+
+  it('imports an external session and refreshes the sessions list', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'ds-1', personaName: 'existing', state: 'running' }),
+    ]);
+    const listSessions = vi.spyOn(store, 'listSessions');
+    const volundr = createMockVolundrService();
+    const importExternalSession = vi.fn().mockResolvedValue({
+      id: 'sess-imported',
+      name: 'imported session',
+      source: { type: 'git', repo: '~/code/niuu/volundr', branch: 'main' },
+      status: 'stopped',
+      model: 'claude-sonnet',
+      lastActive: Date.now(),
+      messageCount: 0,
+      tokensUsed: 0,
+      origin: 'claude',
+      externalSessionId: 'ext-claude-1',
+    });
+    volundr.importExternalSession = importExternalSession;
+
+    wrap(store, volundr);
+
+    await waitFor(() => expect(screen.getByTestId('pod-import-button')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('pod-import-button'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('external-session-import-ext-claude-1')).toBeInTheDocument(),
+    );
+    const callsBeforeImport = listSessions.mock.calls.length;
+    fireEvent.click(screen.getByTestId('external-session-import-ext-claude-1'));
+
+    await waitFor(() =>
+      expect(importExternalSession).toHaveBeenCalledWith('claude-code', 'ext-claude-1'),
+    );
+    await waitFor(() => expect(listSessions.mock.calls.length).toBeGreaterThan(callsBeforeImport));
   });
 
   it('navigates back to the sessions list when deleting the selected stopped session', async () => {

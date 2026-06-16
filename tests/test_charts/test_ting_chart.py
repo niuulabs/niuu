@@ -33,7 +33,7 @@ class TestDeploymentTemplate:
 
     def test_uses_unified_niuu_image_command(self, template_yaml):
         assert ".Values.command" in template_yaml
-        assert 'name: {{ .Chart.Name }}' in template_yaml
+        assert "name: {{ .Chart.Name }}" in template_yaml
 
     def test_has_process_runtime_env_vars(self, template_yaml):
         assert "HOST" in template_yaml
@@ -64,6 +64,8 @@ class TestConfigMapTemplate:
         assert "config.yaml: |" in template_yaml
         assert "database:" in template_yaml
         assert "volundr:" in template_yaml
+        assert "guild_registry:" in template_yaml
+        assert ".Values.guildRegistry.baseUrl" in template_yaml
 
 
 class TestMigrationConfigMap:

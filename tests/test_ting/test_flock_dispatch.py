@@ -442,7 +442,10 @@ class TestBuildSpawnRequestFlockEnabled:
         assert personas[1]["llm"]["model"] == "gpt-5.5"
         assert personas[1]["executor"] == {
             "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
-            "kwargs": {"transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport"},
+            "kwargs": {
+                "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                "transport_kwargs": {"skip_permissions": True},
+            },
         }
 
     def test_workload_config_resolves_registry_backed_mimir_resources(self, tmp_path: Path) -> None:

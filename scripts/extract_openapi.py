@@ -24,8 +24,7 @@ from volundr.adapters.inbound.rest_credentials import create_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_integrations_router
-from volundr.adapters.inbound.rest_presets import create_presets_router
-from volundr.adapters.inbound.rest_profiles import create_profiles_router
+from volundr.adapters.inbound.rest_launch_specs import create_launch_specs_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_secrets_router
@@ -84,8 +83,7 @@ def build_openapi_app() -> FastAPI:
             },
             {
                 "name": "MCP Servers",
-                "description": "MCP server catalogue — available Model Context "
-                "Protocol servers.",
+                "description": "MCP server catalogue — available Model Context Protocol servers.",
             },
             {
                 "name": "Secrets",
@@ -136,12 +134,13 @@ def build_openapi_app() -> FastAPI:
 
     mock = MagicMock()
 
-    app.include_router(create_router(mock, mock, mock, mock, mock, mock, mock))
-    app.include_router(create_profiles_router(mock, mock))
+    app.include_router(
+        create_router(mock, mock, mock, mock, mock, mock, mock, external_session_service=mock)
+    )
+    app.include_router(create_launch_specs_router(mock, mock))
     app.include_router(create_resources_router(mock))
     app.include_router(create_secrets_router(mock, mock))
     app.include_router(create_prompts_router(mock))
-    app.include_router(create_presets_router(mock))
     app.include_router(create_git_router(mock))
     app.include_router(create_tenants_router(mock))
     app.include_router(create_admin_settings_router())

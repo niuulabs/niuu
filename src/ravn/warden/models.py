@@ -151,6 +151,7 @@ class WardenSpec(BaseModel):
     runtime: WardenRuntime = Field(default_factory=WardenRuntime)
     supervisor: WardenSupervisor = Field(default_factory=WardenSupervisor)
     operator: WardenOperator = Field(default_factory=WardenOperator)
+    broker: dict[str, object] = Field(default_factory=dict)
     autostart: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     created_by: str = "operator"

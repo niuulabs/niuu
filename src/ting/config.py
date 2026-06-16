@@ -25,7 +25,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
-from niuu.config import CorsConfig, InstanceRegistryConfig
+from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
 from volundr.config import SessionDefinitionConfig, _default_session_definitions
 
 
@@ -73,13 +73,12 @@ class VolundrConfig(BaseModel):
     """Volundr API connection configuration."""
 
     url: str = Field(default="http://localhost:8080")
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
     use_connection_factory_in_dev: bool = Field(
         default=False,
         description=(
-            "When True, anonymous dev mode still resolves Volundr adapters from "
-            "stored CODE_FORGE connections instead of forcing the single local "
-            "Volundr adapter. Useful for a local Ting controlling multiple remote "
-            "Volundr instances."
+            "When True, anonymous dev mode resolves Volundr adapters through "
+            "Guild discovery instead of forcing the single local Volundr adapter."
         ),
     )
     trusted_connection_test_urls: list[str] = Field(
@@ -106,6 +105,14 @@ class SharedIntegrationsConfig(BaseModel):
 
     base_url: str = Field(default="")
     timeout_seconds: float = Field(default=30.0)
+
+
+class GuildRegistryConfig(BaseModel):
+    """Configuration for discovering runtime instances from Guild."""
+
+    base_url: str = Field(default="")
+    timeout_seconds: float = Field(default=30.0)
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
 class ReviewConfig(BaseModel):
@@ -1069,9 +1076,8 @@ class Settings(BaseSettings):
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
-    shared_integrations: SharedIntegrationsConfig = Field(
-        default_factory=SharedIntegrationsConfig
-    )
+    shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
+    guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)

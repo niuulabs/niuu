@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ravn.warden.models import (
     WardenConsoleConfig,
     WardenDreamSummary,
@@ -13,6 +15,9 @@ from ravn.warden.models import (
     WardenSpec,
     WardenSupervisor,
 )
+
+if TYPE_CHECKING:
+    from ravn.warden.store import WardenStore
 
 
 def resolve_deployment_adapter(deployment: str) -> str:

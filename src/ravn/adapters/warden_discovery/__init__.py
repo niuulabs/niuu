@@ -1,0 +1,2 @@
+"""Warden discovery adapters."""
+

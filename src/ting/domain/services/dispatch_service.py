@@ -33,6 +33,7 @@ from niuu.domain.model_runtime import (
     validate_session_definition_for_models,
 )
 from niuu.domain.models import Principal
+from niuu.domain.tags import matches_tags
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -199,6 +200,8 @@ def _resolve_workflow_execution(
                     executor_kwargs["transport_kwargs"] = {
                         "turn_timeout_s": _WORKFLOW_CLI_TURN_TIMEOUT_S
                     }
+                elif transport_adapter == "skuld.transports.codex_ws.CodexWebSocketTransport":
+                    executor_kwargs["transport_kwargs"] = {"skip_permissions": True}
                 runtime_persona["executor"] = {
                     "adapter": _CLI_TRANSPORT_EXECUTOR,
                     "kwargs": executor_kwargs,
@@ -318,6 +321,8 @@ class QueueItem:
     workflow: str | None = None
     workflow_version: str | None = None
     instance_id: str | None = None
+    target_tags: tuple[str, ...] = ()
+    target_match: str = "all"
 
 
 @dataclass(frozen=True)
@@ -342,6 +347,8 @@ class DispatchItem:
     workflow_id: str | None = None
     session_definition: str | None = None
     issue: TrackerIssue | None = None
+    target_tags: tuple[str, ...] = ()
+    target_match: str = "all"
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +494,34 @@ def resolve_target_adapter(
     if adapter is not None:
         return adapter
     return fallback
+
+
+class TargetSelectionError(Exception):
+    """Raised when a tag selector matches no available Volundr backend."""
+
+
+def select_adapter_by_tags(
+    adapters: list[VolundrPort],
+    tags: list[str] | tuple[str, ...],
+    match: str = "all",
+) -> VolundrPort:
+    """Select a Volundr adapter whose registered instance carries the given tags.
+
+    ``match="all"`` (default) requires every tag; ``match="any"`` requires one.
+    Fails loud — raises ``TargetSelectionError`` if nothing matches rather than
+    silently dispatching to an unintended backend.
+    """
+    for adapter in adapters:
+        if matches_tags(getattr(adapter, "tags", []) or [], tags, match):
+            return adapter
+    raise TargetSelectionError(
+        f"No Volundr backend matches tags {sorted(set(tags))} (match={match})"
+    )
+
+
+def base_branch_for_repo(saga: Saga, repo: str) -> str:
+    """Return the saga base branch configured for *repo*."""
+    return saga.repo_branches.get(repo, saga.base_branch)
 
 
 # ---------------------------------------------------------------------------
@@ -741,14 +776,6 @@ class DispatchService:
                 for item in items
             ]
 
-        # Query Volundr for the user's integration IDs
-        integration_ids = await self._fetch_integration_ids(
-            volundr,
-            auth_token,
-            owner_id,
-            principal=principal,
-        )
-
         # Pre-resolve all Volundr adapters for connection_id targeting
         if principal is not None and hasattr(self._volundr_factory, "for_principal"):
             all_volundr = await self._volundr_factory.for_principal(principal)
@@ -760,6 +787,8 @@ class DispatchService:
                 adapter_by_target[a.target_id] = a
             if a.name:
                 adapter_by_target[a.name] = a
+
+        integration_ids_by_target: dict[int, list[str]] = {}
 
         # Build lookups
         sagas = await self._saga_repo.list_sagas(owner_id=owner_id)
@@ -778,12 +807,41 @@ class DispatchService:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
 
-            target_connection = item.connection_id or connection_id or saga.instance_id
-            target_volundr = resolve_target_adapter(
-                target_connection,
-                adapter_by_target,
-                volundr,
-            )
+            if item.target_tags:
+                # Label-based targeting: pick a backend whose tags match. Fail loud —
+                # never silently fall back to an unintended backend.
+                try:
+                    target_volundr = select_adapter_by_tags(
+                        all_volundr, item.target_tags, item.target_match
+                    )
+                except TargetSelectionError as exc:
+                    logger.warning("Tag targeting failed for issue %s: %s", item.issue_id, exc)
+                    results.append(
+                        DispatchResult(
+                            issue_id=item.issue_id,
+                            session_id="",
+                            session_name="",
+                            status="failed",
+                        )
+                    )
+                    continue
+            else:
+                target_connection = item.connection_id or connection_id or saga.instance_id
+                target_volundr = resolve_target_adapter(
+                    target_connection,
+                    adapter_by_target,
+                    volundr,
+                )
+            integration_cache_key = id(target_volundr)
+            integration_ids = integration_ids_by_target.get(integration_cache_key)
+            if integration_ids is None:
+                integration_ids = await self._fetch_integration_ids(
+                    target_volundr,
+                    auth_token,
+                    owner_id,
+                    principal=principal,
+                )
+                integration_ids_by_target[integration_cache_key] = integration_ids
             workflow_snapshot, workflow_error = await self._resolve_workflow_snapshot(item, saga)
             if workflow_error:
                 logger.warning(
@@ -854,12 +912,15 @@ class DispatchService:
                 logger.info("Auto-continue skipped for owner %s: no Volundr adapter", owner_id[:8])
                 return []
 
-            state, active_sessions, running_runs, available_slots = (
-                await self._dispatch_capacity_snapshot(
-                    owner_id,
-                    volundr=volundr,
-                    trackers=adapters,
-                )
+            (
+                state,
+                active_sessions,
+                running_runs,
+                available_slots,
+            ) = await self._dispatch_capacity_snapshot(
+                owner_id,
+                volundr=volundr,
+                trackers=adapters,
             )
             if available_slots <= 0:
                 logger.info(
@@ -899,6 +960,8 @@ class DispatchService:
                         url=q.url,
                         milestone_id=q.milestone_id,
                     ),
+                    target_tags=q.target_tags,
+                    target_match=q.target_match,
                 )
                 for q in ready[:available_slots]
             ]
@@ -1072,12 +1135,15 @@ class DispatchService:
             owner_id,
         )
         trackers = await self._tracker_factory.for_owner(owner_id)
-        state, active_sessions, running_runs, available_slots = (
-            await self._dispatch_capacity_snapshot(
-                owner_id,
-                volundr=volundr,
-                trackers=trackers,
-            )
+        (
+            state,
+            active_sessions,
+            running_runs,
+            available_slots,
+        ) = await self._dispatch_capacity_snapshot(
+            owner_id,
+            volundr=volundr,
+            trackers=trackers,
         )
         if available_slots < len(runs):
             logger.info(
@@ -1134,7 +1200,7 @@ class DispatchService:
                 name=session_name,
                 repo=repo,
                 branch=saga.feature_branch,
-                base_branch=saga.base_branch,
+                base_branch=base_branch_for_repo(saga, repo),
                 model=self._config.default_model,
                 tracker_issue_id=run.tracker_id,
                 tracker_issue_url="",
@@ -1259,6 +1325,8 @@ class DispatchService:
                                 else None
                             ),
                             instance_id=saga.instance_id,
+                            target_tags=tuple(saga.target_tags),
+                            target_match=saga.target_match,
                         )
                     )
                 return items, False
@@ -1358,7 +1426,7 @@ class DispatchService:
                 name=session_name,
                 repo=item.repo,
                 branch=saga.feature_branch,
-                base_branch=saga.base_branch,
+                base_branch=base_branch_for_repo(saga, item.repo),
                 model=resolved_effective_model,
                 tracker_issue_id=issue.identifier,
                 tracker_issue_url=issue.url,
@@ -1392,9 +1460,7 @@ class DispatchService:
                 configured_models=self._config.configured_models,
             ):
                 workflow_definition = None
-            workflow_definition = (
-                workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
-            )
+            workflow_definition = workflow_definition or _DEFAULT_WORKFLOW_SESSION_DEFINITION
             (
                 resolved_effective_model,
                 resolved_session_definition,
@@ -1495,7 +1561,7 @@ class DispatchService:
             name=session_name,
             repo=item.repo,
             branch=saga.feature_branch,
-            base_branch=saga.base_branch,
+            base_branch=base_branch_for_repo(saga, item.repo),
             model=resolved_effective_model,
             tracker_issue_id=issue.identifier,
             tracker_issue_url=issue.url,

@@ -41,9 +41,7 @@ class TrackerPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def create_run(
-        self, run: Run, *, project_id: str = "", milestone_id: str = ""
-    ) -> str:
+    async def create_run(self, run: Run, *, project_id: str = "", milestone_id: str = "") -> str:
         raise NotImplementedError
 
     async def attach_document(self, project_id: str, title: str, content: str) -> str:
@@ -177,9 +175,7 @@ class TrackerPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def update_phase_status(
-        self, phase_tracker_id: str, status: PhaseStatus
-    ) -> Phase | None:
+    async def update_phase_status(self, phase_tracker_id: str, status: PhaseStatus) -> Phase | None:
         raise NotImplementedError
 
     # -- Cross-entity navigation --

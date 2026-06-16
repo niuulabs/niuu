@@ -12,6 +12,8 @@ image:
 
 # -- Override container command. Defaults to the unified niuu image running the Ting API.
 command:
+  - python
+  - -m
   - ting
 # -- Additional container args.
 args: []
@@ -285,6 +287,18 @@ auth:
 
 volundr:
   url: "http://volundr:8000"
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+    secretKwargs: []
+
+guildRegistry:
+  baseUrl: ""
+  timeoutSeconds: 30.0
+  auth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+    secretKwargs: []
 
 migrations:
   enabled: true
@@ -348,3 +362,6 @@ global:
   imagePullSecrets: []
   image:
     registry: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown

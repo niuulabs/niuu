@@ -18,12 +18,15 @@ test('volundr forge overview matches web2', async ({ page }) => {
   await expect(page).toHaveScreenshot('volundr-forge-overview.png');
 });
 
-// ── Templates ─────────────────────────────────────────────────────────────────
+// ── Launch catalog ────────────────────────────────────────────────────────────
 
-test('volundr templates matches web2', async ({ page }) => {
-  await page.goto('/volundr/templates');
+test('volundr launch catalog matches web2', async ({ page }) => {
+  await page.goto('/volundr/catalog');
   await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('volundr-templates.png');
+  await expect(page.getByRole('heading', { name: /launch catalog/i })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page).toHaveScreenshot('volundr-launch-catalog.png');
 });
 
 // ── Guild overview (legacy /volundr/clusters replacement) ───────────────────

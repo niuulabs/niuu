@@ -17,14 +17,14 @@ logger = logging.getLogger("niuu.mesh.cluster")
 
 
 def read_cluster_pub_addresses(adapters_config: list[dict[str, Any]]) -> list[str]:
-    """Read peer pub addresses from ``cluster_file`` entries in adapters config.
+    """Read peer pub addresses from static discovery adapter config.
 
-    Each entry in *adapters_config* may contain a ``cluster_file`` key pointing
-    to a YAML file with a ``peers`` list.  This function collects all
-    ``pub_address`` values from every cluster file found.
+    Each entry in *adapters_config* may contain either an inline ``peers`` list
+    or a ``cluster_file`` key pointing to a YAML file with a ``peers`` list.
+    This function collects all ``pub_address`` values found.
 
-    Returns an empty list when no ``cluster_file`` keys are present or none of
-    the referenced files exist.
+    Returns an empty list when no inline peers or existing cluster files are
+    present.
 
     Parameters
     ----------
@@ -34,6 +34,13 @@ def read_cluster_pub_addresses(adapters_config: list[dict[str, Any]]) -> list[st
     addresses: list[str] = []
 
     for cfg in adapters_config:
+        for peer in cfg.get("peers", []):
+            if not isinstance(peer, dict):
+                continue
+            addr = peer.get("pub_address")
+            if addr:
+                addresses.append(addr)
+
         cluster_file = cfg.get("cluster_file", "")
         if not cluster_file:
             continue

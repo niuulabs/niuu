@@ -1,20 +1,12 @@
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS builder
+FROM python:3.11-slim-bookworm@sha256:e2d3af735aff6eeee600b1933bedd99da6645fedf572cc12ef4cc1331f2ceebe AS builder
 
 ARG TARGETARCH
 
-
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    python3 \
-    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv from a pinned release archive and resolve from the committed lockfile.
 RUN set -eux; \
     UV_VERSION="0.11.10"; \
     case "${TARGETARCH}" in \
@@ -28,17 +20,16 @@ RUN set -eux; \
     install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uv" /usr/local/bin/uv; \
     rm -rf "/tmp/${UV_ARCHIVE}" "/tmp/${UV_ARCHIVE%.tar.gz}"
 
-# Copy package and install
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s
+RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats \
+    && mkdir -p /dist-root/data/mimir /dist-root/usr/local/bin \
+    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python3 \
+    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python
 
-# ---------------------------------------------------------------------------
-# Runtime — minimal image with no build tools or pip
-# ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
+FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5
 
 
 LABEL org.opencontainers.image.title="niuu"
@@ -47,44 +38,16 @@ LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install only runtime dependencies (no pip, no build tools)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    git \
-    python3 \
-    python3-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create app user
-RUN useradd -m -s /bin/bash niuu
-
-# Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
-COPY --from=builder /opt/venv /opt/venv
+ENV PYTHONPATH=/opt/venv/lib/python3.11/site-packages
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Copy entrypoint
-COPY containers/niuu/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
+COPY --from=builder --chown=65532:65532 /dist-root/data /data
+COPY --from=builder /dist-root/usr/local/bin /usr/local/bin
 
-# Set working directory
 WORKDIR /app
 
-# Shared runtime paths used by the unified control-plane services.
-RUN mkdir -p /data/mimir && chown niuu:niuu /data/mimir
-
-# Switch to non-root user
-USER niuu
-
-# Expose API port
 EXPOSE 8082
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8082/health || exit 1
-
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/python3", "-m", "uvicorn", "niuu.main:app", "--host", "0.0.0.0", "--port", "8082"]

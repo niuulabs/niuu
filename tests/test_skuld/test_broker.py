@@ -12,8 +12,8 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from fastapi import WebSocketDisconnect
-from fastapi.testclient import TestClient
 
+from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
     _log_buffer,
@@ -21,6 +21,7 @@ from skuld.broker import (
     _TokenRedactFilter,
     app,
     broker,
+    get_room_participants,
     send_message_to_session,
 )
 from skuld.config import SkuldSettings
@@ -32,6 +33,8 @@ from skuld.transports import (
     TransportCapabilities,
 )
 from sleipnir.adapters.in_process import InProcessBus
+from sleipnir.domain import registry as event_registry
+from sleipnir.domain.catalog import feedback_recorded
 from sleipnir.testing import EventCapture
 
 
@@ -300,6 +303,45 @@ class TestBroker:
         assert elapsed >= 0.02
         broker._mesh_adapter.publish.assert_awaited_once()
         room_bridge.is_connected.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_publish_workflow_trigger_treats_mesh_consumers_as_ready(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-2b",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Research the topic deeply",
+            },
+            mesh={"enabled": True, "peer_id": "skuld-wf"},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "research.requested",
+                "startup_delay_s": 0.0,
+            },
+            chronicle_watcher_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
+
+        consumer = SimpleNamespace(
+            peer_id="flock-research-framer",
+            participant_type="ravn",
+            participant_kind="mesh",
+            subscribes_to=("research.requested",),
+        )
+
+        room_bridge = MagicMock()
+        room_bridge.participants = {"flock-research-framer": consumer}
+        room_bridge.is_connected.return_value = False
+        broker._room_bridge = room_bridge
+
+        await broker._publish_workflow_trigger()
+
+        broker._mesh_adapter.publish.assert_awaited_once()
+        room_bridge.is_connected.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_workflow_trigger_fails_when_consumers_never_connect(self, tmp_path):
@@ -945,9 +987,7 @@ class TestBroker:
         assert kwargs["extra_metadata"]["structured_outcome"]["verdict"] == "approve"
 
     @pytest.mark.asyncio
-    async def test_parallel_terminal_node_emits_completion_without_finisher_persona(
-        self, tmp_path
-    ):
+    async def test_parallel_terminal_node_emits_completion_without_finisher_persona(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "sess-1", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
@@ -1772,6 +1812,11 @@ class TestDispatchBrowserMessage:
             "set_permission_mode",
             "rewind_files",
             "mcp_set_servers",
+            "terminal_input",
+            "terminal_key",
+            "terminal_resize",
+            "slash_command",
+            "discover_slash_commands",
         ]
         for msg_type in guarded:
             sender_ws = AsyncMock()
@@ -1791,6 +1836,131 @@ class TestDispatchBrowserMessage:
         await test_broker._dispatch_browser_message({"type": "interrupt"})
 
         test_broker._transport.send_control.assert_called_once_with("interrupt")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_terminal_controls(self, test_broker):
+        """Interactive terminal controls pass through when the transport supports them."""
+        test_broker._transport.capabilities = TransportCapabilities(
+            terminal_input=True,
+            terminal_keys=True,
+            terminal_resize=True,
+            slash_commands=True,
+        )
+
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_input", "data": "/help", "enter": True, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_key", "key": "Up", "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {"type": "terminal_resize", "cols": 120, "rows": 40, "pane_id": "%1"}
+        )
+        await test_broker._dispatch_browser_message(
+            {
+                "type": "slash_command",
+                "command": "compact",
+                "arguments": "now",
+                "pane_id": "%1",
+            }
+        )
+
+        assert test_broker._transport.send_control.call_args_list[0].args == ("terminal_input",)
+        assert test_broker._transport.send_control.call_args_list[0].kwargs == {
+            "data": "/help",
+            "enter": True,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[1].args == ("terminal_key",)
+        assert test_broker._transport.send_control.call_args_list[1].kwargs == {
+            "key": "Up",
+            "keys": [],
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[2].args == ("terminal_resize",)
+        assert test_broker._transport.send_control.call_args_list[2].kwargs == {
+            "cols": 120,
+            "rows": 40,
+            "pane_id": "%1",
+        }
+        assert test_broker._transport.send_control.call_args_list[3].args == ("slash_command",)
+        assert test_broker._transport.send_control.call_args_list[3].kwargs == {
+            "command": "compact",
+            "arguments": "now",
+            "pane_id": "%1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_dispatch_discovers_slash_commands(self, test_broker):
+        """Browser can request slash commands over the session WebSocket."""
+        test_broker._transport.capabilities = TransportCapabilities(slash_commands=True)
+        test_broker._transport.discover_slash_commands = AsyncMock(
+            return_value=[
+                {
+                    "name": "/workflows",
+                    "command": "workflows",
+                    "description": "Browse workflows",
+                    "kind": "command",
+                    "source": "tmux_autocomplete",
+                }
+            ]
+        )
+        sender_ws = AsyncMock()
+
+        await test_broker._dispatch_browser_message(
+            {"type": "discover_slash_commands", "refresh": True},
+            sender_ws=sender_ws,
+        )
+
+        test_broker._transport.discover_slash_commands.assert_awaited_once_with(refresh=True)
+        sender_ws.send_json.assert_awaited_once_with(
+            {
+                "type": "slash_commands",
+                "commands": [
+                    {
+                        "name": "/workflows",
+                        "command": "workflows",
+                        "description": "Browse workflows",
+                        "kind": "command",
+                        "source": "tmux_autocomplete",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_normalizes_payload(self, test_broker):
+        """Claude HTTP hooks are routed into the normal CLI event pipeline."""
+        test_broker._transport = None
+        test_broker._handle_cli_event = AsyncMock()
+
+        await test_broker.handle_claude_hook(
+            {"hook_event_name": "PostToolUse", "tool_name": "Read"}
+        )
+
+        test_broker._handle_cli_event.assert_awaited_once_with(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": "PostToolUse",
+                "payload": {"hook_event_name": "PostToolUse", "tool_name": "Read"},
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_claude_hook_delegates_to_transport_handler(self, test_broker):
+        """Interactive transports can convert hook payloads before broker fallback."""
+        transport = MagicMock()
+        transport.handle_claude_hook = AsyncMock(return_value=True)
+        test_broker._transport = transport
+        test_broker._handle_cli_event = AsyncMock()
+
+        payload = {"hook_event_name": "Stop", "last_assistant_message": "done"}
+        await test_broker.handle_claude_hook(payload)
+
+        transport.handle_claude_hook.assert_awaited_once_with(payload)
+        test_broker._handle_cli_event.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_guard_no_sender_ws_still_blocks(self, test_broker):
@@ -1822,6 +1992,8 @@ class TestFastAPIEndpoints:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -1919,6 +2091,66 @@ class TestFastAPIEndpoints:
         response = client.get("/api/capabilities")
         assert response.status_code == 503
 
+    def test_slash_commands_endpoint_returns_discovered_commands(self, client):
+        """GET /api/slash-commands returns normalized transport commands."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities(slash_commands=True)
+        mock_transport.discover_slash_commands = AsyncMock(
+            return_value=[
+                {
+                    "name": "/deep-research",
+                    "command": "deep-research",
+                    "description": "Deep research",
+                    "kind": "workflow",
+                    "source": "tmux_autocomplete",
+                }
+            ]
+        )
+        broker._transport = mock_transport
+
+        response = client.get("/api/slash-commands?refresh=true")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["commands"][0]["name"] == "/deep-research"
+        assert data["commands"][0]["kind"] == "workflow"
+        mock_transport.discover_slash_commands.assert_awaited_once_with(refresh=True)
+        broker._transport = None
+
+    def test_send_slash_command_endpoint_uses_transport_control(self, client):
+        """POST /api/slash-commands/send sends a terminal slash command."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities(slash_commands=True)
+        mock_transport.send_control = AsyncMock()
+        broker._transport = mock_transport
+
+        response = client.post(
+            "/api/slash-commands/send",
+            json={"command": "workflows", "arguments": "--all", "pane_id": "%1"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "sent", "command": "/workflows"}
+        mock_transport.send_control.assert_awaited_once_with(
+            "slash_command",
+            command="workflows",
+            arguments="--all",
+            pane_id="%1",
+        )
+        broker._transport = None
+
+    def test_slash_commands_endpoint_501_when_unsupported(self, client):
+        """Slash command APIs report unsupported transports clearly."""
+        mock_transport = MagicMock()
+        mock_transport.capabilities = TransportCapabilities()
+        broker._transport = mock_transport
+
+        response = client.get("/api/slash-commands")
+
+        assert response.status_code == 501
+        broker._transport = None
+
     def test_logs_endpoint_level_filter(self, client):
         _log_buffer.clear()
         _log_buffer.append(
@@ -1940,6 +2172,8 @@ class TestCORSMiddleware:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -2367,9 +2601,7 @@ class TestHandleCliEventTraceSpans:
         assert mock_start.await_args.kwargs["kind"] == "tool.call"
         assert mock_start.await_args.kwargs["parent_span_id"] == assistant_span_id
         assert mock_start.await_args.kwargs["attributes"]["tool_use_id"] == "tool-123"
-        assert (
-            mock_start.await_args.kwargs["attributes"]["tool_input"]["command"] == "npm test"
-        )
+        assert mock_start.await_args.kwargs["attributes"]["tool_input"]["command"] == "npm test"
         assert test_broker._trace_assistant_tool_spans["tool-123"] == tool_span_id
 
     @pytest.mark.asyncio
@@ -2533,7 +2765,7 @@ class TestPublishMeshOutcome:
 
     @pytest.mark.asyncio
     async def test_payload_omits_empty_fields(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("SESSION_INITIAL_PROMPT", raising=False)
+        monkeypatch.delenv("SKULD__SESSION__INITIAL_PROMPT", raising=False)
         settings = SkuldSettings(
             session={
                 "id": "test-mesh-empty",
@@ -2572,6 +2804,9 @@ class TestReportChronicle:
 
     @pytest.mark.asyncio
     async def test_report_chronicle_posts_to_api(self, test_broker):
+        # Stop-summarization is opt-in (OFF by default); this test exercises
+        # the enabled path.
+        test_broker._settings.chronicle_on_stop_enabled = True
         test_broker._artifacts.turn_count = 3
         test_broker._artifacts.files_changed = ["/src/main.py"]
 
@@ -2642,7 +2877,20 @@ class TestReportChronicle:
         mock_client.post.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_report_chronicle_skipped_by_default(self, test_broker):
+        """Stop summarization is OFF by default — no chronicle POST fires."""
+        test_broker._artifacts.turn_count = 3
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock()
+        test_broker._http_client = mock_client
+        test_broker._transport = None
+
+        await test_broker._report_chronicle()
+
+        assert mock_client.post.call_count == 0
+
     async def test_report_chronicle_posts_for_flock_outcome_without_turns(self, test_broker):
+        test_broker._settings.chronicle_on_stop_enabled = True
         test_broker._artifacts.structured_outcome = {
             "summary": "Reviewer approved the changes",
             "files_changed": ["proofs/marker.txt"],
@@ -3116,6 +3364,8 @@ class TestServiceAPIEndpoints:
 
     @pytest.fixture
     def client(self):
+        from fastapi.testclient import TestClient
+
         client = TestClient(app)
         yield client
         client.close()
@@ -3900,6 +4150,183 @@ class TestBrokerRoomBridge:
         b = Broker(settings=no_room_settings)
         assert b._room_bridge is None
 
+    @pytest.mark.asyncio
+    async def test_join_heartbeat_leave_human_environment(self, room_settings):
+        bus = InProcessBus()
+        captured = EventCapture(bus, ["participant.*"])
+        await captured.start()
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+
+        joined = await b.join_human_environment(
+            participant_id="human:jozef",
+            display_name="Jozef",
+            environment_id="cluster-a",
+            role="owner",
+            room_id="huddle-1",
+        )
+        heartbeat = await b.heartbeat_human_environment(
+            participant_id="human:jozef",
+            status="busy",
+            wakefulness="wakeful",
+            attention_state="reviewing",
+        )
+        await b.leave_human_environment(participant_id="human:jozef", reason="done")
+        await bus.flush()
+
+        assert joined["participant_type"] == "human"
+        assert joined["authority_role"] == "owner"
+        assert "change_autonomy" in joined["capabilities"]
+        assert heartbeat["status"] == "busy"
+        assert "human:jozef" not in b._room_bridge.participants
+        assert [event.event_type for event in captured.events] == [
+            event_registry.PARTICIPANT_JOINED,
+            event_registry.PARTICIPANT_HEARTBEAT,
+            event_registry.PARTICIPANT_LEFT,
+        ]
+        await captured.stop()
+
+    @pytest.mark.asyncio
+    async def test_join_human_environment_binds_capabilities_to_environment_authorities(
+        self,
+        room_settings,
+    ):
+        b = Broker(settings=room_settings)
+
+        joined = await b.join_human_environment(
+            participant_id="human:approver",
+            display_name="Approver",
+            environment_id="cluster-a",
+            role="approver",
+            environment_action_authorities=["autonomous"],
+        )
+
+        assert "approve" not in joined["capabilities"]
+        assert "authorize_action" not in joined["capabilities"]
+        assert joined["capabilities"] == ("view", "reply")
+
+    @pytest.mark.asyncio
+    async def test_human_room_message_preserves_participant_thread_metadata(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        broadcast = AsyncMock()
+        b._channels.broadcast = broadcast
+        await b.join_human_environment(
+            participant_id="human:teacher",
+            display_name="Teacher",
+            environment_id="cluster-a",
+            role="teacher",
+        )
+
+        msg_id = await b.handle_human_room_message(
+            "This was the wrong tier.",
+            source="browser",
+            participant_id="human:teacher",
+            metadata={"thread_id": "thread-1", "root_correlation_id": "root-1"},
+            deliver_to_transport=False,
+        )
+
+        assert b._conversation_turns[-1].id == msg_id
+        assert b._conversation_turns[-1].participant_id == "human:teacher"
+        assert b._conversation_turns[-1].thread_id == "thread-1"
+        assert b._conversation_turns[-1].metadata["root_correlation_id"] == "root-1"
+        event = broadcast.await_args.args[0]
+        assert event["participantId"] == "human:teacher"
+        assert event["threadId"] == "thread-1"
+        assert event["metadata"]["root_correlation_id"] == "root-1"
+
+    @pytest.mark.asyncio
+    async def test_directed_room_message_preserves_metadata_to_target(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        await b.join_human_environment(
+            participant_id="human:approver",
+            display_name="Approver",
+            environment_id="cluster-a",
+            role="approver",
+        )
+        ws = MagicMock()
+        ws.send_text = AsyncMock()
+        await b._room_bridge.register("valkyrie:k8s-a", "K8s Valkyrie", ws)
+
+        await b.handle_directed_room_message(
+            "valkyrie:k8s-a",
+            "Approved, continue.",
+            source="browser",
+            metadata={
+                "participant_id": "human:approver",
+                "thread_id": "thread-approve",
+                "root_correlation_id": "root-approve",
+            },
+        )
+
+        payload = json.loads(ws.send_text.await_args.args[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "Approved, continue."
+        assert payload["metadata"]["thread_id"] == "thread-approve"
+        assert payload["metadata"]["root_correlation_id"] == "root-approve"
+        assert payload["metadata"]["participant_id"] == "human:approver"
+        assert b._conversation_turns[-1].participant_id == "human:approver"
+        assert b._conversation_turns[-1].thread_id == "thread-approve"
+
+    @pytest.mark.asyncio
+    async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
+        b = Broker(settings=room_settings)
+        await b.join_human_environment(
+            participant_id="human:observer",
+            display_name="Observer",
+            environment_id="cluster-a",
+            role="observer",
+        )
+
+        with pytest.raises(PermissionError):
+            b.require_room_capability("human:observer", "authorize_action")
+
+    @pytest.mark.asyncio
+    async def test_joined_human_feedback_links_to_valkyrie_decision(self, room_settings):
+        class _Memory:
+            def __init__(self) -> None:
+                self.episodes = []
+
+            async def record_episode(self, episode):
+                self.episodes.append(episode)
+
+        bus = InProcessBus()
+        memory = _Memory()
+        recorder = EnvironmentFeedbackRecorder(subscriber=bus, publisher=bus, memory=memory)
+        await recorder.start()
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+        await b.join_human_environment(
+            participant_id="human:owner",
+            display_name="Owner",
+            environment_id="cluster-a",
+            role="owner",
+        )
+
+        await bus.publish(
+            feedback_recorded(
+                environment_id="cluster-a",
+                target_event_id="attention-decision-1",
+                feedback_type="useful",
+                rating="correct",
+                notes="Good escalation.",
+                judgment_refs=["judgment-1"],
+                court_decision_id="attention-decision-1",
+                user_id="human:owner",
+                responsible_valkyrie_id="valkyrie:k8s-a",
+                source="human:owner",
+                correlation_id="root-feedback",
+            )
+        )
+        await bus.flush()
+
+        assert len(memory.episodes) == 1
+        structured = memory.episodes[0].structured_outcome
+        assert structured["user_id"] == "human:owner"
+        assert structured["judgment_refs"] == ["judgment-1"]
+        assert structured["court_decision_id"] == "attention-decision-1"
+
+        await recorder.stop()
+
     # -----------------------------------------------------------------------
     # directed_message dispatch
     # -----------------------------------------------------------------------
@@ -4086,6 +4513,63 @@ class TestBrokerRoomBridge:
         assert participants
         assert participants[0]["peer_id"] == "peer-1"
         assert participants[0]["persona"] == "coder"
+
+    @pytest.mark.asyncio
+    async def test_get_room_participants_filters_environment(self, room_settings):
+        b = Broker(settings=room_settings)
+        assert b._room_bridge is not None
+        await b._room_bridge.register(
+            "cluster-peer",
+            "k8s",
+            AsyncMock(),
+            environment_id="cluster-a",
+        )
+        await b._room_bridge.register(
+            "host-peer",
+            "inbox",
+            AsyncMock(),
+            environment_id="host-mail",
+        )
+
+        participants = b.get_room_participants(environment_id="cluster-a")
+
+        assert [participant["peer_id"] for participant in participants] == ["cluster-peer"]
+
+    @pytest.mark.asyncio
+    async def test_room_presence_events_publish_to_existing_sleipnir_bus(self, room_settings):
+        bus = InProcessBus()
+        captured = []
+
+        async def handler(event):
+            captured.append(event)
+
+        await bus.subscribe(["participant.*"], handler)
+        b = Broker(settings=room_settings, sleipnir_publisher=bus)
+        assert b._room_bridge is not None
+
+        await b._room_bridge.register(
+            "valkyrie-1",
+            "K8s Valkyrie",
+            AsyncMock(),
+            environment_id="cluster-a",
+            participant_kind="valkyrie",
+            capabilities=["k8s.inspect_pod"],
+        )
+        await bus.flush()
+
+        assert [event.event_type for event in captured] == [event_registry.PARTICIPANT_JOINED]
+        assert captured[0].payload["environment_id"] == "cluster-a"
+        assert captured[0].payload["participant_type"] == "valkyrie"
+
+    @pytest.mark.asyncio
+    async def test_room_participants_api_handler_passes_environment_filter(self, monkeypatch):
+        get_participants = MagicMock(return_value=[{"peer_id": "cluster-peer"}])
+        monkeypatch.setattr(broker, "get_room_participants", get_participants)
+
+        response = await get_room_participants(environment_id="cluster-a")
+
+        assert response == {"participants": [{"peer_id": "cluster-peer"}]}
+        get_participants.assert_called_once_with(environment_id="cluster-a")
 
     def test_get_communication_routes_returns_channel_routes(self, room_settings):
         b = Broker(settings=room_settings)

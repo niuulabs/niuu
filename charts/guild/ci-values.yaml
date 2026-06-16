@@ -1,0 +1,96 @@
+# CI smoke-test values — minimal config for kind cluster validation.
+# Used by the helm-smoke-test CI job to verify Guild starts as Ting's registry owner.
+
+replicaCount: 1
+revisionHistoryLimit: 1
+
+image:
+  registry: ghcr.io/niuulabs
+  repository: niuu
+  tag: ""  # overridden by CI to use PR-tagged image
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  automount: true
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8084
+
+ingress:
+  enabled: false
+
+config:
+  logLevel: info
+  logFormat: json
+  host: "0.0.0.0"
+  port: 8084
+  cors:
+    allowedOrigins:
+      - "*"
+    allowCredentials: true
+
+database:
+  name: guild
+  createSecret: true
+  username: postgres
+  password: test
+  minPoolSize: 1
+  maxPoolSize: 2
+  external:
+    enabled: true
+    host: pg-postgresql.default.svc.cluster.local
+    port: 5432
+
+envoy:
+  enabled: false
+
+registry:
+  instances:
+    - kind: volundr
+      slug: ci-volundr
+      name: CI Volundr
+      base_url: http://volundr:80
+      visibility: system
+      enabled: true
+      is_default: true
+      tags:
+        - ci
+  catalog: []
+
+migrations:
+  enabled: true
+
+livenessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false

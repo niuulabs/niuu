@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from niuu.domain.models import InstanceKind, Principal
+from niuu.domain.models import Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from ting.adapters.inbound.auth import extract_principal
 from ting.domain.models import (
@@ -99,6 +99,10 @@ class ImportRequest(BaseModel):
     project_id: str = Field(description="External tracker project ID")
     repos: list[str] = Field(description="Repositories (org/repo)")
     base_branch: str = Field(description="Branch to create feature branch from")
+    repo_refs: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Per-repository branch bindings: [{repo, branch}]",
+    )
     workflow_id: str | None = Field(
         default=None,
         description="Optional saved workflow UUID to assign on import",
@@ -106,6 +110,14 @@ class ImportRequest(BaseModel):
     instance_id: str | None = Field(
         default=None,
         description="Optional Volundr target UUID to assign on import",
+    )
+    target_tags: list[str] = Field(
+        default_factory=list,
+        description="Optional Volundr target tags for label-based dispatch routing",
+    )
+    target_match: str = Field(
+        default="all",
+        description="Tag match mode for target_tags: all or any",
     )
     start_immediately: bool = Field(
         default=False,
@@ -120,6 +132,7 @@ class SagaResponse(BaseModel):
     tracker_id: str
     name: str
     repos: list[str]
+    base_branch: str = "main"
     feature_branch: str
     status: str
     phase_count: int
@@ -129,6 +142,10 @@ class SagaResponse(BaseModel):
     workflow_version: str | None = None
     instance_id: str | None = None
     instance_name: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
+    repo_branches: dict[str, str] = Field(default_factory=dict)
+    repo_refs: list[dict[str, str]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -338,16 +355,26 @@ def _build_tracker_router(
             principal=principal,
             workflow_id_value=body.workflow_id,
         )
+        repo_branches = {
+            str(ref.get("repo") or "").strip(): str(ref.get("branch") or "").strip()
+            for ref in body.repo_refs
+            if str(ref.get("repo") or "").strip() and str(ref.get("branch") or "").strip()
+        }
+        repos = list(repo_branches) if repo_branches else body.repos
+        base_branch = next(iter(repo_branches.values()), body.base_branch)
+        target_tags = [tag.strip() for tag in body.target_tags if tag.strip()]
+        target_match = body.target_match if body.target_match in {"all", "any"} else "all"
+
         instance_name: str | None = None
-        if body.instance_id:
-            instance_service = getattr(request.app.state, "instance_service", None)
-            if instance_service is None:
+        if body.instance_id and not target_tags:
+            instance_registry = getattr(request.app.state, "instance_registry", None)
+            if instance_registry is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Instance registry not configured",
                 )
-            instance = await instance_service.get_visible(principal, body.instance_id)
-            if instance is None or instance.kind != InstanceKind.VOLUNDR or not instance.enabled:
+            instance = await instance_registry.get_volundr_target(principal, body.instance_id)
+            if instance is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Target not found: {body.instance_id}",
@@ -386,17 +413,20 @@ def _build_tracker_router(
             tracker_type="linear",
             slug=slug,
             name=project.name,
-            repos=body.repos,
+            repos=repos,
+            repo_branches=repo_branches,
             feature_branch=f"feat/{slug}",
             status=existing.status if existing is not None else SagaStatus.ACTIVE,
             confidence=existing.confidence if existing is not None else 0.0,
             created_at=existing.created_at if existing is not None else now,
-            base_branch=body.base_branch,
+            base_branch=base_branch,
             owner_id=principal.user_id,
             workflow_id=workflow_id,
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
-            instance_id=body.instance_id,
+            instance_id=None if target_tags else body.instance_id,
+            target_tags=target_tags,
+            target_match=target_match,
         )
 
         await saga_repo.save_saga(saga)
@@ -431,6 +461,7 @@ def _build_tracker_router(
             tracker_id=saga.tracker_id,
             name=saga.name,
             repos=saga.repos,
+            base_branch=saga.base_branch,
             feature_branch=saga.feature_branch,
             status=saga.status.value,
             phase_count=project.milestone_count,
@@ -440,6 +471,13 @@ def _build_tracker_router(
             workflow_version=saga.workflow_version,
             instance_id=saga.instance_id,
             instance_name=instance_name,
+            target_tags=saga.target_tags,
+            target_match=saga.target_match,
+            repo_branches=saga.repo_branches,
+            repo_refs=[
+                {"repo": repo, "branch": saga.repo_branches.get(repo, saga.base_branch)}
+                for repo in saga.repos
+            ],
             warnings=warnings,
         )
 

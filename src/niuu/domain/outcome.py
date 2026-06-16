@@ -28,6 +28,8 @@ _TYPE_VALIDATORS: dict[str, type] = {
     "string": str,
     "number": (int, float),
     "boolean": bool,
+    "array": list,
+    "object": dict,
 }
 
 
@@ -35,7 +37,7 @@ _TYPE_VALIDATORS: dict[str, type] = {
 class OutcomeField:
     """Declares a single field in an outcome schema."""
 
-    type: Literal["string", "number", "boolean", "enum"]
+    type: Literal["string", "number", "boolean", "enum", "array", "object"]
     description: str
     enum_values: list[str] | None = None
     required: bool = True
@@ -85,6 +87,10 @@ def generate_outcome_instruction(schema: OutcomeSchema) -> str:
             hint = "<number>"
         elif f.type == "boolean":
             hint = "true | false"
+        elif f.type == "array":
+            hint = "[<item>, ...]"
+        elif f.type == "object":
+            hint = "{key: value}"
         else:
             hint = f"<{f.description}>"
         lines.append(f"{name}: {hint}")
@@ -386,7 +392,7 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
             or validation_errors
             or (expected_keys is not None and not expected_keys.issubset(parsed_fields))
             or len(salvage_errors) < len(validation_errors)
-        ) and len(salvage_errors) <= len(errors):
+        ) and (parse_errors or len(salvage_errors) <= len(errors)):
             parsed_fields = salvaged
             errors = salvage_errors
 

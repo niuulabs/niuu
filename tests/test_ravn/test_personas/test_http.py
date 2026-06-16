@@ -226,9 +226,7 @@ class TestLoad:
     def test_load_logs_warning_on_network_error(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
-        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
-            side_effect=httpx.ConnectError("refused")
-        )
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(side_effect=httpx.ConnectError("refused"))
         with caplog.at_level(logging.WARNING, logger="ravn.adapters.personas.http"):
             _adapter().load("coder")
         assert caplog.records

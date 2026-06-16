@@ -154,18 +154,14 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
         raw_snapshot = row.get("workflow_snapshot") or {}
         raw_stage_state = row.get("stage_state") or []
         raw_metadata = row.get("metadata") or {}
-        snapshot = (
-            json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else dict(raw_snapshot)
-        )
+        snapshot = json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else dict(raw_snapshot)
         stage_state_data = (
             json.loads(raw_stage_state)
             if isinstance(raw_stage_state, str)
             else list(raw_stage_state)
         )
         metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else dict(raw_metadata)
-        status = WorkflowCampaignStatus(
-            row.get("status") or WorkflowCampaignStatus.PENDING.value
-        )
+        status = WorkflowCampaignStatus(row.get("status") or WorkflowCampaignStatus.PENDING.value)
         stage_state = [
             _stage_from_json(item) for item in stage_state_data if isinstance(item, dict)
         ]
@@ -211,9 +207,7 @@ def _stage_from_json(raw: dict[str, object]) -> CampaignStageState:
         status=str(raw.get("status") or "pending"),
         started_at=datetime.fromisoformat(str(started_at)) if isinstance(started_at, str) else None,
         completed_at=(
-            datetime.fromisoformat(str(completed_at))
-            if isinstance(completed_at, str)
-            else None
+            datetime.fromisoformat(str(completed_at)) if isinstance(completed_at, str) else None
         ),
         reason=str(raw.get("reason")) if raw.get("reason") is not None else None,
     )

@@ -218,9 +218,7 @@ class TestWebSocketChannelInternalFilter:
         await ch.send_event(
             {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1"}}
         )
-        await ch.send_event(
-            {"type": "content_block_delta", "delta": {"type": "input_json_delta"}}
-        )
+        await ch.send_event({"type": "content_block_delta", "delta": {"type": "input_json_delta"}})
         await ch.send_event({"type": "content_block_stop"})
         assert mock_ws.send_text.call_count == 3
 
@@ -533,9 +531,7 @@ class TestFormatTelegramEvent:
         assert '<a href="https://example.com">docs</a>' in rendered
 
     def test_render_telegram_html_formats_headings_lists_and_quotes(self):
-        rendered = render_telegram_html(
-            "# Heading\n- bullet\n1. ordered\n> quoted"
-        )
+        rendered = render_telegram_html("# Heading\n- bullet\n1. ordered\n> quoted")
         assert "<b>Heading</b>" in rendered
         assert "• bullet" in rendered
         assert "1. ordered" in rendered
@@ -681,10 +677,7 @@ class TestTelegramChannelMocked:
             "type": "room_message",
             "participant": {"persona": "Skuld", "display_name": "Skuld"},
             "content": (
-                "| Peer | Status |\n"
-                "|------|--------|\n"
-                "| **Skuld** | idle |\n"
-                "| `coder` | blocked |"
+                "| Peer | Status |\n|------|--------|\n| **Skuld** | idle |\n| `coder` | blocked |"
             ),
             "visibility": "public",
         }
@@ -1109,13 +1102,9 @@ class TestTelegramChannelMocked:
 
     @pytest.mark.asyncio
     async def test_start_creates_forum_topic_for_session_mode(self):
-        with patch("skuld.channels.HAS_TELEGRAM", True), patch(
-            "skuld.channels.Bot"
-        ) as bot_cls:
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
             bot = AsyncMock()
-            bot.create_forum_topic = AsyncMock(
-                return_value=MagicMock(message_thread_id=321)
-            )
+            bot.create_forum_topic = AsyncMock(return_value=MagicMock(message_thread_id=321))
             bot_cls.return_value = bot
 
             channel = TelegramChannel(
@@ -1136,9 +1125,7 @@ class TestTelegramChannelMocked:
 
     @pytest.mark.asyncio
     async def test_start_fixed_topic_without_thread_falls_back(self):
-        with patch("skuld.channels.HAS_TELEGRAM", True), patch(
-            "skuld.channels.Bot"
-        ) as bot_cls:
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
             bot = AsyncMock()
             bot_cls.return_value = bot
 

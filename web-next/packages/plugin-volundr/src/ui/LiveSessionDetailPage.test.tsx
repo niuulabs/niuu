@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { LiveSessionDetailPage } from './LiveSessionDetailPage';
+import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
 import * as chatHooks from './hooks/useSkuldChat';
 import {
   createMockVolundrService,
@@ -1002,6 +1002,15 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
     });
 
+    it('keeps nested active child work out of top timeline segments', () => {
+      const rows = buildTelemetryTimelineRows(TELEMETRY_TRACE);
+      const executionRow = rows.find((row) => row.label === 'execution');
+
+      expect(executionRow?.childSegments).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'turn-2-tool' })]),
+      );
+    });
+
     it('shows a hover card with span details for a trace row', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
@@ -1032,6 +1041,26 @@ describe('LiveSessionDetailPage', () => {
       );
 
       expect(await screen.findByText(/tool · write/i)).toBeInTheDocument();
+    });
+
+    it('positions expanded stage task bars within the parent stage window', async () => {
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /execution trace details/i,
+        }),
+      );
+
+      const nestedToolSegment = await screen.findByTestId(
+        'telemetry-breakdown-task-segment-turn-2-tool',
+      );
+      expect(nestedToolSegment).toHaveStyle({
+        left: `${(178_000 / 520_000) * 100}%`,
+        width: `${(38_000 / 520_000) * 100}%`,
+      });
     });
 
     it('renders the turn-by-turn timing shell with all-turns list by default', async () => {

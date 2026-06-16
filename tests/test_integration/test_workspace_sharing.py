@@ -53,8 +53,8 @@ class TestWorkspacePathConsistency:
         assert ".Values.persistence.mountPath" in helpers_tpl
 
     def test_skuld_workspace_env_var(self, deployment_yaml):
-        """Test Skuld container has WORKSPACE_DIR env var."""
-        assert "WORKSPACE_DIR" in deployment_yaml
+        """Test Skuld container has structured workspace config."""
+        assert "SKULD__SESSION__WORKSPACE_DIR" in deployment_yaml
         # And it uses the helper
         assert 'include "skuld.workspacePath"' in deployment_yaml
 

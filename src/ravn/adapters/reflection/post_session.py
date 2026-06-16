@@ -48,7 +48,7 @@ _CONFIDENCE_HIGH_THRESHOLD = 3
 
 _REFLECTION_SYSTEM = (
     "You are an expert at extracting operational learnings from software engineering sessions. "
-    "Respond only with valid JSON — no markdown fences, no commentary."
+    "Respond only with valid JSON or the literal null. No markdown fences, no commentary."
 )
 
 _REFLECTION_PROMPT = """\
@@ -78,7 +78,9 @@ Respond with a single JSON object:
 }}
 
 If the session was unremarkable and no useful learning can be extracted, \
-respond with: null\
+respond with exactly: null
+
+Do not explain why there is no learning. Do not wrap the response in markdown.\
 """
 
 
@@ -170,26 +172,47 @@ class PostSessionReflectionService:
             repo_slug=payload.get("repo_slug", ""),
         )
 
-        try:
-            response = await self._llm.generate(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                system=_REFLECTION_SYSTEM,
-                model=self._config.llm_alias,
-                max_tokens=self._config.max_tokens,
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                response = await self._llm.generate(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    system=_REFLECTION_SYSTEM,
+                    model=self._config.llm_alias,
+                    max_tokens=self._config.max_tokens,
+                )
+            except Exception as exc:
+                logger.warning("PostSessionReflectionService: LLM call failed: %s", exc)
+                return None
+
+            raw = response.content.strip()
+            if not raw:
+                if attempt + 1 < attempts:
+                    logger.info("PostSessionReflectionService: empty LLM response; retrying")
+                    continue
+                return None
+
+            found_json, parsed = _parse_reflection_json(raw)
+            if found_json:
+                break
+
+            if attempt + 1 < attempts:
+                logger.info(
+                    "PostSessionReflectionService: malformed JSON from LLM; retrying excerpt=%r",
+                    _compact_log_excerpt(raw),
+                )
+                continue
+
+            logger.warning(
+                "PostSessionReflectionService: malformed JSON from LLM excerpt=%r",
+                _compact_log_excerpt(raw),
             )
-        except Exception as exc:
-            logger.warning("PostSessionReflectionService: LLM call failed: %s", exc)
+            return None
+        else:
             return None
 
-        raw = response.content.strip()
-        if raw.lower() == "null":
-            return None
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.warning("PostSessionReflectionService: malformed JSON from LLM: %s", exc)
+        if parsed is None:
             return None
 
         if not isinstance(parsed, dict):
@@ -291,6 +314,96 @@ class PostSessionReflectionService:
         return None
 
 
+def _parse_reflection_json(raw: str) -> tuple[bool, object | None]:
+    """Parse the reflection model's JSON object or null from common wrappers."""
+    text = raw.strip()
+    if not text:
+        return False, None
+    if _looks_like_no_learning_response(text):
+        return True, None
+
+    for candidate in _reflection_json_candidates(text):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        if candidate.lower() == "null":
+            return True, None
+        try:
+            return True, json.loads(candidate)
+        except json.JSONDecodeError:
+            found, parsed = _raw_decode_embedded_json(candidate)
+            if found:
+                return True, parsed
+            found, parsed = _parse_yamlish_json(candidate)
+            if found:
+                return True, parsed
+
+    return False, None
+
+
+def _reflection_json_candidates(text: str) -> list[str]:
+    """Return likely JSON snippets, prioritizing fenced blocks over full text."""
+    candidates: list[str] = []
+    fence_pattern = re.compile(r"```(?:json|JSON)?\s*(.*?)```", flags=re.DOTALL)
+    candidates.extend(match.group(1) for match in fence_pattern.finditer(text))
+    candidates.append(text)
+    return candidates
+
+
+def _raw_decode_embedded_json(text: str) -> tuple[bool, object | None]:
+    """Decode the first JSON value embedded in prose, if one exists."""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[n":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        return True, parsed
+    return False, None
+
+
+def _parse_yamlish_json(text: str) -> tuple[bool, object | None]:
+    """Parse JSON-shaped output with local-model looseness such as trailing commas."""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return False, None
+    try:
+        import yaml  # PyYAML is already present via pydantic-settings[yaml].
+
+        parsed = yaml.safe_load(stripped)
+    except Exception:
+        return False, None
+    if parsed is None or isinstance(parsed, dict | list):
+        return True, parsed
+    return False, None
+
+
+def _looks_like_no_learning_response(text: str) -> bool:
+    """Treat common prose refusals as a null learning."""
+    normalized = re.sub(r"\s+", " ", text.strip().lower()).strip(" .")
+    if normalized == "null":
+        return True
+    no_learning_markers = (
+        "no actionable learning",
+        "no useful learning",
+        "no learning can be extracted",
+        "no learning extracted",
+        "session was unremarkable",
+        "nothing useful to learn",
+    )
+    return any(marker in normalized for marker in no_learning_markers)
+
+
+def _compact_log_excerpt(text: str, *, limit: int = 200) -> str:
+    """Return a single-line bounded excerpt safe for parser diagnostics."""
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
 # ---------------------------------------------------------------------------
 # Learnings injection helper (used by agent at session start)
 # ---------------------------------------------------------------------------
@@ -302,6 +415,9 @@ async def fetch_relevant_learnings(
     repo_slug: str,
     max_pages: int,
     token_budget: int,
+    environment_id: str = "",
+    domain: str = "",
+    flock_id: str = "",
 ) -> str:
     """Query Mímir for learning pages matching *repo_slug* and format for injection.
 
@@ -318,16 +434,13 @@ async def fetch_relevant_learnings(
     if not pages:
         return ""
 
-    # Filter to pages relevant to this repo_slug.
-    # Pages are stored at learnings/{safe_repo}/{slug} — match by path prefix.
-    if repo_slug:
-        safe_repo = re.sub(r"[^a-z0-9_-]", "-", repo_slug.lower())
-        prefix = f"learnings/{safe_repo}/"
-        relevant = [
-            p for p in pages if p.path.startswith(prefix) or p.path.startswith("learnings/general/")
-        ]
-    else:
-        relevant = list(pages)
+    prefixes = _learning_injection_prefixes(
+        repo_slug=repo_slug,
+        environment_id=environment_id,
+        domain=domain,
+        flock_id=flock_id,
+    )
+    relevant = [p for p in pages if any(p.path.startswith(prefix) for prefix in prefixes)]
 
     _epoch = datetime(1970, 1, 1, tzinfo=UTC)
     # Sort by recency (most recently updated first).
@@ -361,6 +474,33 @@ async def fetch_relevant_learnings(
         return ""
 
     return "\n".join(lines)
+
+
+def _learning_injection_prefixes(
+    *,
+    repo_slug: str = "",
+    environment_id: str = "",
+    domain: str = "",
+    flock_id: str = "",
+) -> list[str]:
+    """Return ordered learning prefixes for local and promoted knowledge."""
+    prefixes: list[str] = []
+    if repo_slug:
+        safe_repo = re.sub(r"[^a-z0-9_-]", "-", repo_slug.lower())
+        prefixes.append(f"learnings/{safe_repo}/")
+    if environment_id:
+        prefixes.append(f"learnings/environment/{_scope_slug(environment_id)}/")
+    if flock_id:
+        prefixes.append(f"learnings/flock/{_scope_slug(flock_id)}/")
+    if domain:
+        prefixes.extend(
+            [
+                f"learnings/domain/{_scope_slug(domain)}/",
+                f"learnings/flock/{_scope_slug(f'flock:{domain}')}/",
+            ]
+        )
+    prefixes.extend(["learnings/shared/", "learnings/general/"])
+    return list(dict.fromkeys(prefixes))
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +693,12 @@ def _slugify(text: str) -> str:
     slug = re.sub(r"[\s_-]+", "-", slug)
     slug = slug.strip("-")
     return slug[:60] or "learning"
+
+
+def _scope_slug(text: str) -> str:
+    """Convert Environment/Flock/domain identifiers to promoted-learning path slugs."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:80] or "general"
 
 
 def _escape_yaml(text: str) -> str:

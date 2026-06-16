@@ -60,7 +60,7 @@ export function NodeInspector({
               data-testid="inspector-label"
               defaultValue={node.label}
               onBlur={(e) => onUpdateLabel(node.id, e.currentTarget.value)}
-              className="niuu:w-full niuu:bg-bg-secondary niuu:border niuu:border-border niuu:rounded niuu:px-2 niuu:py-1.5 niuu:text-text-primary niuu:text-sm niuu:font-sans niuu-box-border"
+              className="niuu:w-full niuu:bg-bg-secondary niuu:border niuu:border-border niuu:rounded niuu:px-2 niuu:py-1.5 niuu:text-text-primary niuu:text-sm niuu:font-sans niuu:box-border"
             />
           </label>
 

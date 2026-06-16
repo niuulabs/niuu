@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import PurePosixPath
 
 from volundr.domain.models import LocalMountSource, PodSpecAdditions, Session
+from volundr.domain.mount_policy import ensure_host_path_allowed
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
 
 logger = logging.getLogger(__name__)
@@ -83,21 +82,8 @@ class LocalMountContributor(SessionContributor):
         Raises:
             ValueError: If the path is not allowed.
         """
-        resolved = str(PurePosixPath(os.path.normpath(host_path)))
-
-        if resolved == "/":
-            if not self._allow_root_mount:
-                raise ValueError("Mounting root filesystem (/) requires allow_root_mount=true")
-            return
-
-        if not self._allowed_prefixes:
-            return
-
-        for prefix in self._allowed_prefixes:
-            normalized_prefix = str(PurePosixPath(os.path.normpath(prefix)))
-            if resolved == normalized_prefix or resolved.startswith(normalized_prefix + "/"):
-                return
-
-        raise ValueError(
-            f"Host path '{host_path}' is not under any allowed prefix: {self._allowed_prefixes}"
+        ensure_host_path_allowed(
+            host_path,
+            self._allowed_prefixes,
+            allow_root_mount=self._allow_root_mount,
         )

@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { drawStars, drawZones, drawEdges, drawNode, drawMimir, drawMinimap } from './renderer';
+import {
+  drawStars,
+  drawZones,
+  drawEdges,
+  drawNode,
+  drawMimir,
+  drawMinimap,
+  nodeIconGlyph,
+} from './renderer';
 import type { Topology, TopologyNode } from '../../domain';
 import type { NodePosition } from './layoutEngine';
 import { makeCtxMock } from './test-helpers';
@@ -162,6 +170,47 @@ describe('drawEdges', () => {
     expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
   });
 
+  it('ignores self-loop edges from stale discovery snapshots', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [
+        {
+          id: 'edge:cluster-vk:cluster-vk',
+          sourceId: 'cluster-vk',
+          targetId: 'cluster-vk',
+          kind: 'soft',
+        },
+      ],
+    };
+    expect(() => drawEdges(ctx, topo, POSITIONS, 0)).not.toThrow();
+    expect(ctx.bezierCurveTo).not.toHaveBeenCalled();
+  });
+
+  it('ignores legacy containment edges between parent and child nodes', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      ...TOPOLOGY,
+      edges: [
+        {
+          id: 'edge:cluster-vk:ting-0',
+          sourceId: 'cluster-vk',
+          targetId: 'ting-0',
+          kind: 'soft',
+        },
+        {
+          id: 'edge:contains',
+          sourceId: 'cluster-vk',
+          targetId: 'volundr-0',
+          kind: 'soft',
+          relationType: 'contains',
+        },
+      ],
+    };
+    drawEdges(ctx, topo, POSITIONS, 0);
+    expect(ctx.bezierCurveTo).not.toHaveBeenCalled();
+  });
+
   it('animates dashed-anim edges with lineDashOffset', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const topo: Topology = {
@@ -212,6 +261,56 @@ describe('drawEdges', () => {
         (call: unknown[]) => Array.isArray(call[0]) && (call[0] as number[]).length === 0,
       ),
     ).toBe(true);
+  });
+
+  it('does not draw inline labels for semantic edges', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const topo: Topology = {
+      timestamp: TOPOLOGY.timestamp,
+      nodes: [
+        {
+          id: 'namespace-ymir-volundr',
+          typeId: 'namespace',
+          label: 'volundr',
+          parentId: 'cluster-ymir',
+          status: 'healthy',
+        },
+        {
+          id: 'warden',
+          typeId: 'warden',
+          label: 'warden',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+        {
+          id: 'mimir',
+          typeId: 'mimir',
+          label: 'mimir',
+          parentId: 'namespace-ymir-volundr',
+          status: 'healthy',
+        },
+      ],
+      edges: [
+        {
+          id: 'edge:writes',
+          sourceId: 'warden',
+          targetId: 'mimir',
+          kind: 'dashed-long',
+          relationType: 'writes',
+          label: 'writes',
+        },
+      ],
+    };
+    const positions = new Map<string, NodePosition>([
+      ['namespace-ymir-volundr', { x: 100, y: 300 }],
+      ['warden', { x: 0, y: 0 }],
+      ['mimir', { x: 200, y: 0 }],
+    ]);
+
+    drawEdges(ctx, topo, positions, 0);
+
+    expect(ctx.roundRect).not.toHaveBeenCalled();
+    expect(ctx.fillText).not.toHaveBeenCalled();
   });
 });
 
@@ -305,9 +404,24 @@ describe('drawNode', () => {
       status: 'healthy',
     };
     drawNode(ctx, node, pos, true);
-    // A hover ring arc should be drawn before the shape
-    expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    // Hovered nodes use the same rounded swatch vocabulary as the legend.
+    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
     expect(ctx.stroke).toHaveBeenCalled();
+  });
+
+  it('draws generic nodes with the shared legend swatch glyph', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const node: TopologyNode = {
+      id: 'svc-0',
+      typeId: 'service',
+      label: 'observatory',
+      parentId: null,
+      status: 'healthy',
+    };
+    drawNode(ctx, node, pos, false);
+    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+    expect(calls.some(([text]) => text === nodeIconGlyph('service'))).toBe(true);
   });
 
   it('draws the canonical sidebar rune for ting', () => {

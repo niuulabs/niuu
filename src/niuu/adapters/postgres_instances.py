@@ -50,10 +50,11 @@ class PostgresInstanceRepository(InstanceRepository):
             """
             INSERT INTO niuu_instances (
                 id, kind, slug, name, base_url, visibility, owner_id, tenant_id,
-                enabled, is_default, config, created_at, updated_at
+                enabled, is_default, config, created_at, updated_at, tags
             )
             VALUES (
-                $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13
+                $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13,
+                $14::jsonb
             )
             ON CONFLICT (id) DO UPDATE SET
                 kind = EXCLUDED.kind,
@@ -66,7 +67,8 @@ class PostgresInstanceRepository(InstanceRepository):
                 enabled = EXCLUDED.enabled,
                 is_default = EXCLUDED.is_default,
                 config = EXCLUDED.config,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                tags = EXCLUDED.tags
             """,
             instance.id,
             str(instance.kind),
@@ -81,6 +83,7 @@ class PostgresInstanceRepository(InstanceRepository):
             json.dumps(instance.config),
             instance.created_at,
             instance.updated_at,
+            json.dumps(list(instance.tags)),
         )
         return instance
 
@@ -94,6 +97,12 @@ class PostgresInstanceRepository(InstanceRepository):
             config = json.loads(config_raw)
         else:
             config = dict(config_raw) if config_raw else {}
+
+        tags_raw = row["tags"]
+        if isinstance(tags_raw, str):
+            tags = json.loads(tags_raw)
+        else:
+            tags = list(tags_raw) if tags_raw else []
 
         return RegisteredInstance(
             id=str(row["id"]),
@@ -109,4 +118,5 @@ class PostgresInstanceRepository(InstanceRepository):
             config=config,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            tags=tags,
         )

@@ -18,6 +18,7 @@ export * from './primitives/TopbarChip';
 export * from './primitives/BudgetBar';
 export * from './primitives/BudgetRunwayBar';
 export * from './primitives/CommandPalette';
+export * from './primitives/HighlightedCode';
 export * from './data/Table';
 export * from './data/FilterBar';
 export * from './data/KpiStrip';

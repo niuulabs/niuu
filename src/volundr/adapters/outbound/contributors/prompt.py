@@ -13,8 +13,8 @@ from volundr.domain.ports import (
 class PromptContributor(SessionContributor):
     """Injects system_prompt and initial_prompt from the launch request.
 
-    Runs after TemplateContributor so ad-hoc prompts override template defaults
-    via deep merge (last writer wins for the same key).
+    Runs after LaunchSpecContributor so ad-hoc prompts override launch-spec
+    defaults via deep merge (last writer wins for the same key).
     """
 
     def __init__(self, **_extra: object) -> None:

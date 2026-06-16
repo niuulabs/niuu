@@ -10,6 +10,15 @@ Organised by namespace:
 - ``VOLUNDR_*`` — Volundr platform events
 - ``BIFROST_*`` — Bifrost gateway events
 - ``SYSTEM_*`` — Infrastructure and lifecycle events
+- ``ENVIRONMENT_*`` — Resident Environment lifecycle/state events
+- ``SIGNAL_*`` — Normalized Environment signals
+- ``VALKYRIE_*`` — Resident Valkyrie state, judgment, and action events
+- ``ODIN_*`` — ODIN court decisions
+- ``ATTENTION_*`` — Attention routing/escalation events
+- ``FEEDBACK_*`` — Feedback on signals, state, judgments, and actions
+- ``LEARNING_*`` — Learning promotion and adoption events
+- ``PARTICIPANT_*`` — Presence for agents, humans, tools, and surfaces
+- ``ROOM_*`` — Huddle/room lifecycle and transcript events
 """
 
 from __future__ import annotations
@@ -306,6 +315,9 @@ SYSTEM_ERROR: str = "system.error"
 #: A metric snapshot was emitted for observability.
 SYSTEM_METRIC: str = "system.metric"
 
+#: A message that could not be processed was dead-lettered with its raw bytes.
+SYSTEM_DLQ_MESSAGE: str = "system.dlq.message"
+
 # ---------------------------------------------------------------------------
 # mimir — Mimir knowledge-base events
 # ---------------------------------------------------------------------------
@@ -331,3 +343,193 @@ GITHUB_PUSH_MAIN: str = "github.push.main"
 
 #: An issue was opened on GitHub.
 GITHUB_ISSUE_OPENED: str = "github.issue.opened"
+
+# ---------------------------------------------------------------------------
+# environment — resident Environment lifecycle and operational state
+# ---------------------------------------------------------------------------
+
+#: An Environment was registered or created.
+ENVIRONMENT_CREATED: str = "environment.created"
+
+#: An Environment lifecycle transition occurred.
+ENVIRONMENT_LIFECYCLE_CHANGED: str = "environment.lifecycle.changed"
+
+#: The current operational state changed.
+ENVIRONMENT_STATE_CHANGED: str = "environment.state.changed"
+
+#: An Environment health summary changed.
+ENVIRONMENT_HEALTH_CHANGED: str = "environment.health.changed"
+
+#: An Environment replay/checkpoint cursor was recorded.
+ENVIRONMENT_REPLAY_CHECKPOINTED: str = "environment.replay.checkpointed"
+
+# ---------------------------------------------------------------------------
+# signal — normalized external signals consumed by resident Valkyries
+# ---------------------------------------------------------------------------
+
+#: A normalized signal was received from any Environment source.
+SIGNAL_RECEIVED: str = "signal.received"
+
+#: A normalized Kubernetes signal was received.
+SIGNAL_KUBERNETES_EVENT: str = "signal.kubernetes.event"
+
+#: A normalized inbox signal was received.
+SIGNAL_INBOX_MESSAGE: str = "signal.inbox.message"
+
+#: A normalized host signal was received.
+SIGNAL_HOST_EVENT: str = "signal.host.event"
+
+#: A normalized printer/Pi signal was received.
+SIGNAL_PRINTER_EVENT: str = "signal.printer.event"
+
+# ---------------------------------------------------------------------------
+# valkyrie — resident Valkyrie state, judgment, and actions
+# ---------------------------------------------------------------------------
+
+#: A Valkyrie's wake/sleep/dream/health state changed.
+VALKYRIE_STATE_CHANGED: str = "valkyrie.state.changed"
+
+#: A Valkyrie published its current operational/wakefulness state.
+VALKYRIE_STATE_UPDATED: str = "valkyrie.state.updated"
+
+#: A Valkyrie recorded an operational judgment.
+VALKYRIE_JUDGMENT_RECORDED: str = "valkyrie.judgment.recorded"
+
+#: A Valkyrie proposed an operational judgment for downstream policy/court handling.
+VALKYRIE_JUDGMENT_PROPOSED: str = "valkyrie.judgment.proposed"
+
+#: A resident Valkyrie judgment was rejected before publication.
+VALKYRIE_JUDGMENT_REJECTED: str = "valkyrie.judgment.rejected"
+
+#: A Valkyrie proposed a scoped action for policy/court handling.
+VALKYRIE_ACTION_PROPOSED: str = "valkyrie.action.proposed"
+
+#: A Valkyrie requested a scoped action.
+VALKYRIE_ACTION_REQUESTED: str = "valkyrie.action.requested"
+
+#: A scoped Valkyrie action completed.
+VALKYRIE_ACTION_COMPLETED: str = "valkyrie.action.completed"
+
+#: A scoped Valkyrie action was executed.
+VALKYRIE_ACTION_EXECUTED: str = "valkyrie.action.executed"
+
+#: A scoped Valkyrie action failed.
+VALKYRIE_ACTION_FAILED: str = "valkyrie.action.failed"
+
+# ---------------------------------------------------------------------------
+# odin — ODIN court deliberation and resolution
+# ---------------------------------------------------------------------------
+
+#: An ODIN court review started for a judgment or action.
+ODIN_COURT_OPENED: str = "odin.court.opened"
+
+#: ODIN court recorded a final decision.
+ODIN_COURT_DECIDED: str = "odin.court.decided"
+
+#: ODIN court recorded dissenting or minority context.
+ODIN_COURT_DISSENT_RECORDED: str = "odin.court.dissent.recorded"
+
+#: A valkyrie (or operator) filed a ReviewItem for human decision.
+ODIN_REVIEW_REQUESTED: str = "odin.review.requested"
+
+#: An operator decided a ReviewItem; the target resident applies it.
+ODIN_REVIEW_DECIDED: str = "odin.review.decided"
+
+#: A resident applied (or failed to apply) a decided ReviewItem.
+ODIN_REVIEW_RESOLVED: str = "odin.review.resolved"
+
+# ---------------------------------------------------------------------------
+# attention — routing, escalation, and notification decisions
+# ---------------------------------------------------------------------------
+
+#: An attention decision was recorded.
+ATTENTION_DECIDED: str = "attention.decided"
+
+#: ODIN court recorded a final attention/action/escalation decision.
+ATTENTION_DECISION_MADE: str = "attention.decision.made"
+
+#: A signal/state/judgment was escalated to a human or surface.
+ATTENTION_ESCALATED: str = "attention.escalated"
+
+#: Attention was suppressed because the Valkyrie handled or ignored it.
+ATTENTION_SUPPRESSED: str = "attention.suppressed"
+
+# ---------------------------------------------------------------------------
+# feedback — feedback on decisions and actions
+# ---------------------------------------------------------------------------
+
+#: Feedback was recorded on a signal, state, judgment, action, or escalation.
+FEEDBACK_RECORDED: str = "feedback.recorded"
+
+#: Feedback changed a future attention or action preference.
+FEEDBACK_PREFERENCE_UPDATED: str = "feedback.preference.updated"
+
+# ---------------------------------------------------------------------------
+# learning — private, Environment, Flock, domain, and shared learning
+# ---------------------------------------------------------------------------
+
+#: A private/local learning was recorded.
+LEARNING_RECORDED: str = "learning.recorded"
+
+#: A learning was promoted to Environment/Flock/domain/shared scope.
+LEARNING_PROMOTED: str = "learning.promoted"
+
+#: A peer adopted, rejected, or locally overrode a shared learning.
+LEARNING_ADOPTION_RECORDED: str = "learning.adoption.recorded"
+
+# ---------------------------------------------------------------------------
+# flock — learning exchange between related Valkyries across Environments
+# ---------------------------------------------------------------------------
+
+#: A resident proposed a vetted learning/tool to its flock.
+FLOCK_LEARNING_PROPOSED: str = "flock.learning.proposed"
+
+#: A peer Environment started canarying a proposed flock learning.
+FLOCK_LEARNING_CANARY_STARTED: str = "flock.learning.canary_started"
+
+#: A peer Environment adopted a flock learning after canary.
+FLOCK_LEARNING_ADOPTED: str = "flock.learning.adopted"
+
+#: A peer Environment rejected a flock learning.
+FLOCK_LEARNING_REJECTED: str = "flock.learning.rejected"
+
+#: A flock learning became active across the cohort.
+FLOCK_LEARNING_ACTIVATED: str = "flock.learning.activated"
+
+#: A flock learning was rolled back after regression or negative transfer.
+FLOCK_LEARNING_ROLLED_BACK: str = "flock.learning.rolled_back"
+
+# ---------------------------------------------------------------------------
+# participant — humans, agents, tools, and surfaces in an Environment
+# ---------------------------------------------------------------------------
+
+#: A participant joined an Environment or room.
+PARTICIPANT_JOINED: str = "participant.joined"
+
+#: A participant left an Environment or room.
+PARTICIPANT_LEFT: str = "participant.left"
+
+#: A participant heartbeat/presence update was observed.
+PARTICIPANT_HEARTBEAT: str = "participant.heartbeat"
+
+#: A participant's capabilities, tools, or surfaces changed.
+PARTICIPANT_CAPABILITIES_CHANGED: str = "participant.capabilities_changed"
+
+# ---------------------------------------------------------------------------
+# room — replayable huddle and transcript events
+# ---------------------------------------------------------------------------
+
+#: A replayable Environment room/huddle was opened.
+ROOM_OPENED: str = "room.opened"
+
+#: A room message was recorded.
+ROOM_MESSAGE_RECORDED: str = "room.message.recorded"
+
+#: A room context snapshot was recorded for replay/late join.
+ROOM_CONTEXT_SNAPSHOT_RECORDED: str = "room.context_snapshot.recorded"
+
+#: A room transcript was recorded for audit/learning.
+ROOM_TRANSCRIPT_RECORDED: str = "room.transcript.recorded"
+
+#: A room was closed.
+ROOM_CLOSED: str = "room.closed"

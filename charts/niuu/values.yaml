@@ -12,6 +12,9 @@ global:
     registry: ghcr.io/niuulabs
   domain: niuu.world
 
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
 ingress:
   enabled: false
   className: ""
@@ -22,12 +25,12 @@ ingress:
         service: guild
       - path: /api/v1/niuu/targets
         service: guild
-      - path: /api/v1/niuu/volundr
-        service: guild
+      - path: /api/v1/forge
+        service: forge-api
       - path: /api/v1/niuu/observatory
         service: guild
       - path: /api/v1/tokens
-        service: niuu-shared
+        service: volundr
       - path: /api/v1/identity
         service: niuu-shared
       - path: /api/v1/features
@@ -44,7 +47,7 @@ ingress:
         service: bifrost
       - path: /api/v1/ravn
         service: ravn
-      - path: /api/v1/forge
+      - path: /api/v1/volundr
         service: volundr
       - path: /api/v1/users
         service: volundr

@@ -1,0 +1,42 @@
+# Example values for a read-only Kubernetes resident Valkyrie.
+
+agent:
+  persona: k8s-valkyrie
+  workspaceRoot: /workspace
+
+config:
+  value: |-
+    permission:
+      mode: workspace_write
+      workspace_root: /workspace
+    logging:
+      level: info
+      format: text
+    environment:
+      id: cluster
+      type: k8s
+    initiative:
+      enabled: true
+      default_persona: {{ .Values.agent.persona | quote }}
+      queue_journal_path: /home/agent/.ravn/daemon/queue.json
+    discovery:
+      adapters:
+        - adapter: ravn.adapters.discovery.k8s.K8sDiscoveryAdapter
+    wakefulness:
+      enabled: true
+    dream_cycle:
+      enabled: true
+      persona: {{ .Values.agent.persona | quote }}
+      state_dir: /home/agent/.ravn/daemon/state
+    mimir:
+      enabled: false
+
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "pods/log", "events", "nodes", "services", "configmaps"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+      verbs: ["get", "list", "watch"]

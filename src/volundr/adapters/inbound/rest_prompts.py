@@ -114,7 +114,7 @@ class ErrorResponse(BaseModel):
 def create_prompts_router(
     prompt_service: PromptService,
     *,
-    prefix: str = "/api/v1/forge",
+    prefix: str = "/api/v1/volundr",
 ) -> APIRouter:
     """Create FastAPI router for saved prompt endpoints."""
     router = APIRouter(prefix=prefix)

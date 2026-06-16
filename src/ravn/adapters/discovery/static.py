@@ -56,6 +56,9 @@ class StaticDiscoveryAdapter:
         Pre-built ``RavnIdentity`` for this instance.
     cluster_file:
         Path to the cluster.yaml peer definition file.
+    peers:
+        Optional inline peer definitions. Used when no cluster file is present,
+        which is useful for generated Kubernetes pod specs.
     poll_interval_s:
         Seconds between file re-reads for hot-reload. Set to 0 to disable.
     heartbeat_interval_s:
@@ -71,6 +74,7 @@ class StaticDiscoveryAdapter:
         own_identity: RavnIdentity,
         *,
         cluster_file: str = "~/.ravn/cluster.yaml",
+        peers: list[dict[str, Any]] | None = None,
         poll_interval_s: float = 30.0,
         heartbeat_interval_s: float = 30.0,  # noqa: ARG002 — ignored
         peer_ttl_s: float = 90.0,  # noqa: ARG002 — ignored
@@ -80,6 +84,7 @@ class StaticDiscoveryAdapter:
     ) -> None:
         self._identity = own_identity
         self._cluster_file = Path(cluster_file).expanduser()
+        self._inline_peers = list(peers or [])
         self._poll_interval_s = poll_interval_s
 
         self._peers: dict[str, RavnPeer] = {}
@@ -158,16 +163,18 @@ class StaticDiscoveryAdapter:
 
     async def _load_peers(self) -> None:
         """Load peers from cluster.yaml and fire join/leave callbacks."""
-        if not self._cluster_file.exists():
+        if self._inline_peers:
+            data = {"peers": self._inline_peers}
+        elif self._cluster_file.exists():
+            try:
+                content = self._cluster_file.read_text(encoding="utf-8")
+                data = yaml.safe_load(content) or {}
+                self._last_mtime = self._cluster_file.stat().st_mtime
+            except Exception as exc:
+                logger.warning("static_discovery: failed to read cluster file: %s", exc)
+                return
+        else:
             logger.debug("static_discovery: cluster file not found: %s", self._cluster_file)
-            return
-
-        try:
-            content = self._cluster_file.read_text(encoding="utf-8")
-            data = yaml.safe_load(content) or {}
-            self._last_mtime = self._cluster_file.stat().st_mtime
-        except Exception as exc:
-            logger.warning("static_discovery: failed to read cluster file: %s", exc)
             return
 
         if not isinstance(data, dict) or "peers" not in data:

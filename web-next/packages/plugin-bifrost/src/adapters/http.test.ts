@@ -5,10 +5,10 @@ describe('buildBifrostHttpAdapter', () => {
     const cacheStats = {
       hits: 1,
       misses: 2,
-      hitRate: 0.33,
-      savedTokens: 50,
-      savedInputTokens: 30,
-      savedOutputTokens: 20,
+      hit_rate: 0.33,
+      saved_tokens: 50,
+      saved_input_tokens: 30,
+      saved_output_tokens: 20,
       entries: 1,
     };
     const client = {
@@ -174,7 +174,15 @@ describe('buildBifrostHttpAdapter', () => {
         timestamp: '2026-05-12T23:00:00Z',
       },
     ]);
-    expect(stats).toEqual(cacheStats);
+    expect(stats).toEqual({
+      hits: 1,
+      misses: 2,
+      hitRate: 0.33,
+      savedTokens: 50,
+      savedInputTokens: 30,
+      savedOutputTokens: 20,
+      entries: 1,
+    });
     expect(client.get).toHaveBeenCalledWith('/v1/usage?limit=25');
   });
 
@@ -214,15 +222,7 @@ describe('buildBifrostHttpAdapter', () => {
           ];
         }
         if (path === '/v1/cache/stats') {
-          return {
-            hits: 0,
-            misses: 0,
-            hitRate: 0,
-            savedTokens: 0,
-            savedInputTokens: 0,
-            savedOutputTokens: 0,
-            entries: 0,
-          };
+          return {};
         }
         return {
           summary: {},
@@ -254,6 +254,7 @@ describe('buildBifrostHttpAdapter', () => {
     const models = await adapter.listModels();
     const providers = await adapter.listProviders();
     const usage = await adapter.getUsage();
+    const stats = await adapter.getCacheStats();
 
     expect(models).toEqual([
       {
@@ -335,6 +336,15 @@ describe('buildBifrostHttpAdapter', () => {
         timestamp: '2026-05-12T23:10:00Z',
       },
     ]);
+    expect(stats).toEqual({
+      hits: 0,
+      misses: 0,
+      hitRate: 0,
+      savedTokens: 0,
+      savedInputTokens: 0,
+      savedOutputTokens: 0,
+      entries: 0,
+    });
     expect(client.get).toHaveBeenCalledWith('/v1/usage?limit=100');
   });
 });

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { ITingService } from '../ports';
+import type { ITingService, SagaTargetSelection } from '../ports';
 import type { Saga } from '../domain/saga';
 
 export function useSaga(id: string) {
@@ -33,8 +33,8 @@ export function useAssignSagaTarget(sagaId: string) {
   const ting = useService<ITingService>('ting');
   const queryClient = useQueryClient();
 
-  return useMutation<Saga, Error, string | null>({
-    mutationFn: (instanceId: string | null) => ting.assignTarget(sagaId, instanceId),
+  return useMutation<Saga, Error, SagaTargetSelection>({
+    mutationFn: (target: SagaTargetSelection) => ting.assignTarget(sagaId, target),
     onSuccess: (saga) => {
       queryClient.setQueryData(['ting', 'sagas', saga.id], saga);
       queryClient.setQueryData(['ting', 'sagas'], (current: Saga[] | undefined) => {

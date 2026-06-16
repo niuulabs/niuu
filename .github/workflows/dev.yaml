@@ -58,7 +58,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -96,7 +96,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -138,7 +138,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Playwright temporarily disabled
         run: echo "Skipping Playwright until visual baselines are stabilized."
@@ -169,7 +169,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -193,7 +193,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
@@ -295,7 +295,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
@@ -306,7 +306,7 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -314,6 +314,7 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package charts/bifrost -d .helm-packages/
+          helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
           helm package charts/skuld -d .helm-packages/
           helm package charts/skuld-planner -d .helm-packages/
@@ -333,6 +334,7 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/skuld-[0-9]*.tgz ${{ env.CHART_REPO }}
@@ -358,7 +360,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
@@ -418,7 +420,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Restore PostgreSQL bundle cache
         id: pg-cache
@@ -477,7 +479,18 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install Linux ARM64 Nuitka toolchain
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          {
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "LDFLAGS=-fuse-ld=lld"
+          } >> "$GITHUB_ENV"
 
       - name: Download CLI web assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -527,7 +540,18 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install Linux ARM64 Nuitka toolchain
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          {
+            echo "CC=clang"
+            echo "CXX=clang++"
+            echo "LDFLAGS=-fuse-ld=lld"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env

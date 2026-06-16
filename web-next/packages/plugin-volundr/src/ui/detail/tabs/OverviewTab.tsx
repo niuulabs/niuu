@@ -60,7 +60,7 @@ export function OverviewTab({ session }: OverviewTabProps) {
           <dd className="niuu:font-mono niuu:text-text-primary">{session.ravnId}</dd>
           <dt className="niuu:text-text-muted">Cluster</dt>
           <dd className="niuu:font-mono niuu:text-text-primary">{session.clusterId}</dd>
-          <dt className="niuu:text-text-muted">Template</dt>
+          <dt className="niuu:text-text-muted">Launch spec</dt>
           <dd className="niuu:font-mono niuu:text-text-primary">{session.templateId}</dd>
           <dt className="niuu:text-text-muted">State</dt>
           <dd>

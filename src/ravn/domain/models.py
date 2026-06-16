@@ -38,6 +38,8 @@ class OutputMode(StrEnum):
 
     SILENT = "silent"  # agent runs, memory records, nothing delivered
     AMBIENT = "ambient"  # published to Sleipnir for attention model to route
+    PRESENT = "present"  # present to the operator without urgent interruption
+    URGENT = "urgent"  # urgent attention/escalation path
     SURFACE = "surface"  # delivered directly via configured channel (Telegram etc.)
 
 

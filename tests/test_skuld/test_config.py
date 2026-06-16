@@ -18,7 +18,7 @@ class TestSkuldSessionConfig:
         config = SkuldSessionConfig()
         assert config.id == "unknown"
         assert config.name == "unknown"
-        assert config.model == "claude-sonnet-4-6"
+        assert config.model == "claude-opus-4-8"
         assert config.workspace_dir is None
 
     def test_explicit_values(self):
@@ -38,13 +38,6 @@ class TestSkuldSettings:
         """Test all default values when no env vars or config files."""
         # Clear any env vars that might interfere
         for var in [
-            "SESSION_ID",
-            "SESSION_NAME",
-            "MODEL",
-            "HOST",
-            "PORT",
-            "VOLUNDR_API_URL",
-            "WORKSPACE_DIR",
             "SKULD__TRANSPORT",
             "SKULD__HOST",
             "SKULD__PORT",
@@ -60,7 +53,7 @@ class TestSkuldSettings:
         assert s.volundr_api_url == ""
         assert s.session.id == "unknown"
         assert s.session.name == "unknown"
-        assert s.session.model == "claude-sonnet-4-6"
+        assert s.session.model == "claude-opus-4-8"
         assert s.persistence_mount_path == "/volundr/sessions"
         assert s.peer_watchdog.enabled is True
         assert s.peer_watchdog.poll_seconds == 5.0
@@ -69,7 +62,6 @@ class TestSkuldSettings:
 
     def test_workspace_path_computed(self, monkeypatch):
         """Test workspace_path computed from session ID when workspace_dir is None."""
-        monkeypatch.delenv("WORKSPACE_DIR", raising=False)
         monkeypatch.setenv("SKULD__SESSION__ID", "sess-42")
 
         s = SkuldSettings()
@@ -126,33 +118,24 @@ class TestSkuldSettings:
             }
         ]
 
-    def test_legacy_flat_env_vars(self, monkeypatch):
-        """Test backward-compatible flat env vars."""
-        # Clear any SKULD__ prefixed vars
-        for var in [
-            "SKULD__SESSION__ID",
-            "SKULD__SESSION__MODEL",
-            "SKULD__HOST",
-            "SKULD__PORT",
-        ]:
-            monkeypatch.delenv(var, raising=False)
-
-        monkeypatch.setenv("SESSION_ID", "legacy-id")
-        monkeypatch.setenv("MODEL", "legacy-model")
+    def test_flat_env_vars_are_ignored(self, monkeypatch):
+        """Skuld broker config only accepts SKULD__ structured env vars."""
+        monkeypatch.setenv("SESSION_ID", "flat-id")
+        monkeypatch.setenv("MODEL", "flat-model")
         monkeypatch.setenv("HOST", "10.0.0.1")
         monkeypatch.setenv("PORT", "7777")
         monkeypatch.setenv("VOLUNDR_API_URL", "http://volundr:80")
 
         s = SkuldSettings()
-        assert s.session.id == "legacy-id"
-        assert s.session.model == "legacy-model"
-        assert s.host == "10.0.0.1"
-        assert s.port == 7777
-        assert s.volundr_api_url == "http://volundr:80"
+        assert s.session.id == "unknown"
+        assert s.session.model == "claude-opus-4-8"
+        assert s.host == "0.0.0.0"
+        assert s.port == 8081
+        assert s.volundr_api_url == ""
 
-    def test_prefixed_takes_precedence_over_legacy(self, monkeypatch):
-        """Test SKULD__ env vars take precedence over flat legacy vars."""
-        monkeypatch.setenv("SESSION_ID", "legacy")
+    def test_prefixed_env_vars_work_when_flat_envs_exist(self, monkeypatch):
+        """SKULD__ env vars are the supported configuration surface."""
+        monkeypatch.setenv("SESSION_ID", "flat")
         monkeypatch.setenv("SKULD__SESSION__ID", "prefixed")
         monkeypatch.setenv("SKULD__TRANSPORT", "subprocess")
 
@@ -174,10 +157,6 @@ class TestSkuldSettings:
 
         # Clear env vars
         for var in [
-            "SESSION_ID",
-            "MODEL",
-            "HOST",
-            "PORT",
             "SKULD__TRANSPORT",
             "SKULD__HOST",
             "SKULD__PORT",
@@ -248,23 +227,8 @@ class TestSkuldSettings:
         assert config.system_prompt == "You are an agent."
         assert config.initial_prompt == "Fix the bug."
 
-    def test_legacy_env_system_prompt(self, monkeypatch):
-        monkeypatch.delenv("SKULD__SESSION__SYSTEM_PROMPT", raising=False)
-        monkeypatch.setenv("SESSION_SYSTEM_PROMPT", "legacy system prompt")
-
-        s = SkuldSettings()
-        assert s.session.system_prompt == "legacy system prompt"
-
-    def test_legacy_env_initial_prompt(self, monkeypatch):
-        monkeypatch.delenv("SKULD__SESSION__INITIAL_PROMPT", raising=False)
-        monkeypatch.setenv("SESSION_INITIAL_PROMPT", "legacy initial prompt")
-
-        s = SkuldSettings()
-        assert s.session.initial_prompt == "legacy initial prompt"
-
-    def test_prefixed_env_prompt_takes_precedence(self, monkeypatch):
+    def test_prefixed_env_prompt(self, monkeypatch):
         monkeypatch.setenv("SKULD__SESSION__SYSTEM_PROMPT", "prefixed")
-        monkeypatch.setenv("SESSION_SYSTEM_PROMPT", "legacy")
 
         s = SkuldSettings()
         assert s.session.system_prompt == "prefixed"
@@ -275,7 +239,7 @@ class TestTransportAdapter:
 
     def test_default_resolves_to_sdk(self, monkeypatch):
         """Default config resolves to SDKTransport."""
-        for var in ["CLI_TYPE", "SKULD__CLI_TYPE", "SKULD__TRANSPORT"]:
+        for var in ["SKULD__CLI_TYPE", "SKULD__TRANSPORT"]:
             monkeypatch.delenv(var, raising=False)
 
         s = SkuldSettings()
@@ -295,6 +259,13 @@ class TestTransportAdapter:
         s = SkuldSettings()
         assert s.transport_adapter == "skuld.transports.subprocess.SubprocessTransport"
 
+    def test_transport_tmux_interactive_resolves(self, monkeypatch):
+        """transport=tmux-interactive maps to TmuxInteractiveTransport."""
+        monkeypatch.setenv("SKULD__TRANSPORT", "tmux-interactive")
+
+        s = SkuldSettings()
+        assert s.transport_adapter == "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+
     def test_explicit_transport_adapter_takes_precedence(self, monkeypatch):
         """Explicit transport_adapter overrides legacy fields."""
         monkeypatch.setenv("SKULD__CLI_TYPE", "codex")
@@ -306,14 +277,14 @@ class TestTransportAdapter:
         s = SkuldSettings()
         assert s.transport_adapter == "my.custom.Transport"
 
-    def test_legacy_cli_type_env_var_resolves(self, monkeypatch):
-        """Legacy CLI_TYPE env var still maps to transport_adapter."""
+    def test_flat_cli_type_env_var_is_ignored(self, monkeypatch):
+        """CLI_TYPE is not a supported broker config alias."""
         for var in ["SKULD__CLI_TYPE", "SKULD__TRANSPORT"]:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("CLI_TYPE", "codex")
 
         s = SkuldSettings()
-        assert s.transport_adapter == "skuld.transports.codex.CodexSubprocessTransport"
+        assert s.transport_adapter == "skuld.transports.sdk.SDKTransport"
 
     def test_codex_takes_precedence_over_subprocess(self, monkeypatch):
         """When both cli_type=codex and transport=subprocess, codex wins."""

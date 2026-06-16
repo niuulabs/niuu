@@ -6,6 +6,7 @@ import { ravnPlugin } from '@niuulabs/plugin-ravn';
 import { mimirPlugin } from '@niuulabs/plugin-mimir';
 import { observatoryPlugin } from '@niuulabs/plugin-observatory';
 import { tingPlugin } from '@niuulabs/plugin-ting';
+import { valkyriePlugin } from '@niuulabs/plugin-valkyrie';
 import { volundrPlugin } from '@niuulabs/plugin-volundr';
 import { definePlugin, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { GuildPage } from './GuildPage';
@@ -88,6 +89,7 @@ export const plugins: PluginDescriptor[] = [
   tingPlugin,
   mimirPlugin,
   ravnPlugin,
+  valkyriePlugin,
   observatoryPlugin,
   guildPlugin,
   settingsPlugin,

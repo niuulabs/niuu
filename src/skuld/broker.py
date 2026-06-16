@@ -130,6 +130,11 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _non_empty_str(value: object) -> str:
+    """Return a stripped string or an empty string for absent/non-string values."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
     """Return a short human-readable description for a browser content block."""
     block_type = str(block.get("type") or "").strip()
@@ -178,9 +183,7 @@ def _normalize_browser_message_content(content: object) -> str:
             f"{count} {label}" if count != 1 else f"1 {label}"
             for label, count in sorted(counts.items())
         )
-        lines.append(
-            f"[User attached {attachment_summary}. This transport forwards text only.]"
-        )
+        lines.append(f"[User attached {attachment_summary}. This transport forwards text only.]")
     return "\n\n".join(lines).strip()
 
 
@@ -201,6 +204,8 @@ _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 
 # Matches git commit output like: [main e4f7a21] fix: some message
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
+
+
 def _is_git_commit(cmd: str) -> bool:
     """Return True if a Bash command is a git commit invocation."""
     stripped = cmd.lstrip()
@@ -692,9 +697,12 @@ def _workflow_gate_nodes(graph: dict[str, Any] | None) -> list[WorkflowGateNode]
                 else "gate.changes_requested",
             ),
         )
-        pending_behavior = str(
-            node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
-        ).strip() or "help_needed"
+        pending_behavior = (
+            str(
+                node.get("pendingBehavior") or node.get("pending_behavior") or "help_needed"
+            ).strip()
+            or "help_needed"
+        )
         mode = str(node.get("mode") or "human_approval").strip() or "human_approval"
         instructions = str(node.get("instructions") or "").strip()
 
@@ -979,6 +987,15 @@ class Broker:
         self._flock_completion_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
+        # Durable full-fidelity event log (session_event_log). Every CLI frame is
+        # buffered here and flushed to Volundr by a background worker, independent
+        # of any attached channel — so nothing is dropped when no client is
+        # connected, and any client can replay the full transcript from a cursor.
+        self._event_log_seq = 0
+        self._event_log_buffer: list[dict] = []
+        self._event_log_lock = asyncio.Lock()
+        self._event_log_task: asyncio.Task[None] | None = None
+        self._event_log_stopping = False
         self._activity_state: str = "idle"
         self._last_activity_report: float = 0.0
         self._conversation_turns: list[ConversationTurn] = []
@@ -1038,10 +1055,16 @@ class Broker:
                 append_turn=self._append_turn,
                 report_timeline_event=self._report_timeline_event,
                 observe_peer_event=self._observe_room_peer_event,
+                publish_presence_event=self._publish_room_presence_event,
             )
             if self._settings.room.enabled
             else None
         )
+
+        # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on
+        # first forwarded user message; None when disabled.
+        self._reflex_injector: Any = None
+        self._reflex_initialised = False
 
         # JWT identity state — populated on first browser WebSocket connection
         self._user_jwt: str | None = None
@@ -1102,11 +1125,19 @@ class Broker:
         """Append a turn and persist to disk."""
         self._conversation_turns.append(turn)
         self._save_conversation_history()
+        self._enqueue_event_log(
+            {
+                "type": "conversation.turn",
+                "turn": asdict(turn),
+            }
+        )
 
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
         """Save any accumulated assistant content as a conversation turn."""
         content = self._pending_assistant_content
-        if not content:
+        # Save when there's text OR captured parts (tool_use/tool_result/reasoning)
+        # — a tool-only assistant turn (no prose) must still persist its tool cards.
+        if not content and not self._pending_assistant_parts:
             return
 
         # Flush remaining reasoning
@@ -1254,6 +1285,8 @@ class Broker:
                     emits=["code.changed"],
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
+                    participant_kind="mesh",
+                    heartbeat_ttl_s=0.0,
                 )
             has_peers = discovery is not None and hasattr(discovery, "peers")
             if self._room_bridge is not None and has_peers:
@@ -1265,6 +1298,8 @@ class Broker:
                         subscribes_to=list(getattr(peer, "consumes_event_types", [])),
                         emits=list(getattr(peer, "emits_event_types", [])),
                         tools=list(getattr(peer, "capabilities", [])),
+                        participant_kind="mesh",
+                        heartbeat_ttl_s=0.0,
                     )
 
             # Start room mesh bridge so outcomes from any mesh peer flow to the
@@ -1321,6 +1356,15 @@ class Broker:
                 peer_ids.add(participant.peer_id)
         return peer_ids
 
+    def _workflow_trigger_peer_ready(self, peer_id: str) -> bool:
+        """Return True when a workflow-trigger consumer can receive mesh events."""
+        if self._room_bridge is None:
+            return True
+        participant = self._room_bridge.participants.get(peer_id)
+        if participant is not None and getattr(participant, "participant_kind", "") == "mesh":
+            return True
+        return bool(self._room_bridge.is_connected(peer_id))
+
     async def _wait_for_workflow_trigger_consumers(
         self,
         event_type: str,
@@ -1342,9 +1386,7 @@ class Broker:
 
         deadline = time.monotonic() + max(0.0, timeout_s)
         missing = {
-            peer_id
-            for peer_id in required_peers
-            if not self._room_bridge.is_connected(peer_id)
+            peer_id for peer_id in required_peers if not self._workflow_trigger_peer_ready(peer_id)
         }
         if missing:
             logger.info(
@@ -1359,7 +1401,7 @@ class Broker:
             missing = {
                 peer_id
                 for peer_id in required_peers
-                if not self._room_bridge.is_connected(peer_id)
+                if not self._workflow_trigger_peer_ready(peer_id)
             }
 
         if missing:
@@ -1399,9 +1441,7 @@ class Broker:
             wait_timeout_s,
         )
         if not consumers_ready:
-            raise RuntimeError(
-                f"workflow trigger consumers for {cfg.event_type} did not connect"
-            )
+            raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
 
         delay_s = max(0.0, float(cfg.startup_delay_s or 0.0))
         if delay_s and not self._workflow_trigger_consumer_peer_ids(cfg.event_type):
@@ -1489,6 +1529,8 @@ class Broker:
                 "" if self._has_workflow_trigger() else self._settings.session.initial_prompt
             ),
             "mcp_servers": self._settings.mcp_servers,
+            "resume_session_id": self._settings.session.resume_session_id,
+            "ask_user_question_enabled": self._settings.ask_user_question_enabled,
         }
 
     def _create_transport(self) -> CLITransport:
@@ -1533,6 +1575,9 @@ class Broker:
         ):
             turn_id = str(uuid.uuid4())
             self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
+            # The initial prompt is a human turn too — persist it to the durable
+            # log so log-only replay opens with the operator's first message.
+            self._enqueue_human_turn_event(prompt, turn_id)
             try:
                 await self._channels.broadcast(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
@@ -1555,13 +1600,17 @@ class Broker:
         if self.volundr_api_url:
             logger.info("Token usage reporting enabled: %s", self.volundr_api_url)
         else:
-            logger.warning("VOLUNDR_API_URL not set — token usage will not be reported")
+            logger.warning("SKULD__VOLUNDR_API_URL not set — token usage will not be reported")
 
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
 
         # Load conversation history from disk
         self._load_conversation_history()
+
+        # Evict participants whose heartbeats lapse (room mode only)
+        if self._room_bridge is not None:
+            self._room_bridge.start_presence_sweep()
 
         # Initialize transport
         self._transport = self._create_transport()
@@ -1590,6 +1639,9 @@ class Broker:
             asyncio.create_task(self._chronicle_watcher.start())
             logger.info("Chronicle watcher started for %s", watch_dir)
 
+        # Start the durable event-log worker (full-fidelity transcript capture)
+        await self._init_event_log()
+
         # Auto-start transport when an initial prompt is configured
         # (dispatched sessions should begin work immediately, not wait
         # for a browser to connect). Run as a background task so the
@@ -1605,14 +1657,29 @@ class Broker:
             else:
                 logger.info("Initial prompt configured — auto-starting transport in background")
                 asyncio.create_task(self._auto_start_transport())
+        elif self._conversation_turns:
+            # Resumed/restarted session (no new initial prompt, but prior history
+            # was loaded). Warm the transport eagerly so it is already alive when
+            # the next user message arrives. The message-delivery path connects a
+            # WebSocket and closes immediately after sending; a cold transport's
+            # ~280ms lazy-start outlasts that connection and the first message is
+            # dropped (no reply). Warming here makes a restarted session behave
+            # like a never-stopped one, where steering works.
+            logger.info("Resumed session with prior history — warming transport in background")
+            asyncio.create_task(self._auto_start_transport())
+        elif "RemoteControl" in (self._settings.transport_adapter or ""):
+            # Remote-control sessions take no initial prompt (the native app
+            # drives them), so neither branch above fires — but we still want the
+            # RC server launched immediately so the pairing URL is ready without
+            # waiting for a browser to connect.
+            logger.info("Remote-control session — launching the RC server in background")
+            asyncio.create_task(self._auto_start_transport())
 
         # Start mesh adapter if enabled (after transport is ready)
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                self._workflow_trigger_task = asyncio.create_task(
-                    self._run_workflow_trigger_task()
-                )
+                self._workflow_trigger_task = asyncio.create_task(self._run_workflow_trigger_task())
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
@@ -1631,9 +1698,15 @@ class Broker:
         """
         logger.info("Broker shutting down")
 
+        if self._room_bridge is not None:
+            await self._room_bridge.stop_presence_sweep()
+
         # Stop chronicle watcher first (flush pending events)
         if self._chronicle_watcher:
             await self._chronicle_watcher.stop()
+
+        # Drain and stop the durable event-log worker so the last turn persists
+        await self._stop_event_log()
 
         if self._peer_watchdog_task is not None:
             self._peer_watchdog_task.cancel()
@@ -2087,10 +2160,7 @@ class Broker:
             or f"{state.label} is waiting for human approval before the workflow can continue.",
             "reason": "needs_human_approval",
             "recommendation": state.condition
-            or (
-                "Review the pending gate and decide whether to approve "
-                "or request changes."
-            ),
+            or ("Review the pending gate and decide whether to approve or request changes."),
             "context": {
                 "gate_id": state.id,
                 "gate_label": state.label,
@@ -2801,11 +2871,26 @@ class Broker:
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+
+        # Durably capture EVERY frame first — before any channel/broadcast logic —
+        # so agent output is never lost when no client is attached.
+        self._enqueue_event_log(data)
+
+        if event_type == "remote_control":
+            # A remote-control transport reporting its pairing URL. Surface it as
+            # a real assistant turn (conversation history + durable-log replay +
+            # live channels) so every client shows the link to hand off to the
+            # native app.
+            url = str(data.get("url") or "").strip()
+            if url:
+                await self._surface_remote_control_url(url)
+            return
+
         if event_type == "control_request":
             self._track_pending_permission_request(data)
 
-        tool_result_only_user_event = (
-            event_type == "user" and self._is_tool_result_only_user_event(data)
+        tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
+            data
         )
         suppress_channel_broadcast = (
             event_type in {"user", "assistant", "content_block_delta", "result"}
@@ -2813,17 +2898,13 @@ class Broker:
         )
         num_channels = self._channels.count
         logger.debug(
-            "_handle_cli_event: type=%s, forwarding to %d channel(s) suppress=%s",
-            event_type,
+            "_handle_cli_event: forwarding to %d channel(s) suppress=%s",
             num_channels,
             suppress_channel_broadcast,
         )
 
         if num_channels == 0:
-            logger.warning(
-                "_handle_cli_event: no channels to forward type=%s",
-                event_type,
-            )
+            logger.warning("_handle_cli_event: no channels to forward event")
 
         if not suppress_channel_broadcast:
             await self._channels.broadcast(data)
@@ -2905,6 +2986,24 @@ class Broker:
                 )
         elif tool_result_only_user_event:
             await self._finish_assistant_tool_trace_spans_from_user_event(data)
+            # Persist tool_result blocks onto the open assistant turn so the saved
+            # conversation carries tool OUTPUT (not just the call) for read-back.
+            tr_msg = data.get("message", {})
+            tr_blocks = tr_msg.get("content", []) if isinstance(tr_msg, dict) else []
+            for tr_block in tr_blocks or []:
+                if (
+                    isinstance(tr_block, dict)
+                    and tr_block.get("type") == "tool_result"
+                    and tr_block.get("tool_use_id")
+                ):
+                    self._pending_assistant_parts.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tr_block.get("tool_use_id"),
+                            "content": tr_block.get("content"),
+                            "is_error": bool(tr_block.get("is_error")),
+                        }
+                    )
         elif event_type == "result":
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
@@ -2916,30 +3015,44 @@ class Broker:
         # We also handle the HTTP streaming format (content_block_delta, result)
         # for backward compatibility.
         if event_type == "assistant":
-            # Extract content from the assistant message
+            # Extract content and ACCUMULATE parts across the messages of one turn
+            # (a tool_use message, then the final text), so the SAVED conversation
+            # turn carries tool calls + reasoning — not just text — and reloads with
+            # its tool cards. Parts are reset on flush, not per message.
             message = data.get("message", {})
             content_blocks = message.get("content", [])
             if isinstance(content_blocks, list) and content_blocks:
                 text_parts = []
-                reasoning_parts = []
                 for block in content_blocks:
                     if not isinstance(block, dict):
                         continue
-                    if block.get("type") == "text" and block.get("text"):
+                    btype = block.get("type")
+                    if btype == "text" and block.get("text"):
                         text_parts.append(block["text"])
-                    elif block.get("type") == "thinking" and block.get("thinking"):
-                        reasoning_parts.append(block["thinking"])
+                        self._pending_assistant_parts.append(
+                            {"type": "text", "text": block["text"]}
+                        )
+                    elif btype == "thinking" and block.get("thinking"):
+                        # Keep last 500 chars per reasoning block as a summary.
+                        self._pending_assistant_parts.append(
+                            {"type": "reasoning", "text": str(block["thinking"])[-500:]}
+                        )
+                    elif btype == "tool_use" and block.get("id"):
+                        self._pending_assistant_parts.append(
+                            {
+                                "type": "tool_use",
+                                "id": block.get("id"),
+                                "name": block.get("name"),
+                                "input": block.get("input") or {},
+                            }
+                        )
                 text_content = "\n".join(text_parts)
                 if text_content:
-                    self._pending_assistant_content = text_content
-                    self._pending_assistant_parts = []
-                    if reasoning_parts:
-                        # Keep last 500 chars of reasoning as summary
-                        combined = "\n".join(reasoning_parts)
-                        self._pending_assistant_parts.append(
-                            {"type": "reasoning", "text": combined[-500:]}
-                        )
-                    self._pending_assistant_parts.append({"type": "text", "text": text_content})
+                    self._pending_assistant_content = (
+                        f"{self._pending_assistant_content}\n{text_content}"
+                        if self._pending_assistant_content
+                        else text_content
+                    )
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
@@ -3143,6 +3256,11 @@ class Broker:
         "set_permission_mode": "set_permission_mode",
         "rewind_files": "rewind_files",
         "mcp_set_servers": "mcp_set_servers",
+        "terminal_input": "terminal_input",
+        "terminal_key": "terminal_keys",
+        "terminal_resize": "terminal_resize",
+        "slash_command": "slash_commands",
+        "discover_slash_commands": "slash_commands",
     }
 
     async def _dispatch_browser_message(
@@ -3186,6 +3304,15 @@ class Broker:
                     str(request_id),
                     response,
                     auto_approved=False,
+                )
+
+            # AskUserQuestion: a human answered a question the agent asked.
+            # Resolves the blocking can_use_tool future in SDKTransport.
+            case "ask_user_answer":
+                await self._transport.send_control(
+                    "ask_user_answer",
+                    request_id=data.get("request_id", ""),
+                    answers=data.get("answers", []),
                 )
 
             # Phase 3: interrupt current turn
@@ -3245,6 +3372,54 @@ class Broker:
                     servers=servers,
                 )
 
+            # Interactive terminal transports: raw input, key presses, and
+            # resize events. These are intentionally transport controls, not
+            # chat turns, so workflows can drive slash menus/history/editing.
+            case "terminal_input":
+                await self._transport.send_control(
+                    "terminal_input",
+                    data=data.get("data", data.get("text", "")),
+                    enter=bool(data.get("enter", False)),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_key":
+                await self._transport.send_control(
+                    "terminal_key",
+                    key=data.get("key", ""),
+                    keys=data.get("keys", []),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "terminal_resize":
+                await self._transport.send_control(
+                    "terminal_resize",
+                    cols=data.get("cols", data.get("columns", 0)),
+                    rows=data.get("rows", 0),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "slash_command":
+                await self._transport.send_control(
+                    "slash_command",
+                    command=data.get("command", ""),
+                    arguments=data.get("arguments", data.get("args", "")),
+                    pane_id=data.get("pane_id", ""),
+                )
+
+            case "discover_slash_commands":
+                commands = await self.discover_slash_commands(
+                    refresh=bool(data.get("refresh", True))
+                )
+                if sender_ws is not None:
+                    await sender_ws.send_json(
+                        {
+                            "type": "slash_commands",
+                            "commands": commands,
+                            "count": len(commands),
+                        }
+                    )
+
             # Room: forward a directed message to a specific Ravn participant
             case "directed_message":
                 if self._room_bridge is None:
@@ -3294,6 +3469,9 @@ class Broker:
                         content=content_str,
                     )
                 )
+                # Mirror the human turn into the durable event log so log-only
+                # transcript replay (web/iOS) includes it.
+                self._enqueue_human_turn_event(content_str, msg_id)
                 now = datetime.now(UTC)
                 await self._complete_trace_span(
                     kind="turn.user",
@@ -3360,6 +3538,35 @@ class Broker:
             except Exception:
                 logger.debug("Failed to broadcast transport control error", exc_info=True)
 
+    def _retrieval_reflex_injector(self) -> Any:
+        """Lazily build the retrieval reflex injector from reflex config (NIU-1059)."""
+        if self._reflex_initialised:
+            return self._reflex_injector
+        self._reflex_initialised = True
+        from ravn.reflex import build_reflex_injector  # noqa: PLC0415
+
+        self._reflex_injector = build_reflex_injector(self._settings)
+        return self._reflex_injector
+
+    async def _apply_retrieval_reflex(self, message: str) -> str:
+        """Prefix known Mímir entity pointers onto a forwarded user message.
+
+        Fail-open: any reflex failure logs an ERROR and returns the message
+        unchanged — the reflex must never crash or block a turn.
+        """
+        try:
+            injector = self._retrieval_reflex_injector()
+            if injector is None:
+                return message
+            return await injector.apply(message, self.session_id)
+        except Exception:
+            logger.error(
+                "retrieval reflex failed for session %s — forwarding message without pointers",
+                self.session_id,
+                exc_info=True,
+            )
+            return message
+
     async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
@@ -3370,7 +3577,8 @@ class Broker:
         something in the chat UI rather than a silent stall.
         """
         try:
-            await transport.send_message(message)  # type: ignore[attr-defined]
+            outbound = await self._apply_retrieval_reflex(message)
+            await transport.send_message(outbound)  # type: ignore[attr-defined]
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:
@@ -3378,24 +3586,124 @@ class Broker:
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
+    async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
+        """Ingest a Claude Code hook payload into the normal event pipeline.
+
+        Interactive tmux sessions can configure Claude Code HTTP hooks to POST
+        here. The payload schema is owned by Claude Code, so we keep the raw
+        body intact and add only stable routing fields.
+        """
+        transport_hook = getattr(self._transport, "handle_claude_hook", None)
+        if callable(transport_hook):
+            try:
+                handled = await transport_hook(payload)
+            except Exception:
+                logger.warning("Transport Claude hook handler failed", exc_info=True)
+            else:
+                if handled:
+                    return
+
+        event_name = (
+            payload.get("hook_event_name")
+            or payload.get("hookEventName")
+            or payload.get("event")
+            or payload.get("hook_event")
+            or "unknown"
+        )
+        await self._handle_cli_event(
+            {
+                "type": "claude_hook",
+                "event_type": "claude.hook",
+                "hook_event_name": str(event_name),
+                "payload": payload,
+            }
+        )
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """Return slash commands available through the current transport."""
+        if self._transport is None:
+            return []
+
+        commands = await self._transport.discover_slash_commands(refresh=refresh)
+        if commands:
+            return self._normalize_slash_commands(commands)
+
+        raw_commands = getattr(self._transport, "slash_commands", [])
+        if callable(raw_commands):
+            raw_commands = raw_commands()
+        return self._normalize_slash_commands(raw_commands)
+
+    @staticmethod
+    def _normalize_slash_commands(raw_commands: Any) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if not isinstance(raw_commands, list):
+            return normalized
+        for item in raw_commands:
+            if isinstance(item, str):
+                raw_name = item
+                description = ""
+                kind = "command"
+                source = "transport"
+            elif isinstance(item, dict):
+                raw_name = str(item.get("name") or item.get("command") or "")
+                description = str(item.get("description") or "")
+                kind = str(item.get("kind") or "command")
+                source = str(item.get("source") or "transport")
+            else:
+                continue
+            raw_name = raw_name.strip()
+            if not raw_name:
+                continue
+            name = raw_name if raw_name.startswith("/") else f"/{raw_name}"
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(
+                {
+                    "name": name,
+                    "command": name[1:],
+                    "description": description.strip(),
+                    "kind": kind,
+                    "source": source,
+                }
+            )
+        return normalized
+
     async def handle_human_room_message(
         self,
         content: str,
         *,
         source: str = "external",
         metadata: dict[str, Any] | None = None,
+        participant_id: str | None = None,
         deliver_to_transport: bool = True,
     ) -> str:
         """Record and broadcast a human-originated room message."""
         if not content.strip():
             raise ValueError("content is required")
+        participant_meta = None
+        participant = None
+        if participant_id:
+            if self._room_bridge is None:
+                raise RuntimeError("Room mode is not enabled")
+            participant = self._room_bridge.participants.get(participant_id)
+            if participant is None:
+                raise LookupError(f"Unknown room participant: {participant_id}")
+            participant_meta = asdict(participant)
 
         msg_id = str(uuid.uuid4())
+        metadata_payload = metadata or {}
         self._append_turn(
             ConversationTurn(
                 id=msg_id,
                 role="user",
                 content=content,
+                participant_id=participant_id,
+                participant_meta=participant_meta,
+                thread_id=_non_empty_str(metadata_payload.get("thread_id")),
+                visibility=_non_empty_str(metadata_payload.get("visibility")) or "public",
+                metadata=metadata_payload,
             )
         )
         now = datetime.now(UTC)
@@ -3406,19 +3714,37 @@ class Broker:
             actor_type="user",
             actor_id=source,
             actor_label=source,
-            attributes={"source": source, "metadata": metadata or {}},
+            attributes={"source": source, "metadata": metadata_payload},
             started_at=now,
             ended_at=now,
         )
-        await self._channels.broadcast(
-            {
-                "type": "user_confirmed",
-                "id": msg_id,
-                "content": content,
-                "source": source,
-                "metadata": metadata or {},
-            }
-        )
+        event = {
+            "type": "user_confirmed",
+            "id": msg_id,
+            "content": content,
+            "source": source,
+            "metadata": metadata_payload,
+        }
+        if participant_id:
+            event["participantId"] = participant_id
+            event["participant"] = participant_meta
+        thread_id = _non_empty_str(metadata_payload.get("thread_id"))
+        if thread_id:
+            event["threadId"] = thread_id
+        await self._channels.broadcast(event)
+        if self._room_bridge is not None and participant is not None:
+            for room_id in participant.room_ids:
+                await self._room_bridge.record_huddle_message(
+                    room_id=room_id,
+                    environment_id=participant.environment_id,
+                    message_id=msg_id,
+                    participant_id=participant.peer_id,
+                    role="user",
+                    content=content,
+                    visibility=event.get("visibility", "public"),
+                    thread_id=thread_id,
+                    metadata=metadata_payload,
+                )
         if deliver_to_transport:
             await self._send_explicit_human_message_to_transport(content)
         return msg_id
@@ -3446,6 +3772,7 @@ class Broker:
             rendered_content,
             source=source,
             metadata=metadata,
+            participant_id=_non_empty_str(metadata.get("participant_id")) if metadata else None,
             deliver_to_transport=False,
         )
 
@@ -3457,6 +3784,87 @@ class Broker:
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
+
+    async def join_human_environment(
+        self,
+        *,
+        participant_id: str,
+        display_name: str,
+        environment_id: str,
+        role: str = "observer",
+        room_id: str = "",
+        capabilities: list[str] | None = None,
+        surfaces: list[str] | None = None,
+        environment_action_authorities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Join a human participant to the live Environment room state."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        meta = await self._room_bridge.join_human_environment(
+            participant_id,
+            display_name=display_name,
+            environment_id=environment_id,
+            role=role,
+            room_id=room_id,
+            capabilities=capabilities,
+            surfaces=surfaces,
+            environment_action_authorities=environment_action_authorities,
+        )
+        return asdict(meta)
+
+    async def heartbeat_human_environment(
+        self,
+        *,
+        participant_id: str,
+        status: str | None = None,
+        wakefulness: str | None = None,
+        attention_state: str | None = None,
+    ) -> dict[str, Any]:
+        """Record heartbeat/state for a human Environment participant."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        meta = await self._room_bridge.heartbeat(
+            participant_id,
+            status=status,
+            wakefulness=wakefulness,
+            attention_state=attention_state,
+        )
+        if meta is None:
+            raise LookupError(f"Unknown room participant: {participant_id}")
+        return asdict(meta)
+
+    async def leave_human_environment(
+        self,
+        *,
+        participant_id: str,
+        reason: str = "left",
+    ) -> None:
+        """Leave a human participant from the live Environment room state."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        await self._room_bridge.leave_human_environment(participant_id, reason=reason)
+
+    async def close_environment_huddle(
+        self,
+        *,
+        room_id: str,
+        reason: str = "closed",
+        summary: str = "",
+    ) -> dict[str, Any]:
+        """Close a live Environment huddle and publish its transcript."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        return await self._room_bridge.close_environment_huddle(
+            room_id=room_id,
+            reason=reason,
+            summary=summary,
+        )
+
+    def require_room_capability(self, participant_id: str, capability: str) -> None:
+        """Raise when a room participant cannot perform a control action."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        self._room_bridge.require_participant_capability(participant_id, capability)
 
     async def _send_explicit_human_message_to_transport(self, content: str) -> None:
         """Deliver an explicit human room message to Skuld's own transport."""
@@ -3508,11 +3916,15 @@ class Broker:
         )
         return "\n".join(lines)
 
-    def get_room_participants(self) -> list[dict[str, Any]]:
+    async def _publish_room_presence_event(self, event: SleipnirEvent) -> None:
+        """Publish canonical room presence events through the existing Sleipnir bus."""
+        await self._sleipnir_publisher.publish(event)
+
+    def get_room_participants(self, environment_id: str | None = None) -> list[dict[str, Any]]:
         """Return the current room participants as plain dictionaries."""
         if self._room_bridge is None:
             return []
-        return [asdict(participant) for participant in self._room_bridge.participants.values()]
+        return self._room_bridge.environment_roster(environment_id=environment_id)
 
     def get_communication_routes(self) -> list[dict[str, Any]]:
         """Return active external communication routes exposed by this broker."""
@@ -3624,7 +4036,7 @@ class Broker:
                 response.text[:200],
             )
         except Exception:
-            logger.debug("Failed to start trace span kind=%s name=%s", kind, name, exc_info=True)
+            logger.debug("Failed to start trace span", exc_info=True)
         return None
 
     async def _finish_trace_span(
@@ -3741,6 +4153,190 @@ class Broker:
             },
         )
 
+    # -- Durable event log (full-fidelity transcript capture) -----------------
+
+    FORGE_LOG_PATH_TEMPLATE = "/api/v1/forge/sessions/{sid}/log"
+
+    @staticmethod
+    def _extract_request_id(data: dict) -> str | None:
+        """Best-effort turn correlation id from a raw CLI frame."""
+        rid = data.get("request_id")
+        if isinstance(rid, str) and rid:
+            return rid
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            inner = msg.get("request_id")
+            if isinstance(inner, str) and inner:
+                return inner
+        return None
+
+    def _enqueue_event_log(self, data: dict) -> None:
+        """Buffer a raw CLI frame for durable persistence. Never raises.
+
+        Runs for every frame regardless of attached channels — this is what
+        guarantees no agent output is dropped when no client is connected.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        self._event_log_seq += 1
+        entry = {
+            "seq": self._event_log_seq,
+            "kind": str(data.get("type", "unknown"))[:64],
+            "payload": data,
+            "request_id": self._extract_request_id(data),
+            # Emission time, captured HERE — without it the ingest stamps
+            # arrival time, which skews replayed timelines whenever the POST
+            # batch lags (rate-limit stalls, backend hiccups). Clients replay
+            # these ts so an old session shows when things actually happened.
+            "ts": datetime.now(UTC).isoformat(),
+        }
+        role = data.get("role")
+        if isinstance(role, str):
+            entry["role"] = role[:32]
+        self._event_log_buffer.append(entry)
+        # Safety valve: cap memory if the backend is unreachable for a long time.
+        # Dropping the oldest is the least-bad option vs OOM-killing the broker,
+        # and is logged loudly so the loss is visible.
+        overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
+        if overflow > 0:
+            del self._event_log_buffer[:overflow]
+            logger.warning(
+                "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
+                overflow,
+            )
+
+    def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
+        """Persist a HUMAN message to the durable event log as a user frame.
+
+        The CLI never echoes the operator's own prompt as a text frame — only
+        tool_results arrive with role=user — so a transcript replayed purely
+        from the durable log (web Code tab, iOS) omitted every human turn ("the
+        transcript doesn't show my message"). Synthesize a string-content user
+        frame, which the replay reducers render directly as a user turn (and
+        string content distinguishes it from the CLI's block-list tool_result
+        user frames).
+        """
+        if not content:
+            return
+        self._enqueue_event_log(
+            {
+                "type": "user",
+                "role": "user",
+                "uuid": turn_id,
+                "message": {"role": "user", "content": content},
+            }
+        )
+
+    async def _surface_remote_control_url(self, url: str) -> None:
+        """Surface a remote-control pairing URL as an assistant turn everywhere.
+
+        Appends it to conversation history (the conversation endpoint), enqueues a
+        renderable assistant frame to the durable log (log-only replay), and
+        broadcasts to any live channels — so whichever surface a client uses, the
+        hand-off link to the native app is visible.
+        """
+        notice = (
+            "🔗 **Remote control ready.** Drive this session from the Claude app "
+            f"or claude.ai/code:\n\n{url}\n\n"
+            "Open the link (or scan the QR in the host terminal) to attach the "
+            "native app. This session is controlled remotely — messages typed "
+            "here are not sent to the agent."
+        )
+        turn_id = str(uuid.uuid4())
+        self._append_turn(ConversationTurn(id=turn_id, role="assistant", content=notice))
+        frame = {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": notice}]},
+        }
+        self._enqueue_event_log(frame)
+        try:
+            await self._channels.broadcast(frame)
+        except Exception:
+            logger.debug("remote-control URL broadcast failed", exc_info=True)
+        safe_url_for_log = url.replace("\r", "").replace("\n", "")
+        logger.info(
+            "Remote control pairing URL surfaced for session %s: %s",
+            self.session_id,
+            safe_url_for_log,
+        )
+
+    async def _event_log_flush_loop(self) -> None:
+        """Background worker: drain the event-log buffer to Volundr with retry."""
+        interval = self._settings.event_log_flush_interval_ms / 1000.0
+        while not self._event_log_stopping:
+            await asyncio.sleep(interval)
+            try:
+                await self._flush_event_log()
+            except Exception:
+                logger.debug("event log flush iteration failed", exc_info=True)
+
+    async def _flush_event_log(self) -> None:
+        """Send one batch from the front of the buffer. Removes only on success."""
+        if not self.volundr_api_url:
+            return
+        async with self._event_log_lock:
+            batch = self._event_log_buffer[: self._settings.event_log_batch_size]
+        if not batch:
+            return
+
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
+        try:
+            response = await client.post(path, json={"entries": batch})
+        except Exception:
+            logger.debug("event log POST failed — will retry", exc_info=True)
+            return
+        if response.status_code >= 300:
+            logger.debug(
+                "event log POST rejected (%d): %s — will retry",
+                response.status_code,
+                response.text[:200],
+            )
+            return
+        # Idempotent on (session_id, seq), so removing exactly the sent count is
+        # safe even if newer frames were appended during the POST.
+        async with self._event_log_lock:
+            del self._event_log_buffer[: len(batch)]
+
+    async def _init_event_log(self) -> None:
+        """Resume the seq counter from the backend so restarts don't collide.
+
+        The PK is (session_id, seq); if a restarted broker reset seq to 0 its
+        appends would hit ON CONFLICT DO NOTHING and silently vanish. Seeding
+        from the stored head keeps the sequence monotonic across restarts.
+        """
+        if not self._settings.event_log_enabled or not self.volundr_api_url:
+            return
+        client = await self._get_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        try:
+            response = await client.get(path)
+            if response.status_code < 300:
+                self._event_log_seq = int(response.json().get("latest_seq", 0))
+        except Exception:
+            logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
+        logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _stop_event_log(self) -> None:
+        """Drain remaining frames and stop the worker on shutdown."""
+        self._event_log_stopping = True
+        if self._event_log_task is not None:
+            self._event_log_task.cancel()
+            await asyncio.gather(self._event_log_task, return_exceptions=True)
+            self._event_log_task = None
+        # Final best-effort drain so the last turn isn't lost on shutdown.
+        for _ in range(self._settings.event_log_max_buffer):
+            async with self._event_log_lock:
+                remaining = len(self._event_log_buffer)
+            if remaining == 0:
+                return
+            before = remaining
+            await self._flush_event_log()
+            async with self._event_log_lock:
+                if len(self._event_log_buffer) >= before:
+                    return  # made no progress (backend down) — give up
+
     async def _emit_pipeline_event(
         self,
         event_type: str,
@@ -3833,12 +4429,7 @@ class Broker:
             try:
                 response = await client.post(url, json=payload)
                 if response.status_code < 300:
-                    logger.info(
-                        "Reported usage: model=%s tokens=%d cost=%s",
-                        model_id,
-                        tokens,
-                        cost,
-                    )
+                    logger.info("Reported usage")
                 else:
                     logger.warning(
                         "Usage report failed (%d): %s",
@@ -3846,7 +4437,7 @@ class Broker:
                         response.text[:200],
                     )
             except Exception:
-                logger.warning("Failed to report usage for %s", model_id, exc_info=True)
+                logger.warning("Failed to report usage", exc_info=True)
 
     async def _report_timeline_event(self, event: dict) -> None:
         """Report a single timeline event to the Volundr API.
@@ -3863,11 +4454,7 @@ class Broker:
         try:
             response = await client.post(url, json=event)
             if response.status_code < 300:
-                logger.debug(
-                    "Timeline event reported: type=%s, t=%d",
-                    event.get("type"),
-                    event.get("t", 0),
-                )
+                logger.debug("Timeline event reported")
             else:
                 logger.debug(
                     "Timeline event report failed (%d): %s",
@@ -3875,11 +4462,7 @@ class Broker:
                     response.text[:200],
                 )
         except Exception:
-            logger.debug(
-                "Failed to report timeline event: type=%s",
-                event.get("type"),
-                exc_info=True,
-            )
+            logger.debug("Failed to report timeline event", exc_info=True)
 
     @staticmethod
     def _classify_pipeline_event(tool_ev: dict) -> str:
@@ -3984,9 +4567,7 @@ class Broker:
     ) -> tuple[uuid.UUID | None, str]:
         """Pop a pending assistant tool span by id, falling back to FIFO order."""
         tool_key = (
-            tool_use_id
-            if tool_use_id and tool_use_id in self._trace_assistant_tool_spans
-            else ""
+            tool_use_id if tool_use_id and tool_use_id in self._trace_assistant_tool_spans else ""
         )
         if not tool_key and self._trace_assistant_tool_order:
             tool_key = self._trace_assistant_tool_order[0]
@@ -4087,6 +4668,13 @@ class Broker:
             "turn_count": self._artifacts.turn_count,
             "duration_seconds": self._artifacts.duration_seconds,
         }
+        # Ride the CLI/agent conversation id upward so Volundr can persist it
+        # and resume the conversation when the session is restarted. Works for
+        # both Claude (session UUID) and Codex (thread id) — every
+        # resume-capable transport implements .session_id.
+        cli_session_id = self._transport.session_id if self._transport else None
+        if cli_session_id:
+            metadata["cli_session_id"] = cli_session_id
         if extra_metadata:
             metadata.update(extra_metadata)
 
@@ -4388,6 +4976,12 @@ class Broker:
         self._extract_and_store_outcome()
         await self._emit_session_ended_event()
         await self._publish_mesh_outcome()
+
+        # The chronicle SUMMARY (an LLM pass on stop) is opt-in — OFF by default
+        # in our pipeline. The session-ended signals above (Ting run tracking,
+        # mesh outcome) still fire; only the extra summarization is gated.
+        if not self._settings.chronicle_on_stop_enabled:
+            return
 
         if not self.volundr_api_url:
             return
@@ -4909,6 +5503,58 @@ async def get_aggregate_logs(
         participants=requested_participants,
         query=query,
     )
+    if not any(item.get("id") == "skuld" for item in payload.get("available_participants", [])):
+        min_level = getattr(logging, level.upper(), logging.DEBUG)
+        query_lower = query.casefold()
+        broker_lines = []
+        for index, entry in enumerate(_log_buffer):
+            entry_level = str(entry.get("level") or "INFO").upper()
+            entry_level_no = getattr(logging, entry_level, logging.INFO)
+            message = str(entry.get("message") or "")
+            source = str(entry.get("logger") or "skuld")
+            if entry_level_no < min_level:
+                continue
+            if requested_participants and "skuld" not in requested_participants:
+                continue
+            if query_lower and not (
+                query_lower in "skuld"
+                or query_lower in source.casefold()
+                or query_lower in message.casefold()
+            ):
+                continue
+            created = entry.get("timestamp")
+            timestamp = (
+                datetime.fromtimestamp(float(created), tz=UTC)
+                if isinstance(created, (int, float))
+                else datetime.now(UTC)
+            )
+            broker_lines.append(
+                {
+                    "id": f"skuld-buffer-{index}",
+                    "timestamp": timestamp.isoformat(),
+                    "level": entry_level,
+                    "participant": "skuld",
+                    "participant_label": "Skuld",
+                    "participant_kind": "broker",
+                    "source": source,
+                    "message": message,
+                    "sequence": index,
+                    "stream": "memory",
+                }
+            )
+
+        if _log_buffer:
+            payload.setdefault("available_participants", []).insert(
+                0,
+                {"id": "skuld", "label": "Skuld", "kind": "broker"},
+            )
+        if broker_lines:
+            all_lines = [*payload.get("lines", []), *broker_lines]
+            all_lines.sort(key=lambda item: (str(item.get("timestamp") or ""), item.get("id", "")))
+            payload["lines"] = all_lines[-lines:]
+            payload["returned"] = len(payload["lines"])
+            payload["filtered"] = int(payload.get("filtered") or 0) + len(broker_lines)
+        payload["total"] = int(payload.get("total") or 0) + len(_log_buffer)
     payload["session_id"] = broker.session_id
     return payload
 
@@ -4955,12 +5601,60 @@ async def get_conversation_history() -> dict:
 # --- Capabilities API ---
 
 
+class _SlashCommandRequest(BaseModel):
+    """Request body for sending a slash command to the active transport."""
+
+    command: str
+    arguments: str = ""
+    pane_id: str = ""
+
+
 @app.get("/api/capabilities")
 async def get_capabilities() -> dict:
     """Return transport capabilities so the frontend knows which controls to render."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
     return asdict(broker._transport.capabilities)
+
+
+@app.get("/api/slash-commands")
+async def get_slash_commands(refresh: bool = Query(True)) -> dict[str, Any]:
+    """Return slash commands available in the active CLI session."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.slash_commands:
+        raise HTTPException(status_code=501, detail="Slash commands not supported")
+    commands = await broker.discover_slash_commands(refresh=refresh)
+    return {"commands": commands, "count": len(commands)}
+
+
+@app.post("/api/slash-commands/send")
+async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
+    """Send a slash command to the active CLI session as terminal input."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.slash_commands:
+        raise HTTPException(status_code=501, detail="Slash commands not supported")
+    command = body.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+    await broker._transport.send_control(
+        "slash_command",
+        command=command,
+        arguments=body.arguments,
+        pane_id=body.pane_id,
+    )
+    name = command.split(maxsplit=1)[0]
+    if not name.startswith("/"):
+        name = f"/{name}"
+    return {"status": "sent", "command": name}
+
+
+@app.post("/api/claude/hooks")
+async def receive_claude_hook(payload: dict[str, Any]) -> dict[str, bool]:
+    """Receive Claude Code HTTP hook callbacks for interactive tmux sessions."""
+    await broker.handle_claude_hook(payload)
+    return {"ok": True}
 
 
 # --- Service Management API ---
@@ -5200,6 +5894,63 @@ async def upload_files(
     return {"entries": uploaded}
 
 
+@app.put("/api/files/upload")
+async def upload_file_raw(
+    request: Request,
+    path: str,
+    root: str = "workspace",
+) -> dict:
+    """Write raw request-body bytes to a single workspace-relative file.
+
+    Raw-body mirror of ``download_file``: ``path`` is the destination *file*
+    (not a directory), confined identically (reject absolute/.. + realpath guard).
+    """
+    _validate_root(root)
+    base = _resolve_root(root)
+    sanitized = _sanitize_relative(path)
+    base_real = os.path.realpath(str(base))
+    # Containment checks are inlined (not _check_within_base) so the
+    # realpath + startswith barrier is visible to CodeQL's path-injection
+    # query in the same dataflow scope as the filesystem sinks below. The
+    # bare startswith(base_real) is the shape the query recognises; the
+    # separator-anchored check after it rules out /base vs /base-evil
+    # prefix collisions.
+    target_real = os.path.realpath(os.path.join(base_real, sanitized))
+    if not target_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if target_real != base_real and not target_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
+    if sanitized in ("", ".") or os.path.isdir(target_real):
+        raise HTTPException(400, "path must name a file, not a directory")
+
+    body = await request.body()
+    max_size = broker._settings.max_upload_size_bytes
+    if len(body) > max_size:
+        raise HTTPException(
+            413,
+            f"File exceeds maximum upload size ({max_size} bytes)",
+        )
+
+    parent_real = os.path.realpath(os.path.dirname(target_real))
+    if not parent_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if parent_real != base_real and not parent_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
+    os.makedirs(parent_real, exist_ok=True)
+
+    with open(target_real, "wb") as f:
+        f.write(body)
+
+    stat = os.stat(target_real)
+    return {
+        "name": os.path.basename(target_real),
+        "path": os.path.relpath(target_real, base_real),
+        "type": "file",
+        "size": stat.st_size,
+        "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+    }
+
+
 class MkdirRequest(BaseModel):
     path: str
     root: str = "workspace"
@@ -5213,7 +5964,10 @@ async def mkdir(body: MkdirRequest) -> dict:
     sanitized = _sanitize_relative(body.path)
     base_real = os.path.realpath(str(base))
     target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, target_real)
+    if not target_real.startswith(base_real):
+        raise HTTPException(400, "Path traversal not allowed")
+    if target_real != base_real and not target_real.startswith(base_real + os.sep):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if os.path.exists(target_real):
         raise HTTPException(409, "Path already exists")
@@ -5429,6 +6183,7 @@ class _RoomMessageRequest(BaseModel):
 
     content: str
     source: str = "external"
+    participant_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -5438,7 +6193,52 @@ class _DirectedRoomMessageRequest(BaseModel):
     target_peer_id: str
     content: str
     source: str = "external"
+    participant_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class _RoomJoinRequest(BaseModel):
+    """Request body for joining a live Environment room."""
+
+    participant_id: str
+    display_name: str = ""
+    environment_id: str
+    role: str = "observer"
+    room_id: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
+    environment_action_authorities: list[str] = Field(default_factory=list)
+
+
+class _RoomHeartbeatRequest(BaseModel):
+    """Request body for human Environment heartbeat/state updates."""
+
+    participant_id: str
+    status: str | None = None
+    wakefulness: str | None = None
+    attention_state: str | None = None
+
+
+class _RoomLeaveRequest(BaseModel):
+    """Request body for leaving a live Environment room."""
+
+    participant_id: str
+    reason: str = "left"
+
+
+class _RoomCloseRequest(BaseModel):
+    """Request body for closing a live Environment huddle."""
+
+    room_id: str
+    reason: str = "closed"
+    summary: str = ""
+
+
+class _RoomCapabilityRequest(BaseModel):
+    """Request body for verifying a participant control capability."""
+
+    participant_id: str
+    capability: str
 
 
 class _WorkflowGateResolveRequest(BaseModel):
@@ -5479,22 +6279,7 @@ async def send_room_message(body: _RoomMessageRequest) -> dict:
         message_id = await broker.handle_human_room_message(
             body.content,
             source=body.source,
-            metadata=body.metadata,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-    return {"status": "sent", "message_id": message_id}
-
-
-@app.post("/api/room/direct")
-async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
-    """Inject a human-originated directed room message."""
-    try:
-        message_id = await broker.handle_directed_room_message(
-            body.target_peer_id,
-            body.content,
-            source=body.source,
+            participant_id=body.participant_id,
             metadata=body.metadata,
         )
     except ValueError as exc:
@@ -5507,10 +6292,120 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
     return {"status": "sent", "message_id": message_id}
 
 
+@app.post("/api/room/direct")
+async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
+    """Inject a human-originated directed room message."""
+    try:
+        message_id = await broker.handle_directed_room_message(
+            body.target_peer_id,
+            body.content,
+            source=body.source,
+            metadata={**body.metadata, "participant_id": body.participant_id}
+            if body.participant_id
+            else body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/join")
+async def join_room(body: _RoomJoinRequest) -> dict:
+    """Join a human participant to a live Valkyrie Environment."""
+    try:
+        participant = await broker.join_human_environment(
+            participant_id=body.participant_id,
+            display_name=body.display_name,
+            environment_id=body.environment_id,
+            role=body.role,
+            room_id=body.room_id,
+            capabilities=body.capabilities or None,
+            surfaces=body.surfaces or None,
+            environment_action_authorities=body.environment_action_authorities,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+    return {"status": "joined", "participant": participant}
+
+
+@app.post("/api/room/heartbeat")
+async def heartbeat_room(body: _RoomHeartbeatRequest) -> dict:
+    """Update human participant presence in a live Valkyrie Environment."""
+    try:
+        participant = await broker.heartbeat_human_environment(
+            participant_id=body.participant_id,
+            status=body.status,
+            wakefulness=body.wakefulness,
+            attention_state=body.attention_state,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+    return {"status": "ok", "participant": participant}
+
+
+@app.post("/api/room/leave")
+async def leave_room(body: _RoomLeaveRequest) -> dict:
+    """Leave a human participant from a live Valkyrie Environment."""
+    try:
+        await broker.leave_human_environment(
+            participant_id=body.participant_id,
+            reason=body.reason,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+
+    return {"status": "left", "participant_id": body.participant_id}
+
+
+@app.post("/api/room/close")
+async def close_room(body: _RoomCloseRequest) -> dict:
+    """Close a live Environment huddle, publishing its transcript for archival."""
+    try:
+        closed = await broker.close_environment_huddle(
+            room_id=body.room_id,
+            reason=body.reason,
+            summary=body.summary,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    return {"status": "closed", **closed}
+
+
+@app.post("/api/room/require-capability")
+async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
+    """Verify a joined participant holds a control capability (403 otherwise)."""
+    try:
+        broker.require_room_capability(body.participant_id, body.capability)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
+
+
 @app.get("/api/room/participants")
-async def get_room_participants() -> dict:
+async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
     """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants()}
+    return {"participants": broker.get_room_participants(environment_id=environment_id)}
 
 
 @app.get("/api/workflow/gates")

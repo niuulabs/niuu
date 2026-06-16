@@ -13,6 +13,9 @@ global:
     tag: ""
 
 # Session configuration (set by Ting at deployment time)
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
 session:
   # -- Session identifier (UUID, set by Ting)
   id: ""
@@ -133,7 +136,11 @@ envSecrets:
     secretKey: api-key
 
 # Plain environment variables
-envVars: []
+envVars:
+  # Cluster pods have no ~/.claude login — keep API-key auth for Claude
+  # transports (host/mini-mode defaults to the claude.ai subscription).
+  - name: SKULD__CLAUDE_AUTH
+    value: "api_key"
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:

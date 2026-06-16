@@ -10,36 +10,43 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "pyyaml>=6.0.3",
-    "claude-agent-sdk==0.2.87",
+    "claude-agent-sdk==0.2.96",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
-    "idna>=3.17",
+    "idna>=3.18",
     "fastapi>=0.136.3",
     "starlette>=1.2.1",
-    "python-multipart>=0.0.29",
+    "python-multipart>=0.0.32",
     "PyJWT>=2.13.0",
     "urllib3>=2.7.0",
-    "uvicorn>=0.48.0",
+    "uvicorn>=0.49.0",
     "websockets>=16.0",
     "python-on-whales>=0.81.0",
     "gitpython>=3.1.50",
     "msgpack>=1.1.2",
-    "typer>=0.26.4",
+    "typer>=0.26.7",
     "respx>=0.23.1",
     "pynng>=0.9.0",
     "zeroconf>=0.149.16",
     "python-telegram-bot>=22.7",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]
 nats = [
     "nats-py>=2.14.0",
 ]
+# Semantic search for Mimir (NIU-1056): hybrid retrieval needs an embedding
+# model. FTS-only mode works without this extra.
+embeddings = [
+    "sentence-transformers>=3.0.0",
+]
 test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
 ]
 rabbitmq = [
     "aio-pika>=9.6.2",
@@ -65,9 +72,9 @@ infra = [
     "redis>=8.0.0",
 ]
 cli = [
-    "typer>=0.26.4",
+    "typer>=0.26.7",
     "textual>=8.2.7",
-    "nuitka>=4.1.2",
+    "nuitka[onefile]>=4.1.2",
     "ordered-set>=4.1",
     "patchelf>=0.17.2.4; sys_platform == 'linux'",
 ]
@@ -80,16 +87,16 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.15,<0.16",
     "respx>=0.23.1",
+    "httpx2>=2.4.0",
     "cryptography>=48.0.0",
     "textual>=8.2.7",
-    "typer>=0.26.4",
+    "typer>=0.26.7",
     "nats-py>=2.14.0",
 ]
 
 [project.scripts]
 niuu = "niuu.__main__:main"
 guild = "guild.main:main"
-volundr = "volundr.main:main"
 audit = "audit.main:main"
 identity = "identity.main:main"
 features = "features.main:main"

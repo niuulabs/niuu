@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     error TEXT,
     tracker_issue_id TEXT,
     issue_tracker_url TEXT,
-    preset_id TEXT,
+    launch_spec_id TEXT,
     archived_at TIMESTAMP WITH TIME ZONE,
     activity_state TEXT DEFAULT 'idle',
     activity_metadata JSONB DEFAULT '{}'
@@ -314,14 +314,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_mappings_repo_url ON project_mappi
 CREATE INDEX IF NOT EXISTS idx_project_mappings_project_id ON project_mappings(project_id);
 """
 
-VOLUNDR_PRESETS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS volundr_presets (
+VOLUNDR_LAUNCH_SPECS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS volundr_launch_specs (
     id                UUID PRIMARY KEY,
     name              VARCHAR(255) NOT NULL,
     description       TEXT NOT NULL DEFAULT '',
     is_default        BOOLEAN NOT NULL DEFAULT FALSE,
     cli_tool          VARCHAR(100) NOT NULL DEFAULT '',
     workload_type     VARCHAR(100) NOT NULL DEFAULT 'session',
+    session_definition VARCHAR(255),
     model             VARCHAR(100),
     system_prompt     TEXT,
     resource_config   JSONB NOT NULL DEFAULT '{}',
@@ -334,16 +335,18 @@ CREATE TABLE IF NOT EXISTS volundr_presets (
     workload_config   JSONB NOT NULL DEFAULT '{}',
     source            JSONB,
     integration_ids   JSONB NOT NULL DEFAULT '[]',
+    repos             JSONB NOT NULL DEFAULT '[]',
     setup_scripts     JSONB NOT NULL DEFAULT '[]',
+    workspace_layout  JSONB NOT NULL DEFAULT '{}',
     created_at        TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 """
 
-VOLUNDR_PRESETS_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_volundr_presets_name ON volundr_presets(name);
-CREATE INDEX IF NOT EXISTS idx_volundr_presets_cli_tool ON volundr_presets(cli_tool);
-CREATE INDEX IF NOT EXISTS idx_volundr_presets_is_default ON volundr_presets(is_default);
+VOLUNDR_LAUNCH_SPECS_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_volundr_launch_specs_name ON volundr_launch_specs(name);
+CREATE INDEX IF NOT EXISTS idx_volundr_launch_specs_cli_tool ON volundr_launch_specs(cli_tool);
+CREATE INDEX IF NOT EXISTS idx_volundr_launch_specs_is_default ON volundr_launch_specs(is_default);
 """
 
 CREDENTIAL_METADATA_TABLE_SQL = """

@@ -161,11 +161,13 @@ class FileSkillRegistry(SkillPort):
         self,
         *,
         skill_dirs: list[str] | None = None,
+        write_dir: str | Path | None = None,
         include_builtin: bool = True,
         cwd: Path | None = None,
     ) -> None:
         self._include_builtin = include_builtin
         self._cwd = cwd or Path.cwd()
+        self._write_dir = Path(write_dir).expanduser() if write_dir is not None else None
 
         if skill_dirs is not None:
             self._skill_dirs: list[Path] | None = [Path(d).expanduser() for d in skill_dirs]
@@ -231,7 +233,7 @@ class FileSkillRegistry(SkillPort):
         if not skill.content.strip():
             return
 
-        dest_dir = Path.home() / ".ravn" / "skills"
+        dest_dir = self._write_dir or Path.home() / ".ravn" / "skills"
         await asyncio.to_thread(self._write_skill_file, dest_dir, skill)
 
     def _write_skill_file(self, dest_dir: Path, skill: Skill) -> None:

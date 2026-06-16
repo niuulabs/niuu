@@ -66,6 +66,7 @@ class WorkflowLaunchBody(BaseModel):
     session_name: str | None = Field(default=None, max_length=63, alias="sessionName")
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
+    connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
 
     model_config = {"populate_by_name": True}
 
@@ -316,6 +317,7 @@ async def launch_workflow_execution(
     target_adapter = await _resolve_target_adapter(
         volundr_factory=volundr_factory,
         principal=principal,
+        connection_id=launch.connection_id,
     )
     if target_adapter is None:
         raise HTTPException(
@@ -341,11 +343,7 @@ async def launch_workflow_execution(
                 "workflow": workflow_snapshot,
                 **({"mimir": workflow_mimir} if workflow_mimir else {}),
                 **(
-                    {
-                        "sleipnir_publish_urls": list(
-                            settings.dispatch.flock.sleipnir_publish_urls
-                        )
-                    }
+                    {"sleipnir_publish_urls": list(settings.dispatch.flock.sleipnir_publish_urls)}
                     if settings.dispatch.flock.sleipnir_publish_urls
                     else {}
                 ),
@@ -393,10 +391,20 @@ async def _resolve_target_adapter(
     *,
     volundr_factory: VolundrFactory,
     principal: Principal,
+    connection_id: str | None = None,
 ):
     adapters = await volundr_factory.for_principal(principal)
     if not adapters:
         return None
+    normalized_connection_id = str(connection_id or "").strip()
+    if normalized_connection_id:
+        for adapter in adapters:
+            if normalized_connection_id in {adapter.target_id, adapter.name}:
+                return adapter
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Volundr target not found: {normalized_connection_id}",
+        )
     return adapters[0]
 
 

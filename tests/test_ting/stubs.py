@@ -122,6 +122,8 @@ class InMemorySagaRepository(SagaRepository):
         saga_id: UUID,
         *,
         instance_id: str | None,
+        target_tags: list[str] | None = None,
+        target_match: str = "all",
         owner_id: str | None = None,
     ) -> None:
         saga = self.sagas.get(saga_id)
@@ -144,6 +146,8 @@ class InMemorySagaRepository(SagaRepository):
             workflow_version=saga.workflow_version,
             workflow_snapshot=saga.workflow_snapshot,
             instance_id=instance_id,
+            target_tags=target_tags or [],
+            target_match=target_match,
         )
 
     async def count_by_status(self) -> dict[str, int]:

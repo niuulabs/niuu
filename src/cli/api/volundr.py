@@ -81,7 +81,7 @@ class VolundrAPI:
         issue_id: str = "",
         issue_url: str = "",
         workload_type: str = "",
-        profile_name: str = "",
+        launch_spec: str = "",
         integration_ids: list[str] | None = None,
     ) -> SessionInfo:
         payload: dict[str, Any] = {
@@ -93,7 +93,7 @@ class VolundrAPI:
             "issue_id": issue_id,
             "issue_url": issue_url,
             "workload_type": workload_type,
-            "profile_name": profile_name,
+            "launch_spec": launch_spec,
             "integration_ids": integration_ids or [],
         }
         resp = await self._client.post(f"{V1}/sessions", json=payload)

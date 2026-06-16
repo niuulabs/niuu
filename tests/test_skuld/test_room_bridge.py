@@ -9,6 +9,7 @@ import pytest
 
 from skuld.config import RoomConfig
 from skuld.room_bridge import RoomBridge
+from sleipnir.domain import registry as event_registry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,6 +28,9 @@ def _make_bridge(
     append_turn=None,
     report_timeline_event=None,
     observe_peer_event=None,
+    publish_presence_event=None,
+    environment_id: str | None = None,
+    clock=None,
 ) -> tuple[RoomBridge, MagicMock]:
     registry = _make_registry()
     config = RoomConfig(
@@ -39,6 +43,9 @@ def _make_bridge(
         append_turn=append_turn,
         report_timeline_event=report_timeline_event,
         observe_peer_event=observe_peer_event,
+        publish_presence_event=publish_presence_event,
+        environment_id=environment_id,
+        clock=clock,
     )
     return bridge, registry
 
@@ -79,6 +86,37 @@ class TestParticipantRegistration:
         event = registry.broadcast.call_args[0][0]
         assert event["type"] == "participant_joined"
         assert event["participant"]["peer_id"] == "peer-1"
+
+    @pytest.mark.asyncio
+    async def test_register_sets_environment_fields_and_presence_event(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(
+            publish_presence_event=published,
+            environment_id="cluster-a",
+            clock=lambda: 100.0,
+        )
+
+        meta = await bridge.register(
+            "valkyrie-1",
+            "K8s Valkyrie",
+            _fake_ws(),
+            participant_kind="valkyrie",
+            capabilities=["k8s.inspect_pod"],
+            surfaces=["skuld.room"],
+            wakefulness="watching",
+            authority_role="autonomous",
+        )
+
+        assert meta.environment_id == "cluster-a"
+        assert meta.participant_kind == "valkyrie"
+        assert meta.capabilities == ("k8s.inspect_pod",)
+        assert meta.surfaces == ("skuld.room",)
+        assert meta.last_heartbeat_at == 100.0
+        published.assert_awaited_once()
+        presence = published.await_args.args[0]
+        assert presence.event_type == event_registry.PARTICIPANT_JOINED
+        assert presence.payload["environment_id"] == "cluster-a"
+        assert presence.payload["participant_type"] == "valkyrie"
 
     @pytest.mark.asyncio
     async def test_register_assigns_colors_from_pool(self):
@@ -127,7 +165,10 @@ class TestParticipantRegistration:
 
         meta2 = await bridge.register("peer-1", "Alice", ws2)
 
-        assert meta1 == meta2
+        assert meta2.peer_id == meta1.peer_id
+        assert meta2.persona == meta1.persona
+        assert meta2.color == meta1.color
+        assert meta2.last_heartbeat_at >= meta1.last_heartbeat_at
         assert bridge.participant_count == 1
         # Still broadcasts participant_joined on reconnect
         registry.broadcast.assert_awaited_once()
@@ -144,9 +185,11 @@ class TestParticipantRegistration:
 
     @pytest.mark.asyncio
     async def test_unregister_broadcasts_participant_left(self):
-        bridge, registry = _make_bridge()
+        published = AsyncMock()
+        bridge, registry = _make_bridge(publish_presence_event=published)
         await bridge.register("peer-1", "Alice", _fake_ws())
         registry.broadcast.reset_mock()
+        published.reset_mock()
 
         await bridge.unregister("peer-1")
 
@@ -154,6 +197,8 @@ class TestParticipantRegistration:
         event = registry.broadcast.call_args[0][0]
         assert event["type"] == "participant_left"
         assert event["participantId"] == "peer-1"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_LEFT
 
     @pytest.mark.asyncio
     async def test_unregister_unknown_peer_is_noop(self):
@@ -161,6 +206,168 @@ class TestParticipantRegistration:
         # Should not raise
         await bridge.unregister("nonexistent")
         registry.broadcast.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_updates_presence_and_publishes_event(self):
+        published = AsyncMock()
+        now = iter([100.0, 115.0])
+        bridge, registry = _make_bridge(
+            publish_presence_event=published,
+            environment_id="cluster-a",
+            clock=lambda: next(now),
+        )
+        await bridge.register("peer-1", "Alice", _fake_ws())
+        registry.broadcast.reset_mock()
+        published.reset_mock()
+
+        updated = await bridge.heartbeat(
+            "peer-1",
+            status="busy",
+            wakefulness="wakeful",
+            attention_state="working",
+        )
+
+        assert updated is not None
+        assert updated.status == "busy"
+        assert updated.wakefulness == "wakeful"
+        assert updated.attention_state == "working"
+        assert updated.last_heartbeat_at == 115.0
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_heartbeat"
+        assert event["participant"]["status"] == "busy"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_HEARTBEAT
+
+    @pytest.mark.asyncio
+    async def test_update_participant_capabilities_uses_same_roster_model(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(publish_presence_event=published)
+        await bridge.register("peer-1", "Alice", _fake_ws())
+        registry.broadcast.reset_mock()
+        published.reset_mock()
+
+        updated = await bridge.update_participant_capabilities(
+            "peer-1",
+            capabilities=["approve", "teach"],
+            surfaces=["browser"],
+            tools=["kubectl"],
+        )
+
+        assert updated is not None
+        assert bridge.participants["peer-1"].capabilities == ("approve", "teach")
+        assert bridge.participants["peer-1"].surfaces == ("browser",)
+        assert bridge.participants["peer-1"].tools == ("kubectl",)
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_capabilities_changed"
+        assert event["participant"]["capabilities"] == ("approve", "teach")
+        published.assert_awaited_once()
+        assert (
+            published.await_args.args[0].event_type
+            == event_registry.PARTICIPANT_CAPABILITIES_CHANGED
+        )
+
+    @pytest.mark.asyncio
+    async def test_register_mesh_peer_appears_in_environment_roster_and_presence(self):
+        published = AsyncMock()
+        bridge, _ = _make_bridge(
+            publish_presence_event=published,
+            environment_id="cluster-a",
+        )
+
+        meta = await bridge.register_mesh_peer(
+            "mesh-k8s-valkyrie",
+            "K8s Valkyrie",
+            participant_kind="valkyrie",
+            capabilities=["k8s.inspect_pod"],
+            surfaces=["browser"],
+            authority_role="autonomous",
+        )
+
+        roster = bridge.environment_roster(environment_id="cluster-a")
+        assert meta.peer_id == "mesh-k8s-valkyrie"
+        assert roster[0]["peer_id"] == "mesh-k8s-valkyrie"
+        assert roster[0]["participant_kind"] == "valkyrie"
+        assert roster[0]["capabilities"] == ("k8s.inspect_pod",)
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_JOINED
+
+    @pytest.mark.asyncio
+    async def test_human_join_adds_environment_role_capabilities_and_presence(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(
+            publish_presence_event=published,
+            environment_id="cluster-a",
+            clock=lambda: 123.0,
+        )
+
+        meta = await bridge.join_human_environment(
+            "human:jozef",
+            display_name="Jozef",
+            environment_id="cluster-a",
+            role="approver",
+            room_id="huddle-1",
+        )
+
+        assert meta.participant_type == "human"
+        assert meta.participant_kind == "human"
+        assert meta.authority_role == "approver"
+        assert meta.capabilities == ("view", "reply", "approve", "authorize_action")
+        assert meta.room_ids == ("huddle-1",)
+        assert meta.last_heartbeat_at == 123.0
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_joined"
+        assert event["participant"]["peer_id"] == "human:jozef"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_JOINED
+
+    @pytest.mark.asyncio
+    async def test_human_join_rejects_role_capability_escalation(self):
+        bridge, _ = _make_bridge()
+
+        with pytest.raises(PermissionError):
+            await bridge.join_human_environment(
+                "human:observer",
+                display_name="Observer",
+                environment_id="cluster-a",
+                role="observer",
+                capabilities=["approve"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_human_capability_check_is_predictable(self):
+        bridge, _ = _make_bridge()
+        await bridge.join_human_environment(
+            "human:teacher",
+            display_name="Teacher",
+            environment_id="cluster-a",
+            role="teacher",
+        )
+
+        bridge.require_participant_capability("human:teacher", "teach")
+        with pytest.raises(PermissionError):
+            bridge.require_participant_capability("human:teacher", "authorize_action")
+
+    @pytest.mark.asyncio
+    async def test_human_leave_publishes_participant_left(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(publish_presence_event=published)
+        await bridge.join_human_environment(
+            "human:debugger",
+            display_name="Debugger",
+            environment_id="cluster-a",
+            role="debugger",
+        )
+        registry.broadcast.reset_mock()
+        published.reset_mock()
+
+        await bridge.leave_human_environment("human:debugger", reason="done")
+
+        assert "human:debugger" not in bridge.participants
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_left"
+        assert event["participantId"] == "human:debugger"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_LEFT
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +407,40 @@ class TestRoomState:
         event = bridge.get_room_state_event()
         participant = next(p for p in event["participants"] if p["peer_id"] == "p1")
         assert participant["status"] == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_environment_roster_filters_participants(self):
+        bridge, _ = _make_bridge(environment_id="cluster-a")
+        await bridge.register("p1", "K8s", _fake_ws(), environment_id="cluster-a")
+        await bridge.register("p2", "Inbox", _fake_ws(), environment_id="host-mail")
+
+        cluster = bridge.environment_roster(environment_id="cluster-a")
+        host = bridge.get_room_state_event(environment_id="host-mail")
+
+        assert [participant["peer_id"] for participant in cluster] == ["p1"]
+        assert [participant["peer_id"] for participant in host["participants"]] == ["p2"]
+
+    @pytest.mark.asyncio
+    async def test_expire_heartbeats_marks_queryable_presence_expired(self):
+        published = AsyncMock()
+        bridge, registry = _make_bridge(
+            publish_presence_event=published,
+            clock=lambda: 100.0,
+        )
+        await bridge.register("p1", "Alice", _fake_ws(), heartbeat_ttl_s=10.0)
+        registry.broadcast.reset_mock()
+        published.reset_mock()
+
+        expired = await bridge.expire_heartbeats(now=111.0)
+
+        assert [participant.peer_id for participant in expired] == ["p1"]
+        assert bridge.participants["p1"].status == "expired"
+        assert bridge.participants["p1"].attention_state == "offline"
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "participant_heartbeat_expired"
+        assert event["participant"]["status"] == "expired"
+        published.assert_awaited_once()
+        assert published.await_args.args[0].event_type == event_registry.PARTICIPANT_HEARTBEAT
 
     def test_participant_count_empty(self):
         bridge, _ = _make_bridge()

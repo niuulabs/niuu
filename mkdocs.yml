@@ -45,6 +45,51 @@ extra_css:
 
 nav:
   - Home: index.md
+  - Get Started:
+      - Introduction: get-started/introduction.md
+      - Install: get-started/install.md
+      - First local stack: get-started/first-local-stack.md
+      - First AI workspace: get-started/first-ai-workspace.md
+      - Configure your project: get-started/configure-project.md
+      - From small to autonomous:
+          - Overview: get-started/path-from-small-to-autonomous.md
+          - 1. One local platform: get-started/one-local-platform.md
+          - 2. One workspace session: get-started/one-workspace-session.md
+          - 3. Model routing: get-started/model-routing-step.md
+          - 4. Durable memory: get-started/durable-memory.md
+          - 5. Workflows and teams: get-started/workflows-and-teams-step.md
+          - 6. Direct and resident assistants: get-started/direct-and-resident-assistants.md
+          - 7. Shared discovery and topology: get-started/shared-discovery-and-topology.md
+          - 8. Kubernetes and GitOps: get-started/kubernetes-and-gitops-step.md
+  - Concepts:
+      - Platform model: concepts/platform-model.md
+      - Sessions and workspaces: concepts/sessions-and-workspaces.md
+      - Workflows and teams: concepts/workflows-and-teams.md
+      - Agents and personas: concepts/agents-and-personas.md
+      - Memory and knowledge: concepts/memory-and-knowledge.md
+      - Model routing: concepts/model-routing.md
+      - Git and review flow: concepts/git-and-review-flow.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Web UI: reference/web-ui.md
+      - Configuration: reference/configuration.md
+      - API: reference/api.md
+      - Helm charts: reference/helm-charts.md
+      - Sessions: reference/sessions.md
+      - Credentials and secrets: reference/credentials-and-secrets.md
+      - Identity: reference/identity.md
+      - Integrations: reference/integrations.md
+      - Events: reference/events.md
+  - Operations:
+      - Local development: operations/local-development.md
+      - Kubernetes deployment: operations/kubernetes-deployment.md
+      - Production checklist: operations/production-checklist.md
+      - Migrations: operations/migrations.md
+      - Observability: operations/observability.md
+      - Security and permissions: operations/security-and-permissions.md
+  - Troubleshooting:
+      - FAQ: troubleshooting/faq.md
+      - Common issues: troubleshooting/common-issues.md
 
 markdown_extensions:
   - admonition

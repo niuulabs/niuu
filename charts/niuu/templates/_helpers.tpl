@@ -29,6 +29,20 @@ Create chart name and version as used by the chart label.
 {{- end }}
 
 {{/*
+Niuu deployment discovery labels.
+*/}}
+{{- define "niuu.niuuLabels" -}}
+{{- $cluster := "unknown" -}}
+{{- if and .Values.global .Values.global.niuu .Values.global.niuu.cluster -}}
+{{- $cluster = .Values.global.niuu.cluster -}}
+{{- else if and .Values.niuu .Values.niuu.cluster -}}
+{{- $cluster = .Values.niuu.cluster -}}
+{{- end -}}
+niuu.world/cluster: {{ $cluster | quote }}
+niuu.world/namespace: {{ .Release.Namespace | quote }}
+{{- end }}
+
+{{/*
 Common labels
 */}}
 {{- define "niuu.labels" -}}
@@ -37,6 +51,7 @@ helm.sh/chart: {{ include "niuu.chart" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
+{{ include "niuu.niuuLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: niuu
 {{- end }}
@@ -78,6 +93,12 @@ as literal service names to keep the route table extensible.
 {{- $service := .service -}}
 {{- if eq $service "volundr" -}}
 {{ include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr) }}
+{{- else if eq $service "forge-api" -}}
+{{- if $root.Values.guild.enabled -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "guild" "values" $root.Values.guild) }}
+{{- else -}}
+{{ include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr) }}
+{{- end -}}
 {{- else if eq $service "volundr-web" -}}
 {{ printf "%s-web" (include "niuu.componentFullname" (dict "root" $root "name" "volundr" "values" $root.Values.volundr)) }}
 {{- else if eq $service "volundr-web-next" -}}
@@ -114,6 +135,8 @@ Unknown service names are treated as enabled so custom routes still render.
 {{- $service := .service -}}
 {{- if eq $service "volundr" -}}
 {{ ternary "true" "false" ($root.Values.volundr.enabled | default false) }}
+{{- else if eq $service "forge-api" -}}
+{{ ternary "true" "false" (or ($root.Values.guild.enabled | default false) ($root.Values.volundr.enabled | default false)) }}
 {{- else if eq $service "volundr-web" -}}
 {{ ternary "true" "false" (and ($root.Values.volundr.enabled | default false) ($root.Values.volundr.web.enabled | default false)) }}
 {{- else if eq $service "volundr-web-next" -}}

@@ -1029,6 +1029,12 @@ export function useSkuldChat(
               set_model: caps.set_model === true,
               set_thinking_tokens: caps.set_thinking_tokens === true,
               rewind_files: caps.rewind_files === true,
+              slash_commands: caps.slash_commands === true,
+              terminal_output: caps.terminal_output === true,
+              terminal_input: caps.terminal_input === true,
+              terminal_keys: caps.terminal_keys === true,
+              terminal_resize: caps.terminal_resize === true,
+              terminal_panes: caps.terminal_panes === true,
             });
             break;
           }

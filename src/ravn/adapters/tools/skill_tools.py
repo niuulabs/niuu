@@ -18,14 +18,24 @@ the *loading* of a skill is always a read-only operation.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
+from ravn.context.autonomy import (
+    AutonomyMode,
+    AutonomyPolicy,
+    JsonProposalStore,
+    ProposalScope,
+    SelfImprovementProposal,
+)
 from ravn.domain.models import ToolResult
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 
 logger = logging.getLogger(__name__)
 
 _SKILL_PERMISSION = "skill:read"
+_SKILL_MANAGE_PERMISSION = "skill:manage"
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +222,338 @@ class SkillRunTool(ToolPort):
 
         header = f"## Skill: {skill.name}\n\n"
         return ToolResult(tool_call_id="", content=header + content)
+
+
+class SkillManageTool(ToolPort):
+    """Create, update, archive, promote, pin, validate, and inspect managed skills."""
+
+    def __init__(
+        self,
+        skill_port: SkillPort,
+        *,
+        manager: SkillManagementRegistry | None = None,
+        proposal_store: JsonProposalStore | None = None,
+        autonomy_policy: AutonomyPolicy | None = None,
+    ) -> None:
+        self._manager = manager or SkillManagementRegistry(skill_port)
+        self._proposal_store = proposal_store
+        self._autonomy_policy = autonomy_policy or AutonomyPolicy()
+
+    @property
+    def name(self) -> str:
+        return "skill_manage"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Write-capable skill management for resident Valkyries. Supports "
+            "create, update, archive, restore, pin, unpin, promote, show, list, "
+            "validate, and telemetry actions with Environment/Flock scope metadata."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "create",
+                        "update",
+                        "patch",
+                        "archive",
+                        "delete",
+                        "restore",
+                        "pin",
+                        "unpin",
+                        "promote",
+                        "show",
+                        "list",
+                        "validate",
+                        "telemetry",
+                        "proposals",
+                        "rollback",
+                    ],
+                },
+                "name": {"type": "string"},
+                "proposal_id": {"type": "string"},
+                "content": {"type": "string"},
+                "description": {"type": "string"},
+                "scope": {"type": "string"},
+                "environment_id": {"type": "string"},
+                "domain": {"type": "string"},
+                "autonomy_mode": {"type": "string"},
+                "risk_class": {"type": "string"},
+                "risk_boundaries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "delegated_capabilities": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "proposal_store_path": {"type": "string"},
+                "source": {"type": "string"},
+                "source_episode_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "status": {"type": "string"},
+                "action_safety_class": {"type": "string"},
+                "success": {"type": "boolean"},
+                "include_archived": {"type": "boolean"},
+                "query": {"type": "string"},
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _SKILL_MANAGE_PERMISSION
+
+    @property
+    def parallelisable(self) -> bool:
+        return False
+
+    async def execute(self, payload: dict) -> ToolResult:
+        action = (payload.get("action") or "").strip()
+        try:
+            if action in {
+                "create",
+                "update",
+                "patch",
+                "archive",
+                "delete",
+                "restore",
+                "pin",
+                "unpin",
+                "promote",
+            } and payload.get("autonomy_mode"):
+                return await self._execute_autonomous_mutation(action, payload)
+
+            match action:
+                case "create":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "update" | "patch":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "archive" | "delete":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "restore":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "pin" | "unpin":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "promote":
+                    return _json_result(await self._apply_mutation(action, payload))
+                case "show":
+                    data = await self._manager.show(
+                        (payload.get("name") or "").strip(),
+                        include_archived=bool(payload.get("include_archived")),
+                    )
+                    return _json_result(data)
+                case "list":
+                    rows = await self._manager.list_skills(
+                        payload.get("query") or None,
+                        include_archived=bool(payload.get("include_archived")),
+                    )
+                    return _json_result({"skills": rows})
+                case "validate":
+                    SkillManagementRegistry._validate_name_content(
+                        payload.get("name") or "",
+                        payload.get("content") or "",
+                    )
+                    return _json_result({"status": "valid"})
+                case "telemetry":
+                    meta = await self._manager.record_usage(
+                        (payload.get("name") or "").strip(),
+                        success=bool(payload.get("success", True)),
+                        environment_id=payload.get("environment_id") or "",
+                        domain=payload.get("domain") or "",
+                        action_safety_class=payload.get("action_safety_class") or "",
+                    )
+                    return _json_result({"status": "recorded", "metadata": meta})
+                case "proposals":
+                    store = self._store_for_input(payload)
+                    proposals = store.list(
+                        status=payload.get("status") or None,
+                        environment_id=payload.get("environment_id") or None,
+                    )
+                    return _json_result({"proposals": proposals})
+                case "rollback":
+                    store = self._store_for_input(payload)
+                    proposal_id = (payload.get("proposal_id") or "").strip()
+                    proposal = await store.rollback(proposal_id, self._rollback_skill_change)
+                    return _json_result({"status": "rolled_back", "proposal": proposal})
+                case _:
+                    return ToolResult(
+                        tool_call_id="",
+                        content=f"Error: unsupported skill_manage action {action!r}.",
+                        is_error=True,
+                    )
+            raise AssertionError("unreachable skill_manage action dispatch")
+        except Exception as exc:
+            logger.warning("skill_manage action %r failed: %s", action, exc)
+            return ToolResult(tool_call_id="", content=f"Error: {exc}", is_error=True)
+
+    async def _execute_autonomous_mutation(self, action: str, input: dict) -> ToolResult:
+        store = self._store_for_input(input)
+        proposal = self._proposal_from_input(action, input)
+        decision = self._autonomy_policy.decide(proposal)
+        proposal = store.record_decision(proposal, decision)
+        if decision.decision != "allow":
+            return _json_result({"status": proposal.status, "proposal": proposal})
+
+        async def _apply(_: SelfImprovementProposal) -> tuple[dict[str, str], dict]:
+            before = await self._snapshot_skill(input)
+            payload = await self._apply_mutation(action, input)
+            return (
+                {
+                    "skill": str(payload.get("skill") or input.get("name") or ""),
+                    "action": action,
+                },
+                {"skill_name": input.get("name") or "", "before": before},
+            )
+
+        proposal = await store.apply(proposal.proposal_id, _apply)
+        return _json_result(
+            {
+                "status": "applied",
+                "proposal": proposal,
+                "policy_decision": proposal.policy_decision,
+                "skill": proposal.applied_artifact_refs.get("skill", ""),
+            }
+        )
+
+    async def _apply_mutation(self, action: str, payload: dict) -> dict:
+        name = (payload.get("name") or "").strip()
+        match action:
+            case "create":
+                skill = await self._manager.create(
+                    name=name,
+                    content=payload.get("content") or "",
+                    description=payload.get("description") or "",
+                    scope=payload.get("scope") or "private",
+                    environment_id=payload.get("environment_id") or "",
+                    domain=payload.get("domain") or "",
+                    source=payload.get("source") or "manual",
+                    action_safety_class=payload.get("action_safety_class") or "read_only",
+                )
+                return {"status": "created", "skill": skill.name}
+            case "update" | "patch":
+                skill = await self._manager.update(
+                    name=name,
+                    content=payload.get("content"),
+                    description=payload.get("description"),
+                )
+                return {"status": "updated", "skill": skill.name}
+            case "archive" | "delete":
+                meta = await self._manager.archive(name)
+                return {"status": "archived", "metadata": meta, "skill": name}
+            case "restore":
+                meta = await self._manager.restore(name)
+                return {"status": "restored", "metadata": meta, "skill": name}
+            case "pin" | "unpin":
+                meta = await self._manager.pin(name, pinned=action == "pin")
+                return {"status": action, "metadata": meta, "skill": name}
+            case "promote":
+                meta = await self._manager.promote(
+                    name,
+                    scope=payload.get("scope") or "environment",
+                    environment_id=payload.get("environment_id") or "",
+                    domain=payload.get("domain") or "",
+                )
+                return {"status": "promoted", "metadata": meta, "skill": name}
+            case _:
+                raise ValueError(f"unsupported mutation action: {action}")
+        raise AssertionError("unreachable skill mutation dispatch")
+
+    def _proposal_from_input(self, action: str, input: dict) -> SelfImprovementProposal:
+        name = (input.get("name") or "").strip()
+        mode = input.get("autonomy_mode") or AutonomyMode.GUARDED.value
+        scope = input.get("scope") or ProposalScope.PRIVATE.value
+        return SelfImprovementProposal(
+            proposal_id=str(input.get("proposal_id") or uuid4()),
+            title=f"{action} skill {name}",
+            artifact_type="skill",
+            action=action,
+            content=input.get("content") or input.get("description") or name,
+            scope=scope,
+            environment_id=input.get("environment_id") or "",
+            domain=input.get("domain") or "",
+            mode=mode,
+            risk_class=input.get("risk_class") or "low",
+            risk_boundaries=_coerce_string_list(input.get("risk_boundaries")),
+            delegated_capabilities=_coerce_string_list(input.get("delegated_capabilities")),
+            source_episode_ids=_coerce_string_list(input.get("source_episode_ids")),
+        )
+
+    async def _snapshot_skill(self, input: dict) -> dict:
+        name = (input.get("name") or "").strip()
+        if not name:
+            return {}
+        try:
+            return await self._manager.show(name, include_archived=True)
+        except Exception:
+            return {}
+
+    async def _rollback_skill_change(self, proposal: SelfImprovementProposal) -> None:
+        rollback = proposal.rollback_metadata or {}
+        name = rollback.get("skill_name") or proposal.applied_artifact_refs.get("skill", "")
+        before = rollback.get("before") or {}
+        if not name:
+            raise ValueError("proposal rollback metadata does not include skill name")
+
+        if not before:
+            await self._manager.archive(name)
+            return
+
+        skill = before.get("skill") or {}
+        metadata = before.get("metadata") or {}
+        await self._manager.update(
+            name=name,
+            content=skill.get("content"),
+            description=skill.get("description"),
+        )
+        await self._manager.promote(
+            name,
+            scope=metadata.get("scope") or "private",
+            environment_id=metadata.get("environment_id") or "",
+            domain=metadata.get("domain") or "",
+        )
+        await self._manager.pin(name, pinned=bool(metadata.get("pinned")))
+        if metadata.get("status") == "archived":
+            await self._manager.archive(name)
+        else:
+            await self._manager.restore(name)
+
+    def _store_for_input(self, input: dict) -> JsonProposalStore:
+        if input.get("proposal_store_path"):
+            return JsonProposalStore(input["proposal_store_path"])
+        if self._proposal_store is None:
+            self._proposal_store = JsonProposalStore()
+        return self._proposal_store
+
+
+def _coerce_string_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, list):
+        return [str(part) for part in value if str(part)]
+    return []
+
+
+def _json_result(payload: dict) -> ToolResult:
+    import dataclasses
+    import json
+
+    def _default(value):
+        if dataclasses.is_dataclass(value):
+            return dataclasses.asdict(value)
+        return str(value)
+
+    return ToolResult(
+        tool_call_id="",
+        content=json.dumps(payload, default=_default, indent=2, sort_keys=True),
+    )

@@ -81,12 +81,14 @@ const {
   toEpochMs,
   toDate,
   normalizeSession,
+  normalizeExternalSession,
   normalizeTarget,
   normalizeStats,
   normalizeMessageRole,
   deriveCanonicalCredentialsBasePath,
   deriveSharedApiBasePath,
   deriveCanonicalForgeBasePath,
+  deriveCanonicalVolundrBasePath,
   deriveNiuuBasePath,
   normalizeStoredCredential,
   normalizeSecretTypeInfo,
@@ -231,6 +233,100 @@ describe('__testables', () => {
     expect(normalizeMessageRole('system')).toBe('assistant');
   });
 
+  it('normalizes session origin and external session id across fallback forms', () => {
+    const base = {
+      id: 'sess-1',
+      name: 'alpha',
+      source: { type: 'git' as const, repo: 'r', branch: 'main' },
+      status: 'running' as const,
+      model: 'sonnet',
+    };
+
+    expect(
+      normalizeSession({
+        ...base,
+        origin: 'claude',
+        external_session_id: 'ext-1',
+      }),
+    ).toMatchObject({ origin: 'claude', externalSessionId: 'ext-1' });
+
+    expect(
+      normalizeSession({
+        ...base,
+        origin: 'codex',
+        externalSessionId: 'ext-camel',
+      }),
+    ).toMatchObject({ origin: 'codex', externalSessionId: 'ext-camel' });
+
+    const plain = normalizeSession(base);
+    expect(plain.origin).toBeUndefined();
+    expect(plain.externalSessionId).toBeNull();
+  });
+
+  it('normalizes external session payloads with fallback defaults', () => {
+    expect(
+      normalizeExternalSession({
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-1',
+        workspace_path: '/Users/dev/code/volundr',
+        title: 'fix import flow',
+        model: 'claude-sonnet',
+        created_at: '2026-06-01T08:00:00Z',
+        updated_at: '2026-06-01T09:00:00Z',
+        live: true,
+        workspace_exists: true,
+        imported_session_id: 'sess-9',
+      }),
+    ).toEqual({
+      provider: 'claude-code',
+      harness: 'claude',
+      externalId: 'ext-1',
+      workspacePath: '/Users/dev/code/volundr',
+      title: 'fix import flow',
+      model: 'claude-sonnet',
+      createdAt: '2026-06-01T08:00:00Z',
+      updatedAt: '2026-06-01T09:00:00Z',
+      live: true,
+      workspaceExists: true,
+      workspaceAllowed: true,
+      importedSessionId: 'sess-9',
+    });
+
+    expect(
+      normalizeExternalSession({
+        provider: 'codex',
+        harness: 'codex',
+        external_id: 'ext-2',
+        workspace_path: '/tmp/scratch',
+      }),
+    ).toEqual({
+      provider: 'codex',
+      harness: 'codex',
+      externalId: 'ext-2',
+      workspacePath: '/tmp/scratch',
+      title: '',
+      model: '',
+      createdAt: null,
+      updatedAt: null,
+      live: false,
+      workspaceExists: false,
+      workspaceAllowed: true,
+      importedSessionId: null,
+    });
+
+    expect(
+      normalizeExternalSession({
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-3',
+        workspace_path: '/etc/forbidden',
+        workspace_exists: true,
+        workspace_allowed: false,
+      }).workspaceAllowed,
+    ).toBe(false);
+  });
+
   it('derives canonical base paths from forge, shared, niuu, and credentials variants', () => {
     expect(deriveCanonicalCredentialsBasePath()).toBeNull();
     expect(deriveCanonicalCredentialsBasePath('http://host/api/v1/credentials/')).toBe(
@@ -242,26 +338,36 @@ describe('__testables', () => {
     expect(deriveCanonicalCredentialsBasePath('http://host/api/v1/forge')).toBe(
       'http://host/api/v1/credentials',
     );
+    expect(deriveCanonicalCredentialsBasePath('http://host/api/v1/volundr')).toBe(
+      'http://host/api/v1/credentials',
+    );
 
     expect(deriveSharedApiBasePath()).toBeNull();
     expect(deriveSharedApiBasePath('http://host/api/v1')).toBe('http://host/api/v1');
     expect(deriveSharedApiBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1');
-    expect(deriveSharedApiBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1');
     expect(deriveSharedApiBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1');
+    expect(deriveSharedApiBasePath('http://host/api/v1/volundr')).toBe('http://host/api/v1');
 
     expect(deriveCanonicalForgeBasePath()).toBeNull();
     expect(deriveCanonicalForgeBasePath('http://host/api/v1/forge/')).toBe(
       'http://host/api/v1/forge',
     );
     expect(deriveCanonicalForgeBasePath('http://host/api/v1')).toBe('http://host/api/v1/forge');
-    expect(deriveCanonicalForgeBasePath('http://host/api/v1/niuu/volundr')).toBe(
+    expect(deriveCanonicalForgeBasePath('http://host/api/v1/volundr')).toBe(
       'http://host/api/v1/forge',
     );
 
+    expect(deriveCanonicalVolundrBasePath()).toBeNull();
+    expect(deriveCanonicalVolundrBasePath('http://host/api/v1/volundr/')).toBe(
+      'http://host/api/v1/volundr',
+    );
+    expect(deriveCanonicalVolundrBasePath('http://host/api/v1')).toBe('http://host/api/v1/volundr');
+    expect(deriveCanonicalVolundrBasePath('http://host/api/v1/forge')).toBeNull();
+
     expect(deriveNiuuBasePath()).toBeNull();
     expect(deriveNiuuBasePath('http://host/api/v1/niuu')).toBe('http://host/api/v1/niuu');
-    expect(deriveNiuuBasePath('http://host/api/v1/niuu/volundr')).toBe('http://host/api/v1/niuu');
     expect(deriveNiuuBasePath('http://host/api/v1/forge')).toBe('http://host/api/v1/niuu');
+    expect(deriveNiuuBasePath('http://host/api/v1/volundr')).toBe('http://host/api/v1/niuu');
   });
 
   it('normalizes credentials, secret types, conversation history, workflow gates, and logs', () => {
@@ -597,7 +703,7 @@ describe('buildVolundrFileSystemHttpAdapter', () => {
     await fs.listTree('sess-1');
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://sessions.example.com/s/sess-1/api/files?root=workspace',
+      'https://sessions.example.com/sessions/sess-1/files?root=workspace',
       expect.objectContaining({
         headers: expect.any(Headers),
       }),
@@ -1061,7 +1167,7 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
   });
 
-  it('derives forge, shared, niuu, and credentials clients from a shared api base', async () => {
+  it('derives forge runtime, volundr catalog, shared, niuu, and credentials clients from a shared api base', async () => {
     const client = makeClientWithBase('http://localhost:8080/api/v1');
     const service = buildVolundrHttpAdapter(client);
 
@@ -1071,6 +1177,7 @@ describe('buildVolundrHttpAdapter', () => {
     await service.getCredentials();
 
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/volundr');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/credentials',
     );
@@ -1078,38 +1185,61 @@ describe('buildVolundrHttpAdapter', () => {
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
 
     const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
+    const catalogClient = getDerivedClient('http://localhost:8080/api/v1/volundr');
     const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
     const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
 
-    expect(forgeClient.get).toHaveBeenCalledWith('/session-definitions');
+    expect(catalogClient.get).toHaveBeenCalledWith('/session-definitions');
+    expect(forgeClient.get).not.toHaveBeenCalledWith('/session-definitions');
     expect(sharedClient.get).toHaveBeenCalledWith('/features');
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
     expect(credentialsClient.get).toHaveBeenCalledWith('/user');
   });
 
-  it('derives shared and niuu clients from a legacy niuu volundr base', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+  it('derives shared and niuu clients from a forge runtime base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const service = buildVolundrHttpAdapter(client);
 
     await service.getFeatures();
     await service.getTargets();
     await service.getSession('sess-1');
 
-    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
-    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/niuu/volundr/forge',
-    );
 
-    const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
     const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
 
-    expect(forgeClient.get).toHaveBeenCalledWith('/sessions/sess-1');
+    expect(client.get).toHaveBeenCalledWith('/sessions/sess-1');
     expect(sharedClient.get).toHaveBeenCalledWith('/features');
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
+  });
+
+  it('derives catalog calls from a volundr catalog base', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/volundr');
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getSessionDefinitions();
+    await service.getLaunchSpecs('system');
+
+    expect(client.get).toHaveBeenCalledWith('/session-definitions');
+    expect(client.get).toHaveBeenCalledWith('/launch-specs?scope=system');
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/forge');
+  });
+
+  it('uses the provided client directly when no canonical api base can be derived', async () => {
+    const client = { ...makeClient(), basePath: undefined };
+    const service = buildVolundrHttpAdapter(client);
+
+    await service.getFeatures();
+    await service.getRepos();
+    await service.getTargets();
+
+    expect(queryMocks.createApiClient).not.toHaveBeenCalled();
+    expect(client.get).toHaveBeenCalledWith('/features');
+    expect(client.get).toHaveBeenCalledWith('/repos');
+    expect(client.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
   });
 
   it('getSessionDefinitions calls GET /session-definitions and normalizes snake_case', async () => {
@@ -1171,8 +1301,8 @@ describe('buildVolundrHttpAdapter', () => {
     ]);
   });
 
-  it('getTargets uses the shared niuu registry when mounted at /api/v1/niuu/volundr', async () => {
-    const client = makeClientWithBase('http://localhost:8080/api/v1/niuu/volundr');
+  it('getTargets uses the shared niuu registry when mounted at /api/v1/forge', async () => {
+    const client = makeClientWithBase('http://localhost:8080/api/v1/forge');
     const svc = buildVolundrHttpAdapter(client);
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu')!;
     expect(niuuClient).toBeDefined();
@@ -1488,7 +1618,7 @@ describe('buildVolundrHttpAdapter', () => {
     });
   });
 
-  it('savePreset calls POST /presets when no id', async () => {
+  it('saveLaunchSpec calls POST /launch-specs when no id', async () => {
     const client = makeClient();
     const preset = {
       name: 'fast',
@@ -1510,11 +1640,11 @@ describe('buildVolundrHttpAdapter', () => {
       setupScripts: [],
       workloadConfig: {},
     };
-    await buildVolundrHttpAdapter(client).savePreset(preset);
-    expect(client.post).toHaveBeenCalledWith('/presets', preset);
+    await buildVolundrHttpAdapter(client).saveLaunchSpec(preset);
+    expect(client.post).toHaveBeenCalledWith('/launch-specs', preset);
   });
 
-  it('savePreset calls PUT /presets/:id when id is present', async () => {
+  it('saveLaunchSpec calls PUT /launch-specs/:id when id is present', async () => {
     const client = makeClient();
     const preset = {
       id: 'p1',
@@ -1537,8 +1667,8 @@ describe('buildVolundrHttpAdapter', () => {
       setupScripts: [],
       workloadConfig: {},
     };
-    await buildVolundrHttpAdapter(client).savePreset(preset);
-    expect(client.put).toHaveBeenCalledWith('/presets/p1', preset);
+    await buildVolundrHttpAdapter(client).saveLaunchSpec(preset);
+    expect(client.put).toHaveBeenCalledWith('/launch-specs/p1', preset);
   });
 
   it('getIdentity calls GET /identity/me', async () => {
@@ -1552,6 +1682,99 @@ describe('buildVolundrHttpAdapter', () => {
     const client = makeClient();
     await buildVolundrHttpAdapter(client).listArchivedSessions();
     expect(client.get).toHaveBeenCalledWith('/sessions?status=archived');
+  });
+
+  it('listExternalSessions calls GET /external-sessions and normalizes payloads', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([
+      {
+        provider: 'claude-code',
+        harness: 'claude',
+        external_id: 'ext-1',
+        workspace_path: '/Users/dev/code/volundr',
+        title: 'fix import flow',
+        model: 'claude-sonnet',
+        created_at: '2026-06-01T08:00:00Z',
+        updated_at: '2026-06-01T09:00:00Z',
+        live: true,
+        workspace_exists: true,
+        imported_session_id: null,
+      },
+    ]);
+
+    const sessions = await buildVolundrHttpAdapter(client).listExternalSessions();
+
+    expect(client.get).toHaveBeenCalledWith('/external-sessions');
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        provider: 'claude-code',
+        harness: 'claude',
+        externalId: 'ext-1',
+        workspacePath: '/Users/dev/code/volundr',
+        live: true,
+        workspaceExists: true,
+        importedSessionId: null,
+      }),
+    ]);
+  });
+
+  it('listExternalSessions propagates 503 errors so callers can hide the affordance', async () => {
+    const client = makeClient();
+    const unavailable = Object.assign(new Error('External session discovery not available'), {
+      status: 503,
+    });
+    client.get.mockRejectedValueOnce(unavailable);
+
+    await expect(buildVolundrHttpAdapter(client).listExternalSessions()).rejects.toMatchObject({
+      status: 503,
+    });
+  });
+
+  it('importExternalSession posts snake_case body and normalizes the created session', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'sess-imported',
+      name: 'fix import flow',
+      source: { type: 'local_mount', paths: [] },
+      status: 'stopped',
+      model: 'claude-sonnet',
+      origin: 'claude',
+      external_session_id: 'ext-1',
+    });
+
+    const session = await buildVolundrHttpAdapter(client).importExternalSession(
+      'claude-code',
+      'ext-1',
+    );
+
+    expect(client.post).toHaveBeenCalledWith('/sessions/import', {
+      provider: 'claude-code',
+      external_id: 'ext-1',
+    });
+    expect(session).toMatchObject({
+      id: 'sess-imported',
+      origin: 'claude',
+      externalSessionId: 'ext-1',
+    });
+  });
+
+  it('importExternalSession includes the optional name in the request body', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValueOnce({
+      id: 'sess-imported',
+      name: 'renamed',
+      source: { type: 'local_mount', paths: [] },
+      status: 'stopped',
+      model: 'gpt-5-codex',
+    });
+
+    await buildVolundrHttpAdapter(client).importExternalSession('codex', 'ext-2', 'renamed');
+
+    expect(client.post).toHaveBeenCalledWith('/sessions/import', {
+      provider: 'codex',
+      external_id: 'ext-2',
+      name: 'renamed',
+    });
   });
 
   it('createCredential targets the canonical shared credentials route', async () => {
@@ -2035,10 +2258,10 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     // GET methods
     await svc.getFeatures();
     await svc.getRepos();
-    await svc.getTemplates();
-    await svc.getTemplate('tpl-1');
-    await svc.getPresets();
-    await svc.getPreset('p1');
+    await svc.getLaunchSpecs();
+    await svc.getLaunchSpec('tpl-1');
+    await svc.getLaunchSpecs('user');
+    await svc.getLaunchSpec('p1');
     await svc.getAvailableMcpServers();
     await svc.getAvailableSecrets();
     await svc.getClusterResources();
@@ -2096,8 +2319,8 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     await svc.updateSession('sess-1', { name: 'updated' });
     await svc.updateTenant('t1', { name: 'acme-v2' });
     await svc.updateTrackerIssueStatus('issue-1', 'done');
-    await svc.saveTemplate({ name: 'tpl', description: '', config: {} } as Parameters<
-      typeof svc.saveTemplate
+    await svc.saveLaunchSpec({ name: 'tpl', description: '', config: {} } as unknown as Parameters<
+      typeof svc.saveLaunchSpec
     >[0]);
     await svc.updateAdminSettings({
       storage: { provider: 's3', bucket: 'b', region: 'us-east-1' },
@@ -2107,7 +2330,7 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     >[0]);
 
     // DELETE methods
-    await svc.deletePreset('p1');
+    await svc.deleteLaunchSpec('p1');
     await svc.deleteTenant('t1');
     await svc.deleteUserCredential('key');
     await svc.deleteTenantCredential('key');

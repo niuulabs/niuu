@@ -16,11 +16,10 @@ spec:
   selector:
     matchLabels:
       {{- include "bifrost.selectorLabels" . | nindent 6 }}
+  {{- with .Values.strategy }}
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   template:
     metadata:
       annotations:

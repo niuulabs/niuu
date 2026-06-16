@@ -44,6 +44,7 @@ import {
   roundUpDurationMs,
   sessionForgeLabel,
   spanAttributes,
+  telemetryTaskDurationMs,
   timelineRowCategory,
   timelineRowTone,
   truncateLeadingPath,
@@ -634,6 +635,30 @@ describe('LiveSessionDetailPage helpers', () => {
 
     const directOnlyTrace = makeTrace([root, workflow, assistantTurn]);
     expect(buildTelemetryTurnRows(directOnlyTrace)).toHaveLength(1);
+  });
+
+  it('bounds serial task display duration at the next sibling start', () => {
+    const firstTool = makeSpan({
+      id: 'tool-1',
+      parentSpanId: 'workflow',
+      kind: 'tool.call',
+      name: 'Bash',
+      startedAt: '2026-05-23T09:29:12Z',
+      endedAt: '2026-05-23T09:34:27Z',
+      durationMs: 315_000,
+    });
+    const nextTool = makeSpan({
+      id: 'tool-2',
+      parentSpanId: 'workflow',
+      kind: 'tool.call',
+      name: 'Bash',
+      startedAt: '2026-05-23T09:29:17Z',
+      endedAt: '2026-05-23T09:34:27Z',
+      durationMs: 310_000,
+    });
+
+    expect(telemetryTaskDurationMs(firstTool, new Date(nextTool.startedAt).getTime())).toBe(5_000);
+    expect(telemetryTaskDurationMs(nextTool, null)).toBe(310_000);
   });
 
   it('covers additional telemetry helper fallbacks and clamps', () => {

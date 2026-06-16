@@ -26,13 +26,14 @@ without modifying the global ravn.yaml.
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -395,11 +396,11 @@ class SkillConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Conversation memory / persistence backend configuration."""
 
-    backend: Literal["sqlite", "postgres"] | str = Field(
+    backend: Literal["none", "sqlite", "postgres"] | str = Field(
         default="sqlite",
         description=(
-            "Backend to use: 'sqlite', 'postgres', or a fully-qualified class path "
-            "for a custom backend adapter."
+            "Backend to use: 'none', 'sqlite', 'postgres', or a fully-qualified "
+            "class path for a custom backend adapter."
         ),
     )
     path: str = Field(
@@ -453,7 +454,10 @@ class MemoryConfig(BaseModel):
     # Reflection config (merged from OutcomeConfig, NIU-574)
     reflection_model: str = Field(
         default="claude-haiku-4-5-20251001",
-        description="Model alias used for the compact post-task reflection call.",
+        description=(
+            "Model alias used for the compact post-task reflection call. Use empty, "
+            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model."
+        ),
     )
     reflection_max_tokens: int = Field(
         default=512,
@@ -1398,6 +1402,14 @@ class MimirSourceTriggerConfig(BaseModel):
             "in the context window. None uses the LLM/settings default."
         ),
     )
+    max_content_chars: int = Field(
+        default=120_000,
+        description=(
+            "Maximum raw source characters injected into synthesis task context. "
+            "Large web captures can otherwise exhaust the model context before "
+            "the agent can write any synthesis."
+        ),
+    )
     retry_after_seconds: int = Field(
         default=600,
         description=(
@@ -1449,6 +1461,38 @@ class MimirIngestConfig(BaseModel):
     entity_max_tokens: int = Field(
         default=1024,
         description="Maximum output tokens for the entity extraction LLM call.",
+    )
+
+
+class MimirReflexConfig(BaseModel):
+    """Retrieval reflex — deterministic Mímir entity pointer injection (NIU-1059).
+
+    A zero-LLM scanner that matches incoming agent-turn messages against the
+    Mímir entity feed and prefixes compact pointers (never page bodies).
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable retrieval reflex pointer injection on agent turns.",
+    )
+    max_pointers: int = Field(
+        default=5,
+        description="Maximum number of entity pointers injected per turn.",
+    )
+    cache_ttl_seconds: int = Field(
+        default=300,
+        description="How long (seconds) the entity index is cached before refetching.",
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the Mímir HTTP service exposing GET /mimir/entities/index. "
+            "When empty, falls back to the first mimir.instances entry with a url."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        description="HTTP timeout (seconds) for the entity feed request.",
     )
 
 
@@ -1528,6 +1572,10 @@ class MimirConfig(BaseModel):
         default_factory=MimirIngestConfig,
         description="Entity detection settings for ingest.",
     )
+    reflex: MimirReflexConfig = Field(
+        default_factory=MimirReflexConfig,
+        description="Retrieval reflex — deterministic entity pointer injection per turn.",
+    )
 
 
 class NngMeshConfig(BaseModel):
@@ -1553,6 +1601,161 @@ class MeshSleipnirConfig(BaseModel):
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
+    )
+
+
+class MeshNatsExtraSubscriptionConfig(BaseModel):
+    """Additional NATS JetStream filter subject for an existing stream."""
+
+    subject: str = Field(
+        default="",
+        description="Raw NATS filter subject to subscribe to in addition to the prefixed subject.",
+    )
+    stream_name: str = Field(
+        default="",
+        description="JetStream stream that owns the raw filter subject.",
+    )
+    event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Logical Sleipnir event types allowed to attach this raw NATS subject. "
+            "When empty, the raw subject is attached to every logical subscription."
+        ),
+    )
+
+
+class MeshNatsCoreSubscriptionConfig(BaseModel):
+    """Additional core NATS filter subject for live control messages."""
+
+    subject: str = Field(
+        default="",
+        description="Core NATS filter subject to subscribe to in addition to JetStream.",
+    )
+
+
+class MeshNatsConfig(BaseModel):
+    """NATS JetStream mesh settings for environment-resident Valkyries."""
+
+    servers_env: str = Field(
+        default="NATS_URL",
+        description="Env var containing one or more comma-separated NATS server URLs.",
+    )
+    stream_name: str = Field(
+        default="ravn_environment",
+        description="JetStream stream used for Ravn environment/flock events.",
+    )
+    jetstream_domain: str = Field(
+        default="",
+        description=(
+            "Optional JetStream domain to use when the connected NATS account exposes "
+            "JetStream through a domain. Empty uses the server/account default."
+        ),
+    )
+    subject_prefix: str = Field(
+        default="ravn.environment",
+        description="NATS subject prefix for Ravn environment signals and mesh traffic.",
+    )
+    consumer_group: str = Field(
+        default="",
+        description="Optional durable consumer group for load-sharing resident agents.",
+    )
+    publish_timeout_s: float = Field(
+        default=10.0,
+        description="Hard deadline for one JetStream publish before raising.",
+    )
+    replay_from_sequence: int | None = Field(
+        default=None,
+        description="Optional JetStream sequence to replay from on startup.",
+    )
+    retention: str = Field(
+        default="limits",
+        description="JetStream retention policy: limits, interest, or workqueue.",
+    )
+    max_age_seconds: int = Field(
+        default=7 * 24 * 3600,
+        description="Maximum age of retained environment events.",
+    )
+    max_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        description="Maximum bytes retained by the environment stream.",
+    )
+    ring_buffer_depth: int = Field(
+        default=1000,
+        description="Per-subscriber in-process event buffer depth.",
+    )
+    connect_timeout_s: float = Field(
+        default=10.0,
+        description="NATS connection timeout in seconds.",
+    )
+    max_reconnect_attempts: int = Field(
+        default=60,
+        description="Maximum reconnect attempts before the NATS client gives up.",
+    )
+    ensure_stream: bool = Field(
+        default=True,
+        description="Create/ensure the JetStream stream on startup. Disable for GitOps streams.",
+    )
+    tls_ca_file: str = Field(
+        default="",
+        description="Optional CA bundle path for TLS-secured NATS servers.",
+    )
+    tls_cert_file: str = Field(
+        default="",
+        description="Optional client TLS certificate path.",
+    )
+    tls_key_file: str = Field(
+        default="",
+        description="Optional client TLS private key path.",
+    )
+    tls_hostname: str = Field(
+        default="",
+        description="Optional TLS server name override.",
+    )
+    tls_handshake_first: bool = Field(
+        default=False,
+        description="Use TLS-first handshakes for NATS servers that require it.",
+    )
+    tls_insecure_skip_verify: bool = Field(
+        default=False,
+        description="Disable NATS TLS certificate verification for internal/self-signed endpoints.",
+    )
+    user: str = Field(
+        default="",
+        description="Optional NATS username.",
+    )
+    user_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS username.",
+    )
+    password_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS password.",
+    )
+    token_env: str = Field(
+        default="",
+        description="Optional env var containing the NATS token.",
+    )
+    nkeys_seed_file: str = Field(
+        default="",
+        description="Optional mounted NKey seed file path.",
+    )
+    nkeys_seed_env: str = Field(
+        default="",
+        description="Optional env var containing an NKey seed string.",
+    )
+    extra_subscriptions: list[MeshNatsExtraSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional raw NATS subject filters, with stream names, consumed in addition "
+            "to subject_prefix-derived Sleipnir subjects."
+        ),
+    )
+    core_subscriptions: list[MeshNatsCoreSubscriptionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Optional core NATS subject filters for live controls such as resident "
+            "Valkyrie commands routed over leafnodes."
+        ),
     )
 
 
@@ -1711,6 +1914,7 @@ class MeshConfig(BaseModel):
     )
     nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
     sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
+    nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
 
 
 class BuriConfig(BaseModel):
@@ -1975,7 +2179,8 @@ class WakefulnessConfig(BaseModel):
         default="fast",
         description=(
             "LLM alias for the reflection call.  Should resolve to a cheap/fast "
-            "model in the LLM aliases map."
+            "model in the LLM aliases map. Use empty, 'default', 'agent', or "
+            "'same-as-agent' to reuse the effective agent model."
         ),
     )
     max_intents_per_reflection: int = Field(
@@ -2143,6 +2348,159 @@ class DreamCycleTriggerConfig(BaseModel):
     state_dir: str = Field(
         default="~/.ravn/daemon",
         description="Directory where dream cycle state (last_run timestamp) is persisted.",
+    )
+    autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
+        default="guarded",
+        description=(
+            "Autonomy mode for self-improvement proposals emitted by the "
+            "Mimir-curator dream cycle trigger."
+        ),
+    )
+    environment_id: str = Field(
+        default="",
+        description="Optional Environment ID attached to dream-cycle improvement proposals.",
+    )
+    proposal_store_path: str = Field(
+        default="~/.ravn/autonomy_proposals.json",
+        description="JSON proposal store used for dream-cycle self-improvement audit trails.",
+    )
+
+
+class OdinCourtConfig(BaseModel):
+    """ODIN court resolver for resident judgments (NIU-1021).
+
+    Runs inside resident daemons next to the learning runtime, resolving
+    ``valkyrie.judgment.proposed``/``valkyrie.action.proposed`` into final
+    attention and action decisions with persisted audit records.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Run the ODIN court when the resident environment is active.",
+    )
+    quorum_size: int = Field(
+        default=1,
+        description=(
+            "Judgments/actions required before a case resolves immediately. "
+            "Single-resident environments should keep 1; flocked deployments "
+            "with multiple judging residents can raise it."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        description="Age after which a case with any input resolves on sweep.",
+    )
+    sweep_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the court sweeps for timed-out cases.",
+    )
+
+
+class ResidentWakefulnessConfig(BaseModel):
+    """Resident wakefulness state machine and scheduled consolidation dreams.
+
+    Drives ``watching``/``wakeful``/``dreaming`` transitions for resident
+    Valkyrie daemons and runs the reflective consolidation dream (skill
+    telemetry review, stale marking, promotion, gap reopening) on a schedule.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the wakefulness state machine for resident daemons.",
+    )
+    tick_interval_seconds: float = Field(
+        default=5.0,
+        description="How often the state machine evaluates transitions.",
+    )
+    wakeful_window_seconds: float = Field(
+        default=30.0,
+        description="Recency window of signal activity that keeps the resident wakeful.",
+    )
+    dream_interval_seconds: float = Field(
+        default=3600.0,
+        description="Seconds between scheduled consolidation dreams.",
+    )
+    dream_min_idle_seconds: float = Field(
+        default=60.0,
+        description="Minimum idle time before a due dream may start (no mid-incident dreams).",
+    )
+    stale_skill_age_seconds: float = Field(
+        default=7 * 24 * 3600.0,
+        description="Unused-for-this-long skills are marked stale during dreams.",
+    )
+    promote_min_successes: int = Field(
+        default=3,
+        description=(
+            "Successful runs (with zero failures) before a private skill is "
+            "promoted to environment scope during a dream, policy permitting."
+        ),
+    )
+
+
+class ResidentEvolutionConfig(BaseModel):
+    """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
+
+    Lives apart from :class:`DreamCycleTriggerConfig` (the Mimir-curator cron)
+    — these settings drive the resident micro-dream/adoption loop, not the
+    nightly knowledge-base pass.
+    """
+
+    autonomy_mode: Literal["guarded", "autonomous", "yolo"] = Field(
+        default="guarded",
+        description=(
+            "Resident autonomy: guarded records proposals, autonomous applies "
+            "low-risk private/Environment changes, yolo evolves within "
+            "delegated boundaries."
+        ),
+    )
+    reviewer_adapter: str = Field(
+        default="ravn.valkyrie_evolution.adapters.PolicyCourtReviewer",
+        description=(
+            "Fully-qualified EvolutionReviewPort class gating built and "
+            "adopted learnings before install."
+        ),
+    )
+    reviewer_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the reviewer adapter.",
+    )
+    tool_timeout_seconds: float = Field(
+        default=10.0,
+        description="Hard timeout for one sandboxed resident tool execution.",
+    )
+    rollback_consecutive_failures: int = Field(
+        default=3,
+        description=(
+            "Consecutive implementation failures before an installed skill is "
+            "auto-rolled-back (archived, regression published to the flock)."
+        ),
+    )
+    learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
+        default="local",
+        description=(
+            "Execution backend for learned agent tools authored through build_tool. "
+            "'local' uses the resident subprocess sandbox; 'forge'/'devrunner' run "
+            "inside the workspace-mounted devrunner container path."
+        ),
+    )
+    tool_build_adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified ToolBuildBackend class commissioned by build_tool "
+            "when the agent supplies a build_request (for example "
+            "ravn.adapters.tool_build.ForgeSessionToolBuildBackend or "
+            "ravn.adapters.tool_build.TingWorkflowToolBuildBackend). Empty: the "
+            "investigating agent authors tool code inline in-session. The result "
+            "flows through the same review/canary/install path regardless of "
+            "backend."
+        ),
+    )
+    tool_build_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Constructor kwargs for the tool build adapter (base_url, "
+            "workflow_id, pat_env, model, poll intervals, ...)."
+        ),
     )
 
 
@@ -2460,6 +2818,178 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class SignalSourceConfig(BaseModel):
+    """Adapter-backed signal source for a resident Valkyrie Environment."""
+
+    id: str = Field(
+        default="",
+        description="Stable source id, for example k8s-events or host-mail.",
+    )
+    name: str = Field(
+        default="",
+        description="Human-readable source name for UI and audit logs.",
+    )
+    adapter: str = Field(
+        default="",
+        description="Import path or connector id for the signal source adapter.",
+    )
+    kind: str = Field(
+        default="generic",
+        description="Provider-neutral signal kind, for example kubernetes, email, or printer.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether this source should be started by the resident Valkyrie.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Adapter constructor kwargs. Keep mesh transport subjects out of this shape.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map adapter kwarg names to environment variable names for secrets.",
+    )
+
+
+class EnvironmentVocabularyConfig(BaseModel):
+    """Deployment-defined vocabulary extensions for Environment models.
+
+    Values listed here are registered into the domain vocabulary registry on
+    settings load, so new environment types, signal kinds, and health states
+    are a config change, not a code change.
+    """
+
+    environment_types: list[str] = Field(
+        default_factory=list,
+        description="Extra environment types beyond the platform defaults.",
+    )
+    signal_source_kinds: list[str] = Field(
+        default_factory=list,
+        description="Extra signal source kinds beyond the platform defaults.",
+    )
+    operational_health_states: list[str] = Field(
+        default_factory=list,
+        description="Extra operational health states beyond the platform defaults.",
+    )
+
+
+class EnvironmentConfig(BaseModel):
+    """Runtime environment identity for long-running resident Valkyries."""
+
+    id: str = Field(
+        default="local",
+        description="Stable environment id, for example a k8s cluster or host id.",
+    )
+    name: str = Field(
+        default="Local",
+        description="Human-readable environment name.",
+    )
+    type: str = Field(
+        default="local",
+        description="Environment type, for example k8s, host, printer, or local.",
+    )
+    resident_name: str = Field(
+        default="",
+        description="Optional human-friendly name for the resident Valkyrie.",
+    )
+    resident_personality: str = Field(
+        default="",
+        description=(
+            "Optional lightweight resident guidance injected into autonomous Valkyrie tasks."
+        ),
+    )
+    flocks: list[str] = Field(
+        default_factory=list,
+        description="Existing flock names this Valkyrie participates in.",
+    )
+    signal_sources: list[SignalSourceConfig] = Field(
+        default_factory=list,
+        description="Adapter-backed signal feeds this Valkyrie should watch.",
+    )
+    signal_poll_interval_seconds: float = Field(
+        default=10.0,
+        description="Seconds between polling enabled signal sources.",
+    )
+    signal_dedupe_cache_size: int = Field(
+        default=2048,
+        description="Maximum signal ids remembered per daemon to avoid duplicate work.",
+    )
+    signal_task_severities: list[str] = Field(
+        default_factory=lambda: ["warning", "critical"],
+        description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+    )
+    signal_subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Legacy derived bus subjects. Prefer signal_sources in user config; "
+            "transport adapters derive subscriptions from enabled sources."
+        ),
+    )
+    vocabulary: EnvironmentVocabularyConfig = Field(
+        default_factory=EnvironmentVocabularyConfig,
+        description="Deployment-defined extensions to the Environment vocabularies.",
+    )
+
+    @model_validator(mode="after")
+    def _register_vocabulary(self) -> EnvironmentConfig:
+        from ravn.domain.environment import extend_environment_vocabulary  # noqa: PLC0415
+
+        extend_environment_vocabulary(
+            environment_types=self.vocabulary.environment_types,
+            signal_source_kinds=self.vocabulary.signal_source_kinds,
+            operational_health_states=self.vocabulary.operational_health_states,
+        )
+        return self
+
+
+class WardenDiscoveryAdapterConfig(BaseModel):
+    """Dynamic adapter entry for Warden discovery."""
+
+    adapter: str = Field(
+        default="ravn.adapters.warden_discovery.spec.WardenSpecDiscoveryAdapter",
+        description="Fully-qualified class path for the Warden discovery adapter.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
+class WardenDiscoveryConfig(BaseModel):
+    """Read-only Warden discovery configuration."""
+
+    enabled: bool = True
+    adapters: list[WardenDiscoveryAdapterConfig] = Field(
+        default_factory=lambda: [
+            WardenDiscoveryAdapterConfig(
+                adapter="ravn.adapters.warden_discovery.spec.WardenSpecDiscoveryAdapter"
+            )
+        ]
+    )
+    adapters_json: str = Field(
+        default="",
+        description="JSON list of adapter objects for env-driven deployments.",
+    )
+
+    @model_validator(mode="after")
+    def _parse_adapters_json(self) -> WardenDiscoveryConfig:
+        if not self.adapters_json.strip():
+            return self
+        raw_adapters = json.loads(self.adapters_json)
+        if not isinstance(raw_adapters, list):
+            msg = "warden_discovery.adapters_json must be a JSON list"
+            raise ValueError(msg)
+        self.adapters = [
+            WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
+        ]
+        return self
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -2529,6 +3059,17 @@ class Settings(BaseSettings):
     # NIU-587: dream cycle trigger — nightly Mímir enrichment
     dream_cycle: DreamCycleTriggerConfig = Field(default_factory=DreamCycleTriggerConfig)
 
+    # NIU-1040: resident wakefulness state machine + scheduled consolidation dreams
+    resident_wakefulness: ResidentWakefulnessConfig = Field(
+        default_factory=ResidentWakefulnessConfig
+    )
+
+    # NIU-1021: ODIN court resolver for resident judgments
+    odin_court: OdinCourtConfig = Field(default_factory=OdinCourtConfig)
+
+    # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
+    resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
+
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
 
@@ -2546,6 +3087,9 @@ class Settings(BaseSettings):
 
     # NIU-538: flock peer discovery
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
+
+    # Warden discovery for UI/Guild/Observatory surfaces.
+    warden_discovery: WardenDiscoveryConfig = Field(default_factory=WardenDiscoveryConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)
@@ -2578,6 +3122,10 @@ class Settings(BaseSettings):
     workflow: WorkflowRuntimeConfig = Field(
         default_factory=WorkflowRuntimeConfig,
         description="Workflow graph payload injected for flock-backed sessions.",
+    )
+    environment: EnvironmentConfig = Field(
+        default_factory=EnvironmentConfig,
+        description="Environment identity and signal subscriptions for resident Valkyries.",
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
@@ -2618,6 +3166,27 @@ class Settings(BaseSettings):
             )
             return self.agent.model
         return _default
+
+    @staticmethod
+    def _uses_effective_agent_model(value: str | None) -> bool:
+        if value is None:
+            return True
+        return value.strip().lower() in {"", "default", "agent", "same-as-agent"}
+
+    def effective_memory_reflection_model(self) -> str:
+        """Return the model for compact post-task reflections."""
+
+        configured = self.memory.reflection_model
+        if self._uses_effective_agent_model(configured):
+            return self.effective_model()
+        return configured
+
+    def effective_post_session_reflection_config(self) -> PostSessionReflectionConfig:
+        """Return post-session reflection config with any model fallback resolved."""
+
+        if not self._uses_effective_agent_model(self.reflection.llm_alias):
+            return self.reflection
+        return self.reflection.model_copy(update={"llm_alias": self.effective_model()})
 
     def effective_max_tokens(self) -> int:
         """Return the resolved max_tokens.

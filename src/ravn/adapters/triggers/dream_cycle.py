@@ -124,11 +124,15 @@ class DreamCycleTrigger(TriggerPort):
         """Build the dream cycle initiative context and enqueue an AgentTask."""
         since_str = self._last_dream_at.isoformat() if self._last_dream_at else "the beginning"
         warden_id = self._state_dir.parent.name or "mimir"
+        environment_line = self._config.environment_id or "private"
 
         initiative_context = (
             f"Dream cycle run — {now.isoformat()}\n"
             f"Last run: {since_str}\n"
             f"Token budget: ~${self._config.token_budget_usd:.2f} USD\n"
+            f"Autonomy mode: {self._config.autonomy_mode}\n"
+            f"Environment: {environment_line}\n"
+            f"Proposal store: {self._config.proposal_store_path}\n"
             f"\n"
             f"## Dream cycle steps\n"
             f"\n"
@@ -172,6 +176,15 @@ class DreamCycleTrigger(TriggerPort):
             f"\n"
             f"Stay within the token budget.  If budget is running low before all steps "
             f"are done, skip Step 6, complete Steps 7, and note which steps were skipped.\n"
+            f"\n"
+            f"## Self-improvement policy\n"
+            f"\n"
+            f"When this dream cycle discovers a better private or Environment-scoped "
+            f"skill/tool routine, call `skill_manage` with `autonomy_mode`, "
+            f"`environment_id`, and `proposal_store_path` exactly as listed above. "
+            f"Do not directly mutate global doctrine, bundled personas, credentials, "
+            f"spending limits, authority boundaries, or external-send behavior; those "
+            f"must remain review proposals even in YOLO mode.\n"
         )
 
         task_id = f"task_{int(time.time() * 1000):x}_dream_cycle"

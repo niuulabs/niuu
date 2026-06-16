@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
 import socket
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -122,6 +124,13 @@ def _mock_provision(mgr: LocalProcessPodManager) -> patch:
         new_callable=AsyncMock,
         return_value=WS,
     )
+
+
+def _reaped_child_pid() -> int:
+    """Spawn and immediately reap a child so its pid is guaranteed dead."""
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
 
 
 def _mock_spawn(
@@ -254,6 +263,32 @@ class TestSkuldEnv:
 
         assert env["SKULD__TELEGRAM__TOPIC_MODE"] == "fixed_topic"
         assert env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] == "77"
+
+    def test_build_env_includes_resume_session_id(self) -> None:
+        """Imported sessions thread their native CLI session id to Skuld."""
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "claude",
+                    "resumeSessionId": "2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert env["SKULD__SESSION__RESUME_SESSION_ID"] == ("2e877b9f-4b8a-4d46-8f00-03f6163addd5")
+
+    def test_build_env_omits_resume_session_id_when_absent(self) -> None:
+        spec = SessionSpec(
+            values={"broker": {"cliType": "claude"}},
+            pod_spec=PodSpecAdditions(),
+        )
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__SESSION__RESUME_SESSION_ID" not in env
 
     def test_build_env_includes_localized_mcp_servers(self) -> None:
         spec = SessionSpec(
@@ -498,19 +533,68 @@ class TestWorkspaceProvisioning:
         assert workspace.exists()
         assert workspace == tmp_workspaces / str(git_session.id)
 
-    async def test_writes_claude_md(
+    async def test_does_not_write_claude_md(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
         default_spec: SessionSpec,
     ) -> None:
-        """CLAUDE.md is written with system prompt."""
+        """Prompts are delivered via the transport — CLAUDE.md is never written
+        (it used to clobber real project files and bleed into later sessions)."""
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, default_spec)
-        claude_md = workspace / "CLAUDE.md"
-        assert claude_md.exists()
-        content = claude_md.read_text()
-        assert "You are a helpful assistant." in content
+        assert not (workspace / "CLAUDE.md").exists()
+
+    async def test_local_mount_path_outside_allowed_prefixes_is_rejected(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        """Mini-mode local_path workspaces obey the allowed mount prefix policy."""
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="denied-local-mount",
+            source=LocalMountSource(local_path=str(outside)),
+        )
+
+        with pytest.raises(RuntimeError, match="allowed mount prefix"):
+            await manager._provision_workspace(session, default_spec)
+
+    async def test_local_mount_path_under_allowed_prefix_is_used(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        workspace_dir = allowed / "project"
+        workspace_dir.mkdir(parents=True)
+        manager = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            state_file=str(tmp_state_file),
+            allowed_mount_prefixes=[str(allowed)],
+        )
+        session = Session(
+            id=uuid4(),
+            name="allowed-local-mount",
+            source=LocalMountSource(local_path=str(workspace_dir)),
+        )
+
+        workspace = await manager._provision_workspace(session, default_spec)
+
+        assert workspace == workspace_dir
 
     async def test_git_source_local_path_uses_directory_directly(
         self,
@@ -533,14 +617,16 @@ class TestWorkspaceProvisioning:
         clone_repo.assert_not_called()
         assert workspace == project.resolve()
         assert not (manager._workspaces_dir / str(session.id)).exists()
-        assert "You are a helpful assistant." in (project / "CLAUDE.md").read_text()
+        # The user's real project directory is left untouched.
+        assert not (project / "CLAUDE.md").exists()
 
-    async def test_writes_claude_md_with_initial_prompt(
+    async def test_does_not_write_claude_md_with_initial_prompt(
         self,
         manager: LocalProcessPodManager,
         git_session: Session,
     ) -> None:
-        """CLAUDE.md includes initial prompt when provided."""
+        """Even with prompts configured, CLAUDE.md is not written — prompts go
+        through the transport (system_prompt option / send_message)."""
         spec = SessionSpec(
             values={
                 "session": {
@@ -552,9 +638,7 @@ class TestWorkspaceProvisioning:
         )
         with patch.object(manager, "_clone_repo", new_callable=AsyncMock):
             workspace = await manager._provision_workspace(git_session, spec)
-        content = (workspace / "CLAUDE.md").read_text()
-        assert "Initial Task" in content
-        assert "Do the thing." in content
+        assert not (workspace / "CLAUDE.md").exists()
 
     async def test_no_claude_md_when_no_prompts(
         self,
@@ -942,11 +1026,11 @@ class TestProcessSpawning:
         assert env["FOO"] == "bar"
         assert env["NUM"] == "42"
 
-    def test_build_env_sets_workspace_dir(self) -> None:
-        """WORKSPACE_DIR is set in the environment."""
+    def test_build_env_sets_structured_workspace_dir(self) -> None:
+        """The Skuld workspace is set through structured broker config."""
         spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
         env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
-        assert env["WORKSPACE_DIR"] == "/tmp/ws"
+        assert env["SKULD__SESSION__WORKSPACE_DIR"] == "/tmp/ws"
 
     def test_build_env_includes_broker_overrides(self) -> None:
         """Broker values from session definitions are mapped to Skuld env vars."""
@@ -1150,15 +1234,13 @@ class TestProcessSpawning:
             values={},
             pod_spec=PodSpecAdditions(
                 env=(
-                    {"name": "MESH_ENABLED", "value": "true"},
-                    {"name": "MESH_PUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
-                    {"name": "MESH_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
-                    {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                    {"name": "SKULD__MESH__ENABLED", "value": "true"},
+                    {"name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
+                    {"name": "SKULD__MESH__NNG__REQ_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
+                    {"name": "SKULD__MESH__HANDSHAKE_PORT", "value": "7580"},
+                    {"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1217,12 +1299,8 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1277,9 +1355,7 @@ class TestProcessSpawning:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-claude-mimir-researcher"},
                     {"name": "ravn-codex-mimir-researcher"},
@@ -1309,12 +1385,8 @@ class TestProcessSpawning:
             )
 
         persona_dir = workspace / ".ravn" / "personas"
-        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
-        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(
-            encoding="utf-8"
-        )
+        claude_yaml = (persona_dir / "claude-mimir-researcher.yaml").read_text(encoding="utf-8")
+        codex_yaml = (persona_dir / "codex-mimir-researcher.yaml").read_text(encoding="utf-8")
         assert claude_yaml.startswith("name: claude-mimir-researcher")
         assert codex_yaml.startswith("name: codex-mimir-researcher")
         assert mock_run.call_args_list[0].kwargs["cwd"] == str(workspace)
@@ -1348,12 +1420,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1417,12 +1485,8 @@ class TestProcessSpawning:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -1515,12 +1579,8 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-coder"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-coder"},),
             ),
         )
 
@@ -1642,9 +1702,7 @@ class TestProcessSpawning:
                 },
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
                 extra_containers=(
                     {"name": "ravn-coder"},
                     {"name": "ravn-reviewer"},
@@ -1907,11 +1965,40 @@ class TestStartStop:
 
         with (
             _mock_provision(mgr),
-            _mock_spawn(mgr),
+            # A live pid — the cap reconciler reaps sessions whose process is
+            # dead, so a fake dead pid would silently free the slot.
+            _mock_spawn(mgr, pid=os.getpid()),
         ):
             await mgr.start(session1, spec)
             with pytest.raises(RuntimeError, match="Max concurrent sessions"):
                 await mgr.start(session2, spec)
+
+    async def test_dead_process_frees_concurrent_slot(
+        self,
+        tmp_workspaces: Path,
+        tmp_state_file: Path,
+    ) -> None:
+        """A session whose broker died no longer holds a phantom slot."""
+        mgr = LocalProcessPodManager(
+            workspaces_dir=str(tmp_workspaces),
+            claude_binary="/usr/bin/fake-claude",
+            max_concurrent=1,
+            state_file=str(tmp_state_file),
+        )
+        session1 = Session(id=uuid4(), name="s1")
+        session2 = Session(id=uuid4(), name="s2")
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        with (
+            _mock_provision(mgr),
+            # pid that is guaranteed dead: spawn a child and wait for it
+            _mock_spawn(mgr, pid=_reaped_child_pid()),
+        ):
+            await mgr.start(session1, spec)
+            # The dead session is reaped, freeing the slot — no raise.
+            await mgr.start(session2, spec)
+
+        assert mgr._processes[str(session1.id)].state == ProcessState.STOPPED
 
     async def test_start_failure_releases_port(
         self,
@@ -2309,15 +2396,13 @@ class TestLocalFlockMeshMode:
             values={},
             pod_spec=PodSpecAdditions(
                 env=(
-                    {"name": "MESH_ENABLED", "value": "true"},
-                    {"name": "MESH_PUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
-                    {"name": "MESH_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
-                    {"name": "MESH_HANDSHAKE_PORT", "value": "7580"},
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
+                    {"name": "SKULD__MESH__ENABLED", "value": "true"},
+                    {"name": "SKULD__MESH__NNG__PUB_SUB_ADDRESS", "value": "tcp://0.0.0.0:7480"},
+                    {"name": "SKULD__MESH__NNG__REQ_REP_ADDRESS", "value": "tcp://0.0.0.0:7481"},
+                    {"name": "SKULD__MESH__HANDSHAKE_PORT", "value": "7580"},
+                    {"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},
                 ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2375,12 +2460,8 @@ class TestLocalFlockMeshMode:
         spec = SessionSpec(
             values={},
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2443,12 +2524,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 
@@ -2505,12 +2582,8 @@ class TestLocalFlockMeshMode:
                 }
             },
             pod_spec=PodSpecAdditions(
-                env=(
-                    {"name": "MESH_PEER_ID", "value": "skuld-test"},
-                ),
-                extra_containers=(
-                    {"name": "ravn-reviewer"},
-                ),
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-reviewer"},),
             ),
         )
 

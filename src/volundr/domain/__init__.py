@@ -1,7 +1,12 @@
 """Domain layer - models, ports, and services."""
 
+from typing import TYPE_CHECKING
+
 from volundr.domain.models import Session, SessionStatus
 from volundr.domain.ports import PodManager, SessionRepository
+
+if TYPE_CHECKING:
+    from volundr.domain.services import SessionService
 
 __all__ = [
     "Session",

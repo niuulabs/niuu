@@ -143,10 +143,41 @@ class FluxPodManager(PodManager):
 
         # Translate pod_spec additions into Helm values
         if spec.pod_spec:
+            if spec.pod_spec.env:
+                env_vars = list(values.get("envVars") or [])
+                env_names = {
+                    str(entry.get("name"))
+                    for entry in env_vars
+                    if isinstance(entry, dict) and entry.get("name")
+                }
+                for env in spec.pod_spec.env:
+                    env_dict = dict(env)
+                    env_name = str(env_dict.get("name") or "")
+                    if env_name and env_name in env_names:
+                        env_vars = [
+                            existing
+                            for existing in env_vars
+                            if not (
+                                isinstance(existing, dict)
+                                and str(existing.get("name") or "") == env_name
+                            )
+                        ]
+                    env_vars.append(env_dict)
+                    if env_name:
+                        env_names.add(env_name)
+                values["envVars"] = env_vars
             if spec.pod_spec.volumes:
                 values["extraVolumes"] = [dict(v) for v in spec.pod_spec.volumes]
             if spec.pod_spec.volume_mounts:
                 values["extraVolumeMounts"] = [dict(vm) for vm in spec.pod_spec.volume_mounts]
+            if spec.pod_spec.init_containers:
+                values["extraInitContainers"] = [
+                    dict(container) for container in spec.pod_spec.init_containers
+                ]
+            if spec.pod_spec.extra_containers:
+                values["extraContainers"] = [
+                    dict(container) for container in spec.pod_spec.extra_containers
+                ]
             if spec.pod_spec.service_account:
                 values["serviceAccountName"] = spec.pod_spec.service_account
             if spec.pod_spec.labels:

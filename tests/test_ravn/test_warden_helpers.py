@@ -234,6 +234,40 @@ def test_local_supervisor_artifacts_use_model_runtime_resolution_for_codex() -> 
     assert "OPENAI_API_KEY" not in payload["EnvironmentVariables"]
 
 
+def test_warden_broker_settings_render_yolo_codex_permissions(tmp_path: Path) -> None:
+    spec = WardenSpec(
+        id="codex-warden",
+        name="Codex Warden",
+        model="gpt-5.5",
+        broker={
+            "skipPermissions": True,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+        },
+    )
+
+    config = runtime_config_payload(spec, workspace_root=tmp_path, warden_dir=tmp_path)
+    assert config["skuld"] == {
+        "skip_permissions": True,
+        "approval_policy": "never",
+        "sandbox": "danger-full-access",
+    }
+
+    plist_text = render_launchd_plist(
+        spec,
+        config_path=Path("/tmp/codex-warden.yaml"),
+        working_directory=Path("/tmp"),
+        stdout_path=Path("/tmp/codex-stdout.log"),
+        stderr_path=Path("/tmp/codex-stderr.log"),
+        python_executable="/usr/bin/python3",
+    )
+
+    payload = plistlib.loads(plist_text.encode("utf-8"))
+    assert payload["EnvironmentVariables"]["SKULD__SKIP_PERMISSIONS"] == "true"
+    assert payload["EnvironmentVariables"]["SKULD__APPROVAL_POLICY"] == "never"
+    assert payload["EnvironmentVariables"]["SKULD__SANDBOX"] == "danger-full-access"
+
+
 def test_warden_stream_broker_unsubscribe_cleans_up_subscribers() -> None:
     broker = WardenStreamBroker()
     warden = WardenSpec(id="research-warden", name="Research Warden")

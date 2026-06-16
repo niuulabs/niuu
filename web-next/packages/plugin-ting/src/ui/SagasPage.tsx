@@ -5,12 +5,12 @@ import { useService } from '@niuulabs/plugin-sdk';
 import {
   BranchSelect,
   findRepoByRef,
-  getCommonBranches,
   LoadingState,
   ErrorState,
   EmptyState,
   RepoSelect,
   Rune,
+  SegmentedFilter,
   ToastProvider,
   useToast,
   Modal,
@@ -83,6 +83,9 @@ type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
   getBranches(repoUrl: string): Promise<string[]>;
 };
+
+type SelectedRepoRef = { repo: string; branch: string };
+type ImportTargetMode = 'default' | 'instance' | 'tags';
 
 function SagaRailItem({
   saga,
@@ -195,11 +198,18 @@ function SagasPageContent() {
     params.sagaId ?? null,
   );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
+  const [selectedRepoRefs, setSelectedRepoRefs] = useState<SelectedRepoRef[]>([]);
   const [repoCandidate, setRepoCandidate] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
   const [selectedInstanceId, setSelectedInstanceId] = useState('');
+  const [targetMode, setTargetMode] = useState<ImportTargetMode>('default');
+  const [targetTagsDraft, setTargetTagsDraft] = useState('');
+  const [targetMatch, setTargetMatch] = useState<'all' | 'any'>('all');
   const [isImporting, setIsImporting] = useState(false);
+  const selectedRepos = useMemo(
+    () => selectedRepoRefs.map((entry) => entry.repo),
+    [selectedRepoRefs],
+  );
 
   const allSagas = useMemo(() => sagas ?? [], [sagas]);
   const selectedSagaId = selectedSagaIdState ?? allSagas[0]?.id ?? null;
@@ -230,35 +240,19 @@ function SagasPageContent() {
     queryFn: () => dispatchBus.getClusters(),
     enabled: showImportModal,
   });
-  const repoBranchesQuery = useQuery({
-    queryKey: ['niuu', 'repos', 'branches', selectedRepos],
-    queryFn: async () => {
-      const branchSets = await Promise.all(
-        selectedRepos.map((repo) => repoCatalog.getBranches(repo).catch(() => [] as string[])),
-      );
-      return branchSets.reduce<string[]>((acc, branches, index) => {
-        if (index === 0) return [...branches];
-        return acc.filter((branch) => branches.includes(branch));
-      }, []);
-    },
-    enabled: showImportModal && selectedRepos.length > 0 && repoCatalogQuery.data?.length === 0,
-  });
-
   const trackerProjects = (trackerProjectsQuery.data ?? []).filter(
     (project) => !isTerminalTrackerStatus(project.status),
   );
   const availableRepos = useMemo(() => repoCatalogQuery.data ?? [], [repoCatalogQuery.data]);
-  const commonBranches = useMemo(
+  const targetTags = useMemo(
     () =>
-      availableRepos.length > 0
-        ? getCommonBranches(availableRepos, selectedRepos)
-        : (repoBranchesQuery.data ?? []),
-    [availableRepos, repoBranchesQuery.data, selectedRepos],
+      targetTagsDraft
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    [targetTagsDraft],
   );
-  const effectiveBaseBranch =
-    showImportModal && commonBranches.length > 0 && !commonBranches.includes(baseBranch)
-      ? (commonBranches[0] ?? 'main')
-      : baseBranch;
+  const effectiveBaseBranch = selectedRepoRefs[0]?.branch ?? baseBranch;
   const effectiveSelectedProjectId =
     showImportModal && !selectedProjectId && trackerProjects.length > 0
       ? (
@@ -276,8 +270,10 @@ function SagasPageContent() {
     : '';
   const canImportSelectedProject =
     effectiveSelectedProject !== null &&
-    selectedRepos.length > 0 &&
-    Boolean(effectiveBaseBranch.trim()) &&
+    selectedRepoRefs.length > 0 &&
+    selectedRepoRefs.every((entry) => entry.repo.trim() && entry.branch.trim()) &&
+    (targetMode !== 'instance' || Boolean(selectedInstanceId.trim())) &&
+    (targetMode !== 'tags' || targetTags.length > 0) &&
     !importedTrackerIds.has(effectiveSelectedProject.id) &&
     !selectedProjectHasSlugConflict &&
     !isImporting;
@@ -285,12 +281,21 @@ function SagasPageContent() {
   function addSelectedRepo(repoRef: string) {
     const value = repoRef.trim();
     if (!value || selectedRepos.includes(value)) return;
-    setSelectedRepos((current) => [...current, value]);
-    if (selectedRepos.length === 0) {
-      const repo = findRepoByRef(availableRepos, value);
-      setBaseBranch(repo?.defaultBranch ?? 'main');
-    }
+    const repo = findRepoByRef(availableRepos, value);
+    const branch = repo?.defaultBranch || baseBranch || 'main';
+    setSelectedRepoRefs((current) => [...current, { repo: value, branch }]);
+    if (selectedRepoRefs.length === 0) setBaseBranch(branch);
     setRepoCandidate('');
+  }
+
+  function updateSelectedRepoBranch(repo: string, branch: string) {
+    setSelectedRepoRefs((current) =>
+      current.map((entry) => (entry.repo === repo ? { ...entry, branch } : entry)),
+    );
+  }
+
+  function removeSelectedRepo(repo: string) {
+    setSelectedRepoRefs((current) => current.filter((entry) => entry.repo !== repo));
   }
 
   const groups = useMemo(() => {
@@ -316,20 +321,26 @@ function SagasPageContent() {
   function openImportModal() {
     setShowImportModal(true);
     setSelectedProjectId(null);
-    setSelectedRepos([]);
+    setSelectedRepoRefs([]);
     setRepoCandidate('');
     setBaseBranch('');
     setSelectedInstanceId('');
+    setTargetMode('default');
+    setTargetTagsDraft('');
+    setTargetMatch('all');
   }
 
   function closeImportModal() {
     setShowImportModal(false);
     setSelectedProjectId(null);
     setIsImporting(false);
-    setSelectedRepos([]);
+    setSelectedRepoRefs([]);
     setRepoCandidate('');
     setBaseBranch('');
     setSelectedInstanceId('');
+    setTargetMode('default');
+    setTargetTagsDraft('');
+    setTargetMatch('all');
   }
 
   function handleImportModalToggle(open: boolean) {
@@ -350,7 +361,16 @@ function SagasPageContent() {
         effectiveSelectedProject.id,
         selectedRepos,
         effectiveBaseBranch,
-        selectedInstanceId || undefined,
+        targetMode === 'instance' ? selectedInstanceId || undefined : undefined,
+        {
+          repoRefs: selectedRepoRefs,
+          target:
+            targetMode === 'tags'
+              ? { mode: 'tags', tags: targetTags, match: targetMatch }
+              : targetMode === 'instance'
+                ? { mode: 'instance', instanceId: selectedInstanceId }
+                : { mode: 'default' },
+        },
       );
       await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
       setSelectedSagaIdState(importedSaga.id);
@@ -610,31 +630,46 @@ function SagasPageContent() {
                       </p>
                     </div>
 
-                    <label className="niuu:block">
+                    <div className="niuu:block">
                       <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
                         Repositories
                       </span>
                       {availableRepos.length > 0 ? (
                         <div className="niuu:flex niuu:flex-col niuu:gap-3">
-                          {selectedRepos.length > 0 ? (
-                            <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-                              {selectedRepos.map((repoUrl) => {
+                          {selectedRepoRefs.length > 0 ? (
+                            <div className="niuu:flex niuu:flex-col niuu:gap-2">
+                              {selectedRepoRefs.map((entry) => {
+                                const repoUrl = entry.repo;
                                 const repo = findRepoByRef(availableRepos, repoUrl);
                                 const label = repo ? `${repo.org}/${repo.name}` : repoUrl;
                                 return (
-                                  <button
+                                  <div
                                     key={repoUrl}
-                                    type="button"
-                                    onClick={() =>
-                                      setSelectedRepos((current) =>
-                                        current.filter((item) => item !== repoUrl),
-                                      )
-                                    }
-                                    className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:text-text-secondary"
+                                    className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_minmax(120px,0.8fr)_auto] niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-2"
                                   >
-                                    <span>{label}</span>
-                                    <span aria-hidden="true">×</span>
-                                  </button>
+                                    <span className="niuu:min-w-0 niuu:truncate niuu:font-mono niuu:text-xs niuu:text-text-secondary">
+                                      {label}
+                                    </span>
+                                    <BranchSelect
+                                      repos={availableRepos}
+                                      selectedRepos={[repoUrl]}
+                                      value={entry.branch}
+                                      onChange={(branch) =>
+                                        updateSelectedRepoBranch(repoUrl, branch)
+                                      }
+                                      placeholder="Branch"
+                                      testId={`branch-select-${repoUrl}`}
+                                      className="niuu:bg-bg-primary"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSelectedRepo(repoUrl)}
+                                      className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
+                                      aria-label={`Remove ${label}`}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -653,22 +688,35 @@ function SagasPageContent() {
                         </div>
                       ) : (
                         <div className="niuu:flex niuu:flex-col niuu:gap-3">
-                          {selectedRepos.length > 0 ? (
-                            <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-                              {selectedRepos.map((repoUrl) => (
-                                <button
-                                  key={repoUrl}
-                                  type="button"
-                                  onClick={() =>
-                                    setSelectedRepos((current) =>
-                                      current.filter((item) => item !== repoUrl),
-                                    )
-                                  }
-                                  className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-xs niuu:font-mono niuu:text-text-secondary"
+                          {selectedRepoRefs.length > 0 ? (
+                            <div className="niuu:flex niuu:flex-col niuu:gap-2">
+                              {selectedRepoRefs.map((entry) => (
+                                <div
+                                  key={entry.repo}
+                                  className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_minmax(96px,0.55fr)_auto] niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-2"
                                 >
-                                  <span>{repoUrl}</span>
-                                  <span aria-hidden="true">×</span>
-                                </button>
+                                  <span className="niuu:min-w-0 niuu:truncate niuu:font-mono niuu:text-xs niuu:text-text-secondary">
+                                    {entry.repo}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    value={entry.branch}
+                                    onChange={(event) =>
+                                      updateSelectedRepoBranch(entry.repo, event.target.value)
+                                    }
+                                    placeholder="main"
+                                    data-testid={`branch-select-${entry.repo}`}
+                                    className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSelectedRepo(entry.repo)}
+                                    className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
+                                    aria-label={`Remove ${entry.repo}`}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
                               ))}
                             </div>
                           ) : null}
@@ -697,56 +745,67 @@ function SagasPageContent() {
                           </div>
                         </div>
                       )}
-                    </label>
+                    </div>
 
-                    <label className="niuu:block">
+                    <div className="niuu:block">
                       <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
-                        Base branch
+                        Volundr target
                       </span>
-                      {commonBranches.length > 0 ? (
-                        <BranchSelect
-                          repos={availableRepos}
-                          selectedRepos={selectedRepos}
-                          value={effectiveBaseBranch}
-                          onChange={setBaseBranch}
-                          placeholder="Select branch"
-                          testId="branch-select"
-                          className="niuu:bg-bg-tertiary"
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          value={effectiveBaseBranch}
-                          onChange={(e) => setBaseBranch(e.target.value)}
-                          placeholder="main"
-                          className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
-                        />
-                      )}
-                    </label>
-
-                    <label className="niuu:block">
-                      <span className="niuu:block niuu:mb-1.5 niuu:text-xs niuu:font-mono niuu:text-text-muted">
-                        Volundr target (optional)
-                      </span>
-                      <select
-                        value={selectedInstanceId}
-                        onChange={(event) => setSelectedInstanceId(event.target.value)}
-                        className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
-                      >
-                        <option value="">Use default routing</option>
-                        {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
-                          <option
-                            key={target.instanceId ?? target.connectionId}
-                            value={target.instanceId ?? target.connectionId}
+                      <SegmentedFilter<ImportTargetMode>
+                        aria-label="Saga target routing mode"
+                        value={targetMode}
+                        onChange={setTargetMode}
+                        options={[
+                          { value: 'default', label: 'Default' },
+                          { value: 'instance', label: 'Instance' },
+                          { value: 'tags', label: 'Tags' },
+                        ]}
+                      />
+                      {targetMode === 'instance' ? (
+                        <select
+                          value={selectedInstanceId}
+                          onChange={(event) => setSelectedInstanceId(event.target.value)}
+                          className="niuu:mt-2 niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
+                        >
+                          <option value="">Select a Volundr instance</option>
+                          {(dispatchTargetsQuery.data ?? []).map((target: DispatchCluster) => (
+                            <option
+                              key={target.instanceId ?? target.connectionId}
+                              value={target.instanceId ?? target.connectionId}
+                            >
+                              {target.name}
+                              {target.tags?.length ? ` · ${target.tags.join(', ')}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      {targetMode === 'tags' ? (
+                        <div className="niuu:mt-2 niuu:flex niuu:gap-2">
+                          <input
+                            type="text"
+                            value={targetTagsDraft}
+                            onChange={(event) => setTargetTagsDraft(event.target.value)}
+                            placeholder="gpu, valhalla"
+                            className="niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:outline-none niuu:focus:border-brand"
+                          />
+                          <select
+                            value={targetMatch}
+                            onChange={(event) =>
+                              setTargetMatch(event.target.value as 'all' | 'any')
+                            }
+                            className="niuu:w-[96px] niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-tertiary niuu:px-2 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+                            aria-label="Target tag match mode"
                           >
-                            {target.name}
-                          </option>
-                        ))}
-                      </select>
+                            <option value="all">all</option>
+                            <option value="any">any</option>
+                          </select>
+                        </div>
+                      ) : null}
                       <div className="niuu:mt-1 niuu:text-[11px] niuu:text-text-faint">
-                        If selected, the imported saga will default to this forge for dispatches.
+                        Default lets Ting route normally. Instance pins one Volundr. Tags route each
+                        dispatch to a Volundr instance whose labels match.
                       </div>
-                    </label>
+                    </div>
 
                     <div className="niuu:rounded-md niuu:bg-bg-tertiary niuu:p-3 niuu:text-xs niuu:leading-5 niuu:text-text-secondary">
                       {importedTrackerIds.has(effectiveSelectedProject.id)

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
+import { openEventStream } from '@niuulabs/query';
 import type { IDispatcherService, IResearchService } from '../ports';
 import type {
   CampaignArtifactDetail,
@@ -839,25 +840,32 @@ export function ResearchCampaignPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const source = new EventSource('/api/v1/ting/events');
-    const invalidate = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as { slug?: string };
-        if (data.slug && data.slug !== slug) return;
-      } catch {
-        return;
-      }
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaign', slug] });
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaigns'] });
-      void queryClient.invalidateQueries({
-        queryKey: ['ting', 'research', 'campaign', slug, 'activity'],
-      });
-    };
-    source.addEventListener('workflow.campaign.updated', invalidate);
-    source.addEventListener('workflow.campaign.completed', invalidate);
-    source.addEventListener('workflow.campaign.failed', invalidate);
-    source.addEventListener('workflow.campaign.deleted', invalidate);
-    return () => source.close();
+    const stream = openEventStream('/api/v1/ting/events', {
+      onMessage: () => {},
+      onEvent: ({ event, data }) => {
+        if (
+          event !== 'workflow.campaign.updated' &&
+          event !== 'workflow.campaign.completed' &&
+          event !== 'workflow.campaign.failed' &&
+          event !== 'workflow.campaign.deleted'
+        ) {
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(data) as { slug?: string };
+          if (parsed.slug && parsed.slug !== slug) return;
+        } catch {
+          return;
+        }
+        void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaign', slug] });
+        void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaigns'] });
+        void queryClient.invalidateQueries({
+          queryKey: ['ting', 'research', 'campaign', slug, 'activity'],
+        });
+      },
+    });
+    return () => stream.close();
   }, [queryClient, slug]);
 
   const artifactQueries = useQueries({

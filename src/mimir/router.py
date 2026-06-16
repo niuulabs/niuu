@@ -19,6 +19,7 @@ GET  /mimir/search         — full-text search (?q=...)
 GET  /mimir/log            — last N log entries (?n=50)
 GET  /mimir/lint           — current lint report (12 check types, L01–L12)
 POST /mimir/lint/fix       — run lint and apply auto-fixes (L05, L11, L12)
+GET  /mimir/doctor         — health-check report (8 checks, D01–D08)
 GET  /mimir/graph          — nodes + edges for MimirExplorer visualiser
 PUT  /mimir/page           — upsert a page (requires write auth)
 POST /mimir/ingest         — ingest URL or text (requires write auth)
@@ -26,10 +27,12 @@ POST /mimir/ingest         — ingest URL or text (requires write auth)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from posixpath import normpath
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
@@ -55,6 +58,8 @@ logger = logging.getLogger(__name__)
 _ALLOWED_INGEST_URL_SCHEMES = {"http", "https"}
 _SAFE_INGEST_PATH_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
 _SAFE_INGEST_QUERY_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
+# Recent-query rows returned by GET /eval/queries for the Analytics view.
+_RECENT_QUERY_LIMIT = 20
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -97,12 +102,15 @@ class PageResponse(BaseModel):
     updated_by: str = "mimir"
     size: int = 0
     related: list[str] = []
-    zones: list[
-        KeyFactsZoneResponse
-        | RelationshipsZoneResponse
-        | AssessmentZoneResponse
-        | TimelineZoneResponse
-    ] | None = None
+    zones: (
+        list[
+            KeyFactsZoneResponse
+            | RelationshipsZoneResponse
+            | AssessmentZoneResponse
+            | TimelineZoneResponse
+        ]
+        | None
+    ) = None
 
 
 class KeyFactsZoneResponse(BaseModel):
@@ -141,6 +149,41 @@ class SearchResult(BaseModel):
     title: str
     summary: str
     category: str
+    # Populated only when the search is called with ?debug=true (NIU-1057).
+    score: float | None = None
+    score_breakdown: dict[str, float] | None = None
+
+
+class EntityResponse(BaseModel):
+    slug: str
+    title: str
+    type: str | None = None
+    confidence: str | None = None
+    updated_at: str
+    path: str
+
+
+class RelatedPageResponse(BaseModel):
+    path: str
+    hop: int
+    rel: str | None = None
+    direction: str
+
+
+class FactEvidenceResponse(BaseModel):
+    fact: str
+    proof_count: int
+    trend: str
+    latest_support: str | None = None
+    supporting_dates: list[str] = []
+    source_proof_count: int = 0
+
+
+class ReviseBeliefRequest(BaseModel):
+    path: str
+    old_fact: str
+    new_fact: str
+    attribution: str
 
 
 class LintIssueResponse(BaseModel):
@@ -196,6 +239,7 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     source_id: str
     pages_updated: list[str]
+    consolidated: list[str] = []
 
 
 class UrlIngestRequest(BaseModel):
@@ -836,12 +880,15 @@ def _extract_relationships(compiled_truth: str) -> list[RelationshipZoneItemResp
 
 def _decorate_page_zones(
     parsed: CompiledTruthPage,
-) -> list[
-    KeyFactsZoneResponse
-    | RelationshipsZoneResponse
-    | AssessmentZoneResponse
-    | TimelineZoneResponse
-] | None:
+) -> (
+    list[
+        KeyFactsZoneResponse
+        | RelationshipsZoneResponse
+        | AssessmentZoneResponse
+        | TimelineZoneResponse
+    ]
+    | None
+):
     zones: list[
         KeyFactsZoneResponse
         | RelationshipsZoneResponse
@@ -934,12 +981,14 @@ class MimirRouter:
         name: str = "local",
         role: str = "local",
         registry_store: MimirRegistryStore | None = None,
+        eval_capture_dir: Path | None = None,
     ) -> None:
         self._adapter = adapter
         self._name = name
         self._role = role
         self._registry_store = registry_store
         self._registry_local_ports: dict[str, tuple[str, MimirPort]] = {}
+        self._eval_capture_dir = eval_capture_dir
         self.router = APIRouter()
         self._register_routes()
 
@@ -1084,10 +1133,7 @@ class MimirRouter:
                     for mount in mounts
                 ]
 
-            return [
-                _registry_to_response(entry)
-                for entry in self._registry_store.list_entries()
-            ]
+            return [_registry_to_response(entry) for entry in self._registry_store.list_entries()]
 
         @router.post("/registry/mounts", response_model=RegistryMountResponse)
         async def create_registry_mount(
@@ -1277,18 +1323,107 @@ class MimirRouter:
         async def search(
             q: str = Query(),
             mount: str | None = Query(default=None),
+            debug: bool = Query(default=False),
         ) -> list[SearchResult]:
             port, _ = self._resolve_port(mount)
             pages = await port.search(q)
+            if self._eval_capture_dir is not None:
+                from mimir.eval import append_capture
+
+                await asyncio.to_thread(
+                    append_capture,
+                    self._eval_capture_dir,
+                    q,
+                    [p.meta.path for p in pages],
+                )
             return [
                 SearchResult(
                     path=p.meta.path,
                     title=p.meta.title,
                     summary=p.meta.summary,
                     category=p.meta.category,
+                    score=p.meta.search_score if debug else None,
+                    score_breakdown=p.meta.score_breakdown if debug else None,
                 )
                 for p in pages
             ]
+
+        @router.get("/entities/index", response_model=list[EntityResponse])
+        async def entities() -> list[EntityResponse]:
+            """Entity index for the Retrieval Reflex (NIU-1059) and graph tools.
+
+            Distinct from ``GET /entities`` (the UI catalog): this is the
+            compact, typed index derived from the link graph."""
+            index = getattr(adapter, "entity_index", None)
+            if index is None:
+                raise HTTPException(status_code=501, detail="Adapter has no entity index")
+            return [
+                EntityResponse(
+                    slug=meta.path.rsplit("/", 1)[-1].removesuffix(".md"),
+                    title=meta.title,
+                    type=meta.entity_type.value if meta.entity_type else None,
+                    confidence=meta.confidence.value if meta.confidence else None,
+                    updated_at=meta.updated_at.isoformat(),
+                    path=meta.path,
+                )
+                for meta in index()
+            ]
+
+        @router.get("/related", response_model=list[RelatedPageResponse])
+        async def related(
+            path: str = Query(),
+            depth: int = Query(default=1, ge=1, le=3),
+            rel: str | None = Query(default=None),
+        ) -> list[RelatedPageResponse]:
+            """Link-graph traversal from a page (NIU-1058)."""
+            related_fn = getattr(adapter, "related_pages", None)
+            if related_fn is None:
+                raise HTTPException(status_code=501, detail="Adapter has no link graph")
+            return [RelatedPageResponse(**item) for item in related_fn(path, depth=depth, rel=rel)]
+
+        @router.get("/evidence", response_model=list[FactEvidenceResponse])
+        async def evidence(path: str = Query()) -> list[FactEvidenceResponse]:
+            """Evidence-counted beliefs for a page (NIU-1062).
+
+            Proofs come from the page's timeline entries AND from ingested raw
+            sources that bear on a fact (write-time scoped consolidation)."""
+            from mimir.learning import compute_page_evidence
+
+            try:
+                content = await adapter.read_page(path)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+            sources = [
+                (source.source_id, source.content) for source in await _read_full_sources(adapter)
+            ]
+            return [
+                FactEvidenceResponse(**item.to_dict())
+                for item in compute_page_evidence(content, sources=sources)
+            ]
+
+        @router.post(
+            "/page/revise",
+            response_model=PageResponse,
+            dependencies=[Depends(_require_write_auth)],
+        )
+        async def revise_belief_endpoint(request: ReviseBeliefRequest) -> PageResponse:
+            """Belief revision with journey (NIU-1062): rewrite a compiled-truth
+            fact while appending the old → new transition to the Timeline."""
+            from mimir.learning import revise_belief
+
+            try:
+                content = await adapter.read_page(request.path)
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Page not found: {request.path}")
+            try:
+                revised = revise_belief(
+                    content, request.old_fact, request.new_fact, request.attribution
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            await adapter.upsert_page(request.path, revised)
+            page = await adapter.get_page(request.path)
+            return _decorate_page(page, mounts=[self._name])
 
         @router.get("/log")
         async def log_entries(
@@ -1349,6 +1484,84 @@ class MimirRouter:
                     resolved_mount if mount is not None else mount_map.get(path, [self._name])[0]
                 ),
             )
+
+        @router.get("/doctor")
+        async def doctor_report() -> dict[str, Any]:
+            from mimir.doctor import run_doctor
+
+            root = adapter.filesystem_root()
+            if root is None:
+                raise HTTPException(
+                    status_code=501,
+                    detail="doctor requires a filesystem-backed Mimir adapter",
+                )
+            report = await run_doctor(
+                adapter,
+                Path(root),
+                registry_store=self._registry_store,
+            )
+            return report.to_dict()
+
+        @router.get("/eval/latest")
+        async def eval_latest() -> dict[str, Any]:
+            """Latest retrieval eval report (written by `mimir eval --out
+            <root>/evals/eval-latest.json`). 404 when none has been recorded."""
+            root = adapter.filesystem_root()
+            if root is None:
+                raise HTTPException(status_code=501, detail="No filesystem root")
+            report_path = Path(root) / "evals" / "eval-latest.json"
+            if not report_path.exists():
+                raise HTTPException(status_code=404, detail="No eval report recorded")
+            import json as _json
+
+            return _json.loads(report_path.read_text(encoding="utf-8"))
+
+        @router.get("/eval/queries")
+        async def eval_queries() -> dict[str, Any]:
+            """Aggregated live query stats from the eval-capture JSONL files."""
+            from mimir.eval import load_capture
+
+            root = adapter.filesystem_root()
+            if root is None:
+                raise HTTPException(status_code=501, detail="No filesystem root")
+            evals_dir = Path(root) / "evals"
+            captures = []
+            for capture_file in sorted(evals_dir.glob("queries-*.jsonl")):
+                captures.extend(load_capture(capture_file))
+            if not captures:
+                raise HTTPException(status_code=404, detail="No captured queries")
+            recent = [
+                {
+                    "ts": entry.ts,
+                    "query": entry.query,
+                    "result_count": len(entry.result_paths),
+                }
+                for entry in reversed(captures[-_RECENT_QUERY_LIMIT:])
+            ]
+            return {
+                "total": len(captures),
+                "zero_result_count": sum(1 for c in captures if not c.result_paths),
+                "recent": recent,
+            }
+
+        @router.post("/doctor/fix", dependencies=[Depends(_require_write_auth)])
+        async def doctor_fix() -> dict[str, Any]:
+            """Run the safe auto-remediations, then return a fresh report."""
+            from mimir.doctor import run_doctor, run_fixes
+
+            root = adapter.filesystem_root()
+            if root is None:
+                raise HTTPException(
+                    status_code=501,
+                    detail="doctor requires a filesystem-backed Mimir adapter",
+                )
+            await run_fixes(adapter)
+            report = await run_doctor(
+                adapter,
+                Path(root),
+                registry_store=self._registry_store,
+            )
+            return report.to_dict()
 
         @router.post("/lint/reassign", response_model=LintResponse)
         async def lint_reassign(request: LintReassignRequest) -> LintResponse:
@@ -1626,7 +1839,12 @@ class MimirRouter:
                 ingested_at=datetime.now(UTC),
             )
             page_paths = await port.ingest(source)
-            return IngestResponse(source_id=source_id, pages_updated=page_paths)
+            consolidated = list(getattr(port, "_last_consolidated", []))
+            return IngestResponse(
+                source_id=source_id,
+                pages_updated=page_paths,
+                consolidated=consolidated,
+            )
 
         @router.post("/sources/ingest/url", response_model=SourceResponse)
         async def ingest_url(

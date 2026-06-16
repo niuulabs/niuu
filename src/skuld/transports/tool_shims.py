@@ -42,7 +42,7 @@ def _extract_platform_config() -> tuple[str, float, str]:
         payload = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
     except Exception:
         return base_url, timeout, pat_token
-    platform = ((payload.get("gateway") or {}).get("platform") or {})
+    platform = (payload.get("gateway") or {}).get("platform") or {}
     if isinstance(platform.get("base_url"), str) and platform["base_url"].strip():
         base_url = platform["base_url"].strip()
     if isinstance(platform.get("timeout"), (int, float)):
@@ -156,24 +156,58 @@ def ensure_codex_tool_shims(
         _tracker_issue_script(platform_base_url, platform_timeout, platform_pat),
         encoding="utf-8",
     )
-    tracker_target.chmod(
-        tracker_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
+    tracker_target.chmod(tracker_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    commands: dict[str, tuple[str, str]] = {}
+    commands: dict[str, tuple[str, str, str]] = {}
     if mount is not None:
         commands.update(
             {
-                "mimir_ingest": ("ravn.cli.mimir_bridge", "ingest"),
-                "mimir_search": ("ravn.cli.mimir_bridge", "search"),
-                "mimir_read": ("ravn.cli.mimir_bridge", "read"),
-                "mimir_read_source": ("ravn.cli.mimir_bridge", "read-source"),
-                "mimir_write": ("ravn.cli.mimir_bridge", "write"),
-                "mimir_publish_files": ("ravn.cli.mimir_bridge", "publish-files"),
-                "mimir_list": ("ravn.cli.mimir_bridge", "list"),
+                "mimir_ingest": (
+                    "ravn.cli.mimir_bridge",
+                    "ingest",
+                    "Ingest a raw document into Mimir (assigns a source_id).",
+                ),
+                "mimir_search": (
+                    "ravn.cli.mimir_bridge",
+                    "search",
+                    "Full-text search across Mimir wiki pages.",
+                ),
+                "mimir_read": (
+                    "ravn.cli.mimir_bridge",
+                    "read",
+                    "Read a Mimir wiki page by path.",
+                ),
+                "mimir_read_source": (
+                    "ravn.cli.mimir_bridge",
+                    "read-source",
+                    "Read a raw ingested Mimir source by source_id.",
+                ),
+                "mimir_write": (
+                    "ravn.cli.mimir_bridge",
+                    "write",
+                    "Create or update a Mimir wiki page.",
+                ),
+                "mimir_publish_files": (
+                    "ravn.cli.mimir_bridge",
+                    "publish-files",
+                    "Publish workspace files into Mimir as wiki pages.",
+                ),
+                "mimir_list": (
+                    "ravn.cli.mimir_bridge",
+                    "list",
+                    "List Mimir wiki page paths, optionally under a prefix.",
+                ),
+                "mimir_related": (
+                    "ravn.cli.mimir_bridge",
+                    "related",
+                    "Traverse the Mimir wikilink graph from a page and return related "
+                    "pages up to N hops away (--path <wiki path>, --depth 1-3, "
+                    "optional --rel works_at to filter by typed relationship). "
+                    "Use for relationship questions instead of keyword search.",
+                ),
             }
         )
-    for command_name, (module_name, subcommand) in commands.items():
+    for command_name, (module_name, subcommand, description) in commands.items():
         env_parts = [
             f'PYTHONPATH="{source_root}{os.pathsep}$PYTHONPATH"',
             f'UV_CACHE_DIR="{uv_cache_dir}"',
@@ -192,6 +226,7 @@ def ensure_codex_tool_shims(
             "\n".join(
                 [
                     "#!/bin/sh",
+                    f"# {command_name}: {description}",
                     command,
                     "",
                 ]

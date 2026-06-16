@@ -112,6 +112,15 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range .Values.discovery.adapters }}
+            {{- range .secretKwargs }}
+            - name: OBSERVATORY_DISCOVERY_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

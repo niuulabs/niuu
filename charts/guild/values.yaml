@@ -10,7 +10,9 @@ image:
   pullPolicy: IfNotPresent
 
 command:
-  - guild
+  - python
+  - -m
+  - guild.main
 args: []
 
 nameOverride: ""
@@ -39,7 +41,7 @@ ingress:
           pathType: Prefix
         - path: /api/v1/niuu/targets
           pathType: Prefix
-        - path: /api/v1/niuu/volundr
+        - path: /api/v1/forge
           pathType: Prefix
         - path: /api/v1/niuu/observatory
           pathType: Prefix
@@ -194,3 +196,6 @@ global:
   imagePullSecrets: []
   image:
     registry: ""
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown

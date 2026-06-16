@@ -19,8 +19,8 @@ class ResourceContributor(SessionContributor):
 
     Reads ``resource_config`` from the SessionContext (user launch request)
     and calls ResourceProvider.translate() to produce K8s-native values.
-    Template/profile resource configs are already K8s-native and pass through
-    directly via TemplateContributor.
+    Launch-spec resource configs are already K8s-native and pass through
+    directly via LaunchSpecContributor.
     """
 
     def __init__(

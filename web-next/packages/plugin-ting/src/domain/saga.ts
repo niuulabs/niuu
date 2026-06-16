@@ -38,6 +38,12 @@ export const sagaPhaseSummarySchema = z.object({
 });
 export type SagaPhaseSummary = z.infer<typeof sagaPhaseSummarySchema>;
 
+export const sagaRepoRefSchema = z.object({
+  repo: z.string().min(1),
+  branch: z.string().min(1),
+});
+export type SagaRepoRef = z.infer<typeof sagaRepoRefSchema>;
+
 export const sagaSchema = z.object({
   /** Unique identifier (UUID). */
   id: z.string().uuid(),
@@ -51,6 +57,8 @@ export const sagaSchema = z.object({
   name: z.string().min(1),
   /** List of repository identifiers this saga targets. */
   repos: z.array(z.string()),
+  /** Per-repository base branch bindings used when dispatching work. */
+  repoRefs: z.array(sagaRepoRefSchema).optional(),
   /** Git feature branch for all work in this saga. */
   featureBranch: z.string(),
   /** Current lifecycle status. */
@@ -71,6 +79,10 @@ export const sagaSchema = z.object({
   instanceId: z.string().uuid().optional(),
   /** Assigned Volundr target display name. */
   instanceName: z.string().optional(),
+  /** Assigned Volundr target tags. When present they take precedence over instanceId. */
+  targetTags: z.array(z.string()).optional(),
+  /** Tag match mode for targetTags. */
+  targetMatch: z.enum(['all', 'any']).optional(),
   /** Base branch all feature work merges into (e.g. "main"). */
   baseBranch: z.string().default('main'),
 });

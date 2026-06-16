@@ -10,6 +10,7 @@ import { getStructureLabelBounds } from './renderer';
 
 const CANVAS_RECT = { left: 24, top: 16, width: 480, height: 320 };
 const MINIMAP_RECT = { left: 260, top: 180, width: CANVAS.MINIMAP_W, height: CANVAS.MINIMAP_H };
+const MINIMAP_LABEL = 'Topology minimap — click to pan';
 
 let viewportSize = { w: CANVAS_RECT.width, h: CANVAS_RECT.height };
 let animationFrames: FrameRequestCallback[] = [];
@@ -92,7 +93,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLCanvasElement.prototype, 'clientWidth', {
     configurable: true,
     get() {
-      return this.getAttribute('aria-label') === 'Minimap — click to pan'
+      return this.getAttribute('aria-label') === MINIMAP_LABEL
         ? MINIMAP_RECT.width
         : viewportSize.w;
     },
@@ -100,18 +101,18 @@ beforeEach(() => {
   Object.defineProperty(HTMLCanvasElement.prototype, 'clientHeight', {
     configurable: true,
     get() {
-      return this.getAttribute('aria-label') === 'Minimap — click to pan'
+      return this.getAttribute('aria-label') === MINIMAP_LABEL
         ? MINIMAP_RECT.height
         : viewportSize.h;
     },
   });
   HTMLCanvasElement.prototype.getBoundingClientRect = vi.fn(function getBoundingClientRect() {
-    return this.getAttribute('aria-label') === 'Minimap — click to pan'
+    return this.getAttribute('aria-label') === MINIMAP_LABEL
       ? asDomRect(MINIMAP_RECT)
       : asDomRect(CANVAS_RECT);
   });
   HTMLCanvasElement.prototype.getContext = vi.fn(function getContext() {
-    return this.getAttribute('aria-label') === 'Minimap — click to pan' ? minimapCtx : mainCtx;
+    return this.getAttribute('aria-label') === MINIMAP_LABEL ? minimapCtx : mainCtx;
   });
   global.ResizeObserver = class ResizeObserver {
     constructor(callback: ResizeObserverCallback) {
@@ -476,7 +477,7 @@ describe('TopologyCanvas', () => {
 
   it('still renders the main frame when the minimap context is unavailable', async () => {
     HTMLCanvasElement.prototype.getContext = vi.fn(function getContext() {
-      return this.getAttribute('aria-label') === 'Minimap — click to pan' ? null : mainCtx;
+      return this.getAttribute('aria-label') === MINIMAP_LABEL ? null : mainCtx;
     });
 
     await renderCanvas(MOCK_TOPOLOGY);

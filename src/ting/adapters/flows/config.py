@@ -1,7 +1,7 @@
 """YAML-file-backed flock flow provider.
 
 Loads flows from a YAML file at startup and keeps in-memory runtime
-additions. Mirrors the pattern of ConfigProfileProvider.
+additions. Mirrors the config-provider pattern used across the platform.
 """
 
 from __future__ import annotations

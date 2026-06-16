@@ -58,6 +58,10 @@ auth:
 volundr:
   url: "http://volundr:80"
 
+guildRegistry:
+  baseUrl: "http://guild:80"
+  timeoutSeconds: 10.0
+
 migrations:
   enabled: true
 

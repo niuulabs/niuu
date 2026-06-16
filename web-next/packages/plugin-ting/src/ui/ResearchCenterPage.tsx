@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
+import { openEventStream } from '@niuulabs/query';
 import { Table, type TableColumn } from '@niuulabs/ui';
 import type {
   CampaignArtifact,
@@ -588,15 +589,20 @@ export function ResearchCenterPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const source = new EventSource('/api/v1/ting/events');
-    const invalidate = () => {
-      void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaigns'] });
-    };
-    source.addEventListener('workflow.campaign.created', invalidate);
-    source.addEventListener('workflow.campaign.updated', invalidate);
-    source.addEventListener('workflow.campaign.completed', invalidate);
-    source.addEventListener('workflow.campaign.failed', invalidate);
-    return () => source.close();
+    const stream = openEventStream('/api/v1/ting/events', {
+      onMessage: () => {},
+      onEvent: ({ event }) => {
+        if (
+          event === 'workflow.campaign.created' ||
+          event === 'workflow.campaign.updated' ||
+          event === 'workflow.campaign.completed' ||
+          event === 'workflow.campaign.failed'
+        ) {
+          void queryClient.invalidateQueries({ queryKey: ['ting', 'research', 'campaigns'] });
+        }
+      },
+    });
+    return () => stream.close();
   }, [queryClient]);
 
   const cards = useMemo(() => {

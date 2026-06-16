@@ -12,13 +12,12 @@ from volundr.adapters.outbound.contributors.ravn_flock import (
     _normalize_mimir_workload_config,
     _resolve_mimir_runtime,
 )
-from volundr.domain.models import ForgeProfile, PodSpecAdditions, Session, WorkspaceTemplate
+from volundr.domain.models import LaunchSpec, PodSpecAdditions, Session
 from volundr.domain.ports import (
-    ProfileProvider,
+    LaunchSpecProvider,
     SessionContext,
     SessionContribution,
     SessionContributor,
-    TemplateProvider,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,13 +50,11 @@ class SessionMCPContributor(SessionContributor):
     def __init__(
         self,
         *,
-        template_provider: TemplateProvider | None = None,
-        profile_provider: ProfileProvider | None = None,
+        launch_spec_provider: LaunchSpecProvider | None = None,
         python_binary: str = _DEFAULT_PYTHON_BINARY,
         **_extra: object,
     ) -> None:
-        self._template_provider = template_provider
-        self._profile_provider = profile_provider
+        self._launch_spec_provider = launch_spec_provider
         self._python_binary = python_binary
 
     @property
@@ -124,22 +121,17 @@ class SessionMCPContributor(SessionContributor):
             return context.workload_type, {}
         return source.workload_type, dict(source.workload_config or {})
 
-    def _resolve_source(self, context: SessionContext) -> WorkspaceTemplate | ForgeProfile | None:
-        if context.template_name and self._template_provider is not None:
-            template = self._template_provider.get(context.template_name)
-            if template is not None:
-                return template
-
-        if self._profile_provider is None:
+    def _resolve_source(self, context: SessionContext) -> LaunchSpec | None:
+        if self._launch_spec_provider is None:
             return None
 
-        if context.profile_name:
-            profile = self._profile_provider.get(context.profile_name)
-            if profile is not None:
-                return profile
+        if context.launch_spec:
+            spec = self._launch_spec_provider.get(context.launch_spec)
+            if spec is not None:
+                return spec
 
         if context.workload_type != "session":
-            return self._profile_provider.get_default(context.workload_type)
+            return self._launch_spec_provider.get_default(context.workload_type)
         return None
 
     def _build_mimir_server(self, instance: dict[str, Any]) -> dict[str, Any] | None:

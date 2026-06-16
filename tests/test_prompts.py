@@ -224,7 +224,7 @@ class TestPromptEndpoints:
 
     def test_create_prompt(self, prompt_client: TestClient):
         resp = prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Test", "content": "Test content"},
         )
         assert resp.status_code == 201
@@ -234,24 +234,24 @@ class TestPromptEndpoints:
 
     def test_list_prompts(self, prompt_client: TestClient):
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "A", "content": "A content"},
         )
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "B", "content": "B content"},
         )
-        resp = prompt_client.get("/api/v1/forge/prompts")
+        resp = prompt_client.get("/api/v1/volundr/prompts")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
 
     def test_list_prompts_with_scope_filter(self, prompt_client: TestClient):
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Global", "content": "G"},
         )
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={
                 "name": "Project",
                 "content": "P",
@@ -259,18 +259,18 @@ class TestPromptEndpoints:
                 "project_repo": "repo1",
             },
         )
-        resp = prompt_client.get("/api/v1/forge/prompts?scope=global")
+        resp = prompt_client.get("/api/v1/volundr/prompts?scope=global")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
     def test_update_prompt(self, prompt_client: TestClient):
         create_resp = prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Old", "content": "Old content"},
         )
         prompt_id = create_resp.json()["id"]
         resp = prompt_client.put(
-            f"/api/v1/forge/prompts/{prompt_id}",
+            f"/api/v1/volundr/prompts/{prompt_id}",
             json={"name": "New"},
         )
         assert resp.status_code == 200
@@ -278,44 +278,44 @@ class TestPromptEndpoints:
 
     def test_update_prompt_not_found(self, prompt_client: TestClient):
         resp = prompt_client.put(
-            f"/api/v1/forge/prompts/{uuid4()}",
+            f"/api/v1/volundr/prompts/{uuid4()}",
             json={"name": "X"},
         )
         assert resp.status_code == 404
 
     def test_delete_prompt(self, prompt_client: TestClient):
         create_resp = prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Del", "content": "C"},
         )
         prompt_id = create_resp.json()["id"]
-        resp = prompt_client.delete(f"/api/v1/forge/prompts/{prompt_id}")
+        resp = prompt_client.delete(f"/api/v1/volundr/prompts/{prompt_id}")
         assert resp.status_code == 204
 
     def test_delete_prompt_not_found(self, prompt_client: TestClient):
-        resp = prompt_client.delete(f"/api/v1/forge/prompts/{uuid4()}")
+        resp = prompt_client.delete(f"/api/v1/volundr/prompts/{uuid4()}")
         assert resp.status_code == 404
 
     def test_search_prompts(self, prompt_client: TestClient):
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Security Review", "content": "Check vulnerabilities"},
         )
         prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={"name": "Unrelated", "content": "Nothing"},
         )
-        resp = prompt_client.get("/api/v1/forge/prompts/search?q=security")
+        resp = prompt_client.get("/api/v1/volundr/prompts/search?q=security")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
     def test_search_requires_query(self, prompt_client: TestClient):
-        resp = prompt_client.get("/api/v1/forge/prompts/search")
+        resp = prompt_client.get("/api/v1/volundr/prompts/search")
         assert resp.status_code == 422
 
     def test_create_with_tags(self, prompt_client: TestClient):
         resp = prompt_client.post(
-            "/api/v1/forge/prompts",
+            "/api/v1/volundr/prompts",
             json={
                 "name": "Tagged",
                 "content": "Content",

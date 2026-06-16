@@ -35,6 +35,11 @@ type Story = StoryObj<typeof SearchPage>;
 
 export const Default: Story = {};
 
+/** Retrieval workbench — debug toggle on, per-factor score breakdowns visible. */
+export const DebugWorkbench: Story = {
+  args: { initialDebug: true },
+};
+
 export const WithError: Story = {
   decorators: [
     withMimir({

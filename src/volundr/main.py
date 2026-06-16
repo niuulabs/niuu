@@ -2,17 +2,17 @@
 
 import asyncio
 import logging
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib.metadata import metadata
 
 from fastapi import FastAPI
 
-from bifrost.app import create_app as create_bifrost_app
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
+from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.cors import apply_cors_middleware
+from niuu.domain.services.pat import PATService
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -35,6 +35,7 @@ from niuu.service_settings import Settings
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
 from volundr.adapters.inbound.rest_audit import (
@@ -47,22 +48,20 @@ from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
-from volundr.adapters.inbound.rest_presets import create_presets_router
-from volundr.adapters.inbound.rest_profiles import create_profiles_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
-from volundr.adapters.outbound.config_profiles import ConfigProfileProvider
-from volundr.adapters.outbound.config_templates import ConfigTemplateProvider
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
+from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_communication_cursors import (
@@ -72,8 +71,8 @@ from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
+from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
-from volundr.adapters.outbound.postgres_presets import PostgresPresetRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
@@ -83,11 +82,12 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
+from volundr.catalog import build_catalog
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
     ChronicleService,
+    ExternalSessionService,
     GitWorkflowService,
-    PresetService,
     PromptService,
     RepoService,
     SessionArchiveService,
@@ -100,9 +100,7 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
-from volundr.domain.services.profile import ForgeProfileService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
-from volundr.domain.services.template import WorkspaceTemplateService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
 from volundr.domain.services.workspace import WorkspaceService
@@ -234,6 +232,29 @@ def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F8
     instance = cls(**kwargs)
     logger.info("Archive store: %s", as_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def _create_external_session_providers(
+    settings: Settings,
+) -> list["ExternalSessionProvider"]:  # noqa: F821
+    """Create external session provider adapters from dynamic config.
+
+    Disabled unless ``external_sessions.enabled`` is true, or unset while
+    running in mini/local mode — host session stores are only reachable
+    when Volundr runs on the host.
+    """
+    es_cfg = settings.external_sessions
+    enabled = es_cfg.enabled if es_cfg.enabled is not None else settings.local_mounts.mini_mode
+    if not enabled:
+        return []
+
+    providers = []
+    for provider_cfg in es_cfg.providers:
+        cls = import_class(provider_cfg.adapter)
+        instance = cls(**provider_cfg.kwargs)
+        providers.append(instance)
+        logger.info("External session provider: %s", provider_cfg.adapter.rsplit(".", 1)[-1])
+    return providers
 
 
 def _create_contributors(
@@ -371,6 +392,31 @@ async def _broadcast_periodic_updates(
             logger.exception("SSE periodic broadcast failed")
 
 
+async def _reconcile_liveness_loop(
+    session_service: SessionService,
+    *,
+    interval_seconds: int,
+    stale_after_seconds: int,
+) -> None:
+    """Periodically mark running sessions whose broker has gone silent as stopped."""
+    logger.info(
+        "Liveness reconciliation started, interval=%ds stale_after=%ds",
+        interval_seconds,
+        stale_after_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            count = await session_service.reconcile_liveness(stale_after_seconds)
+            if count:
+                logger.info("Liveness: reconciled %d stale running session(s)", count)
+        except asyncio.CancelledError:
+            logger.info("Liveness reconciliation task cancelled")
+            break
+        except Exception:
+            logger.exception("Liveness reconciliation iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -456,14 +502,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "description": "Git providers and repository discovery.",
             },
             {
-                "name": "Profiles",
-                "description": "Forge profiles — resource and workload configuration "
-                "presets (read-only, config-driven).",
+                "name": "Launch Specs",
+                "description": "Launch specs — the unified session blueprint "
+                "(system-scope config-seeded + user-scope DB-stored).",
             },
             {
-                "name": "Templates",
-                "description": "Workspace templates — multi-repo workspace layouts "
-                "with setup scripts (read-only, config-driven).",
+                "name": "Session Definitions",
+                "description": "Session definitions — the runtime types a launch spec runs on.",
             },
             {
                 "name": "Git Workflow",
@@ -480,11 +525,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "mountable secrets for sessions.",
             },
             {
-                "name": "Presets",
-                "description": "Runtime configuration presets — portable, DB-stored "
-                "bundles of model, MCP servers, resources, and environment config.",
-            },
-            {
                 "name": "Issue Tracker",
                 "description": "External issue tracker integration — search issues, "
                 "update status, and manage repo-to-project mappings.",
@@ -498,9 +538,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "storage": {"home_enabled": True},
     }
 
-    # Standalone Volundr deployments co-host the canonical Bifrost API surface
-    # so local chart/runtime consumers can resolve the shared model catalog.
-    app.mount("/api/v1/bifrost", create_bifrost_app(settings.bifrost))
+    # Bifrost is its own service/plugin. Volundr no longer co-hosts it; it consumes
+    # the model catalog over HTTP from settings.bifrost.url for cost/pricing only.
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -590,9 +629,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
             # Create services with broadcaster for real-time updates
-            # Create profile and template adapters (config-driven)
-            profile_provider = ConfigProfileProvider(settings.profiles)
-            template_provider = ConfigTemplateProvider(settings.templates)
+            # Forge catalog (launch specs + session definitions), built via the
+            # shared `build_catalog` builder. The repository enables user-scope CRUD.
+            catalog = build_catalog(
+                settings,
+                launch_spec_repository=PostgresLaunchSpecRepository(pool),
+            )
+            launch_spec_provider = catalog.launch_spec_provider
 
             # Create shared adapters used by both contributors and credential routes
             secret_injection = _create_secret_injection_adapter(settings)
@@ -656,8 +699,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             mount_strategies = SecretMountStrategyRegistry()
             contributors = _create_contributors(
                 settings,
-                template_provider=template_provider,
-                profile_provider=profile_provider,
+                launch_spec_provider=launch_spec_provider,
                 git_registry=git_registry,
                 storage=storage_adapter,
                 admin_settings=app.state.admin_settings,
@@ -677,7 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 git_registry=git_registry,
                 validate_repos=settings.git.validate_on_create,
                 broadcaster=broadcaster,
-                template_provider=template_provider,
+                launch_spec_provider=launch_spec_provider,
                 authorization=authorization_adapter,
                 contributors=contributors if contributors else None,
                 provisioning_timeout=settings.provisioning.timeout_seconds,
@@ -698,6 +740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             chronicle_repository = PostgresChronicleRepository(pool)
             timeline_repository = PostgresTimelineRepository(pool)
+            session_event_log = PostgresSessionEventLog(pool)
             chronicle_service = ChronicleService(
                 chronicle_repository,
                 session_service,
@@ -710,12 +753,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 storage_adapter,
                 archive_store,
                 chronicle_service=chronicle_service,
+                event_log_repository=session_event_log,
             )
             app.state.archive_service = archive_service
+            app.state.session_event_log = session_event_log
 
-            # Create profile and template services (providers already created above)
-            profile_service = ForgeProfileService(profile_provider, session_repository=repository)
-            template_service = WorkspaceTemplateService(template_provider)
             tracker_service = TrackerService(
                 default_tracker,
                 mapping_repository,
@@ -732,6 +774,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 workflow_config=settings.git.workflow,
             )
 
+            # External session discovery (Claude Code / Codex on the host)
+            external_session_providers = _create_external_session_providers(settings)
+            external_session_service = None
+            if external_session_providers:
+                external_session_service = ExternalSessionService(
+                    external_session_providers,
+                    repository,
+                    session_service,
+                    allowed_workspace_prefixes=settings.local_mounts.allowed_prefixes,
+                    allow_root_workspace=settings.local_mounts.allow_root_mount,
+                )
+
             # Create and include routers
             forge_router = create_router(
                 session_service,
@@ -742,22 +796,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repo_service=repo_service,
                 chronicle_service=chronicle_service,
                 archive_service=archive_service,
+                external_session_service=external_session_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)
 
-            profiles_router = create_profiles_router(
-                profile_service,
-                template_service,
-                settings.session_definitions,
-                prefix="/api/v1/forge",
-            )
-            app.include_router(profiles_router)
+            app.include_router(catalog.router)
 
             # Resource discovery endpoint
             resources_router = create_resources_router(
                 resource_provider,
-                prefix="/api/v1/forge",
+                prefix="/api/v1/volundr",
             )
             app.include_router(resources_router)
             app.state.resource_provider = resource_provider
@@ -767,7 +816,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             prompt_service = PromptService(prompt_repository)
             prompts_router = create_prompts_router(
                 prompt_service,
-                prefix="/api/v1/forge",
+                prefix="/api/v1/volundr",
             )
             app.include_router(prompts_router)
 
@@ -795,20 +844,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 
-            # Presets (DB-stored runtime config)
-            preset_repository = PostgresPresetRepository(pool)
-            preset_service = PresetService(preset_repository)
-            presets_router = create_presets_router(
-                preset_service,
-                prefix="/api/v1/forge",
-            )
-            app.include_router(presets_router)
-
             from volundr.adapters.outbound.postgres_pats import PostgresPATRepository
 
             pat_repository = PostgresPATRepository(pool)
             pat_validator = _create_pat_validator(settings, pat_repository)
+            token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
+            token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
+            pat_service = PATService(
+                repo=pat_repository,
+                token_issuer=token_issuer,
+                ttl_days=settings.pat.ttl_days,
+                validator=pat_validator,
+            )
             app.state.pat_validator = pat_validator
+            app.state.pat_service = pat_service
+            app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
 
             git_router = create_git_router(
                 git_workflow_service,
@@ -958,6 +1008,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(events_router)
+
+            # Durable full-fidelity transcript log: ingest (skuld) + cursor replay
+            session_log_router = create_session_log_router(
+                session_event_log,
+                session_service=session_service,
+                prefix="/api/v1/forge",
+            )
+            app.include_router(session_log_router)
+
             trace_router = create_trace_router(
                 span_repository,
                 session_service=session_service,
@@ -983,8 +1042,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.git_registry = git_registry
             app.state.broadcaster = broadcaster
             app.state.chronicle_service = chronicle_service
-            app.state.profile_service = profile_service
-            app.state.template_service = template_service
+            app.state.launch_spec_service = catalog.launch_spec_service
             app.state.git_workflow_service = git_workflow_service
             app.state.event_ingestion = event_ingestion
             app.state.tenant_service = tenant_service
@@ -998,6 +1056,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             background_task = asyncio.create_task(
                 _broadcast_periodic_updates(broadcaster, stats_service)
             )
+
+            # Start liveness reconciliation: expire running sessions whose broker
+            # has gone silent so clients stop dialing dead chat endpoints.
+            liveness_task: asyncio.Task | None = None
+            if settings.session_liveness.enabled:
+                liveness_task = asyncio.create_task(
+                    _reconcile_liveness_loop(
+                        session_service,
+                        interval_seconds=settings.session_liveness.check_interval_seconds,
+                        stale_after_seconds=settings.session_liveness.stale_after_seconds,
+                    )
+                )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1021,6 +1091,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await background_task
                 except asyncio.CancelledError:
                     pass  # Expected: task cancellation during shutdown
+                if liveness_task is not None:
+                    liveness_task.cancel()
+                    try:
+                        await liveness_task
+                    except asyncio.CancelledError:
+                        pass  # Expected: task cancellation during shutdown
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
@@ -1047,28 +1123,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "healthy"}
 
     return app
-
-
-# Default app instance for uvicorn
-app = create_app()
-
-
-def main() -> None:
-    """Run the Volundr API server."""
-    import uvicorn
-
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8080"))
-    workers = int(os.environ.get("WORKERS", "4"))
-
-    uvicorn.run(
-        "volundr.main:app",
-        host=host,
-        port=port,
-        workers=workers,
-        access_log=False,
-    )
-
-
-if __name__ == "__main__":
-    main()

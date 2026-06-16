@@ -14,8 +14,8 @@ import httpx
 import pytest
 import respx
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
-from tests.test_ting.conftest import StubCredentialStore, StubIntegrationRepo
+from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
+from tests.test_ting.conftest import StubCredentialStore
 from ting.adapters.volundr_factory import VolundrAdapterFactory
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import SpawnRequest
@@ -32,22 +32,30 @@ STORED_PAT = "test-pat-jwt"
 OWNER_ID = "user-123"
 
 
-def _make_connection(
-    *,
-    enabled: bool = True,
-    config: dict | None = None,
-) -> IntegrationConnection:
-    return IntegrationConnection(
-        id="conn-1",
-        owner_id=OWNER_ID,
-        integration_type=IntegrationType.CODE_FORGE,
-        adapter="ting.adapters.volundr_http.VolundrHTTPAdapter",
-        credential_name="volundr-pat",
-        config={"url": VOLUNDR_BASE} if config is None else config,
-        enabled=enabled,
+def _make_instance() -> RegisteredInstance:
+    return RegisteredInstance(
+        id="volundr-1",
+        kind=InstanceKind.VOLUNDR,
+        slug="volundr-1",
+        name="Volundr Test",
+        base_url=VOLUNDR_BASE,
+        visibility=InstanceVisibility.SYSTEM,
+        owner_id=None,
+        tenant_id=None,
+        enabled=True,
+        is_default=True,
+        config={"credential_name": "volundr-pat"},
         created_at=_NOW,
         updated_at=_NOW,
     )
+
+
+class StubGuildRegistry:
+    def __init__(self, instances: list[RegisteredInstance]) -> None:
+        self.instances = list(instances)
+
+    async def list_volundr_targets(self, principal: Principal) -> list[RegisteredInstance]:
+        return list(self.instances)
 
 
 def _spawn_request() -> SpawnRequest:
@@ -81,9 +89,8 @@ class TestAutonomousDispatchWithPAT:
     @respx.mock
     async def test_factory_resolves_pat_and_dispatches(self) -> None:
         """End-to-end: factory → adapter → spawn_session with stored PAT."""
-        conn = _make_connection()
         factory = VolundrAdapterFactory(
-            integration_repo=StubIntegrationRepo(connections=[conn]),
+            StubGuildRegistry([_make_instance()]),
             credential_store=StubCredentialStore(
                 values={f"user:{OWNER_ID}:volundr-pat": {"token": STORED_PAT}}
             ),
@@ -120,10 +127,10 @@ class TestAutonomousDispatchWithPAT:
         assert session.tracker_issue_id == "NIU-234"
 
     @pytest.mark.asyncio
-    async def test_factory_returns_empty_when_no_connection(self) -> None:
-        """Factory returns empty list when no CODE_FORGE connection exists."""
+    async def test_factory_returns_empty_when_no_guild_target(self) -> None:
+        """Factory returns empty list when Guild has no Volundr targets."""
         factory = VolundrAdapterFactory(
-            integration_repo=StubIntegrationRepo(connections=[]),
+            StubGuildRegistry([]),
             credential_store=StubCredentialStore(),
         )
 
@@ -131,10 +138,10 @@ class TestAutonomousDispatchWithPAT:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_primary_for_owner_returns_none_when_no_connection(self) -> None:
-        """primary_for_owner returns None when no CODE_FORGE connection exists."""
+    async def test_primary_for_owner_returns_none_when_no_guild_target(self) -> None:
+        """primary_for_owner returns None when Guild has no Volundr targets."""
         factory = VolundrAdapterFactory(
-            integration_repo=StubIntegrationRepo(connections=[]),
+            StubGuildRegistry([]),
             credential_store=StubCredentialStore(),
         )
 

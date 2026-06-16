@@ -1,4 +1,4 @@
-"""Integration tests for Volundr stats and models endpoints."""
+"""Integration tests for Forge-owned Volundr runtime endpoints."""
 
 from __future__ import annotations
 
@@ -24,16 +24,8 @@ async def test_stats_empty_db(volundr_client, auth_headers):
     assert body["cost_today"] == 0.0
 
 
-async def test_models_list(volundr_client, auth_headers):
-    """GET /api/models returns a non-empty list of available models."""
+async def test_forge_does_not_serve_model_catalog(volundr_client, auth_headers):
+    """Model catalog endpoints are owned by Bifrost, not Forge."""
     headers = auth_headers()
     resp = await volundr_client.get(f"{API}/models", headers=headers)
-    assert resp.status_code == 200, resp.text
-
-    models = resp.json()
-    assert isinstance(models, list)
-    assert len(models) > 0
-    # Each model should have at least an id and name
-    for m in models:
-        assert "id" in m
-        assert "name" in m
+    assert resp.status_code == 404, resp.text

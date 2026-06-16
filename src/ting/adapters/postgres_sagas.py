@@ -116,9 +116,11 @@ class PostgresSagaRepository(SagaRepository):
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
-                 workflow_id, workflow_version, workflow_snapshot, instance_id)
+                 workflow_id, workflow_version, workflow_snapshot, instance_id,
+                 repo_branches, target_tags, target_match)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
+                 $17::jsonb, $18, $19)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -133,7 +135,10 @@ class PostgresSagaRepository(SagaRepository):
                 workflow_id = EXCLUDED.workflow_id,
                 workflow_version = EXCLUDED.workflow_version,
                 workflow_snapshot = EXCLUDED.workflow_snapshot,
-                instance_id = EXCLUDED.instance_id
+                instance_id = EXCLUDED.instance_id,
+                repo_branches = EXCLUDED.repo_branches,
+                target_tags = EXCLUDED.target_tags,
+                target_match = EXCLUDED.target_match
             """,
             saga.id,
             saga.tracker_id,
@@ -151,6 +156,9 @@ class PostgresSagaRepository(SagaRepository):
             saga.workflow_version,
             json.dumps(saga.workflow_snapshot) if saga.workflow_snapshot is not None else None,
             saga.instance_id,
+            json.dumps(saga.repo_branches),
+            saga.target_tags,
+            saga.target_match,
         )
 
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
@@ -312,17 +320,23 @@ class PostgresSagaRepository(SagaRepository):
         saga_id: UUID,
         *,
         instance_id: str | None,
+        target_tags: list[str] | None = None,
+        target_match: str = "all",
         owner_id: str | None = None,
     ) -> None:
         if owner_id is not None:
             await self._pool.execute(
                 """
                 UPDATE sagas
-                SET instance_id = $1::uuid
-                WHERE id = $2
-                  AND owner_id = $3
+                SET instance_id = $1::uuid,
+                    target_tags = $2,
+                    target_match = $3
+                WHERE id = $4
+                  AND owner_id = $5
                 """,
                 instance_id,
+                target_tags or [],
+                target_match,
                 saga_id,
                 owner_id,
             )
@@ -331,10 +345,14 @@ class PostgresSagaRepository(SagaRepository):
         await self._pool.execute(
             """
             UPDATE sagas
-            SET instance_id = $1::uuid
-            WHERE id = $2
+            SET instance_id = $1::uuid,
+                target_tags = $2,
+                target_match = $3
+            WHERE id = $4
             """,
             instance_id,
+            target_tags or [],
+            target_match,
             saga_id,
         )
 
@@ -444,6 +462,9 @@ class PostgresSagaRepository(SagaRepository):
     def _row_to_saga(row: asyncpg.Record) -> Saga:
         slug = row["slug"]
         workflow_snapshot = PostgresSagaRepository._decode_jsonb(row.get("workflow_snapshot"))
+        repo_branches = PostgresSagaRepository._decode_jsonb(row.get("repo_branches"))
+        if not isinstance(repo_branches, dict):
+            repo_branches = {}
         return Saga(
             id=row["id"],
             tracker_id=row["tracker_id"],
@@ -451,6 +472,7 @@ class PostgresSagaRepository(SagaRepository):
             slug=slug,
             name=row["name"],
             repos=list(row["repos"]),
+            repo_branches={str(k): str(v) for k, v in repo_branches.items()},
             feature_branch=row.get("feature_branch") or f"feat/{slug}",
             base_branch=row["base_branch"],
             status=SagaStatus(row.get("status", "ACTIVE") or "ACTIVE"),
@@ -461,6 +483,8 @@ class PostgresSagaRepository(SagaRepository):
             workflow_version=row.get("workflow_version"),
             workflow_snapshot=workflow_snapshot,
             instance_id=str(row["instance_id"]) if row.get("instance_id") is not None else None,
+            target_tags=list(row.get("target_tags") or []),
+            target_match=str(row.get("target_match") or "all"),
         )
 
     @staticmethod

@@ -1,0 +1,194 @@
+# --- environment-nats -------------------------------------------------------
+#
+# Long-running Valkyrie profile for an Environment: a Kubernetes cluster, host,
+# printer Pi, or other place where a resident agent receives signals and decides
+# what needs attention.
+#
+# What you get:
+#   - Existing Ravn flock runtime, cascade delegation, Mimir, and wakefulness
+#   - NATS JetStream as the shared mesh/event substrate
+#   - Environment identity carried in config for routing, UI, and audit trails
+#   - Adapter-backed signal sources for k8s, host, printer, and operator events
+#   - JetStream replay knobs for recovering after restarts
+#
+# Architecture:
+#   source adapters ---> Ravn mesh/NATS JetStream <--- Valkyrie A
+#                              ^                    Valkyrie B
+#                              |                    Valkyrie C
+#                        existing flock learning and delegation
+#
+# Prerequisites:
+#   - An LLM provider configured on each resident Valkyrie
+#   - NATS JetStream reachable from each resident Valkyrie
+#   - Optional: NATS_URL, defaults to nats://localhost:4222
+#   - Optional: RAVN_ENVIRONMENT_ID and RAVN_ENVIRONMENT_TYPE env overrides
+#
+# Quick local NATS:
+#   docker run -p 4222:4222 nats:2 -js
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml
+# ---------------------------------------------------------------------------
+
+environment:
+  id: local-dev
+  name: Local Development
+  type: local
+  flocks:
+    - valkyries
+  signal_poll_interval_seconds: 10.0
+  signal_dedupe_cache_size: 2048
+  signal_task_severities:
+    - warning
+    - critical
+  signal_sources:
+    - id: kubernetes-events
+      name: Kubernetes Events
+      kind: kubernetes
+      adapter: ravn.adapters.environment_signals.KubernetesSignalAdapter
+      enabled: true
+      kwargs:
+        kubeconfig_env: KUBECONFIG
+        namespaces: []                  # empty means all namespaces
+        include_reasons: []             # empty means all reasons
+        exclude_reasons:
+          - Pulled
+          - Pulling
+    - id: host-events
+      name: Host Events
+      kind: host
+      adapter: ravn.adapters.environment_signals.HostSignalAdapter
+      enabled: true
+      kwargs:
+        providers:
+          - system
+          - process
+    - id: printer-telemetry
+      name: Printer Telemetry
+      kind: printer_telemetry
+      adapter: ravn.adapters.environment_signals.PrinterPiSignalAdapter
+      enabled: false
+      kwargs:
+        moonraker_url_env: MOONRAKER_URL
+    - id: operator-events
+      name: Operator Events
+      kind: host
+      adapter: ravn.adapters.environment_signals.HostSignalAdapter
+      enabled: true
+      kwargs:
+        provider: gateway.http
+        category: operator
+
+llm:
+  model: ""                              # set to your model name
+  max_tokens: 8192
+  timeout: 120
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: ""                       # set to your provider URL
+      api_key_env: ""                    # env var name containing API key
+
+memory:
+  backend: sqlite
+
+mimir:
+  enabled: true
+  path: ~/.ravn/mimir
+  auto_distill: true
+  categories:
+    - operations
+    - incidents
+    - tools
+    - learnings
+
+mesh:
+  enabled: true
+  adapter: nats
+  rpc_timeout_s: 10.0
+  own_peer_id: ""                        # auto: hostname
+  nats:
+    servers_env: NATS_URL
+    stream_name: ravn_environment
+    subject_prefix: ravn.environment
+    consumer_group: ""                   # set for active/active load-sharing
+    replay_from_sequence: null           # set to recover from a known offset
+    retention: limits
+    max_age_seconds: 604800              # 7 days
+    max_bytes: 1073741824                # 1 GiB
+    ring_buffer_depth: 1000
+    connect_timeout_s: 10.0
+    max_reconnect_attempts: 60
+
+discovery:
+  enabled: true
+  adapter: sleipnir
+  realm_id_env: RAVN_ENVIRONMENT_ID      # isolate by environment id
+  heartbeat_interval_s: 60.0
+  peer_ttl_s: 180.0
+  sleipnir:
+    heartbeat_interval_s: 60.0
+    convergence_wait_s: 5.0
+
+cascade:
+  enabled: true
+  spawn_timeout_s: 30.0
+  collect_timeout_s: 120.0
+  mesh_delegation_timeout_s: 60.0
+  stuck_detection_threshold_s: 300.0
+  loop_detection: true
+  retry_strategy: replan
+
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: false
+    http:
+      enabled: true
+      host: 0.0.0.0
+      port: 7477
+
+initiative:
+  enabled: true
+  max_concurrent_tasks: 3
+  queue_journal_path: ~/.ravn/daemon/queue.json
+  default_output_mode: ambient
+
+thread:
+  enabled: true
+  enricher_poll_interval_seconds: 300
+  enricher_llm_alias: fast
+
+wakefulness:
+  enabled: true
+  silence_threshold_seconds: 1800
+  reflection_cooldown_seconds: 3600
+  llm_alias: fast
+
+recap:
+  enabled: true
+  absence_threshold_seconds: 3600
+  return_detection_window_seconds: 300
+  persona: produce-recap
+
+budget:
+  daily_cap_usd: 3.0
+  warn_at_percent: 80
+
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: approval
+  spending_beyond_cap: never
+
+logging:
+  level: info

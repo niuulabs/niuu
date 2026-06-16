@@ -69,6 +69,25 @@ class TestSessionDefinitionContributor:
         assert "transportAdapter" in result.values["broker"]
 
     @pytest.mark.asyncio
+    async def test_drops_empty_definition_api_url(self):
+        definitions = {
+            "skuldCodex": SessionDefinitionConfig(
+                enabled=True,
+                defaults={
+                    "broker": {"cliType": "codex-ws"},
+                    "volundr": {"apiUrl": ""},
+                },
+            )
+        }
+        contributor = SessionDefinitionContributor(definitions=definitions)
+        context = SessionContext(definition="skuldCodex")
+
+        result = await contributor.contribute(_mock_session(), context)
+
+        assert result.values["broker"]["cliType"] == "codex-ws"
+        assert "volundr" not in result.values
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_definition(self):
         contributor = SessionDefinitionContributor(definitions=DEFINITIONS)
         context = SessionContext()
@@ -151,6 +170,7 @@ class TestDefaultSessionDefinitions:
     def test_returns_three_definitions(self):
         defs = _default_session_definitions()
         assert "skuldClaude" in defs
+        assert "skuldClaudeInteractive" in defs
         assert "skuldCodex" in defs
         assert "skuldOpenCode" in defs
 
@@ -164,6 +184,18 @@ class TestDefaultSessionDefinitions:
         assert claude.defaults["broker"]["cliType"] == "claude"
         assert claude.defaults["broker"]["transport"] == "sdk"
         assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
+
+    def test_claude_interactive_defaults(self):
+        interactive = _default_session_definitions()["skuldClaudeInteractive"]
+        assert interactive.display_name == "Claude Code Interactive"
+        assert interactive.default_model == "claude-sonnet-4-6"
+        assert interactive.defaults["broker"]["cliType"] == "claude"
+        assert interactive.defaults["broker"]["transport"] == "tmux-interactive"
+        assert (
+            interactive.defaults["broker"]["transportAdapter"]
+            == "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
+        )
+        assert interactive.defaults["broker"]["skipPermissions"] is True
 
     def test_codex_defaults(self):
         codex = _default_session_definitions()["skuldCodex"]
@@ -186,4 +218,4 @@ class TestDefaultSessionDefinitions:
         context = SessionContext()
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
-        assert result.values["model"] == "claude-sonnet-4-6"
+        assert result.values["model"] == "claude-opus-4-8"

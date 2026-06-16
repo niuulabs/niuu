@@ -50,3 +50,20 @@ data:
           {{- else }}
           secret_kwargs_env: {}
           {{- end }}
+      discovery:
+        {{- if .Values.discovery.adapters }}
+        {{- range .Values.discovery.adapters }}
+        - adapter: {{ .adapter | quote }}
+          kwargs: {{ .kwargs | default dict | toJson }}
+          {{- if .secretKwargs }}
+          secret_kwargs_env:
+            {{- range .secretKwargs }}
+            {{ .kwarg }}: OBSERVATORY_DISCOVERY_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+        {{- else }}
+        []
+        {{- end }}

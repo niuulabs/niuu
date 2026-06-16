@@ -165,9 +165,7 @@ class TestNotificationChannelContributor:
         context = SessionContext(
             principal=principal,
             workload_type="ravn_flock",
-            integration_connections=(
-                _telegram_connection(config={"topic_per_session": False}),
-            ),
+            integration_connections=(_telegram_connection(config={"topic_per_session": False}),),
         )
 
         result = await contributor.contribute(session, context)
@@ -184,9 +182,7 @@ class TestNotificationChannelContributor:
         context = SessionContext(
             principal=principal,
             workload_type="ravn_flock",
-            integration_connections=(
-                _telegram_connection(config={"message_thread_id": 42}),
-            ),
+            integration_connections=(_telegram_connection(config={"message_thread_id": 42}),),
         )
 
         result = await contributor.contribute(session, context)

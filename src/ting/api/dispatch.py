@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from niuu.domain.models import InstanceKind, IntegrationType, Principal
+from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.flock_config import FlockPersonaResponse
 from ting.api.tracker import resolve_trackers
@@ -61,6 +61,8 @@ class QueueItemResponse(BaseModel):
     workflow: str | None = None
     workflow_version: str | None = None
     instance_id: str | None = None
+    target_tags: list[str] = Field(default_factory=list)
+    target_match: str = "all"
 
 
 class ModelOption(BaseModel):
@@ -91,6 +93,14 @@ class DispatchRequest(BaseModel):
         default=None,
         description="Target a specific Volundr cluster by connection ID",
     )
+    target_tags: list[str] = Field(
+        default_factory=list,
+        description="Target a Volundr backend by instance tags (label-based routing)",
+    )
+    target_match: str = Field(
+        default="all",
+        description="Tag match mode: 'all' (every tag) or 'any' (at least one)",
+    )
     session_definition: str | None = Field(
         default=None,
         description="Optional Volundr session definition key (e.g. 'skuldCodex')",
@@ -118,6 +128,14 @@ class DispatchItemRequest(BaseModel):
     workflow_id: str | None = Field(
         default=None,
         description="Optional workflow override for this dispatch item",
+    )
+    target_tags: list[str] = Field(
+        default_factory=list,
+        description="Target a Volundr backend by instance tags (overrides request-level)",
+    )
+    target_match: str = Field(
+        default="all",
+        description="Tag match mode: 'all' or 'any'",
     )
     session_definition: str | None = Field(
         default=None,
@@ -161,6 +179,7 @@ class ClusterInfo(BaseModel):
     name: str
     url: str
     enabled: bool
+    tags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +208,8 @@ def _queue_item_to_response(item: ServiceQueueItem) -> QueueItemResponse:
         workflow=item.workflow,
         workflow_version=item.workflow_version,
         instance_id=item.instance_id,
+        target_tags=list(item.target_tags),
+        target_match=item.target_match,
     )
 
 
@@ -356,6 +377,9 @@ def create_dispatch_router() -> APIRouter:
                 connection_id=item.connection_id,
                 workflow_id=item.workflow_id,
                 session_definition=item.session_definition,
+                # Per-item tags override request-level tags.
+                target_tags=tuple(item.target_tags or body.target_tags),
+                target_match=item.target_match or body.target_match,
             )
             for item in body.items
         ]
@@ -380,47 +404,21 @@ def create_dispatch_router() -> APIRouter:
         return [_result_to_response(r) for r in results]
 
     async def _list_targets(request: Request, principal: Principal) -> list[ClusterInfo]:
-        instance_service = getattr(request.app.state, "instance_service", None)
-        if instance_service is not None:
-            instances = await instance_service.list_visible(
-                principal,
-                kind=InstanceKind.VOLUNDR,
-                enabled_only=False,
-            )
-            if instances:
-                return [
-                    ClusterInfo(
-                        connection_id=instance.id,
-                        instance_id=instance.id,
-                        name=instance.name,
-                        url=instance.base_url,
-                        enabled=instance.enabled,
-                    )
-                    for instance in instances
-                ]
-
-        integration_repo = getattr(request.app.state, "integration_repo", None)
-        if integration_repo is None:
+        instance_registry = getattr(request.app.state, "instance_registry", None)
+        if instance_registry is None:
             return []
-
-        connections = await integration_repo.list_connections(
-            principal.user_id,
-            integration_type=IntegrationType.CODE_FORGE,
-        )
-        clusters: list[ClusterInfo] = []
-        for conn in connections:
-            name = conn.config.get("name", "") or conn.slug or conn.id
-            url = conn.config.get("url", "")
-            clusters.append(
-                ClusterInfo(
-                    connection_id=conn.id,
-                    instance_id=None,
-                    name=name,
-                    url=url,
-                    enabled=conn.enabled,
-                )
+        instances = await instance_registry.list_volundr_targets(principal)
+        return [
+            ClusterInfo(
+                connection_id=instance.id,
+                instance_id=instance.id,
+                name=instance.name,
+                url=instance.base_url,
+                enabled=instance.enabled,
+                tags=instance.tags,
             )
-        return clusters
+            for instance in instances
+        ]
 
     @router.get("/targets", response_model=list[ClusterInfo])
     async def list_targets(

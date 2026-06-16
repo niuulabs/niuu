@@ -21,6 +21,14 @@ def adapter() -> VolundrHTTPAdapter:
     return VolundrHTTPAdapter(base_url=BASE_URL, timeout=5.0, name="test-cluster")
 
 
+class StaticAuth:
+    def __init__(self, headers: dict[str, str]) -> None:
+        self._headers = headers
+
+    def headers(self) -> dict[str, str]:
+        return dict(self._headers)
+
+
 # -------------------------------------------------------------------
 # _headers
 # -------------------------------------------------------------------
@@ -48,6 +56,34 @@ class TestAuthHeaders:
 
     def test_no_auth_token_no_api_key(self, adapter: VolundrHTTPAdapter):
         assert adapter._headers(auth_token=None) == {}
+
+    def test_service_auth_headers_used_when_no_runtime_or_user_token(self):
+        adapter = VolundrHTTPAdapter(
+            base_url=BASE_URL,
+            auth=StaticAuth({"Authorization": "Bearer service-token"}),
+        )
+
+        assert adapter._headers()["Authorization"] == "Bearer service-token"
+
+    def test_auth_token_overrides_service_auth(self):
+        adapter = VolundrHTTPAdapter(
+            base_url=BASE_URL,
+            auth=StaticAuth({"Authorization": "Bearer service-token", "x-service": "ting"}),
+        )
+
+        headers = adapter._headers(auth_token="runtime-tok")
+
+        assert headers["Authorization"] == "Bearer runtime-tok"
+        assert headers["x-service"] == "ting"
+
+    def test_api_key_overrides_service_auth(self):
+        adapter = VolundrHTTPAdapter(
+            base_url=BASE_URL,
+            api_key="pat-abc",
+            auth=StaticAuth({"Authorization": "Bearer service-token"}),
+        )
+
+        assert adapter._headers()["Authorization"] == "Bearer pat-abc"
 
 
 # -------------------------------------------------------------------
@@ -786,8 +822,9 @@ class _FakeStreamResponse:
 
 
 class _FakeAsyncClient:
-    def __init__(self, response: _FakeStreamResponse) -> None:
+    def __init__(self, response: _FakeStreamResponse, expected_headers: dict[str, str]) -> None:
         self._response = response
+        self._expected_headers = expected_headers
 
     async def __aenter__(self):
         return self
@@ -798,7 +835,7 @@ class _FakeAsyncClient:
     def stream(self, method: str, url: str, headers: dict[str, str]):
         assert method == "GET"
         assert url == f"{BASE_URL}/api/v1/forge/sessions/stream"
-        assert headers == {}
+        assert headers == self._expected_headers
         return self._response
 
 
@@ -835,7 +872,11 @@ class TestSubscribeActivity:
             ]
         )
 
-        monkeypatch.setattr(httpx, "AsyncClient", lambda timeout=None: _FakeAsyncClient(response))
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda timeout=None: _FakeAsyncClient(response, expected_headers={}),
+        )
 
         events = [event async for event in adapter.subscribe_activity()]
 
@@ -845,3 +886,29 @@ class TestSubscribeActivity:
         assert events[0].metadata == {"step": "plan"}
         assert events[1].session_id == "ses-2"
         assert events[1].session_status == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_uses_service_auth_headers(self, monkeypatch):
+        adapter = VolundrHTTPAdapter(
+            base_url=BASE_URL,
+            auth=StaticAuth({"Authorization": "Bearer service-token"}),
+        )
+        response = _FakeStreamResponse(
+            [
+                "event: session_updated",
+                f"data: {json.dumps({'id': 'ses-1', 'status': 'failed', 'owner_id': 'user-1'})}",
+                "",
+            ]
+        )
+        monkeypatch.setattr(
+            httpx,
+            "AsyncClient",
+            lambda timeout=None: _FakeAsyncClient(
+                response,
+                expected_headers={"Authorization": "Bearer service-token"},
+            ),
+        )
+
+        events = [event async for event in adapter.subscribe_activity()]
+
+        assert events[0].session_id == "ses-1"

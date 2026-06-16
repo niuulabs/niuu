@@ -72,6 +72,7 @@ def _instance(
     enabled: bool = True,
     is_default: bool = False,
     created_at: datetime | None = None,
+    tags: list[str] | None = None,
 ) -> RegisteredInstance:
     now = created_at or datetime.now(UTC)
     return RegisteredInstance(
@@ -88,6 +89,7 @@ def _instance(
         config={"region": "ca-central-1"},
         created_at=now,
         updated_at=now,
+        tags=tags or [],
     )
 
 
@@ -404,3 +406,58 @@ async def test_seed_configured_instances_skips_incomplete_items(
     assert seeded == 1
     assert "Skipping incomplete seeded instance" in caplog.text
     assert list(repo.instances) == ["seed-1"]
+
+
+@pytest.mark.asyncio
+async def test_list_visible_filters_by_tags() -> None:
+    repo = InMemoryInstanceRepository(
+        [
+            _instance("gpu-west", tags=["gpu", "us-west"]),
+            _instance("gpu-east", tags=["gpu", "us-east"]),
+            _instance("cpu-west", tags=["us-west"]),
+            _instance("untagged"),
+        ]
+    )
+    service = InstanceService(repo)
+    principal = _principal()
+
+    # Default match=all: every selector tag must be present.
+    both = await service.list_visible(principal, tags=["gpu", "us-west"])
+    assert {i.id for i in both} == {"gpu-west"}
+
+    # match=any: at least one selector tag present.
+    either = await service.list_visible(principal, tags=["us-west", "us-east"], match="any")
+    assert {i.id for i in either} == {"gpu-west", "gpu-east", "cpu-west"}
+
+    # Empty selector matches everything.
+    everything = await service.list_visible(principal)
+    assert {i.id for i in everything} == {"gpu-west", "gpu-east", "cpu-west", "untagged"}
+
+    # A selector that nothing satisfies returns nothing (callers fail loud on this).
+    none_match = await service.list_visible(principal, tags=["gpu", "us-central"])
+    assert none_match == []
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_round_trip_tags() -> None:
+    repo = InMemoryInstanceRepository()
+    service = InstanceService(repo)
+    admin = _principal(admin=True)
+
+    created = await service.create_instance(
+        admin,
+        kind=InstanceKind.VOLUNDR,
+        slug="tagged",
+        name="Tagged",
+        base_url="https://tagged.example.com",
+        visibility=InstanceVisibility.SYSTEM,
+        tags=["gpu", "prod"],
+    )
+    assert created.tags == ["gpu", "prod"]
+
+    updated = await service.update_instance(admin, created.id, tags=["cpu"])
+    assert updated.tags == ["cpu"]
+
+    # Omitting tags on update leaves them unchanged.
+    unchanged = await service.update_instance(admin, created.id, name="Renamed")
+    assert unchanged.tags == ["cpu"]

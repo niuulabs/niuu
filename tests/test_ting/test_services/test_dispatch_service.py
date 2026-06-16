@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -35,10 +36,12 @@ from ting.domain.services.dispatch_service import (
     DispatchConfig,
     DispatchItem,
     DispatchService,
+    TargetSelectionError,
     _format_persona_label,
     build_prompt,
     is_ready,
     resolve_target_adapter,
+    select_adapter_by_tags,
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
 from ting.ports.workflow_repository import WorkflowRepository
@@ -266,6 +269,27 @@ class TestResolveTargetAdapter:
     def test_unknown_returns_fallback(self):
         fallback = MockVolundr()
         assert resolve_target_adapter("b", {"a": MockVolundr()}, fallback) is fallback
+
+
+class TestSelectAdapterByTags:
+    @staticmethod
+    def _adapter(name: str, tags: list[str]):
+        return SimpleNamespace(name=name, target_id=name, tags=tags)
+
+    def test_match_all_requires_every_tag(self):
+        gpu = self._adapter("gpu", ["gpu", "us-west"])
+        cpu = self._adapter("cpu", ["us-west"])
+        assert select_adapter_by_tags([cpu, gpu], ["gpu", "us-west"]) is gpu
+
+    def test_match_any_requires_one_tag(self):
+        east = self._adapter("east", ["us-east"])
+        west = self._adapter("west", ["us-west"])
+        assert select_adapter_by_tags([east, west], ["us-west"], match="any") is west
+
+    def test_no_match_fails_loud(self):
+        cpu = self._adapter("cpu", ["us-west"])
+        with pytest.raises(TargetSelectionError):
+            select_adapter_by_tags([cpu], ["gpu"])
 
 
 # -------------------------------------------------------------------
@@ -782,6 +806,75 @@ class TestDispatchIssues:
         assert results[0].status == "spawned"
         assert default.spawned == []
         assert len(assigned.spawned) == 1
+
+    @pytest.mark.asyncio
+    async def test_fetches_integration_ids_from_selected_target(
+        self,
+        tracker: MockTracker,
+        saga_repo: MockSagaRepo,
+        dispatcher_repo: MockDispatcherRepo,
+    ):
+        class TargetVolundr(MockVolundr):
+            def __init__(self, target_id: str) -> None:
+                super().__init__()
+                self._target_id = target_id
+
+            @property
+            def name(self) -> str:
+                return self._target_id
+
+            @property
+            def target_id(self) -> str:
+                return self._target_id
+
+        default = TargetVolundr("default-instance")
+        assigned = TargetVolundr("assigned-instance")
+        default.integration_ids = ["default-integration"]
+        assigned.integration_ids = ["assigned-integration"]
+        saga = saga_repo.sagas[0]
+        saga_repo.sagas[0] = Saga(
+            id=saga.id,
+            tracker_id=saga.tracker_id,
+            tracker_type=saga.tracker_type,
+            slug=saga.slug,
+            name=saga.name,
+            repos=saga.repos,
+            feature_branch=saga.feature_branch,
+            status=saga.status,
+            confidence=saga.confidence,
+            created_at=saga.created_at,
+            base_branch=saga.base_branch,
+            owner_id=saga.owner_id,
+            workflow_id=saga.workflow_id,
+            workflow_version=saga.workflow_version,
+            workflow_snapshot=saga.workflow_snapshot,
+            instance_id="assigned-instance",
+        )
+        svc = DispatchService(
+            tracker_factory=MockTrackerFactory([tracker]),
+            volundr_factory=MockVolundrFactory(adapters=[default, assigned]),
+            saga_repo=saga_repo,
+            dispatcher_repo=dispatcher_repo,
+            config=DispatchConfig(),
+        )
+
+        results = await svc.dispatch_issues(
+            owner_id="dev-user",
+            items=[
+                DispatchItem(
+                    saga_id=str(saga_repo.sagas[0].id),
+                    issue_id="i-1",
+                    repo="org/repo-a",
+                )
+            ],
+            auth_token="user-token",
+        )
+
+        assert results[0].status == "spawned"
+        assert default.spawned == []
+        assert default.last_auth_token is None
+        assert assigned.last_auth_token == "user-token"
+        assert assigned.spawned[0].integration_ids == ["assigned-integration"]
 
     @pytest.mark.asyncio
     async def test_no_volundr_returns_all_failed(
@@ -1347,9 +1440,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             }
@@ -1400,9 +1492,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },
@@ -1414,9 +1505,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },
@@ -1428,9 +1518,8 @@ class TestBuildSpawnRequestPersonaOverrides:
                 "executor": {
                     "adapter": "ravn.adapters.executors.cli.CliTransportExecutor",
                     "kwargs": {
-                        "transport_adapter": (
-                            "skuld.transports.codex_ws.CodexWebSocketTransport"
-                        )
+                        "transport_adapter": ("skuld.transports.codex_ws.CodexWebSocketTransport"),
+                        "transport_kwargs": {"skip_permissions": True},
                     },
                 },
             },

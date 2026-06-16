@@ -10,8 +10,6 @@ Config file locations (first found wins):
 Environment variable override format:
 - Use SKULD__ prefix with double underscore nesting:
   SKULD__TRANSPORT=subprocess, SKULD__SESSION__MODEL=opus
-- Flat legacy env vars are also supported for backward compatibility:
-  SESSION_ID, MODEL, HOST, PORT, VOLUNDR_API_URL, SERVICE_USER_ID, WORKSPACE_DIR
 """
 
 import json
@@ -148,6 +146,13 @@ class RoomConfig(BaseModel):
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    presence_sweep_interval_s: float = Field(
+        default=30.0,
+        description=(
+            "How often expired participants (heartbeat TTL exceeded, no live "
+            "WebSocket) are evicted from room state. 0 disables the sweep."
+        ),
+    )
 
 
 class TelegramConfig(BaseModel):
@@ -189,12 +194,19 @@ class SkuldSessionConfig(BaseModel):
 
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
-    model: str = Field(default="claude-sonnet-4-6")
+    model: str = Field(default="claude-opus-4-8")
     workspace_dir: str | None = Field(default=None)
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
+    resume_session_id: str = Field(
+        default="",
+        description=(
+            "Native CLI session/thread id to resume on first start. Set by "
+            "Volundr for sessions imported from an external harness."
+        ),
+    )
 
 
 class ArchiveStoreConfig(BaseModel):
@@ -205,6 +217,37 @@ class ArchiveStoreConfig(BaseModel):
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class ReflexConfig(BaseModel):
+    """Retrieval reflex — deterministic Mímir entity pointer injection (NIU-1059).
+
+    When enabled, user messages forwarded to the CLI agent are scanned for
+    known Mímir entities and prefixed with compact pointers (never page
+    bodies). Enabled by default; the Mímir base URL is derived from
+    ``volundr_api_url`` when not set explicitly.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable retrieval reflex pointer injection on forwarded user messages.",
+    )
+    base_url: str = Field(
+        default="",
+        description="Base URL of the Mímir HTTP service exposing GET /mimir/entities/index.",
+    )
+    max_pointers: int = Field(
+        default=5,
+        description="Maximum number of entity pointers injected per message.",
+    )
+    cache_ttl_seconds: int = Field(
+        default=300,
+        description="How long (seconds) the entity index is cached before refetching.",
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        description="HTTP timeout (seconds) for the entity feed request.",
+    )
 
 
 class SkuldSettings(BaseSettings):
@@ -220,9 +263,6 @@ class SkuldSettings(BaseSettings):
     - SKULD__TRANSPORT=subprocess -> settings.transport
     - SKULD__SESSION__MODEL=opus -> settings.session.model
 
-    Legacy flat env vars are also supported (lowest priority, backward compat):
-    - SESSION_ID, SESSION_NAME, MODEL, HOST, PORT, VOLUNDR_API_URL,
-      SERVICE_USER_ID, SERVICE_TENANT_ID, WORKSPACE_DIR
     """
 
     model_config = SettingsConfigDict(
@@ -241,6 +281,15 @@ class SkuldSettings(BaseSettings):
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
     agent_teams: bool = Field(default=False)
+    ask_user_question_enabled: bool = Field(
+        default=False,
+        description=(
+            "Route Claude tool permissions over the control protocol so "
+            "AskUserQuestion reaches a human (requires a client that answers "
+            "ask_user_question events). Off by default: sessions keep the "
+            "classic bypassPermissions behavior."
+        ),
+    )
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
@@ -248,85 +297,32 @@ class SkuldSettings(BaseSettings):
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
-    chronicle_watcher_enabled: bool = Field(default=True)
+    # OFF by default in our pipeline: the watcher tails session JSONL and POSTs
+    # chronicle timeline events we don't use (and which 405 through the guild
+    # aggregate). Opt in with SKULD__CHRONICLE_WATCHER_ENABLED=true.
+    chronicle_watcher_enabled: bool = Field(default=False)
     chronicle_watcher_debounce_ms: int = Field(default=500)
+    # Generate + report a Chronicle SUMMARY (an LLM pass) when a session stops.
+    # OFF by default in our pipeline: stopping a session must NOT trigger an
+    # extra summarization (cost / latency / unwanted behavior). Opt in with
+    # SKULD__CHRONICLE_ON_STOP_ENABLED=true.
+    chronicle_on_stop_enabled: bool = Field(default=False)
+    # Durable full-fidelity event log: every CLI frame is appended to the
+    # Volundr session_event_log so any client can replay the full transcript
+    # (including the in-flight turn) regardless of whether a socket is attached.
+    event_log_enabled: bool = Field(default=True)
+    event_log_batch_size: int = Field(default=100)
+    event_log_flush_interval_ms: int = Field(default=500)
+    event_log_max_buffer: int = Field(default=50_000)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_trigger: WorkflowTriggerConfig = Field(default_factory=WorkflowTriggerConfig)
     workflow: WorkflowRuntimeConfig = Field(default_factory=WorkflowRuntimeConfig)
-
-    @model_validator(mode="after")
-    def _apply_legacy_env_vars(self) -> "SkuldSettings":
-        """Apply flat legacy env vars as fallbacks.
-
-        Only overrides fields that still hold their default values, so
-        SKULD__* prefixed vars and YAML always take precedence.
-        """
-        if self.cli_type == "claude":
-            val = os.environ.get("CLI_TYPE")
-            if val:
-                self.cli_type = val
-
-        if self.session.id == "unknown":
-            val = os.environ.get("SESSION_ID")
-            if val:
-                self.session.id = val
-
-        if self.session.name == "unknown":
-            val = os.environ.get("SESSION_NAME")
-            if val:
-                self.session.name = val
-
-        if self.session.model == "claude-sonnet-4-6":
-            val = os.environ.get("MODEL")
-            if val:
-                self.session.model = val
-
-        if self.session.workspace_dir is None:
-            val = os.environ.get("WORKSPACE_DIR")
-            if val:
-                self.session.workspace_dir = val
-
-        if not self.session.system_prompt:
-            val = os.environ.get("SESSION_SYSTEM_PROMPT")
-            if val:
-                self.session.system_prompt = val
-
-        if not self.session.initial_prompt:
-            val = os.environ.get("SESSION_INITIAL_PROMPT")
-            if val:
-                self.session.initial_prompt = val
-
-        if self.host == "0.0.0.0":
-            val = os.environ.get("HOST")
-            if val:
-                self.host = val
-
-        if self.port == 8081:
-            val = os.environ.get("PORT")
-            if val:
-                self.port = int(val)
-
-        if self.volundr_api_url == "":
-            val = os.environ.get("VOLUNDR_API_URL")
-            if val:
-                self.volundr_api_url = val
-
-        if self.service_user_id == "skuld-broker":
-            val = os.environ.get("SERVICE_USER_ID")
-            if val:
-                self.service_user_id = val
-
-        if self.service_tenant_id == "default":
-            val = os.environ.get("SERVICE_TENANT_ID")
-            if val:
-                self.service_tenant_id = val
-
-        return self
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":
@@ -352,6 +348,8 @@ class SkuldSettings(BaseSettings):
 
         if self.transport == "subprocess":
             self.transport_adapter = "skuld.transports.subprocess.SubprocessTransport"
+        elif self.transport == "tmux-interactive":
+            self.transport_adapter = "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
 
         return self
 

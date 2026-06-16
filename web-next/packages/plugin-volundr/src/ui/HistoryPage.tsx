@@ -88,7 +88,7 @@ export function HistoryPage() {
           <h2 className="history-page__title">Session History</h2>
 
           <p className="history-page__subtitle">
-            Terminated sessions, failed runs, and archived pod lineage across ravens, templates,
+            Terminated sessions, failed runs, and archived pod lineage across ravens, launch specs,
             clusters, and sagas.
           </p>
         </div>

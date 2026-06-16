@@ -12,7 +12,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -22,12 +22,11 @@ from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
     CleanupTarget,
+    ExternalSessionRecord,
     GitProviderType,
     GitSource,
     LocalMountSource,
-    Model,
     ModelProvider,
-    ModelTier,
     Principal,
     Session,
     SessionActivityState,
@@ -46,6 +45,12 @@ from volundr.domain.ports import (
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
+    ExternalSessionAlreadyImportedError,
+    ExternalSessionNotFoundError,
+    ExternalSessionPathNotAllowedError,
+    ExternalSessionProviderNotFoundError,
+    ExternalSessionService,
+    ExternalSessionWorkspaceError,
     ForgeService,
     ProviderInfo,
     RepoService,
@@ -234,19 +239,14 @@ class SessionCreate(BaseModel):
         max_length=100,
         description="Session definition key (e.g. 'skuldClaude', 'skuldCodex')",
     )
-    template_name: str | None = Field(
+    launch_spec: str | None = Field(
         default=None,
         max_length=255,
-        description="Workspace template name to apply",
+        description="Launch spec name (system) to apply",
     )
-    profile_name: str | None = Field(
+    launch_spec_id: UUID | None = Field(
         default=None,
-        max_length=255,
-        description="Forge profile name for resource allocation",
-    )
-    preset_id: UUID | None = Field(
-        default=None,
-        description="Preset ID for runtime configuration",
+        description="User launch spec id for runtime configuration",
     )
     workspace_id: UUID | None = Field(
         default=None,
@@ -323,7 +323,7 @@ class SessionCreate(BaseModel):
                     "repo": "github.com/acme/backend",
                     "branch": "main",
                 },
-                "profile_name": "default",
+                "launch_spec": "default",
             },
         },
     }
@@ -399,19 +399,99 @@ class SessionUpdate(BaseModel):
 class SessionStart(BaseModel):
     """Request model for (re)starting a session."""
 
-    profile_name: str | None = Field(
+    launch_spec: str | None = Field(
         default=None,
         max_length=255,
-        description="Forge profile name to use when starting",
+        description="Launch spec name to use when starting",
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "profile_name": "default",
+                "launch_spec": "default",
             },
         },
     }
+
+
+class SessionImportRequest(BaseModel):
+    """Request model for importing an external CLI session."""
+
+    provider: str = Field(
+        min_length=1,
+        max_length=100,
+        description="External session provider key (e.g. 'claude-code', 'codex')",
+    )
+    external_id: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Native session/thread identifier to import",
+    )
+    name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional session name; derived from the harness when omitted",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "provider": "claude-code",
+                "external_id": "2e877b9f-4b8a-4d46-8f00-03f6163addd5",
+                "name": "imported-debug-session",
+            },
+        },
+    }
+
+
+class ExternalSessionResponse(BaseModel):
+    """Response model for a discoverable external CLI session."""
+
+    provider: str = Field(description="Provider key that discovered the session")
+    harness: str = Field(description="CLI harness owning the session (claude, codex)")
+    external_id: str = Field(description="Native session/thread identifier")
+    workspace_path: str = Field(description="Working directory the session ran in")
+    title: str = Field(description="Short human-readable summary")
+    model: str = Field(description="Model the session used, when known")
+    created_at: str | None = Field(description="ISO 8601 start timestamp, when known")
+    updated_at: str | None = Field(description="ISO 8601 last-activity timestamp")
+    live: bool = Field(description="Whether the session appears to be actively running")
+    workspace_exists: bool = Field(description="Whether the workspace still exists on disk")
+    workspace_allowed: bool = Field(
+        description="Whether the workspace passes the allowed mount prefix policy",
+    )
+    imported_session_id: UUID | None = Field(
+        description="Volundr session id when already imported",
+    )
+    importable: bool = Field(
+        description=(
+            "Whether the session can be imported right now (workspace present, "
+            "allowed by policy, and not already imported)"
+        ),
+    )
+
+    @classmethod
+    def from_record(cls, record: ExternalSessionRecord) -> "ExternalSessionResponse":
+        """Create response from domain model."""
+        return cls(
+            provider=record.provider,
+            harness=record.harness,
+            external_id=record.external_id,
+            workspace_path=record.workspace_path,
+            title=record.title,
+            model=record.model,
+            created_at=record.created_at.isoformat() if record.created_at else None,
+            updated_at=record.updated_at.isoformat() if record.updated_at else None,
+            live=record.live,
+            workspace_exists=record.workspace_exists,
+            workspace_allowed=record.workspace_allowed,
+            imported_session_id=record.imported_session_id,
+            importable=(
+                record.workspace_exists
+                and record.workspace_allowed
+                and record.imported_session_id is None
+            ),
+        )
 
 
 class DeleteSessionBody(BaseModel):
@@ -463,9 +543,9 @@ class SessionResponse(BaseModel):
         default=None,
         description="Web URL for the linked issue in the tracker",
     )
-    preset_id: UUID | None = Field(
+    launch_spec_id: UUID | None = Field(
         default=None,
-        description="Preset used to configure this session",
+        description="User launch spec used to configure this session",
     )
     archived_at: str | None = Field(
         default=None,
@@ -490,6 +570,18 @@ class SessionResponse(BaseModel):
     workload_type: str = Field(
         default="session",
         description="Workload type used to launch the session",
+    )
+    origin: str = Field(
+        default="volundr",
+        description="Where the session originated (volundr, claude, codex)",
+    )
+    external_session_id: str | None = Field(
+        default=None,
+        description="Native CLI session id for imported sessions",
+    )
+    cli_session_id: str | None = Field(
+        default=None,
+        description="Captured CLI/agent conversation id; present once the session is resumable",
     )
 
     model_config = {
@@ -541,13 +633,16 @@ class SessionResponse(BaseModel):
             error=session.error,
             tracker_issue_id=session.tracker_issue_id,
             issue_tracker_url=session.issue_tracker_url,
-            preset_id=session.preset_id,
+            launch_spec_id=session.launch_spec_id,
             archived_at=(session.archived_at.isoformat() if session.archived_at else None),
             owner_id=session.owner_id,
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_metadata=session.activity_metadata,
             workload_type=session.workload_type,
+            origin=session.origin,
+            external_session_id=session.external_session_id,
+            cli_session_id=session.cli_session_id,
         )
 
 
@@ -556,46 +651,6 @@ class SessionEndpoints(BaseModel):
 
     chat_endpoint: str = Field(description="Skuld chat proxy URL")
     code_endpoint: str = Field(description="Editor IDE URL")
-
-
-class ModelInfo(BaseModel):
-    """Response model for available models."""
-
-    id: str = Field(description="Model identifier")
-    name: str = Field(description="Human-readable model name")
-    description: str = Field(description="Model capabilities description")
-    provider: ModelProvider = Field(description="Provider type: cloud or local")
-    vendor: str = Field(description="Model vendor/runtime family (e.g. anthropic, openai)")
-    tier: ModelTier = Field(description="Model tier classification")
-    color: str = Field(description="UI color code for the model badge")
-    cost_per_million_tokens: float | None = Field(
-        default=None,
-        description="Cost per million tokens in USD",
-    )
-    vram_required: str | None = Field(
-        default=None,
-        description="VRAM required for local models (e.g. 24GB)",
-    )
-    session_definition: str | None = Field(
-        default=None,
-        description="Resolved model-specific runtime override, when configured.",
-    )
-
-    @classmethod
-    def from_model(cls, model: Model) -> "ModelInfo":
-        """Create response from domain model."""
-        return cls(
-            id=model.id,
-            name=model.name,
-            description=model.description,
-            provider=model.provider,
-            vendor=model.vendor,
-            tier=model.tier,
-            color=model.color,
-            cost_per_million_tokens=model.cost_per_million_tokens,
-            vram_required=model.vram_required,
-            session_definition=model.session_definition,
-        )
 
 
 class ProviderResponse(BaseModel):
@@ -1044,11 +1099,11 @@ def create_router(
     chronicle_service: ChronicleService | None = None,
     archive_service=None,
     *,
+    external_session_service: ExternalSessionService | None = None,
     prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
-    compat_router = APIRouter(prefix="/api/v1/volundr") if prefix == "/api/v1/forge" else None
     forge = ForgeService(
         session_service,
         stats_service=stats_service,
@@ -1107,6 +1162,7 @@ def create_router(
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
             "mini_mode": settings.local_mounts.mini_mode,
+            "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
         }
 
     @router.get("/repos/branches", response_model=list[str], tags=["Repositories"])
@@ -1245,6 +1301,97 @@ def create_router(
         archived_ids = await forge.archive_stopped_sessions()
         return [str(uid) for uid in archived_ids]
 
+    @router.get(
+        "/external-sessions",
+        response_model=list[ExternalSessionResponse],
+        responses={
+            404: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
+    async def list_external_sessions(
+        provider: str | None = Query(
+            default=None,
+            description="Restrict discovery to a single provider key",
+        ),
+    ) -> list[ExternalSessionResponse]:
+        """List CLI sessions discoverable on the host (Claude Code, Codex).
+
+        Sessions already imported into Volundr carry their Volundr session
+        id in ``imported_session_id``. Live sessions are flagged via a
+        recent-activity heuristic on the harness's session store.
+        """
+        if external_session_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External session discovery not available",
+            )
+        try:
+            records = await external_session_service.list_external_sessions(provider=provider)
+        except ExternalSessionProviderNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        return [ExternalSessionResponse.from_record(record) for record in records]
+
+    @router.post(
+        "/sessions/import",
+        response_model=SessionResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
+    async def import_external_session(
+        request: Request,
+        data: SessionImportRequest,
+    ) -> SessionResponse:
+        """Import an external CLI session as a stopped Volundr session.
+
+        The imported session keeps pointing at its original working
+        directory and resumes the native CLI session when started.
+        """
+        if external_session_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External session discovery not available",
+            )
+        principal = await _optional_principal(request)
+        try:
+            session = await external_session_service.import_session(
+                provider=data.provider,
+                external_id=data.external_id,
+                name=data.name,
+                principal=principal,
+            )
+        except (ExternalSessionProviderNotFoundError, ExternalSessionNotFoundError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e),
+            )
+        except ExternalSessionAlreadyImportedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
+        except ExternalSessionPathNotAllowedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e),
+            )
+        except ExternalSessionWorkspaceError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(e),
+            )
+        return SessionResponse.from_session(session)
+
     @router.post(
         "/sessions",
         response_model=SessionResponse,
@@ -1259,9 +1406,8 @@ def create_router(
         """Create and start a new session.
 
         Creates the session record then immediately starts its pods.
-        If template_name is set, the template provides defaults for
-        repo/branch/model. The profile (explicit or from template) is
-        passed to the pod manager to build task_args.
+        If launch_spec is set, the launch spec provides defaults for
+        repo/branch/model and is passed to the pod manager to build task_args.
         """
         principal = await _optional_principal(request)
         try:
@@ -1426,6 +1572,15 @@ def create_router(
         },
         tags=["Sessions"],
     )
+    @router.post(
+        "/sessions/{session_id}/resume",
+        response_model=SessionResponse,
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+        tags=["Sessions"],
+    )
     async def start_session(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
@@ -1434,14 +1589,16 @@ def create_router(
         """Restart a session's pods.
 
         Used to relaunch a stopped or failed session. An optional
-        profile_name in the body overrides the default profile.
+        launch_spec in the body overrides the default launch spec.
+        ``/resume`` is an alias for ``/start``; imported sessions resume
+        their native CLI session via the recorded external session id.
         """
-        profile_name = data.profile_name if data else None
+        launch_spec = data.launch_spec if data else None
         principal = await _optional_principal(request)
         try:
             session = await forge.start_session(
                 session_id,
-                profile_name=profile_name,
+                launch_spec=launch_spec,
                 principal=principal,
             )
             return SessionResponse.from_session(session)
@@ -1625,18 +1782,6 @@ def create_router(
                 detail=str(e),
             )
 
-    @router.get("/models", response_model=list[ModelInfo], tags=["Models & Stats"])
-    async def list_models() -> list[ModelInfo]:
-        """List available models."""
-        try:
-            models = forge.list_models()
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            )
-        return [ModelInfo.from_model(m) for m in models]
-
     @router.get("/stats", response_model=StatsResponse, tags=["Models & Stats"])
     async def get_stats(request: Request) -> StatsResponse:
         """Get aggregate statistics for the dashboard."""
@@ -1735,6 +1880,7 @@ def create_router(
         tags=["Sessions"],
     )
     async def get_session_logs(
+        request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         lines: int = Query(
             default=100,
@@ -1766,10 +1912,15 @@ def create_router(
             )
 
         try:
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     _session_proxy_url(base_url, "api", "logs"),
                     params={"lines": lines, "level": level},
+                    headers=headers,
                 )
                 response.raise_for_status()
                 return response.json()
@@ -1799,6 +1950,7 @@ def create_router(
         tags=["Sessions"],
     )
     async def get_session_logs_aggregate(
+        request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         lines: int = Query(
             default=200,
@@ -1830,6 +1982,10 @@ def create_router(
         try:
             if session.chat_endpoint:
                 _, base_url = await forge.get_session_proxy_target(session_id)
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
                         _session_proxy_url(base_url, "api", "logs", "aggregate"),
@@ -1839,6 +1995,7 @@ def create_router(
                             "participants": participants,
                             "query": query,
                         },
+                        headers=headers,
                     )
                     response.raise_for_status()
                     return response.json()
@@ -1876,6 +2033,132 @@ def create_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
             ) from None
+
+    async def _proxy_session_api(
+        request: Request,
+        session_id: UUID,
+        *path_segments: str,
+        timeout: float = 30.0,
+    ) -> httpx.Response:
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            ) from None
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            ) from None
+
+        headers: dict[str, str] = {}
+        for name in ("authorization", "content-type", "accept"):
+            value = request.headers.get(name)
+            if value:
+                headers[name] = value
+        body = await request.body()
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                response = await client.request(
+                    request.method,
+                    _session_proxy_url(base_url, "api", *path_segments),
+                    params=list(request.query_params.multi_items()),
+                    headers=headers,
+                    content=body if body else None,
+                )
+                response.raise_for_status()
+                return response
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                "Session API proxy failed for session %s path=%s status=%d",
+                _sanitize_log(session_id),
+                _sanitize_log("/".join(path_segments)),
+                e.response.status_code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch session API: {e.response.status_code}",
+            ) from None
+        except httpx.RequestError as e:
+            logger.warning(
+                "Session API proxy connection failed for session %s path=%s: %s",
+                _sanitize_log(session_id),
+                _sanitize_log("/".join(path_segments)),
+                _sanitize_log(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not connect to session pod: {e}",
+            ) from None
+
+    @router.get("/sessions/{session_id}/files", tags=["Sessions"])
+    async def list_session_files(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """List files in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.get("/sessions/{session_id}/files/download", tags=["Sessions"])
+    async def download_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Download a file from a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "download")
+        headers = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
+    @router.post("/sessions/{session_id}/files/upload", tags=["Sessions"])
+    async def upload_session_files(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Upload one or more files to a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "upload")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"entries": []}
+
+    @router.put("/sessions/{session_id}/files/upload", tags=["Sessions"])
+    async def write_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Write a file body to a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "upload")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.post("/sessions/{session_id}/files/mkdir", tags=["Sessions"])
+    async def mkdir_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Create a directory in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files", "mkdir")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    @router.delete("/sessions/{session_id}/files", tags=["Sessions"])
+    async def delete_session_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Delete a file in a live session through the owning Skuld broker."""
+        response = await _proxy_session_api(request, session_id, "files")
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.post(
         "/sessions/{session_id}/messages",
@@ -1939,10 +2222,27 @@ def create_router(
 
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
-                # Send immediately. Draining startup traffic here can delay or
-                # drop the first user turn for transports that emit welcome or
-                # capability events while still coming online.
+                # Send immediately. Draining startup traffic *before* sending can
+                # delay or drop the first user turn for transports that emit
+                # welcome or capability events while still coming online.
                 await ws.send(json.dumps({"type": "user", "content": content}))
+
+                # Then hold the socket open for a short, bounded grace so the
+                # broker's receive loop actually consumes the frame before we
+                # close. A just-restarted broker may still be warming its
+                # transport on this very connection; closing instantly races that
+                # startup and silently drops the message (HTTP 200 "sent" but no
+                # assistant reply). Drain-and-discard broker frames until the
+                # deadline; the cap keeps send latency bounded even while the
+                # assistant streams a reply back over the same channel.
+                import contextlib
+
+                async def _drain() -> None:
+                    while True:
+                        await ws.recv()
+
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(_drain(), timeout=0.75)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -2864,41 +3164,4 @@ def create_router(
                 failed.append({"session_id": sid, "error": "Internal error"})
         return {"deleted": deleted, "failed": failed}
 
-    if compat_router is None:
-        return router
-
-    compat_router.add_api_route(
-        "/sessions/{session_id}/logs/aggregate",
-        get_session_logs_aggregate,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/messages",
-        send_session_message,
-        methods=["POST"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/conversation",
-        get_conversation,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/transcript",
-        get_session_transcript,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-    compat_router.add_api_route(
-        "/sessions/{session_id}/transcript/download",
-        download_session_transcript,
-        methods=["GET"],
-        include_in_schema=False,
-    )
-
-    combined_router = APIRouter()
-    combined_router.include_router(router)
-    combined_router.include_router(compat_router)
-    return combined_router
+    return router

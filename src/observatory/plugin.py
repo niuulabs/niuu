@@ -50,6 +50,7 @@ class ObservatoryPlugin(ServicePlugin):
         from niuu.utils import import_class, resolve_secret_kwargs
         from observatory.app import create_app
         from observatory.discovery import ObservatoryDiscoveryService
+        from observatory.entity_discovery import build_discovery_adapter
 
         settings = Settings()
         guild_cfg = settings.observatory.guild
@@ -63,6 +64,7 @@ class ObservatoryPlugin(ServicePlugin):
             guild_url=guild_cfg.url,
             auth=auth,
             timeout_seconds=guild_cfg.timeout_seconds,
+            discovery_adapter=build_discovery_adapter(settings.observatory.discovery),
         )
         return create_app(discovery_service=discovery_service)
 

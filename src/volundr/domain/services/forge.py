@@ -96,8 +96,8 @@ class ForgeService:
             name=data.name,
             model=data.model,
             source=data.source,
-            template_name=data.template_name,
-            preset_id=data.preset_id,
+            launch_spec=data.launch_spec,
+            launch_spec_id=data.launch_spec_id,
             principal=principal,
             workspace_id=data.workspace_id,
             tracker_issue_id=data.issue_id,
@@ -106,8 +106,7 @@ class ForgeService:
         return await self._session_service.start_session(
             session.id,
             definition=resolved_definition,
-            profile_name=data.profile_name,
-            template_name=data.template_name,
+            launch_spec=data.launch_spec,
             principal=principal,
             terminal_restricted=data.terminal_restricted,
             credential_names=data.credential_names,
@@ -139,7 +138,7 @@ class ForgeService:
         return None
 
     async def get_session(self, session_id: UUID) -> Session | None:
-        return await self._session_service.get_session(session_id)
+        return await self._session_service.reconcile_session_if_active(session_id)
 
     async def ensure_access(
         self,
@@ -185,12 +184,12 @@ class ForgeService:
         self,
         session_id: UUID,
         *,
-        profile_name: str | None = None,
+        launch_spec: str | None = None,
         principal: Principal | None = None,
     ) -> Session:
         return await self._session_service.start_session(
             session_id,
-            profile_name=profile_name,
+            launch_spec=launch_spec,
             principal=principal,
         )
 

@@ -21,7 +21,11 @@ class _FakeDiscoveryService:
     guild_url = "http://guild.test"
     base_url = "http://guild.test"
 
-    async def get_topology_snapshot(self) -> dict[str, object]:
+    async def get_topology_snapshot(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del headers
         return {
             "nodes": [
                 {
@@ -36,7 +40,11 @@ class _FakeDiscoveryService:
             "timestamp": "2026-05-13T12:00:00Z",
         }
 
-    async def get_events(self) -> list[dict[str, str]]:
+    async def get_events(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        del headers
         return [
             {
                 "id": "ev-1",
@@ -56,7 +64,11 @@ class _SequenceDiscoveryService:
         self._topology_calls = 0
         self._events_calls = 0
 
-    async def get_topology_snapshot(self) -> dict[str, object]:
+    async def get_topology_snapshot(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del headers
         self._topology_calls += 1
         return {
             "nodes": [{"id": "realm:test"}],
@@ -64,7 +76,11 @@ class _SequenceDiscoveryService:
             "timestamp": "2026-05-13T12:00:00Z",
         }
 
-    async def get_events(self) -> list[dict[str, str]]:
+    async def get_events(
+        self,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        del headers
         self._events_calls += 1
         return [
             {
@@ -124,8 +140,9 @@ class TestObservatoryApp:
             response = client.get("/api/v1/observatory/registry")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["version"] == 8
+            assert payload["version"] == 10
             assert any(item["id"] == "mimir" for item in payload["types"])
+            assert any(item["id"] == "namespace" for item in payload["types"])
 
     def test_registry_put_persists_changes(self) -> None:
         with _make_client() as client:
@@ -170,10 +187,7 @@ class TestObservatoryApp:
             payload = response.json()
             assert payload["title"] == "Observatory"
             assert payload["sections"][0]["id"] == "streams"
-            assert any(
-                field["key"] == "guild_url"
-                for field in payload["sections"][0]["fields"]
-            )
+            assert any(field["key"] == "guild_url" for field in payload["sections"][0]["fields"])
 
     def test_topology_stream_aliases_return_sse(self) -> None:
         first_chunk = asyncio.run(anext(_topology_stream(_FakeDiscoveryService())))

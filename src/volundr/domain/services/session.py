@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -37,6 +37,7 @@ from volundr.domain.ports import (
     CommunicationRouteRepository,
     EventBroadcaster,
     IntegrationRepository,
+    LaunchSpecProvider,
     PodManager,
     Resource,
     SessionCommunicationPort,
@@ -45,7 +46,6 @@ from volundr.domain.ports import (
     SessionContributor,
     SessionRepository,
     StoragePort,
-    TemplateProvider,
 )
 
 if TYPE_CHECKING:
@@ -117,7 +117,7 @@ class SessionService:
         git_registry: GitProviderRegistry | None = None,
         validate_repos: bool = True,
         broadcaster: EventBroadcaster | None = None,
-        template_provider: TemplateProvider | None = None,
+        launch_spec_provider: LaunchSpecProvider | None = None,
         authorization: AuthorizationPort | None = None,
         contributors: list[SessionContributor] | None = None,
         provisioning_timeout: float = 300.0,
@@ -134,7 +134,7 @@ class SessionService:
         self._git_registry = git_registry
         self._validate_repos = validate_repos
         self._broadcaster = broadcaster
-        self._template_provider = template_provider
+        self._launch_spec_provider = launch_spec_provider
         self._authorization = authorization
         self._contributors = contributors or []
         self._provisioning_timeout = provisioning_timeout
@@ -153,12 +153,14 @@ class SessionService:
         name: str,
         model: str,
         source: SessionSource | None = None,
-        template_name: str | None = None,
-        preset_id: UUID | None = None,
+        launch_spec: str | None = None,
+        launch_spec_id: UUID | None = None,
         principal: Principal | None = None,
         workspace_id: UUID | None = None,
         tracker_issue_id: str | None = None,
         issue_tracker_url: str | None = None,
+        origin: str = "volundr",
+        external_session_id: str | None = None,
     ) -> Session:
         """Create a new session.
 
@@ -166,12 +168,14 @@ class SessionService:
             name: Session name.
             model: Model identifier.
             source: Workspace source (git or local_mount). Defaults to empty GitSource.
-            template_name: Optional workspace template name. When provided,
-                the template's repos/profile are used to fill in defaults
-                for source and model if not explicitly provided.
-            preset_id: Optional preset ID to associate with the session.
+            launch_spec: Optional system launch spec name. When provided, its
+                repos/model fill in defaults for source and model if not
+                explicitly provided.
+            launch_spec_id: Optional user launch spec id to associate with the session.
             principal: Authenticated identity. When provided, sets owner_id
                 and tenant_id on the session.
+            origin: Where the session originated (volundr, claude, codex).
+            external_session_id: Native CLI session id for imported sessions.
 
         Returns:
             Created session.
@@ -182,21 +186,21 @@ class SessionService:
         if source is None:
             source = GitSource()
 
-        # Resolve template defaults when a template is specified
-        if template_name and self._template_provider:
-            template = self._template_provider.get(template_name)
-            if template is not None:
-                logger.info("Applying workspace template: %s", _sanitize_log(template_name))
-                # Use first repo from template if caller didn't provide one
-                if isinstance(source, GitSource) and not source.repo and template.repos:
-                    first_repo = template.repos[0]
+        # Resolve launch-spec defaults when a launch spec is specified
+        if launch_spec and self._launch_spec_provider:
+            spec = self._launch_spec_provider.get(launch_spec)
+            if spec is not None:
+                logger.info("Applying launch spec: %s", _sanitize_log(launch_spec))
+                # Use first repo from the spec if caller didn't provide one
+                if isinstance(source, GitSource) and not source.repo and spec.repos:
+                    first_repo = spec.repos[0]
                     source = GitSource(
                         repo=first_repo.get("url", ""),
                         branch=first_repo.get("branch", source.branch or "main"),
                     )
-                # Use model from template directly (unified template)
-                if not model and template.model:
-                    model = template.model
+                # Use model from the spec directly
+                if not model and spec.model:
+                    model = spec.model
 
         repo = source.repo if isinstance(source, GitSource) else ""
 
@@ -225,12 +229,14 @@ class SessionService:
             name=name,
             model=model,
             source=source,
-            preset_id=preset_id,
+            launch_spec_id=launch_spec_id,
             owner_id=principal.user_id if principal else None,
             tenant_id=principal.tenant_id if principal else None,
             workspace_id=workspace_id,
             tracker_issue_id=tracker_issue_id,
             issue_tracker_url=issue_tracker_url,
+            origin=origin,
+            external_session_id=external_session_id,
         )
         created = await self._repository.create(session)
 
@@ -348,8 +354,23 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
+        # The broker rides the CLI/agent conversation id on activity reports.
+        # Persist it as a first-class field (so the session can be resumed after
+        # a stop) and keep it OUT of activity_metadata, which is clobbered below.
+        cli_session_id = metadata.pop("cli_session_id", None)
+        if cli_session_id and cli_session_id != session.cli_session_id:
+            session.cli_session_id = cli_session_id
+
         session.activity_state = state
         session.activity_metadata = metadata
+        # Treat each activity report as a liveness heartbeat so the reconciler can
+        # tell a live-but-idle session from one whose broker has died.
+        session.last_active = datetime.now(UTC)
+        # A heartbeat is PROOF OF LIFE — a lingering liveness verdict is now
+        # demonstrably false, so clear it (only liveness errors: real failure
+        # records from other paths must stay visible).
+        if session.error and session.error.startswith("liveness:"):
+            session.error = None
         updated = await self._repository.update(session)
 
         if self._broadcaster is not None:
@@ -368,6 +389,40 @@ class SessionService:
         if self._should_auto_stop_after_activity(updated, state, metadata):
             self._schedule_activity_stop(updated.id)
         return updated
+
+    async def reconcile_liveness(self, stale_after_seconds: int) -> int:
+        """Mark running sessions with no recent activity heartbeat as stopped.
+
+        A session whose broker has died otherwise sits in ``running`` forever
+        with a stale ``chat_endpoint``; clients then open a socket to a tombstone
+        and see nothing. Reconciling clears the endpoint and flips the status to
+        ``stopped`` (resumable) so the list reflects reality.
+
+        Returns the number of sessions reconciled.
+        """
+        threshold = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+        stale = await self._repository.list_stale_running(threshold)
+        reconciled = 0
+        for session in stale:
+            stopped = session.model_copy(
+                update={
+                    "status": SessionStatus.STOPPED,
+                    "chat_endpoint": None,
+                    "code_endpoint": None,
+                    "error": "liveness: no activity heartbeat — broker presumed dead",
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            result = await self._repository.update(stopped)
+            reconciled += 1
+            logger.warning(
+                "Liveness: marked stale running session %s as stopped (last_active=%s)",
+                session.id,
+                session.last_active,
+            )
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(result)
+        return reconciled
 
     def _should_auto_stop_after_activity(
         self,
@@ -515,12 +570,12 @@ class SessionService:
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
 
-        if session.status in (SessionStatus.RUNNING, SessionStatus.PROVISIONING):
+        if self._should_stop_infrastructure_on_delete(session.status):
             try:
                 await self._pod_manager.stop(session)
             except Exception as e:
                 logger.warning(
-                    "Failed to stop pods for session %s during deletion: %s. "
+                    "Failed to stop infrastructure for session %s during deletion: %s. "
                     "Proceeding with session deletion.",
                     _sanitize_log(session_id),
                     _sanitize_log(e),
@@ -539,6 +594,17 @@ class SessionService:
             await self._broadcaster.publish_session_deleted(session_id)
 
         return deleted
+
+    @staticmethod
+    def _should_stop_infrastructure_on_delete(status: SessionStatus) -> bool:
+        """Return True when a session may have runtime infrastructure to remove."""
+        return status in {
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+            SessionStatus.STOPPING,
+            SessionStatus.FAILED,
+        }
 
     async def _run_targeted_cleanup(
         self,
@@ -603,8 +669,7 @@ class SessionService:
         self,
         session_id: UUID,
         definition: str | None = None,
-        profile_name: str | None = None,
-        template_name: str | None = None,
+        launch_spec: str | None = None,
         principal: Principal | None = None,
         terminal_restricted: bool = False,
         credential_names: list[str] | None = None,
@@ -640,6 +705,11 @@ class SessionService:
                 "status": SessionStatus.STARTING,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
+                # A restart is an explicit "bring it back": stale failure
+                # detail (e.g. the liveness reaper's "broker presumed dead")
+                # must not survive onto the healthy relaunched session — the
+                # clients render `error` as a Session-error banner verbatim.
+                "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
             }
@@ -655,8 +725,7 @@ class SessionService:
                 starting,
                 principal=principal,
                 definition=definition,
-                template_name=template_name,
-                profile_name=profile_name,
+                launch_spec=launch_spec,
                 terminal_restricted=terminal_restricted,
                 credential_names=credential_names,
                 integration_ids=integration_ids,
@@ -678,8 +747,7 @@ class SessionService:
         session: Session,
         principal: Principal | None = None,
         definition: str | None = None,
-        template_name: str | None = None,
-        profile_name: str | None = None,
+        launch_spec: str | None = None,
         terminal_restricted: bool = False,
         credential_names: list[str] | None = None,
         integration_ids: list[str] | None = None,
@@ -695,8 +763,7 @@ class SessionService:
                 session,
                 principal,
                 definition,
-                template_name,
-                profile_name,
+                launch_spec,
                 terminal_restricted,
                 credential_names=credential_names,
                 integration_ids=integration_ids,
@@ -738,8 +805,7 @@ class SessionService:
         session: Session,
         principal: Principal | None,
         definition: str | None,
-        template_name: str | None,
-        profile_name: str | None,
+        launch_spec: str | None,
         terminal_restricted: bool,
         credential_names: list[str] | None = None,
         integration_ids: list[str] | None = None,
@@ -769,8 +835,7 @@ class SessionService:
         context = SessionContext(
             principal=principal,
             definition=definition,
-            template_name=template_name,
-            profile_name=profile_name,
+            launch_spec=launch_spec,
             terminal_restricted=terminal_restricted,
             credential_names=tuple(credential_names or ()),
             integration_ids=tuple(c.id for c in resolved_connections),
@@ -788,7 +853,37 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
+        self._overlay_resume_session(session, spec)
         return await self._pod_manager.start(session, spec=spec)
+
+    @staticmethod
+    def _overlay_resume_session(session: Session, spec: SessionSpec) -> None:
+        """Seed the broker with a conversation id to resume, when one exists.
+
+        Imported sessions carry the harness's own session/thread id
+        (``external_session_id``) and must be pinned to a resume-capable
+        transport for their origin. Volundr-born sessions carry the
+        ``cli_session_id`` captured from broker activity reports — restarting
+        them reloads the prior conversation on whatever transport their
+        definition selects (SDK, persistent subprocess, and Codex WebSocket
+        all support resume).
+        """
+        if session.external_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker["resumeSessionId"] = session.external_session_id
+            if session.origin == "claude":
+                broker["cliType"] = "claude"
+                broker["transportAdapter"] = (
+                    "skuld.transports.persistent_subprocess.PersistentSubprocessTransport"
+                )
+            if session.origin == "codex":
+                broker["cliType"] = "codex-ws"
+                broker["transportAdapter"] = "skuld.transports.codex_ws.CodexWebSocketTransport"
+            return
+
+        if session.cli_session_id:
+            broker = spec.values.setdefault("broker", {})
+            broker.setdefault("resumeSessionId", session.cli_session_id)
 
     async def _run_cleanup(
         self,
@@ -1163,6 +1258,40 @@ class SessionService:
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
 
+    async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
+        """Reconcile one active session against the pod manager and return it."""
+        session = await self._repository.get(session_id)
+        if session is None:
+            return None
+        if session.status not in {SessionStatus.STARTING, SessionStatus.RUNNING}:
+            return session
+
+        actual_status = await self._pod_manager.status(session)
+        if actual_status == session.status:
+            return session
+
+        logger.info(
+            "Reconciling session %s from %s to %s",
+            session.id,
+            session.status.value,
+            actual_status.value,
+        )
+        if actual_status == SessionStatus.STOPPED:
+            updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+        elif actual_status == SessionStatus.FAILED:
+            updated = (
+                session.with_status(SessionStatus.FAILED)
+                .with_cleared_endpoints()
+                .with_error("Session runtime is no longer available")
+            )
+        else:
+            updated = session.with_status(actual_status)
+
+        final = await self._repository.update(updated)
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(final)
+        return final
+
 
 def _communication_route_id(
     *,
@@ -1173,7 +1302,6 @@ def _communication_route_id(
 ) -> UUID:
     """Return a stable route UUID for a session communication target."""
     value = (
-        f"volundr:communication-route:{session_id}:{platform}:"
-        f"{conversation_id}:{thread_id or ''}"
+        f"volundr:communication-route:{session_id}:{platform}:{conversation_id}:{thread_id or ''}"
     )
     return uuid5(NAMESPACE_URL, value)

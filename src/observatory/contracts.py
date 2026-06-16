@@ -10,9 +10,22 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 LayoutMode = Literal["manual", "orbit", "pack", "force", "hybrid"]
-LayoutScope = Literal["world", "realm", "cluster", "group", "node"]
+LayoutScope = Literal["world", "realm", "cluster", "namespace", "group", "node"]
 LayoutAxis = Literal["x", "y"]
 EdgeKind = Literal["solid", "dashed-anim", "dashed-long", "soft", "run"]
+EdgeRelationType = Literal[
+    "contains",
+    "manages",
+    "uses",
+    "reads",
+    "writes",
+    "routes_to",
+    "exposes",
+    "observes",
+    "signals_to",
+    "member_of",
+]
+EdgeConfidence = Literal["declared", "observed", "inferred"]
 
 
 class ObservatoryAnchorHint(TypedDict, total=False):
@@ -33,9 +46,9 @@ class ObservatoryLayoutHints(TypedDict, total=False):
     order: int
     ring: int
     radius: float
-    pack_group: str
-    cluster_role: str
-    axis_lock: list[LayoutAxis]
+    packGroup: str
+    clusterRole: str
+    axisLock: list[LayoutAxis]
     note: str
 
 
@@ -57,13 +70,17 @@ class ObservatoryNode(TypedDict, total=False):
     layoutHints: ObservatoryLayoutHints
 
 
-class ObservatoryEdge(TypedDict):
+class ObservatoryEdge(TypedDict, total=False):
     """One topology edge contributed by a fragment producer."""
 
     id: str
     sourceId: str
     targetId: str
     kind: EdgeKind
+    relationType: EdgeRelationType
+    label: str
+    confidence: EdgeConfidence
+    evidence: dict[str, str]
 
 
 class ObservatoryEvent(TypedDict, total=False):

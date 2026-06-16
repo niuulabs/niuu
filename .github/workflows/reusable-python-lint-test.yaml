@@ -27,7 +27,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -56,7 +56,7 @@ jobs:
               --ignore=tests/test_bifrost
               --ignore=tests/test_sleipnir
               --ignore=tests/integration
-            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld"
+            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld --cov=src/mimir"
           - name: Ting
             flag: backend-ting
             paths: "tests/test_ting"
@@ -81,7 +81,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -102,3 +102,33 @@ jobs:
           files: coverage.xml
           flags: ${{ matrix.pkg.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Mímir retrieval-quality eval (NIU-1055/NIU-1057). HARD GATE: fails when
+  # overall P@5 regresses more than the threshold vs the committed baseline
+  # (tests/test_mimir/evals/baseline.json). Improvements should refresh the
+  # baseline via `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json`.
+  mimir-eval:
+    name: "Mímir: Retrieval eval (gated)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Run golden-set eval vs committed baseline (FTS-only)
+        run: |
+          uv run python -m mimir eval \
+            --against tests/test_mimir/evals/baseline.json \
+            --fail-on-regression | tee eval-report.txt
+          {
+            echo "## Mímir retrieval eval (FTS-only, gated vs baseline)"
+            echo '```'
+            cat eval-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

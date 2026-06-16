@@ -43,6 +43,11 @@ class TestTransportCapabilities:
         assert caps.permission_requests is False
         assert caps.slash_commands is False
         assert caps.skills is False
+        assert caps.terminal_output is False
+        assert caps.terminal_input is False
+        assert caps.terminal_keys is False
+        assert caps.terminal_resize is False
+        assert caps.terminal_panes is False
 
     def test_subprocess_transport_capabilities(self, tmp_path):
         """SubprocessTransport has session_resume=True, rest False."""
@@ -61,6 +66,11 @@ class TestTransportCapabilities:
         assert caps.permission_requests is False
         assert caps.slash_commands is False
         assert caps.skills is False
+        assert caps.terminal_output is False
+        assert caps.terminal_input is False
+        assert caps.terminal_keys is False
+        assert caps.terminal_resize is False
+        assert caps.terminal_panes is False
 
     def test_sdk_websocket_transport_capabilities(self, tmp_path):
         """SdkWebSocketTransport has all capabilities True."""
@@ -83,6 +93,11 @@ class TestTransportCapabilities:
         assert caps.permission_requests is True
         assert caps.slash_commands is True
         assert caps.skills is True
+        assert caps.terminal_output is False
+        assert caps.terminal_input is False
+        assert caps.terminal_keys is False
+        assert caps.terminal_resize is False
+        assert caps.terminal_panes is False
 
     def test_codex_subprocess_transport_capabilities(self, tmp_path):
         """CodexSubprocessTransport has all capabilities False."""
@@ -101,6 +116,11 @@ class TestTransportCapabilities:
         assert caps.permission_requests is False
         assert caps.slash_commands is False
         assert caps.skills is False
+        assert caps.terminal_output is False
+        assert caps.terminal_input is False
+        assert caps.terminal_keys is False
+        assert caps.terminal_resize is False
+        assert caps.terminal_panes is False
 
     def test_capabilities_is_frozen(self):
         """TransportCapabilities is immutable (frozen dataclass)."""
@@ -1571,12 +1591,15 @@ class TestCodexSubprocessTransport:
 
         transport.on_event(AsyncMock())
 
-        with patch(
-            "skuld.transports.codex.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec, patch(
-            "skuld.transports.codex.resolve_codex_cli",
-            return_value="/Applications/Codex.app/Contents/Resources/codex",
+        with (
+            patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch(
+                "skuld.transports.codex.resolve_codex_cli",
+                return_value="/Applications/Codex.app/Contents/Resources/codex",
+            ),
         ):
             mock_exec.return_value = mock_process
             await transport.send_message("refactor the auth module")
@@ -1624,9 +1647,7 @@ class TestCodexSubprocessTransport:
 
             call_args = mock_exec.call_args[0]
             assert "-c" in call_args
-            assert any(
-                arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args
-            )
+            assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
 
     @pytest.mark.asyncio
     async def test_send_message_emits_text_delta_for_json_events(self, transport):

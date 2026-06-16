@@ -197,6 +197,7 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         enabled BOOLEAN NOT NULL DEFAULT true,
         is_default BOOLEAN NOT NULL DEFAULT false,
         config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        tags JSONB NOT NULL DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT niuu_instances_kind_check CHECK (kind IN ('volundr')),
@@ -221,6 +222,15 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_visibility
         ON niuu_instances(visibility, owner_id, tenant_id);
+    """,
+    # Idempotent for tables created before the tags column existed.
+    """
+    ALTER TABLE niuu_instances
+        ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_niuu_instances_tags
+        ON niuu_instances USING GIN(tags);
     """,
 )
 

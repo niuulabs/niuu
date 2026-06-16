@@ -1,16 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   ClusterResourceInfo,
   IntegrationConnection,
   SessionDefinition,
   StoredCredential,
   VolundrModel,
-  VolundrPreset,
+  VolundrLaunchSpec,
   VolundrTarget,
   VolundrWorkspace,
 } from '../models/volundr.model';
-import type { Template } from '../domain/template';
 import type { RepoRecord } from '@niuulabs/ui';
 import {
   BootingStep,
@@ -18,29 +17,13 @@ import {
   RuntimeStep,
   SourceStep,
   StepIndicator,
-  TemplateStep,
   type WizardForm,
 } from './LaunchWizard';
-
-const TEMPLATE: Template = {
-  id: 'tpl-platform',
-  name: 'Platform Forge',
-  description: 'Launch the platform workspace',
-  source: { kind: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
-  resources: { cpu: '2', memory: '8Gi' },
-  prompts: { system: '', initial: '' },
-  metadata: {},
-  spec: {
-    image: 'ghcr.io/niuulabs/volundr',
-    tag: 'latest',
-    resources: { cpuRequest: 2, memRequestMi: 8192, gpuCount: 0 },
-  },
-  usageCount: 7,
-};
 
 const MODELS: Record<string, VolundrModel> = {
   'sonnet-primary': { name: 'Sonnet', provider: 'anthropic', tier: 'smart' },
   'gpt-test': { name: 'GPT Test', provider: 'openai', tier: 'fast' },
+  'local-test': { name: 'Local Test', provider: 'local', tier: 'fast' },
 };
 
 const CREDENTIALS: StoredCredential[] = [
@@ -74,11 +57,15 @@ const WORKSPACES: VolundrWorkspace[] = [
   },
 ];
 
-const PRESET: VolundrPreset = {
+const PRESET: VolundrLaunchSpec = {
   id: 'preset-1',
+  scope: 'user',
   name: 'Saved preset',
   description: 'preset description',
   isDefault: false,
+  sessionDefinition: null,
+  repos: [],
+  workspaceLayout: {},
   cliTool: 'claude',
   workloadType: 'skuld-claude',
   model: 'sonnet-primary',
@@ -105,6 +92,7 @@ const DEFINITIONS: SessionDefinition[] = [
     description: '',
     labels: [],
     defaultModel: 'sonnet-primary',
+    compatibleProviders: ['anthropic'],
   },
   {
     key: 'skuld-codex',
@@ -112,6 +100,15 @@ const DEFINITIONS: SessionDefinition[] = [
     description: '',
     labels: [],
     defaultModel: 'gpt-test',
+    compatibleProviders: ['openai'],
+  },
+  {
+    key: 'skuldOpenCode',
+    displayName: 'OpenCode',
+    description: '',
+    labels: [],
+    defaultModel: '',
+    compatibleProviders: [],
   },
 ];
 
@@ -137,13 +134,30 @@ const CLUSTER_RESOURCES: ClusterResourceInfo = {
 };
 
 const TARGETS: VolundrTarget[] = [
-  { id: 'forge-alpha', name: 'Forge Alpha', kind: 'volundr', isDefault: true },
-  { id: 'forge-beta', name: 'Forge Beta', kind: 'volundr', isDefault: false },
+  {
+    id: 'forge-alpha',
+    slug: 'forge-alpha',
+    name: 'Forge Alpha',
+    baseUrl: 'https://alpha.example.test',
+    enabled: true,
+    isDefault: true,
+    visibility: 'system',
+    tags: ['local', 'default'],
+  },
+  {
+    id: 'forge-beta',
+    slug: 'forge-beta',
+    name: 'Forge Beta',
+    baseUrl: 'https://beta.example.test',
+    enabled: true,
+    isDefault: false,
+    visibility: 'system',
+    tags: ['gpu', 'batch'],
+  },
 ];
 
 function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
   return {
-    templateId: TEMPLATE.id,
     presetId: '',
     sourcetype: 'git',
     repo: 'github.com/niuulabs/volundr',
@@ -167,6 +181,9 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     gpu: '0',
     cluster: '',
     instanceId: 'forge-alpha',
+    targetMode: 'instance',
+    targetTags: [],
+    targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
     ...overrides,
@@ -174,12 +191,10 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
 }
 
 describe('LaunchWizard step components', () => {
-  it('renders indicator, template cards, confirm summary, and boot progress', () => {
-    const onSelect = vi.fn();
+  it('renders indicator, confirm summary, and boot progress', () => {
     render(
       <div>
-        <StepIndicator current="runtime" steps={['template', 'source', 'runtime', 'confirm']} />
-        <TemplateStep templates={[TEMPLATE]} selectedId="" onSelect={onSelect} />
+        <StepIndicator current="runtime" steps={['source', 'runtime', 'confirm']} />
         <ConfirmStep
           form={makeForm({
             selectedCredentials: ['GITHUB_TOKEN'],
@@ -188,7 +203,6 @@ describe('LaunchWizard step components', () => {
             setupScripts: ['pnpm install'],
             initialPrompt: 'Ship it',
           })}
-          templates={[TEMPLATE]}
           models={MODELS}
           integrations={INTEGRATIONS}
           sessionDefinitions={DEFINITIONS}
@@ -198,9 +212,8 @@ describe('LaunchWizard step components', () => {
       </div>,
     );
 
-    fireEvent.click(screen.getByTestId('wizard-template-card'));
-    expect(onSelect).toHaveBeenCalledWith(TEMPLATE.id);
-    expect(screen.getAllByText('Platform Forge').length).toBeGreaterThan(0);
+    expect(screen.getByText('Source')).toBeInTheDocument();
+    expect(screen.getByText('Runtime')).toBeInTheDocument();
     expect(screen.getByText('Launch summary')).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
     expect(screen.getAllByTestId('boot-step')).toHaveLength(8);
@@ -375,18 +388,18 @@ describe('LaunchWizard step components', () => {
       />,
     );
 
-    fireEvent.change(screen.getByPlaceholderText('save as preset'), {
+    fireEvent.change(screen.getByPlaceholderText('save as launch spec'), {
       target: { value: 'coverage-preset' },
     });
     fireEvent.click(screen.getByText('save'));
     await waitFor(() => expect(onSavePreset).toHaveBeenCalledWith('coverage-preset'));
 
-    fireEvent.change(screen.getByDisplayValue('Custom (no preset)'), {
+    fireEvent.change(screen.getByDisplayValue('Custom launch'), {
       target: { value: PRESET.id },
     });
     expect(onApplyPreset).toHaveBeenCalledWith(PRESET.id);
 
-    fireEvent.click(screen.getByTestId('cli-option-codex'));
+    fireEvent.click(screen.getByTestId('runtime-option-skuld-codex'));
     expect(update).toHaveBeenCalledWith({ definition: 'skuld-codex', model: 'gpt-test' });
 
     fireEvent.click(screen.getByText('show advanced'));
@@ -429,12 +442,100 @@ describe('LaunchWizard step components', () => {
     );
   });
 
+  it('scopes model dropdown options to the selected runtime', () => {
+    const update = vi.fn();
+    const { rerender } = render(
+      <RuntimeStep
+        form={makeForm()}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    let select = screen.getByTestId('model-select');
+    expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
+    expect(within(select).queryByRole('option', { name: /GPT Test/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing 1 of 3 Bifrost models compatible with Claude Code/),
+    ).toBeInTheDocument();
+
+    rerender(
+      <RuntimeStep
+        form={makeForm({ definition: 'skuldOpenCode' })}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={[]}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    select = screen.getByTestId('model-select');
+    expect(within(select).getByRole('option', { name: /Sonnet/ })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: /GPT Test/ })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: /Local Test/ })).toBeInTheDocument();
+    expect(screen.getByText(/Showing all 3 Bifrost models for OpenCode/)).toBeInTheDocument();
+  });
+
+  it('shows tag-based Forge routing controls', () => {
+    const update = vi.fn();
+    render(
+      <RuntimeStep
+        form={makeForm({ targetMode: 'tags', targetTags: ['gpu'] })}
+        update={update}
+        models={MODELS}
+        workspaces={[]}
+        credentials={[]}
+        integrations={[]}
+        clusterResources={null}
+        presets={[]}
+        selectedPreset={null}
+        availableMcpServers={[]}
+        sessionDefinitions={DEFINITIONS}
+        targets={TARGETS}
+        onApplyPreset={vi.fn()}
+        onSavePreset={vi.fn(async () => {})}
+      />,
+    );
+
+    expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();
+    expect(screen.getByTestId('forge-target-match-select')).toBeInTheDocument();
+    expect(screen.getByText('gpu')).toBeInTheDocument();
+    expect(screen.getByText(/1 matching Forge: Forge Beta/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('batch'));
+    expect(update).toHaveBeenCalledWith({ targetTags: ['gpu', 'batch'] });
+    fireEvent.click(screen.getByText('Specific Forge'));
+    expect(update).toHaveBeenCalledWith({ targetMode: 'instance' });
+  });
+
   it('handles runtime field updates, credential toggles, and removal flows', () => {
     const update = vi.fn();
 
     render(
       <RuntimeStep
         form={makeForm({
+          definition: 'skuld-codex',
+          model: 'gpt-test',
           workspaceId: 'ws-1',
           selectedCredentials: ['GITHUB_TOKEN'],
           selectedIntegrations: ['int-1'],
@@ -571,7 +672,6 @@ describe('LaunchWizard step components', () => {
           trackerIssue: null,
           selectedIntegrations: ['missing-integration'],
         })}
-        templates={[]}
         models={{}}
         integrations={[]}
         sessionDefinitions={[]}
@@ -666,7 +766,7 @@ describe('LaunchWizard step components', () => {
       />,
     );
 
-    expect(screen.queryByText('Preset')).not.toBeInTheDocument();
+    expect(screen.queryByText('Launch spec')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('sonnet-primary')).toBeInTheDocument();
     expect(screen.queryByTestId('workspace-select')).not.toBeInTheDocument();
     expect(screen.queryByTestId('forge-target-select')).not.toBeInTheDocument();

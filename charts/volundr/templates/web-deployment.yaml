@@ -14,8 +14,11 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/web-configmap.yaml") . | sha256sum }}
+        {{- with .Values.web.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
-        {{- include "volundr.web.selectorLabels" . | nindent 8 }}
+        {{- include "volundr.web.labels" . | nindent 8 }}
     spec:
       {{- include "volundr.imagePullSecrets" . | nindent 6 }}
       securityContext:

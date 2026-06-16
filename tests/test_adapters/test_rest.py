@@ -574,7 +574,7 @@ class TestStopSession:
 
 
 class TestSessionMessages:
-    """Tests for POST /api/v1/volundr/sessions/{id}/messages."""
+    """Tests for POST /api/v1/forge/sessions/{id}/messages."""
 
     def test_send_message_uses_plain_ws_without_ssl(
         self,
@@ -637,7 +637,7 @@ class TestSessionMessages:
             ),
         ):
             response = client.post(
-                f"/api/v1/volundr/sessions/{session.id}/messages",
+                f"/api/v1/forge/sessions/{session.id}/messages",
                 json={"content": "hello from rest"},
             )
 
@@ -650,6 +650,42 @@ class TestSessionMessages:
 
 class TestSessionLogAggregationProxy:
     """Tests for aggregated session log proxy endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_session_logs_success_forwards_auth(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(session.id)
+
+        response_payload = {"session_id": str(session.id), "lines": [{"message": "ready"}]}
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = response_payload
+        mock_response.raise_for_status.return_value = None
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(
+                f"/api/v1/forge/sessions/{session.id}/logs?lines=20&level=INFO",
+                headers={"Authorization": "Bearer caller-token"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == response_payload
+        mock_client.get.assert_awaited_once_with(
+            f"http://localhost:8080/s/{session.id}/api/logs",
+            params={"lines": 20, "level": "INFO"},
+            headers={"Authorization": "Bearer caller-token"},
+        )
 
     @pytest.mark.asyncio
     async def test_get_session_logs_aggregate_success(
@@ -695,7 +731,8 @@ class TestSessionLogAggregationProxy:
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
             response = client.get(
-                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh"
+                f"/api/v1/forge/sessions/{session.id}/logs/aggregate?lines=50&level=WARNING&participants=coder&query=mesh",
+                headers={"Authorization": "Bearer caller-token"},
             )
 
         assert response.status_code == 200
@@ -708,6 +745,7 @@ class TestSessionLogAggregationProxy:
                 "participants": "coder",
                 "query": "mesh",
             },
+            headers={"Authorization": "Bearer caller-token"},
         )
 
     @pytest.mark.asyncio
@@ -808,7 +846,7 @@ class TestSessionLogAggregationProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
 
         assert response.status_code == 200
         assert response.json()["turns"][0]["content"] == "from workspace"
@@ -844,7 +882,7 @@ class TestSessionLogAggregationProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/logs/aggregate")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/logs/aggregate")
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
@@ -951,7 +989,7 @@ class TestWorkflowGateProxy:
             mock_client.get.return_value = mock_response
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            response = client.get(f"/api/v1/volundr/sessions/{session.id}/conversation")
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/conversation")
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
@@ -968,76 +1006,13 @@ class TestFeatureFlags:
         assert "local_mounts_enabled" in data
         assert isinstance(data["local_mounts_enabled"], bool)
 
-
-class TestListModels:
-    """Tests for GET /api/v1/forge/models."""
-
-    def test_list_models_success(self, client: TestClient, pricing: InMemoryPricingProvider):
-        """Returns list of available models."""
-        response = client.get("/api/v1/forge/models")
+    def test_feature_flags_lists_allowed_mount_prefixes(self, client: TestClient):
+        """Exposes the configured mount prefix allowlist for UI/automation."""
+        response = client.get("/api/v1/forge/feature-flags")
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == len(pricing.list_models())
-        assert all("id" in m for m in data)
-        assert all("name" in m for m in data)
-        assert all("description" in m for m in data)
-
-    def test_list_models_contains_expected(self, client: TestClient):
-        """Models list contains expected models."""
-        response = client.get("/api/v1/forge/models")
-        data = response.json()
-        model_ids = [m["id"] for m in data]
-        assert "claude-sonnet-4-20250514" in model_ids
-        assert "claude-opus-4-20250514" in model_ids
-
-    def test_list_models_has_extended_fields(self, client: TestClient):
-        """Models include provider, tier, color, and pricing."""
-        response = client.get("/api/v1/forge/models")
-        assert response.status_code == 200
-        data = response.json()
-
-        for model in data:
-            assert "provider" in model
-            assert "tier" in model
-            assert "color" in model
-            assert "cost_per_million_tokens" in model
-            assert "vram_required" in model
-
-    def test_list_models_cloud_has_pricing(self, client: TestClient):
-        """Cloud models have pricing information."""
-        response = client.get("/api/v1/forge/models")
-        data = response.json()
-
-        cloud_models = [m for m in data if m["provider"] == "cloud"]
-        assert len(cloud_models) > 0
-
-        for model in cloud_models:
-            assert model["cost_per_million_tokens"] is not None
-            assert model["cost_per_million_tokens"] > 0
-
-    def test_list_models_local_has_vram(self, client: TestClient):
-        """Local models have VRAM requirements."""
-        response = client.get("/api/v1/forge/models")
-        data = response.json()
-
-        local_models = [m for m in data if m["provider"] == "local"]
-        assert len(local_models) > 0
-
-        for model in local_models:
-            assert model["vram_required"] is not None
-            assert model["cost_per_million_tokens"] is None
-
-    def test_list_models_without_provider(
-        self, service: SessionService, stats_service: StatsService
-    ):
-        """Returns 503 when pricing provider is not available."""
-        app = FastAPI()
-        router = create_router(service, stats_service, pricing_provider=None)
-        app.include_router(router)
-        with TestClient(app) as client:
-            response = client.get("/api/v1/forge/models")
-        assert response.status_code == 503
-        assert "not available" in response.json()["detail"].lower()
+        assert "local_mounts_allowed_prefixes" in data
+        assert isinstance(data["local_mounts_allowed_prefixes"], list)
 
 
 class TestStatsResponse:

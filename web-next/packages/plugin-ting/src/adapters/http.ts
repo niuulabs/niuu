@@ -45,6 +45,7 @@ import type {
   NotificationSettings,
   AuditEntry,
   AuditFilter,
+  ImportProjectOptions,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
@@ -73,6 +74,10 @@ interface RawSaga {
   workflow_version?: string | null;
   instance_id?: string | null;
   instance_name?: string | null;
+  target_tags?: string[] | null;
+  target_match?: string | null;
+  repo_branches?: Record<string, string> | null;
+  repo_refs?: Array<{ repo: string; branch: string }> | null;
   phase_summary?: {
     total: number;
     completed: number;
@@ -228,6 +233,8 @@ interface RawDispatchQueueItem {
   workflow?: string | null;
   workflow_version?: string | null;
   instance_id?: string | null;
+  target_tags?: string[] | null;
+  target_match?: string | null;
 }
 
 interface RawDispatchApprovalResult {
@@ -244,6 +251,7 @@ interface RawDispatchCluster {
   name: string;
   url: string;
   enabled: boolean;
+  tags?: string[];
 }
 
 interface RawWorkflow {
@@ -387,6 +395,12 @@ function toSaga(raw: RawSaga): Saga {
     total: raw.run_count ?? 0,
     completed: 0,
   };
+  const repoRefs =
+    raw.repo_refs ??
+    raw.repos.map((repo) => ({
+      repo,
+      branch: raw.repo_branches?.[repo] ?? raw.base_branch ?? 'main',
+    }));
   return {
     id: raw.id,
     trackerId: raw.tracker_id,
@@ -399,6 +413,7 @@ function toSaga(raw: RawSaga): Saga {
         .replace(/^-+|-+$/g, ''),
     name: raw.name,
     repos: raw.repos,
+    repoRefs,
     featureBranch: raw.feature_branch,
     baseBranch: raw.base_branch ?? 'main',
     status: raw.status as Saga['status'],
@@ -409,6 +424,8 @@ function toSaga(raw: RawSaga): Saga {
     workflowVersion: raw.workflow_version ?? undefined,
     instanceId: raw.instance_id ?? undefined,
     instanceName: raw.instance_name ?? undefined,
+    targetTags: raw.target_tags ?? [],
+    targetMatch: raw.target_match === 'any' ? 'any' : 'all',
     phaseSummary: {
       total: phaseSummary.total,
       completed: phaseSummary.completed,
@@ -534,6 +551,9 @@ function toDispatchQueueItem(raw: RawDispatchQueueItem): DispatchQueueItem {
     workflow: raw.workflow ?? undefined,
     workflowVersion: raw.workflow_version ?? undefined,
     instanceId: raw.instance_id ?? undefined,
+    targetTags: raw.target_tags ?? undefined,
+    targetMatch:
+      raw.target_match === 'any' ? 'any' : raw.target_match === 'all' ? 'all' : undefined,
   };
 }
 
@@ -554,6 +574,7 @@ function toDispatchCluster(raw: RawDispatchCluster): DispatchCluster {
     name: raw.name,
     url: raw.url,
     enabled: raw.enabled,
+    tags: raw.tags ?? [],
   };
 }
 
@@ -635,6 +656,7 @@ function toWorkflowLaunchBody(request: WorkflowLaunchRequest): Record<string, un
     sessionName: request.sessionName,
     repo: request.repo,
     branch: request.branch,
+    connectionId: request.connectionId,
   };
 }
 
@@ -726,6 +748,7 @@ function toResearchCampaignCreateBody(
     success: request.success,
     constraints: request.constraints,
     monitoringCadence: request.monitoringCadence,
+    connectionId: request.connectionId,
   };
 }
 
@@ -837,9 +860,11 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       return toSaga(raw);
     },
 
-    async assignTarget(sagaId: string, instanceId: string | null) {
+    async assignTarget(sagaId: string, target) {
       const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/target`, {
-        instance_id: instanceId,
+        instance_id: target.mode === 'instance' ? target.instanceId : null,
+        target_tags: target.mode === 'tags' ? target.tags : [],
+        target_match: target.mode === 'tags' ? (target.match ?? 'all') : 'all',
       });
       return toSaga(raw);
     },
@@ -951,12 +976,22 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
       repos: string[],
       baseBranch?: string,
       instanceId?: string | null,
+      options?: ImportProjectOptions,
     ) {
+      const target = options?.target;
       const raw = await client.post<RawSaga>('/tracker/import', {
         project_id: projectId,
-        repos,
-        base_branch: baseBranch,
-        instance_id: instanceId ?? null,
+        repos: options?.repoRefs?.map((ref) => ref.repo) ?? repos,
+        base_branch: options?.repoRefs?.[0]?.branch ?? baseBranch,
+        repo_refs: options?.repoRefs,
+        instance_id:
+          target?.mode === 'instance'
+            ? target.instanceId
+            : target?.mode === 'tags'
+              ? null
+              : (instanceId ?? null),
+        target_tags: target?.mode === 'tags' ? target.tags : [],
+        target_match: target?.mode === 'tags' ? (target.match ?? 'all') : 'all',
       });
       return toSaga(raw);
     },
@@ -1070,14 +1105,14 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
 export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
   return {
     async listCampaigns() {
-      const raw = await client.get<RawResearchCampaign[]>('/campaigns');
+      const raw = await client.get<RawResearchCampaign[]>('/research/campaigns');
       return raw.map(toResearchCampaign);
     },
 
     async getCampaign(slug: string) {
       try {
         const raw = await client.get<RawResearchCampaignDetail>(
-          `/campaigns/${encodeURIComponent(slug)}`,
+          `/research/campaigns/${encodeURIComponent(slug)}`,
         );
         return toResearchCampaignDetail(raw);
       } catch {
@@ -1087,7 +1122,7 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
 
     async createCampaign(request: CreateResearchCampaignRequest) {
       const raw = await client.post<RawResearchCampaign>(
-        '/campaigns',
+        '/research/campaigns',
         toResearchCampaignCreateBody(request),
       );
       return toResearchCampaign(raw);
@@ -1095,19 +1130,19 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
 
     async updateCampaign(slug: string, request: UpdateResearchCampaignRequest) {
       const raw = await client.patch<RawResearchCampaign>(
-        `/campaigns/${encodeURIComponent(slug)}`,
+        `/research/campaigns/${encodeURIComponent(slug)}`,
         toResearchCampaignPatchBody(request),
       );
       return toResearchCampaign(raw);
     },
 
     async deleteCampaign(slug: string) {
-      await client.delete<void>(`/campaigns/${encodeURIComponent(slug)}`);
+      await client.delete<void>(`/research/campaigns/${encodeURIComponent(slug)}`);
     },
 
     async listArtifacts(slug: string) {
       const raw = await client.get<RawCampaignArtifact[]>(
-        `/campaigns/${encodeURIComponent(slug)}/artifacts`,
+        `/research/campaigns/${encodeURIComponent(slug)}/artifacts`,
       );
       return raw.map(toCampaignArtifact);
     },
@@ -1115,7 +1150,7 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
     async getArtifact(slug: string, path: string) {
       try {
         const raw = await client.get<RawCampaignArtifactDetail>(
-          `/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
+          `/research/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
         );
         return toCampaignArtifactDetail(raw);
       } catch {

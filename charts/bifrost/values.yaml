@@ -2,6 +2,11 @@
 # Override these values in your environment-specific values file.
 
 # -- Number of replicas when autoscaling is disabled.
+global:
+  niuu:
+    # -- Deployment cluster label used by Guild/Observatory discovery.
+    cluster: unknown
+
 replicaCount: 2
 
 # -- How many old ReplicaSets to retain.
@@ -19,6 +24,8 @@ image:
 
 # -- Override container command. Defaults to the unified niuu image running the Bifröst API.
 command:
+  - python
+  - -m
   - bifrost
 
 # -- Image pull secrets for private registries.
@@ -193,6 +200,13 @@ podDisruptionBudget:
   minAvailable: 1
   # -- Maximum number of pods that can be unavailable (alternative to minAvailable).
   maxUnavailable: null
+
+# -- Deployment rollout strategy.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
 
 # -- Node selector for pod assignment.
 nodeSelector: {}
