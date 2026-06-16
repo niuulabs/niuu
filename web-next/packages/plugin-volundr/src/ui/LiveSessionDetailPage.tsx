@@ -694,6 +694,33 @@ export function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string 
   return `${span.kind.replace('.', ' · ')} · ${normalizeTimelineRowLabel(span)}`;
 }
 
+function spanStartedAtMs(span: VolundrSessionTraceSpan): number {
+  const value = new Date(span.startedAt).getTime();
+  return Number.isFinite(value) ? value : 0;
+}
+
+function isSerialTelemetryTaskSpan(span: VolundrSessionTraceSpan): boolean {
+  return span.kind === 'tool.call' || span.kind === 'terminal.command';
+}
+
+export function telemetryTaskDurationMs(
+  span: VolundrSessionTraceSpan,
+  nextSiblingStartedAtMs?: number | null,
+): number {
+  const rawDurationMs = span.durationMs ?? 0;
+  if (
+    !isSerialTelemetryTaskSpan(span) ||
+    nextSiblingStartedAtMs == null ||
+    !Number.isFinite(nextSiblingStartedAtMs)
+  ) {
+    return rawDurationMs;
+  }
+
+  const startedAtMs = spanStartedAtMs(span);
+  if (nextSiblingStartedAtMs <= startedAtMs) return rawDurationMs;
+  return Math.min(rawDurationMs, nextSiblingStartedAtMs - startedAtMs);
+}
+
 export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimelineRow[] {
   const rootSpan = trace.spans.find((span) => span.parentSpanId == null);
   if (!rootSpan) return [];
@@ -1436,16 +1463,18 @@ function TelemetryTaskRow({
   depth,
   stageStartedAtMs,
   stageDurationMs,
+  nextSiblingStartedAtMs,
 }: {
   node: TelemetrySpanNode;
   depth: number;
   stageStartedAtMs: number;
   stageDurationMs: number;
+  nextSiblingStartedAtMs?: number | null;
 }) {
   const tone = timelineRowTone(node.span);
-  const durationMs = node.span.durationMs ?? 0;
+  const durationMs = telemetryTaskDurationMs(node.span, nextSiblingStartedAtMs);
   const safeStageDurationMs = Math.max(stageDurationMs, 1);
-  const taskStartOffsetMs = Math.max(0, new Date(node.span.startedAt).getTime() - stageStartedAtMs);
+  const taskStartOffsetMs = Math.max(0, spanStartedAtMs(node.span) - stageStartedAtMs);
   const clampedTaskStartOffsetMs = Math.min(taskStartOffsetMs, safeStageDurationMs);
   const clampedTaskDurationMs = Math.max(
     0,
@@ -1491,15 +1520,19 @@ function TelemetryTaskRow({
           ) : null}
         </div>
       </div>
-      {node.children.map((child) => (
-        <TelemetryTaskRow
-          key={child.span.id}
-          node={child}
-          depth={depth + 1}
-          stageStartedAtMs={stageStartedAtMs}
-          stageDurationMs={stageDurationMs}
-        />
-      ))}
+      {node.children.map((child, index) => {
+        const nextSibling = node.children[index + 1];
+        return (
+          <TelemetryTaskRow
+            key={child.span.id}
+            node={child}
+            depth={depth + 1}
+            stageStartedAtMs={stageStartedAtMs}
+            stageDurationMs={stageDurationMs}
+            nextSiblingStartedAtMs={nextSibling ? spanStartedAtMs(nextSibling.span) : null}
+          />
+        );
+      })}
     </>
   );
 }
@@ -1625,15 +1658,21 @@ function TelemetryStageBreakdown({
 
               {isExpanded && stage.node.children.length > 0 ? (
                 <div className="niuu-live-telemetry__breakdown-stage-children">
-                  {stage.node.children.map((child) => (
-                    <TelemetryTaskRow
-                      key={child.span.id}
-                      node={child}
-                      depth={1}
-                      stageStartedAtMs={new Date(stage.row.startedAt).getTime()}
-                      stageDurationMs={stage.row.durationMs}
-                    />
-                  ))}
+                  {stage.node.children.map((child, index) => {
+                    const nextSibling = stage.node.children[index + 1];
+                    return (
+                      <TelemetryTaskRow
+                        key={child.span.id}
+                        node={child}
+                        depth={1}
+                        stageStartedAtMs={new Date(stage.row.startedAt).getTime()}
+                        stageDurationMs={stage.row.durationMs}
+                        nextSiblingStartedAtMs={
+                          nextSibling ? spanStartedAtMs(nextSibling.span) : null
+                        }
+                      />
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
