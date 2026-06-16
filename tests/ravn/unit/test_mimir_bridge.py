@@ -134,7 +134,7 @@ def test_related_adapter_without_link_graph(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    monkeypatch.setattr(mimir_bridge, "_adapter", lambda: object())
+    monkeypatch.setattr(mimir_bridge, "_adapter", object)
 
     exit_code = main(["related", "--path", "entities/alice-smith.md"])
 
