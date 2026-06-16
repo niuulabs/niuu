@@ -36,7 +36,7 @@
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/query": "workspace:*",
     "@niuulabs/ui": "workspace:*",
-    "lucide-react": "^1.17.0"
+    "lucide-react": "^1.18.0"
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
@@ -49,9 +49,9 @@
     "postcss": "^8.5.15",
     "postcss-import": "^16.1.0",
     "react": "^19.2.6",
-    "tailwindcss": "^4.3.0",
+    "tailwindcss": "^4.3.1",
     "tsup": "^8.3.5",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.9"
   }
 }
