@@ -110,6 +110,9 @@ describe('ResearchNewPage', () => {
     fireEvent.change(screen.getByLabelText('Question'), {
       target: { value: 'Should research use workflow tags?' },
     });
+    fireEvent.change(screen.getByLabelText('Campaign title'), {
+      target: { value: 'Workflow tag research' },
+    });
     fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'monitoring' } });
     fireEvent.change(screen.getByLabelText('Audience'), { target: { value: 'Platform ops' } });
     fireEvent.change(screen.getByLabelText('Deliverable'), {
@@ -129,7 +132,7 @@ describe('ResearchNewPage', () => {
     await waitFor(() =>
       expect(mockNavigate).toHaveBeenCalledWith({
         to: '/ting/research/$slug',
-        params: { slug: 'should-research-use-workflow-tags' },
+        params: { slug: 'workflow-tag-research' },
       }),
     );
   });
@@ -239,6 +242,9 @@ describe('ResearchNewPage', () => {
     fireEvent.change(screen.getByLabelText('Question'), {
       target: { value: 'Should we keep a generic workflow escape hatch?' },
     });
+    fireEvent.change(screen.getByLabelText('Campaign title'), {
+      target: { value: 'Generic workflow escape hatch' },
+    });
     fireEvent.change(screen.getByLabelText('Repo'), {
       target: { value: 'https://github.com/niuulabs/niuu.git' },
     });
@@ -251,6 +257,7 @@ describe('ResearchNewPage', () => {
 
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toMatchObject({
+      name: 'Generic workflow escape hatch',
       workflowId: 'workflow-ops',
       repo: 'https://github.com/niuulabs/niuu.git',
       branch: 'feature/research',

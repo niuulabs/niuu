@@ -191,7 +191,7 @@ def create_research_router() -> APIRouter:
             workflow_id=body.workflow_id,
         )
         initiative_prompt = _build_campaign_prompt(body)
-        campaign_name = (body.name or _default_campaign_name(body.question))[:255]
+        campaign_name = _campaign_name(body)
         session_name = _session_name(campaign_name) or "research-campaign"
         launch = WorkflowLaunchBody(
             prompt=initiative_prompt,
@@ -471,6 +471,13 @@ def _default_campaign_name(question: str) -> str:
     return compact[:80]
 
 
+def _campaign_name(body: ResearchCampaignCreateBody) -> str:
+    explicit = " ".join((body.name or "").strip().split())
+    if explicit:
+        return explicit[:255]
+    return _default_campaign_name(body.question)[:255]
+
+
 def _build_campaign_prompt(body: ResearchCampaignCreateBody) -> str:
     lines = [
         body.question.strip(),
@@ -478,6 +485,9 @@ def _build_campaign_prompt(body: ResearchCampaignCreateBody) -> str:
         "## Research Brief",
         f"- Mode: {body.mode}",
     ]
+    campaign_name = _campaign_name(body)
+    if campaign_name:
+        lines.append(f"- Title: {campaign_name}")
     if body.audience:
         lines.append(f"- Audience: {body.audience}")
     if body.deliverable:

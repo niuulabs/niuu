@@ -390,6 +390,7 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
         headers=_headers(),
         json={
             "question": "Map the competitive landscape for retrieval-augmented generation tools.",
+            "name": "RAG competitor map",
             "mode": "exploratory",
             "audience": "product leadership",
             "deliverable": "briefing memo",
@@ -406,6 +407,9 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
     assert body["status"] == "running"
     assert len(volundr_port.requests) == 1
     assert volundr_port.requests[0].tracker_issue_id.startswith("workflow:")
+    assert volundr_port.requests[0].name == "rag-competitor-map"
+    assert "- Title: RAG competitor map" in volundr_port.requests[0].initial_prompt
+    assert body["name"] == "RAG competitor map"
 
     campaigns = client.get("/api/v1/ting/research/campaigns", headers=_headers()).json()
     assert len(campaigns) == 1
