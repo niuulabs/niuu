@@ -51,6 +51,16 @@ nav:
       - First local stack: get-started/first-local-stack.md
       - First AI workspace: get-started/first-ai-workspace.md
       - Configure your project: get-started/configure-project.md
+      - From small to autonomous:
+          - Overview: get-started/path-from-small-to-autonomous.md
+          - 1. One local platform: get-started/one-local-platform.md
+          - 2. One workspace session: get-started/one-workspace-session.md
+          - 3. Model routing: get-started/model-routing-step.md
+          - 4. Durable memory: get-started/durable-memory.md
+          - 5. Workflows and teams: get-started/workflows-and-teams-step.md
+          - 6. Direct and resident assistants: get-started/direct-and-resident-assistants.md
+          - 7. Shared discovery and topology: get-started/shared-discovery-and-topology.md
+          - 8. Kubernetes and GitOps: get-started/kubernetes-and-gitops-step.md
   - Concepts:
       - Platform model: concepts/platform-model.md
       - Sessions and workspaces: concepts/sessions-and-workspaces.md

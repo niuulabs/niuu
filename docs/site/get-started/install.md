@@ -1,27 +1,78 @@
 # Install
 
-Prepare a local Niuu development environment.
+Install the small set of tools you actually run.
 
-The fastest path is to use the repository scripts. They install or verify the required local tools, build the web packages, start PostgreSQL, and run the platform host.
+Most operators start with `niuu`. Install `ravn` when you want to run an
+assistant directly or keep a resident assistant running outside the web UI.
 
-## Prerequisites
+## Download `niuu`
 
-- macOS or Linux
-- `curl`, `make`, `gcc`, and `pkg-config`
-- Network access for first-time dependency installation
-- A checked-out copy of the repository
+Get the latest release from GitHub and replace `VERSION` with the release you
+want to install:
 
-The `start-dev` script installs `uv`, `pnpm`, and Node.js if they are not already available in the expected local paths.
+```bash
+VERSION=v1.0.0
+ARCH=darwin-arm64
 
-## Install dependencies
+curl -L "https://github.com/niuulabs/niuu/releases/download/${VERSION}/niuu-${ARCH}" -o niuu
+chmod +x niuu
+sudo mv niuu /usr/local/bin/niuu
+```
+
+Choose the asset that matches your machine:
+
+| Machine | Asset |
+| --- | --- |
+| macOS Apple Silicon | `niuu-darwin-arm64` |
+| Linux x86_64 | `niuu-linux-amd64` |
+| Linux ARM64 | `niuu-linux-arm64` |
+
+Verify it:
+
+```bash
+niuu --help
+niuu --version
+```
+
+The release also includes `checksums.txt` if you want to verify the downloaded
+binary before moving it onto your `PATH`.
+
+## Initialize the local platform
+
+```bash
+niuu platform init
+```
+
+The init command writes local platform configuration under `~/.niuu`.
+
+## Optional: install `ravn`
+
+Install `ravn` when you want a direct assistant runtime:
+
+```bash
+VERSION=v1.0.0
+ARCH=darwin-arm64
+
+curl -L "https://github.com/niuulabs/niuu/releases/download/${VERSION}/ravn-${ARCH}" -o ravn
+chmod +x ravn
+sudo mv ravn /usr/local/bin/ravn
+```
+
+Verify it:
+
+```bash
+ravn --help
+```
+
+## From source
+
+If you are developing Niuu itself, use the repository scripts instead:
 
 ```bash
 uv sync --all-extras --dev
 pnpm --dir web-next install
+./start-dev
 ```
 
-Most operators can skip the manual install and go straight to `./start-dev`; the script performs these checks for you.
-
-## Next step
-
-Run the [first local stack](first-local-stack.md).
+For normal local operation, prefer the release binary and continue with the
+[first local stack](first-local-stack.md).

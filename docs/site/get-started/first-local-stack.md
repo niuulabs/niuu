@@ -1,29 +1,56 @@
 # First Local Stack
 
-Start Niuu on your machine.
+Start the platform on your machine.
 
-Use the local stack when you want the web UI, platform APIs, embedded services, and development database in one operator-controlled environment.
+This is the smallest useful Niuu setup: one local platform, one web UI, and the
+services needed to create and inspect workspace sessions.
 
 ## Start
 
 ```bash
-./start-dev
+niuu platform up
 ```
 
-When the stack is ready, the script prints the web UI and API URLs. The default web UI runs on port `8080` with the `web-next` interface.
+When the stack is ready, the command prints the web UI and API URLs.
 
 ## Stop
 
 ```bash
-./stop-dev
+niuu platform down
+```
+
+## Check status
+
+```bash
+niuu platform status
 ```
 
 ## What starts
 
-- The Niuu platform host
-- Local PostgreSQL under `~/.niuu/pgdata`
-- The web-next UI
-- Embedded or locally mounted service APIs for the development profile
+The local stack is intentionally bundled. You do not download separate
+executables for every service.
+
+At this stage, think of it as:
+
+- the Niuu web UI
+- the platform API
+- a local database/runtime
+- workspace/session services
+- embedded service APIs needed by the local profile
+
+Later pages introduce the service names behind those capabilities.
+
+## Source development shortcut
+
+If you are working from a repo checkout, `./start-dev` starts the development
+version of the same local stack and rebuilds local assets as needed.
+
+```bash
+./start-dev
+./stop-dev
+```
+
+Operators should use `niuu platform up`. Contributors can use `./start-dev`.
 
 ## Verify
 
@@ -33,4 +60,4 @@ Open the printed UI URL and check the health endpoint:
 curl http://127.0.0.1:8080/health
 ```
 
-If the stack binds to a LAN address, use the host printed by `start-dev`.
+If the stack binds to a LAN address, use the host printed by the command.

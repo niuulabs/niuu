@@ -1,31 +1,36 @@
 # Introduction
 
-Learn what Niuu is and where to start in the docs.
+Start small, then add the parts of Niuu when you need them.
 
-Niuu is a self-hosted harness for AI workspaces, coordinated agent teams, always-on assistants, shared knowledge, and local or cloud model operations.
+Niuu is a self-hosted platform for AI workspaces, assistant teams, durable
+memory, workflows, and long-running assistants. You do not need to understand
+the whole platform before you can use it.
 
-Use Niuu when you want operators to stay in control of the workspace, credentials, runtime, review path, and memory layer instead of handing the whole workflow to a hosted agent platform.
+The first mental model is simple:
 
-## Start here
-
-- [Install Niuu](install.md) to prepare a local development stack.
-- [Run the first local stack](first-local-stack.md) to bring up the web UI and platform APIs.
-- [Create your first AI workspace](first-ai-workspace.md) to understand sessions, presets, and review surfaces.
-- [Configure your project](configure-project.md) when you are ready to connect real repos, credentials, and providers.
-
-## What Niuu includes
-
-| Area | What it does |
+| Tool | Use it for |
 | --- | --- |
-| Völundr | AI workspaces, sessions, git review, and remote dev pods |
-| Ting | Workflow orchestration, staged runs, and dispatch |
-| Ravn | Personas, assistants, triggers, budgets, and resident behavior |
-| Valkyries | Resident Ravn personas that watch environments, make judgments, act within policy, and learn with their flock |
-| Mímir | Shared knowledge, memory, sources, and wardens |
-| Bifröst | Local and cloud model catalog, routing, and usage telemetry |
-| Guild | Runtime registry for local and remote platform instances |
-| Observatory | Topology, service visibility, and platform event context |
+| `niuu` | Run and operate the local platform, web UI, sessions, and service stack. |
+| `ravn` | Run an assistant directly, or run a resident assistant/daemon outside the UI. |
 
-## Learn more
+The rest of the names in the platform are capabilities that the stack provides.
+You will meet them when they become useful.
 
-Start with the [platform model](../concepts/platform-model.md), then use the reference pages when you need exact configuration, deployment, or API details.
+## Recommended path
+
+1. [Install the tools](install.md).
+2. [Run the first local stack](first-local-stack.md).
+3. [Launch your first AI workspace](first-ai-workspace.md).
+4. [Configure your project](configure-project.md).
+5. [Grow from small to autonomous](path-from-small-to-autonomous.md).
+
+## What you will build up to
+
+- A local platform you can open in the browser.
+- One workspace session with chat, terminal, files, diffs, logs, and telemetry.
+- Model routing when you want consistent access to local or cloud models.
+- Shared memory when the work should survive one session.
+- Workflows when work needs stages, gates, or several roles.
+- Resident assistants when something should keep watching, curating, or improving.
+
+Start with the first workspace. The rest can wait.
