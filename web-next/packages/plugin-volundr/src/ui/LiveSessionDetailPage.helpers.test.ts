@@ -614,7 +614,7 @@ describe('LiveSessionDetailPage helpers', () => {
       childSpanCount: 4,
       hatch: false,
     });
-    expect(rows[0]?.stateDurations.wait).toBe(35_000);
+    expect(rows[0]?.stateDurations.wait).toBe(30_000);
     expect(rows[0]?.stateDurations.blocked).toBe(50_000);
     expect(rows[0]?.childSegments).toHaveLength(4);
 

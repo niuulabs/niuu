@@ -1002,18 +1002,12 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
     });
 
-    it('keeps active child work visible as timeline segments', () => {
+    it('keeps nested active child work out of top timeline segments', () => {
       const rows = buildTelemetryTimelineRows(TELEMETRY_TRACE);
       const executionRow = rows.find((row) => row.label === 'execution');
 
-      expect(executionRow?.childSegments).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: 'turn-2-tool',
-            tone: 'active',
-            durationMs: 38_000,
-          }),
-        ]),
+      expect(executionRow?.childSegments).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'turn-2-tool' })]),
       );
     });
 
@@ -1029,8 +1023,8 @@ describe('LiveSessionDetailPage', () => {
 
       const tooltip = await screen.findByTestId('telemetry-tooltip-workflow');
       expect(tooltip).toHaveTextContent('child spans');
-      expect(tooltip).toHaveTextContent('active 8m 16s');
-      expect(tooltip).toHaveTextContent('wait 24s');
+      expect(tooltip).toHaveTextContent('active 8m 40s');
+      expect(tooltip).toHaveTextContent('wait 0s');
       expect(tooltip).toHaveTextContent('blocked 0s');
       expect(tooltip).toHaveTextContent('1');
     });

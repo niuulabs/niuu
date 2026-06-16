@@ -694,19 +694,6 @@ export function formatTelemetryTaskLabel(span: VolundrSessionTraceSpan): string 
   return `${span.kind.replace('.', ' · ')} · ${normalizeTimelineRowLabel(span)}`;
 }
 
-function collectTelemetryTimelineSegmentSpans(
-  parent: VolundrSessionTraceSpan,
-  childrenByParent: Map<string, VolundrSessionTraceSpan[]>,
-): VolundrSessionTraceSpan[] {
-  const children = childrenByParent.get(parent.id) ?? [];
-  return children.flatMap((child) => {
-    if (child.kind.startsWith('turn.') || child.kind === 'session.workflow') {
-      return collectTelemetryTimelineSegmentSpans(child, childrenByParent);
-    }
-    return [child, ...collectTelemetryTimelineSegmentSpans(child, childrenByParent)];
-  });
-}
-
 export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimelineRow[] {
   const rootSpan = trace.spans.find((span) => span.parentSpanId == null);
   if (!rootSpan) return [];
@@ -728,14 +715,13 @@ export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): Telemetr
       const percentOfTotal = totalDuration > 0 ? Math.round((durationMs / totalDuration) * 100) : 0;
       const tone = timelineRowTone(span);
       const childSpans = childrenByParent.get(span.id) ?? [];
-      const segmentSpans = collectTelemetryTimelineSegmentSpans(span, childrenByParent);
       const childToneDurations: Record<'active' | 'wait' | 'blocked' | 'system', number> = {
         active: 0,
         wait: 0,
         blocked: 0,
         system: 0,
       };
-      const childSegments = segmentSpans
+      const childSegments = childSpans
         .map((childSpan) => {
           const childTone = timelineRowTone(childSpan);
           childToneDurations[childTone] += childSpan.durationMs ?? 0;
@@ -1279,7 +1265,7 @@ function TelemetryTimeline({
                     aria-pressed={selectedRowId === row.id}
                   >
                     {row.childSegments
-                      .filter((segment) => segment.tone !== 'system')
+                      .filter((segment) => segment.tone === 'wait' || segment.tone === 'blocked')
                       .map((segment) => {
                         const segmentLeft =
                           row.durationMs > 0 ? (segment.startOffsetMs / row.durationMs) * 100 : 0;

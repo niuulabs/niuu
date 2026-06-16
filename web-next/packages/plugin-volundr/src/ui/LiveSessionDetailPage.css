@@ -915,23 +915,13 @@
 
 .niuu-live-telemetry__timeline-bar-segment {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 0;
+  bottom: 0;
   min-width: 2px;
-  border-radius: 999px;
   pointer-events: none;
 }
 
-.niuu-live-telemetry__timeline-bar-segment--active {
-  background: rgba(18, 23, 31, 0.36);
-  border-left: 1px solid rgba(238, 248, 255, 0.5);
-  border-right: 1px solid rgba(238, 248, 255, 0.5);
-}
-
 .niuu-live-telemetry__timeline-bar-segment--wait {
-  top: 0;
-  bottom: 0;
-  border-radius: 0;
   background: repeating-linear-gradient(
     -45deg,
     rgba(148, 151, 165, 0.16) 0 4px,
@@ -940,9 +930,6 @@
 }
 
 .niuu-live-telemetry__timeline-bar-segment--blocked {
-  top: 0;
-  bottom: 0;
-  border-radius: 0;
   background: repeating-linear-gradient(
     -45deg,
     rgba(234, 92, 86, 0.28) 0 4px,
