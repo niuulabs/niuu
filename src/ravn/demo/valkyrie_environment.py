@@ -51,7 +51,8 @@ DEFAULT_SUBJECT_PREFIX = "odin.valkyrie.demo"
 
 
 class AsyncPublisher(Protocol):
-    async def publish(self, event: SleipnirEvent) -> None: ...
+    async def publish(self, event: SleipnirEvent) -> None:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)

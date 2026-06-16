@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mimir.config import MimirServiceConfig
+import mimir.config as mimir_config
 
 
 def test_defaults() -> None:
-    config = MimirServiceConfig()
+    config = mimir_config.MimirServiceConfig()
     assert config.path == "~/.ravn/mimir"
     assert config.port == 7477
     assert config.eval_capture is True
@@ -22,7 +22,7 @@ def test_env_overrides_with_nesting(monkeypatch) -> None:
     monkeypatch.setenv("MIMIR__RANKING__TITLE_MATCH_BOOST", "1.5")
     monkeypatch.setenv("MIMIR__EVIDENCE__STALE_AFTER_DAYS", "30")
 
-    config = MimirServiceConfig()
+    config = mimir_config.MimirServiceConfig()
     assert config.eval_capture is False
     assert config.embedding_model == "all-MiniLM-L6-v2"
     assert config.ranking.title_match_boost == 1.5
@@ -31,7 +31,7 @@ def test_env_overrides_with_nesting(monkeypatch) -> None:
 
 def test_constructor_wins_over_env(monkeypatch) -> None:
     monkeypatch.setenv("MIMIR__PORT", "9999")
-    assert MimirServiceConfig(port=1234).port == 1234
+    assert mimir_config.MimirServiceConfig(port=1234).port == 1234
 
 
 def test_yaml_file_source(monkeypatch, tmp_path: Path) -> None:
@@ -44,8 +44,6 @@ def test_yaml_file_source(monkeypatch, tmp_path: Path) -> None:
     # CONFIG_PATHS is resolved at import time from MIMIR_CONFIG; re-resolve
     # the yaml source for this test by rebuilding the class-level paths.
     import importlib
-
-    import mimir.config as mimir_config
 
     importlib.reload(mimir_config)
     try:

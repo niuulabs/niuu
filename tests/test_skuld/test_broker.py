@@ -21,6 +21,7 @@ from skuld.broker import (
     _TokenRedactFilter,
     app,
     broker,
+    get_room_participants,
     send_message_to_session,
 )
 from skuld.config import SkuldSettings
@@ -4562,16 +4563,13 @@ class TestBrokerRoomBridge:
 
     @pytest.mark.asyncio
     async def test_room_participants_api_handler_passes_environment_filter(self, monkeypatch):
-        import skuld.broker as broker_module
+        get_participants = MagicMock(return_value=[{"peer_id": "cluster-peer"}])
+        monkeypatch.setattr(broker, "get_room_participants", get_participants)
 
-        fake_broker = MagicMock()
-        fake_broker.get_room_participants.return_value = [{"peer_id": "cluster-peer"}]
-        monkeypatch.setattr(broker_module, "broker", fake_broker)
-
-        response = await broker_module.get_room_participants(environment_id="cluster-a")
+        response = await get_room_participants(environment_id="cluster-a")
 
         assert response == {"participants": [{"peer_id": "cluster-peer"}]}
-        fake_broker.get_room_participants.assert_called_once_with(environment_id="cluster-a")
+        get_participants.assert_called_once_with(environment_id="cluster-a")
 
     def test_get_communication_routes_returns_channel_routes(self, room_settings):
         b = Broker(settings=room_settings)

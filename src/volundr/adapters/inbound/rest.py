@@ -2235,7 +2235,6 @@ def create_router(
                 # assistant reply). Drain-and-discard broker frames until the
                 # deadline; the cap keeps send latency bounded even while the
                 # assistant streams a reply back over the same channel.
-                import asyncio
                 import contextlib
 
                 async def _drain() -> None:

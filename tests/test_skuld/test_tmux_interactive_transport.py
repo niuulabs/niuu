@@ -287,7 +287,7 @@ async def test_interrupt_finishes_active_turn(tmp_path: Path) -> None:
     send_task = asyncio.create_task(transport.send_message("long task"))
     await _wait_until(lambda: transport.is_turn_active)
     await transport.send_control("interrupt")
-    await send_task
+    _ = await send_task
     await transport.stop()
 
     assert ("send-keys", "-t", "%1", "C-c") in [args for args, _ in transport.commands]
@@ -458,7 +458,7 @@ async def test_hook_enabled_turn_waits_for_stop_not_terminal_idle(tmp_path: Path
             "last_assistant_message": "done from hook",
         }
     )
-    await send_task
+    _ = await send_task
     await transport.stop()
 
     assert any(

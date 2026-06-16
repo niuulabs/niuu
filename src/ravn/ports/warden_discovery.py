@@ -12,4 +12,4 @@ class WardenDiscoveryPort(Protocol):
 
     async def list_wardens(self) -> list[WardenSpec]:
         """Return known wardens normalized as WardenSpec objects."""
-        ...
+        raise NotImplementedError

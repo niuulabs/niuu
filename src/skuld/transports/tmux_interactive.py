@@ -311,10 +311,10 @@ class TmuxInteractiveTransport(CLITransport):
                 task.cancel()
             for task in list(self._tail_tasks.values()):
                 with suppress(asyncio.CancelledError, Exception):
-                    await task
+                    _ = await task
             for task in list(self._frame_tasks.values()):
                 with suppress(asyncio.CancelledError, Exception):
-                    await task
+                    _ = await task
             self._tail_tasks.clear()
             self._frame_tasks.clear()
             self._panes.clear()
