@@ -20,9 +20,11 @@ class HttpResponse:
 class AsyncJsonHttpClient(Protocol):
     """Bearer-authenticated JSON GET/POST used by the build backends."""
 
-    async def get(self, url: str) -> HttpResponse: ...
+    async def get(self, url: str) -> HttpResponse:
+        raise NotImplementedError
 
-    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse: ...
+    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
+        raise NotImplementedError
 
 
 def client_from_pat_env(pat_env: str) -> HttpxJsonClient:

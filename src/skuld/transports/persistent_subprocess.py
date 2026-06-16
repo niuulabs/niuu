@@ -406,7 +406,7 @@ class PersistentSubprocessTransport(CLITransport):
                     }
                 )
             except Exception:
-                pass
+                logger.debug("failed to write fallback control error response", exc_info=True)
 
     async def _answer_ask_user_question(
         self, tool_input: dict[str, Any], tool_use_id: object

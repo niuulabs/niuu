@@ -123,6 +123,7 @@ class ResidentWakefulness:
         try:
             await self._task
         except asyncio.CancelledError:
+            # Expected after requesting cancellation of the wakefulness loop.
             pass
         self._task = None
         await self._transition(_SLEEPING, reason="resident runtime stopped")

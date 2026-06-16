@@ -700,7 +700,7 @@ def create_app(
         finally:
             review_sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await review_sweep_task
+                _ = await review_sweep_task
             if valkyrie_telemetry is not None:
                 await valkyrie_telemetry.stop()
             await valkyrie_learning_commands.stop()

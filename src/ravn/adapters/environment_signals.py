@@ -273,9 +273,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             kubeconfig = self._kubeconfig_path
             if not kubeconfig and self._kubeconfig_env:
                 kubeconfig = os.environ.get(self._kubeconfig_env, "")
-            load_result = config.load_kube_config(config_file=kubeconfig or None)
-            if inspect.isawaitable(load_result):
-                await load_result
+            await config.load_kube_config(config_file=kubeconfig or None)
         self._core_v1 = client.CoreV1Api()
         self._client_loaded = True
         return self._core_v1

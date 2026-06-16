@@ -1604,8 +1604,8 @@ def test_valkyrie_learning_command_publisher_supports_core_command_targets(monke
 
     class FakeNatsCorePublisher(FakeNatsPublisher):
         def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
-            self.events: list[SleipnirEvent] = []
+            super().__init__(**kwargs)
+            created_stream.remove(self)
             created_core.append(self)
 
     monkeypatch.setattr(nats_transport, "NatsPublisher", FakeNatsPublisher)

@@ -147,6 +147,7 @@ async def test_service_crud_enforces_uniqueness_and_default_clearing() -> None:
     with pytest.raises(LaunchSpecNotFoundError):
         await service.update(uuid4(), {"name": "missing"})
 
-    assert await service.delete(updated.id) is True
+    deleted = await service.delete(updated.id)
+    assert deleted is True
     with pytest.raises(LaunchSpecNotFoundError):
         await service.delete(updated.id)

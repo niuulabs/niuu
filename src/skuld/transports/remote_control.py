@@ -220,7 +220,8 @@ class RemoteControlTransport(CLITransport):
         if proc_paths:
             for path in proc_paths:
                 try:
-                    raw = open(path, "rb").read()
+                    with open(path, "rb") as handle:
+                        raw = handle.read()
                 except Exception:
                     continue
                 cl = raw.replace(b"\0", b" ").decode("utf-8", "replace")

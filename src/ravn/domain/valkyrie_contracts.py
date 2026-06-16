@@ -84,6 +84,7 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
         try:
             normalized["confidence"] = float(confidence.strip())
         except ValueError:
+            # Invalid confidence strings are left as-is for downstream validation.
             pass
 
     expires_at = normalized.get("expires_at")
