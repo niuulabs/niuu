@@ -455,8 +455,9 @@ def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | Non
 
 
 def _can_manage_system_workflows(principal: Principal) -> bool:
-    allowed_roles = {"ting:admin", "volundr:developer"}
-    return bool(set(principal.roles) & allowed_roles)
+    allowed_roles = {"admin", "ting:admin", "volundr:admin", "volundr:developer"}
+    normalized_roles = {role.strip() for role in principal.roles if role.strip()}
+    return bool(normalized_roles & allowed_roles)
 
 
 def _assert_can_manage_scope(scope: WorkflowScope, principal: Principal) -> None:

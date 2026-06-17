@@ -1069,22 +1069,27 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
 
     async saveWorkflow(workflow: Workflow) {
       const body = toWorkflowBody(workflow);
+      let existing: RawWorkflow | null;
       try {
-        const existing = await client.get<RawWorkflow>(
-          `/workflows/${encodeURIComponent(workflow.id)}`,
-        );
-        if (existing) {
+        existing = await client.get<RawWorkflow>(`/workflows/${encodeURIComponent(workflow.id)}`);
+      } catch {
+        existing = null;
+      }
+
+      if (existing) {
+        try {
           const raw = await client.put<RawWorkflow>(
             `/workflows/${encodeURIComponent(workflow.id)}`,
             body,
           );
           return toWorkflow(raw);
+        } catch (error) {
+          if (existing.scope !== 'system') throw error;
         }
-      } catch {
-        // Fall through to create when the workflow doesn't exist yet.
       }
 
-      const raw = await client.post<RawWorkflow>('/workflows', body);
+      const createBody = existing?.scope === 'system' ? { ...body, scope: 'user' } : body;
+      const raw = await client.post<RawWorkflow>('/workflows', createBody);
       return toWorkflow(raw);
     },
 

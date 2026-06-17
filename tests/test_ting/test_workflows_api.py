@@ -349,6 +349,26 @@ class TestWorkflowCatalogAPI:
         assert body["scope"] == "system"
         assert body["owner_id"] is None
 
+    def test_resource_admin_can_create_system_workflow(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(roles="admin"),
+            json={
+                "name": "Shared Flow",
+                "scope": "system",
+                "nodes": [],
+                "edges": [],
+            },
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["scope"] == "system"
+        assert body["owner_id"] is None
+
     def test_non_owner_cannot_get_private_workflow(self) -> None:
         workflow = _make_workflow(owner_id="user-1")
         repo = InMemoryWorkflowRepository([workflow])
@@ -491,6 +511,34 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 403
+
+    def test_resource_admin_can_update_system_workflow(self) -> None:
+        workflow = _make_workflow(
+            scope=WorkflowScope.SYSTEM,
+            owner_id=None,
+            name="Shared",
+        )
+        repo = InMemoryWorkflowRepository([workflow])
+        client = _make_client(repo)
+
+        response = client.put(
+            f"/api/v1/ting/workflows/{workflow.id}",
+            headers=_headers(roles="admin"),
+            json={
+                "name": "Shared Updated",
+                "description": "Updated",
+                "version": "2.0.0",
+                "scope": "system",
+                "nodes": [],
+                "edges": [],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == "Shared Updated"
+        assert body["scope"] == "system"
+        assert body["owner_id"] is None
 
     def test_launch_workflow_spawns_direct_flock_session(self) -> None:
         workflow = _make_research_workflow()
