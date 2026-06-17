@@ -1545,6 +1545,7 @@ class Broker:
             "mcp_servers": self._settings.mcp_servers,
             "resume_session_id": self._settings.session.resume_session_id,
             "ask_user_question_enabled": self._settings.ask_user_question_enabled,
+            "acp_prompt_timeout_s": self._settings.acp_prompt_timeout_s,
         }
 
     def _create_transport(self) -> CLITransport:

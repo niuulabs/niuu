@@ -274,7 +274,7 @@ class SkuldSettings(BaseSettings):
     )
 
     session: SkuldSessionConfig = Field(default_factory=SkuldSessionConfig)
-    cli_type: str = Field(default="claude")  # "claude" | "codex"
+    cli_type: str = Field(default="claude")  # "claude" | "codex" | "grok"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
     skip_permissions: bool = Field(default=False)
@@ -315,6 +315,7 @@ class SkuldSettings(BaseSettings):
     event_log_flush_interval_ms: int = Field(default=500)
     event_log_max_buffer: int = Field(default=50_000)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -344,6 +345,10 @@ class SkuldSettings(BaseSettings):
 
         if self.cli_type == "opencode":
             self.transport_adapter = "skuld.transports.opencode.OpenCodeHttpTransport"
+            return self
+
+        if self.cli_type == "grok":
+            self.transport_adapter = "skuld.transports.grok.GrokACPTransport"
             return self
 
         if self.transport == "subprocess":

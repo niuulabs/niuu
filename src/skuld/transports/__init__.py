@@ -18,6 +18,11 @@ from skuld.transports.codex import (  # noqa: E402
     _map_codex_tool,
 )
 from skuld.transports.codex_ws import CodexWebSocketTransport  # noqa: E402
+from skuld.transports.grok import (  # noqa: E402
+    _GROK_TOOL_MAP,
+    GrokACPTransport,
+    _map_grok_tool,
+)
 from skuld.transports.opencode import OpenCodeHttpTransport  # noqa: E402
 from skuld.transports.persistent_subprocess import (  # noqa: E402
     PersistentSubprocessTransport,
@@ -32,6 +37,7 @@ __all__ = [
     "CodexSubprocessTransport",
     "CodexWebSocketTransport",
     "EventCallback",
+    "GrokACPTransport",
     "OpenCodeHttpTransport",
     "PersistentSubprocessTransport",
     "SDKTransport",
@@ -40,8 +46,10 @@ __all__ = [
     "TmuxInteractiveTransport",
     "TransportCapabilities",
     "_CODEX_TOOL_MAP",
+    "_GROK_TOOL_MAP",
     "_drain_stream",
     "_filter_event",
     "_map_codex_tool",
+    "_map_grok_tool",
     "_stop_process",
 ]

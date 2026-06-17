@@ -695,6 +695,11 @@ class SessionService:
         if not session.can_start():
             raise SessionStateError(session_id, "start", session.status)
 
+        # Restart parity: persist the definition the first time it is supplied and
+        # reuse the stored one on later restarts, so a session keeps its transport
+        # (e.g. Grok ACP) instead of falling back to the platform default.
+        definition = definition or session.session_definition
+
         # Set chat_endpoint eagerly — URL is deterministic from session ID
         host = _public_loopback_host()
         port = os.environ.get("NIUU_SERVER_PORT", "8080")
@@ -703,6 +708,7 @@ class SessionService:
         starting = session.model_copy(
             update={
                 "status": SessionStatus.STARTING,
+                "session_definition": definition,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
                 # A restart is an explicit "bring it back": stale failure

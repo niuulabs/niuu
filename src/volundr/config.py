@@ -385,6 +385,21 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldGrok": SessionDefinitionConfig(
+            enabled=True,
+            display_name="xAI Grok Build",
+            description="xAI Grok Build — Agent Client Protocol (ACP) over stdio (Scaldy pipeline)",
+            labels=["session", "grok"],
+            default_model="grok-build",
+            compatible_providers=["xai"],
+            defaults={
+                "broker": {
+                    "cliType": "grok",
+                    "transportAdapter": "skuld.transports.grok.GrokACPTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
         "skuldOpenCode": SessionDefinitionConfig(
             enabled=True,
             display_name="OpenCode",

@@ -435,6 +435,15 @@ class Session(BaseModel):
             "session is restarted."
         ),
     )
+    session_definition: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Session definition (runtime type, e.g. skuldClaude / skuldGrok) the "
+            "session was launched with, persisted so restarts re-apply the same "
+            "transport instead of falling back to the platform default."
+        ),
+    )
 
     model_config = {"frozen": False}
 

@@ -1259,4 +1259,11 @@ data:
     DROP INDEX IF EXISTS idx_odin_review_items_environment;
     DROP INDEX IF EXISTS idx_odin_review_items_status;
     DROP TABLE IF EXISTS odin_review_items;
+  000049_session_definition.up.sql: |
+    -- Persist the session definition (runtime type, e.g. skuldClaude / skuldGrok)
+    -- a session was launched with, so restarts re-apply the same transport
+    -- instead of falling back to the platform default.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
+  000049_session_definition.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS session_definition;
 {{- end }}

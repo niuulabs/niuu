@@ -26,10 +26,10 @@ class PostgresSessionRepository(SessionRepository):
                  created_at, updated_at, last_active, message_count, tokens_used,
                  pod_name, error, tracker_issue_id, issue_tracker_url,
                  launch_spec_id, archived_at, owner_id, tenant_id, workload_type,
-                 origin, external_session_id, cli_session_id)
+                 origin, external_session_id, cli_session_id, session_definition)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                    $22, $23, $24)
+                    $22, $23, $24, $25)
             """,
             session.id,
             session.name,
@@ -55,6 +55,7 @@ class PostgresSessionRepository(SessionRepository):
             session.origin,
             session.external_session_id,
             session.cli_session_id,
+            session.session_definition,
         )
         return session
 
@@ -124,7 +125,8 @@ class PostgresSessionRepository(SessionRepository):
                 pod_name = $12, error = $13, tracker_issue_id = $14,
                 issue_tracker_url = $15, launch_spec_id = $16, archived_at = $17,
                 owner_id = $18, tenant_id = $19, workload_type = $20,
-                origin = $21, external_session_id = $22, cli_session_id = $23
+                origin = $21, external_session_id = $22, cli_session_id = $23,
+                session_definition = $24
             WHERE id = $1
             """,
             session.id,
@@ -150,6 +152,7 @@ class PostgresSessionRepository(SessionRepository):
             session.origin,
             session.external_session_id,
             session.cli_session_id,
+            session.session_definition,
         )
         return session
 
@@ -216,6 +219,7 @@ class PostgresSessionRepository(SessionRepository):
             origin=row.get("origin") or "volundr",
             external_session_id=row.get("external_session_id"),
             cli_session_id=row.get("cli_session_id"),
+            session_definition=row.get("session_definition"),
         )
 
     @staticmethod
