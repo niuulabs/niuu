@@ -610,7 +610,10 @@ export function useSkuldChat(
     () => initialPersistedState.agentEvents,
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
-  const [availableCommands, setAvailableCommands] = useState<SlashCommand[]>([]);
+  const [availableCommandsState, setAvailableCommandsState] = useState<{
+    url: string | null;
+    commands: SlashCommand[];
+  }>({ url, commands: [] });
   const [capabilities, setCapabilities] = useState<SessionCapabilities>({});
   const [connected, setConnected] = useState(false);
   const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
@@ -634,13 +637,18 @@ export function useSkuldChat(
   const streamingOutputTokensRef = useRef<number | undefined>(undefined);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const availableCommands =
+    availableCommandsState.url === url ? availableCommandsState.commands : [];
+  const storeAvailableCommands = useCallback(
+    (commands: SlashCommand[]) => {
+      setAvailableCommandsState({ url, commands });
+    },
+    [url],
+  );
+
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
-
-  useEffect(() => {
-    setAvailableCommands([]);
-  }, [url]);
 
   useEffect(() => {
     agentEventsRef.current = agentEvents;
@@ -1113,13 +1121,13 @@ export function useSkuldChat(
             break;
           }
           case 'available_commands': {
-            setAvailableCommands(
+            storeAvailableCommands(
               normalizeAvailableCommands(event.slash_commands ?? [], event.skills ?? []),
             );
             break;
           }
           case 'slash_commands': {
-            setAvailableCommands(normalizeAvailableCommands(event.commands ?? [], []));
+            storeAvailableCommands(normalizeAvailableCommands(event.commands ?? [], []));
             break;
           }
           case 'conversation_history': {
@@ -1519,7 +1527,13 @@ export function useSkuldChat(
         }
       }
     },
-    [ensureSingleParticipant, finalizeStreaming, getDefaultAssistantParticipant, url],
+    [
+      ensureSingleParticipant,
+      finalizeStreaming,
+      getDefaultAssistantParticipant,
+      storeAvailableCommands,
+      url,
+    ],
   );
 
   const { sendJson } = useWebSocket(url, {
@@ -1557,7 +1571,7 @@ export function useSkuldChat(
             payload.commands ?? payload.slash_commands ?? [],
             payload.skills ?? [],
           );
-          if (commands.length > 0) setAvailableCommands(commands);
+          if (commands.length > 0) storeAvailableCommands(commands);
         })
         .catch(() => {
           // Slash command discovery is a progressive enhancement; keep chat usable if it fails.
@@ -1565,7 +1579,14 @@ export function useSkuldChat(
     }, 1500);
 
     return () => clearTimeout(timer);
-  }, [availableCommands.length, capabilities.slash_commands, connected, sendJson, url]);
+  }, [
+    availableCommands.length,
+    capabilities.slash_commands,
+    connected,
+    sendJson,
+    storeAvailableCommands,
+    url,
+  ]);
 
   const sendMessage = useCallback(
     (text: string, attachments: FileAttachment[]) => {
