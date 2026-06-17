@@ -230,6 +230,26 @@ function normalizeAvailableCommands(
   return Array.from(deduped.values());
 }
 
+function parseAdvertisedSlashCommand(
+  input: string,
+  availableCommands: readonly SlashCommand[],
+): { command: string; arguments: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith('/')) return null;
+
+  const [rawCommand = '', ...argumentParts] = trimmed.split(/\s+/);
+  const command = commandName(rawCommand);
+  if (!command) return null;
+
+  const isAdvertised = availableCommands.some((item) => commandName(item.name) === command);
+  if (!isAdvertised) return null;
+
+  return {
+    command: `/${command}`,
+    arguments: argumentParts.join(' '),
+  };
+}
+
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -637,8 +657,10 @@ export function useSkuldChat(
   const streamingOutputTokensRef = useRef<number | undefined>(undefined);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const availableCommands =
-    availableCommandsState.url === url ? availableCommandsState.commands : [];
+  const availableCommands = useMemo(
+    () => (availableCommandsState.url === url ? availableCommandsState.commands : []),
+    [availableCommandsState.commands, availableCommandsState.url, url],
+  );
   const storeAvailableCommands = useCallback(
     (commands: SlashCommand[]) => {
       setAvailableCommandsState({ url, commands });
@@ -1593,6 +1615,30 @@ export function useSkuldChat(
       const trimmed = text.trim();
       if (!trimmed && attachments.length === 0) return;
 
+      const slashCommand =
+        attachments.length === 0 ? parseAdvertisedSlashCommand(trimmed, availableCommands) : null;
+      if (slashCommand) {
+        const requestId = generateId();
+        optimisticUserMessagesRef.current.set(requestId, requestId);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: requestId,
+            role: 'user',
+            content: trimmed,
+            createdAt: new Date(),
+            status: 'done',
+          },
+        ]);
+        sendJson({
+          type: 'slash_command',
+          command: slashCommand.command,
+          arguments: slashCommand.arguments,
+          request_id: requestId,
+        });
+        return;
+      }
+
       Promise.all(attachments.map(attachmentToWireContent)).then((converted) => {
         const requestId = generateId();
         const valid = converted.filter(
@@ -1622,7 +1668,7 @@ export function useSkuldChat(
         sendJson({ type: 'user', content: trimmed, request_id: requestId });
       });
     },
-    [sendJson],
+    [availableCommands, sendJson],
   );
 
   const sendDirectedMessages = useCallback(

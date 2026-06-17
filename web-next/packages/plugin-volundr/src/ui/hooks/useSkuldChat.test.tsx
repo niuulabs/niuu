@@ -1290,6 +1290,47 @@ page_path: council/demo/opinion-b.md
     );
   });
 
+  it('dispatches advertised slash commands through the control channel', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'available_commands',
+          slash_commands: [{ name: '/compact', description: 'Compact the thread' }],
+        }),
+      );
+    });
+    expect(result.current.availableCommands).toEqual([
+      { name: 'compact', type: 'command', description: 'Compact the thread' },
+    ]);
+
+    sendJson.mockClear();
+    await act(async () => {
+      result.current.sendMessage('/compact', []);
+    });
+
+    await waitFor(() => {
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'slash_command',
+          command: '/compact',
+          arguments: '',
+          request_id: expect.any(String),
+        }),
+      );
+    });
+    expect(sendJson).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'user', content: '/compact' }),
+    );
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: '/compact',
+    });
+  });
+
   it('emits the remaining control websocket commands', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
