@@ -1123,13 +1123,12 @@ class TestControl:
 
         t._thread_id = "thread-1"
 
-        assert await t.discover_slash_commands(refresh=True) == [
-            {
-                "name": "/compact",
-                "description": "Compact the Codex thread context.",
-                "source": "codex-app-server",
-            }
-        ]
+        commands = await t.discover_slash_commands(refresh=True)
+        command_names = [command["name"] for command in commands]
+        assert command_names == ["/compact", "/review", "/goal", "/title", "/fork"]
+        compact = commands[0]
+        assert compact["method"] == "thread/compact/start"
+        assert compact["capability"] == "thread.compact"
 
     @pytest.mark.asyncio
     async def test_slash_compact_uses_native_compact_rpc(self, tmp_path):
@@ -1143,6 +1142,133 @@ class TestControl:
             "thread/compact/start",
             {"threadId": "thread-1"},
         )
+
+    @pytest.mark.asyncio
+    async def test_slash_review_uses_review_rpc(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={})
+
+        await t.send_control("slash_command", command="/review")
+
+        t._send_rpc.assert_awaited_once_with(
+            "review/start",
+            {
+                "threadId": "thread-1",
+                "target": {"type": "uncommittedChanges"},
+                "delivery": "inline",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_slash_review_accepts_custom_instructions(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={})
+
+        await t.send_control(
+            "slash_command",
+            command="/review",
+            arguments="focus on auth edge cases",
+        )
+
+        t._send_rpc.assert_awaited_once_with(
+            "review/start",
+            {
+                "threadId": "thread-1",
+                "target": {
+                    "type": "custom",
+                    "instructions": "focus on auth edge cases",
+                },
+                "delivery": "inline",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_slash_goal_sets_thread_goal(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={})
+        emit = _collect_emits(t)
+
+        await t.send_control("slash_command", command="/goal", arguments="stabilize sessions")
+
+        t._send_rpc.assert_awaited_once_with(
+            "thread/goal/set",
+            {
+                "threadId": "thread-1",
+                "objective": "stabilize sessions",
+                "status": "active",
+            },
+        )
+        assert emit.await_args.args[0]["content"] == "Goal set: stabilize sessions"
+
+    @pytest.mark.asyncio
+    async def test_slash_goal_reads_thread_goal_without_arguments(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(
+            return_value={"goal": {"objective": "stabilize sessions", "status": "active"}}
+        )
+        emit = _collect_emits(t)
+
+        await t.send_control("slash_command", command="/goal")
+
+        t._send_rpc.assert_awaited_once_with("thread/goal/get", {"threadId": "thread-1"})
+        assert emit.await_args.args[0]["content"] == "Current goal: stabilize sessions (active)"
+
+    @pytest.mark.asyncio
+    async def test_slash_title_renames_thread(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={})
+        emit = _collect_emits(t)
+
+        await t.send_control("slash_command", command="/title", arguments="Session cleanup")
+
+        t._send_rpc.assert_awaited_once_with(
+            "thread/name/set",
+            {"threadId": "thread-1", "name": "Session cleanup"},
+        )
+        assert emit.await_args.args[0]["content"] == "Thread renamed: Session cleanup"
+
+    @pytest.mark.asyncio
+    async def test_slash_fork_uses_thread_fork_rpc(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={"thread": {"id": "thread-2"}})
+        emit = _collect_emits(t)
+
+        await t.send_control("slash_command", command="/fork")
+
+        t._send_rpc.assert_awaited_once_with("thread/fork", {"threadId": "thread-1"})
+        assert emit.await_args.args[0]["content"] == "Forked Codex thread: thread-2"
+
+    @pytest.mark.asyncio
+    async def test_unknown_slash_command_does_not_call_rpc(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={})
+
+        await t.send_control("slash_command", command="/not-real")
+
+        t._send_rpc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_slash_command_rpc_failure_emits_notice(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(side_effect=RuntimeError("method not found"))
+        emit = _collect_emits(t)
+
+        await t.send_control("slash_command", command="/review")
+
+        t._send_rpc.assert_awaited_once()
+        assert emit.await_args.args[0] == {
+            "type": "system",
+            "subtype": "notice",
+            "content": "/review failed: method not found",
+        }
 
     @pytest.mark.asyncio
     async def test_steer_sends_turn_steer(self, tmp_path):
