@@ -121,6 +121,12 @@ type SlashCommandWireItem =
       source?: string;
     };
 
+type SlashCommandsPayload = {
+  commands?: SlashCommandWireItem[];
+  slash_commands?: SlashCommandWireItem[];
+  skills?: SlashCommandWireItem[];
+};
+
 export interface ConversationTurn {
   id: string;
   role: string;
@@ -1528,8 +1534,38 @@ export function useSkuldChat(
 
   useEffect(() => {
     if (!connected || !capabilities.slash_commands) return;
+    if (availableCommands.length > 0) return;
     sendJson({ type: 'discover_slash_commands', refresh: true });
-  }, [capabilities.slash_commands, connected, sendJson]);
+
+    const timer = setTimeout(() => {
+      const httpBase = url ? wsUrlToHttpBase(url) : null;
+      if (!httpBase) return;
+      const requestUrl = new URL(
+        'api/slash-commands',
+        httpBase.endsWith('/') ? httpBase : `${httpBase}/`,
+      );
+      requestUrl.searchParams.set('refresh', 'false');
+
+      void fetch(requestUrl.toString(), { headers: getAuthHeaders() })
+        .then(async (response) => {
+          if (!response.ok) return null;
+          return (await response.json()) as SlashCommandsPayload;
+        })
+        .then((payload) => {
+          if (!payload) return;
+          const commands = normalizeAvailableCommands(
+            payload.commands ?? payload.slash_commands ?? [],
+            payload.skills ?? [],
+          );
+          if (commands.length > 0) setAvailableCommands(commands);
+        })
+        .catch(() => {
+          // Slash command discovery is a progressive enhancement; keep chat usable if it fails.
+        });
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [availableCommands.length, capabilities.slash_commands, connected, sendJson, url]);
 
   const sendMessage = useCallback(
     (text: string, attachments: FileAttachment[]) => {

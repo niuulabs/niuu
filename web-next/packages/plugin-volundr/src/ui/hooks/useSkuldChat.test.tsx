@@ -168,6 +168,60 @@ describe('useSkuldChat', () => {
     ]);
   });
 
+  it('falls back to the live session slash-command API when websocket discovery stalls', async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () =>
+        url.includes('/api/slash-commands')
+          ? {
+              commands: [
+                { name: '/agents', description: 'Manage agent teams and subagents' },
+                { name: '/compact', description: 'Compact the current conversation' },
+              ],
+            }
+          : { turns: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() =>
+      useSkuldChat('wss://sessions.example.test/s/session-1/session'),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    sendJson.mockClear();
+
+    act(() => {
+      wsHandlers.onOpen?.();
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'capabilities',
+          slash_commands: true,
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: true }),
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+    });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://sessions.example.test/s/session-1/api/slash-commands?refresh=false',
+        expect.any(Object),
+      ),
+    );
+    await waitFor(() =>
+      expect(result.current.availableCommands).toEqual([
+        { name: 'agents', type: 'command', description: 'Manage agent teams and subagents' },
+        { name: 'compact', type: 'command', description: 'Compact the current conversation' },
+      ]),
+    );
+  });
+
   it('serializes and revives persisted message and event state', () => {
     const createdAt = new Date('2026-05-11T10:00:00Z');
     const timestamp = new Date('2026-05-11T10:05:00Z');
