@@ -436,7 +436,7 @@ describe('SessionsPage', () => {
     expect(screen.getByText('Import CLI Sessions')).toBeInTheDocument();
   });
 
-  it('hides the import affordance when discovery is unavailable (503)', async () => {
+  it('defers external session discovery until the import dialog opens', async () => {
     const volundr = createMockVolundrService();
     volundr.listExternalSessions = vi
       .fn()
@@ -444,17 +444,23 @@ describe('SessionsPage', () => {
 
     wrap(createMockSessionStore(), volundr);
 
-    await waitFor(() => expect(screen.getByTestId('pod-launch-button')).toBeInTheDocument());
-    await waitFor(() => expect(screen.queryByTestId('pod-import-button')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('pod-import-button')).toBeInTheDocument());
+    expect(volundr.listExternalSessions).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('pod-import-button'));
+
+    await waitFor(() => expect(volundr.listExternalSessions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText('Discovery unavailable')).toBeInTheDocument());
   });
 
-  it('keeps the import affordance for non-503 discovery errors', async () => {
+  it('does not probe external session discovery before import is requested', async () => {
     const volundr = createMockVolundrService();
     volundr.listExternalSessions = vi.fn().mockRejectedValue(new Error('boom'));
 
     wrap(createMockSessionStore(), volundr);
 
     await waitFor(() => expect(screen.getByTestId('pod-import-button')).toBeInTheDocument());
+    expect(volundr.listExternalSessions).not.toHaveBeenCalled();
   });
 
   it('imports an external session and refreshes the sessions list', async () => {

@@ -14,12 +14,17 @@ export function isExternalSessionsUnavailableError(error: unknown): boolean {
   return (error as { status?: number }).status === 503;
 }
 
+interface UseExternalSessionsOptions {
+  enabled?: boolean;
+}
+
 /** Queries discoverable external CLI sessions (Claude Code / Codex) on the host. */
-export function useExternalSessions() {
+export function useExternalSessions(options: UseExternalSessionsOptions = {}) {
   const volundr = useService<IVolundrService>('volundr');
   return useQuery({
     queryKey: EXTERNAL_SESSIONS_QUERY_KEY,
     queryFn: () => volundr.listExternalSessions(),
+    enabled: options.enabled ?? true,
     retry: false,
     refetchOnWindowFocus: false,
   });
