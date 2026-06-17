@@ -50,7 +50,7 @@ class TestTransportCapabilities:
         assert caps.terminal_panes is False
 
     def test_subprocess_transport_capabilities(self, tmp_path):
-        """SubprocessTransport has session_resume=True, rest False."""
+        """SubprocessTransport has session_resume + slash command discovery."""
         transport = SubprocessTransport(str(tmp_path))
         caps = transport.capabilities
         assert caps.session_resume is True
@@ -64,8 +64,8 @@ class TestTransportCapabilities:
         assert caps.rewind_files is False
         assert caps.mcp_set_servers is False
         assert caps.permission_requests is False
-        assert caps.slash_commands is False
-        assert caps.skills is False
+        assert caps.slash_commands is True
+        assert caps.skills is True
         assert caps.terminal_output is False
         assert caps.terminal_input is False
         assert caps.terminal_keys is False

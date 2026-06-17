@@ -2962,16 +2962,27 @@ class Broker:
                         )
                     )
 
-        # When CLI sends system/init, broadcast available commands to browsers
+        # When CLI sends system/init, broadcast available commands to browsers.
+        # Alongside the bare name lists, include the rich catalog (names +
+        # descriptions + argument hints + source) so clients can render a
+        # proper `/` autocomplete menu without a follow-up fetch.
         if event_type == "system" and data.get("subtype") == "init":
             slash_commands = data.get("slash_commands", [])
             skills = data.get("skills", [])
-            if slash_commands or skills:
+            commands: list[dict] = []
+            transport = self._transport
+            if transport is not None and transport.capabilities.slash_commands:
+                try:
+                    commands = await transport.discover_slash_commands(refresh=True)
+                except Exception:
+                    logger.debug("slash-command discovery failed at init", exc_info=True)
+            if slash_commands or skills or commands:
                 await self._channels.broadcast(
                     {
                         "type": "available_commands",
                         "slash_commands": slash_commands,
                         "skills": skills,
+                        "commands": commands,
                     }
                 )
 

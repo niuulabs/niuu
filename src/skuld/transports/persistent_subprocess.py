@@ -41,6 +41,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -117,6 +118,12 @@ class PersistentSubprocessTransport(CLITransport):
         # which reattaches to an imported/external Claude session.
         self._session_id: str | None = resume_session_id or None
         self._last_result: dict | None = None
+        # Slash commands + skills the CLI advertises in its system/init event
+        # (bare names). Captured at startup; the discovered catalog (rich dicts
+        # with descriptions) is built lazily and cached.
+        self._slash_commands: list[str] = []
+        self._skills: list[str] = []
+        self._slash_command_catalog: list[dict] | None = None
         # Permission control protocol (stream-json) — lets us answer the CLI's
         # can_use_tool requests. We allow every tool EXCEPT AskUserQuestion,
         # which we route to a human and answer with their choice. Replaces the
@@ -134,7 +141,11 @@ class PersistentSubprocessTransport(CLITransport):
 
     @property
     def capabilities(self) -> TransportCapabilities:
-        return TransportCapabilities(session_resume=True)
+        return TransportCapabilities(
+            session_resume=True,
+            slash_commands=True,
+            skills=True,
+        )
 
     @property
     def session_id(self) -> str | None:
@@ -222,9 +233,46 @@ class PersistentSubprocessTransport(CLITransport):
             finally:
                 self._turn_done = None
 
+    async def _safe_send_message(self, content: str) -> None:
+        try:
+            await self.send_message(content)
+        except Exception:
+            logger.warning("Background slash-command send failed", exc_info=True)
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Return the rich slash-command catalog for this session.
+
+        Combines the CLI-reported names (captured from system/init) with a
+        filesystem scan for descriptions. Cached until the next init resets it
+        or ``refresh`` is requested.
+        """
+        if refresh or self._slash_command_catalog is None:
+            self._slash_command_catalog = build_slash_command_catalog(
+                self._slash_commands,
+                self._skills,
+                self.workspace_dir,
+            )
+        return list(self._slash_command_catalog)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _capture_init_commands(self, data: dict) -> None:
+        """Record the slash_commands + skills the CLI advertised at startup."""
+        slash = data.get("slash_commands")
+        skills = data.get("skills")
+        if isinstance(slash, list):
+            self._slash_commands = [c for c in slash if isinstance(c, str)]
+        if isinstance(skills, list):
+            self._skills = [s for s in skills if isinstance(s, str)]
+        # Invalidate the cached catalog so the next discover rebuilds it.
+        self._slash_command_catalog = None
+        logger.info(
+            "PersistentSubprocessTransport: captured %d slash commands, %d skills",
+            len(self._slash_commands),
+            len(self._skills),
+        )
 
     def _build_command(self) -> list[str]:
         cmd = [
@@ -437,15 +485,33 @@ class PersistentSubprocessTransport(CLITransport):
         return {"behavior": "deny", "message": _format_answer_message(questions, answers)}
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
-        """Only ask_user_answer is handled here (resolves a pending question).
-        Other control types are not supported by this transport (see
-        capabilities) and are never dispatched."""
+        """Handle server-initiated control messages.
+
+        ``ask_user_answer`` resolves a pending AskUserQuestion. ``slash_command``
+        composes ``/cmd args`` and feeds it as an ordinary user message — a
+        stream-json transport has no separate command channel, and the CLI
+        interprets the leading slash. The send runs detached so the WS dispatch
+        loop is never blocked on the command's turn.
+        """
         if subtype == "ask_user_answer":
             request_id = str(kwargs.get("request_id") or "")
             answers = kwargs.get("answers")
             fut = self._pending_questions.get(request_id)
             if fut is not None and not fut.done():
                 fut.set_result(answers if answers is not None else [])
+            return
+
+        if subtype == "slash_command":
+            command = str(kwargs.get("command") or "")
+            arguments = str(kwargs.get("arguments") or kwargs.get("args") or "")
+            text = compose_slash_command_text(command, arguments)
+            if not text:
+                return
+            logger.info("PersistentSubprocessTransport: sending slash command %s", text)
+            asyncio.create_task(  # noqa: RUF006 — fire-and-forget; turn streams back
+                self._safe_send_message(text),
+                name="claude-slash-command",
+            )
 
     async def _read_stdout_loop(self) -> None:
         """Demultiplex Claude's stdout JSON stream.
@@ -493,6 +559,8 @@ class PersistentSubprocessTransport(CLITransport):
                     sid = data.get("session_id")
                     if isinstance(sid, str) and sid:
                         self._session_id = sid
+                    if data.get("subtype") == "init":
+                        self._capture_init_commands(data)
                 event = _filter_event(data)
                 if event is not None:
                     try:

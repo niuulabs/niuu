@@ -17,6 +17,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -73,6 +74,10 @@ class SubprocessTransport(CLITransport):
         self._lock = asyncio.Lock()
         self._session_id: str | None = None
         self._last_result: dict | None = None
+        # Slash commands + skills advertised in the CLI's system/init event.
+        self._slash_commands: list[str] = []
+        self._skills: list[str] = []
+        self._slash_command_catalog: list[dict] | None = None
 
     async def start(self) -> None:
         logger.info(
@@ -209,6 +214,9 @@ class SubprocessTransport(CLITransport):
                 if isinstance(session_id, str) and session_id:
                     self._session_id = session_id
 
+                if data.get("type") == "system" and data.get("subtype") == "init":
+                    self._capture_init_commands(data)
+
                 event_type = data.get("type", "unknown")
                 if event_type == "result":
                     self._last_result = data
@@ -267,7 +275,11 @@ class SubprocessTransport(CLITransport):
 
     @property
     def capabilities(self) -> TransportCapabilities:
-        return TransportCapabilities(session_resume=True)
+        return TransportCapabilities(
+            session_resume=True,
+            slash_commands=True,
+            skills=True,
+        )
 
     @property
     def session_id(self) -> str | None:
@@ -280,6 +292,50 @@ class SubprocessTransport(CLITransport):
     @property
     def is_alive(self) -> bool:
         return self._process is not None
+
+    def _capture_init_commands(self, data: dict) -> None:
+        """Record the slash_commands + skills the CLI advertised at startup."""
+        slash = data.get("slash_commands")
+        skills = data.get("skills")
+        if isinstance(slash, list):
+            self._slash_commands = [c for c in slash if isinstance(c, str)]
+        if isinstance(skills, list):
+            self._skills = [s for s in skills if isinstance(s, str)]
+        self._slash_command_catalog = None
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Return the rich slash-command catalog (CLI-reported names enriched
+        with filesystem descriptions). Cached until init resets it or refresh."""
+        if refresh or self._slash_command_catalog is None:
+            self._slash_command_catalog = build_slash_command_catalog(
+                self._slash_commands,
+                self._skills,
+                self.workspace_dir,
+            )
+        return list(self._slash_command_catalog)
+
+    async def send_control(self, subtype: str, **kwargs: object) -> None:
+        """Send a slash command by composing ``/cmd args`` and running it as a
+        user turn (a fresh per-turn spawn picks up the prior session via
+        ``--resume``)."""
+        if subtype != "slash_command":
+            return
+        command = str(kwargs.get("command") or "")
+        arguments = str(kwargs.get("arguments") or kwargs.get("args") or "")
+        text = compose_slash_command_text(command, arguments)
+        if not text:
+            return
+        logger.info("SubprocessTransport: sending slash command %s", text)
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget; turn streams back
+            self._safe_send_message(text),
+            name="claude-slash-command",
+        )
+
+    async def _safe_send_message(self, content: str) -> None:
+        try:
+            await self.send_message(content)
+        except Exception:
+            logger.warning("Background slash-command send failed", exc_info=True)
 
 
 def _extract_error_message(data: dict) -> str:
