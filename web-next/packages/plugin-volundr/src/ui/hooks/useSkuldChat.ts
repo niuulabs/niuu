@@ -13,6 +13,7 @@ import type {
   PermissionRequest,
   RoomParticipant,
   SessionCapabilities,
+  SlashCommand,
 } from '@niuulabs/ui';
 import type { FileAttachment } from '@niuulabs/ui';
 import { useWebSocket } from './useWebSocket';
@@ -102,9 +103,23 @@ type CliStreamEvent = {
     data?: string | Record<string, unknown>;
     metadata?: Record<string, unknown>;
   };
+  slash_commands?: SlashCommandWireItem[];
+  skills?: SlashCommandWireItem[];
+  commands?: SlashCommandWireItem[];
   turns?: ConversationTurn[];
   fields?: Record<string, unknown>;
 };
+
+type SlashCommandWireItem =
+  | string
+  | {
+      name?: string;
+      command?: string;
+      description?: string;
+      kind?: string;
+      type?: string;
+      source?: string;
+    };
 
 export interface ConversationTurn {
   id: string;
@@ -130,6 +145,7 @@ interface UseSkuldChatResult {
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   pendingPermissions: PermissionRequest[];
+  availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
   sendDirectedMessages: (
@@ -166,6 +182,47 @@ type InternalParticipantStream = {
   parts: ChatMessagePart[];
   currentToolId: string;
 };
+
+function commandName(value: string): string {
+  return value.trim().replace(/^\/+/, '');
+}
+
+function normalizeSlashCommandItem(
+  item: SlashCommandWireItem,
+  fallbackType: SlashCommand['type'],
+): SlashCommand | null {
+  if (typeof item === 'string') {
+    const name = commandName(item);
+    return name ? { name, type: fallbackType } : null;
+  }
+
+  const rawName = item.name ?? item.command ?? '';
+  const name = commandName(rawName);
+  if (!name) return null;
+  const kind = (item.kind ?? item.type ?? item.source ?? '').toLowerCase();
+  const type: SlashCommand['type'] = kind === 'skill' ? 'skill' : fallbackType;
+  return {
+    name,
+    type,
+    description: item.description,
+  };
+}
+
+function normalizeAvailableCommands(
+  slashCommands: SlashCommandWireItem[] = [],
+  skills: SlashCommandWireItem[] = [],
+): SlashCommand[] {
+  const deduped = new Map<string, SlashCommand>();
+  for (const item of slashCommands) {
+    const command = normalizeSlashCommandItem(item, 'command');
+    if (command) deduped.set(`${command.type}:${command.name}`, command);
+  }
+  for (const item of skills) {
+    const command = normalizeSlashCommandItem(item, 'skill');
+    if (command) deduped.set(`${command.type}:${command.name}`, command);
+  }
+  return Array.from(deduped.values());
+}
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -547,6 +604,7 @@ export function useSkuldChat(
     () => initialPersistedState.agentEvents,
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [availableCommands, setAvailableCommands] = useState<SlashCommand[]>([]);
   const [capabilities, setCapabilities] = useState<SessionCapabilities>({});
   const [connected, setConnected] = useState(false);
   const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
@@ -573,6 +631,10 @@ export function useSkuldChat(
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
+
+  useEffect(() => {
+    setAvailableCommands([]);
+  }, [url]);
 
   useEffect(() => {
     agentEventsRef.current = agentEvents;
@@ -1044,6 +1106,16 @@ export function useSkuldChat(
             });
             break;
           }
+          case 'available_commands': {
+            setAvailableCommands(
+              normalizeAvailableCommands(event.slash_commands ?? [], event.skills ?? []),
+            );
+            break;
+          }
+          case 'slash_commands': {
+            setAvailableCommands(normalizeAvailableCommands(event.commands ?? [], []));
+            break;
+          }
           case 'conversation_history': {
             const nextMessages = event.turns?.length ? transformTurns(event.turns) : [];
             const historyParticipants = event.turns?.length
@@ -1454,6 +1526,11 @@ export function useSkuldChat(
     onError: () => setConnected(false),
   });
 
+  useEffect(() => {
+    if (!connected || !capabilities.slash_commands) return;
+    sendJson({ type: 'discover_slash_commands', refresh: true });
+  }, [capabilities.slash_commands, connected, sendJson]);
+
   const sendMessage = useCallback(
     (text: string, attachments: FileAttachment[]) => {
       const trimmed = text.trim();
@@ -1560,6 +1637,7 @@ export function useSkuldChat(
     meshEvents,
     agentEvents: stableAgentEvents,
     pendingPermissions,
+    availableCommands,
     capabilities,
     sendMessage,
     sendDirectedMessages,

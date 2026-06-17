@@ -45,6 +45,13 @@ logger = logging.getLogger("skuld.transport")
 
 _MAX_WS_FRAME_BYTES = 1024 * 1024
 _WS_FRAME_HEADROOM_BYTES = 8 * 1024
+_CODEX_APP_SERVER_SLASH_COMMANDS = [
+    {
+        "name": "/compact",
+        "description": "Compact the Codex thread context.",
+        "source": "codex-app-server",
+    }
+]
 
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
@@ -1532,7 +1539,27 @@ class CodexWebSocketTransport(CLITransport):
                 self._model = model
             return
 
+        if subtype == "slash_command":
+            command = str(kwargs.get("command") or "").strip().split(maxsplit=1)[0]
+            if not command:
+                return
+            if not command.startswith("/"):
+                command = f"/{command}"
+            if command == "/compact":
+                if not self._thread_id:
+                    logger.info("Codex /compact ignored without an active thread")
+                    return
+                await self._send_rpc("thread/compact/start", {"threadId": self._thread_id})
+                return
+
         logger.debug("Codex WS: unhandled control subtype=%s", subtype)
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        if self._fallback_transport is not None:
+            return await self._fallback_transport.discover_slash_commands(refresh=refresh)
+        if not self._thread_id:
+            return []
+        return [dict(command) for command in _CODEX_APP_SERVER_SLASH_COMMANDS]
 
     @property
     def session_id(self) -> str | None:
@@ -1574,6 +1601,7 @@ class CodexWebSocketTransport(CLITransport):
             rewind_files=False,
             mcp_set_servers=False,
             permission_requests=True,
+            slash_commands=True,
         )
 
     def _consume_pending_redirects(self) -> str | None:

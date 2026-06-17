@@ -51,7 +51,10 @@ export function useMentionMenu(
   const buildApiBase = useCallback((): string | null => {
     if (chatEndpoint) {
       const url = new URL(chatEndpoint, 'http://localhost');
-      return url.origin + url.pathname.replace(/\/chat$/, '');
+      const protocol =
+        url.protocol === 'wss:' ? 'https:' : url.protocol === 'ws:' ? 'http:' : url.protocol;
+      const pathname = url.pathname.replace(/\/chat$/, '').replace(/\/(api\/)?session$/, '');
+      return `${protocol}//${url.host}${pathname}`;
     }
     if (sessionHost) return `http://${sessionHost}`;
     return null;
@@ -105,7 +108,7 @@ export function useMentionMenu(
     (item: MentionMenuItem) => {
       if (item.kind !== 'file' || item.entry.type !== 'directory') return;
       const path = item.entry.path;
-      void fetchFiles(path);
+      void fetchFiles(path.endsWith('/') ? path : `${path}/`);
     },
     [fetchFiles],
   );

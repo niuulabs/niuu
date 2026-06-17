@@ -129,7 +129,7 @@ class TestConstruction:
         assert caps.set_thinking_tokens is False
         assert caps.rewind_files is False
         assert caps.mcp_set_servers is False
-        assert caps.slash_commands is False
+        assert caps.slash_commands is True
         assert caps.skills is False
 
     def test_init_with_mcp_servers(self, tmp_path):
@@ -1115,6 +1115,34 @@ class TestControl:
         t = _make_transport(tmp_path, model="o4-mini")
         await t.send_control("set_model", model="o3")
         assert t._model == "o3"
+
+    @pytest.mark.asyncio
+    async def test_discovers_app_server_slash_commands_when_thread_exists(self, tmp_path):
+        t = _make_transport(tmp_path)
+        assert await t.discover_slash_commands(refresh=True) == []
+
+        t._thread_id = "thread-1"
+
+        assert await t.discover_slash_commands(refresh=True) == [
+            {
+                "name": "/compact",
+                "description": "Compact the Codex thread context.",
+                "source": "codex-app-server",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_slash_compact_uses_native_compact_rpc(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(return_value={"turn": {"id": "compact-1"}})
+
+        await t.send_control("slash_command", command="/compact")
+
+        t._send_rpc.assert_awaited_once_with(
+            "thread/compact/start",
+            {"threadId": "thread-1"},
+        )
 
     @pytest.mark.asyncio
     async def test_steer_sends_turn_steer(self, tmp_path):
