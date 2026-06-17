@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-login",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "OIDC login page plugin for the Niuu platform",
   "license": "Apache-2.0",
   "type": "module",

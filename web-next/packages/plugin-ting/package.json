@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-ting",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Ting plugin — sagas, phases, runs, dispatch queue, workflows",
   "license": "Apache-2.0",
   "type": "module",
