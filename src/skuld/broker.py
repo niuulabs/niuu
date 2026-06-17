@@ -3461,11 +3461,39 @@ class Broker:
                 content = data.get("content", "")
                 if not target or not content:
                     return
-                await self._room_bridge.route_directed_message(
-                    target,
-                    content,
-                    metadata=data.get("metadata"),
-                )
+                try:
+                    await self.handle_directed_room_message(
+                        str(target),
+                        str(content),
+                        source="browser",
+                        metadata=(
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None
+                        ),
+                    )
+                except LookupError as exc:
+                    if sender_ws:
+                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+
+            case "resend_initial_prompt":
+                try:
+                    message_id = await self.handle_resend_initial_prompt(
+                        source="browser",
+                        metadata=(
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else None
+                        ),
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    if sender_ws:
+                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+                    return
+                if sender_ws:
+                    await sender_ws.send_json(
+                        {"type": "room_prompt_resent", "message_id": message_id}
+                    )
 
             # Default: treat as user message (backward compat with {"content": "..."})
             case _:
@@ -3812,6 +3840,36 @@ class Broker:
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
+
+    async def handle_resend_initial_prompt(
+        self,
+        *,
+        source: str = "external",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Resend the configured initial prompt into an active room/flock session."""
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        prompt = self._settings.session.initial_prompt.strip()
+        if not prompt:
+            raise ValueError("No initial prompt is configured")
+
+        metadata_payload = {
+            **(metadata or {}),
+            "resend_prompt": True,
+            "initial_prompt": True,
+        }
+        if self._has_workflow_trigger() and self._mesh_adapter is None:
+            raise RuntimeError("Workflow mesh is not available")
+        message_id = await self.handle_human_room_message(
+            prompt,
+            source=source,
+            metadata=metadata_payload,
+            deliver_to_transport=not self._has_workflow_trigger(),
+        )
+        if self._has_workflow_trigger():
+            await self._publish_workflow_trigger()
+        return message_id
 
     async def join_human_environment(
         self,
@@ -5247,6 +5305,7 @@ class Broker:
             # controls to render.
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
+                caps["room_prompt_resend"] = self._room_bridge is not None
                 if not await self._safe_browser_send_json(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
@@ -5642,7 +5701,9 @@ async def get_capabilities() -> dict:
     """Return transport capabilities so the frontend knows which controls to render."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
-    return asdict(broker._transport.capabilities)
+    payload = asdict(broker._transport.capabilities)
+    payload["room_prompt_resend"] = broker._room_bridge is not None
+    return payload
 
 
 @app.get("/api/slash-commands")
@@ -6225,6 +6286,13 @@ class _DirectedRoomMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _ResendPromptRequest(BaseModel):
+    """Request body for resending the configured initial prompt into a room."""
+
+    source: str = "external"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class _RoomJoinRequest(BaseModel):
     """Request body for joining a live Environment room."""
 
@@ -6338,6 +6406,22 @@ async def send_directed_room_message(body: _DirectedRoomMessageRequest) -> dict:
         raise HTTPException(503, str(exc))
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+
+    return {"status": "sent", "message_id": message_id}
+
+
+@app.post("/api/room/resend-prompt")
+async def resend_room_initial_prompt(body: _ResendPromptRequest) -> dict:
+    """Resend the configured initial prompt into the active room/flock session."""
+    try:
+        message_id = await broker.handle_resend_initial_prompt(
+            source=body.source,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
 
     return {"status": "sent", "message_id": message_id}
 

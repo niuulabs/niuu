@@ -27,6 +27,7 @@ import {
   FilePenLine,
   FolderOpen,
   GitCommitHorizontal,
+  MessageCircleReply,
   MessageSquareText,
   Play,
   RotateCcw,
@@ -3736,6 +3737,23 @@ function LiveSessionDetailPageInner({
     }
   }, [chat, isReady, showInternalMessages]);
 
+  const isFlockSession = useMemo(
+    () =>
+      Array.from(chat.participants.values()).some(
+        (participant) => participant.participantType === 'ravn',
+      ),
+    [chat.participants],
+  );
+  const canShowResendPromptToFlock =
+    isFlockSession && chat.capabilities.room_prompt_resend === true;
+
+  const canResendPromptToFlock =
+    isReady &&
+    isSessionConnected &&
+    !readOnly &&
+    liveSession?.status === 'running' &&
+    canShowResendPromptToFlock;
+
   const handleHumanGateReply = useCallback(
     (decision: 'APPROVE' | 'CHANGES_REQUESTED', notes: string) => {
       if (!activeHumanGate) return;
@@ -4012,6 +4030,14 @@ function LiveSessionDetailPageInner({
               active={showInternalMessages}
               onClick={handleToggleInternalMessages}
             />
+            {canShowResendPromptToFlock && (
+              <SessionToolbarButton
+                icon={MessageCircleReply}
+                title="Resend prompt to flock"
+                onClick={chat.sendResendPrompt}
+                disabled={!canResendPromptToFlock}
+              />
+            )}
             {liveSession &&
               !readOnly &&
               (liveSession.status === 'running' ? (

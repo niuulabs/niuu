@@ -159,6 +159,7 @@ interface UseSkuldChatResult {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
@@ -1139,6 +1140,7 @@ export function useSkuldChat(
               terminal_keys: caps.terminal_keys === true,
               terminal_resize: caps.terminal_resize === true,
               terminal_panes: caps.terminal_panes === true,
+              room_prompt_resend: caps.room_prompt_resend === true,
             });
             break;
           }
@@ -1693,6 +1695,10 @@ export function useSkuldChat(
     [sendJson],
   );
 
+  const sendResendPrompt = useCallback(() => {
+    sendJson({ type: 'resend_initial_prompt' });
+  }, [sendJson]);
+
   const respondToPermission = useCallback(
     (requestId: string, behavior: PermissionBehavior) => {
       const normalized =
@@ -1744,6 +1750,7 @@ export function useSkuldChat(
     capabilities,
     sendMessage,
     sendDirectedMessages,
+    sendResendPrompt,
     respondToPermission,
     sendInterrupt: () => sendJson({ type: 'interrupt' }),
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),

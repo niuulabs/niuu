@@ -4350,16 +4350,16 @@ class TestBrokerRoomBridge:
     async def test_dispatch_directed_message_with_room_bridge(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()
-        mock_bridge = AsyncMock()
-        b._room_bridge = mock_bridge
+        b.handle_directed_room_message = AsyncMock()
 
         await b._dispatch_browser_message(
             {"type": "directed_message", "targetPeerId": "agent-1", "content": "Hi!"}
         )
 
-        mock_bridge.route_directed_message.assert_awaited_once_with(
+        b.handle_directed_room_message.assert_awaited_once_with(
             "agent-1",
             "Hi!",
+            source="browser",
             metadata=None,
         )
 
@@ -4447,6 +4447,38 @@ class TestBrokerRoomBridge:
         assert payload["content"] == "Please investigate this"
         transport.start.assert_not_awaited()
         transport.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_resend_initial_prompt_records_and_forwards_to_room_transport(
+        self,
+        tmp_path,
+    ):
+        settings = SkuldSettings(
+            session={
+                "id": "room-session",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Please investigate the cluster state.",
+            },
+            transport="sdk",
+            room={"enabled": True},
+        )
+        b = Broker(settings=settings)
+        transport = AsyncMock()
+        transport.is_alive = False
+        b._transport = transport
+        broadcast = AsyncMock()
+        b._channels = MagicMock()
+        b._channels.broadcast = broadcast
+
+        message_id = await b.handle_resend_initial_prompt(source="browser")
+
+        assert message_id
+        assert b._conversation_turns[-1].content == "Please investigate the cluster state."
+        assert b._conversation_turns[-1].metadata["resend_prompt"] is True
+        broadcast.assert_awaited_once()
+        assert broadcast.await_args.args[0]["content"] == "Please investigate the cluster state."
+        transport.start.assert_awaited_once()
+        transport.send_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_transport_user_echo_does_not_duplicate_explicit_human_room_message(

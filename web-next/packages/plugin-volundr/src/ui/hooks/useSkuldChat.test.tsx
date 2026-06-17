@@ -962,6 +962,14 @@ page_path: council/demo/opinion-b.md
     });
 
     act(() => {
+      result.current.sendResendPrompt();
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'resend_initial_prompt',
+    });
+
+    act(() => {
       wsHandlers.onMessage?.(
         JSON.stringify({
           type: 'control_request',
@@ -2043,6 +2051,7 @@ page_path: council/demo/opinion-b.md
       terminal_output: false,
       terminal_panes: false,
       terminal_resize: false,
+      room_prompt_resend: false,
     });
     expect(result.current.messages.slice(1).map((message) => message.content)).toEqual([
       'Session initialized · claude-sonnet-4-6',
