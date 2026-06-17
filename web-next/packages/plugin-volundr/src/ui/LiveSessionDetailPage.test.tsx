@@ -828,7 +828,9 @@ describe('LiveSessionDetailPage', () => {
     wrap('test-session-id-1234');
 
     await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByRole('button', { name: 'Resend prompt to flock' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resend prompt to flock' }),
+    ).not.toBeInTheDocument();
   });
 
   describe('loading and error states', () => {
