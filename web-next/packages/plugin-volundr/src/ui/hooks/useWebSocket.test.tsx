@@ -8,11 +8,10 @@ const { getAccessTokenMock } = vi.hoisted(() => ({
 
 vi.mock('@niuulabs/query', () => ({
   getAccessToken: getAccessTokenMock,
-  withAuthQuery: (url: string) => {
+  getWebSocketAuth: (url: string) => {
     const token = getAccessTokenMock();
-    if (!token) return url;
-    const separator = url.includes('?') ? '&' : '?';
-    return `${url}${separator}access_token=${encodeURIComponent(token)}`;
+    if (!token) return { url };
+    return { url, protocols: [`volundr.bearer.${encodeURIComponent(token)}`] };
   },
 }));
 
@@ -20,14 +19,16 @@ class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
   readonly url: string;
+  readonly protocols?: string | string[];
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, protocols?: string | string[]) {
     this.url = url;
+    this.protocols = protocols;
     MockWebSocket.instances.push(this);
   }
 
@@ -126,18 +127,17 @@ describe('useWebSocket', () => {
     expect(onMessage).toHaveBeenCalledWith('fresh-output');
   });
 
-  it('appends the current access token to the websocket url when present', () => {
+  it('passes the current access token as a websocket subprotocol when present', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     getAccessTokenMock.mockReturnValue('secret token');
 
     renderHook(() => useWebSocket('ws://localhost:8080/s/one/session', { reconnect: false }));
 
-    expect(MockWebSocket.instances[0]?.url).toBe(
-      'ws://localhost:8080/s/one/session?access_token=secret%20token',
-    );
+    expect(MockWebSocket.instances[0]?.url).toBe('ws://localhost:8080/s/one/session');
+    expect(MockWebSocket.instances[0]?.protocols).toEqual(['volundr.bearer.secret%20token']);
   });
 
-  it('appends the access token with an ampersand when the url already has query params', () => {
+  it('preserves query params while passing the access token as a websocket subprotocol', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     getAccessTokenMock.mockReturnValue('secret token');
 
@@ -145,9 +145,8 @@ describe('useWebSocket', () => {
       useWebSocket('ws://localhost:8080/s/one/session?tail=1', { reconnect: false }),
     );
 
-    expect(MockWebSocket.instances[0]?.url).toBe(
-      'ws://localhost:8080/s/one/session?tail=1&access_token=secret%20token',
-    );
+    expect(MockWebSocket.instances[0]?.url).toBe('ws://localhost:8080/s/one/session?tail=1');
+    expect(MockWebSocket.instances[0]?.protocols).toEqual(['volundr.bearer.secret%20token']);
   });
 
   it('reports invalid websocket protocols through onError without opening a socket', () => {

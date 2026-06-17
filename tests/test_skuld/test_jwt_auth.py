@@ -79,6 +79,13 @@ class TestExtractTokenFromWebSocket:
         ws = self._make_ws(query_params={"access_token": "query-token"})
         assert _extract_token_from_websocket(ws) == "query-token"
 
+    def test_websocket_subprotocol_preferred_over_query_param(self):
+        ws = self._make_ws(
+            headers={"sec-websocket-protocol": "volundr.bearer.protocol-token"},
+            query_params={"access_token": "query-token"},
+        )
+        assert _extract_token_from_websocket(ws) == "protocol-token"
+
     def test_no_token_returns_none(self):
         ws = self._make_ws()
         assert _extract_token_from_websocket(ws) is None
@@ -126,6 +133,18 @@ class TestBrokerJwtIntegration:
 
         assert test_broker._user_jwt == token
         assert test_broker._user_claims["sub"] == "user-99"
+
+    def test_update_jwt_from_websocket_with_subprotocol(self, test_broker):
+        claims = {"sub": "user-protocol"}
+        token = _make_jwt(claims)
+        ws = MagicMock()
+        ws.headers = {"sec-websocket-protocol": f"chat, volundr.bearer.{token}"}
+        ws.query_params = {}
+
+        test_broker._update_jwt_from_websocket(ws)
+
+        assert test_broker._user_jwt == token
+        assert test_broker._user_claims["sub"] == "user-protocol"
 
     def test_update_jwt_refreshes_on_reconnect(self, test_broker):
         old_token = _make_jwt({"sub": "user-1"})

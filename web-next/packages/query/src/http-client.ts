@@ -198,6 +198,20 @@ export function withAuthQuery(url: string): string {
   return resolved.toString();
 }
 
+export function getWebSocketAuth(url: string): { url: string; protocols?: string[] } {
+  const baseOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+  const resolved = new URL(url, baseOrigin);
+  const token = getAccessToken();
+  if (token) {
+    return {
+      url: resolved.toString(),
+      protocols: [`volundr.bearer.${encodeURIComponent(token)}`],
+    };
+  }
+
+  return { url: withAuthQuery(url) };
+}
+
 /**
  * Create an API client for a specific service base path.
  * @param basePath - e.g. '/api/v1/forge'

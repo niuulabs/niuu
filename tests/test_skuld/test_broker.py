@@ -4095,6 +4095,21 @@ class TestTokenRedactFilter:
         f.filter(record)
         assert record.msg == "first access_token=[REDACTED] second access_token=[REDACTED]"
 
+    def test_redacts_tokens_in_args(self):
+        """Token-bearing values in structured log args are redacted too."""
+        f = _TokenRedactFilter()
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="%s %s",
+            args=("WebSocket", "/session?access_token=secret-token"),
+            exc_info=None,
+        )
+        f.filter(record)
+        assert record.args == ("WebSocket", "/session?access_token=[REDACTED]")
+
     @pytest.mark.asyncio
     async def test_filter_attached_during_lifespan(self):
         """Lifespan attaches redact filter to uvicorn loggers."""

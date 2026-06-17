@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
@@ -888,8 +889,9 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
 
     Checks (in order):
     1. Authorization header (Bearer token) — preferred, works with Envoy
-    2. x-auth-* headers injected by Envoy sidecar
-    3. access_token query parameter — browser fallback
+    2. Sec-WebSocket-Protocol auth token — browser-safe, avoids URL logging
+    3. x-auth-* headers injected by Envoy sidecar
+    4. access_token query parameter — legacy browser fallback
     """
     header_items = websocket.headers.items()
     if inspect.iscoroutine(header_items):
@@ -904,10 +906,22 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     if token:
         return token
 
-    # 2. If Envoy x-auth-* headers are present, we don't have the raw JWT
+    # 2. Browser WebSocket cannot set Authorization headers, but it can pass
+    # subprotocol tokens. Keep the raw bearer out of the request URL so access
+    # logs cannot accidentally capture it.
+    protocol_header = headers.get("sec-websocket-protocol", "")
+    for protocol in protocol_header.split(","):
+        protocol = protocol.strip()
+        if protocol.startswith("volundr.bearer."):
+            token = protocol.removeprefix("volundr.bearer.").strip()
+            if token:
+                return urllib.parse.unquote(token)
+
+    # 3. If Envoy x-auth-* headers are present, we don't have the raw JWT
     #    but we have the validated claims — return None (caller uses headers).
 
-    # 3. Query parameter fallback (browser WebSocket can't set headers)
+    # 4. Query parameter fallback for old clients. New UI code uses
+    # Sec-WebSocket-Protocol to avoid logging bearer tokens in URLs.
     query_get = getattr(websocket.query_params, "get", None)
     if not callable(query_get):
         return None
@@ -3097,12 +3111,26 @@ class Broker:
                 if isinstance(data.get("error"), dict)
                 else data.get("content", str(data.get("error", "Unknown error")))
             )
+            visible_error = str(error_msg) or "Unknown error"
+            if self._pending_assistant_content or self._pending_assistant_parts:
+                self._flush_pending_assistant_turn(
+                    metadata={"status": "error", "messageType": "error"}
+                )
+            self._append_turn(
+                ConversationTurn(
+                    id=str(uuid.uuid4()),
+                    role="assistant",
+                    content=visible_error,
+                    parts=[{"type": "text", "text": visible_error}],
+                    metadata={"status": "error", "messageType": "error"},
+                )
+            )
             asyncio.create_task(
                 self._report_timeline_event(
                     {
                         "t": self._artifacts.duration_seconds,
                         "type": "error",
-                        "label": str(error_msg)[:120] or "Unknown error",
+                        "label": visible_error[:120],
                     }
                 )
             )
@@ -6454,9 +6482,18 @@ class _TokenRedactFilter(logging.Filter):
 
     _pattern = re.compile(r"access_token=[^\s\"&]+")
 
+    def _redact(self, value: object) -> object:
+        if isinstance(value, str):
+            return self._pattern.sub("access_token=[REDACTED]", value)
+        return value
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if hasattr(record, "msg") and isinstance(record.msg, str):
-            record.msg = self._pattern.sub("access_token=[REDACTED]", record.msg)
+        if hasattr(record, "msg"):
+            record.msg = self._redact(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._redact(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: self._redact(value) for key, value in record.args.items()}
         return True
 
 

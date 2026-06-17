@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { withAuthQuery } from '@niuulabs/query';
+import { getWebSocketAuth } from '@niuulabs/query';
 
 interface UseWebSocketOptions {
   onOpen?: () => void;
@@ -101,7 +101,7 @@ export function useWebSocket(
     const doConnect = (wsUrl: string) => {
       clearReconnectTimer();
 
-      const finalUrl = withAuthQuery(wsUrl);
+      const { url: finalUrl, protocols } = getWebSocketAuth(wsUrl);
 
       const parsed = new URL(finalUrl);
       if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
@@ -109,7 +109,7 @@ export function useWebSocket(
         return;
       }
 
-      const ws = new WebSocket(finalUrl);
+      const ws = protocols?.length ? new WebSocket(finalUrl, protocols) : new WebSocket(finalUrl);
       wsRef.current = ws;
       const handlers = snapshotHandlersPerConnectionRef.current
         ? {

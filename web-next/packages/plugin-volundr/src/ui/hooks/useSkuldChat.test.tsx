@@ -13,6 +13,7 @@ import {
   serializeMessages,
   serializeMeshEvents,
   stringifyOutcomeValue,
+  transformTurns,
   useSkuldChat,
 } from './useSkuldChat';
 
@@ -78,6 +79,27 @@ describe('useSkuldChat', () => {
     });
 
     expect(parseParticipantMeta({ persona: 'missing-peer-id' })).toBeUndefined();
+  });
+
+  it('hydrates persisted error turns as errored assistant messages', () => {
+    const messages = transformTurns([
+      {
+        id: 'err-1',
+        role: 'assistant',
+        content: 'Codex ran out of room in the model context window.',
+        parts: [{ type: 'text', text: 'Codex ran out of room in the model context window.' }],
+        created_at: '2026-06-17T01:25:35.000Z',
+        metadata: { status: 'error', messageType: 'error' },
+        visibility: 'public',
+      },
+    ]);
+
+    expect(messages[0]).toMatchObject({
+      id: 'err-1',
+      role: 'assistant',
+      status: 'error',
+      content: 'Codex ran out of room in the model context window.',
+    });
   });
 
   it('parses raw websocket events with and without SSE data prefixes', () => {

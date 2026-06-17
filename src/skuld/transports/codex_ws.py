@@ -174,6 +174,12 @@ class CodexWebSocketTransport(CLITransport):
         self._pending_redirects: list[str] = []
         self._redirect_interrupt_requested = False
         self._buffered_item_output: dict[str, list[str]] = {}
+        self._active_user_prompt: str | None = None
+        self._pending_context_retry_prompt: str | None = None
+        self._context_compaction_active = False
+        self._context_compaction_starting = False
+        self._context_compaction_turn_id: str | None = None
+        self._context_retry_attempts: dict[str, int] = {}
 
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
@@ -586,6 +592,12 @@ class CodexWebSocketTransport(CLITransport):
             turn = params.get("turn", {})
             self._current_turn_id = turn.get("id")
             self._block_index = 0
+            if self._is_context_compaction_turn(turn):
+                self._context_compaction_active = True
+                self._context_compaction_starting = False
+                self._context_compaction_turn_id = self._current_turn_id
+                logger.info("Codex context compaction turn started: %s", self._current_turn_id)
+                return
             # Emit an assistant event to signal a new streaming message.
             # The browser uses this to create a new message with status 'running'.
             await self._emit(
@@ -600,7 +612,22 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if method == "turn/completed":
+            turn = params.get("turn", {})
             self._current_turn_id = None
+
+            if self._is_context_compaction_turn(turn):
+                await self._complete_context_compaction()
+                return
+
+            if self._turn_has_context_window_error(turn):
+                message = self._turn_error_message(turn)
+                recovered = await self._recover_from_context_window_exceeded(message)
+                if recovered:
+                    return
+                await self._emit({"type": "error", "error": message})
+                return
+
+            self._active_user_prompt = None
             # Merge saved usage into result event.
             usage = self._last_usage or {}
             self._last_result = {
@@ -678,6 +705,10 @@ class CodexWebSocketTransport(CLITransport):
         if method == "error":
             error = params.get("error", {})
             message = error.get("message", str(params))
+            if self._is_context_window_error(error, message):
+                recovered = await self._recover_from_context_window_exceeded(message)
+                if recovered:
+                    return
             logger.warning("Codex error notification: %s", message)
             await self._emit({"type": "error", "error": message})
             return
@@ -1220,6 +1251,145 @@ class CodexWebSocketTransport(CLITransport):
         if filtered:
             await self._emit(filtered)
 
+    @staticmethod
+    def _is_context_window_error(error: object, message: object = "") -> bool:
+        """Return true for Codex context-window exhaustion in old and new shapes."""
+        if isinstance(error, dict):
+            info = error.get("codexErrorInfo")
+            if info == "contextWindowExceeded":
+                return True
+            if isinstance(info, dict) and "contextWindowExceeded" in info:
+                return True
+            nested = error.get("error")
+            if nested is not error and CodexWebSocketTransport._is_context_window_error(nested):
+                return True
+            message = error.get("message", message)
+
+        text = str(message or "").lower()
+        return (
+            "context window" in text
+            or "ran out of room" in text
+            or "out of context" in text
+        )
+
+    @classmethod
+    def _turn_has_context_window_error(cls, turn: object) -> bool:
+        if not isinstance(turn, dict):
+            return False
+        if turn.get("status") != "failed":
+            return False
+        return cls._is_context_window_error(turn.get("error"))
+
+    @staticmethod
+    def _turn_error_message(turn: object) -> str:
+        if isinstance(turn, dict):
+            error = turn.get("error")
+            if isinstance(error, dict):
+                message = error.get("message")
+                if message:
+                    return str(message)
+        return "Codex ran out of room in the model context window."
+
+    def _is_context_compaction_turn(self, turn: object) -> bool:
+        if not isinstance(turn, dict):
+            return False
+
+        turn_id = turn.get("id")
+        if self._context_compaction_turn_id and turn_id == self._context_compaction_turn_id:
+            return True
+
+        items = turn.get("items")
+        if isinstance(items, list) and any(
+            isinstance(item, dict) and item.get("type") == "contextCompaction"
+            for item in items
+        ):
+            return True
+
+        # Immediately after `thread/compact/start`, older app-server builds may
+        # send turn/started before the compact item is present. A failed turn is
+        # the original overflowed turn, not the compact turn.
+        return self._context_compaction_starting and turn.get("status") != "failed"
+
+    async def _recover_from_context_window_exceeded(self, message: str) -> bool:
+        """Run native Codex compaction and retry the active prompt once."""
+        prompt = self._active_user_prompt
+        if not prompt or not self._thread_id:
+            return False
+
+        if self._pending_context_retry_prompt == prompt and self._context_compaction_active:
+            logger.info("Codex context compaction already in progress; suppressing duplicate error")
+            return True
+
+        attempts = self._context_retry_attempts.get(prompt, 0)
+        if attempts >= 1:
+            logger.warning("Codex context compaction retry already attempted; surfacing error")
+            self._active_user_prompt = None
+            return False
+
+        self._context_retry_attempts[prompt] = attempts + 1
+        self._pending_context_retry_prompt = prompt
+        self._context_compaction_starting = True
+        self._context_compaction_active = True
+        self._context_compaction_turn_id = None
+        self._current_turn_id = None
+
+        logger.info("Codex context window exceeded; starting native compaction: %s", message)
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": "context_compaction",
+                "status": "started",
+                "content": "Codex context window was full; compacting and retrying the turn.",
+            }
+        )
+
+        try:
+            result = await self._send_rpc(
+                "thread/compact/start",
+                {"threadId": self._thread_id},
+            )
+        except Exception as exc:
+            self._context_compaction_starting = False
+            self._context_compaction_active = False
+            self._pending_context_retry_prompt = None
+            logger.warning("Codex context compaction failed to start", exc_info=True)
+            await self._emit(
+                {
+                    "type": "error",
+                    "error": f"{message}\n\nAutomatic context compaction failed: {exc}",
+                }
+            )
+            return True
+
+        turn = result.get("turn") if isinstance(result, dict) else None
+        if isinstance(turn, dict) and turn.get("id"):
+            self._context_compaction_turn_id = turn["id"]
+        return True
+
+    async def _complete_context_compaction(self) -> None:
+        prompt = self._pending_context_retry_prompt
+        self._pending_context_retry_prompt = None
+        self._context_compaction_active = False
+        self._context_compaction_starting = False
+        self._context_compaction_turn_id = None
+        self._active_user_prompt = None
+
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": "context_compaction",
+                "status": "completed",
+                "content": "Codex compacted the thread context; retrying the turn.",
+            }
+        )
+
+        if prompt:
+            logger.info("Codex context compaction completed; retrying user turn")
+            asyncio.create_task(
+                self.send_message(prompt),
+                name=f"codex-context-retry-{self._thread_id or 'thread'}",
+            )
+
     # ------------------------------------------------------------------
     # CLITransport interface
     # ------------------------------------------------------------------
@@ -1235,6 +1405,7 @@ class CodexWebSocketTransport(CLITransport):
         self._last_result = None
         self._last_usage = None
         self._block_index = 0
+        self._active_user_prompt = content
         params: dict = {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": content, "textElements": []}],

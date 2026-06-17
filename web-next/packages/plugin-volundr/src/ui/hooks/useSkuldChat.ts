@@ -342,18 +342,24 @@ export function serializeAgentEvents(
 }
 
 export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
-  return turns.map((turn) => ({
-    id: turn.id,
-    role: turn.role === 'user' ? 'user' : 'assistant',
-    content: turn.content,
-    createdAt: new Date(turn.created_at),
-    status: 'done',
-    parts: turn.parts as ChatMessagePart[] | undefined,
-    metadata: turn.metadata as ChatMessage['metadata'] | undefined,
-    participant: parseParticipantMeta(turn.participant_meta as Record<string, unknown> | undefined),
-    threadId: turn.thread_id,
-    visibility: turn.visibility,
-  }));
+  return turns.map((turn) => {
+    const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
+    const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
+    return {
+      id: turn.id,
+      role: turn.role === 'user' ? 'user' : 'assistant',
+      content: turn.content,
+      createdAt: new Date(turn.created_at),
+      status: metadataStatus === 'error' ? 'error' : 'done',
+      parts: turn.parts as ChatMessagePart[] | undefined,
+      metadata,
+      participant: parseParticipantMeta(
+        turn.participant_meta as Record<string, unknown> | undefined,
+      ),
+      threadId: turn.thread_id,
+      visibility: turn.visibility,
+    };
+  });
 }
 
 export function participantsFromTurns(turns: ConversationTurn[]): Map<string, RoomParticipant> {

@@ -674,6 +674,115 @@ class TestEventNormalization:
         assert result["modelUsage"] == {}
 
     @pytest.mark.asyncio
+    async def test_context_window_error_starts_native_compaction(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-1"
+        t._active_user_prompt = "continue the investigation"
+        t._send_rpc = AsyncMock(return_value={"turn": {"id": "compact-1"}})
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "error",
+                "params": {
+                    "error": {
+                        "message": (
+                            "Codex ran out of room in the model's context window. "
+                            "Start a new thread or clear earlier history before retrying."
+                        )
+                    }
+                },
+            }
+        )
+
+        t._send_rpc.assert_awaited_once_with(
+            "thread/compact/start",
+            {"threadId": "thread-1"},
+        )
+        assert t._pending_context_retry_prompt == "continue the investigation"
+        assert t._context_compaction_active is True
+        assert t._context_compaction_turn_id == "compact-1"
+        assert not _events_of_type(emit, "error")
+        notices = [
+            event
+            for event in _emitted_events(emit)
+            if event.get("subtype") == "context_compaction"
+        ]
+        assert notices[0]["status"] == "started"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_failed_context_turn_is_suppressed_during_compaction(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-1"
+        t._active_user_prompt = "continue the investigation"
+        t._pending_context_retry_prompt = "continue the investigation"
+        t._context_compaction_active = True
+        t._context_retry_attempts = {"continue the investigation": 1}
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "items": [],
+                        "status": "failed",
+                        "error": {
+                            "message": "context window exceeded",
+                            "codexErrorInfo": "contextWindowExceeded",
+                        },
+                    },
+                },
+            }
+        )
+
+        assert not _events_of_type(emit, "error")
+        assert not _events_of_type(emit, "result")
+        assert t._pending_context_retry_prompt == "continue the investigation"
+
+    @pytest.mark.asyncio
+    async def test_compaction_turn_completed_retries_original_prompt(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._context_compaction_active = True
+        t._context_compaction_turn_id = "compact-1"
+        t._pending_context_retry_prompt = "continue the investigation"
+        t._active_user_prompt = "continue the investigation"
+        t.send_message = AsyncMock()
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "compact-1",
+                        "items": [{"id": "cc-1", "type": "contextCompaction"}],
+                        "status": "completed",
+                        "error": None,
+                    },
+                },
+            }
+        )
+        await asyncio.sleep(0)
+
+        t.send_message.assert_awaited_once_with("continue the investigation")
+        assert t._context_compaction_active is False
+        assert t._pending_context_retry_prompt is None
+        assert not _events_of_type(emit, "result")
+        notices = [
+            event
+            for event in _emitted_events(emit)
+            if event.get("subtype") == "context_compaction"
+        ]
+        assert notices[0]["status"] == "completed"
+
+    @pytest.mark.asyncio
     async def test_token_usage_saves_and_emits_message_delta(self, tmp_path):
         t = _make_transport(tmp_path, model="o4-mini")
         emit = _collect_emits(t)
