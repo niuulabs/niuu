@@ -11,7 +11,11 @@ vi.mock('@niuulabs/query', () => ({
   getWebSocketAuth: (url: string) => {
     const token = getAccessTokenMock();
     if (!token) return { url };
-    return { url, protocols: [`volundr.bearer.${encodeURIComponent(token)}`] };
+    const resolved = new URL(url, 'http://localhost');
+    resolved.searchParams.set('access_token', token);
+    return {
+      url: resolved.toString(),
+    };
   },
 }));
 
@@ -127,17 +131,19 @@ describe('useWebSocket', () => {
     expect(onMessage).toHaveBeenCalledWith('fresh-output');
   });
 
-  it('passes the current access token as a websocket subprotocol when present', () => {
+  it('passes the current access token in the websocket URL when present', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     getAccessTokenMock.mockReturnValue('secret token');
 
     renderHook(() => useWebSocket('ws://localhost:8080/s/one/session', { reconnect: false }));
 
-    expect(MockWebSocket.instances[0]?.url).toBe('ws://localhost:8080/s/one/session');
-    expect(MockWebSocket.instances[0]?.protocols).toEqual(['volundr.bearer.secret%20token']);
+    expect(MockWebSocket.instances[0]?.url).toBe(
+      'ws://localhost:8080/s/one/session?access_token=secret+token',
+    );
+    expect(MockWebSocket.instances[0]?.protocols).toBeUndefined();
   });
 
-  it('preserves query params while passing the access token as a websocket subprotocol', () => {
+  it('preserves query params while passing the access token in the websocket URL', () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     getAccessTokenMock.mockReturnValue('secret token');
 
@@ -145,8 +151,10 @@ describe('useWebSocket', () => {
       useWebSocket('ws://localhost:8080/s/one/session?tail=1', { reconnect: false }),
     );
 
-    expect(MockWebSocket.instances[0]?.url).toBe('ws://localhost:8080/s/one/session?tail=1');
-    expect(MockWebSocket.instances[0]?.protocols).toEqual(['volundr.bearer.secret%20token']);
+    expect(MockWebSocket.instances[0]?.url).toBe(
+      'ws://localhost:8080/s/one/session?tail=1&access_token=secret+token',
+    );
+    expect(MockWebSocket.instances[0]?.protocols).toBeUndefined();
   });
 
   it('reports invalid websocket protocols through onError without opening a socket', () => {
