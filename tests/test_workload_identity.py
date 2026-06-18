@@ -22,7 +22,6 @@ from niuu.domain.services.workload_identity import (
     WorkloadIdentityService,
 )
 
-
 OWNER_ID = "76475334-b685-4299-b91d-1ec37f57e10f"
 WORKLOAD_SUBJECT = "system:serviceaccount:valkyrie:ravn"
 WORKLOAD_ISSUER = "https://kubernetes.default.svc"
@@ -137,7 +136,9 @@ async def test_workload_identity_exchange_rejects_unmapped_subject() -> None:
     service = _service(proof_key)
 
     with pytest.raises(WorkloadIdentityError, match="No workload identity mapping matched"):
-        await service.exchange(_workload_token(proof_key, subject="system:serviceaccount:other:ravn"))
+        await service.exchange(
+            _workload_token(proof_key, subject="system:serviceaccount:other:ravn")
+        )
 
 
 def test_workload_exchange_route_does_not_require_user_principal() -> None:
@@ -185,7 +186,9 @@ def test_workload_jwt_provider_renders_as_additional_envoy_auth_provider(
 
     documents = list(yaml.safe_load_all(rendered))
     envoy = next(
-        doc for doc in documents if doc and doc.get("metadata", {}).get("name", "").endswith("-envoy")
+        doc
+        for doc in documents
+        if doc and doc.get("metadata", {}).get("name", "").endswith("-envoy")
     )
     envoy_yaml = envoy["data"]["envoy.yaml"]
     assert 'prefix: "/api/v1/tokens/workload/jwks"' in envoy_yaml
