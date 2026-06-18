@@ -291,6 +291,26 @@ async def test_kubernetes_adapter_accepts_runtime_client_kwargs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kubernetes_adapter_can_ignore_historical_events() -> None:
+    environment = k8s_environment_fixture()
+    recent_event = {
+        **_k8s_warning_event(),
+        "metadata": {"name": "api-recent", "uid": "ev-k8s-recent", "namespace": "shop"},
+        "eventTime": None,
+    }
+    adapter = KubernetesSignalAdapter(
+        environment=environment,
+        source_id="kubernetes-events",
+        raw_items=[_k8s_warning_event(), recent_event],
+        max_event_age_seconds=60,
+    )
+
+    signals = await adapter.collect()
+
+    assert [signal.provider_event_id for signal in signals] == ["ev-k8s-recent"]
+
+
+@pytest.mark.asyncio
 async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
     adapters = demo_signal_adapters()
     events_by_environment: dict[str, list[SleipnirEvent]] = {}
