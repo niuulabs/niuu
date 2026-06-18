@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.config import EnvironmentConfig, Settings, SignalSourceConfig
+from ravn.adapters.capabilities import FileWorkflowSubmissionStore
+from ravn.config import (
+    CapabilityPolicyConfig,
+    CapabilitySourceConfig,
+    CapabilitySubmissionStoreConfig,
+    EnvironmentConfig,
+    Settings,
+    SignalSourceConfig,
+    WorkflowSelectorConfig,
+)
+from ravn.domain.capability_resolution import WorkflowCapability
 from ravn.domain.models import AgentTask
 from ravn.environment_signal_runtime import (
     EnvironmentSignalRuntime,
     build_runtime_environment,
+)
+from ravn.ports.capability import (
+    WorkflowCapabilityPort,
+    WorkflowLaunchRequest,
+    WorkflowLaunchResult,
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
@@ -50,6 +65,32 @@ def _settings() -> Settings:
     )
     settings.mesh.own_peer_id = "valkyrie-host-jozef"
     return settings
+
+
+class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
+    launched: list[WorkflowLaunchRequest] = []
+
+    async def list_workflows(self) -> list[WorkflowCapability]:
+        return [
+            WorkflowCapability(
+                workflow_id="wf-incident",
+                name="Incident Investigation",
+                version="1.0.0",
+                tags=["incident", "host"],
+            )
+        ]
+
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launched.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Incident Investigation",
+            session_id="session-from-policy",
+            session_name=request.session_name,
+            status="running",
+            slug="session-from-policy",
+            cluster_name="ymir",
+        )
 
 
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
@@ -166,6 +207,78 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_launches_configured_workflow_capability_instead_of_local_task(
+    tmp_path,
+) -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    FakeWorkflowCapabilitySource.launched = []
+    settings = _settings()
+    settings.environment.capability_sources = [
+        CapabilitySourceConfig(
+            adapter=(
+                "tests.test_ravn.test_environment_signal_runtime."
+                "FakeWorkflowCapabilitySource"
+            )
+        )
+    ]
+    journal_path = tmp_path / "capability_submissions.json"
+    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
+        kwargs={"path": str(journal_path)}
+    )
+    settings.environment.capability_policies = [
+        CapabilityPolicyConfig(
+            name="host-critical-to-incident-workflow",
+            signal_types=["signal.host.event"],
+            severities=["critical"],
+            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
+        )
+    ]
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert enqueued == []
+    assert len(FakeWorkflowCapabilitySource.launched) == 1
+    launch = FakeWorkflowCapabilitySource.launched[0]
+    assert launch.workflow_id == "wf-incident"
+    assert "## Capability policy" in launch.prompt
+    assert "host-critical-to-incident-workflow" in launch.prompt
+    assert launch.provenance["policy"] == "host-critical-to-incident-workflow"
+    assert launch.provenance["decision"] == "invoke_workflow"
+    assert launch.provenance["workflow_id"] == "wf-incident"
+    assert launch.provenance["source_event_id"]
+    assert telemetry[0].payload["capability_policy_checked_count"] == 1
+    assert telemetry[0].payload["capability_remote_launch_count"] == 1
+    assert telemetry[0].payload["enqueued_task_count"] == 0
+    records = await FileWorkflowSubmissionStore(journal_path).list_submissions()
+    assert len(records) == 1
+    assert records[0].status == "launched"
+    assert records[0].session_id == "session-from-policy"
+    assert records[0].provenance["policy"] == "host-critical-to-incident-workflow"
+
+    restarted = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+    await restarted.collect_once()
+    await bus.flush()
+
+    assert len(FakeWorkflowCapabilitySource.launched) == 1
+    assert len(await FileWorkflowSubmissionStore(journal_path).list_submissions()) == 1
 
 
 @pytest.mark.asyncio

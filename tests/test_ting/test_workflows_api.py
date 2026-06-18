@@ -554,6 +554,11 @@ class TestWorkflowCatalogAPI:
                 "sessionName": "grief-companions",
                 "repo": "https://github.com/niuulabs/volundr.git",
                 "branch": "feat/research",
+                "provenance": {
+                    "signal_id": "sig-1",
+                    "valkyrie_id": "valkyrie-ymir",
+                    "policy": "k8s-signals",
+                },
             },
         )
 
@@ -571,6 +576,11 @@ class TestWorkflowCatalogAPI:
         assert spawn.branch == "feat/research"
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
+        assert spawn.workload_config["provenance"] == {
+            "signal_id": "sig-1",
+            "valkyrie_id": "valkyrie-ymir",
+            "policy": "k8s-signals",
+        }
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
         assert "Workflow Launch" in spawn.initial_prompt
 

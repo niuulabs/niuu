@@ -67,6 +67,7 @@ class WorkflowLaunchBody(BaseModel):
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
 
@@ -341,6 +342,7 @@ async def launch_workflow_execution(
                 "personas": workflow_personas,
                 "initiative_context": initiative_context,
                 "workflow": workflow_snapshot,
+                **({"provenance": dict(launch.provenance)} if launch.provenance else {}),
                 **({"mimir": workflow_mimir} if workflow_mimir else {}),
                 **(
                     {"sleipnir_publish_urls": list(settings.dispatch.flock.sleipnir_publish_urls)}

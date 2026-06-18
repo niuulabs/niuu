@@ -3101,8 +3101,21 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
+    local_skill_names = None
     if resident_learning_runtime is not None:
         process_signal = resident_learning_runtime.process_signal
+
+        async def _list_local_skill_names() -> list[str]:
+            rows = await resident_learning_runtime.skills.list_skills()
+            names: list[str] = []
+            for row in rows:
+                skill = row.get("skill", {}) if isinstance(row, dict) else {}
+                name = str(skill.get("name") or "")
+                if name:
+                    names.append(name)
+            return names
+
+        local_skill_names = _list_local_skill_names
         if resident_wakefulness is not None:
 
             async def _process_with_wakefulness(event: Any) -> Any:
@@ -3118,6 +3131,7 @@ def _build_environment_signal_runtime(
         publisher=publisher,
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
         resident_signal_processor=resident_signal_processor,
+        local_skill_names=local_skill_names,
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,

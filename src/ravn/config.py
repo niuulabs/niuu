@@ -2818,6 +2818,94 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowSelectorConfig(BaseModel):
+    """Select workflows from an existing workflow catalog."""
+
+    names: list[str] = Field(
+        default_factory=list,
+        description="Workflow names or ids allowed by this selector.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Workflow tags allowed by this selector.",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="Require every configured tag instead of any matching tag.",
+    )
+
+
+class BuildMissingCapabilityConfig(BaseModel):
+    """Configured fallback for commissioning a missing capability."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Allow this policy to invoke a builder workflow when capability is missing.",
+    )
+    workflow: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
+    requires_approval: bool = Field(
+        default=True,
+        description="Whether generated capability installation should require approval.",
+    )
+
+
+class CapabilityPolicyConfig(BaseModel):
+    """Policy mapping resident signals to local or remote capabilities."""
+
+    name: str = Field(default="", description="Stable policy name for audit/provenance.")
+    enabled: bool = Field(default=True)
+    signal_types: list[str] = Field(
+        default_factory=list,
+        description="Signal event types matched by this policy; empty means any.",
+    )
+    severities: list[str] = Field(
+        default_factory=list,
+        description="Signal severities matched by this policy; empty means any.",
+    )
+    source_ids: list[str] = Field(
+        default_factory=list,
+        description="Signal source ids matched by this policy; empty means any.",
+    )
+    local_skills: list[str] = Field(
+        default_factory=list,
+        description="Preferred local skill names when installed.",
+    )
+    local_tools: list[str] = Field(
+        default_factory=list,
+        description="Local tool names expected by the matched skill or investigation.",
+    )
+    remote_workflows: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
+    build_missing_capability: BuildMissingCapabilityConfig = Field(
+        default_factory=BuildMissingCapabilityConfig
+    )
+
+
+class CapabilitySourceConfig(BaseModel):
+    """Dynamic adapter entry for remote workflow capability discovery."""
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified WorkflowCapabilityPort implementation.",
+    )
+    enabled: bool = True
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class CapabilitySubmissionStoreConfig(BaseModel):
+    """Dynamic adapter entry for resident workflow submission durability."""
+
+    enabled: bool = True
+    adapter: str = Field(
+        default="ravn.adapters.capabilities.FileWorkflowSubmissionStore",
+        description="Fully-qualified WorkflowSubmissionStore implementation.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"path": "~/.ravn/daemon/capability_submissions.json"}
+    )
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class SignalSourceConfig(BaseModel):
     """Adapter-backed signal source for a resident Valkyrie Environment."""
 
@@ -2905,6 +2993,22 @@ class EnvironmentConfig(BaseModel):
     signal_sources: list[SignalSourceConfig] = Field(
         default_factory=list,
         description="Adapter-backed signal feeds this Valkyrie should watch.",
+    )
+    capability_sources: list[CapabilitySourceConfig] = Field(
+        default_factory=list,
+        description=(
+            "Dynamic adapters that discover remote workflow capabilities from existing catalogs."
+        ),
+    )
+    capability_policies: list[CapabilityPolicyConfig] = Field(
+        default_factory=list,
+        description=(
+            "Configurable signal-to-capability policies. Empty keeps legacy resident behavior."
+        ),
+    )
+    capability_submission_store: CapabilitySubmissionStoreConfig = Field(
+        default_factory=CapabilitySubmissionStoreConfig,
+        description="Durable resident journal for workflow submissions and restart reconciliation.",
     )
     signal_poll_interval_seconds: float = Field(
         default=10.0,
