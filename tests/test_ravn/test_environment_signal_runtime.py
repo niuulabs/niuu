@@ -210,7 +210,56 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
-async def test_runtime_launches_configured_workflow_capability_instead_of_local_task(
+async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decision(
+    tmp_path,
+) -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    FakeWorkflowCapabilitySource.launched = []
+    settings = _settings()
+    settings.environment.capability_sources = [
+        CapabilitySourceConfig(
+            adapter=(
+                "tests.test_ravn.test_environment_signal_runtime."
+                "FakeWorkflowCapabilitySource"
+            )
+        )
+    ]
+    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
+        kwargs={"path": str(tmp_path / "capability_submissions.json")}
+    )
+    settings.environment.capability_policies = [
+        CapabilityPolicyConfig(
+            name="host-critical-to-incident-workflow",
+            signal_types=["signal.host.event"],
+            severities=["critical"],
+            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
+        )
+    ]
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert len(enqueued) == 1
+    assert FakeWorkflowCapabilitySource.launched == []
+    assert "## Capability policy" in enqueued[0].initiative_context
+    assert "not allowed to launch remote work" in enqueued[0].initiative_context
+    assert telemetry[0].payload["capability_policy_checked_count"] == 1
+    assert telemetry[0].payload["capability_remote_launch_count"] == 0
+    assert telemetry[0].payload["enqueued_task_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_launches_configured_workflow_after_remote_trigger_decision(
     tmp_path,
 ) -> None:
     bus = InProcessBus()
@@ -235,15 +284,25 @@ async def test_runtime_launches_configured_workflow_capability_instead_of_local_
             name="host-critical-to-incident-workflow",
             signal_types=["signal.host.event"],
             severities=["critical"],
+            remote_trigger_decisions=["needs_remote_research"],
             remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
         )
     ]
     await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
 
+    async def _resident_process(event: SleipnirEvent) -> dict:
+        return {
+            "usedAdoptedLearning": False,
+            "decision": "needs_remote_research",
+            "capabilityName": "inspect.host.disk",
+            "skillName": "",
+        }
+
     runtime = EnvironmentSignalRuntime(
         settings=settings,
         publisher=bus,
         enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=_resident_process,
     )
 
     count = await runtime.collect_once()

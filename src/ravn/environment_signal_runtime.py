@@ -355,6 +355,7 @@ class EnvironmentSignalRuntime:
             operational = _operational_signal(signal, event)
             resolution = self._capability_resolver.resolve(
                 operational,
+                resident_decision=_resident_decision(resident_result),
                 local_skill_names=local_skills,
                 workflows=workflows,
             )
@@ -883,6 +884,7 @@ def _capability_policies(settings: Settings) -> list[CapabilityPolicy]:
                 source_ids=list(cfg.source_ids),
                 local_skills=list(cfg.local_skills),
                 local_tools=list(cfg.local_tools),
+                remote_trigger_decisions=list(cfg.remote_trigger_decisions),
                 remote_workflows=WorkflowSelector(
                     names=list(cfg.remote_workflows.names),
                     tags=list(cfg.remote_workflows.tags),
@@ -941,6 +943,12 @@ def _resolution_payload(resolution: CapabilityResolution) -> dict[str, Any]:
         },
         "provenance": dict(resolution.provenance),
     }
+
+
+def _resident_decision(result: dict[str, Any] | None) -> str:
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("decision") or "")
 
 
 def _remote_launch_started(result: dict[str, Any] | None) -> bool:

@@ -2874,6 +2874,13 @@ class CapabilityPolicyConfig(BaseModel):
         default_factory=list,
         description="Local tool names expected by the matched skill or investigation.",
     )
+    remote_trigger_decisions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Resident-learning decision names allowed to launch remote workflow work. "
+            "Empty means workflow selectors are discoverable but never launched automatically."
+        ),
+    )
     remote_workflows: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
     build_missing_capability: BuildMissingCapabilityConfig = Field(
         default_factory=BuildMissingCapabilityConfig

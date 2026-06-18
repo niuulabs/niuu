@@ -78,6 +78,7 @@ class CapabilityPolicy:
     source_ids: list[str] = field(default_factory=list)
     local_skills: list[str] = field(default_factory=list)
     local_tools: list[str] = field(default_factory=list)
+    remote_trigger_decisions: list[str] = field(default_factory=list)
     remote_workflows: WorkflowSelector = field(default_factory=WorkflowSelector)
     build_missing_capability: BuildMissingCapabilityPolicy = field(
         default_factory=BuildMissingCapabilityPolicy
@@ -120,6 +121,7 @@ class CapabilityResolver:
         self,
         signal: OperationalSignal,
         *,
+        resident_decision: str = "",
         local_skill_names: list[str] | None = None,
         workflows: list[WorkflowCapability] | None = None,
     ) -> CapabilityResolution:
@@ -145,6 +147,17 @@ class CapabilityResolver:
 
             workflow = _select_workflow(policy.remote_workflows, available_workflows)
             if workflow is not None:
+                if not _remote_decision_allowed(resident_decision, policy):
+                    return CapabilityResolution(
+                        decision="decline",
+                        capability_name=capability_name,
+                        policy_name=policy.name,
+                        reason=(
+                            f"policy {policy.name} selected workflow {workflow.name}, "
+                            "but the resident decision is not allowed to launch remote work"
+                        ),
+                        provenance=_provenance(signal, policy),
+                    )
                 return CapabilityResolution(
                     decision="invoke_workflow",
                     capability_name=capability_name,
@@ -158,6 +171,18 @@ class CapabilityResolver:
             build_policy = policy.build_missing_capability
             build_workflow = _select_workflow(build_policy.workflow, available_workflows)
             if build_policy.enabled and build_workflow is not None:
+                if not _remote_decision_allowed(resident_decision, policy):
+                    return CapabilityResolution(
+                        decision="decline",
+                        capability_name=capability_name,
+                        policy_name=policy.name,
+                        reason=(
+                            f"policy {policy.name} selected builder workflow "
+                            f"{build_workflow.name}, but the resident decision is not allowed "
+                            "to launch remote work"
+                        ),
+                        provenance=_provenance(signal, policy),
+                    )
                 return CapabilityResolution(
                     decision="build_missing_capability",
                     capability_name=capability_name,
@@ -220,6 +245,12 @@ def _value_matches(value: str, patterns: list[str]) -> bool:
         if candidate == "*" or candidate == normalized:
             return True
     return False
+
+
+def _remote_decision_allowed(resident_decision: str, policy: CapabilityPolicy) -> bool:
+    if not policy.remote_trigger_decisions:
+        return False
+    return _value_matches(resident_decision, policy.remote_trigger_decisions)
 
 
 def _provenance(signal: OperationalSignal, policy: CapabilityPolicy | None) -> dict[str, Any]:
