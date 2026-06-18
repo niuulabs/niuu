@@ -69,6 +69,34 @@ def test_resolver_selects_remote_workflow_from_existing_catalog() -> None:
     assert result.capability_name == "kubernetes.pod.crashloop"
 
 
+def test_resolver_reports_when_remote_discovery_is_needed() -> None:
+    resolver = CapabilityResolver(
+        [
+            CapabilityPolicy(
+                name="k8s-policy",
+                severities=["warning", "critical"],
+                remote_trigger_decisions=["needs_remote_research"],
+                remote_workflows=WorkflowSelector(tags=["incident"]),
+            )
+        ]
+    )
+
+    assert (
+        resolver.needs_remote_workflows(
+            _signal(),
+            resident_decision="needs_remote_research",
+        )
+        is True
+    )
+    assert (
+        resolver.needs_remote_workflows(
+            _signal(),
+            resident_decision="ignore",
+        )
+        is False
+    )
+
+
 def test_resolver_can_fall_back_to_builder_workflow() -> None:
     resolver = CapabilityResolver(
         [

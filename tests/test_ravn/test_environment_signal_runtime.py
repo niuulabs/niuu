@@ -69,8 +69,10 @@ def _settings() -> Settings:
 
 class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
     launched: list[WorkflowLaunchRequest] = []
+    list_calls = 0
 
     async def list_workflows(self) -> list[WorkflowCapability]:
+        self.__class__.list_calls += 1
         return [
             WorkflowCapability(
                 workflow_id="wf-incident",
@@ -221,6 +223,7 @@ async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decisi
     telemetry: list[SleipnirEvent] = []
     enqueued: list[AgentTask] = []
     FakeWorkflowCapabilitySource.launched = []
+    FakeWorkflowCapabilitySource.list_calls = 0
     settings = _settings()
     settings.environment.capability_sources = [
         CapabilitySourceConfig(
@@ -255,6 +258,7 @@ async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decisi
     assert count == 1
     assert len(enqueued) == 1
     assert FakeWorkflowCapabilitySource.launched == []
+    assert FakeWorkflowCapabilitySource.list_calls == 0
     assert "## Capability policy" in enqueued[0].initiative_context
     assert "not allowed to launch remote work" in enqueued[0].initiative_context
     assert telemetry[0].payload["capability_policy_checked_count"] == 1
@@ -270,6 +274,7 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
     telemetry: list[SleipnirEvent] = []
     enqueued: list[AgentTask] = []
     FakeWorkflowCapabilitySource.launched = []
+    FakeWorkflowCapabilitySource.list_calls = 0
     settings = _settings()
     settings.environment.capability_sources = [
         CapabilitySourceConfig(
@@ -314,6 +319,7 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
 
     assert count == 1
     assert enqueued == []
+    assert FakeWorkflowCapabilitySource.list_calls == 1
     assert len(FakeWorkflowCapabilitySource.launched) == 1
     launch = FakeWorkflowCapabilitySource.launched[0]
     assert launch.workflow_id == "wf-incident"
@@ -361,6 +367,63 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
 
     assert len(FakeWorkflowCapabilitySource.launched) == 1
     assert len(await FileWorkflowSubmissionStore(journal_path).list_submissions()) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_workflow_discovery_when_no_capability_policy_matches(
+    tmp_path,
+) -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    FakeWorkflowCapabilitySource.launched = []
+    FakeWorkflowCapabilitySource.list_calls = 0
+    settings = _settings()
+    settings.environment.capability_sources = [
+        CapabilitySourceConfig(
+            adapter=(
+                "tests.test_ravn.test_environment_signal_runtime."
+                "FakeWorkflowCapabilitySource"
+            )
+        )
+    ]
+    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
+        kwargs={"path": str(tmp_path / "capability_submissions.json")}
+    )
+    settings.environment.capability_policies = [
+        CapabilityPolicyConfig(
+            name="kubernetes-only-workflow",
+            signal_types=["signal.kubernetes.event"],
+            remote_trigger_decisions=["needs_remote_research"],
+            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
+        )
+    ]
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    async def _resident_process(event: SleipnirEvent) -> dict:
+        return {
+            "usedAdoptedLearning": False,
+            "decision": "needs_remote_research",
+            "capabilityName": "inspect.host.disk",
+            "skillName": "",
+        }
+
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=_resident_process,
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert len(enqueued) == 1
+    assert FakeWorkflowCapabilitySource.list_calls == 0
+    assert FakeWorkflowCapabilitySource.launched == []
+    assert "no capability policy matched the signal" in enqueued[0].initiative_context
+    assert telemetry[0].payload["capability_remote_launch_count"] == 0
 
 
 @pytest.mark.asyncio

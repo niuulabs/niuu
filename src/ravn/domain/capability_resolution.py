@@ -145,19 +145,21 @@ class CapabilityResolver:
                     provenance=_provenance(signal, policy),
                 )
 
+            remote_allowed = _remote_decision_allowed(resident_decision, policy)
+            if policy.remote_workflows.configured and not remote_allowed:
+                return CapabilityResolution(
+                    decision="decline",
+                    capability_name=capability_name,
+                    policy_name=policy.name,
+                    reason=(
+                        f"policy {policy.name} matched a remote workflow selector, "
+                        "but the resident decision is not allowed to launch remote work"
+                    ),
+                    provenance=_provenance(signal, policy),
+                )
+
             workflow = _select_workflow(policy.remote_workflows, available_workflows)
             if workflow is not None:
-                if not _remote_decision_allowed(resident_decision, policy):
-                    return CapabilityResolution(
-                        decision="decline",
-                        capability_name=capability_name,
-                        policy_name=policy.name,
-                        reason=(
-                            f"policy {policy.name} selected workflow {workflow.name}, "
-                            "but the resident decision is not allowed to launch remote work"
-                        ),
-                        provenance=_provenance(signal, policy),
-                    )
                 return CapabilityResolution(
                     decision="invoke_workflow",
                     capability_name=capability_name,
@@ -169,20 +171,20 @@ class CapabilityResolver:
                 )
 
             build_policy = policy.build_missing_capability
+            if build_policy.enabled and build_policy.workflow.configured and not remote_allowed:
+                return CapabilityResolution(
+                    decision="decline",
+                    capability_name=capability_name,
+                    policy_name=policy.name,
+                    reason=(
+                        f"policy {policy.name} matched a builder workflow selector, "
+                        "but the resident decision is not allowed to launch remote work"
+                    ),
+                    provenance=_provenance(signal, policy),
+                )
+
             build_workflow = _select_workflow(build_policy.workflow, available_workflows)
             if build_policy.enabled and build_workflow is not None:
-                if not _remote_decision_allowed(resident_decision, policy):
-                    return CapabilityResolution(
-                        decision="decline",
-                        capability_name=capability_name,
-                        policy_name=policy.name,
-                        reason=(
-                            f"policy {policy.name} selected builder workflow "
-                            f"{build_workflow.name}, but the resident decision is not allowed "
-                            "to launch remote work"
-                        ),
-                        provenance=_provenance(signal, policy),
-                    )
                 return CapabilityResolution(
                     decision="build_missing_capability",
                     capability_name=capability_name,
@@ -208,6 +210,29 @@ class CapabilityResolver:
             reason="no capability policy matched the signal",
             provenance=_provenance(signal, None),
         )
+
+    def needs_remote_workflows(
+        self,
+        signal: OperationalSignal,
+        *,
+        resident_decision: str = "",
+        local_skill_names: list[str] | None = None,
+    ) -> bool:
+        """Return whether resolving this signal may need remote workflow discovery."""
+
+        local_skills = {_norm(name) for name in (local_skill_names or []) if _norm(name)}
+        for policy in self._policies:
+            if not policy.matches(signal):
+                continue
+            if _first_available(policy.local_skills, local_skills):
+                return False
+            if not _remote_decision_allowed(resident_decision, policy):
+                return False
+            if policy.remote_workflows.configured:
+                return True
+            build_policy = policy.build_missing_capability
+            return build_policy.enabled and build_policy.workflow.configured
+        return False
 
 
 def derive_capability_name(signal: OperationalSignal) -> str:

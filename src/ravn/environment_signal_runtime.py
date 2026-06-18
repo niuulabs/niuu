@@ -349,13 +349,34 @@ class EnvironmentSignalRuntime:
         if not self._settings.environment.capability_policies:
             return [None for _ in events]
         local_skills = await self._load_local_skill_names()
-        workflows = await self._discover_workflow_capabilities()
+        operationals = [
+            _operational_signal(signal, event)
+            for signal, event in zip(signals, events, strict=True)
+        ]
+        resident_decisions = [_resident_decision(result) for result in resident_results]
+        needs_workflows = any(
+            self._capability_resolver.needs_remote_workflows(
+                operational,
+                resident_decision=resident_decision,
+                local_skill_names=local_skills,
+            )
+            for operational, resident_decision in zip(
+                operationals, resident_decisions, strict=True
+            )
+        )
+        workflows = await self._discover_workflow_capabilities() if needs_workflows else []
         results: list[dict[str, Any] | None] = []
-        for signal, event, resident_result in zip(signals, events, resident_results, strict=True):
-            operational = _operational_signal(signal, event)
+        for signal, event, resident_result, operational, resident_decision in zip(
+            signals,
+            events,
+            resident_results,
+            operationals,
+            resident_decisions,
+            strict=True,
+        ):
             resolution = self._capability_resolver.resolve(
                 operational,
-                resident_decision=_resident_decision(resident_result),
+                resident_decision=resident_decision,
                 local_skill_names=local_skills,
                 workflows=workflows,
             )
