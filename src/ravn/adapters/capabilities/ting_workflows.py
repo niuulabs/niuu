@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ravn.domain.capability_resolution import WorkflowCapability
+from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.ports.capability import (
     WorkflowCapabilityPort,
     WorkflowLaunchRequest,

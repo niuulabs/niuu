@@ -11,6 +11,7 @@ Groups
 ``skill``     — skill_list, skill_run  (conditional on settings.skill.enabled)
 ``kubernetes``— read-only Kubernetes inspection tools for resident Valkyries
 ``platform``  — volundr/ting platform tools  (conditional on gateway.platform.enabled)
+``workflow``  — workflow catalog discovery/launch tools backed by capability_sources
 ``cascade``   — marker group; cascade tools are wired externally via build_cascade_tools()
 
 Runtime context keys
@@ -367,6 +368,27 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         },
     ),
     # =========================================================================
+    # workflow — resident workflow catalog tools backed by capability_sources
+    # =========================================================================
+    "workflow_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowListTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_describe": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowDescribeTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_launch": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowLaunchTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    # =========================================================================
     # ravn — persona management tools
     # =========================================================================
     "persona_validate": BuiltinToolDef(
@@ -376,5 +398,15 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
     "persona_save": BuiltinToolDef(
         adapter="ravn.adapters.tools.persona_tools.PersonaSaveTool",
         groups=frozenset({"ravn"}),
+    ),
+    "capability_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.capability_catalog.CapabilityListTool",
+        groups=frozenset({"ravn"}),
+        required_context=frozenset({"capability_tools_provider"}),
+        kwargs_fn=lambda _s, ctx: {
+            "tools_provider": ctx["capability_tools_provider"],
+            "skill_port": ctx.get("skill_port"),
+            "workflow_sources": ctx.get("workflow_sources") or [],
+        },
     ),
 }

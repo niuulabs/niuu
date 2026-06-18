@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -179,7 +180,21 @@ def _build_tool_build_backend(settings: Settings) -> Any | None:
     if not cfg.tool_build_adapter:
         return None
     cls = _import_class(cfg.tool_build_adapter)
-    return cls(**cfg.tool_build_kwargs)
+    kwargs = dict(cfg.tool_build_kwargs)
+    selector = cfg.tool_builder_workflow
+    if (selector.names or selector.tags) and _constructor_accepts_kwarg(cls, "workflow_selector"):
+        kwargs.setdefault("workflow_selector", selector.model_dump())
+    return cls(**kwargs)
+
+
+def _constructor_accepts_kwarg(cls: type, name: str) -> bool:
+    signature = inspect.signature(cls)
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == name:
+            return True
+    return False
 
 
 def _warden_store():
@@ -739,7 +754,16 @@ def _build_permission(
 
 _DEFAULT_TOOL_GROUPS: dict[str, ToolGroupConfig] = {
     "default": ToolGroupConfig(
-        include_groups=["core", "extended", "skill", "platform", "cascade", "mimir"],
+        include_groups=[
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+            "workflow",
+            "ravn",
+        ],
         include_mcp=True,
     ),
     "worker": ToolGroupConfig(
@@ -817,6 +841,28 @@ def _build_mimir(settings: Settings) -> Any:
     return MarkdownMimirAdapter(root=settings.mimir.path)
 
 
+def _build_workflow_capability_sources(settings: Settings) -> list[Any]:
+    """Build enabled workflow capability adapters from environment config."""
+    sources: list[Any] = []
+    for source_cfg in settings.environment.capability_sources:
+        if not source_cfg.enabled or not source_cfg.adapter:
+            continue
+        try:
+            cls = _import_class(source_cfg.adapter)
+            kwargs = _inject_secrets(
+                dict(source_cfg.kwargs),
+                source_cfg.secret_kwargs_env,
+            )
+            sources.append(cls(**kwargs))
+        except Exception as exc:
+            logger.warning(
+                "Failed to load workflow capability source %r: %s",
+                source_cfg.adapter,
+                exc,
+            )
+    return sources
+
+
 def _build_tools(
     settings: Settings,
     workspace: Path,
@@ -875,12 +921,18 @@ def _build_tools(
         "persona_prefix": persona_prefix,
         "discovery": discovery,
     }
+    runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 
     # Pre-build shared skill port so both skill_list and skill_run reuse one instance
     if "skill" in include_groups and settings.skill.enabled:
         from ravn.adapters.tools.builtin_registry import _build_skill_port  # noqa: PLC0415
 
         runtime_ctx["skill_port"] = _build_skill_port(settings, workspace)
+
+    if "workflow" in include_groups:
+        workflow_sources = _build_workflow_capability_sources(settings)
+        if workflow_sources:
+            runtime_ctx["workflow_sources"] = workflow_sources
 
     tools: list[ToolPort] = []
     state_tool: Any = None
@@ -939,6 +991,7 @@ def _build_tools(
     tools = _filter_tools(tools, settings, persona_config)
 
     # Update state tool with final tool names after filtering
+    runtime_ctx["capability_tools"] = list(tools)
     if state_tool is not None:
         state_tool._tool_names = [t.name for t in tools]
 
@@ -1073,14 +1126,28 @@ _MIMIR_TOOL_NAMES: list[str] = [
     "mimir_list",
 ]
 
+_WORKFLOW_TOOL_NAMES: list[str] = [
+    "workflow_list",
+    "workflow_describe",
+    "workflow_launch",
+]
+
 _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
     "file": ["read_file", "write_file", "edit_file", "glob_search", "grep_search"],
     "web": ["web_fetch", "web_search"],
     "terminal": ["terminal", "bash"],
     "mimir": _MIMIR_TOOL_NAMES,
+    "workflow": _WORKFLOW_TOOL_NAMES,
     "cascade": ["cascade_delegate", "cascade_broadcast"],
     "volundr": ["volundr_session", "volundr_git"],
-    "ravn": ["persona_validate", "persona_save", "skill_list", "skill_run", "skill_manage"],
+    "ravn": [
+        "persona_validate",
+        "persona_save",
+        "skill_list",
+        "skill_run",
+        "skill_manage",
+        "capability_list",
+    ],
 }
 
 
@@ -1111,6 +1178,8 @@ def _groups_for_persona(persona_config: Any) -> list[str]:
     groups: set[str] = {"core"}
     if allowed & set(_MIMIR_TOOL_NAMES):
         groups.add("mimir")
+    if allowed & set(_WORKFLOW_TOOL_NAMES):
+        groups.add("workflow")
 
     for key, tool_def in BUILTIN_TOOLS.items():
         # Use the same prefix-match logic as _filter_tools
@@ -3101,21 +3170,8 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
-    local_skill_names = None
     if resident_learning_runtime is not None:
         process_signal = resident_learning_runtime.process_signal
-
-        async def _list_local_skill_names() -> list[str]:
-            rows = await resident_learning_runtime.skills.list_skills()
-            names: list[str] = []
-            for row in rows:
-                skill = row.get("skill", {}) if isinstance(row, dict) else {}
-                name = str(skill.get("name") or "")
-                if name:
-                    names.append(name)
-            return names
-
-        local_skill_names = _list_local_skill_names
         if resident_wakefulness is not None:
 
             async def _process_with_wakefulness(event: Any) -> Any:
@@ -3131,7 +3187,6 @@ def _build_environment_signal_runtime(
         publisher=publisher,
         enqueue=drive_loop.enqueue if drive_loop is not None else None,
         resident_signal_processor=resident_signal_processor,
-        local_skill_names=local_skill_names,
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,

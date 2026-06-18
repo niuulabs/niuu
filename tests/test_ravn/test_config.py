@@ -338,10 +338,25 @@ class TestResidentEvolutionConfig:
         c = ResidentEvolutionConfig()
         assert c.tool_build_adapter == ""
         assert c.learned_tool_execution_backend == "local"
+        assert c.tool_builder_workflow.names == []
+        assert c.tool_builder_workflow.tags == []
 
     def test_learned_tool_execution_backend_can_select_forge(self) -> None:
         c = ResidentEvolutionConfig(learned_tool_execution_backend="forge")
         assert c.learned_tool_execution_backend == "forge"
+
+    def test_tool_builder_workflow_selector_is_configurable(self) -> None:
+        c = ResidentEvolutionConfig(
+            tool_builder_workflow={
+                "names": ["Tool Builder"],
+                "tags": ["tool-builder"],
+                "require_all_tags": True,
+            }
+        )
+
+        assert c.tool_builder_workflow.names == ["Tool Builder"]
+        assert c.tool_builder_workflow.tags == ["tool-builder"]
+        assert c.tool_builder_workflow.require_all_tags is True
 
 
 class TestSettings:

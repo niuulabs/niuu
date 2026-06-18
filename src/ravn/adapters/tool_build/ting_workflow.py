@@ -17,6 +17,11 @@ from ravn.adapters.tool_build._contract import (
     poll_until,
 )
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_pat_env
+from ravn.domain.capability_catalog import (
+    WorkflowCapability,
+    WorkflowSelector,
+    select_workflow,
+)
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,
@@ -35,7 +40,8 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
         self,
         *,
         base_url: str,
-        workflow_id: str,
+        workflow_id: str = "",
+        workflow_selector: dict[str, Any] | None = None,
         client: AsyncJsonHttpClient | None = None,
         pat_env: str = "",
         repo: str = "",
@@ -47,6 +53,7 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
         self._client = client if client is not None else client_from_pat_env(pat_env)
         self._base_url = base_url.rstrip("/")
         self._workflow_id = workflow_id
+        self._workflow_selector = _selector_from_dict(workflow_selector)
         self._repo = repo
         self._branch = branch
         self._max_poll_attempts = max_poll_attempts
@@ -58,10 +65,11 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
         return "ting_workflow"
 
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
-        if not self._workflow_id:
-            raise ToolBuildError("ting_workflow backend requires a configured workflow_id")
+        workflow_id = await self._resolve_workflow_id()
+        if not workflow_id:
+            raise ToolBuildError("ting_workflow backend requires workflow_id or workflow_selector")
         _system, initial_prompt = build_prompts(request)
-        launch = await self._launch(request, initial_prompt)
+        launch = await self._launch(request, initial_prompt, workflow_id=workflow_id)
         campaign_id = str(launch.get("campaign_id") or launch.get("id") or "")
         if not campaign_id:
             raise ToolBuildError("Ting workflow launch returned no campaign id")
@@ -90,12 +98,33 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
             provenance={
                 "backend": self.name,
                 "ting_campaign_id": campaign_id,
-                "ting_workflow_id": self._workflow_id,
+                "ting_workflow_id": workflow_id,
                 "build_request": request.build_request,
             },
         )
 
-    async def _launch(self, request: ToolBuildRequest, initial_prompt: str) -> dict[str, Any]:
+    async def _resolve_workflow_id(self) -> str:
+        if self._workflow_id:
+            return self._workflow_id
+        if not self._workflow_selector.configured:
+            return ""
+        resp = await self._client.get(f"{self._base_url}/api/v1/ting/workflows")
+        if resp.status_code != 200 or not isinstance(resp.body, list):
+            raise ToolBuildError(f"Ting workflow discovery returned HTTP {resp.status_code}")
+        workflows = [_workflow_from_body(item) for item in resp.body if isinstance(item, dict)]
+        workflow = select_workflow(self._workflow_selector, workflows)
+        if workflow is None:
+            raise ToolBuildError("Ting workflow discovery found no matching tool-builder workflow")
+        self._workflow_id = workflow.workflow_id
+        return self._workflow_id
+
+    async def _launch(
+        self,
+        request: ToolBuildRequest,
+        initial_prompt: str,
+        *,
+        workflow_id: str,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "prompt": initial_prompt,
             "sessionName": f"tool-build-{request.name}",
@@ -104,7 +133,7 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
             body["repo"] = self._repo
         if self._branch:
             body["branch"] = self._branch
-        url = f"{self._base_url}/api/v1/ting/workflows/{self._workflow_id}/launch"
+        url = f"{self._base_url}/api/v1/ting/workflows/{workflow_id}/launch"
         resp = await self._client.post(url, body)
         if resp.status_code not in (200, 201):
             raise ToolBuildError(f"Ting workflow launch returned HTTP {resp.status_code}")
@@ -142,3 +171,32 @@ def _campaign_status(campaign: Any) -> str:
     if not isinstance(campaign, dict):
         return "running"
     return str(campaign.get("status") or "running").lower()
+
+
+def _selector_from_dict(value: dict[str, Any] | None) -> WorkflowSelector:
+    if not isinstance(value, dict):
+        value = {}
+    names = value.get("names")
+    tags = value.get("tags")
+    return WorkflowSelector(
+        names=[str(item) for item in names if str(item).strip()] if isinstance(names, list) else [],
+        tags=[str(item) for item in tags if str(item).strip()] if isinstance(tags, list) else [],
+        require_all_tags=bool(value.get("require_all_tags")),
+    )
+
+
+def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
+    tags = body.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    return WorkflowCapability(
+        workflow_id=str(body.get("id") or ""),
+        name=str(body.get("name") or ""),
+        description=str(body.get("description") or ""),
+        version=str(body.get("version") or ""),
+        tags=[str(tag) for tag in tags if str(tag).strip()],
+        metadata={
+            "scope": body.get("scope"),
+            "owner_id": body.get("ownerId") or body.get("owner_id"),
+        },
+    )

@@ -157,6 +157,8 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert "ODIN/court" in persona.system_prompt_template
     assert "Flock/NATS mesh" in persona.system_prompt_template
     assert spec["action"] in persona.system_prompt_template
+    assert "ravn" in persona.allowed_tools
+    assert "workflow" in persona.allowed_tools
 
 
 @pytest.mark.parametrize("name", sorted(RESIDENT_VALKYRIES))

@@ -270,12 +270,24 @@ class ToolGroupConfig(BaseModel):
     """Named tool group configuration — controls which tool groups are active."""
 
     include_groups: list[str] = Field(
-        default=["core", "extended", "skill", "platform", "cascade", "mimir"],
+        default=[
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+            "workflow",
+            "ravn",
+        ],
         description=(
-            "Tool groups to include. Built-in groups: core, extended, skill, platform, mimir. "
+            "Tool groups to include. Built-in groups: core, extended, skill, platform, "
+            "mimir, workflow, ravn. "
             "The 'cascade' group signals that cascade tools (wired via build_cascade_tools) "
             "should be appended when the profile is selected by the coordinator. "
-            "The 'mimir' group enables the six mimir_* knowledge-base tools."
+            "The 'mimir' group enables mimir_* knowledge-base tools. "
+            "The 'workflow' group enables workflow_* tools backed by capability_sources. "
+            "The 'ravn' group enables persona, skill, and capability catalog tools."
         ),
     )
     include_mcp: bool = Field(
@@ -2437,6 +2449,23 @@ class ResidentWakefulnessConfig(BaseModel):
     )
 
 
+class WorkflowSelectorConfig(BaseModel):
+    """Select workflows from an existing workflow catalog."""
+
+    names: list[str] = Field(
+        default_factory=list,
+        description="Workflow names or ids allowed by this selector.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Workflow tags allowed by this selector.",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="Require every configured tag instead of any matching tag.",
+    )
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2500,6 +2529,15 @@ class ResidentEvolutionConfig(BaseModel):
         description=(
             "Constructor kwargs for the tool build adapter (base_url, "
             "workflow_id, pat_env, model, poll intervals, ...)."
+        ),
+    )
+    tool_builder_workflow: WorkflowSelectorConfig = Field(
+        default_factory=WorkflowSelectorConfig,
+        description=(
+            "Optional selector for the tool-builder workflow. When configured "
+            "with a Ting workflow build backend, the backend discovers the "
+            "matching workflow from the catalog instead of requiring a "
+            "hardcoded workflow_id."
         ),
     )
 
@@ -2818,82 +2856,6 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
-class WorkflowSelectorConfig(BaseModel):
-    """Select workflows from an existing workflow catalog."""
-
-    names: list[str] = Field(
-        default_factory=list,
-        description="Workflow names or ids allowed by this selector.",
-    )
-    tags: list[str] = Field(
-        default_factory=list,
-        description="Workflow tags allowed by this selector.",
-    )
-    require_all_tags: bool = Field(
-        default=False,
-        description="Require every configured tag instead of any matching tag.",
-    )
-
-
-class BuildMissingCapabilityConfig(BaseModel):
-    """Configured fallback for commissioning a missing capability."""
-
-    enabled: bool = Field(
-        default=False,
-        description="Allow this policy to invoke a builder workflow when capability is missing.",
-    )
-    workflow: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
-    requires_approval: bool = Field(
-        default=True,
-        description="Whether generated capability installation should require approval.",
-    )
-
-
-class CapabilityPolicyConfig(BaseModel):
-    """Policy mapping resident signals to local or remote capabilities."""
-
-    name: str = Field(default="", description="Stable policy name for audit/provenance.")
-    enabled: bool = Field(default=True)
-    signal_types: list[str] = Field(
-        default_factory=list,
-        description="Signal event types matched by this policy; empty means any.",
-    )
-    severities: list[str] = Field(
-        default_factory=list,
-        description="Signal severities matched by this policy; empty means any.",
-    )
-    source_ids: list[str] = Field(
-        default_factory=list,
-        description="Signal source ids matched by this policy; empty means any.",
-    )
-    local_skills: list[str] = Field(
-        default_factory=list,
-        description="Preferred local skill names when installed.",
-    )
-    local_tools: list[str] = Field(
-        default_factory=list,
-        description="Local tool names expected by the matched skill or investigation.",
-    )
-    remote_trigger_decisions: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Resident-learning decision names allowed to launch remote workflow work. "
-            "Empty means workflow selectors are discoverable but never launched automatically."
-        ),
-    )
-    remote_connection_id: str = Field(
-        default="",
-        description=(
-            "Optional Volundr connection id/name to pass to Ting workflow launches. "
-            "Empty uses Ting's default target selection."
-        ),
-    )
-    remote_workflows: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
-    build_missing_capability: BuildMissingCapabilityConfig = Field(
-        default_factory=BuildMissingCapabilityConfig
-    )
-
-
 class CapabilitySourceConfig(BaseModel):
     """Dynamic adapter entry for remote workflow capability discovery."""
 
@@ -2903,20 +2865,6 @@ class CapabilitySourceConfig(BaseModel):
     )
     enabled: bool = True
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-
-
-class CapabilitySubmissionStoreConfig(BaseModel):
-    """Dynamic adapter entry for resident workflow submission durability."""
-
-    enabled: bool = True
-    adapter: str = Field(
-        default="ravn.adapters.capabilities.FileWorkflowSubmissionStore",
-        description="Fully-qualified WorkflowSubmissionStore implementation.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=lambda: {"path": "~/.ravn/daemon/capability_submissions.json"}
-    )
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
@@ -3013,16 +2961,6 @@ class EnvironmentConfig(BaseModel):
         description=(
             "Dynamic adapters that discover remote workflow capabilities from existing catalogs."
         ),
-    )
-    capability_policies: list[CapabilityPolicyConfig] = Field(
-        default_factory=list,
-        description=(
-            "Configurable signal-to-capability policies. Empty keeps legacy resident behavior."
-        ),
-    )
-    capability_submission_store: CapabilitySubmissionStoreConfig = Field(
-        default_factory=CapabilitySubmissionStoreConfig,
-        description="Durable resident journal for workflow submissions and restart reconciliation.",
     )
     signal_poll_interval_seconds: float = Field(
         default=10.0,

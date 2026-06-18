@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.adapters.capabilities import FileWorkflowSubmissionStore
 from ravn.config import (
-    CapabilityPolicyConfig,
     CapabilitySourceConfig,
-    CapabilitySubmissionStoreConfig,
     EnvironmentConfig,
     Settings,
     SignalSourceConfig,
-    WorkflowSelectorConfig,
 )
-from ravn.domain.capability_resolution import WorkflowCapability
+from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.models import AgentTask
 from ravn.environment_signal_runtime import (
     EnvironmentSignalRuntime,
@@ -216,9 +212,7 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
-async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decision(
-    tmp_path,
-) -> None:
+async def test_runtime_exposes_workflow_sources_as_tools_without_policy_routing() -> None:
     bus = InProcessBus()
     telemetry: list[SleipnirEvent] = []
     enqueued: list[AgentTask] = []
@@ -231,17 +225,6 @@ async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decisi
                 "tests.test_ravn.test_environment_signal_runtime."
                 "FakeWorkflowCapabilitySource"
             )
-        )
-    ]
-    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
-        kwargs={"path": str(tmp_path / "capability_submissions.json")}
-    )
-    settings.environment.capability_policies = [
-        CapabilityPolicyConfig(
-            name="host-critical-to-incident-workflow",
-            signal_types=["signal.host.event"],
-            severities=["critical"],
-            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
         )
     ]
     await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
@@ -259,174 +242,12 @@ async def test_runtime_keeps_workflow_policy_local_without_remote_trigger_decisi
     assert len(enqueued) == 1
     assert FakeWorkflowCapabilitySource.launched == []
     assert FakeWorkflowCapabilitySource.list_calls == 0
-    assert "## Capability policy" in enqueued[0].initiative_context
-    assert "not allowed to launch remote work" in enqueued[0].initiative_context
-    assert telemetry[0].payload["capability_policy_checked_count"] == 1
-    assert telemetry[0].payload["capability_remote_launch_count"] == 0
+    assert "## Remote workflows" in enqueued[0].initiative_context
+    assert "`workflow_list`" in enqueued[0].initiative_context
+    assert "`workflow_launch`" in enqueued[0].initiative_context
+    assert "hidden signal policy" in enqueued[0].initiative_context
+    assert telemetry[0].payload["workflow_capability_source_count"] == 1
     assert telemetry[0].payload["enqueued_task_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_runtime_launches_configured_workflow_after_remote_trigger_decision(
-    tmp_path,
-) -> None:
-    bus = InProcessBus()
-    telemetry: list[SleipnirEvent] = []
-    enqueued: list[AgentTask] = []
-    FakeWorkflowCapabilitySource.launched = []
-    FakeWorkflowCapabilitySource.list_calls = 0
-    settings = _settings()
-    settings.environment.capability_sources = [
-        CapabilitySourceConfig(
-            adapter=(
-                "tests.test_ravn.test_environment_signal_runtime."
-                "FakeWorkflowCapabilitySource"
-            )
-        )
-    ]
-    journal_path = tmp_path / "capability_submissions.json"
-    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
-        kwargs={"path": str(journal_path)}
-    )
-    settings.environment.capability_policies = [
-        CapabilityPolicyConfig(
-            name="host-critical-to-incident-workflow",
-            signal_types=["signal.host.event"],
-            severities=["critical"],
-            remote_trigger_decisions=["needs_remote_research"],
-            remote_connection_id="valhalla",
-            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
-        )
-    ]
-    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
-
-    async def _resident_process(event: SleipnirEvent) -> dict:
-        return {
-            "usedAdoptedLearning": False,
-            "decision": "needs_remote_research",
-            "capabilityName": "inspect.host.disk",
-            "skillName": "",
-        }
-
-    runtime = EnvironmentSignalRuntime(
-        settings=settings,
-        publisher=bus,
-        enqueue=lambda task: _enqueue(enqueued, task),
-        resident_signal_processor=_resident_process,
-    )
-
-    count = await runtime.collect_once()
-    await bus.flush()
-
-    assert count == 1
-    assert enqueued == []
-    assert FakeWorkflowCapabilitySource.list_calls == 1
-    assert len(FakeWorkflowCapabilitySource.launched) == 1
-    launch = FakeWorkflowCapabilitySource.launched[0]
-    assert launch.workflow_id == "wf-incident"
-    assert launch.connection_id == "valhalla"
-    assert "## Capability policy" in launch.prompt
-    assert "host-critical-to-incident-workflow" in launch.prompt
-    assert launch.provenance["policy"] == "host-critical-to-incident-workflow"
-    assert launch.provenance["decision"] == "invoke_workflow"
-    assert launch.provenance["workflow_id"] == "wf-incident"
-    assert launch.provenance["remote_connection_id"] == "valhalla"
-    assert launch.provenance["tenant_id"] == "host-jozef"
-    assert launch.provenance["source_id"] == "host-events"
-    assert launch.provenance["source_event_id"]
-    assert telemetry[0].payload["capability_policy_checked_count"] == 1
-    assert telemetry[0].payload["capability_remote_launch_count"] == 1
-    launch_summary = telemetry[0].payload["capability_remote_launches"][0]
-    assert launch_summary["status"] == "launched"
-    assert launch_summary["submissionId"]
-    assert launch_summary["sessionId"] == "session-from-policy"
-    assert launch_summary["workflowId"] == "wf-incident"
-    assert launch_summary["policyName"] == "host-critical-to-incident-workflow"
-    assert launch_summary["capabilityName"]
-    assert launch_summary["ownerId"] == "owner-1"
-    assert launch_summary["tenantId"] == "tenant-1"
-    assert launch_summary["workloadSubject"] == "system:serviceaccount:nats:valkyrie-host-jozef"
-    assert telemetry[0].payload["enqueued_task_count"] == 0
-    records = await FileWorkflowSubmissionStore(journal_path).list_submissions()
-    assert len(records) == 1
-    assert records[0].status == "launched"
-    assert records[0].session_id == "session-from-policy"
-    assert records[0].owner_id == "owner-1"
-    assert records[0].tenant_id == "tenant-1"
-    assert records[0].workload_subject == "system:serviceaccount:nats:valkyrie-host-jozef"
-    assert records[0].source_id == "host-events"
-    assert records[0].source_event_id
-    assert records[0].provenance["policy"] == "host-critical-to-incident-workflow"
-    assert records[0].provenance["owner_id"] == "owner-1"
-    assert records[0].provenance["session_id"] == "session-from-policy"
-
-    restarted = EnvironmentSignalRuntime(
-        settings=settings,
-        publisher=bus,
-        enqueue=lambda task: _enqueue(enqueued, task),
-    )
-    await restarted.collect_once()
-    await bus.flush()
-
-    assert len(FakeWorkflowCapabilitySource.launched) == 1
-    assert len(await FileWorkflowSubmissionStore(journal_path).list_submissions()) == 1
-
-
-@pytest.mark.asyncio
-async def test_runtime_skips_workflow_discovery_when_no_capability_policy_matches(
-    tmp_path,
-) -> None:
-    bus = InProcessBus()
-    telemetry: list[SleipnirEvent] = []
-    enqueued: list[AgentTask] = []
-    FakeWorkflowCapabilitySource.launched = []
-    FakeWorkflowCapabilitySource.list_calls = 0
-    settings = _settings()
-    settings.environment.capability_sources = [
-        CapabilitySourceConfig(
-            adapter=(
-                "tests.test_ravn.test_environment_signal_runtime."
-                "FakeWorkflowCapabilitySource"
-            )
-        )
-    ]
-    settings.environment.capability_submission_store = CapabilitySubmissionStoreConfig(
-        kwargs={"path": str(tmp_path / "capability_submissions.json")}
-    )
-    settings.environment.capability_policies = [
-        CapabilityPolicyConfig(
-            name="kubernetes-only-workflow",
-            signal_types=["signal.kubernetes.event"],
-            remote_trigger_decisions=["needs_remote_research"],
-            remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
-        )
-    ]
-    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
-
-    async def _resident_process(event: SleipnirEvent) -> dict:
-        return {
-            "usedAdoptedLearning": False,
-            "decision": "needs_remote_research",
-            "capabilityName": "inspect.host.disk",
-            "skillName": "",
-        }
-
-    runtime = EnvironmentSignalRuntime(
-        settings=settings,
-        publisher=bus,
-        enqueue=lambda task: _enqueue(enqueued, task),
-        resident_signal_processor=_resident_process,
-    )
-
-    count = await runtime.collect_once()
-    await bus.flush()
-
-    assert count == 1
-    assert len(enqueued) == 1
-    assert FakeWorkflowCapabilitySource.list_calls == 0
-    assert FakeWorkflowCapabilitySource.launched == []
-    assert "no capability policy matched the signal" in enqueued[0].initiative_context
-    assert telemetry[0].payload["capability_remote_launch_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -484,7 +305,7 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
     assert "## Resident learning" in context
     assert "## Required before you finish" in context
     assert "`inspect.host.host.disk-pressure`" in context
-    assert "Do not finish without calling" in context
+    assert "If no suitable capability exists, use `build_tool`" in context
     # It lands after the outcome schema so the model weights it.
     assert context.index("## Required before you finish") > context.index("---end---")
 
