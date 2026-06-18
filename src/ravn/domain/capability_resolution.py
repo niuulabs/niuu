@@ -79,6 +79,7 @@ class CapabilityPolicy:
     local_skills: list[str] = field(default_factory=list)
     local_tools: list[str] = field(default_factory=list)
     remote_trigger_decisions: list[str] = field(default_factory=list)
+    remote_connection_id: str = ""
     remote_workflows: WorkflowSelector = field(default_factory=WorkflowSelector)
     build_missing_capability: BuildMissingCapabilityPolicy = field(
         default_factory=BuildMissingCapabilityPolicy
@@ -104,6 +105,7 @@ class CapabilityResolution:
     capability_name: str
     policy_name: str = ""
     workflow: WorkflowCapability | None = None
+    remote_connection_id: str = ""
     local_skill: str = ""
     local_tools: list[str] = field(default_factory=list)
     requires_approval: bool = False
@@ -165,6 +167,7 @@ class CapabilityResolver:
                     capability_name=capability_name,
                     policy_name=policy.name,
                     workflow=workflow,
+                    remote_connection_id=policy.remote_connection_id,
                     local_tools=list(policy.local_tools),
                     reason=f"policy {policy.name} selected workflow {workflow.name}",
                     provenance=_provenance(signal, policy),
@@ -190,6 +193,7 @@ class CapabilityResolver:
                     capability_name=capability_name,
                     policy_name=policy.name,
                     workflow=build_workflow,
+                    remote_connection_id=policy.remote_connection_id,
                     local_tools=list(policy.local_tools),
                     requires_approval=build_policy.requires_approval,
                     reason=f"policy {policy.name} selected builder workflow {build_workflow.name}",

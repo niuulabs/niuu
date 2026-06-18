@@ -138,6 +138,7 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
             workflow_id="wf-1",
             prompt="investigate this",
             session_name="incident-session",
+            connection_id="valhalla",
             provenance={"signal_id": "sig-1"},
         )
     )
@@ -149,6 +150,7 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
     assert json.loads(json.dumps(launch_call[2]["json"])) == {
         "prompt": "investigate this",
         "sessionName": "incident-session",
+        "connectionId": "valhalla",
         "provenance": {
             "signal_id": "sig-1",
             "workload_identity": {

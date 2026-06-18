@@ -2881,6 +2881,13 @@ class CapabilityPolicyConfig(BaseModel):
             "Empty means workflow selectors are discoverable but never launched automatically."
         ),
     )
+    remote_connection_id: str = Field(
+        default="",
+        description=(
+            "Optional Volundr connection id/name to pass to Ting workflow launches. "
+            "Empty uses Ting's default target selection."
+        ),
+    )
     remote_workflows: WorkflowSelectorConfig = Field(default_factory=WorkflowSelectorConfig)
     build_missing_capability: BuildMissingCapabilityConfig = Field(
         default_factory=BuildMissingCapabilityConfig

@@ -294,6 +294,7 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
             signal_types=["signal.host.event"],
             severities=["critical"],
             remote_trigger_decisions=["needs_remote_research"],
+            remote_connection_id="valhalla",
             remote_workflows=WorkflowSelectorConfig(tags=["incident"]),
         )
     ]
@@ -323,11 +324,13 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
     assert len(FakeWorkflowCapabilitySource.launched) == 1
     launch = FakeWorkflowCapabilitySource.launched[0]
     assert launch.workflow_id == "wf-incident"
+    assert launch.connection_id == "valhalla"
     assert "## Capability policy" in launch.prompt
     assert "host-critical-to-incident-workflow" in launch.prompt
     assert launch.provenance["policy"] == "host-critical-to-incident-workflow"
     assert launch.provenance["decision"] == "invoke_workflow"
     assert launch.provenance["workflow_id"] == "wf-incident"
+    assert launch.provenance["remote_connection_id"] == "valhalla"
     assert launch.provenance["tenant_id"] == "host-jozef"
     assert launch.provenance["source_id"] == "host-events"
     assert launch.provenance["source_event_id"]

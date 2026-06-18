@@ -433,12 +433,14 @@ class EnvironmentSignalRuntime:
             workflow_id=workflow.workflow_id,
             prompt=task.initiative_context,
             session_name=task.title,
+            connection_id=resolution.remote_connection_id,
             provenance={
                 **resolution.provenance,
                 "capability_name": resolution.capability_name,
                 "decision": resolution.decision,
                 "workflow_id": workflow.workflow_id,
                 "workflow_name": workflow.name,
+                "remote_connection_id": resolution.remote_connection_id,
                 "environment_id": self._environment.id,
                 "environment_type": self._environment.type,
                 "tenant_id": self._environment.tenant_id,
@@ -946,6 +948,7 @@ def _capability_policies(settings: Settings) -> list[CapabilityPolicy]:
                 local_skills=list(cfg.local_skills),
                 local_tools=list(cfg.local_tools),
                 remote_trigger_decisions=list(cfg.remote_trigger_decisions),
+                remote_connection_id=cfg.remote_connection_id,
                 remote_workflows=WorkflowSelector(
                     names=list(cfg.remote_workflows.names),
                     tags=list(cfg.remote_workflows.tags),
@@ -993,6 +996,7 @@ def _resolution_payload(resolution: CapabilityResolution) -> dict[str, Any]:
         "localSkill": resolution.local_skill,
         "localTools": list(resolution.local_tools),
         "requiresApproval": resolution.requires_approval,
+        "remoteConnectionId": resolution.remote_connection_id,
         "reason": resolution.reason,
         "workflow": None
         if workflow is None
