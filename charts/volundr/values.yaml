@@ -452,11 +452,39 @@ envoy:
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
       - /api/v1/identity/auth/config
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
       - /health
+    # -- Additional JWT provider for short-lived Niuu workload tokens.
+    # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      # Defaults to the app-local workload JWKS endpoint when empty.
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr.roles"
+      extraClaimHeaders: []
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
+
+workloadIdentity:
+  enabled: false
+  issuer: ""
+  audiences:
+    - volundr-api
+  tokenTtlSeconds: 900
+  keyId: niuu-workload
+  signingKey:
+    existingSecret: ""
+    key: private-key.pem
+  verifiers: []
+  mappings: []
 
 # Identity adapter (dynamic adapter pattern)
 # Switch between identity/authentication backends by changing the adapter class.

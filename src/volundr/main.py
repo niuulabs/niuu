@@ -13,6 +13,7 @@ from niuu.adapters.inbound.rest_integrations_settings import create_integrations
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -858,6 +859,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
+            app.state.workload_identity_service = WorkloadIdentityService(
+                settings.workload_identity
+            )
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
 
             git_router = create_git_router(

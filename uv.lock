@@ -3292,6 +3292,7 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "claude-agent-sdk" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "gitpython" },
     { name = "httpx" },
@@ -3388,6 +3389,7 @@ requires-dist = [
     { name = "aio-pika", marker = "extra == 'rabbitmq'", specifier = ">=9.6.2" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "claude-agent-sdk", specifier = "==0.2.96" },
+    { name = "cryptography", specifier = ">=48.0.1" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=48.0.1" },
     { name = "cryptography", marker = "extra == 'encryption'", specifier = ">=48.0.1" },
     { name = "fastapi", specifier = ">=0.136.3" },

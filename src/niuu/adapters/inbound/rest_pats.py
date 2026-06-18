@@ -16,6 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.workload_identity import (
+    WorkloadIdentityError,
+    WorkloadIdentityService,
+)
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.domain.ports import IdentityPort, UserProvisioningError
 
@@ -73,6 +77,36 @@ class CreatePATResponse(BaseModel):
         return payload
 
 
+class WorkloadExchangeRequest(BaseModel):
+    """Request model for exchanging a workload identity proof."""
+
+    token: str = Field(min_length=1, description="Projected workload identity JWT.")
+
+
+class WorkloadPrincipalResponse(BaseModel):
+    """Principal represented by an exchanged workload token."""
+
+    user_id: str = Field(serialization_alias="userId")
+    tenant_id: str = Field(serialization_alias="tenantId")
+    email: str = ""
+    roles: list[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkloadExchangeResponse(BaseModel):
+    """Response model for workload identity token exchange."""
+
+    token: str
+    expires_at: int = Field(serialization_alias="expiresAt")
+    token_type: str = Field(default="Bearer", serialization_alias="tokenType")
+    principal: WorkloadPrincipalResponse
+    workload_subject: str = Field(serialization_alias="workloadSubject")
+    workload_name: str = Field(serialization_alias="workloadName")
+
+    model_config = {"populate_by_name": True}
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -111,6 +145,57 @@ def create_pats_router(
                 detail="User provisioning in progress, retry later",
                 headers={"Retry-After": "5"},
             ) from exc
+
+    def workload_identity_service(request: Request) -> WorkloadIdentityService:
+        service: WorkloadIdentityService | None = getattr(
+            request.app.state,
+            "workload_identity_service",
+            None,
+        )
+        if service is None or not service.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Workload identity exchange is not configured",
+            )
+        return service
+
+    @router.get("/workload/jwks", include_in_schema=False)
+    async def workload_jwks(request: Request) -> dict:
+        """Return the public JWKS for exchanged workload tokens."""
+        service = workload_identity_service(request)
+        return service.jwks()
+
+    @router.post(
+        "/workload/exchange",
+        response_model=WorkloadExchangeResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def exchange_workload_token(
+        body: WorkloadExchangeRequest,
+        request: Request,
+    ) -> WorkloadExchangeResponse:
+        """Exchange a validated workload proof for a short-lived Volundr JWT."""
+        service = workload_identity_service(request)
+        try:
+            result = await service.exchange(body.token)
+        except WorkloadIdentityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        return WorkloadExchangeResponse(
+            token=result.token,
+            expires_at=result.expires_at,
+            principal=WorkloadPrincipalResponse(
+                user_id=result.principal.user_id,
+                tenant_id=result.principal.tenant_id,
+                email=result.principal.email,
+                roles=result.principal.roles,
+            ),
+            workload_subject=result.workload_subject,
+            workload_name=result.workload_name,
+        )
 
     @router.post(
         "",
@@ -215,5 +300,29 @@ def create_pats_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"PAT not found: {pat_id}",
             )
+
+    return router
+
+
+def create_workload_identity_jwks_router(
+    prefix: str = "/api/v1/tokens",
+) -> APIRouter:
+    """Create a JWKS-only router for services that validate workload JWTs."""
+
+    router = APIRouter(prefix=prefix, tags=["Workload Identity"])
+
+    @router.get("/workload/jwks", include_in_schema=False)
+    async def workload_jwks(request: Request) -> dict:
+        service: WorkloadIdentityService | None = getattr(
+            request.app.state,
+            "workload_identity_service",
+            None,
+        )
+        if service is None or not service.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Workload identity exchange is not configured",
+            )
+        return service.jwks()
 
     return router

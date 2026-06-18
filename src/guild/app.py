@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.rest_instances import create_instances_router
+from niuu.adapters.inbound.rest_pats import create_workload_identity_jwks_router
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
@@ -16,6 +17,7 @@ from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.instances import InstanceService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import configure_logging, create_pat_validator
@@ -68,6 +70,9 @@ def create_app(
 
             app.state.instance_service = instance_service
             app.state.pat_validator = pat_validator
+            app.state.workload_identity_service = WorkloadIdentityService(
+                loaded_settings.workload_identity
+            )
 
             if loaded_settings.niuu.instances:
                 await seed_configured_instances(
@@ -89,6 +94,7 @@ def create_app(
                     embedded_forge_app=embedded_forge_app,
                 )
             )
+            app.include_router(create_workload_identity_jwks_router())
 
             yield
 
