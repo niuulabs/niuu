@@ -338,10 +338,10 @@ class TestSessionServiceDelete:
             SessionStatus.STOPPING,
         ]
 
-    async def test_delete_created_does_not_stop_infrastructure(
+    async def test_delete_created_still_stops_infrastructure(
         self, repository: Repo, pod_manager: Pods
     ):
-        """Deleting a never-started session does not call the pod manager."""
+        """Deleting any session asks the pod manager to remove stale runtime resources."""
         service = SessionService(repository, pod_manager)
         created = await service.create_session(
             name="test",
@@ -355,7 +355,8 @@ class TestSessionServiceDelete:
         result = await service.delete_session(created.id)
 
         assert result is True
-        assert pod_manager.stop_calls == []
+        assert len(pod_manager.stop_calls) == 1
+        assert pod_manager.stop_calls[0].id == created.id
 
     async def test_delete_running_succeeds_when_pod_stop_fails(
         self, repository: Repo, failing_pod_manager: Pods
