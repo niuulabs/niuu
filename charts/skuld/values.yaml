@@ -324,6 +324,31 @@ envoy:
     keycloakTls: false
     # -- Additional JWT claim-to-header mappings
     extraClaimHeaders: []
+    workload:
+      # -- Enable workload JWT authentication as an additional accepted provider
+      enabled: false
+      # -- Workload JWT issuer URL
+      issuer: ""
+      # -- Allowed workload JWT audiences
+      audiences: []
+      # -- Workload JWT JWKS URI
+      jwksUri: ""
+      # -- Hostname used by the Envoy JWKS cluster for workload tokens
+      jwksHost: ""
+      # -- Port used by the Envoy JWKS cluster for workload tokens
+      jwksPort: 443
+      # -- Enable TLS for the workload JWKS cluster
+      jwksTls: true
+      # -- JWKS fetch timeout
+      jwksTimeout: "5s"
+      # -- JWKS cache duration in seconds
+      jwksCacheDurationSeconds: 300
+      # -- Workload JWT claim containing tenant ID
+      tenantClaim: "tenant_id"
+      # -- Workload JWT claim containing roles
+      rolesClaim: "resource_access.volundr-api.roles"
+      # -- Additional workload JWT claim-to-header mappings
+      extraClaimHeaders: []
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
   # -- Extra upstream clusters
@@ -370,6 +395,15 @@ gateway:
     audiences: []
     # -- JWKS URI for key retrieval
     jwksUri: ""
+    workload:
+      # -- Enable workload JWT validation as an additional session-route provider
+      enabled: false
+      # -- Workload JWT issuer URL
+      issuer: ""
+      # -- Allowed workload JWT audiences
+      audiences: []
+      # -- JWKS URI for workload JWT key retrieval
+      jwksUri: ""
 
 # Pod configuration
 # -- Extra labels applied to session pods (e.g. volundr/owner for PVC isolation)

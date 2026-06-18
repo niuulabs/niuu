@@ -1,6 +1,7 @@
 """Gateway contributor — wraps GatewayPort."""
 
 from typing import Any
+from urllib.parse import urlparse
 
 from volundr.domain.models import Session
 from volundr.domain.ports import (
@@ -62,5 +63,44 @@ class GatewayContributor(SessionContributor):
                 "audiences": [gateway_config.get("audience", "volundr")],
                 "jwksUri": gateway_config.get("jwks_uri", ""),
             }
+            if workload := _workload_jwt_config(gateway_config):
+                gw["jwt"]["workload"] = {
+                    "enabled": True,
+                    "issuer": workload["issuer"],
+                    "audiences": workload["audiences"],
+                    "jwksUri": workload["jwksUri"],
+                }
 
-        return SessionContribution(values={"gateway": gw})
+        values: dict[str, Any] = {"gateway": gw}
+        if workload := _workload_jwt_config(gateway_config):
+            values["envoy"] = {
+                "jwt": {
+                    "workload": workload,
+                },
+            }
+
+        return SessionContribution(values=values)
+
+
+def _workload_jwt_config(gateway_config: dict[str, str]) -> dict[str, Any]:
+    issuer = gateway_config.get("workload_issuer_url", "")
+    jwks_uri = gateway_config.get("workload_jwks_uri", "")
+    if not issuer or not jwks_uri:
+        return {}
+
+    parsed = urlparse(jwks_uri)
+    if not parsed.hostname:
+        return {}
+
+    scheme = parsed.scheme.lower()
+    tls = scheme == "https"
+    default_port = 443 if tls else 80
+    return {
+        "enabled": True,
+        "issuer": issuer,
+        "audiences": [gateway_config.get("workload_audience", "volundr-api")],
+        "jwksUri": jwks_uri,
+        "jwksHost": parsed.hostname,
+        "jwksPort": parsed.port or default_port,
+        "jwksTls": tls,
+    }

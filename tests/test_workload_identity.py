@@ -196,6 +196,77 @@ def test_workload_jwt_provider_renders_as_additional_envoy_auth_provider(
         assert 'prefix: "/api/v1/tokens/workload/exchange"' in envoy_yaml
 
 
+def test_skuld_accepts_workload_jwt_at_gateway_and_sidecar() -> None:
+    chart_dir = Path(__file__).parent.parent / "charts" / "skuld"
+    result = subprocess.run(
+        [
+            "helm",
+            "template",
+            "test",
+            str(chart_dir),
+            "--set",
+            "envoy.enabled=true",
+            "--set",
+            "envoy.jwt.enabled=true",
+            "--set",
+            "envoy.jwt.issuer=https://keycloak.example/realms/volundr",
+            "--set",
+            "envoy.jwt.jwksUri=https://keycloak.example/certs",
+            "--set",
+            "envoy.jwt.keycloakHost=keycloak.example",
+            "--set",
+            "envoy.jwt.workload.enabled=true",
+            "--set",
+            f"envoy.jwt.workload.issuer={EXCHANGE_ISSUER}",
+            "--set",
+            "envoy.jwt.workload.audiences[0]=volundr-api",
+            "--set",
+            f"envoy.jwt.workload.jwksUri={EXCHANGE_ISSUER}/jwks",
+            "--set",
+            "envoy.jwt.workload.jwksHost=yggdrasil.niuu.world",
+            "--set",
+            "gateway.enabled=true",
+            "--set",
+            "gateway.jwt.enabled=true",
+            "--set",
+            "gateway.jwt.issuer=https://keycloak.example/realms/volundr",
+            "--set",
+            "gateway.jwt.audiences[0]=volundr-api",
+            "--set",
+            "gateway.jwt.jwksUri=https://keycloak.example/certs",
+            "--set",
+            "gateway.jwt.workload.enabled=true",
+            "--set",
+            f"gateway.jwt.workload.issuer={EXCHANGE_ISSUER}",
+            "--set",
+            "gateway.jwt.workload.audiences[0]=volundr-api",
+            "--set",
+            f"gateway.jwt.workload.jwksUri={EXCHANGE_ISSUER}/jwks",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    assert "workload:" in result.stdout
+    assert "requires_any:" in result.stdout
+    assert "- provider_name: keycloak" in result.stdout
+    assert "- provider_name: workload" in result.stdout
+    assert "cluster: workload_jwks" in result.stdout
+    assert 'address: "yggdrasil.niuu.world"' in result.stdout
+
+    documents = list(yaml.safe_load_all(result.stdout))
+    security_policy = next(
+        doc
+        for doc in documents
+        if doc and doc.get("kind") == "SecurityPolicy"
+    )
+    providers = security_policy["spec"]["jwt"]["providers"]
+    assert [provider["name"] for provider in providers] == ["volundr-idp", "workload"]
+
+
 def _render_chart(chart: str) -> str:
     chart_dir = Path(__file__).parent.parent / "charts" / chart
     result = subprocess.run(
