@@ -51,6 +51,7 @@ def test_resolver_selects_remote_workflow_from_existing_catalog() -> None:
             CapabilityPolicy(
                 name="k8s-policy",
                 severities=["warning", "critical"],
+                remote_trigger_decisions=["needs_remote_research"],
                 remote_workflows=WorkflowSelector(tags=["incident"]),
             )
         ]
@@ -58,6 +59,7 @@ def test_resolver_selects_remote_workflow_from_existing_catalog() -> None:
 
     result = resolver.resolve(
         _signal(),
+        resident_decision="needs_remote_research",
         workflows=[WorkflowCapability("wf-1", "Incident Investigation", tags=["incident"])],
     )
 
@@ -73,6 +75,7 @@ def test_resolver_can_fall_back_to_builder_workflow() -> None:
             CapabilityPolicy(
                 name="k8s-policy",
                 remote_workflows=WorkflowSelector(tags=["missing-direct-workflow"]),
+                remote_trigger_decisions=["defer_to_builder"],
                 build_missing_capability=BuildMissingCapabilityPolicy(
                     enabled=True,
                     workflow=WorkflowSelector(tags=["tool-builder"]),
@@ -84,6 +87,7 @@ def test_resolver_can_fall_back_to_builder_workflow() -> None:
 
     result = resolver.resolve(
         _signal(),
+        resident_decision="defer_to_builder",
         workflows=[WorkflowCapability("wf-build", "Tool Builder", tags=["tool-builder"])],
     )
 

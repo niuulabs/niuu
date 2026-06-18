@@ -32,7 +32,20 @@ class _FakeAsyncClient:
     async def post(self, url: str, **kwargs):  # noqa: ANN003
         self.calls.append(("POST", url, kwargs))
         if url.endswith("/api/v1/tokens/workload/exchange"):
-            return _FakeResponse(201, {"token": "exchanged-token", "expiresAt": 9999999999})
+            return _FakeResponse(
+                201,
+                {
+                    "token": "exchanged-token",
+                    "expiresAt": 9999999999,
+                    "principal": {
+                        "userId": "owner-1",
+                        "tenantId": "tenant-1",
+                        "roles": ["volundr:developer"],
+                    },
+                    "workloadSubject": "system:serviceaccount:nats:valkyrie",
+                    "workloadName": "valkyrie-ymir-k8s",
+                },
+            )
         return _FakeResponse(
             201,
             {
@@ -136,5 +149,17 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
     assert json.loads(json.dumps(launch_call[2]["json"])) == {
         "prompt": "investigate this",
         "sessionName": "incident-session",
-        "provenance": {"signal_id": "sig-1"},
+        "provenance": {
+            "signal_id": "sig-1",
+            "workload_identity": {
+                "owner_id": "owner-1",
+                "tenant_id": "tenant-1",
+                "workload_subject": "system:serviceaccount:nats:valkyrie",
+                "workload_name": "valkyrie-ymir-k8s",
+                "roles": ["volundr:developer"],
+            },
+        },
     }
+    assert result.owner_id == "owner-1"
+    assert result.tenant_id == "tenant-1"
+    assert result.workload_subject == "system:serviceaccount:nats:valkyrie"

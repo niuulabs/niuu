@@ -90,6 +90,10 @@ class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
             status="running",
             slug="session-from-policy",
             cluster_name="ymir",
+            owner_id="owner-1",
+            tenant_id="tenant-1",
+            workload_subject="system:serviceaccount:nats:valkyrie-host-jozef",
+            workload_name="valkyrie-host-jozef",
         )
 
 
@@ -318,15 +322,34 @@ async def test_runtime_launches_configured_workflow_after_remote_trigger_decisio
     assert launch.provenance["policy"] == "host-critical-to-incident-workflow"
     assert launch.provenance["decision"] == "invoke_workflow"
     assert launch.provenance["workflow_id"] == "wf-incident"
+    assert launch.provenance["tenant_id"] == "host-jozef"
+    assert launch.provenance["source_id"] == "host-events"
     assert launch.provenance["source_event_id"]
     assert telemetry[0].payload["capability_policy_checked_count"] == 1
     assert telemetry[0].payload["capability_remote_launch_count"] == 1
+    launch_summary = telemetry[0].payload["capability_remote_launches"][0]
+    assert launch_summary["status"] == "launched"
+    assert launch_summary["submissionId"]
+    assert launch_summary["sessionId"] == "session-from-policy"
+    assert launch_summary["workflowId"] == "wf-incident"
+    assert launch_summary["policyName"] == "host-critical-to-incident-workflow"
+    assert launch_summary["capabilityName"]
+    assert launch_summary["ownerId"] == "owner-1"
+    assert launch_summary["tenantId"] == "tenant-1"
+    assert launch_summary["workloadSubject"] == "system:serviceaccount:nats:valkyrie-host-jozef"
     assert telemetry[0].payload["enqueued_task_count"] == 0
     records = await FileWorkflowSubmissionStore(journal_path).list_submissions()
     assert len(records) == 1
     assert records[0].status == "launched"
     assert records[0].session_id == "session-from-policy"
+    assert records[0].owner_id == "owner-1"
+    assert records[0].tenant_id == "tenant-1"
+    assert records[0].workload_subject == "system:serviceaccount:nats:valkyrie-host-jozef"
+    assert records[0].source_id == "host-events"
+    assert records[0].source_event_id
     assert records[0].provenance["policy"] == "host-critical-to-incident-workflow"
+    assert records[0].provenance["owner_id"] == "owner-1"
+    assert records[0].provenance["session_id"] == "session-from-policy"
 
     restarted = EnvironmentSignalRuntime(
         settings=settings,

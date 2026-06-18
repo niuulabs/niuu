@@ -33,6 +33,10 @@ class WorkflowLaunchResult:
     status: str
     slug: str = ""
     cluster_name: str = ""
+    owner_id: str = ""
+    tenant_id: str = ""
+    workload_subject: str = ""
+    workload_name: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -48,6 +52,13 @@ class WorkflowSubmissionRecord:
     decision: str
     environment_id: str
     valkyrie_id: str
+    owner_id: str = ""
+    tenant_id: str = ""
+    workload_subject: str = ""
+    workload_name: str = ""
+    source_id: str = ""
+    source_event_id: str = ""
+    correlation_id: str = ""
     session_id: str = ""
     session_name: str = ""
     slug: str = ""

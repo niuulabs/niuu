@@ -419,20 +419,29 @@ class EnvironmentSignalRuntime:
                 "workflow_id": workflow.workflow_id,
                 "workflow_name": workflow.name,
                 "environment_id": self._environment.id,
+                "environment_type": self._environment.type,
+                "tenant_id": self._environment.tenant_id,
                 "valkyrie_id": self._settings.mesh.own_peer_id,
                 "source_event_id": event.event_id,
+                "source_id": signal.source_id,
+                "correlation_id": event.correlation_id or signal.correlation_id,
             },
         )
+        signal_id = _stable_signal_id(signal, event)
         await self._record_submission(
             WorkflowSubmissionRecord(
                 submission_id=submission_id,
                 status="pending",
-                signal_id=_stable_signal_id(signal, event),
+                signal_id=signal_id,
                 workflow_id=workflow.workflow_id,
                 workflow_name=workflow.name,
                 decision=resolution.decision,
                 environment_id=self._environment.id,
                 valkyrie_id=self._settings.mesh.own_peer_id,
+                tenant_id=self._environment.tenant_id,
+                source_id=signal.source_id,
+                source_event_id=event.event_id,
+                correlation_id=event.correlation_id or signal.correlation_id or "",
                 provenance=dict(request.provenance),
                 created_at=_now_iso(),
                 updated_at=_now_iso(),
@@ -442,21 +451,38 @@ class EnvironmentSignalRuntime:
         for source in self._capability_sources:
             try:
                 launched = await source.launch_workflow(request)
+                launch_provenance = {
+                    **request.provenance,
+                    "owner_id": launched.owner_id,
+                    "tenant_id": launched.tenant_id or self._environment.tenant_id,
+                    "workload_subject": launched.workload_subject,
+                    "workload_name": launched.workload_name,
+                    "session_id": launched.session_id,
+                    "session_name": launched.session_name,
+                    "cluster_name": launched.cluster_name,
+                }
                 await self._record_submission(
                     WorkflowSubmissionRecord(
                         submission_id=submission_id,
                         status="launched",
-                        signal_id=_stable_signal_id(signal, event),
+                        signal_id=signal_id,
                         workflow_id=launched.workflow_id or workflow.workflow_id,
                         workflow_name=launched.workflow_name or workflow.name,
                         decision=resolution.decision,
                         environment_id=self._environment.id,
                         valkyrie_id=self._settings.mesh.own_peer_id,
+                        owner_id=launched.owner_id,
+                        tenant_id=launched.tenant_id or self._environment.tenant_id,
+                        workload_subject=launched.workload_subject,
+                        workload_name=launched.workload_name,
+                        source_id=signal.source_id,
+                        source_event_id=event.event_id,
+                        correlation_id=event.correlation_id or signal.correlation_id or "",
                         session_id=launched.session_id,
                         session_name=launched.session_name,
                         slug=launched.slug,
                         cluster_name=launched.cluster_name,
-                        provenance=dict(request.provenance),
+                        provenance=launch_provenance,
                         created_at=(existing.created_at if existing is not None else _now_iso()),
                         updated_at=_now_iso(),
                     )
@@ -471,6 +497,10 @@ class EnvironmentSignalRuntime:
                     "slug": launched.slug,
                     "clusterName": launched.cluster_name,
                     "submissionId": submission_id,
+                    "ownerId": launched.owner_id,
+                    "tenantId": launched.tenant_id or self._environment.tenant_id,
+                    "workloadSubject": launched.workload_subject,
+                    "workloadName": launched.workload_name,
                     "reused": False,
                 }
             except Exception as exc:  # noqa: BLE001
@@ -480,12 +510,16 @@ class EnvironmentSignalRuntime:
             WorkflowSubmissionRecord(
                 submission_id=submission_id,
                 status="failed",
-                signal_id=_stable_signal_id(signal, event),
+                signal_id=signal_id,
                 workflow_id=workflow.workflow_id,
                 workflow_name=workflow.name,
                 decision=resolution.decision,
                 environment_id=self._environment.id,
                 valkyrie_id=self._settings.mesh.own_peer_id,
+                tenant_id=self._environment.tenant_id,
+                source_id=signal.source_id,
+                source_event_id=event.event_id,
+                correlation_id=event.correlation_id or signal.correlation_id or "",
                 error="; ".join(errors),
                 provenance=dict(request.provenance),
                 created_at=(existing.created_at if existing is not None else _now_iso()),
@@ -771,6 +805,11 @@ class EnvironmentSignalRuntime:
         capability_remote_launch_count = sum(
             1 for result in capability_results if _remote_launch_started(result)
         )
+        capability_remote_launches = [
+            _remote_launch_summary(result)
+            for result in capability_results
+            if isinstance(result, dict) and isinstance(result.get("remoteLaunch"), dict)
+        ][:10]
         payload = {
             "valkyrie_id": self._settings.mesh.own_peer_id,
             "valkyrie_name": self._resident_name(),
@@ -786,6 +825,7 @@ class EnvironmentSignalRuntime:
             "resident_learning_used_count": resident_used_count,
             "capability_policy_checked_count": capability_checked_count,
             "capability_remote_launch_count": capability_remote_launch_count,
+            "capability_remote_launches": capability_remote_launches,
             "drive_loop_enabled": self._enqueue is not None,
             "duration_ms": duration_ms,
             "severity_counts": severity_counts,
@@ -958,6 +998,27 @@ def _remote_launch_started(result: dict[str, Any] | None) -> bool:
     return isinstance(launch, dict) and launch.get("status") == "launched"
 
 
+def _remote_launch_summary(result: dict[str, Any]) -> dict[str, Any]:
+    launch = result.get("remoteLaunch")
+    if not isinstance(launch, dict):
+        launch = {}
+    workflow = result.get("workflow")
+    workflow_id = ""
+    if isinstance(workflow, dict):
+        workflow_id = str(workflow.get("id") or "")
+    return {
+        "status": launch.get("status") or "skipped",
+        "submissionId": launch.get("submissionId") or "",
+        "sessionId": launch.get("sessionId") or "",
+        "workflowId": launch.get("workflowId") or workflow_id,
+        "policyName": result.get("policyName") or "",
+        "capabilityName": result.get("capabilityName") or "",
+        "ownerId": launch.get("ownerId") or "",
+        "tenantId": launch.get("tenantId") or "",
+        "workloadSubject": launch.get("workloadSubject") or "",
+    }
+
+
 def _submission_id(event: SleipnirEvent, resolution: CapabilityResolution) -> str:
     workflow_id = resolution.workflow.workflow_id if resolution.workflow is not None else ""
     payload = event.payload if isinstance(event.payload, dict) else {}
@@ -996,6 +1057,10 @@ def _launch_from_submission(record: WorkflowSubmissionRecord, *, reused: bool) -
         "slug": record.slug,
         "clusterName": record.cluster_name,
         "submissionId": record.submission_id,
+        "ownerId": record.owner_id,
+        "tenantId": record.tenant_id,
+        "workloadSubject": record.workload_subject,
+        "workloadName": record.workload_name,
         "reused": reused,
     }
 

@@ -42,6 +42,7 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         self._timeout_seconds = timeout_seconds
         self._cached_token = ""
         self._cached_expires_at = 0
+        self._cached_identity: dict[str, Any] = {}
 
     async def list_workflows(self) -> list[WorkflowCapability]:
         resp = await self._request("GET", f"{self._base_url}/api/v1/ting/workflows")
@@ -53,6 +54,7 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         return [_workflow_from_body(item) for item in body if isinstance(item, dict)]
 
     async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        identity = await self._workload_identity_metadata()
         body: dict[str, Any] = {"prompt": request.prompt}
         if request.session_name:
             body["sessionName"] = request.session_name
@@ -62,8 +64,11 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             body["branch"] = request.branch
         if request.connection_id:
             body["connectionId"] = request.connection_id
-        if request.provenance:
-            body["provenance"] = dict(request.provenance)
+        provenance = dict(request.provenance)
+        if identity:
+            provenance["workload_identity"] = dict(identity)
+        if provenance:
+            body["provenance"] = provenance
 
         resp = await self._request(
             "POST",
@@ -83,6 +88,10 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             status=str(raw.get("status") or ""),
             slug=str(raw.get("slug") or ""),
             cluster_name=str(raw.get("clusterName") or raw.get("cluster_name") or ""),
+            owner_id=str(identity.get("owner_id") or ""),
+            tenant_id=str(identity.get("tenant_id") or ""),
+            workload_subject=str(identity.get("workload_subject") or ""),
+            workload_name=str(identity.get("workload_name") or ""),
             raw=raw,
         )
 
@@ -111,7 +120,12 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             raise RuntimeError("workload token exchange returned no token")
         self._cached_token = token
         self._cached_expires_at = int(body.get("expiresAt") or body.get("expires_at") or now)
+        self._cached_identity = _identity_from_exchange(body)
         return token
+
+    async def _workload_identity_metadata(self) -> dict[str, Any]:
+        await self._workload_bearer_token()
+        return dict(self._cached_identity)
 
 
 def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
@@ -129,3 +143,19 @@ def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
             "owner_id": body.get("ownerId") or body.get("owner_id"),
         },
     )
+
+
+def _identity_from_exchange(body: dict[str, Any]) -> dict[str, Any]:
+    principal = body.get("principal")
+    if not isinstance(principal, dict):
+        principal = {}
+    roles = principal.get("roles")
+    if not isinstance(roles, list):
+        roles = []
+    return {
+        "owner_id": str(principal.get("userId") or principal.get("user_id") or ""),
+        "tenant_id": str(principal.get("tenantId") or principal.get("tenant_id") or ""),
+        "workload_subject": str(body.get("workloadSubject") or body.get("workload_subject") or ""),
+        "workload_name": str(body.get("workloadName") or body.get("workload_name") or ""),
+        "roles": [str(role) for role in roles if str(role).strip()],
+    }
