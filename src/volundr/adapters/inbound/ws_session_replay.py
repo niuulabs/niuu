@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -37,6 +39,8 @@ from volundr.replay.source import (
     RepositoryReplaySource,
     load_fixture_entries,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _VisibilityGate:
@@ -73,12 +77,25 @@ def create_session_replay_router(
     *,
     prefix: str = "/api/v1/forge",
     config,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> APIRouter:
     """Create the FastAPI router exposing the replay-as-live WebSocket routes.
 
     ``config`` is a ``volundr.config.ReplayConfig`` (passed in to avoid a
-    config <-> replay import cycle).
+    config <-> replay import cycle). ``sleep`` is the pacing clock, injectable so
+    tests can pace deterministically without real wall-clock waits.
     """
+    # The fixture route silently closes 1008 when its corpus dir is missing,
+    # which is baffling to debug — warn loudly at wire-up time instead.
+    if config.fixtures_enabled:
+        fixtures_dir = config.fixtures_dir_path()
+        if not fixtures_dir.is_dir():
+            logger.warning(
+                "replay: fixtures_enabled but fixtures dir %s does not exist — "
+                "every /replay/fixtures request will close 1008",
+                fixtures_dir,
+            )
+
     router = APIRouter(prefix=prefix)
 
     @router.websocket("/sessions/{session_id}/replay")
@@ -124,6 +141,7 @@ def create_session_replay_router(
             after=after,
             show_internal=show_internal,
             preamble=preamble,
+            sleep=sleep,
         )
 
     @router.websocket("/replay/fixtures/{name}")
@@ -155,6 +173,7 @@ def create_session_replay_router(
             after=after,
             show_internal=show_internal,
             preamble=preamble,
+            sleep=sleep,
         )
 
     return router
@@ -169,23 +188,26 @@ async def _run(
     after: int,
     show_internal: bool,
     preamble: bool,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Accept the socket, send the preamble, then pace-emit the recorded frames.
 
-    A concurrent receiver honors ``set_internal_visibility`` toggles; all other
-    inbound frames are ignored (read-only replay). On client disconnect the
-    drive task unwinds (via ``WebSocketDisconnect`` on send or ``CancelledError``
-    through the injected sleep); ``finally`` cancels the receiver and closes.
+    The driver and a receiver run CONCURRENTLY; whichever finishes first cancels
+    the other (``asyncio.wait`` + ``FIRST_COMPLETED``). So a client disconnect —
+    observed by the receiver as a ``WebSocketDisconnect`` — cancels the driver
+    PROMPTLY even if it is parked in a long pacing sleep, rather than waiting for
+    the next ``send`` to fail. The receiver honors ``set_internal_visibility``
+    toggles; all other inbound frames are ignored (read-only replay). ``finally``
+    cancels any straggler and closes.
     """
     await ws.accept()
     gate = _VisibilityGate(show_internal)
     receiver: asyncio.Task | None = None
+    driver: asyncio.Task | None = None
     try:
         if preamble:
             await ws.send_text(
-                json.dumps(
-                    {"type": "system", "content": f"Replaying session {session_id_str}"}
-                )
+                json.dumps({"type": "system", "content": f"Replaying session {session_id_str}"})
             )
             caps = {
                 "type": "capabilities",
@@ -227,12 +249,25 @@ async def _run(
                 return
 
         receiver = asyncio.create_task(_recv())
-        await drive_replay(src.entries(after_seq=after), cfg=cfg, emit=_emit)
+        driver = asyncio.create_task(
+            drive_replay(src.entries(after_seq=after), cfg=cfg, emit=_emit, sleep=sleep)
+        )
+        # Whichever finishes first wins: stream exhausted (driver) OR client gone
+        # (receiver returns on WebSocketDisconnect). Cancel the loser so a
+        # disconnect mid-sleep tears the driver down at once.
+        done, pending = await asyncio.wait({driver, receiver}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if driver in done:
+            driver.result()  # re-raise a driver error (e.g. WebSocketDisconnect)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
-        if receiver is not None:
-            receiver.cancel()
+        for task in (receiver, driver):
+            if task is not None and not task.done():
+                task.cancel()
         try:
             await ws.close()
         except RuntimeError:

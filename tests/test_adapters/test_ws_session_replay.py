@@ -9,19 +9,21 @@ both repos offline).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 # Reuse the in-memory log used by the REST endpoint tests.
 from tests.test_adapters.test_rest_session_log import InMemoryLog
-from volundr.adapters.inbound.ws_session_replay import create_session_replay_router
+from volundr.adapters.inbound.ws_session_replay import _run, create_session_replay_router
 from volundr.config import ReplayConfig
 from volundr.domain.models import SessionLogEntry
+from volundr.replay.pacing import PacingConfig
 
 _FIXTURES_DIR = str(Path(__file__).resolve().parents[1] / "test_volundr" / "fixtures" / "replay")
 _BASE = datetime(2026, 6, 18, 9, 0, 0, tzinfo=UTC)
@@ -38,9 +40,7 @@ def _app(repo: InMemoryLog | None = None, **cfg_kwargs) -> tuple[FastAPI, InMemo
         **cfg_kwargs,
     )
     app = FastAPI()
-    app.include_router(
-        create_session_replay_router(repo, session_service=None, config=cfg)
-    )
+    app.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
     return app, repo
 
 
@@ -76,21 +76,60 @@ def _drain(ws) -> list[dict]:
 # Rows mirroring the Phase-1 claude-incremental-refactor shape: assistant/user
 # messages whose content lists carry tool_use / tool_result blocks.
 _MIXED_ROWS = [
-    {"seq": 1, "kind": "user", "offset": 0, "payload": {
-        "type": "user", "message": {"role": "user", "content": "do the thing"}}},
-    {"seq": 2, "kind": "assistant", "offset": 3, "payload": {
-        "type": "assistant", "message": {"role": "assistant", "content": [
-            {"type": "text", "text": "reading"},
-            {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"file_path": "a.ts"}},
-        ]}}},
-    {"seq": 3, "kind": "user", "offset": 4, "payload": {
-        "type": "user", "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "tu1", "content": "file body"},
-        ]}}},
-    {"seq": 4, "kind": "assistant", "offset": 9, "payload": {
-        "type": "assistant", "message": {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "tu2", "name": "Edit", "input": {}},
-        ]}}},
+    {
+        "seq": 1,
+        "kind": "user",
+        "offset": 0,
+        "payload": {"type": "user", "message": {"role": "user", "content": "do the thing"}},
+    },
+    {
+        "seq": 2,
+        "kind": "assistant",
+        "offset": 3,
+        "payload": {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "reading"},
+                    {
+                        "type": "tool_use",
+                        "id": "tu1",
+                        "name": "Read",
+                        "input": {"file_path": "a.ts"},
+                    },
+                ],
+            },
+        },
+    },
+    {
+        "seq": 3,
+        "kind": "user",
+        "offset": 4,
+        "payload": {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1", "content": "file body"},
+                ],
+            },
+        },
+    },
+    {
+        "seq": 4,
+        "kind": "assistant",
+        "offset": 9,
+        "payload": {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu2", "name": "Edit", "input": {}},
+                ],
+            },
+        },
+    },
     {"seq": 5, "kind": "result", "offset": 10, "payload": {"type": "result", "ok": True}},
 ]
 
@@ -106,15 +145,14 @@ def _block_types(frame: dict) -> list[str]:
 # Preamble + verbatim stream
 # --------------------------------------------------------------------------- #
 
+
 def test_preamble_order_and_no_conversation_history_at_after_zero():
     sid = uuid4()
     app, repo = _app()
     with TestClient(app) as client:
         # seed synchronously via the running app's portal
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        with client.websocket_connect(
-            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
-        ) as ws:
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
             frames = _drain(ws)
 
     assert frames[0]["type"] == "system"
@@ -136,9 +174,7 @@ def test_payloads_stream_verbatim_in_seq_order():
     app, repo = _app()
     with TestClient(app) as client:
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        with client.websocket_connect(
-            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
-        ) as ws:
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
             frames = _drain(ws)
 
     body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
@@ -165,14 +201,13 @@ def test_preamble_can_be_suppressed():
 # Visibility
 # --------------------------------------------------------------------------- #
 
+
 def test_show_internal_default_on_streams_tool_blocks():
     sid = uuid4()
     app, repo = _app(default_show_internal=True)
     with TestClient(app) as client:
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        with client.websocket_connect(
-            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
-        ) as ws:
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
             frames = _drain(ws)
 
     body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
@@ -222,8 +257,7 @@ def test_set_internal_visibility_toggle_unhides_subsequent_tool_frames():
     # After the toggle lands, the tool-only frame (seq4) is no longer dropped.
     tool_use_frames = [f for f in body if "tool_use" in _block_types(f)]
     assert any(
-        f.get("message", {}).get("content", [{}])[0].get("name") == "Edit"
-        for f in tool_use_frames
+        f.get("message", {}).get("content", [{}])[0].get("name") == "Edit" for f in tool_use_frames
     )
     # And the final result frame still arrives (stream completed).
     assert body[-1]["type"] == "result"
@@ -232,6 +266,7 @@ def test_set_internal_visibility_toggle_unhides_subsequent_tool_frames():
 # --------------------------------------------------------------------------- #
 # Cursor / empty
 # --------------------------------------------------------------------------- #
+
 
 def test_after_cursor_replays_tail_only():
     sid = uuid4()
@@ -252,9 +287,7 @@ def test_empty_session_sends_preamble_then_closes():
     sid = uuid4()
     app, _repo = _app()
     with TestClient(app) as client:
-        with client.websocket_connect(
-            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
-        ) as ws:
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
             frames = _drain(ws)
 
     # Preamble only, then a clean close.
@@ -264,6 +297,7 @@ def test_empty_session_sends_preamble_then_closes():
 # --------------------------------------------------------------------------- #
 # Fixture route (no DB touched)
 # --------------------------------------------------------------------------- #
+
 
 def test_fixture_route_streams_payloads_without_touching_repo():
     # A repo that explodes if read — proves the fixture route never hits the DB.
@@ -331,9 +365,7 @@ def _app_with_session_service(service, **cfg_kwargs) -> tuple[FastAPI, InMemoryL
         **cfg_kwargs,
     )
     app = FastAPI()
-    app.include_router(
-        create_session_replay_router(repo, session_service=service, config=cfg)
-    )
+    app.include_router(create_session_replay_router(repo, session_service=service, config=cfg))
     # Allow-all identity so extract_principal succeeds without an Authorization
     # header (the deny/success behavior is driven by _check_access, not auth).
     # Subclass to satisfy the isinstance(AllowAllIdentityAdapter) branch without
@@ -353,9 +385,7 @@ def test_access_denied_closes_1008():
     app, repo = _app_with_session_service(_FakeSessionService(deny=True))
     with TestClient(app) as client:
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        _expect_close(
-            client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008
-        )
+        _expect_close(client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008)
 
 
 def test_access_granted_streams():
@@ -363,9 +393,7 @@ def test_access_granted_streams():
     app, repo = _app_with_session_service(_FakeSessionService(deny=False))
     with TestClient(app) as client:
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        with client.websocket_connect(
-            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
-        ) as ws:
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
             frames = _drain(ws)
 
     # Preamble + full body streamed once access is granted.
@@ -389,14 +417,13 @@ def test_missing_token_closes_1008():
     app.state.identity = _TokenModeIdentity()
     with TestClient(app) as client:
         client.portal.call(_seed, repo, sid, _MIXED_ROWS)
-        _expect_close(
-            client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008
-        )
+        _expect_close(client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008)
 
 
 # --------------------------------------------------------------------------- #
 # Rejections (close 1008)
 # --------------------------------------------------------------------------- #
+
 
 def _expect_close(client, url, *, code: int | None = None) -> int:
     """Connect and assert the socket is closed (no frames). Return the close code.
@@ -442,3 +469,140 @@ def test_fixture_route_closed_when_fixtures_disabled():
     app, _repo = _app(fixtures_enabled=False)
     with TestClient(app) as client:
         _expect_close(client, "/api/v1/forge/replay/fixtures/two-turn", code=1008)
+
+
+# --------------------------------------------------------------------------- #
+# _run concurrency: deterministic disconnect-cancellation + toggle (no TestClient,
+# no wall-clock). A hand-rolled fake WS controls receive timing exactly.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeWS:
+    """Minimal WebSocket double for driving ``_run`` directly.
+
+    ``incoming`` items are returned (dicts) or raised (exceptions) by successive
+    ``receive_json`` calls; once exhausted, ``receive_json`` blocks forever.
+    """
+
+    def __init__(self, incoming: list) -> None:
+        self.sent: list[dict] = []
+        self.closed: int | None = None
+        self.accepted = False
+        self._incoming = list(incoming)
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_text(self, data: str) -> None:
+        self.sent.append(json.loads(data))
+
+    async def receive_json(self):
+        if self._incoming:
+            item = self._incoming.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        await asyncio.Event().wait()  # park: no more client frames
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed = code
+
+
+class _ListSrc:
+    def __init__(self, entries: list[SessionLogEntry]) -> None:
+        self._entries = entries
+
+    async def entries(self, *, after_seq: int = 0):
+        for e in self._entries:
+            if e.seq > after_seq:
+                yield e
+
+
+def _sle(seq: int, offset: float, kind: str, payload: dict) -> SessionLogEntry:
+    return SessionLogEntry(
+        session_id=uuid4(),
+        seq=seq,
+        kind=kind,
+        payload=payload,
+        ts=_BASE + timedelta(seconds=offset),
+        role=None,
+        request_id="r",
+    )
+
+
+async def test_disconnect_during_pacing_sleep_cancels_driver_promptly():
+    # The driver parks in a sleep that never returns; the receiver sees an
+    # immediate disconnect. The concurrent wait must cancel the parked driver so
+    # _run returns having emitted ONLY the pre-sleep frame — not the whole stream.
+    rows = [
+        _sle(1, 0, "assistant", {"type": "assistant", "seq": 1}),
+        _sle(2, 5, "assistant", {"type": "assistant", "seq": 2}),
+        _sle(3, 10, "assistant", {"type": "assistant", "seq": 3}),
+    ]
+    parked = asyncio.Event()  # never set
+
+    async def never_returns(_d: float) -> None:
+        await parked.wait()
+
+    ws = _FakeWS(incoming=[WebSocketDisconnect()])
+    await asyncio.wait_for(
+        _run(
+            ws,
+            _ListSrc(rows),
+            "s",
+            PacingConfig(speed=1.0, max_gap_seconds=2.0),
+            after=0,
+            show_internal=True,
+            preamble=False,
+            sleep=never_returns,
+        ),
+        timeout=2.0,
+    )
+
+    body = [f for f in ws.sent if f.get("type") not in ("system", "capabilities")]
+    assert [f["seq"] for f in body] == [1]  # parked before seq2; disconnect cancelled it
+    assert ws.closed is not None
+
+
+async def test_visibility_toggle_during_stream_is_honored_deterministically():
+    # show_internal starts False; the receiver delivers visible=True then parks.
+    # A yield-only sleep guarantees the receiver applies the toggle before the
+    # later tool-only frame is emitted — deterministic, no wall-clock.
+    rows = [
+        _sle(1, 0, "user", {"type": "user", "message": {"role": "user", "content": "go"}}),
+        _sle(
+            2,
+            3,
+            "assistant",
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "tu", "name": "Edit", "input": {}}],
+                },
+            },
+        ),
+    ]
+
+    async def yield_sleep(_d: float) -> None:
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    ws = _FakeWS(incoming=[{"type": "set_internal_visibility", "visible": True}])
+    await asyncio.wait_for(
+        _run(
+            ws,
+            _ListSrc(rows),
+            "s",
+            PacingConfig(speed=1.0, max_gap_seconds=2.0),
+            after=0,
+            show_internal=False,
+            preamble=False,
+            sleep=yield_sleep,
+        ),
+        timeout=2.0,
+    )
+
+    # The tool-only frame (seq2) was hidden at start; the toggle, applied during
+    # the pre-seq2 sleep, unhides it.
+    assert any("tool_use" in _block_types(f) for f in ws.sent)

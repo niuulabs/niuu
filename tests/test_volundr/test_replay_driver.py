@@ -128,6 +128,36 @@ async def test_cancellation_from_sleep_stops_loop_with_no_further_emit():
     assert emitted == [1]
 
 
+async def test_null_ts_frame_does_not_collapse_the_surrounding_gap():
+    # A mid-stream frame with ts=None must NOT advance prev_ts, so the genuine
+    # gap across it (seq1 @0s -> seq3 @10s) is preserved rather than zeroed.
+    # Regression: prev_ts used to advance unconditionally, dropping the far gap.
+    e_null = SessionLogEntry(
+        session_id=_SID,
+        seq=2,
+        kind="assistant",
+        payload={"type": "assistant", "n": 2},
+        ts=None,
+        role=None,
+        request_id="r",
+    )
+    entries = [_entry(1, offset=0), e_null, _entry(3, offset=10)]
+    sleeps: list[float] = []
+
+    async def fake_sleep(d: float) -> None:
+        sleeps.append(d)
+
+    async def emit(e: SessionLogEntry) -> bool:
+        return True
+
+    cfg = PacingConfig(speed=1.0, max_gap_seconds=100.0)
+    await drive_replay(_aiter(entries), cfg=cfg, emit=emit, sleep=fake_sleep)
+
+    # seq1: first frame, no sleep. seq2: ts=None -> delay 0, no sleep recorded,
+    # prev_ts stays @0s. seq3: full 10s gap from seq1 survives.
+    assert sleeps == [10.0]
+
+
 async def test_default_sleep_is_real_asyncio_sleep_but_zero_delays_are_skipped():
     # With max_gap=0 every delay is 0, so the default asyncio.sleep is never
     # awaited with a positive value — the driver returns promptly.

@@ -70,9 +70,12 @@ async def drive_replay(
     actually wrote a frame (a hidden frame returns ``False``). ``sleep`` is
     injected so tests can pass a zeroed/recording clock.
 
-    ``prev_ts`` advances on EVERY source frame — even ones ``emit`` drops — so
-    the spacing *between visible frames* matches the recorded wall-clock gap
-    (pacing follows the recorded timeline, not the emitted one).
+    ``prev_ts`` advances on every source frame that CARRIES a ts — even ones
+    ``emit`` drops — so the spacing *between visible frames* matches the recorded
+    wall-clock gap (pacing follows the recorded timeline, not the emitted one). A
+    frame with ``ts is None`` (rare, but ``ts`` is nullable) does NOT advance
+    ``prev_ts``, so the genuine gap on its far side is preserved instead of being
+    collapsed to zero.
 
     ``asyncio.CancelledError`` (client disconnect cancels the driving task)
     propagates out so the caller can tear down; the ``async for`` closes the
@@ -82,7 +85,8 @@ async def drive_replay(
     count = 0
     async for entry in entries:
         delay = frame_delay(prev_ts, entry.ts, cfg)
-        prev_ts = entry.ts
+        if entry.ts is not None:
+            prev_ts = entry.ts
         if delay > 0:
             await sleep(delay)
         if await emit(entry):
