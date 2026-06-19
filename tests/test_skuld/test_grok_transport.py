@@ -6,12 +6,23 @@ shared test_transport.py.
 """
 
 import asyncio
+import json
 import signal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from skuld.transports import GrokACPTransport, _map_grok_tool
+
+
+def _acp_update(update: dict) -> bytes:
+    """Encode an ACP session/update notification frame for the fake reader."""
+    return (json.dumps({"method": "session/update", "params": {"update": update}}) + "\n").encode()
+
+
+def _acp_response(req_id: int, result: dict) -> bytes:
+    """Encode an ACP JSON-RPC response frame for the fake reader."""
+    return (json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}) + "\n").encode()
 
 
 class TestGrokACPTransport:
@@ -211,10 +222,26 @@ class TestGrokACPTransport:
                     break
                 await asyncio.sleep(0.01)
 
-            await queue.put(b'{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"Hello from Grok"}}}}\n')  # noqa: E501
-            await queue.put(b'{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"thinking step"}}}}\n')  # noqa: E501
-            await queue.put(b'{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","tool":"search_replace","arguments":{"file_path":"foo.py","new_string":"bar"}}}}\n')  # noqa: E501
-            await queue.put(b'{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","text":"done"}}\n')  # noqa: E501
+            await queue.put(
+                _acp_update(
+                    {"sessionUpdate": "agent_message_chunk", "content": {"text": "Hello from Grok"}}
+                )
+            )
+            await queue.put(
+                _acp_update(
+                    {"sessionUpdate": "agent_thought_chunk", "content": {"text": "thinking step"}}
+                )
+            )
+            await queue.put(
+                _acp_update(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "tool": "search_replace",
+                        "arguments": {"file_path": "foo.py", "new_string": "bar"},
+                    }
+                )
+            )
+            await queue.put(_acp_response(3, {"stopReason": "end_turn", "text": "done"}))
 
             await asyncio.wait_for(send_task, timeout=5)
 
@@ -254,6 +281,93 @@ class TestGrokACPTransport:
         assert fut.done()
         assert "interrupted" in str(fut.exception())
         assert transport._current_prompt_id is None
+
+    def test_capabilities_advertise_interrupt_resume_steering(self, tmp_path):
+        # ACP turns are sequential, so steering is interrupt+resume (not native).
+        caps = GrokACPTransport(str(tmp_path)).capabilities
+        assert caps.steer is True
+        assert caps.steering_mode == "interrupt_resume"
+
+    @pytest.mark.asyncio
+    async def test_is_turn_active_tracks_current_prompt(self, transport):
+        assert transport.is_turn_active is False
+        transport._current_prompt_id = 7
+        assert transport.is_turn_active is True
+        transport._current_prompt_id = None
+        assert transport.is_turn_active is False
+
+    @pytest.mark.asyncio
+    async def test_steer_when_idle_starts_a_fresh_turn(self, transport, tmp_path):
+        # No turn in flight: a steer/redirect just issues a normal prompt.
+        sent = []
+
+        async def fake_send(text):
+            sent.append(text)
+
+        transport.send_message = fake_send  # type: ignore[assignment]
+        transport._current_prompt_id = None
+
+        await transport.send_control("steer", content="hello there")
+
+        assert sent == ["hello there"]
+
+    @pytest.mark.asyncio
+    async def test_steer_interrupts_turn_and_resumes_with_new_prompt(self, transport, tmp_path):
+        queue: asyncio.Queue = asyncio.Queue()
+        await queue.put(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
+        await queue.put(b'{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}\n')
+
+        async def fake_readline():
+            return await queue.get()
+
+        mock_stdout = MagicMock()
+        mock_stdout.readline = fake_readline
+        mock_stdin = AsyncMock()
+        mock_stdin.write = MagicMock()
+        mock_stdin.drain = AsyncMock()
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.stdin = mock_stdin
+        mock_process.returncode = None
+        mock_process.send_signal = MagicMock()
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def _wait_prompt(prompt_id: int) -> None:
+            for _ in range(200):
+                if transport._current_prompt_id == prompt_id:
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError(f"prompt {prompt_id} never went in flight")
+
+        with patch(
+            "skuld.transports.grok.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            await transport.start()
+
+            send_task = asyncio.create_task(transport.send_message("first task"))
+            await _wait_prompt(3)
+            assert transport.is_turn_active is True
+
+            # Steer mid-turn: interrupts the running prompt and queues the new
+            # text. The send loop resumes with it as a fresh prompt (id=4) — it
+            # is NOT blocked behind the per-turn lock.
+            await transport.send_control("steer", content="actually do X")
+            await _wait_prompt(4)
+
+            await queue.put(b'{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}\n')
+            await asyncio.wait_for(send_task, timeout=5)
+
+        mock_process.send_signal.assert_called_with(signal.SIGINT)
+        writes = b"".join(c.args[0] for c in mock_stdin.write.call_args_list)
+        assert b"first task" in writes
+        assert b"actually do X" in writes
+        assert transport._pending_steers == []
+
+        await transport.stop()
 
     @pytest.mark.asyncio
     async def test_stop_cleans_process_and_tasks(self, transport):

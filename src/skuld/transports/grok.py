@@ -114,6 +114,10 @@ class GrokACPTransport(CLITransport):
         # race): buffered here so _acp_send resolves from them instead of hanging.
         self._early_results: dict[int, dict] = {}
         self._current_prompt_id: int | None = None
+        # Steering follow-ups queued while a turn is in flight. ACP turns are
+        # sequential (no native mid-turn input), so a steer interrupts the
+        # current prompt and the send_message loop resumes with the queued text.
+        self._pending_steers: list[str] = []
 
         self._pending_text_chunks: list[str] = []
         # Per-turn character counters for usage estimation (reset each turn).
@@ -385,54 +389,74 @@ class GrokACPTransport(CLITransport):
         logger.info("Grok ACP new session established: %s", self._session_id)
 
     async def send_message(self, content: str) -> None:
-        """Send a user turn. The ACP reader will stream mapped events and emit a final result."""
+        """Send a user turn and drain any steers queued while it ran.
+
+        ACP turns are sequential, so a mid-turn steer (see ``send_control``)
+        interrupts the in-flight prompt and queues its text; this loop then
+        resumes within the SAME locked turn so the follow-up is sent
+        immediately instead of stalling behind the per-turn lock.
+        """
         async with self._lock:
-            self._last_result = None
-            self._pending_text_chunks = []
-            self._turn_out_chars = 0
-            self._turn_reason_chars = 0
-            self._turn_in_chars = len(content or "")
+            next_content: str | None = content
+            while next_content is not None:
+                await self._issue_prompt(next_content)
+                next_content = self._pending_steers.pop(0) if self._pending_steers else None
 
-            if not self._process or not self._process.stdin:
-                await self.start()
+    async def _issue_prompt(self, content: str) -> None:
+        """Issue one ACP session/prompt and wait (bounded) for it to resolve.
 
-            prompt_blocks = [{"type": "text", "text": content}]
+        Caller holds ``self._lock``. The reader streams mapped chunks and emits
+        the final result; we wait only to preserve turn ordering. An interrupt
+        (e.g. a steer) resolves the future early — we return so send_message can
+        issue the queued follow-up.
+        """
+        self._last_result = None
+        self._pending_text_chunks = []
+        self._turn_out_chars = 0
+        self._turn_reason_chars = 0
+        self._turn_in_chars = len(content or "")
 
-            req_id = self._next_id
-            self._next_id += 1
-            self._current_prompt_id = req_id
+        if not self._process or not self._process.stdin:
+            await self.start()
 
-            # Register the future BEFORE writing so the reader can resolve it, and so
-            # current_prompt_id stays set until the reader emits the final result.
-            fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
-            self._pending[req_id] = fut
+        prompt_blocks = [{"type": "text", "text": content}]
 
-            msg = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "method": "session/prompt",
-                "params": {
-                    "sessionId": self._session_id,
-                    "prompt": prompt_blocks,
-                },
-            }
+        req_id = self._next_id
+        self._next_id += 1
+        self._current_prompt_id = req_id
 
-            self._process.stdin.write((json.dumps(msg) + "\n").encode())
-            await self._process.stdin.drain()
+        # Register the future BEFORE writing so the reader can resolve it, and so
+        # current_prompt_id stays set until the reader emits the final result.
+        fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        self._pending[req_id] = fut
 
-            # The reader streams mapped chunks as they arrive and, on the matching
-            # response, sets last_result and emits the final result event. Wait here
-            # (bounded) for that response to preserve turn ordering.
-            try:
-                if self._early_results.pop(req_id, None) is None:
-                    await asyncio.wait_for(asyncio.shield(fut), timeout=self._prompt_timeout)
-            except TimeoutError:
-                logger.warning(
-                    "Grok ACP prompt did not complete within timeout (%.1fs)", self._prompt_timeout
-                )
-            finally:
-                self._pending.pop(req_id, None)
-                self._current_prompt_id = None
+        msg = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": self._session_id,
+                "prompt": prompt_blocks,
+            },
+        }
+
+        self._process.stdin.write((json.dumps(msg) + "\n").encode())
+        await self._process.stdin.drain()
+
+        try:
+            if self._early_results.pop(req_id, None) is None:
+                await asyncio.wait_for(asyncio.shield(fut), timeout=self._prompt_timeout)
+        except TimeoutError:
+            logger.warning(
+                "Grok ACP prompt did not complete within timeout (%.1fs)", self._prompt_timeout
+            )
+        except Exception:
+            # Interrupted (e.g. by a steer). The reader already streamed what it
+            # had; return so the turn loop can issue the queued follow-up.
+            logger.info("Grok ACP prompt ended early (interrupted)")
+        finally:
+            self._pending.pop(req_id, None)
+            self._current_prompt_id = None
 
     # ------------------------------------------------------------------
     # Event mapping (ACP -> broker-expected Claude-style events)
@@ -581,6 +605,11 @@ class GrokACPTransport(CLITransport):
         )
 
     @property
+    def is_turn_active(self) -> bool:
+        """True while an ACP prompt is in flight (drives the broker's steer route)."""
+        return self._current_prompt_id is not None
+
+    @property
     def capabilities(self) -> TransportCapabilities:
         # ACP gives us a persistent session (higher quality than per-turn Codex) with rich
         # observability via notifications. Matches Codex yolo + Claude event shapes for
@@ -591,6 +620,11 @@ class GrokACPTransport(CLITransport):
             cli_websocket=False,  # we use stdio ACP, not the --sdk-url WS
             session_resume=True,
             interrupt=True,
+            # ACP turns are sequential (no native mid-turn input like tmux), so a
+            # mid-turn message steers by interrupting the current turn and
+            # resuming with the new text — the SDK's interrupt_resume model.
+            steer=True,
+            steering_mode="interrupt_resume",
             # set_model / rewind / mcp / permission_requests etc. are no-op or future ACP extensions
             skills=True,  # Grok Build surfaces skills and subagents as tools
         )
@@ -600,21 +634,27 @@ class GrokACPTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
-        """Handle server-initiated controls. Supports interrupt for parity with other transports."""
+        """Handle server-initiated controls (interrupt, steer) for broker parity."""
         if subtype == "interrupt":
             logger.info("GrokACPTransport: received interrupt control")
-            if self._process and self._process.returncode is None:
-                try:
-                    self._process.send_signal(signal.SIGINT)
-                    logger.info("GrokACPTransport: sent SIGINT to interrupt current turn")
-                except Exception as exc:
-                    logger.warning("GrokACPTransport: SIGINT failed: %r", exc)
-            # Unblock any in-flight prompt future so caller can proceed
-            if self._current_prompt_id:
-                fut = self._pending.pop(self._current_prompt_id, None)
-                if fut and not fut.done():
-                    fut.set_exception(RuntimeError("interrupted by control"))
-                self._current_prompt_id = None
+            self._interrupt_current_prompt(reason="interrupted by control")
+            return
+
+        if subtype in {"redirect", "steer"}:
+            content = kwargs.get("content")
+            text = str(content) if content is not None else ""
+            if not text:
+                return
+            if self._current_prompt_id is not None:
+                # Mid-turn: queue the steer and interrupt the running prompt. The
+                # in-flight send_message loop then resumes with this text — we do
+                # NOT start a second send_message that would block on the lock.
+                logger.info("GrokACPTransport: steering active turn")
+                self._pending_steers.append(text)
+                self._interrupt_current_prompt(reason="steered")
+            else:
+                # Idle: just start a fresh turn.
+                await self.send_message(text)
             return
 
         # Other controls (set_model, rewind, mcp_set_servers, etc.) not directly supported
@@ -625,6 +665,24 @@ class GrokACPTransport(CLITransport):
             subtype,
             kwargs,
         )
+
+    def _interrupt_current_prompt(self, *, reason: str) -> None:
+        """SIGINT the CLI and resolve the in-flight prompt future so the turn ends.
+
+        Clearing here is idempotent with ``_issue_prompt``'s finally (pop with a
+        default, then None), so either path can run first.
+        """
+        if self._process and self._process.returncode is None:
+            try:
+                self._process.send_signal(signal.SIGINT)
+                logger.info("GrokACPTransport: sent SIGINT to interrupt current turn")
+            except Exception as exc:
+                logger.warning("GrokACPTransport: SIGINT failed: %r", exc)
+        if self._current_prompt_id is not None:
+            fut = self._pending.pop(self._current_prompt_id, None)
+            if fut and not fut.done():
+                fut.set_exception(RuntimeError(reason))
+            self._current_prompt_id = None
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
         """ACP skips the Claude-SDK control_request/response handshake (always-approve)."""
