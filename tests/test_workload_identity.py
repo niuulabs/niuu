@@ -93,6 +93,7 @@ def _service(proof_key: rsa.RSAPrivateKey) -> WorkloadIdentityService:
                     name="ravn-valkyrie",
                     verifier="kubernetes",
                     subject=WORKLOAD_SUBJECT,
+                    subject_prefix="",
                     issuer=WORKLOAD_ISSUER,
                     claims={"kubernetes.io.namespace": "valkyrie"},
                     owner_id=OWNER_ID,
@@ -175,6 +176,20 @@ async def test_workload_identity_exchange_rejects_unmapped_subject() -> None:
         await service.exchange(
             _workload_token(proof_key, subject="system:serviceaccount:other:ravn")
         )
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_matches_subject_prefix() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+    service._config.mappings[0].subject = ""
+    service._config.mappings[0].subject_prefix = "system:serviceaccount:skuld:openbao-session-"
+    service._config.mappings[0].claims = {}
+    session_subject = "system:serviceaccount:skuld:openbao-session-abc123"
+
+    result = await service.exchange(_workload_token(proof_key, subject=session_subject))
+
+    assert result.workload_subject == session_subject
 
 
 def test_workload_exchange_route_does_not_require_user_principal() -> None:

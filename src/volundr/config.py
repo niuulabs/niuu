@@ -1405,6 +1405,10 @@ class WorkloadIdentityMappingConfig(BaseModel):
         description="Verifier name that must accept the presented proof.",
     )
     subject: str = Field(default="", description="Exact subject claim to match.")
+    subject_prefix: str = Field(
+        default="",
+        description="Subject claim prefix to match for dynamic workload identities.",
+    )
     issuer: str = Field(default="", description="Optional exact issuer claim to match.")
     claims: dict[str, Any] = Field(
         default_factory=dict,

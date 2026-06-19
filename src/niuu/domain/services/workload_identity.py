@@ -142,7 +142,11 @@ class WorkloadIdentityService:
 
     def _matches(self, mapping: Any, claims: dict[str, Any]) -> bool:
         subject = str(getattr(mapping, "subject", "") or "").strip()
-        if subject and claims.get("sub") != subject:
+        claim_subject = str(claims.get("sub") or "")
+        if subject and claim_subject != subject:
+            return False
+        subject_prefix = str(getattr(mapping, "subject_prefix", "") or "").strip()
+        if subject_prefix and not claim_subject.startswith(subject_prefix):
             return False
         issuer = str(getattr(mapping, "issuer", "") or "").strip()
         if issuer and claims.get("iss") != issuer:
