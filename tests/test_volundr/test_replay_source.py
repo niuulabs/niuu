@@ -15,6 +15,16 @@ from volundr.replay.source import load_fixture_entries
 _FIXTURES = default_fixtures_dir()
 
 
+@pytest.mark.parametrize("path", sorted(_FIXTURES.glob("*.frames.json")), ids=lambda p: p.name)
+def test_every_packaged_fixture_loads_and_is_seq_ordered(path):
+    # Locks the whole replay corpus the endpoint serves (web + iOS QA): every
+    # checked-in fixture must parse and yield seq-ordered, non-empty frames.
+    entries = load_fixture_entries(path, session_id=uuid4())
+    assert entries, f"{path.name} produced no entries"
+    seqs = [e.seq for e in entries]
+    assert seqs == sorted(seqs), f"{path.name} is not seq-ordered"
+
+
 def test_load_fixture_entries_parses_and_sorts_by_seq(tmp_path):
     sid = uuid4()
     rows = [
