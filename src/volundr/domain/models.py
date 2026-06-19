@@ -126,11 +126,37 @@ class SessionStatus(StrEnum):
 
 
 class SessionActivityState(StrEnum):
-    """Activity state of a running session (orthogonal to lifecycle status)."""
+    """Activity state of a running session (orthogonal to lifecycle status).
+
+    This is the "what is the agent doing right now" axis, distinct from the
+    lifecycle ``status`` (which only tracks whether the container is up):
+
+    - ``active`` / ``tool_executing`` — the agent is progressing (thinking,
+      streaming, or running a tool). Both mean "busy".
+    - ``idle`` — the turn finished; the session is waiting for the user's next
+      message but is NOT blocked on anything.
+    - ``awaiting_input`` — the session is BLOCKED on a human: an
+      ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
+      the "needs attention" state — the agent cannot make progress until the
+      user responds. ``activity_metadata`` carries the specifics via
+      ``kind`` (``question`` | ``confirmation`` | ``permission``), ``prompt``,
+      ``options``, and ``request_id``.
+    """
 
     ACTIVE = "active"
     IDLE = "idle"
     TOOL_EXECUTING = "tool_executing"
+    AWAITING_INPUT = "awaiting_input"
+
+    @property
+    def is_busy(self) -> bool:
+        """True when the agent is actively progressing (not idle, not blocked)."""
+        return self in (SessionActivityState.ACTIVE, SessionActivityState.TOOL_EXECUTING)
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user."""
+        return self is SessionActivityState.AWAITING_INPUT
 
 
 class EventType(StrEnum):
@@ -446,6 +472,16 @@ class Session(BaseModel):
     )
 
     model_config = {"frozen": False}
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user (awaiting_input).
+
+        Surfaced directly so clients (web badges, the iOS widget) and the REST
+        list endpoint can filter "this session needs you" without re-deriving
+        the rule from ``activity_state``.
+        """
+        return self.activity_state is SessionActivityState.AWAITING_INPUT
 
     @property
     def repo(self) -> str:

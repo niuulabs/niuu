@@ -506,7 +506,7 @@ class DeleteSessionBody(BaseModel):
 class ActivityReport(BaseModel):
     """Request model for reporting session activity state."""
 
-    state: str = Field(description="Activity state (active/idle/tool_executing)")
+    state: str = Field(description="Activity state (active/idle/tool_executing/awaiting_input)")
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
 
 
@@ -561,11 +561,19 @@ class SessionResponse(BaseModel):
     )
     activity_state: str | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing)",
+        description="Current activity state (active/idle/tool_executing/awaiting_input)",
     )
     activity_metadata: dict = Field(
         default_factory=dict,
         description="Metadata from the latest activity report",
+    )
+    needs_attention: bool = Field(
+        default=False,
+        description=(
+            "True when the session is blocked waiting on the user "
+            "(activity_state == awaiting_input). Lets clients and the iOS widget "
+            "highlight 'needs you' sessions without re-deriving the rule."
+        ),
     )
     workload_type: str = Field(
         default="session",
@@ -639,6 +647,7 @@ class SessionResponse(BaseModel):
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_metadata=session.activity_metadata,
+            needs_attention=session.needs_attention,
             workload_type=session.workload_type,
             origin=session.origin,
             external_session_id=session.external_session_id,

@@ -7,7 +7,12 @@ from uuid import uuid4
 import pytest
 
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
-from volundr.domain.models import GitSource, Session, SessionStatus
+from volundr.domain.models import (
+    GitSource,
+    Session,
+    SessionActivityState,
+    SessionStatus,
+)
 
 
 @pytest.fixture
@@ -303,3 +308,102 @@ class TestRowToSession:
         assert result.status == SessionStatus.RUNNING
         assert result.chat_endpoint == "wss://chat.example.com"
         assert result.code_endpoint == "https://code.example.com"
+
+
+class TestActivityStatePersistence:
+    """The activity_state / activity_metadata columns must round-trip.
+
+    Regression guard: previously these columns existed in the schema but the
+    repository never wrote or read them, so any reported activity state was
+    silently dropped on the next DB read (a re-fetch returned ``null``).
+    """
+
+    @pytest.fixture
+    def awaiting_session(self, sample_session: Session) -> Session:
+        sample_session.status = SessionStatus.RUNNING
+        sample_session.activity_state = SessionActivityState.AWAITING_INPUT
+        sample_session.activity_metadata = {
+            "kind": "question",
+            "request_id": "askq-1-abc",
+            "prompt": "Which database should we use?",
+        }
+        return sample_session
+
+    async def test_create_persists_activity_columns(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        await repository.create(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "activity_state" in sql
+        assert "activity_metadata" in sql
+        # $26 = activity_state, $27 = activity_metadata (JSON-encoded)
+        assert call_args[26] == "awaiting_input"
+        assert '"kind": "question"' in call_args[27]
+
+    async def test_update_persists_activity_columns(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        await repository.update(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "activity_state = $25" in sql
+        assert "activity_metadata = $26" in sql
+        assert call_args[25] == "awaiting_input"
+        assert '"request_id": "askq-1-abc"' in call_args[26]
+
+    async def test_create_persists_null_when_unset(
+        self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
+    ):
+        await repository.create(sample_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        assert call_args[26] is None
+        assert call_args[27] == "{}"
+
+    async def test_row_round_trips_activity_state(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        sample_row["activity_state"] = "awaiting_input"
+        sample_row["activity_metadata"] = '{"kind": "permission"}'
+
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state is SessionActivityState.AWAITING_INPUT
+        assert result.activity_metadata == {"kind": "permission"}
+        assert result.needs_attention is True
+
+    async def test_row_accepts_dict_metadata(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        # asyncpg may hand back JSONB as a dict when a codec is registered.
+        sample_row["activity_state"] = "tool_executing"
+        sample_row["activity_metadata"] = {"turn_count": 3}
+
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state is SessionActivityState.TOOL_EXECUTING
+        assert result.activity_metadata == {"turn_count": 3}
+        assert result.needs_attention is False
+
+    async def test_row_tolerates_unknown_and_malformed(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        sample_row["activity_state"] = "bogus_state"
+        sample_row["activity_metadata"] = "not-json"
+
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state is None
+        assert result.activity_metadata == {}
+
+    async def test_row_defaults_when_columns_absent(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        # Legacy rows / partial SELECTs without the columns must not crash.
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state is None
+        assert result.activity_metadata == {}
