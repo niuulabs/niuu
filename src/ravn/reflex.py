@@ -242,14 +242,18 @@ def http_entity_fetcher(
     base_url: str,
     timeout_seconds: float,
     headers: dict[str, str] | None = None,
+    headers_provider: Callable[[], Awaitable[dict[str, str]]] | None = None,
 ) -> Callable[[], Awaitable[list[ReflexEntity]]]:
     """Build an async fetcher for ``GET {base_url}/mimir/entities/index``."""
     url = f"{base_url.rstrip('/')}/mimir/entities/index"
     request_headers = dict(headers or {})
 
     async def _fetch() -> list[ReflexEntity]:
+        headers = dict(request_headers)
+        if headers_provider is not None:
+            headers.update(await headers_provider())
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.get(url, headers=request_headers)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return parse_entities(response.json())
 
@@ -348,6 +352,41 @@ def _resolve_reflex_headers(host_cfg: object, base_url: str) -> dict[str, str]:
     return {}
 
 
+def _resolve_reflex_headers_provider(
+    host_cfg: object,
+    base_url: str,
+) -> Callable[[], Awaitable[dict[str, str]]] | None:
+    """Resolve dynamic auth headers for workload-authenticated Mímir instances."""
+    normalized_base = base_url.strip().rstrip("/")
+    instances = getattr(host_cfg, "instances", None)
+    if not isinstance(instances, (list, tuple)):
+        return None
+
+    for instance in instances:
+        url = getattr(instance, "url", None)
+        if not isinstance(url, str) or url.strip().rstrip("/") != normalized_base:
+            continue
+        auth = getattr(instance, "auth", None)
+        if auth is None or getattr(auth, "type", "") != "workload":
+            return None
+
+        from ravn.adapters.mimir.http import HttpMimirAdapter
+        from ravn.domain.mimir import MimirAuth
+
+        adapter = HttpMimirAdapter(
+            base_url=normalized_base,
+            auth=MimirAuth(
+                type="workload",
+                token_file=getattr(auth, "token_file", ""),
+                exchange_url=getattr(auth, "exchange_url", ""),
+                audiences=tuple(getattr(auth, "audiences", ()) or ("mimir",)),
+                trust_domain=getattr(auth, "trust_domain", ""),
+            ),
+        )
+        return adapter._build_headers
+    return None
+
+
 def _resolve_bearer_token(auth: object) -> str | None:
     token = getattr(auth, "token", None)
     if isinstance(token, str) and token.strip():
@@ -397,6 +436,7 @@ def build_reflex_injector(host_cfg: object) -> ReflexInjector | None:
             base_url,
             float(reflex_cfg.timeout_seconds),
             headers=_resolve_reflex_headers(host_cfg, base_url),
+            headers_provider=_resolve_reflex_headers_provider(host_cfg, base_url),
         ),
         max_pointers=int(reflex_cfg.max_pointers),
         cache_ttl_seconds=float(reflex_cfg.cache_ttl_seconds),
