@@ -583,9 +583,7 @@ class TestMountedConfig:
             assert env["HOME"] == "/workspace"
             assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
 
-    async def test_ravn_config_uses_workspace_mount_root(
-        self, session, flock_template
-    ):
+    async def test_ravn_config_uses_workspace_mount_root(self, session, flock_template):
         """Ravn sidecars must run tools and Codex transports from the writable workspace."""
         provider = MagicMock()
         provider.get.return_value = flock_template
@@ -1821,6 +1819,7 @@ class TestMimirHelpers:
                     {
                         "mount_name": "registry-a",
                         "path": "/mnt/registry-a",
+                        "url": "https://registry-a.example",
                         "role": "shared",
                         "categories": ["directive"],
                     },
@@ -1876,6 +1875,9 @@ class TestMimirHelpers:
         assert {"prefix": "drafts/", "mounts": ["scratch"]} in routing["rules"]
         assert {"prefix": "reviews/", "mounts": ["registry-b"]} in routing["rules"]
         assert routing["default"] == ["scratch"]
+        registry_a = next(instance for instance in instances if instance["name"] == "registry-a")
+        assert registry_a["url"] == "https://registry-a.example"
+        assert "path" not in registry_a
 
     def test_resolve_mimir_runtime_adds_default_hosted_instance_when_no_registry_refs(self):
         instances, routing = _resolve_mimir_runtime({"hosted_url": "https://hosted.example"})

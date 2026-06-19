@@ -50,6 +50,7 @@ def _campaign() -> WorkflowCampaign:
                 "registry_refs": [
                     {
                         "mount_name": "mimir-yggdrasil",
+                        "path": "/data/mimir-yggdrasil",
                         "url": "https://mimir.yggdrasil.niuu.world/api/v1",
                     }
                 ],

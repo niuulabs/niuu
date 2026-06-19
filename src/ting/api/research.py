@@ -864,12 +864,12 @@ def _resolve_campaign_mimir_port(campaign: WorkflowCampaign, settings: Any) -> M
             mount_name = str(ref.get("mount_name") or "")
             if default_mounts and mount_name not in default_mounts:
                 continue
-            path = str(ref.get("path") or "").strip()
             url = str(ref.get("url") or "").strip()
-            if path:
-                return MarkdownMimirAdapter(root=path)
+            path = str(ref.get("path") or "").strip()
             if url:
                 return HttpMimirAdapter(base_url=url, auth=_mimir_http_auth(settings))
+            if path:
+                return MarkdownMimirAdapter(root=path)
 
     hosted_url = str(settings.dispatch.flock.mimir_hosted_url or "").strip()
     if hosted_url:

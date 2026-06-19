@@ -253,12 +253,12 @@ def _resolve_mimir_runtime(
             "name": mount_name,
             "role": str(raw_ref.get("role") or "shared"),
         }
-        path = str(raw_ref.get("path") or "").strip()
         url = str(raw_ref.get("url") or "").strip()
-        if path:
-            instance["path"] = path
-        elif url:
+        path = str(raw_ref.get("path") or "").strip()
+        if url:
             instance["url"] = url
+        elif path:
+            instance["path"] = path
         elif hosted_url:
             instance["url"] = hosted_url
         else:
@@ -381,12 +381,12 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
         "name": mount_name,
         "role": str(raw_instance.get("role") or "shared"),
     }
-    path = str(raw_instance.get("path") or "").strip()
     url = str(raw_instance.get("url") or "").strip()
-    if path:
-        instance["path"] = path
-    elif url:
+    path = str(raw_instance.get("path") or "").strip()
+    if url:
         instance["url"] = url
+    elif path:
+        instance["path"] = path
     else:
         return None
 

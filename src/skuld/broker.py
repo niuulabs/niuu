@@ -1427,9 +1427,10 @@ class Broker:
             )
             return False
 
-        # Give newly connected peers one short beat to finish their channel
-        # registration/subscription handshake before the first pub/sub event.
-        await asyncio.sleep(poll_interval_s)
+        # Static mesh discovery can register a peer before the daemon has
+        # finished wiring its topic subscriptions. Give the participant
+        # processes a real startup beat before the first pub/sub event.
+        await asyncio.sleep(max(poll_interval_s, 5.0))
         logger.info(
             "Workflow trigger consumers ready event_type=%s peers=%s",
             event_type,
@@ -3467,9 +3468,7 @@ class Broker:
                         str(content),
                         source="browser",
                         metadata=(
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
                         ),
                     )
                 except LookupError as exc:
@@ -3481,9 +3480,7 @@ class Broker:
                     message_id = await self.handle_resend_initial_prompt(
                         source="browser",
                         metadata=(
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
                         ),
                     )
                 except (ValueError, RuntimeError) as exc:
