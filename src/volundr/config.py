@@ -642,6 +642,33 @@ class SessionLivenessConfig(BaseModel):
     check_interval_seconds: int = Field(default=120, ge=10)
 
 
+class ReplayConfig(BaseModel):
+    """Replay-as-live WebSocket: re-emit recorded ``session_event_log`` frames,
+    paced by the recorded ``ts`` deltas, so a live-session client renders a
+    finished session (or a checked-in fixture) as if it were streaming live.
+
+    The DB route is read-only and auth-gated (mirrors the already-served REST
+    ``GET .../log`` replay), so it defaults ON. The fixture route serves
+    synthetic data UNAUTHENTICATED and defaults OFF (enable only in dev/CI).
+    """
+
+    enabled: bool = Field(default=True)
+    fixtures_enabled: bool = Field(default=False)
+    default_speed: float = Field(default=1.0, gt=0)
+    max_gap_seconds: float = Field(default=2.0, ge=0)
+    default_show_internal: bool = Field(default=True)
+    page_size: int = Field(default=500, ge=1, le=5000)
+    fixtures_dir: str | None = Field(default=None)
+
+    def fixtures_dir_path(self) -> Path:
+        """Resolve the fixtures directory (defaults to the packaged dir)."""
+        if self.fixtures_dir:
+            return Path(self.fixtures_dir)
+        from volundr.replay.fixtures import default_fixtures_dir
+
+        return default_fixtures_dir()
+
+
 class SleipnirConfig(BaseModel):
     """Sleipnir platform event bus integration (optional).
 
@@ -1545,6 +1572,7 @@ class Settings(BaseSettings):
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
+    replay: ReplayConfig = Field(default_factory=ReplayConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)

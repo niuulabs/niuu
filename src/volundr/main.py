@@ -1017,6 +1017,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.include_router(session_log_router)
 
+            # Replay-as-live: paced re-emit of recorded frames over a WebSocket,
+            # speaking the live-session frame protocol so existing clients
+            # (web SessionSocket, ?qa=stream, iOS) render a finished session live.
+            if settings.replay.enabled:
+                from volundr.adapters.inbound.ws_session_replay import (
+                    create_session_replay_router,
+                )
+
+                session_replay_router = create_session_replay_router(
+                    session_event_log,
+                    session_service=session_service,
+                    prefix="/api/v1/forge",
+                    config=settings.replay,
+                )
+                app.include_router(session_replay_router)
+
             trace_router = create_trace_router(
                 span_repository,
                 session_service=session_service,

@@ -1,0 +1,341 @@
+"""End-to-end tests for the replay-as-live WebSocket router.
+
+Driven through ``TestClient.websocket_connect`` against a bare ``FastAPI`` app
+with ONLY the replay router mounted — no live DB, no broker. The DB-backed route
+uses the in-memory ``SessionEventLogRepository`` from the REST log tests; the
+fixture route reads a checked-in ``*.frames.json`` (proving one corpus serves
+both repos offline).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+# Reuse the in-memory log used by the REST endpoint tests.
+from tests.test_adapters.test_rest_session_log import InMemoryLog
+from volundr.adapters.inbound.ws_session_replay import create_session_replay_router
+from volundr.config import ReplayConfig
+from volundr.domain.models import SessionLogEntry
+
+_FIXTURES_DIR = str(Path(__file__).resolve().parents[1] / "test_volundr" / "fixtures" / "replay")
+_BASE = datetime(2026, 6, 18, 9, 0, 0, tzinfo=UTC)
+
+
+def _app(repo: InMemoryLog | None = None, **cfg_kwargs) -> tuple[FastAPI, InMemoryLog]:
+    repo = repo if repo is not None else InMemoryLog()
+    cfg = ReplayConfig(
+        enabled=True,
+        fixtures_enabled=cfg_kwargs.pop("fixtures_enabled", True),
+        fixtures_dir=cfg_kwargs.pop("fixtures_dir", _FIXTURES_DIR),
+        max_gap_seconds=cfg_kwargs.pop("max_gap_seconds", 0.0),  # instant by default
+        default_show_internal=cfg_kwargs.pop("default_show_internal", True),
+        **cfg_kwargs,
+    )
+    app = FastAPI()
+    app.include_router(
+        create_session_replay_router(repo, session_service=None, config=cfg)
+    )
+    return app, repo
+
+
+async def _seed(repo: InMemoryLog, session_id, rows: list[dict]) -> None:
+    entries = [
+        SessionLogEntry(
+            session_id=session_id,
+            seq=r["seq"],
+            kind=r["kind"],
+            payload=r["payload"],
+            ts=_BASE + timedelta(seconds=r.get("offset", 0)),
+            role=r.get("role"),
+            request_id="req-1",
+        )
+        for r in rows
+    ]
+    await repo.append(entries)
+
+
+def _drain(ws) -> list[dict]:
+    """Read frames until the server closes the socket."""
+    from starlette.testclient import WebSocketDisconnect
+
+    out: list[dict] = []
+    try:
+        while True:
+            out.append(ws.receive_json())
+    except WebSocketDisconnect:
+        pass
+    return out
+
+
+# Rows mirroring the Phase-1 claude-incremental-refactor shape: assistant/user
+# messages whose content lists carry tool_use / tool_result blocks.
+_MIXED_ROWS = [
+    {"seq": 1, "kind": "user", "offset": 0, "payload": {
+        "type": "user", "message": {"role": "user", "content": "do the thing"}}},
+    {"seq": 2, "kind": "assistant", "offset": 3, "payload": {
+        "type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "reading"},
+            {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"file_path": "a.ts"}},
+        ]}}},
+    {"seq": 3, "kind": "user", "offset": 4, "payload": {
+        "type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": "file body"},
+        ]}}},
+    {"seq": 4, "kind": "assistant", "offset": 9, "payload": {
+        "type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu2", "name": "Edit", "input": {}},
+        ]}}},
+    {"seq": 5, "kind": "result", "offset": 10, "payload": {"type": "result", "ok": True}},
+]
+
+
+def _block_types(frame: dict) -> list[str]:
+    msg = frame.get("message")
+    if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+        return [b.get("type") for b in msg["content"] if isinstance(b, dict)]
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# Preamble + verbatim stream
+# --------------------------------------------------------------------------- #
+
+def test_preamble_order_and_no_conversation_history_at_after_zero():
+    sid = uuid4()
+    app, repo = _app()
+    with TestClient(app) as client:
+        # seed synchronously via the running app's portal
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
+        ) as ws:
+            frames = _drain(ws)
+
+    assert frames[0]["type"] == "system"
+    assert f"Replaying session {sid}" in frames[0]["content"]
+    assert frames[1]["type"] == "capabilities"
+    # Read-only capabilities advertised.
+    assert frames[1]["send_message"] is False
+    assert frames[1]["steer"] is False
+    assert frames[1]["slash_commands"] is True
+    # No conversation_history when attaching from zero (the stream IS history).
+    assert not any(f.get("type") == "conversation_history" for f in frames)
+
+
+def test_payloads_stream_verbatim_in_seq_order():
+    sid = uuid4()
+    app, repo = _app()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
+        ) as ws:
+            frames = _drain(ws)
+
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    assert [f["type"] for f in body] == ["user", "assistant", "user", "assistant", "result"]
+    # Verbatim: the tool_use input survives unchanged when internals are shown.
+    assert body[1]["message"]["content"][1]["name"] == "Read"
+
+
+def test_preamble_can_be_suppressed():
+    sid = uuid4()
+    app, repo = _app()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000&preamble=false"
+        ) as ws:
+            frames = _drain(ws)
+
+    assert not any(f.get("type") in ("system", "capabilities") for f in frames)
+    assert frames[0]["type"] == "user"
+
+
+# --------------------------------------------------------------------------- #
+# Visibility
+# --------------------------------------------------------------------------- #
+
+def test_show_internal_default_on_streams_tool_blocks():
+    sid = uuid4()
+    app, repo = _app(default_show_internal=True)
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
+        ) as ws:
+            frames = _drain(ws)
+
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    # All five frames present; tool_use / tool_result blocks intact.
+    assert len(body) == 5
+    assert "tool_use" in _block_types(body[1])
+    assert "tool_result" in _block_types(body[2])
+    assert "tool_use" in _block_types(body[3])
+
+
+def test_show_internal_false_strips_tool_blocks():
+    sid = uuid4()
+    app, repo = _app()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000&show_internal=false"
+        ) as ws:
+            frames = _drain(ws)
+
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    # seq1 (user text) kept; seq2 assistant keeps text, drops tool_use; seq3
+    # (tool_result-only) dropped entirely; seq4 (tool_use-only) dropped; seq5 kept.
+    assert [f["type"] for f in body] == ["user", "assistant", "result"]
+    assert _block_types(body[1]) == ["text"]  # tool_use stripped, text retained
+    # No tool blocks anywhere in the visible stream.
+    for f in body:
+        assert "tool_use" not in _block_types(f)
+        assert "tool_result" not in _block_types(f)
+
+
+def test_set_internal_visibility_toggle_unhides_subsequent_tool_frames():
+    # Start hidden; send the toggle BEFORE reading; use generous pacing so the
+    # concurrent receiver processes the toggle well before the later tool-only
+    # frame (seq4 @ +9s) is emitted.
+    sid = uuid4()
+    app, repo = _app(max_gap_seconds=2.0)
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=20&show_internal=false"
+        ) as ws:
+            ws.send_json({"type": "set_internal_visibility", "visible": True})
+            frames = _drain(ws)
+
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    # After the toggle lands, the tool-only frame (seq4) is no longer dropped.
+    tool_use_frames = [f for f in body if "tool_use" in _block_types(f)]
+    assert any(
+        f.get("message", {}).get("content", [{}])[0].get("name") == "Edit"
+        for f in tool_use_frames
+    )
+    # And the final result frame still arrives (stream completed).
+    assert body[-1]["type"] == "result"
+
+
+# --------------------------------------------------------------------------- #
+# Cursor / empty
+# --------------------------------------------------------------------------- #
+
+def test_after_cursor_replays_tail_only():
+    sid = uuid4()
+    app, repo = _app()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000&after=3"
+        ) as ws:
+            frames = _drain(ws)
+
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    # Only seq 4 (assistant) and seq 5 (result) remain after cursor=3.
+    assert [f["type"] for f in body] == ["assistant", "result"]
+
+
+def test_empty_session_sends_preamble_then_closes():
+    sid = uuid4()
+    app, _repo = _app()
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
+        ) as ws:
+            frames = _drain(ws)
+
+    # Preamble only, then a clean close.
+    assert [f["type"] for f in frames] == ["system", "capabilities"]
+
+
+# --------------------------------------------------------------------------- #
+# Fixture route (no DB touched)
+# --------------------------------------------------------------------------- #
+
+def test_fixture_route_streams_payloads_without_touching_repo():
+    # A repo that explodes if read — proves the fixture route never hits the DB.
+    class ExplodingRepo(InMemoryLog):
+        async def read_after(self, *a, **k):  # type: ignore[override]
+            raise AssertionError("fixture route must not touch the repository")
+
+    app, _repo = _app(repo=ExplodingRepo())
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v1/forge/replay/fixtures/two-turn?speed=1000&preamble=false"
+        ) as ws:
+            frames = _drain(ws)
+
+    # Compare against the on-disk fixture's payloads in seq order.
+    raw = json.loads((Path(_FIXTURES_DIR) / "two-turn.frames.json").read_text())
+    expected = [r["payload"] for r in sorted(raw, key=lambda r: r["seq"])]
+    assert frames == expected
+
+
+def test_fixture_route_full_name_also_works():
+    app, _repo = _app()
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v1/forge/replay/fixtures/two-turn.frames.json?speed=1000&preamble=false"
+        ) as ws:
+            frames = _drain(ws)
+    assert len(frames) >= 2
+
+
+# --------------------------------------------------------------------------- #
+# Rejections (close 1008)
+# --------------------------------------------------------------------------- #
+
+def _expect_close(client, url, *, code: int | None = None) -> int:
+    """Connect and assert the socket is closed (no frames). Return the close code.
+
+    If ``code`` is given, assert exactly that close code.
+    """
+    from starlette.testclient import WebSocketDisconnect
+
+    try:
+        with client.websocket_connect(url) as ws:
+            ws.receive_json()
+        raise AssertionError("expected the socket to be closed")
+    except WebSocketDisconnect as exc:
+        if code is not None:
+            assert exc.code == code, f"expected close {code}, got {exc.code}"
+        return exc.code
+
+
+def test_fixture_route_rejects_traversal_with_slash():
+    # A name decoding to a path with "/" (e.g. "..%2fsecret") never matches the
+    # single-segment {name} route — Starlette refuses the handshake (close 1000).
+    # The traversal is blocked at the routing layer before our handler runs.
+    app, _repo = _app()
+    with TestClient(app) as client:
+        _expect_close(client, "/api/v1/forge/replay/fixtures/..%2fsecret", code=1000)
+
+
+def test_fixture_route_rejects_dotdot_name_in_handler():
+    # An encoded ".." with no slash ("%2e%2e") reaches the handler as a single
+    # segment; resolve_fixture / load then reject it -> handler closes 1008.
+    app, _repo = _app()
+    with TestClient(app) as client:
+        _expect_close(client, "/api/v1/forge/replay/fixtures/%2e%2e", code=1008)
+
+
+def test_fixture_route_rejects_unknown_fixture():
+    app, _repo = _app()
+    with TestClient(app) as client:
+        _expect_close(client, "/api/v1/forge/replay/fixtures/does-not-exist", code=1008)
+
+
+def test_fixture_route_closed_when_fixtures_disabled():
+    app, _repo = _app(fixtures_enabled=False)
+    with TestClient(app) as client:
+        _expect_close(client, "/api/v1/forge/replay/fixtures/two-turn", code=1008)
