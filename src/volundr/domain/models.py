@@ -258,6 +258,53 @@ class RealtimeEvent:
     timestamp: datetime
 
 
+class DevicePlatform(StrEnum):
+    """Platform a registered push device belongs to."""
+
+    IOS = "ios"
+    ANDROID = "android"
+    WEB = "web"
+
+
+class DeviceToken(BaseModel):
+    """A user's registered device for push notifications.
+
+    Stored per-owner so a session that needs attention can fan a push out to
+    every device the owner has registered (the iOS app/widget, etc.).
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    owner_id: str = Field(description="User ID (IDP sub) the device belongs to")
+    platform: DevicePlatform = Field(description="Device platform")
+    token: str = Field(
+        min_length=1,
+        max_length=512,
+        description="APNs device token, FCM token, or web-push endpoint",
+    )
+    app_bundle_id: str | None = Field(
+        default=None,
+        description="APNs topic (bundle id) to target; falls back to the channel default",
+    )
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = {"frozen": False}
+
+
+@dataclass(frozen=True)
+class PushMessage:
+    """A user-facing push built from a session attention signal."""
+
+    owner_id: str
+    title: str
+    body: str
+    session_id: str
+    #: question | confirmation | permission
+    kind: str
+    urgency: float
+    request_id: str = ""
+
+
 class GitSource(BaseModel):
     """Git repository workspace source."""
 

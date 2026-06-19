@@ -70,6 +70,7 @@ from volundr.adapters.outbound.postgres_communication_cursors import (
 from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
+from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
@@ -96,6 +97,7 @@ from volundr.domain.services import (
     TenantService,
     TokenService,
 )
+from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
@@ -574,6 +576,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Create adapters
             repository = PostgresSessionRepository(pool)
+            device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
@@ -627,6 +630,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
             )
+
+            # Push / attention notifier (optional — enabled via push.enabled).
+            # Fans a "session needs you" push out to the owner's devices when a
+            # session enters awaiting_input.
+            attention_notifier = None
+            if settings.push.enabled:
+                try:
+                    channel_cls = import_class(settings.push.adapter)
+                    channel_kwargs = resolve_secret_kwargs(
+                        settings.push.kwargs, settings.push.secret_kwargs_env
+                    )
+                    notification_channel = channel_cls(**channel_kwargs)
+                    attention_notifier = PushAttentionNotifier(
+                        device_repository,
+                        notification_channel,
+                        min_urgency=settings.push.min_urgency,
+                    )
+                    logger.info(
+                        "Push notifications enabled: adapter=%s",
+                        settings.push.adapter.rsplit(".", 1)[-1],
+                    )
+                except Exception:
+                    logger.exception("Failed to initialise push notifications")
+                    attention_notifier = None
 
             # Create services with broadcaster for real-time updates
             # Forge catalog (launch specs + session definitions), built via the
@@ -728,6 +755,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
                 session_communication_port=session_room_port,
+                attention_notifier=attention_notifier,
             )
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
@@ -797,6 +825,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chronicle_service=chronicle_service,
                 archive_service=archive_service,
                 external_session_service=external_session_service,
+                device_repository=device_repository,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)

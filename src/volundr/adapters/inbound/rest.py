@@ -22,6 +22,8 @@ from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
     CleanupTarget,
+    DevicePlatform,
+    DeviceToken,
     ExternalSessionRecord,
     GitProviderType,
     GitSource,
@@ -37,6 +39,7 @@ from volundr.domain.models import (
     WorkspaceStatus,
 )
 from volundr.domain.ports import (
+    DeviceTokenRepository,
     EventBroadcaster,
     GitAuthError,
     GitRepoNotFoundError,
@@ -508,6 +511,36 @@ class ActivityReport(BaseModel):
 
     state: str = Field(description="Activity state (active/idle/tool_executing/awaiting_input)")
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
+
+
+class DeviceRegistration(BaseModel):
+    """Request model for registering a push device."""
+
+    platform: str = Field(description="Device platform (ios/android/web)")
+    token: str = Field(min_length=1, max_length=512, description="Push token / endpoint")
+    app_bundle_id: str | None = Field(default=None, description="APNs topic (bundle id) to target")
+
+
+class DeviceResponse(BaseModel):
+    """Response model for a registered push device."""
+
+    id: UUID
+    platform: str
+    token: str
+    app_bundle_id: str | None = None
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_device(cls, device: DeviceToken) -> "DeviceResponse":
+        return cls(
+            id=device.id,
+            platform=device.platform.value,
+            token=device.token,
+            app_bundle_id=device.app_bundle_id,
+            created_at=device.created_at.isoformat(),
+            updated_at=device.updated_at.isoformat(),
+        )
 
 
 class SessionResponse(BaseModel):
@@ -1109,6 +1142,7 @@ def create_router(
     archive_service=None,
     *,
     external_session_service: ExternalSessionService | None = None,
+    device_repository: DeviceTokenRepository | None = None,
     prefix: str = "/api/v1/forge",
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
@@ -1718,6 +1752,92 @@ def create_router(
             )
         except Exception:
             logger.exception("Activity update failed for session %s", _sanitize_log(session_id))
+
+    @router.post(
+        "/devices",
+        response_model=DeviceResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def register_device(request: Request, data: DeviceRegistration) -> DeviceResponse:
+        """Register a push device for the authenticated user.
+
+        The iOS app/widget calls this so a session that needs attention can fan
+        a push out to it. Idempotent on (owner, token).
+        """
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to register a device",
+            )
+        try:
+            platform = DevicePlatform(data.platform)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid device platform: {data.platform}",
+            )
+        device = DeviceToken(
+            owner_id=principal.user_id,
+            platform=platform,
+            token=data.token,
+            app_bundle_id=data.app_bundle_id,
+        )
+        stored = await device_repository.upsert(device)
+        return DeviceResponse.from_device(stored)
+
+    @router.get(
+        "/devices",
+        response_model=list[DeviceResponse],
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def list_devices(request: Request) -> list[DeviceResponse]:
+        """List the authenticated user's registered push devices."""
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        devices = await device_repository.list_for_owner(principal.user_id)
+        return [DeviceResponse.from_device(d) for d in devices]
+
+    @router.delete(
+        "/devices/{token}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def unregister_device(
+        request: Request,
+        token: str = Path(description="The push token to unregister"),
+    ) -> None:
+        """Unregister a push device for the authenticated user."""
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        await device_repository.delete(principal.user_id, token)
 
     @router.patch(
         "/sessions/{session_id}/archive",

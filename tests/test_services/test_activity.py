@@ -31,6 +31,30 @@ class TestUpdateActivity:
         )
 
     @pytest.fixture
+    def attention_notifier(self):
+        from volundr.domain.ports import AttentionNotifier
+
+        class RecordingNotifier(AttentionNotifier):
+            def __init__(self):
+                self.calls = []
+
+            async def notify_needs_input(self, session, *, kind, prompt, request_id):
+                self.calls.append((session.id, kind, prompt, request_id))
+
+        return RecordingNotifier()
+
+    @pytest.fixture
+    def service_with_notifier(self, repository, pod_manager, broadcaster, attention_notifier):
+        return SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            attention_notifier=attention_notifier,
+            provisioning_initial_delay=0,
+            provisioning_timeout=1.0,
+        )
+
+    @pytest.fixture
     def service_no_broadcaster(self, repository, pod_manager):
         return SessionService(
             repository=repository,
@@ -220,6 +244,43 @@ class TestUpdateActivity:
 
         needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
         assert needs == []
+
+    @pytest.mark.asyncio
+    async def test_attention_notifier_fires_on_new_request(
+        self, service_with_notifier, attention_notifier
+    ):
+        """Entering awaiting_input dispatches a push via the attention notifier."""
+        session = await service_with_notifier.create_session(
+            name="Blocked",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        await service_with_notifier.update_activity(
+            session.id,
+            SessionActivityState.AWAITING_INPUT,
+            {"kind": "question", "prompt": "Which DB?", "request_id": "askq-1"},
+        )
+        await asyncio.sleep(0)  # let the fire-and-forget notify task run
+
+        assert attention_notifier.calls == [(session.id, "question", "Which DB?", "askq-1")]
+
+    @pytest.mark.asyncio
+    async def test_attention_notifier_not_fired_for_busy(
+        self, service_with_notifier, attention_notifier
+    ):
+        session = await service_with_notifier.create_session(
+            name="Working",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        await service_with_notifier.update_activity(
+            session.id, SessionActivityState.ACTIVE, {"turn_count": 1}
+        )
+        await asyncio.sleep(0)
+
+        assert attention_notifier.calls == []
 
     @pytest.mark.asyncio
     async def test_busy_states_do_not_emit_needs_input(self, service, broadcaster):

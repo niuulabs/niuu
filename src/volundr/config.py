@@ -669,6 +669,48 @@ class SleipnirConfig(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
+class PushNotificationConfig(BaseModel):
+    """Push / attention notification fan-out (optional).
+
+    When enabled, a session entering ``awaiting_input`` dispatches a push to the
+    owner's registered devices through the configured NotificationChannel
+    adapter. Off by default; the default adapter only logs.
+
+    Example YAML::
+
+        push:
+          enabled: true
+          adapter: "volundr.adapters.outbound.push_channels.ApnsNotificationChannel"
+          min_urgency: 0.8
+          kwargs:
+            team_id: "ABCDE12345"
+            key_id: "KEY1234567"
+            bundle_id: "com.niuu.forge"
+          secret_kwargs_env:
+            private_key: "APNS_PRIVATE_KEY"
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable push notifications for sessions that need attention.",
+    )
+    adapter: str = Field(
+        default="volundr.adapters.outbound.push_channels.LoggingNotificationChannel",
+        description="Fully-qualified NotificationChannel class path.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
+    min_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Drop pushes below this urgency.",
+    )
+
+
 class IdentityConfig(BaseModel):
     """Dynamic identity adapter configuration.
 
@@ -1546,6 +1588,7 @@ class Settings(BaseSettings):
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
+    push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)

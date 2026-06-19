@@ -27,6 +27,7 @@ from volundr.domain.models import (
     ClusterResourceInfo,
     CommunicationRoute,
     CredentialMapping,
+    DeviceToken,
     ExternalSessionRecord,
     IntegrationConnection,
     LaunchSpec,
@@ -37,6 +38,7 @@ from volundr.domain.models import (
     Principal,
     ProjectMapping,
     PromptScope,
+    PushMessage,
     PVCRef,
     RealtimeEvent,
     RoomParticipantInfo,
@@ -400,6 +402,55 @@ class EventBroadcaster(ABC):
             The generator should be used in an async for loop and will
             continue yielding events until the subscription is cancelled.
         """
+
+
+class DeviceTokenRepository(ABC):
+    """Persistence port for per-user push device registrations."""
+
+    @abstractmethod
+    async def upsert(self, device: DeviceToken) -> DeviceToken:
+        """Register a device, or refresh it if the (owner, token) already exists."""
+
+    @abstractmethod
+    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
+        """Return every device registered by an owner."""
+
+    @abstractmethod
+    async def delete(self, owner_id: str, token: str) -> bool:
+        """Remove a device registration. Returns True if one was deleted."""
+
+
+class NotificationChannel(ABC):
+    """Outbound port for delivering a push to a user's devices.
+
+    Implementations: APNs (direct), an outbound webhook relay, or a logging
+    no-op. Selected via the dynamic-adapter config so adding a channel is
+    config-only.
+    """
+
+    @abstractmethod
+    async def send(self, message: PushMessage, devices: list[DeviceToken]) -> None:
+        """Deliver a push. ``devices`` is the owner's registered devices (may be
+        empty for relay channels that resolve recipients themselves)."""
+
+
+class AttentionNotifier(ABC):
+    """Port the session service calls when a session needs the user.
+
+    Decouples session logic from the push delivery mechanism: the session
+    service emits the intent, an adapter resolves devices and dispatches.
+    """
+
+    @abstractmethod
+    async def notify_needs_input(
+        self,
+        session: Session,
+        *,
+        kind: str,
+        prompt: str,
+        request_id: str,
+    ) -> None:
+        """Alert the session owner that the session is blocked awaiting them."""
 
 
 class LaunchSpecProvider(ABC):
