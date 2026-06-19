@@ -48,7 +48,15 @@ class TestRegistryStructure:
             assert val.groups, f"{key!r} has no groups"
 
     def test_known_groups_only(self) -> None:
-        valid_groups = {"core", "extended", "skill", "platform", "ravn", "kubernetes"}
+        valid_groups = {
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "ravn",
+            "kubernetes",
+            "workflow",
+        }
         for key, val in BUILTIN_TOOLS.items():
             unknown = val.groups - valid_groups
             assert not unknown, f"{key!r} has unknown groups: {unknown}"
@@ -101,6 +109,18 @@ class TestRegistryStructure:
             "ting_workflow",
             "tracker_issue",
         }.issubset(platform_keys)
+
+    def test_workflow_tools_present(self) -> None:
+        workflow_keys = {k for k, v in BUILTIN_TOOLS.items() if "workflow" in v.groups}
+        assert {
+            "workflow_list",
+            "workflow_describe",
+            "workflow_launch",
+            "workflow_status",
+            "workflow_events",
+            "workflow_artifacts",
+            "workflow_artifact_read",
+        }.issubset(workflow_keys)
 
     def test_terminal_docker_entry_exists(self) -> None:
         assert "terminal_docker" in BUILTIN_TOOLS
