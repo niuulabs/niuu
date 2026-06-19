@@ -158,8 +158,9 @@
         label: Research Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [research, memory, sources]
         position:
@@ -306,8 +307,9 @@
         label: Specification Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [specifications, product, design, planning]
         position:
@@ -622,8 +624,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -740,8 +743,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -842,8 +846,9 @@
         label: Capability Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [capability, skills, tools, valkyrie]
         position:

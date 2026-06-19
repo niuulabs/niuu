@@ -788,6 +788,29 @@ def _get_tool_group(settings: Settings, name: str) -> ToolGroupConfig:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_mimir_auth_token(auth_config: Any) -> str | None:
+    """Resolve a Mimir bearer token from config without storing secrets in YAML."""
+    if auth_config is None:
+        return None
+    if auth_config.token:
+        return auth_config.token
+    token_env = getattr(auth_config, "token_env", None)
+    if token_env:
+        token = os.environ.get(str(token_env), "").strip()
+        if token:
+            return token
+    token_file = getattr(auth_config, "token_file", None)
+    if token_file:
+        try:
+            token = Path(str(token_file)).read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.warning("Mímir auth token file is not readable: %s", token_file)
+            return None
+        if token:
+            return token
+    return None
+
+
 def _build_mimir(settings: Settings) -> Any:
     """Build the Mímir adapter from config, or None if disabled."""
     if not settings.mimir.enabled:
@@ -808,7 +831,7 @@ def _build_mimir(settings: Settings) -> Any:
                 if inst.auth is not None:
                     auth = MimirAuth(
                         type=inst.auth.type,
-                        token=inst.auth.token,
+                        token=_resolve_mimir_auth_token(inst.auth),
                         trust_domain=inst.auth.trust_domain,
                     )
                 port = HttpMimirAdapter(base_url=inst.url, auth=auth)
@@ -4933,7 +4956,7 @@ def _build_single_mimir(settings: Settings, name: str) -> Any:
             if inst.auth is not None:
                 auth = MimirAuth(
                     type=inst.auth.type,
-                    token=inst.auth.token,
+                    token=_resolve_mimir_auth_token(inst.auth),
                     trust_domain=inst.auth.trust_domain,
                 )
             return HttpMimirAdapter(base_url=inst.url, auth=auth)

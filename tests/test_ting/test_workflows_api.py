@@ -181,6 +181,7 @@ def _make_research_workflow() -> WorkflowDefinition:
                     "bindingMode": "registry",
                     "registryEntryId": "tmp-mimir",
                     "path": "/tmp/mimir",
+                    "authRef": "integration:volundr",
                 },
                 {
                     "id": "stage-1",
@@ -576,6 +577,7 @@ class TestWorkflowCatalogAPI:
         assert spawn.branch == "feat/research"
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
+        assert spawn.credential_names == []
         assert spawn.workload_config["provenance"] == {
             "signal_id": "sig-1",
             "valkyrie_id": "valkyrie-ymir",

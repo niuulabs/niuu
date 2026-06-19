@@ -1326,6 +1326,14 @@ class MimirAuthConfig(BaseModel):
         default=None,
         description="Bearer token value (when type=bearer).",
     )
+    token_file: str | None = Field(
+        default=None,
+        description="File containing a bearer token (when type=bearer).",
+    )
+    token_env: str | None = Field(
+        default=None,
+        description="Environment variable containing a bearer token (when type=bearer).",
+    )
     trust_domain: str | None = Field(
         default=None,
         description="SPIFFE trust domain (when type=spiffe), e.g. 'niuu.world'.",

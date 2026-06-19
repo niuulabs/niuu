@@ -81,7 +81,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         if node.get("kind") == "resource"
     }
     assert research_resources["Research Memory"]["bindingMode"] == "registry"
-    assert research_resources["Research Memory"]["path"] == "/tmp/mimir"
+    assert research_resources["Research Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert research_resources["Research Memory"]["authRef"] == "integration:volundr"
 
     specification_flow = next(
         workflow for workflow in workflows if workflow.name == "Specification Stack"
@@ -139,7 +142,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in specification_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert specification_resources["Specification Memory"]["path"] == "/tmp/mimir"
+    assert specification_resources["Specification Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert specification_resources["Specification Memory"]["authRef"] == "integration:volundr"
 
     delivery_flow = next(
         workflow for workflow in workflows if workflow.name == "Tracker Delivery Flow"
@@ -170,7 +176,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in delivery_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert delivery_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+    assert delivery_resources["Delivery Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert delivery_resources["Delivery Memory"]["authRef"] == "integration:volundr"
 
     code_review_flow = next(
         workflow for workflow in workflows if workflow.name == "Code & Review Flow"
@@ -210,7 +219,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in code_review_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert code_review_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+    assert code_review_resources["Delivery Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert code_review_resources["Delivery Memory"]["authRef"] == "integration:volundr"
 
     builder_flow = next(
         workflow for workflow in workflows if workflow.name == "Tool & Skill Builder"
@@ -241,7 +253,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         if node.get("kind") == "resource"
     }
     assert builder_resources["Capability Memory"]["bindingMode"] == "registry"
-    assert builder_resources["Capability Memory"]["path"] == "/tmp/mimir"
+    assert builder_resources["Capability Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert builder_resources["Capability Memory"]["authRef"] == "integration:volundr"
 
 
 @pytest.mark.asyncio

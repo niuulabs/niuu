@@ -196,6 +196,45 @@ class TestSecretInjectionContributor:
             "/home/dev/.claude/credentials.json": "oauth_token",
         }
 
+    async def test_integration_auth_ref_maps_mimir_token_file(self, session):
+        """Mimir auth refs can target an integration slug portably."""
+        defn = _definition(
+            slug="volundr",
+            env_from_credentials={"VOLUNDR_API_TOKEN": "token"},
+        )
+        registry = _registry([defn])
+
+        adapter = AsyncMock()
+        adapter.pod_spec_additions.return_value = PodSpecAdditions()
+        adapter.ensure_secret_provider_class.return_value = None
+
+        ctx = SessionContext(
+            integration_connections=(_connection("volundr-session-runtime-valhalla", "volundr"),),
+            workload_type="ravn_flock",
+            workload_config={
+                "mimir": {
+                    "registry_refs": [
+                        {
+                            "mount_name": "mimir-yggdrasil",
+                            "auth_ref": "integration:volundr",
+                        }
+                    ]
+                }
+            },
+        )
+        c = SecretInjectionContributor(
+            secret_injection=adapter,
+            integration_registry=registry,
+        )
+        await c.contribute(session, ctx)
+
+        mappings = adapter.ensure_secret_provider_class.call_args[0][1]
+        assert mappings[0].credential_name == "volundr-session-runtime-valhalla"
+        assert mappings[0].env_mappings == {"VOLUNDR_API_TOKEN": "token"}
+        assert mappings[0].file_mappings == {
+            "/run/secrets/mimir/integration-volundr/token": "token",
+        }
+
     async def test_direct_credential_names_fallback_without_store(self, session):
         """Direct credential_names have no env/file mappings when no store is available."""
         adapter = AsyncMock()

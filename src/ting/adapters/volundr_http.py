@@ -137,6 +137,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "workload_config": request.workload_config,
                     "launch_spec": request.profile,
                     "integration_ids": request.integration_ids,
+                    "credential_names": request.credential_names,
                 },
             )
             if resp.status_code >= 400:
