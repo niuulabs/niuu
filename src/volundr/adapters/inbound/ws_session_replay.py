@@ -50,6 +50,12 @@ class _VisibilityGate:
     ``content_block_delta``/``content_block_stop`` belonging to an internal
     block is dropped, and resets that tracking when visibility is turned on
     (matching ``set_show_internal``).
+
+    By design this reuses the SHARED ``filter_internal_blocks`` predicate and
+    keeps only the tiny per-connection state (``show`` + ``_open_block_type``),
+    rather than depending on the broker's ``WebSocketChannel`` (which is bound to
+    live broadcast/room machinery the replay path has no use for). The filtering
+    LOGIC lives in one place; only this small state wrapper is local.
     """
 
     def __init__(self, show: bool) -> None:
@@ -69,6 +75,50 @@ class _VisibilityGate:
             payload, open_block_type=self._open_block_type
         )
         return filtered
+
+
+async def _authorize_replay(
+    session_service: SessionService | None,
+    websocket: WebSocket,
+    session_id: UUID,
+) -> bool:
+    """Authorize a DB-replay connection; close 1008 on denial. Return True to proceed.
+
+    Mirrors the REST ``GET .../log`` access contract
+    (``rest_session_log._check_access``) with early returns:
+
+    * auth unconfigured (``session_service is None``) -> open;
+    * unauthenticated principal (``extract_principal`` raises ``HTTPException``)
+      or forbidden principal (``_check_access`` raises ``SessionAccessDeniedError``)
+      -> close 1008;
+    * session row absent -> open. PARITY with REST /log: a deleted session whose
+      durable log survives (no FK) has no per-session ACL to check. If that
+      deleted-session exposure is ever tightened, change it HERE and in
+      ``rest_session_log._check_access`` together.
+    """
+    if session_service is None:
+        return True
+
+    from fastapi import HTTPException
+
+    from volundr.adapters.inbound.auth import extract_principal
+
+    try:
+        principal = await extract_principal(websocket)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return False
+
+    session = await session_service.get_session(session_id)
+    if session is None:
+        return True
+
+    try:
+        await session_service._check_access(session, principal, "read")
+    except SessionAccessDeniedError:
+        await websocket.close(code=1008)
+        return False
+    return True
 
 
 def create_session_replay_router(
@@ -108,29 +158,10 @@ def create_session_replay_router(
         after: int = Query(default=0, ge=0),
         preamble: bool = Query(default=True),
     ) -> None:
-        # Auth runs BEFORE accept(). extract_principal only reads .app.state /
-        # .headers / .query_params, all present on a WebSocket connection. We
-        # cannot raise HTTPException after the WS scope, so both an
-        # unauthenticated principal (extract_principal -> HTTPException) and a
-        # denied principal (_check_access -> SessionAccessDeniedError) close with
-        # policy-violation 1008 instead of dropping the handshake.
-        if session_service is not None:
-            from fastapi import HTTPException
-
-            from volundr.adapters.inbound.auth import extract_principal
-
-            try:
-                principal = await extract_principal(websocket)
-            except HTTPException:
-                await websocket.close(code=1008)
-                return
-            session = await session_service.get_session(session_id)
-            if session is not None:
-                try:
-                    await session_service._check_access(session, principal, "read")
-                except SessionAccessDeniedError:
-                    await websocket.close(code=1008)
-                    return
+        # Auth runs BEFORE accept() (see _authorize_replay). Denial closes the
+        # socket with policy-violation 1008 rather than dropping the handshake.
+        if not await _authorize_replay(session_service, websocket, session_id):
+            return
 
         src = RepositoryReplaySource(log_repository, session_id, page=config.page_size)
         await _run(
@@ -242,7 +273,10 @@ async def _run(
                 while True:
                     msg = await ws.receive_json()
                     if isinstance(msg, dict) and msg.get("type") == "set_internal_visibility":
-                        gate.set_show(bool(msg.get("visible", True)))
+                        # Strict: only a JSON boolean `true` shows; default true when
+                        # the key is absent. `is True` avoids the string "false"
+                        # (truthy) accidentally unhiding internal frames.
+                        gate.set_show(msg.get("visible", True) is True)
                     # Other control frames (steer, slash_command, ...) are
                     # accepted and ignored — replay is read-only.
             except (WebSocketDisconnect, RuntimeError, ValueError):
