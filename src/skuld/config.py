@@ -209,6 +209,29 @@ class SkuldSessionConfig(BaseModel):
     )
 
 
+class ActivityHeartbeatConfig(BaseModel):
+    """Periodic re-report of the current activity state to Volundr.
+
+    Skuld reports activity purely on CLI frame transitions, so a long turn (a
+    slow tool, an extended thinking pass) or a session blocked on the user goes
+    silent: the UI cannot tell "still progressing" from "frozen", and Volundr's
+    liveness reaper (``session_liveness.stale_after_seconds``, default 600) can
+    falsely mark a genuinely-busy or input-blocked session as stopped. The
+    heartbeat re-reports the current state on an interval while the agent is busy
+    (active/tool_executing) or awaiting input, advancing ``last_active``.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "How often to re-report a busy/awaiting state. Keep comfortably "
+            "below Volundr's session liveness stale_after_seconds (default 600)."
+        ),
+    )
+
+
 class ArchiveStoreConfig(BaseModel):
     """Dynamic archive store adapter configuration."""
 
@@ -290,6 +313,7 @@ class SkuldSettings(BaseSettings):
             "classic bypassPermissions behavior."
         ),
     )
+    activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

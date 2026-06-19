@@ -1012,6 +1012,15 @@ class Broker:
         self._event_log_stopping = False
         self._activity_state: str = "idle"
         self._last_activity_report: float = 0.0
+        # Rich context for the CURRENT activity state (e.g. the pending question's
+        # kind/request_id/prompt for awaiting_input). Re-sent verbatim by the
+        # heartbeat so a heartbeat never strips the question detail or looks like
+        # a new attention request. Reset whenever a plain state report arrives.
+        self._activity_extra: dict[str, Any] = {}
+        # request_id -> kind for every pending human gate (question / permission).
+        # Non-empty == the session is blocked waiting on the user.
+        self._pending_attention: dict[str, str] = {}
+        self._activity_heartbeat_task: asyncio.Task[None] | None = None
         self._conversation_turns: list[ConversationTurn] = []
         self._pending_assistant_content: str = ""
         self._pending_assistant_parts: list[dict] = []
@@ -1705,6 +1714,9 @@ class Broker:
         ):
             self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
 
+        if self._settings.activity_heartbeat.enabled and self.volundr_api_url:
+            self._activity_heartbeat_task = asyncio.create_task(self._activity_heartbeat_loop())
+
     async def shutdown(self) -> None:
         """Clean up on shutdown.
 
@@ -1722,6 +1734,11 @@ class Broker:
 
         # Drain and stop the durable event-log worker so the last turn persists
         await self._stop_event_log()
+
+        if self._activity_heartbeat_task is not None:
+            self._activity_heartbeat_task.cancel()
+            await asyncio.gather(self._activity_heartbeat_task, return_exceptions=True)
+            self._activity_heartbeat_task = None
 
         if self._peer_watchdog_task is not None:
             self._peer_watchdog_task.cancel()
@@ -2831,6 +2848,7 @@ class Broker:
             request_id,
             cancel_auto_approval=not auto_approved,
         )
+        await self._exit_attention(request_id)
         await self._channels.broadcast(
             {
                 "type": "permission_resolved",
@@ -2847,6 +2865,14 @@ class Broker:
 
         decision = await self._evaluate_permission_auto_approval(initial_request)
         if not decision or decision.get("can_auto_approve") is not True:
+            # Policy won't auto-approve — a human must decide. Surface it as a
+            # needs-attention gate (auto-approvable requests never flip the
+            # session, so they don't spam the user with notifications).
+            await self._enter_attention(
+                request_id,
+                "permission",
+                prompt=self._attention_prompt_from_permission(initial_request),
+            )
             return
 
         delay_seconds = self._decision_delay_seconds(decision)
@@ -2903,6 +2929,19 @@ class Broker:
 
         if event_type == "control_request":
             self._track_pending_permission_request(data)
+
+        if event_type == "ask_user_question":
+            # The agent is blocked on a human answer. Flip the session to
+            # awaiting_input so the platform (and any push fan-out) knows it
+            # needs the user — Skuld otherwise stays pinned at active here.
+            asyncio.create_task(
+                self._enter_attention(
+                    str(data.get("request_id", "")),
+                    "question",
+                    prompt=self._attention_prompt_from_questions(data),
+                    options=data.get("questions"),
+                )
+            )
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
@@ -3031,6 +3070,10 @@ class Broker:
                         }
                     )
         elif event_type == "result":
+            # A turn that reaches result is no longer blocked on the user; drop
+            # any stale pending gates so a later heartbeat can't resurrect
+            # awaiting_input.
+            self._pending_attention.clear()
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
                 asyncio.create_task(self._on_result_publish_mesh())
@@ -3354,6 +3397,8 @@ class Broker:
                     request_id=data.get("request_id", ""),
                     answers=data.get("answers", []),
                 )
+                # The human answered — the session is no longer blocked.
+                await self._exit_attention(str(data.get("request_id", "")))
 
             # Phase 3: interrupt current turn
             case "interrupt":
@@ -4691,11 +4736,20 @@ class Broker:
     ) -> None:
         """Report activity state change to Volundr.
 
-        States: active, idle, tool_executing.
-        Debounces rapid transitions — only reports when state actually changes.
+        States: active, idle, tool_executing, awaiting_input.
+        Debounces rapid transitions — only reports when the state actually
+        changes, unless extra_metadata is attached (used by the heartbeat and by
+        attention reports so they always land).
         """
         if state == self._activity_state and not extra_metadata:
             return
+
+        # Remember the rich context of a "real" (non-heartbeat) report so the
+        # heartbeat can re-send it unchanged. A plain report (no extra) clears it.
+        if not (extra_metadata and extra_metadata.get("heartbeat")):
+            self._activity_extra = {
+                k: v for k, v in (extra_metadata or {}).items() if k != "heartbeat"
+            }
 
         self._activity_state = state
         now = time.monotonic()
@@ -4735,6 +4789,81 @@ class Broker:
                 "Failed to report activity state %s",
                 state,
                 exc_info=True,
+            )
+
+    async def _enter_attention(
+        self,
+        request_id: str,
+        kind: str,
+        *,
+        prompt: str = "",
+        options: list | None = None,
+    ) -> None:
+        """Mark the session blocked on the user and report awaiting_input.
+
+        ``kind`` is one of ``question`` | ``confirmation`` | ``permission``.
+        The metadata travels to Volundr, which (re-)emits the high-urgency
+        needs-input event a notification / push fan-out reacts to.
+        """
+        if request_id:
+            self._pending_attention[request_id] = kind
+        extra: dict[str, Any] = {"kind": kind, "request_id": request_id}
+        if prompt:
+            extra["prompt"] = prompt
+        if options is not None:
+            extra["options"] = options
+        await self._report_activity_state("awaiting_input", extra_metadata=extra)
+
+    async def _exit_attention(self, request_id: str) -> None:
+        """Clear one pending human gate; resume when nothing else is blocking.
+
+        Reports ``active`` once the last gate clears so the session leaves
+        awaiting_input immediately — the next CLI frame refines the state.
+        """
+        self._pending_attention.pop(request_id, None)
+        if self._pending_attention:
+            return
+        if self._activity_state == "awaiting_input":
+            await self._report_activity_state("active")
+
+    @staticmethod
+    def _attention_prompt_from_questions(data: dict) -> str:
+        """Best-effort human-readable prompt from an ask_user_question frame."""
+        questions = data.get("questions") or []
+        for q in questions:
+            if isinstance(q, dict):
+                text = q.get("question") or q.get("header") or q.get("prompt")
+                if text:
+                    return str(text)
+        return "The agent is asking a question"
+
+    @staticmethod
+    def _attention_prompt_from_permission(request: dict) -> str:
+        """Best-effort human-readable prompt from a permission control_request."""
+        tool = request.get("tool_name") or request.get("tool") or "a tool"
+        description = request.get("description") or request.get("command")
+        if description:
+            return f"Permission to run {tool}: {description}"
+        return f"Permission to run {tool}"
+
+    async def _activity_heartbeat_loop(self) -> None:
+        """Re-report the current activity state on an interval while busy/blocked.
+
+        Keeps the UI's "progressing" signal live during long turns and keeps
+        ``last_active`` fresh so Volundr's liveness reaper does not stop a
+        genuinely-busy or input-blocked session. Idle sessions are not
+        heartbeated (an idle session that goes stale is exactly what the reaper
+        is meant to catch).
+        """
+        interval = self._settings.activity_heartbeat.interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            state = self._activity_state
+            if state not in ("active", "tool_executing", "awaiting_input"):
+                continue
+            await self._report_activity_state(
+                state,
+                extra_metadata={**self._activity_extra, "heartbeat": True},
             )
 
     async def _generate_summary(self) -> dict:

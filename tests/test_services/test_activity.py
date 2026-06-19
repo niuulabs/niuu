@@ -197,6 +197,31 @@ class TestUpdateActivity:
         assert needs[0].data["request_id"] == "askq-2"
 
     @pytest.mark.asyncio
+    async def test_heartbeat_report_does_not_refire_needs_input(self, service, broadcaster):
+        """A Skuld heartbeat re-reporting awaiting_input must not re-fire the
+        needs-input event (which would re-trigger a push)."""
+        session = await service.create_session(
+            name="Blocked",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        await service.update_activity(
+            session.id,
+            SessionActivityState.AWAITING_INPUT,
+            {"kind": "question", "request_id": "askq-1"},
+        )
+        broadcaster._events.clear()
+
+        await service.update_activity(
+            session.id,
+            SessionActivityState.AWAITING_INPUT,
+            {"kind": "question", "request_id": "askq-1", "heartbeat": True},
+        )
+
+        needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
+        assert needs == []
+
+    @pytest.mark.asyncio
     async def test_busy_states_do_not_emit_needs_input(self, service, broadcaster):
         """active/idle/tool_executing never raise a needs-input signal."""
         session = await service.create_session(

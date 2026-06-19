@@ -427,9 +427,12 @@ class SessionService:
         Fires on the transition into ``awaiting_input``, and again if a new
         pending request (different ``request_id``) arrives while the session is
         still awaiting — so a second question is not swallowed. Re-reports of the
-        same pending request do not re-fire, avoiding notification spam.
+        same pending request, and Skuld's periodic heartbeats, do not re-fire,
+        avoiding notification spam.
         """
         if state is not SessionActivityState.AWAITING_INPUT:
+            return False
+        if metadata.get("heartbeat"):
             return False
         if previous_state is not SessionActivityState.AWAITING_INPUT:
             return True
