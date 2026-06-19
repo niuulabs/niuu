@@ -1,7 +1,23 @@
 # Forge Session State & Reporting — Analysis and Design
 
 > Branch: `lexi/forge-state-reporting` (worktree off `lexi/dev-api-integration`).
-> Status: **analysis complete, design proposed** — implementation not yet started.
+> Status: **implemented** across the backend, eventing, push, and web layers.
+
+## Implementation status
+
+| Commit | What it does |
+|---|---|
+| `feat(session): persist activity state and add awaiting_input attention state` | Fixes the activity_state persistence bug; adds the `awaiting_input` state + `needs_attention` on REST. |
+| `feat(session): emit needs-input as a first-class realtime and bus event` | `EventType.SESSION_NEEDS_INPUT` + Sleipnir `volundr.session.needs_input` (urgency 0.9); emitted on transition into awaiting_input. |
+| `feat(skuld): report awaiting_input on human gates and add a progress heartbeat` | Skuld reports awaiting_input on AskUserQuestion / permission gates; config-driven progress heartbeat keeps long/blocked turns alive and "progressing". |
+| `feat(volundr): push notifications for sessions that need attention` | Device-token registry + REST; APNs / webhook / logging channels; AttentionNotifier fired from the session service. |
+| `feat(web): render progressing and needs-attention session states` | `awaiting_input` badge/group/panel, live SSE activity handling. |
+
+**Known follow-up:** the in-chat AskUserQuestion answer panel (rendering and
+answering the question inside the live session view) is not built — this work
+covers session-level state *reporting and visibility*, not the interactive
+answer UI. The broker already forwards the `ask_user_question` frame to the
+browser; a panel analogous to `PermissionApprovalPanel` would complete it.
 
 ## 1. Goal
 
