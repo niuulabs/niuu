@@ -839,16 +839,20 @@ class TestConfigGeneration:
         assert shared["name"] == "shared-team-mimir"
         assert shared["url"] == "https://mimir.niuu.internal/api/v1"
         assert shared["auth"] == {
-            "type": "bearer",
-            "token_file": "/run/secrets/mimir/integration-volundr/token",
+            "type": "workload",
+            "token_file": "/var/run/secrets/niuu-workload/token",
+            "audiences": ["mimir"],
         }
         assert "scratchpad" in cfg
         assert "/mimir/local/scratchpad" in cfg
         assert "project/" in cfg
         assert "draft/" in cfg
-        assert result.pod_spec.annotations["vault.hashicorp.com/agent-inject-containers"] == (
-            "skuld,devrunner,ravn-coordinator"
-        )
+        ravn_container = result.pod_spec.extra_containers[0]
+        assert {
+            "name": "niuu-workload-identity",
+            "mountPath": "/var/run/secrets/niuu-workload",
+            "readOnly": True,
+        } in ravn_container["volumeMounts"]
         volume_names = [v["name"] for v in result.pod_spec.volumes]
         assert "mimir-local" in volume_names
         mount_paths = {m["mountPath"] for m in result.pod_spec.extra_containers[0]["volumeMounts"]}

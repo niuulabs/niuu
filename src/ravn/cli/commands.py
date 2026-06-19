@@ -831,7 +831,12 @@ def _build_mimir(settings: Settings) -> Any:
                 if inst.auth is not None:
                     auth = MimirAuth(
                         type=inst.auth.type,
-                        token=_resolve_mimir_auth_token(inst.auth),
+                        token=_resolve_mimir_auth_token(inst.auth)
+                        if inst.auth.type == "bearer"
+                        else None,
+                        token_file=inst.auth.token_file,
+                        exchange_url=inst.auth.exchange_url,
+                        audiences=tuple(inst.auth.audiences),
                         trust_domain=inst.auth.trust_domain,
                     )
                 port = HttpMimirAdapter(base_url=inst.url, auth=auth)
@@ -4956,7 +4961,12 @@ def _build_single_mimir(settings: Settings, name: str) -> Any:
             if inst.auth is not None:
                 auth = MimirAuth(
                     type=inst.auth.type,
-                    token=_resolve_mimir_auth_token(inst.auth),
+                    token=_resolve_mimir_auth_token(inst.auth)
+                    if inst.auth.type == "bearer"
+                    else None,
+                    token_file=inst.auth.token_file,
+                    exchange_url=inst.auth.exchange_url,
+                    audiences=tuple(inst.auth.audiences),
                     trust_domain=inst.auth.trust_domain,
                 )
             return HttpMimirAdapter(base_url=inst.url, auth=auth)

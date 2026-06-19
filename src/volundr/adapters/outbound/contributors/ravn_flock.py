@@ -45,6 +45,7 @@ _MIMIR_VOLUME_NAME = "mimir-local"
 _MIMIR_MOUNT_PATH = "/mimir/local"
 _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
+_DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH = "/var/run/secrets/niuu-workload"
 _RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/skuld:dev"
 _RAVN_COMMAND = [
     "python",
@@ -182,7 +183,11 @@ def _mimir_auth_from_ref(auth_ref: object) -> dict[str, Any] | None:
     normalized = str(auth_ref or "").strip()
     if not normalized:
         return None
-    return {"type": "bearer", "token_file": _mimir_token_file(normalized)}
+    return {
+        "type": "workload",
+        "token_file": f"{_DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH}/token",
+        "audiences": ["mimir"],
+    }
 
 
 def _normalize_mimir_workload_config(
@@ -715,6 +720,9 @@ class RavnFlockContributor(SessionContributor):
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
         persona_source_token_secret_name: str = "",
         persona_source_http_base_url: str = "",
+        workload_identity_volume_name: str = "niuu-workload-identity",
+        workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
+        workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
@@ -726,6 +734,9 @@ class RavnFlockContributor(SessionContributor):
         self._persona_source_mount_path = persona_source_mount_path
         self._persona_source_token_secret_name = persona_source_token_secret_name
         self._persona_source_http_base_url = persona_source_http_base_url
+        self._workload_identity_volume_name = workload_identity_volume_name
+        self._workload_identity_mount_path = workload_identity_mount_path.rstrip("/")
+        self._workload_identity_token_file_env = workload_identity_token_file_env
 
     @property
     def name(self) -> str:
@@ -1070,6 +1081,10 @@ class RavnFlockContributor(SessionContributor):
                 {"name": "RAVN_STATE_DIR", "value": f"{_WORKSPACE_MOUNT_PATH}/.ravn"},
                 {"name": "HOST", "value": self._mesh_host},
                 {"name": "PORT", "value": str(gw)},
+                {
+                    "name": self._workload_identity_token_file_env,
+                    "value": f"{self._workload_identity_mount_path}/token",
+                },
             ]
 
             if sleipnir_publish_urls:
@@ -1092,6 +1107,11 @@ class RavnFlockContributor(SessionContributor):
                 {
                     "name": cfg_vol_name,
                     "mountPath": _RAVN_CONFIG_DIR,
+                    "readOnly": True,
+                },
+                {
+                    "name": self._workload_identity_volume_name,
+                    "mountPath": self._workload_identity_mount_path,
                     "readOnly": True,
                 },
             ]

@@ -270,6 +270,9 @@ def _create_contributors(
     """
     from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
     from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
+    from volundr.adapters.outbound.contributors.workload_identity import (
+        WorkloadIdentityContributor,
+    )
     from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
 
     contributors: list[SessionContributor] = []
@@ -308,6 +311,10 @@ def _create_contributors(
     if not _has_contributor("workload_config"):
         contributors.append(WorkloadConfigContributor())
         logger.info("Session contributor: workload_config (auto-wired)")
+
+    if not _has_contributor("workload_identity"):
+        contributors.append(WorkloadIdentityContributor())
+        logger.info("Session contributor: workload_identity (auto-wired)")
 
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts

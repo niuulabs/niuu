@@ -18,13 +18,16 @@ class MimirAuth:
     """Authentication configuration for a Mímir instance.
 
     Attributes:
-        type:         Auth mechanism: ``bearer`` (dev) or ``spiffe`` (prod).
+        type:         Auth mechanism: ``bearer``, ``workload``, or ``spiffe``.
         token:        Bearer token value (when type=``bearer``).
         trust_domain: SPIFFE trust domain (when type=``spiffe``).
     """
 
-    type: Literal["bearer", "spiffe"] = "bearer"
+    type: Literal["bearer", "workload", "spiffe"] = "bearer"
     token: str | None = None
+    token_file: str | None = None
+    exchange_url: str | None = None
+    audiences: tuple[str, ...] = ()
     trust_domain: str | None = None
 
 

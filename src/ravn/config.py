@@ -1333,9 +1333,12 @@ class MimirSearchConfig(BaseModel):
 class MimirAuthConfig(BaseModel):
     """Auth configuration for a remote Mímir instance."""
 
-    type: Literal["bearer", "spiffe"] = Field(
+    type: Literal["bearer", "workload", "spiffe"] = Field(
         default="bearer",
-        description="Auth mechanism: 'bearer' (dev) or 'spiffe' (production mTLS).",
+        description=(
+            "Auth mechanism: 'bearer' (dev), 'workload' (projected JWT exchange), "
+            "or 'spiffe' (production mTLS)."
+        ),
     )
     token: str | None = Field(
         default=None,
@@ -1348,6 +1351,14 @@ class MimirAuthConfig(BaseModel):
     token_env: str | None = Field(
         default=None,
         description="Environment variable containing a bearer token (when type=bearer).",
+    )
+    exchange_url: str | None = Field(
+        default=None,
+        description="Workload token exchange URL (when type=workload).",
+    )
+    audiences: list[str] = Field(
+        default_factory=lambda: ["mimir"],
+        description="Target audiences requested from workload token exchange.",
     )
     trust_domain: str | None = Field(
         default=None,

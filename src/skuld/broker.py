@@ -993,6 +993,9 @@ class Broker:
         self._channels = ChannelRegistry()
         self._http_client: httpx.AsyncClient | None = None
         self._http_client_jwt: str | None = None  # JWT used to create _http_client
+        self._http_client_auth_header: str = ""
+        self._workload_jwt: str | None = None
+        self._workload_jwt_expires_at: float = 0.0
         self._sleipnir_publisher: SleipnirPublisher = sleipnir_publisher or InProcessBus()
         self._artifacts = SessionArtifacts(
             saga_id=self._settings.session.saga_id,
@@ -1642,6 +1645,7 @@ class Broker:
 
         # Start chronicle watcher (tails JSONL session files for terminal mode)
         if self._settings.chronicle_watcher_enabled and self.volundr_api_url:
+            await self._refresh_workload_token()
             workspace_slug = self.workspace_dir.replace("/", "-")
             watch_dir = Path.home() / ".claude" / "projects" / workspace_slug
             self._chronicle_watcher = ChronicleWatcher(
@@ -4025,14 +4029,17 @@ class Broker:
         """Build authentication headers for Volundr API calls.
 
         Priority:
-        1. VOLUNDR_API_TOKEN (long-lived PAT injected by Infisical) — preferred
-           because user JWTs expire after minutes while PATs last for months.
-        2. User JWT from WebSocket connection (fallback for dev/local)
-        3. Empty (dev mode — no auth, Volundr backend must accept)
+        1. VOLUNDR_API_TOKEN when explicitly injected for legacy/external use.
+        2. Short-lived workload JWT exchanged from projected service-account token.
+        3. User JWT from WebSocket connection (fallback for dev/local).
+        4. Empty (dev mode — no auth, Volundr backend must accept).
         """
         service_token = os.environ.get("VOLUNDR_API_TOKEN", "")
         if service_token:
             return {"Authorization": f"Bearer {service_token}"}
+
+        if self._workload_jwt and self._workload_jwt_expires_at - 30 > time.time():
+            return {"Authorization": f"Bearer {self._workload_jwt}"}
 
         if self._user_jwt:
             return {"Authorization": f"Bearer {self._user_jwt}"}
@@ -4040,13 +4047,69 @@ class Broker:
         logger.debug("No auth token available — requests will be unauthenticated")
         return {}
 
+    async def _refresh_workload_token(self) -> None:
+        """Refresh cached workload JWT from the projected service-account token."""
+        now = time.time()
+        if self._workload_jwt and self._workload_jwt_expires_at - 30 > now:
+            return
+
+        token_file = os.environ.get(
+            "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
+            "/var/run/secrets/niuu-workload/token",
+        )
+        token_path = Path(token_file)
+        if not token_path.exists():
+            return
+
+        proof = token_path.read_text(encoding="utf-8").strip()
+        if not proof:
+            return
+
+        exchange_url = os.environ.get("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "").strip()
+        if not exchange_url:
+            exchange_url = f"{self.volundr_api_url.rstrip('/')}/api/v1/tokens/workload/exchange"
+        audiences = [
+            part.strip()
+            for part in os.environ.get(
+                "NIUU_WORKLOAD_IDENTITY_AUDIENCES",
+                "volundr-api,forge,ting,mimir,guild",
+            ).split(",")
+            if part.strip()
+        ]
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    exchange_url,
+                    json={"token": proof, "audiences": audiences},
+                )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            logger.warning("Workload token exchange failed", exc_info=True)
+            return
+
+        token = str(payload.get("token") or "")
+        if not token:
+            logger.warning("Workload token exchange returned no token")
+            return
+
+        expires_at = payload.get("expiresAt") or payload.get("expires_at")
+        self._workload_jwt = token
+        self._workload_jwt_expires_at = float(expires_at or (now + 300))
+
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Lazy-init HTTP client for Volundr API calls.
 
         Recreates the client when the JWT changes so the Authorization
         header stays current.
         """
-        if self._http_client is not None and self._http_client_jwt != self._user_jwt:
+        await self._refresh_workload_token()
+        headers = self._build_auth_headers()
+        auth_header = headers.get("Authorization", "")
+        if self._http_client is not None and (
+            self._http_client_jwt != self._user_jwt or self._http_client_auth_header != auth_header
+        ):
             await self._http_client.aclose()
             self._http_client = None
 
@@ -4054,9 +4117,10 @@ class Broker:
             self._http_client = httpx.AsyncClient(
                 base_url=self.volundr_api_url,
                 timeout=10.0,
-                headers=self._build_auth_headers(),
+                headers=headers,
             )
             self._http_client_jwt = self._user_jwt
+            self._http_client_auth_header = auth_header
         return self._http_client
 
     def _next_sequence(self) -> int:

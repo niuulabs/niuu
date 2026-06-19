@@ -11,6 +11,7 @@ from volundr.adapters.outbound.flux import (
     HELMRELEASE_PLURAL,
     HELMRELEASE_VERSION,
     FluxPodManager,
+    _inject_workload_exchange_env,
 )
 from volundr.domain.models import (
     GitSource,
@@ -880,3 +881,31 @@ class TestFluxPodManagerGetApi:
 
         assert pod_manager._api_client is existing_client
         assert result is mock_custom_api
+
+
+def test_inject_workload_exchange_env_updates_builtin_and_extra_containers():
+    values = {
+        "volundr": {"apiUrl": "https://niuu.noatun.asgard.niuu.world/"},
+        "envVars": [{"name": "EXISTING", "value": "1"}],
+        "extraContainers": [
+            {"name": "ravn", "env": [{"name": "RAVN_PERSONA", "value": "framer"}]},
+            {
+                "name": "custom",
+                "env": [
+                    {
+                        "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+                        "value": "https://override/exchange",
+                    }
+                ],
+            },
+        ],
+    }
+
+    _inject_workload_exchange_env(values)
+
+    expected = "https://niuu.noatun.asgard.niuu.world/api/v1/tokens/workload/exchange"
+    assert {"name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "value": expected} in values["envVars"]
+    assert {"name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "value": expected} in values[
+        "extraContainers"
+    ][0]["env"]
+    assert values["extraContainers"][1]["env"][0]["value"] == "https://override/exchange"

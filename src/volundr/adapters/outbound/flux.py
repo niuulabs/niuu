@@ -185,6 +185,8 @@ class FluxPodManager(PodManager):
             if spec.pod_spec.annotations:
                 values["podAnnotations"] = dict(spec.pod_spec.annotations)
 
+        _inject_workload_exchange_env(values)
+
         manifest = self._build_helmrelease(release_name, values)
 
         try:
@@ -338,3 +340,39 @@ class FluxPodManager(PodManager):
         if self._api_client is not None:
             await self._api_client.close()
             self._api_client = None
+
+
+def _inject_workload_exchange_env(values: dict) -> None:
+    """Propagate workload token exchange URL into all session containers."""
+    volundr_cfg = values.get("volundr")
+    if not isinstance(volundr_cfg, dict):
+        return
+    api_url = str(volundr_cfg.get("apiUrl") or "").rstrip("/")
+    if not api_url:
+        return
+    exchange_url = f"{api_url}/api/v1/tokens/workload/exchange"
+    env_entry = {
+        "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+        "value": exchange_url,
+    }
+
+    env_vars = list(values.get("envVars") or [])
+    if not _has_env(env_vars, env_entry["name"]):
+        env_vars.append(env_entry)
+        values["envVars"] = env_vars
+
+    extra_containers = values.get("extraContainers")
+    if not isinstance(extra_containers, list):
+        return
+    for container in extra_containers:
+        if not isinstance(container, dict):
+            continue
+        container_env = list(container.get("env") or [])
+        if _has_env(container_env, env_entry["name"]):
+            continue
+        container_env.append(dict(env_entry))
+        container["env"] = container_env
+
+
+def _has_env(env: list, name: str) -> bool:
+    return any(isinstance(entry, dict) and entry.get("name") == name for entry in env)
