@@ -11,6 +11,7 @@ preserving module boundaries while allowing route ownership to evolve.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import httpx
 
@@ -23,17 +24,92 @@ _PERMISSION_PLATFORM = "platform:api"
 
 _DEFAULT_BASE_URL = "http://localhost:8080"
 _DEFAULT_TIMEOUT = 30.0
+_DEFAULT_WORKLOAD_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+_DEFAULT_WORKLOAD_AUDIENCES = ["volundr-api", "forge", "ting", "mimir", "guild"]
 _FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 _FORGE_REPOS_PATH = "/api/v1/forge/repos"
 _TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
 _TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 
 
-def _client(base_url: str, timeout: float, pat_token: str = "") -> httpx.AsyncClient:
+async def _client(
+    base_url: str,
+    timeout: float,
+    pat_token: str = "",
+    *,
+    workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+    exchange_url: str = "",
+    audiences: list[str] | None = None,
+) -> httpx.AsyncClient:
     headers: dict[str, str] = {}
     if pat_token:
         headers["Authorization"] = f"Bearer {pat_token}"
+    else:
+        token = await _exchange_workload_token(
+            base_url,
+            timeout,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     return httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, headers=headers)
+
+
+async def _exchange_workload_token(
+    base_url: str,
+    timeout: float,
+    *,
+    workload_token_file: str,
+    exchange_url: str,
+    audiences: list[str] | None,
+) -> str:
+    token_path = Path(workload_token_file).expanduser()
+    if not token_path.exists():
+        return ""
+    proof = token_path.read_text(encoding="utf-8").strip()
+    if not proof:
+        return ""
+    url = exchange_url.rstrip("/") or f"{base_url.rstrip('/')}/api/v1/tokens/workload/exchange"
+    body = {"token": proof, "audiences": audiences or _DEFAULT_WORKLOAD_AUDIENCES}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(url, json=body)
+        response.raise_for_status()
+        payload = response.json()
+    token = str(payload.get("token") or "")
+    if not token:
+        raise RuntimeError("workload token exchange response did not include token")
+    return token
+
+
+class _PlatformAuthMixin:
+    def _set_platform_auth(
+        self,
+        *,
+        base_url: str,
+        timeout: float,
+        pat_token: str,
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
+    ) -> None:
+        self._base_url = base_url
+        self._timeout = timeout
+        self._pat_token = pat_token
+        self._workload_token_file = workload_token_file
+        self._exchange_url = exchange_url
+        self._audiences = audiences or _DEFAULT_WORKLOAD_AUDIENCES
+
+    async def _client(self) -> httpx.AsyncClient:
+        return await _client(
+            self._base_url,
+            self._timeout,
+            self._pat_token,
+            workload_token_file=self._workload_token_file,
+            exchange_url=self._exchange_url,
+            audiences=self._audiences,
+        )
 
 
 def _ok(data: object) -> ToolResult:
@@ -51,7 +127,7 @@ def _err(message: str) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 
-class VolundrSessionTool(ToolPort):
+class VolundrSessionTool(_PlatformAuthMixin, ToolPort):
     """Create, list, and stop Volundr coding sessions.
 
     Actions:
@@ -68,10 +144,18 @@ class VolundrSessionTool(ToolPort):
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
     ) -> None:
-        self._base_url = base_url
-        self._timeout = timeout
-        self._pat_token = pat_token
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
 
     @property
     def name(self) -> str:
@@ -135,7 +219,7 @@ class VolundrSessionTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+        async with await self._client() as client:
             match action:
                 case "list":
                     return await self._list(client, input)
@@ -225,7 +309,7 @@ class VolundrSessionTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-class VolundrGitTool(ToolPort):
+class VolundrGitTool(_PlatformAuthMixin, ToolPort):
     """Perform git operations via the Volundr API.
 
     Actions:
@@ -242,10 +326,18 @@ class VolundrGitTool(ToolPort):
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
     ) -> None:
-        self._base_url = base_url
-        self._timeout = timeout
-        self._pat_token = pat_token
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
 
     @property
     def name(self) -> str:
@@ -323,7 +415,7 @@ class VolundrGitTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+        async with await self._client() as client:
             match action:
                 case "list_branches":
                     return await self._list_branches(client, input)
@@ -438,7 +530,7 @@ class VolundrGitTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-class TingSagaTool(ToolPort):
+class TingSagaTool(_PlatformAuthMixin, ToolPort):
     """Decompose specs and manage Ting sagas.
 
     Actions:
@@ -456,10 +548,18 @@ class TingSagaTool(ToolPort):
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
     ) -> None:
-        self._base_url = base_url
-        self._timeout = timeout
-        self._pat_token = pat_token
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
 
     @property
     def name(self) -> str:
@@ -566,7 +666,7 @@ class TingSagaTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+        async with await self._client() as client:
             match action:
                 case "list":
                     return await self._list(client)
@@ -664,7 +764,7 @@ class TingSagaTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-class TingWorkflowTool(ToolPort):
+class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
     """List, inspect, and launch Ting workflows.
 
     Actions:
@@ -678,10 +778,18 @@ class TingWorkflowTool(ToolPort):
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
     ) -> None:
-        self._base_url = base_url
-        self._timeout = timeout
-        self._pat_token = pat_token
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
 
     @property
     def name(self) -> str:
@@ -782,7 +890,7 @@ class TingWorkflowTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+        async with await self._client() as client:
             match action:
                 case "list":
                     return await self._list(client, input)
@@ -859,7 +967,7 @@ class TingWorkflowTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-class TrackerIssueTool(ToolPort):
+class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
     """Search, view, and update issues via Volundr's tracker integration.
 
     Actions:
@@ -873,10 +981,18 @@ class TrackerIssueTool(ToolPort):
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
     ) -> None:
-        self._base_url = base_url
-        self._timeout = timeout
-        self._pat_token = pat_token
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
 
     @property
     def name(self) -> str:
@@ -922,7 +1038,7 @@ class TrackerIssueTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        async with _client(self._base_url, self._timeout, self._pat_token) as client:
+        async with await self._client() as client:
             match action:
                 case "search":
                     return await self._search(client, input.get("query", ""))

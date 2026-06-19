@@ -24,10 +24,12 @@ Components
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -239,13 +241,15 @@ class EntityIndexCache:
 def http_entity_fetcher(
     base_url: str,
     timeout_seconds: float,
+    headers: dict[str, str] | None = None,
 ) -> Callable[[], Awaitable[list[ReflexEntity]]]:
     """Build an async fetcher for ``GET {base_url}/mimir/entities/index``."""
     url = f"{base_url.rstrip('/')}/mimir/entities/index"
+    request_headers = dict(headers or {})
 
     async def _fetch() -> list[ReflexEntity]:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers=request_headers)
             response.raise_for_status()
             return parse_entities(response.json())
 
@@ -323,6 +327,50 @@ def _resolve_base_url(host_cfg: object, reflex_cfg: object) -> str:
     return ""
 
 
+def _resolve_reflex_headers(host_cfg: object, base_url: str) -> dict[str, str]:
+    """Resolve auth headers for the Mímir instance backing the reflex feed."""
+    normalized_base = base_url.strip().rstrip("/")
+    instances = getattr(host_cfg, "instances", None)
+    if not isinstance(instances, (list, tuple)):
+        return {}
+
+    for instance in instances:
+        url = getattr(instance, "url", None)
+        if not isinstance(url, str) or url.strip().rstrip("/") != normalized_base:
+            continue
+        auth = getattr(instance, "auth", None)
+        if auth is None or getattr(auth, "type", "") != "bearer":
+            return {}
+        token = _resolve_bearer_token(auth)
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+        return {}
+    return {}
+
+
+def _resolve_bearer_token(auth: object) -> str | None:
+    token = getattr(auth, "token", None)
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+
+    token_env = getattr(auth, "token_env", None)
+    if isinstance(token_env, str) and token_env.strip():
+        value = os.environ.get(token_env.strip(), "").strip()
+        if value:
+            return value
+
+    token_file = getattr(auth, "token_file", None)
+    if isinstance(token_file, str) and token_file.strip():
+        try:
+            value = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.warning("mimir.reflex: auth token file is not readable: %s", token_file)
+            return None
+        if value:
+            return value
+    return None
+
+
 def build_reflex_injector(host_cfg: object) -> ReflexInjector | None:
     """Build a :class:`ReflexInjector` from a config object holding ``.reflex``.
 
@@ -345,7 +393,11 @@ def build_reflex_injector(host_cfg: object) -> ReflexInjector | None:
         )
         return None
     return ReflexInjector(
-        fetch_entities=http_entity_fetcher(base_url, float(reflex_cfg.timeout_seconds)),
+        fetch_entities=http_entity_fetcher(
+            base_url,
+            float(reflex_cfg.timeout_seconds),
+            headers=_resolve_reflex_headers(host_cfg, base_url),
+        ),
         max_pointers=int(reflex_cfg.max_pointers),
         cache_ttl_seconds=float(reflex_cfg.cache_ttl_seconds),
     )

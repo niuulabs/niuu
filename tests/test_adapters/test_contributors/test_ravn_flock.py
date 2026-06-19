@@ -805,6 +805,7 @@ class TestConfigGeneration:
                             "registry_entry_id": "shared-team-mimir",
                             "mount_name": "shared-team-mimir",
                             "categories": ["entity", "decision"],
+                            "auth_ref": "integration:volundr",
                         }
                     ],
                     "ephemeral_locals": [
@@ -835,12 +836,21 @@ class TestConfigGeneration:
         result = await c.contribute(session, SessionContext(launch_spec="registry-flock"))
 
         cfg = _extract_mounted_config(result.pod_spec, "coordinator")
-        assert "shared-team-mimir" in cfg
-        assert "https://mimir.niuu.internal/api/v1" in cfg
+        parsed = yaml.safe_load(cfg)
+        shared = parsed["mimir"]["instances"][0]
+        assert shared["name"] == "shared-team-mimir"
+        assert shared["url"] == "https://mimir.niuu.internal/api/v1"
+        assert shared["auth"] == {
+            "type": "bearer",
+            "token_file": "/run/secrets/mimir/integration-volundr/token",
+        }
         assert "scratchpad" in cfg
         assert "/mimir/local/scratchpad" in cfg
         assert "project/" in cfg
         assert "draft/" in cfg
+        assert result.pod_spec.annotations["vault.hashicorp.com/agent-inject-containers"] == (
+            "skuld,devrunner,ravn-coordinator"
+        )
         volume_names = [v["name"] for v in result.pod_spec.volumes]
         assert "mimir-local" in volume_names
         mount_paths = {m["mountPath"] for m in result.pod_spec.extra_containers[0]["volumeMounts"]}

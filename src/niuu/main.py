@@ -21,6 +21,7 @@ from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_integrations import (
@@ -192,6 +193,9 @@ def create_app(
             app.state.storage = storage_adapter
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
+            app.state.workload_identity_service = WorkloadIdentityService(
+                loaded_settings.workload_identity
+            )
             app.state.persona_registry = PostgresPersonaRegistry(pool)
 
             app.include_router(create_repos_router(repo_service))

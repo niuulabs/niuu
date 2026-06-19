@@ -842,6 +842,58 @@ describe('buildWorkflowHttpAdapter', () => {
     });
   });
 
+  it('creates a user copy when saving a system workflow is forbidden', async () => {
+    const client = makeClient();
+    const systemWorkflow = { ...rawWorkflow, scope: 'system' as const, owner_id: null };
+    client.get.mockResolvedValue(systemWorkflow);
+    client.put.mockRejectedValue(new Error('403'));
+    client.post.mockResolvedValue({ ...rawWorkflow, scope: 'user' as const });
+
+    await buildWorkflowHttpAdapter(client).saveWorkflow({
+      id: systemWorkflow.id,
+      name: systemWorkflow.name,
+      description: systemWorkflow.description,
+      version: systemWorkflow.version,
+      scope: systemWorkflow.scope,
+      ownerId: systemWorkflow.owner_id,
+      nodes: systemWorkflow.nodes,
+      edges: systemWorkflow.edges,
+      tags: [],
+      resourceBindings: systemWorkflow.resourceBindings,
+    } as Workflow);
+
+    expect(client.put).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(systemWorkflow.id)}`,
+      expect.objectContaining({ scope: 'system' }),
+    );
+    expect(client.post).toHaveBeenCalledWith(
+      '/workflows',
+      expect.objectContaining({ name: systemWorkflow.name, scope: 'user' }),
+    );
+  });
+
+  it('surfaces update failures for owned user workflows', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawWorkflow);
+    client.put.mockRejectedValue(new Error('500'));
+
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: rawWorkflow.id,
+        name: rawWorkflow.name,
+        description: rawWorkflow.description,
+        version: rawWorkflow.version,
+        scope: rawWorkflow.scope,
+        ownerId: rawWorkflow.owner_id,
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+        resourceBindings: rawWorkflow.resourceBindings,
+      } as Workflow),
+    ).rejects.toThrow('500');
+
+    expect(client.post).not.toHaveBeenCalled();
+  });
+
   it('creates workflows when the existence probe returns null instead of throwing', async () => {
     const client = makeClient();
     client.get.mockResolvedValue(null);

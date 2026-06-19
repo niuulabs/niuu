@@ -283,9 +283,7 @@ class TestSessionServiceDelete:
         assert result is True
         assert len(pod_manager.stop_calls) == 1
 
-    async def test_delete_failed_stops_infrastructure(
-        self, repository: Repo, pod_manager: Pods
-    ):
+    async def test_delete_failed_stops_infrastructure(self, repository: Repo, pod_manager: Pods):
         """Deleting a failed session still asks the pod manager to clean up."""
         service = SessionService(repository, pod_manager)
         created = await service.create_session(
@@ -338,10 +336,10 @@ class TestSessionServiceDelete:
             SessionStatus.STOPPING,
         ]
 
-    async def test_delete_created_does_not_stop_infrastructure(
+    async def test_delete_created_still_stops_infrastructure(
         self, repository: Repo, pod_manager: Pods
     ):
-        """Deleting a never-started session does not call the pod manager."""
+        """Deleting any session asks the pod manager to remove stale runtime resources."""
         service = SessionService(repository, pod_manager)
         created = await service.create_session(
             name="test",
@@ -355,7 +353,8 @@ class TestSessionServiceDelete:
         result = await service.delete_session(created.id)
 
         assert result is True
-        assert pod_manager.stop_calls == []
+        assert len(pod_manager.stop_calls) == 1
+        assert pod_manager.stop_calls[0].id == created.id
 
     async def test_delete_running_succeeds_when_pod_stop_fails(
         self, repository: Repo, failing_pod_manager: Pods
@@ -435,10 +434,10 @@ class TestSessionServiceDelete:
 class TestSessionServiceDeleteCleanup:
     """Tests for SessionService.delete_session with cleanup_targets."""
 
-    async def test_delete_without_cleanup_preserves_workspace(
+    async def test_delete_without_cleanup_removes_session_workspace(
         self, repository: Repo, pod_manager: Pods
     ):
-        """Default delete (no cleanup targets) does not delete workspace PVC."""
+        """Default delete removes the session workspace PVC."""
         storage = InMemoryStorageAdapter()
         service = SessionService(repository, pod_manager, storage=storage)
         created = await service.create_session(
@@ -451,9 +450,8 @@ class TestSessionServiceDeleteCleanup:
         result = await service.delete_session(created.id)
 
         assert result is True
-        # Workspace PVC still exists (archived by contributor, not deleted)
         ws = await storage.get_workspace_by_session(str(created.id))
-        assert ws is not None
+        assert ws is None
 
     async def test_delete_with_workspace_cleanup(self, repository: Repo, pod_manager: Pods):
         """Deleting with WORKSPACE_STORAGE target removes the PVC."""

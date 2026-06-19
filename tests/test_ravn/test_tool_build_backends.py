@@ -203,8 +203,46 @@ async def test_ting_workflow_backend_requires_workflow_id() -> None:
     backend = TingWorkflowToolBuildBackend(
         client=_FakeHttpClient({}), base_url="http://ting", workflow_id=""
     )
-    with pytest.raises(ToolBuildError, match="workflow_id"):
+    with pytest.raises(ToolBuildError, match="workflow_id or workflow_selector"):
         await backend.build(_request())
+
+
+async def test_ting_workflow_backend_resolves_workflow_selector() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/api/v1/ting/workflows"): [
+                HttpResponse(
+                    200,
+                    [
+                        {"id": "wf-research", "name": "Research", "tags": ["research"]},
+                        {
+                            "id": "wf-builder",
+                            "name": "Tool Builder",
+                            "tags": ["tool-builder", "capability-builder"],
+                        },
+                    ],
+                )
+            ],
+            ("POST", "/api/v1/ting/workflows/wf-builder/launch"): [
+                HttpResponse(200, {"campaign_id": "camp-builder"})
+            ],
+            ("GET", "/api/v1/ting/research/campaigns/camp-builder"): [
+                HttpResponse(200, {"status": "COMPLETED", "result": _BUILT_CONTRACT})
+            ],
+        }
+    )
+    backend = TingWorkflowToolBuildBackend(
+        client=client,
+        base_url="http://ting",
+        workflow_selector={"tags": ["tool-builder"]},
+        poll_interval_seconds=0,
+        sleep=_no_sleep,
+    )
+
+    result = await backend.build(_request())
+
+    assert result.tool_code.startswith("def run")
+    assert result.provenance["ting_workflow_id"] == "wf-builder"
 
 
 def test_backends_construct_from_plain_yaml_kwargs() -> None:

@@ -168,9 +168,34 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /api/v1/identity/auth/config
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
       - /health
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr-api.roles"
+      extraClaimHeaders: []
   extraHttpFilters: []
   extraClusters: []
+
+workloadIdentity:
+  enabled: false
+  issuer: ""
+  audiences:
+    - volundr-api
+  tokenTtlSeconds: 900
+  keyId: niuu-workload
+  signingKey:
+    existingSecret: ""
+    key: private-key.pem
+  verifiers: []
+  mappings: []
 
 pat:
   token_issuer_adapter: "niuu.adapters.memory_token_issuer.MemoryTokenIssuer"

@@ -45,6 +45,46 @@ logger = logging.getLogger("skuld.transport")
 
 _MAX_WS_FRAME_BYTES = 1024 * 1024
 _WS_FRAME_HEADROOM_BYTES = 8 * 1024
+_CODEX_APP_SERVER_SLASH_COMMANDS = [
+    {
+        "name": "/compact",
+        "description": "Compact the Codex thread context.",
+        "source": "codex-app-server",
+        "method": "thread/compact/start",
+        "capability": "thread.compact",
+    },
+    {
+        "name": "/review",
+        "description": "Review the current workspace changes, or review with custom instructions.",
+        "source": "codex-app-server",
+        "method": "review/start",
+        "capability": "review.start",
+    },
+    {
+        "name": "/goal",
+        "description": "Show or set the current Codex thread goal.",
+        "source": "codex-app-server",
+        "method": "thread/goal",
+        "capability": "thread.goal",
+    },
+    {
+        "name": "/title",
+        "description": "Rename the current Codex thread.",
+        "source": "codex-app-server",
+        "method": "thread/name/set",
+        "capability": "thread.name.set",
+    },
+    {
+        "name": "/fork",
+        "description": "Fork the current Codex thread.",
+        "source": "codex-app-server",
+        "method": "thread/fork",
+        "capability": "thread.fork",
+    }
+]
+_CODEX_APP_SERVER_SLASH_BY_NAME = {
+    str(command["name"]): command for command in _CODEX_APP_SERVER_SLASH_COMMANDS
+}
 
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
@@ -1532,7 +1572,110 @@ class CodexWebSocketTransport(CLITransport):
                 self._model = model
             return
 
+        if subtype == "slash_command":
+            raw_command = str(kwargs.get("command") or "").strip()
+            arguments = str(kwargs.get("arguments") or kwargs.get("args") or "").strip()
+            command_parts = raw_command.split(maxsplit=1)
+            command = command_parts[0] if command_parts else ""
+            if not arguments and len(command_parts) > 1:
+                arguments = command_parts[1]
+            if not command:
+                return
+            if not command.startswith("/"):
+                command = f"/{command}"
+            try:
+                await self._dispatch_slash_action(command, arguments)
+            except Exception as exc:
+                logger.warning("Codex slash command failed: %s", command, exc_info=True)
+                await self._emit_system_notice(f"{command} failed: {exc}")
+            return
+
         logger.debug("Codex WS: unhandled control subtype=%s", subtype)
+
+    async def _dispatch_slash_action(self, command: str, arguments: str = "") -> None:
+        """Dispatch a UI slash command to its backing Codex app-server action."""
+        if command not in _CODEX_APP_SERVER_SLASH_BY_NAME:
+            logger.debug("Codex WS: unknown slash command=%s", command)
+            return
+        if not self._thread_id:
+            logger.info("Codex %s ignored without an active thread", command)
+            return
+
+        if command == "/compact":
+            await self._send_rpc("thread/compact/start", {"threadId": self._thread_id})
+            return
+
+        if command == "/review":
+            target: dict[str, object]
+            if arguments:
+                target = {"type": "custom", "instructions": arguments}
+            else:
+                target = {"type": "uncommittedChanges"}
+            await self._send_rpc(
+                "review/start",
+                {
+                    "threadId": self._thread_id,
+                    "target": target,
+                    "delivery": "inline",
+                },
+            )
+            return
+
+        if command == "/goal":
+            if arguments:
+                await self._send_rpc(
+                    "thread/goal/set",
+                    {
+                        "threadId": self._thread_id,
+                        "objective": arguments,
+                        "status": "active",
+                    },
+                )
+                await self._emit_system_notice(f"Goal set: {arguments}")
+                return
+            result = await self._send_rpc("thread/goal/get", {"threadId": self._thread_id})
+            goal = result.get("goal") if isinstance(result, dict) else None
+            if isinstance(goal, dict):
+                objective = str(goal.get("objective") or "").strip()
+                status = str(goal.get("status") or "").strip()
+                if objective:
+                    suffix = f" ({status})" if status else ""
+                    await self._emit_system_notice(f"Current goal: {objective}{suffix}")
+                    return
+            await self._emit_system_notice("No Codex goal is set.")
+            return
+
+        if command == "/title":
+            if not arguments:
+                await self._emit_system_notice("Usage: /title <new thread title>")
+                return
+            await self._send_rpc(
+                "thread/name/set",
+                {"threadId": self._thread_id, "name": arguments},
+            )
+            await self._emit_system_notice(f"Thread renamed: {arguments}")
+            return
+
+        if command == "/fork":
+            result = await self._send_rpc("thread/fork", {"threadId": self._thread_id})
+            forked_thread = result.get("thread") if isinstance(result, dict) else None
+            forked_id = ""
+            if isinstance(forked_thread, dict):
+                forked_id = str(forked_thread.get("id") or "")
+            await self._emit_system_notice(
+                f"Forked Codex thread: {forked_id}" if forked_id else "Forked Codex thread."
+            )
+            return
+
+    async def _emit_system_notice(self, content: str) -> None:
+        await self._emit({"type": "system", "subtype": "notice", "content": content})
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        if self._fallback_transport is not None:
+            return await self._fallback_transport.discover_slash_commands(refresh=refresh)
+        if not self._thread_id:
+            return []
+        return [dict(command) for command in _CODEX_APP_SERVER_SLASH_COMMANDS]
 
     @property
     def session_id(self) -> str | None:
@@ -1574,6 +1717,7 @@ class CodexWebSocketTransport(CLITransport):
             rewind_files=False,
             mcp_set_servers=False,
             permission_requests=True,
+            slash_commands=True,
         )
 
     def _consume_pending_redirects(self) -> str | None:

@@ -104,6 +104,8 @@ _PERSONA_CM_VOLUME_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_MOUNT_PATH = "/etc/ravn/personas"
 _PERSONA_TOKEN_ENV = "RAVN_VOLUNDR_TOKEN"
+_OPENBAO_INJECT_CONTAINERS_ANNOTATION = "vault.hashicorp.com/agent-inject-containers"
+_OPENBAO_SECRET_VOLUME_PATH = "/run/secrets"
 
 
 def _ravn_gateway_port_for(index: int, base_port: int) -> int:
@@ -164,6 +166,23 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _secret_file_name(value: str) -> str:
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value)
+    normalized = normalized.strip(".-_")
+    return normalized or "credential"
+
+
+def _mimir_token_file(auth_ref: str) -> str:
+    return f"{_OPENBAO_SECRET_VOLUME_PATH}/mimir/{_secret_file_name(auth_ref)}/token"
+
+
+def _mimir_auth_from_ref(auth_ref: object) -> dict[str, Any] | None:
+    normalized = str(auth_ref or "").strip()
+    if not normalized:
+        return None
+    return {"type": "bearer", "token_file": _mimir_token_file(normalized)}
 
 
 def _normalize_mimir_workload_config(
@@ -244,6 +263,9 @@ def _resolve_mimir_runtime(
             instance["url"] = hosted_url
         else:
             continue
+
+        if auth := _mimir_auth_from_ref(raw_ref.get("auth_ref") or raw_ref.get("authRef")):
+            instance["auth"] = auth
 
         categories = _string_list(raw_ref.get("categories"))
         if categories:
@@ -371,6 +393,8 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
     categories = _string_list(raw_instance.get("categories"))
     if categories:
         instance["categories"] = categories
+    if isinstance(raw_instance.get("auth"), dict):
+        instance["auth"] = dict(raw_instance["auth"])
     return instance
 
 
@@ -813,6 +837,14 @@ class RavnFlockContributor(SessionContributor):
         all_personas = [pd["name"] for pd in persona_dicts]
         mimir_instances, _mimir_write_routing = _resolve_mimir_runtime(mimir_config)
         requires_local_mimir_mount = _requires_local_mimir_mount(mimir_instances)
+        ravn_container_names = [f"ravn-{pd['name']}" for pd in persona_dicts]
+        requires_secret_mount = any(
+            isinstance(instance.get("auth"), dict)
+            and str(instance["auth"].get("token_file") or "").startswith(
+                f"{_OPENBAO_SECRET_VOLUME_PATH}/"
+            )
+            for instance in mimir_instances
+        )
 
         # Skuld (index 0) + ravn nodes start at index 1
         skuld_peer_id = f"skuld-{session_id[:8]}"
@@ -1093,6 +1125,15 @@ class RavnFlockContributor(SessionContributor):
         pod_spec = PodSpecAdditions(
             volumes=tuple(pod_volumes),
             env=tuple(skuld_env),
+            annotations=(
+                {
+                    _OPENBAO_INJECT_CONTAINERS_ANNOTATION: ",".join(
+                        ["skuld", "devrunner", *ravn_container_names]
+                    )
+                }
+                if requires_secret_mount
+                else {}
+            ),
             extra_containers=tuple(extra_containers),
             init_containers=tuple(init_containers),
         )

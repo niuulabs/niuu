@@ -104,6 +104,13 @@ spec:
                   name: {{ .Values.pat.issuerSecretName }}
                   key: {{ .Values.pat.issuerSecretKey | default "client-secret" }}
             {{- end }}
+            {{- if and .Values.workloadIdentity .Values.workloadIdentity.signingKey.existingSecret }}
+            - name: NIUU_WORKLOAD_IDENTITY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.workloadIdentity.signingKey.existingSecret }}
+                  key: {{ .Values.workloadIdentity.signingKey.key | default "private-key.pem" }}
+            {{- end }}
             {{- if .Values.git.github.existingSecret }}
             - name: GIT__GITHUB__TOKEN
               valueFrom:

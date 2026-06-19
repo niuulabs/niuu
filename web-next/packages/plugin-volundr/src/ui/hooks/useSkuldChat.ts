@@ -13,6 +13,7 @@ import type {
   PermissionRequest,
   RoomParticipant,
   SessionCapabilities,
+  SlashCommand,
 } from '@niuulabs/ui';
 import type { FileAttachment } from '@niuulabs/ui';
 import { useWebSocket } from './useWebSocket';
@@ -102,8 +103,28 @@ type CliStreamEvent = {
     data?: string | Record<string, unknown>;
     metadata?: Record<string, unknown>;
   };
+  slash_commands?: SlashCommandWireItem[];
+  skills?: SlashCommandWireItem[];
+  commands?: SlashCommandWireItem[];
   turns?: ConversationTurn[];
   fields?: Record<string, unknown>;
+};
+
+type SlashCommandWireItem =
+  | string
+  | {
+      name?: string;
+      command?: string;
+      description?: string;
+      kind?: string;
+      type?: string;
+      source?: string;
+    };
+
+type SlashCommandsPayload = {
+  commands?: SlashCommandWireItem[];
+  slash_commands?: SlashCommandWireItem[];
+  skills?: SlashCommandWireItem[];
 };
 
 export interface ConversationTurn {
@@ -130,6 +151,7 @@ interface UseSkuldChatResult {
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   pendingPermissions: PermissionRequest[];
+  availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
   sendDirectedMessages: (
@@ -137,6 +159,7 @@ interface UseSkuldChatResult {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
@@ -166,6 +189,67 @@ type InternalParticipantStream = {
   parts: ChatMessagePart[];
   currentToolId: string;
 };
+
+function commandName(value: string): string {
+  return value.trim().replace(/^\/+/, '');
+}
+
+function normalizeSlashCommandItem(
+  item: SlashCommandWireItem,
+  fallbackType: SlashCommand['type'],
+): SlashCommand | null {
+  if (typeof item === 'string') {
+    const name = commandName(item);
+    return name ? { name, type: fallbackType } : null;
+  }
+
+  const rawName = item.name ?? item.command ?? '';
+  const name = commandName(rawName);
+  if (!name) return null;
+  const kind = (item.kind ?? item.type ?? item.source ?? '').toLowerCase();
+  const type: SlashCommand['type'] = kind === 'skill' ? 'skill' : fallbackType;
+  return {
+    name,
+    type,
+    description: item.description,
+  };
+}
+
+function normalizeAvailableCommands(
+  slashCommands: SlashCommandWireItem[] = [],
+  skills: SlashCommandWireItem[] = [],
+): SlashCommand[] {
+  const deduped = new Map<string, SlashCommand>();
+  for (const item of slashCommands) {
+    const command = normalizeSlashCommandItem(item, 'command');
+    if (command) deduped.set(`${command.type}:${command.name}`, command);
+  }
+  for (const item of skills) {
+    const command = normalizeSlashCommandItem(item, 'skill');
+    if (command) deduped.set(`${command.type}:${command.name}`, command);
+  }
+  return Array.from(deduped.values());
+}
+
+function parseAdvertisedSlashCommand(
+  input: string,
+  availableCommands: readonly SlashCommand[],
+): { command: string; arguments: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith('/')) return null;
+
+  const [rawCommand = '', ...argumentParts] = trimmed.split(/\s+/);
+  const command = commandName(rawCommand);
+  if (!command) return null;
+
+  const isAdvertised = availableCommands.some((item) => commandName(item.name) === command);
+  if (!isAdvertised) return null;
+
+  return {
+    command: `/${command}`,
+    arguments: argumentParts.join(' '),
+  };
+}
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -547,6 +631,10 @@ export function useSkuldChat(
     () => initialPersistedState.agentEvents,
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [availableCommandsState, setAvailableCommandsState] = useState<{
+    url: string | null;
+    commands: SlashCommand[];
+  }>({ url, commands: [] });
   const [capabilities, setCapabilities] = useState<SessionCapabilities>({});
   const [connected, setConnected] = useState(false);
   const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
@@ -569,6 +657,17 @@ export function useSkuldChat(
   const streamingInputTokensRef = useRef<number | undefined>(undefined);
   const streamingOutputTokensRef = useRef<number | undefined>(undefined);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const availableCommands = useMemo(
+    () => (availableCommandsState.url === url ? availableCommandsState.commands : []),
+    [availableCommandsState.commands, availableCommandsState.url, url],
+  );
+  const storeAvailableCommands = useCallback(
+    (commands: SlashCommand[]) => {
+      setAvailableCommandsState({ url, commands });
+    },
+    [url],
+  );
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -1041,7 +1140,18 @@ export function useSkuldChat(
               terminal_keys: caps.terminal_keys === true,
               terminal_resize: caps.terminal_resize === true,
               terminal_panes: caps.terminal_panes === true,
+              room_prompt_resend: caps.room_prompt_resend === true,
             });
+            break;
+          }
+          case 'available_commands': {
+            storeAvailableCommands(
+              normalizeAvailableCommands(event.slash_commands ?? [], event.skills ?? []),
+            );
+            break;
+          }
+          case 'slash_commands': {
+            storeAvailableCommands(normalizeAvailableCommands(event.commands ?? [], []));
             break;
           }
           case 'conversation_history': {
@@ -1441,7 +1551,13 @@ export function useSkuldChat(
         }
       }
     },
-    [ensureSingleParticipant, finalizeStreaming, getDefaultAssistantParticipant, url],
+    [
+      ensureSingleParticipant,
+      finalizeStreaming,
+      getDefaultAssistantParticipant,
+      storeAvailableCommands,
+      url,
+    ],
   );
 
   const { sendJson } = useWebSocket(url, {
@@ -1454,10 +1570,76 @@ export function useSkuldChat(
     onError: () => setConnected(false),
   });
 
+  useEffect(() => {
+    if (!connected || !capabilities.slash_commands) return;
+    if (availableCommands.length > 0) return;
+    sendJson({ type: 'discover_slash_commands', refresh: true });
+
+    const timer = setTimeout(() => {
+      const httpBase = url ? wsUrlToHttpBase(url) : null;
+      if (!httpBase) return;
+      const requestUrl = new URL(
+        'api/slash-commands',
+        httpBase.endsWith('/') ? httpBase : `${httpBase}/`,
+      );
+      requestUrl.searchParams.set('refresh', 'false');
+
+      void fetch(requestUrl.toString(), { headers: getAuthHeaders() })
+        .then(async (response) => {
+          if (!response.ok) return null;
+          return (await response.json()) as SlashCommandsPayload;
+        })
+        .then((payload) => {
+          if (!payload) return;
+          const commands = normalizeAvailableCommands(
+            payload.commands ?? payload.slash_commands ?? [],
+            payload.skills ?? [],
+          );
+          if (commands.length > 0) storeAvailableCommands(commands);
+        })
+        .catch(() => {
+          // Slash command discovery is a progressive enhancement; keep chat usable if it fails.
+        });
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [
+    availableCommands.length,
+    capabilities.slash_commands,
+    connected,
+    sendJson,
+    storeAvailableCommands,
+    url,
+  ]);
+
   const sendMessage = useCallback(
     (text: string, attachments: FileAttachment[]) => {
       const trimmed = text.trim();
       if (!trimmed && attachments.length === 0) return;
+
+      const slashCommand =
+        attachments.length === 0 ? parseAdvertisedSlashCommand(trimmed, availableCommands) : null;
+      if (slashCommand) {
+        const requestId = generateId();
+        optimisticUserMessagesRef.current.set(requestId, requestId);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: requestId,
+            role: 'user',
+            content: trimmed,
+            createdAt: new Date(),
+            status: 'done',
+          },
+        ]);
+        sendJson({
+          type: 'slash_command',
+          command: slashCommand.command,
+          arguments: slashCommand.arguments,
+          request_id: requestId,
+        });
+        return;
+      }
 
       Promise.all(attachments.map(attachmentToWireContent)).then((converted) => {
         const requestId = generateId();
@@ -1488,7 +1670,7 @@ export function useSkuldChat(
         sendJson({ type: 'user', content: trimmed, request_id: requestId });
       });
     },
-    [sendJson],
+    [availableCommands, sendJson],
   );
 
   const sendDirectedMessages = useCallback(
@@ -1512,6 +1694,10 @@ export function useSkuldChat(
     },
     [sendJson],
   );
+
+  const sendResendPrompt = useCallback(() => {
+    sendJson({ type: 'resend_initial_prompt' });
+  }, [sendJson]);
 
   const respondToPermission = useCallback(
     (requestId: string, behavior: PermissionBehavior) => {
@@ -1560,9 +1746,11 @@ export function useSkuldChat(
     meshEvents,
     agentEvents: stableAgentEvents,
     pendingPermissions,
+    availableCommands,
     capabilities,
     sendMessage,
     sendDirectedMessages,
+    sendResendPrompt,
     respondToPermission,
     sendInterrupt: () => sendJson({ type: 'interrupt' }),
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),

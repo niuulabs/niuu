@@ -538,6 +538,135 @@ class TestBuildTools:
         assert "ravn_memory_search" not in tool_names
         assert "session_search" not in tool_names
 
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_absent_without_capability_sources(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert "workflow_list" not in tool_names
+        assert "workflow_launch" not in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_added_from_capability_sources(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=(
+                    "tests.test_ravn.test_workflow_tools."
+                    "FakeWorkflowCapabilitySource"
+                )
+            )
+        ]
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert {"workflow_list", "workflow_describe", "workflow_launch"}.issubset(tool_names)
+        assert "capability_list" in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_respect_exact_disabled_filter(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=(
+                    "tests.test_ravn.test_workflow_tools."
+                    "FakeWorkflowCapabilitySource"
+                )
+            )
+        ]
+        settings.tools.disabled = ["workflow_launch"]
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert "workflow_list" in tool_names
+        assert "workflow_launch" not in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_valkyrie_persona_loads_capability_catalog_and_workflow_tools(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.type = "k8s"
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=(
+                    "tests.test_ravn.test_workflow_tools."
+                    "FakeWorkflowCapabilitySource"
+                )
+            )
+        ]
+        persona = FilesystemPersonaAdapter().load("k8s-valkyrie")
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=persona,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert {"capability_list", "workflow_list", "workflow_launch"}.issubset(tool_names)
+
 
 # ---------------------------------------------------------------------------
 # _get_tool_group
@@ -654,6 +783,25 @@ class TestFilterTools:
         groups = _groups_for_persona(persona)
         assert "mimir" in groups
         assert "extended" in groups
+
+    def test_workflow_alias_expands_to_dynamic_tools(self, settings: Settings) -> None:
+        from ravn.cli.commands import _filter_tools, _groups_for_persona
+
+        tools = [
+            self._make_tool("workflow_list"),
+            self._make_tool("workflow_describe"),
+            self._make_tool("workflow_launch"),
+            self._make_tool("web_fetch"),
+        ]
+        persona = MagicMock(allowed_tools=["workflow"], forbidden_tools=None)
+
+        assert "workflow" in _groups_for_persona(persona)
+        result = _filter_tools(tools, settings, persona)
+        assert [t.name for t in result] == [
+            "workflow_list",
+            "workflow_describe",
+            "workflow_launch",
+        ]
 
 
 # ---------------------------------------------------------------------------

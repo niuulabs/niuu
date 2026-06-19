@@ -13,6 +13,7 @@ from niuu.adapters.inbound.rest_integrations_settings import create_integrations
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -340,7 +341,10 @@ def _create_contributors(
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("ravn_flock"):
-        contributors.append(RavnFlockContributor(**ports))
+        ravn_kwargs = dict(ports)
+        if settings.ravn_flock_image:
+            ravn_kwargs["ravn_image"] = settings.ravn_flock_image
+        contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 
     if not _has_contributor("session_mcp"):
@@ -887,6 +891,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
+            app.state.workload_identity_service = WorkloadIdentityService(
+                settings.workload_identity
+            )
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
 
             git_router = create_git_router(

@@ -305,8 +305,7 @@ class EnvironmentSignalRuntime:
         if resident_personality:
             resident_lines.append(f"- **Personality:** {resident_personality}")
 
-        # Markdown section the agent reads about what resident learning already
-        # found, plus the (last-placed, heavily-weighted) build mandate.
+        # Markdown section the agent reads about what resident learning already found.
         learning_section = ""
         closing_section = ""
         if resident_learning_result:
@@ -329,11 +328,10 @@ class EnvironmentSignalRuntime:
                 closing_section = (
                     "\n## Required before you finish\n\n"
                     f"No installed instrument matches capability `{capability}`. "
-                    "Decide for yourself what instrument this investigation and "
-                    "its follow-ups actually need — **you write that spec, it is "
-                    "not pre-defined** — then capitalise the gap with `build_tool`: "
+                    "Decide for yourself which available skill or tool should handle "
+                    "the signal. If no suitable capability exists, use `build_tool`: "
                     "author the `tool_code` yourself, or pass your spec as "
-                    "`build_request` to commission a build session.\n\n"
+                    "`build_request` so the configured builder can produce it.\n\n"
                     "Guardrails, not recipes:\n\n"
                     "- Declare the tool's **real reach** — review gates on it, and "
                     "mutating reach is held for an operator.\n"
@@ -342,10 +340,9 @@ class EnvironmentSignalRuntime:
                     "- When access is missing, return a clear error object instead "
                     "of raising, so the canary still passes in restricted "
                     "environments.\n\n"
-                    "Then run the new tool on this signal and cite its result in "
-                    "the outcome. If the tool is held for operator review, say so "
-                    "in the rationale. **Do not finish without calling "
-                    "`build_tool`.**\n"
+                    "When you build or use a capability, cite the result in the "
+                    "outcome. If the tool is held for operator review, say so in "
+                    "the rationale.\n"
                 )
             elif decision:
                 learning_section = (
@@ -353,6 +350,20 @@ class EnvironmentSignalRuntime:
                     f"- **Decision:** `{decision}`\n"
                     f"- **Capability:** `{capability}`\n"
                 )
+
+        workflow_section = ""
+        if self._workflow_capability_sources_enabled():
+            workflow_section = (
+                "\n## Remote workflows\n\n"
+                "Remote workflows are available as ordinary tools. Use "
+                "`workflow_list` to inspect the catalog and `workflow_launch` only "
+                "when the task genuinely needs a workflow-backed build, research, "
+                "or operations run. Treat them like any other tool: choose based "
+                "on the current task, not on a hidden signal policy. After launching, "
+                "do not treat the launch receipt as the outcome; use `workflow_status` "
+                "and then `workflow_events`, `workflow_artifacts`, or "
+                "`workflow_artifact_read` to inspect what Ting reports.\n"
+            )
 
         payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)
         object_json = json.dumps(signal.object_ref, sort_keys=True, default=str)
@@ -405,6 +416,7 @@ class EnvironmentSignalRuntime:
             f"{payload_json}\n"
             "```\n"
             f"{learning_section}\n"
+            f"{workflow_section}\n"
             "## Your task\n\n"
             "Decide whether this is noise, needs a **watching** state, or "
             "**requires action**. Use existing tools, memory, and resident "
@@ -412,8 +424,10 @@ class EnvironmentSignalRuntime:
             "`skill_run` are available, inspect and load the relevant runbook "
             "first. If the investigation is blocked because the toolbox lacks a "
             "reusable instrument, call `build_tool` with a manifest, declared "
-            "reach, and canary input, then use the newly registered tool before "
-            "deciding — or note the review item when the tool requires approval.\n\n"
+            "reach, and canary input; when a builder backend is configured, pass "
+            "a `build_request` and let that backend produce the tool. Then use "
+            "the newly registered tool before deciding — or note the review item "
+            "when the tool requires approval.\n\n"
             "## Required outcome\n\n"
             "Finish with exactly one `valkyrie.judgment.proposed` block in this "
             "shape — keep the `---outcome---` / `---end---` delimiters, valid YAML "
@@ -444,6 +458,12 @@ class EnvironmentSignalRuntime:
 
     def _resident_personality(self) -> str:
         return self._settings.environment.resident_personality.strip()
+
+    def _workflow_capability_sources_enabled(self) -> bool:
+        return any(
+            source.enabled and source.adapter
+            for source in self._settings.environment.capability_sources
+        )
 
     async def _publish_runtime_started(self) -> None:
         sources = [
@@ -490,11 +510,11 @@ class EnvironmentSignalRuntime:
         self,
         adapter: SignalAdapter,
         *,
-        collected: list[NormalizedSignal],
-        published_events: list[SleipnirEvent],
-        resident_results: list[dict[str, Any] | None],
-        enqueued_count: int,
-        duration_ms: int,
+            collected: list[NormalizedSignal],
+            published_events: list[SleipnirEvent],
+            resident_results: list[dict[str, Any] | None],
+            enqueued_count: int,
+            duration_ms: int,
     ) -> None:
         severity_counts: dict[str, int] = {}
         for signal in collected:
@@ -520,6 +540,13 @@ class EnvironmentSignalRuntime:
             "enqueued_task_count": enqueued_count,
             "resident_learning_checked_count": resident_checked_count,
             "resident_learning_used_count": resident_used_count,
+            "workflow_capability_source_count": len(
+                [
+                    source
+                    for source in self._settings.environment.capability_sources
+                    if source.enabled and source.adapter
+                ]
+            ),
             "drive_loop_enabled": self._enqueue is not None,
             "duration_ms": duration_ms,
             "severity_counts": severity_counts,

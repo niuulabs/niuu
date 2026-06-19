@@ -1281,6 +1281,8 @@ class TestWorkflowRuntimeForPersona:
             "platform",
             "cascade",
             "mimir",
+            "workflow",
+            "ravn",
         ]
 
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:

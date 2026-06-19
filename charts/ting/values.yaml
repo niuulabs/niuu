@@ -233,11 +233,38 @@ envoy:
     extraClaimHeaders: []
     # -- Path prefixes that bypass JWT validation
     bypassPrefixes:
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
       - /health
+    # -- Additional JWT provider for short-lived Niuu workload tokens.
+    # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.ting.roles"
+      extraClaimHeaders: []
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
+
+workloadIdentity:
+  enabled: false
+  issuer: ""
+  audiences:
+    - volundr-api
+  tokenTtlSeconds: 900
+  keyId: niuu-workload
+  signingKey:
+    existingSecret: ""
+    key: private-key.pem
+  verifiers: []
+  mappings: []
 
 # Flock flow configuration — reusable named persona compositions
 flockFlows:

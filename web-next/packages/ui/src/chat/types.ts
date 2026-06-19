@@ -147,4 +147,5 @@ export interface SessionCapabilities {
   terminal_keys?: boolean;
   terminal_resize?: boolean;
   terminal_panes?: boolean;
+  room_prompt_resend?: boolean;
 }

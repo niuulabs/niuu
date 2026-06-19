@@ -66,6 +66,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "guild.databaseSecretName" . }}
                   key: {{ .Values.database.passwordKey | default "password" }}
+            {{- if and .Values.workloadIdentity .Values.workloadIdentity.signingKey.existingSecret }}
+            - name: NIUU_WORKLOAD_IDENTITY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.workloadIdentity.signingKey.existingSecret }}
+                  key: {{ .Values.workloadIdentity.signingKey.key | default "private-key.pem" }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

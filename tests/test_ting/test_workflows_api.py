@@ -181,6 +181,7 @@ def _make_research_workflow() -> WorkflowDefinition:
                     "bindingMode": "registry",
                     "registryEntryId": "tmp-mimir",
                     "path": "/tmp/mimir",
+                    "authRef": "integration:volundr",
                 },
                 {
                     "id": "stage-1",
@@ -349,6 +350,26 @@ class TestWorkflowCatalogAPI:
         assert body["scope"] == "system"
         assert body["owner_id"] is None
 
+    def test_resource_admin_can_create_system_workflow(self) -> None:
+        repo = InMemoryWorkflowRepository()
+        client = _make_client(repo)
+
+        response = client.post(
+            "/api/v1/ting/workflows",
+            headers=_headers(roles="admin"),
+            json={
+                "name": "Shared Flow",
+                "scope": "system",
+                "nodes": [],
+                "edges": [],
+            },
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["scope"] == "system"
+        assert body["owner_id"] is None
+
     def test_non_owner_cannot_get_private_workflow(self) -> None:
         workflow = _make_workflow(owner_id="user-1")
         repo = InMemoryWorkflowRepository([workflow])
@@ -492,6 +513,34 @@ class TestWorkflowCatalogAPI:
 
         assert response.status_code == 403
 
+    def test_resource_admin_can_update_system_workflow(self) -> None:
+        workflow = _make_workflow(
+            scope=WorkflowScope.SYSTEM,
+            owner_id=None,
+            name="Shared",
+        )
+        repo = InMemoryWorkflowRepository([workflow])
+        client = _make_client(repo)
+
+        response = client.put(
+            f"/api/v1/ting/workflows/{workflow.id}",
+            headers=_headers(roles="admin"),
+            json={
+                "name": "Shared Updated",
+                "description": "Updated",
+                "version": "2.0.0",
+                "scope": "system",
+                "nodes": [],
+                "edges": [],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == "Shared Updated"
+        assert body["scope"] == "system"
+        assert body["owner_id"] is None
+
     def test_launch_workflow_spawns_direct_flock_session(self) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
@@ -506,6 +555,11 @@ class TestWorkflowCatalogAPI:
                 "sessionName": "grief-companions",
                 "repo": "https://github.com/niuulabs/volundr.git",
                 "branch": "feat/research",
+                "provenance": {
+                    "signal_id": "sig-1",
+                    "valkyrie_id": "valkyrie-ymir",
+                    "policy": "k8s-signals",
+                },
             },
         )
 
@@ -523,6 +577,12 @@ class TestWorkflowCatalogAPI:
         assert spawn.branch == "feat/research"
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
+        assert spawn.credential_names == []
+        assert spawn.workload_config["provenance"] == {
+            "signal_id": "sig-1",
+            "valkyrie_id": "valkyrie-ymir",
+            "policy": "k8s-signals",
+        }
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
         assert "Workflow Launch" in spawn.initial_prompt
 

@@ -6,7 +6,7 @@ import inspect
 import json
 import os
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +180,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         field_selector: str = "",
         label_selector: str = "",
         limit: int | None = None,
+        max_event_age_seconds: float | None = None,
     ) -> None:
         self._core_v1 = core_v1
         self._in_cluster = in_cluster
@@ -191,6 +192,11 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         self._field_selector = field_selector
         self._label_selector = label_selector
         self._limit = limit
+        self._max_event_age = (
+            timedelta(seconds=max_event_age_seconds)
+            if max_event_age_seconds is not None and max_event_age_seconds > 0
+            else None
+        )
         self._client_loaded = core_v1 is not None
         selected_provider = provider
         if selected_provider is None and raw_items is None and not raw_items_file:
@@ -204,7 +210,18 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         )
 
     async def collect(self) -> list[NormalizedSignal]:
-        signals = [self.normalize_event(raw) for raw in await self._raw()]
+        raw_items = await self._raw()
+        if self._max_event_age is not None:
+            cutoff = datetime.now(UTC) - self._max_event_age
+            raw_items = [
+                raw
+                for raw in raw_items
+                if _parse_timestamp(
+                    _field(raw, "eventTime", "event_time", "lastTimestamp", "last_timestamp")
+                )
+                >= cutoff
+            ]
+        signals = [self.normalize_event(raw) for raw in raw_items]
         if self._include_reasons:
             signals = [
                 signal

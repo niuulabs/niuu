@@ -56,6 +56,22 @@ def test_build_tool_build_backend_is_inline_by_default_and_dynamic_when_configur
     assert backend.name == "forge_session"
 
 
+def test_build_tool_build_backend_injects_configured_workflow_selector() -> None:
+    configured = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+            "tool_build_kwargs": {"base_url": "http://ting", "pat_env": "UNSET_PAT"},
+            "tool_builder_workflow": {"tags": ["tool-builder"]},
+        }
+    )
+
+    backend = _build_tool_build_backend(configured)
+
+    assert backend is not None
+    assert backend.name == "ting_workflow"
+    assert backend._workflow_selector.tags == ["tool-builder"]
+
+
 def test_investigation_prompt_handles_missing_and_failing_providers(tmp_path) -> None:
     def _boom() -> str:
         raise RuntimeError("provider exploded")

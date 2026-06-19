@@ -1465,6 +1465,77 @@ class PATConfig(BaseModel):
     )
 
 
+class WorkloadIdentityVerifierConfig(BaseModel):
+    """Adapter config for validating workload identity proofs."""
+
+    name: str = Field(
+        default="kubernetes",
+        description="Stable verifier name referenced by workload identity mappings.",
+    )
+    adapter: str = Field(
+        default="niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier",
+        description="Fully-qualified class path for the verifier adapter.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class WorkloadIdentityMappingConfig(BaseModel):
+    """Maps a validated workload proof to an application principal."""
+
+    name: str = Field(default="", description="Human-readable workload identity name.")
+    verifier: str = Field(
+        default="kubernetes",
+        description="Verifier name that must accept the presented proof.",
+    )
+    subject: str = Field(default="", description="Exact subject claim to match.")
+    issuer: str = Field(default="", description="Optional exact issuer claim to match.")
+    claims: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional exact-match claim selectors. Dot notation is supported.",
+    )
+    owner_id: str = Field(
+        default="",
+        description="User id used as the exchanged token subject and session owner.",
+    )
+    tenant_id: str = Field(default="default", description="Tenant/org id for isolation.")
+    email: str = Field(default="", description="Optional owner/workload email claim.")
+    roles: list[str] = Field(
+        default_factory=lambda: ["volundr:developer"],
+        description="Roles embedded in the exchanged token.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Non-secret audit metadata embedded as workload_* claims.",
+    )
+
+
+class WorkloadIdentityConfig(BaseModel):
+    """Short-lived workload token exchange configuration."""
+
+    enabled: bool = Field(default=False)
+    issuer: str = Field(
+        default="",
+        description="Issuer used for exchanged workload JWTs and Envoy validation.",
+    )
+    audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api"],
+        description="Audiences accepted by Envoy for exchanged workload JWTs.",
+    )
+    token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    key_id: str = Field(default="niuu-workload")
+    signing_key_pem: str = Field(
+        default="",
+        description="PEM encoded RSA private key. Prefer signing_key_env for deployments.",
+    )
+    signing_key_env: str = Field(
+        default="NIUU_WORKLOAD_IDENTITY_SIGNING_KEY",
+        description="Environment variable containing a PEM encoded RSA private key.",
+    )
+    verifiers: list[WorkloadIdentityVerifierConfig] = Field(default_factory=list)
+    mappings: list[WorkloadIdentityMappingConfig] = Field(default_factory=list)
+
+
 class AuthDiscoveryConfig(BaseModel):
     """Public auth discovery configuration for CLI and external clients.
 
@@ -1627,6 +1698,7 @@ class Settings(BaseSettings):
     webhooks: WebhooksConfig = Field(default_factory=WebhooksConfig)
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
@@ -1640,6 +1712,13 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
+    ravn_flock_image: str = Field(
+        default="",
+        description=(
+            "Optional image used for auto-wired Ravn flock sidecars. "
+            "When empty, the contributor's built-in default is used."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",

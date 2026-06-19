@@ -13,6 +13,7 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_runtime import (
@@ -77,6 +78,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.storage = storage_adapter
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
+            app.state.workload_identity_service = WorkloadIdentityService(
+                settings.workload_identity
+            )
             app.include_router(create_identity_router(tenant_service))
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
             yield

@@ -1013,7 +1013,7 @@ class StoragePort(ABC):
         self,
         session_id: str,
     ) -> None:
-        """Permanently delete a session's workspace PVC (explicit user action only)."""
+        """Permanently delete a session-scoped workspace PVC."""
 
     @abstractmethod
     async def get_user_storage_usage(

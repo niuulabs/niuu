@@ -21,6 +21,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MIMIR_SECRET_VOLUME_PATH = "/run/secrets/mimir"
+
+
+def _secret_file_name(value: str) -> str:
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value)
+    normalized = normalized.strip(".-_")
+    return normalized or "credential"
+
+
+def _integration_auth_ref(slug: str) -> str:
+    return f"integration:{slug}"
+
 
 class SecretInjectionContributor(SessionContributor):
     """Returns PodSpecAdditions for secret injection (agent injector, hostPath, etc.).
@@ -69,6 +81,11 @@ class SecretInjectionContributor(SessionContributor):
                     if defn.mcp_server:
                         env_mappings.update(defn.mcp_server.env_from_credentials)
                     file_mappings.update(defn.file_mounts)
+                    auth_ref = _integration_auth_ref(conn.slug)
+                    if auth_ref in self._mimir_auth_refs(context):
+                        file_mappings[
+                            f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(auth_ref)}/token"
+                        ] = "token"
 
             mappings.append(
                 CredentialMapping(
@@ -81,9 +98,27 @@ class SecretInjectionContributor(SessionContributor):
         # Direct credential names — mapping comes from SecretMountStrategy
         for cred_name in context.credential_names:
             mapping = await self._resolve_credential_mapping(owner_id, cred_name)
+            if cred_name in self._mimir_auth_refs(context):
+                mapping.file_mappings[
+                    f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(cred_name)}/token"
+                ] = "token"
             mappings.append(mapping)
 
         return mappings
+
+    def _mimir_auth_refs(self, context: SessionContext) -> set[str]:
+        mimir = context.workload_config.get("mimir")
+        if not isinstance(mimir, dict):
+            return set()
+
+        refs: set[str] = set()
+        for raw_ref in list(mimir.get("registry_refs") or []):
+            if not isinstance(raw_ref, dict):
+                continue
+            auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
+            if auth_ref:
+                refs.add(auth_ref)
+        return refs
 
     async def _resolve_credential_mapping(
         self,

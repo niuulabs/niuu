@@ -26,7 +26,11 @@ from pydantic_settings import (
 
 from bifrost.config import BifrostConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
-from volundr.config import SessionDefinitionConfig, _default_session_definitions
+from volundr.config import (
+    SessionDefinitionConfig,
+    WorkloadIdentityConfig,
+    _default_session_definitions,
+)
 
 
 # Config file search paths (in order of priority).
@@ -1079,6 +1083,7 @@ class Settings(BaseSettings):
     shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
     guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)

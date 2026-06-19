@@ -55,6 +55,31 @@ class TestVolundrSessionTool:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_uses_workload_exchange_when_no_pat(self, tmp_path):
+        token_file = tmp_path / "workload.jwt"
+        token_file.write_text("projected-token", encoding="utf-8")
+        exchange = respx.post(f"{BASE_URL}/api/v1/tokens/workload/exchange").mock(
+            return_value=httpx.Response(201, json={"token": "workload-bearer"})
+        )
+        sessions = respx.get(FORGE_SESSIONS_URL).mock(
+            return_value=httpx.Response(200, json=[{"id": "abc"}])
+        )
+        tool = VolundrSessionTool(base_url=BASE_URL, workload_token_file=str(token_file))
+
+        result = await tool.execute({"action": "list"})
+
+        assert not result.is_error
+        assert json.loads(exchange.calls.last.request.content)["audiences"] == [
+            "volundr-api",
+            "forge",
+            "ting",
+            "mimir",
+            "guild",
+        ]
+        assert sessions.calls.last.request.headers["authorization"] == "Bearer workload-bearer"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_create_session(self):
         respx.post(FORGE_SESSIONS_URL).mock(
             return_value=httpx.Response(200, json={"id": "new-session"})

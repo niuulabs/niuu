@@ -17,6 +17,7 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -345,6 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.state.settings = settings
+    app.state.workload_identity_service = WorkloadIdentityService(settings.workload_identity)
 
     # -- Routers --
     app.include_router(create_health_router())

@@ -63,7 +63,7 @@ system_prompt_template: |
   material warnings, and operator feedback. Promote printer-profile or maintenance
   learnings only when supported by repeated signals or explicit feedback.
 
-allowed_tools: [ravn, file, terminal, mimir_query, mimir_search, mimir_read, mimir_write]
+allowed_tools: [ravn, workflow, file, terminal, mimir_query, mimir_search, mimir_read, mimir_write]
 forbidden_tools: [cascade, volundr, ask_user]
 permission_mode: workspace-write
 

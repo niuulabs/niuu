@@ -570,6 +570,7 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
     capabilities: {},
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
+    sendResendPrompt: vi.fn(),
     respondToPermission: vi.fn(),
     sendInterrupt: vi.fn(),
     sendSetModel: vi.fn(),
@@ -792,6 +793,46 @@ describe('LiveSessionDetailPage', () => {
     });
   });
 
+  it('shows resend prompt only for flock sessions and sends through Skuld chat', async () => {
+    const sendResendPrompt = vi.fn();
+    mockChatState({
+      participants: new Map([
+        [
+          'flock-coder',
+          {
+            peerId: 'flock-coder',
+            displayName: 'Coder',
+            persona: 'coder',
+            participantType: 'ravn',
+          },
+        ],
+      ]),
+      capabilities: { room_prompt_resend: true },
+      sendResendPrompt,
+    });
+
+    wrap('test-session-id-1234');
+
+    const resendButton = await screen.findByRole('button', {
+      name: 'Resend prompt to flock',
+    });
+    expect(resendButton).toBeEnabled();
+
+    fireEvent.click(resendButton);
+    expect(sendResendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show resend prompt for non-flock sessions', async () => {
+    mockChatState();
+
+    wrap('test-session-id-1234');
+
+    await screen.findByTestId('live-session-detail-page');
+    expect(
+      screen.queryByRole('button', { name: 'Resend prompt to flock' }),
+    ).not.toBeInTheDocument();
+  });
+
   describe('loading and error states', () => {
     it('shows loading state initially', () => {
       wrap('test-session-id-1234');
@@ -944,6 +985,7 @@ describe('LiveSessionDetailPage', () => {
         capabilities: {},
         sendMessage: vi.fn(),
         sendDirectedMessages: vi.fn(),
+        sendResendPrompt: vi.fn(),
         respondToPermission: vi.fn(),
         sendInterrupt: vi.fn(),
         sendSetModel: vi.fn(),
@@ -2152,6 +2194,7 @@ describe('LiveSessionDetailPage', () => {
         capabilities: {},
         sendMessage: vi.fn(),
         sendDirectedMessages: vi.fn(),
+        sendResendPrompt: vi.fn(),
         respondToPermission: vi.fn(),
         sendInterrupt: vi.fn(),
         sendSetModel: vi.fn(),

@@ -41,7 +41,12 @@ export function SlashCommandMenu({ commands, selectedIndex, onSelect }: SlashCom
             onClick={() => onSelect(cmd)}
           >
             <Icon className="niuu-chat-slash-icon" />
-            <span className="niuu-chat-slash-name">/{cmd.name}</span>
+            <span className="niuu-chat-slash-copy">
+              <span className="niuu-chat-slash-name">/{cmd.name}</span>
+              {cmd.description ? (
+                <span className="niuu-chat-slash-description">{cmd.description}</span>
+              ) : null}
+            </span>
             <span className="niuu-chat-slash-type">{cmd.type}</span>
           </button>
         );

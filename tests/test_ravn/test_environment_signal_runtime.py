@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.config import EnvironmentConfig, Settings, SignalSourceConfig
+from ravn.config import (
+    CapabilitySourceConfig,
+    EnvironmentConfig,
+    Settings,
+    SignalSourceConfig,
+)
+from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.models import AgentTask
 from ravn.environment_signal_runtime import (
     EnvironmentSignalRuntime,
     build_runtime_environment,
+)
+from ravn.ports.capability import (
+    WorkflowCapabilityPort,
+    WorkflowLaunchRequest,
+    WorkflowLaunchResult,
 )
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
@@ -50,6 +61,38 @@ def _settings() -> Settings:
     )
     settings.mesh.own_peer_id = "valkyrie-host-jozef"
     return settings
+
+
+class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
+    launched: list[WorkflowLaunchRequest] = []
+    list_calls = 0
+
+    async def list_workflows(self) -> list[WorkflowCapability]:
+        self.__class__.list_calls += 1
+        return [
+            WorkflowCapability(
+                workflow_id="wf-incident",
+                name="Incident Investigation",
+                version="1.0.0",
+                tags=["incident", "host"],
+            )
+        ]
+
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launched.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Incident Investigation",
+            session_id="session-from-policy",
+            session_name=request.session_name,
+            status="running",
+            slug="session-from-policy",
+            cluster_name="ymir",
+            owner_id="owner-1",
+            tenant_id="tenant-1",
+            workload_subject="system:serviceaccount:nats:valkyrie-host-jozef",
+            workload_name="valkyrie-host-jozef",
+        )
 
 
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
@@ -169,6 +212,45 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
+async def test_runtime_exposes_workflow_sources_as_tools_without_policy_routing() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    FakeWorkflowCapabilitySource.launched = []
+    FakeWorkflowCapabilitySource.list_calls = 0
+    settings = _settings()
+    settings.environment.capability_sources = [
+        CapabilitySourceConfig(
+            adapter=(
+                "tests.test_ravn.test_environment_signal_runtime."
+                "FakeWorkflowCapabilitySource"
+            )
+        )
+    ]
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert len(enqueued) == 1
+    assert FakeWorkflowCapabilitySource.launched == []
+    assert FakeWorkflowCapabilitySource.list_calls == 0
+    assert "## Remote workflows" in enqueued[0].initiative_context
+    assert "`workflow_list`" in enqueued[0].initiative_context
+    assert "`workflow_launch`" in enqueued[0].initiative_context
+    assert "hidden signal policy" in enqueued[0].initiative_context
+    assert telemetry[0].payload["workflow_capability_source_count"] == 1
+    assert telemetry[0].payload["enqueued_task_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_resident_learning_failure_is_published_and_recovered() -> None:
     bus = InProcessBus()
     failures: list[SleipnirEvent] = []
@@ -223,7 +305,7 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
     assert "## Resident learning" in context
     assert "## Required before you finish" in context
     assert "`inspect.host.host.disk-pressure`" in context
-    assert "Do not finish without calling" in context
+    assert "If no suitable capability exists, use `build_tool`" in context
     # It lands after the outcome schema so the model weights it.
     assert context.index("## Required before you finish") > context.index("---end---")
 

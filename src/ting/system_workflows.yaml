@@ -158,8 +158,9 @@
         label: Research Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [research, memory, sources]
         position:
@@ -306,8 +307,9 @@
         label: Specification Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [specifications, product, design, planning]
         position:
@@ -622,8 +624,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -740,8 +743,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -822,4 +826,128 @@
         targetId: tracker-code-review-flow
         access: read_write
         writePrefixes: [deliveries/]
+        readPriority: 1
+- name: Tool & Skill Builder
+  description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a missing Valkyrie/Ravn tool or skill.
+  version: 1.0.0
+  graph:
+    tags: [tool-builder, skill-builder, capability-builder]
+    nodes:
+      - id: capability-request
+        kind: trigger
+        label: Missing capability requested
+        source: valkyrie capability policy
+        dispatchEvent: capability.requested
+        position:
+          x: 96
+          y: 280
+      - id: capability-memory
+        kind: resource
+        label: Capability Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
+        role: shared
+        categories: [capability, skills, tools, valkyrie]
+        position:
+          x: 352
+          y: 520
+      - id: capability-frame
+        kind: stage
+        label: Frame missing capability
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-framer
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [capability.requested]
+        position:
+          x: 352
+          y: 280
+      - id: capability-build
+        kind: stage
+        label: Build tool or skill
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 48
+            model: gpt-5.5
+            consumesEventTypes: [specification.ready, review.changes_requested]
+        position:
+          x: 704
+          y: 280
+      - id: capability-review
+        kind: stage
+        label: Review capability
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+          - personaId: security-auditor
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+        position:
+          x: 1056
+          y: 280
+      - id: capability-publish
+        kind: stage
+        label: Publish capability record
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: publisher
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1408
+          y: 280
+      - id: capability-complete
+        kind: end
+        label: Capability ready
+        joinMode: all
+        completionEvent: capability.ready
+        position:
+          x: 1760
+          y: 280
+    edges:
+      - id: edge-capability-request-to-frame
+        source: capability-request
+        target: capability-frame
+        label: capability.requested -> capability.requested
+      - id: edge-capability-frame-to-build
+        source: capability-frame
+        target: capability-build
+        label: specification.ready -> specification.ready
+      - id: edge-capability-build-to-review
+        source: capability-build
+        target: capability-review
+        label: code.changed -> code.changed
+      - id: edge-capability-review-to-build
+        source: capability-review
+        target: capability-build
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-capability-review-to-publish
+        source: capability-review
+        target: capability-publish
+        label: review.passed -> review.passed
+      - id: edge-capability-publish-to-end
+        source: capability-publish
+        target: capability-complete
+        label: capability.ready -> capability.ready
+    resourceBindings:
+      - id: binding-capability-memory
+        resourceNodeId: capability-memory
+        targetType: workflow
+        targetId: tool-skill-builder
+        access: read_write
+        writePrefixes: [capabilities/, skills/, tools/]
         readPriority: 1

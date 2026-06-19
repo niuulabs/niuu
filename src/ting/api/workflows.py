@@ -67,6 +67,7 @@ class WorkflowLaunchBody(BaseModel):
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
 
@@ -341,6 +342,7 @@ async def launch_workflow_execution(
                 "personas": workflow_personas,
                 "initiative_context": initiative_context,
                 "workflow": workflow_snapshot,
+                **({"provenance": dict(launch.provenance)} if launch.provenance else {}),
                 **({"mimir": workflow_mimir} if workflow_mimir else {}),
                 **(
                     {"sleipnir_publish_urls": list(settings.dispatch.flock.sleipnir_publish_urls)}
@@ -358,6 +360,7 @@ async def launch_workflow_execution(
                     else {}
                 ),
             },
+            credential_names=_mimir_auth_credential_names(workflow_mimir),
             definition=resolved_definition,
         ),
         auth_token=bearer_token,
@@ -448,6 +451,21 @@ def _build_workflow_initiative_context(
     return "\n".join(lines)
 
 
+def _mimir_auth_credential_names(mimir_config: dict[str, Any]) -> list[str]:
+    """Return credential names needed by workflow-backed Mimir resources."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in list(mimir_config.get("registry_refs") or []):
+        if not isinstance(raw_ref, dict):
+            continue
+        auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
+        if not auth_ref or auth_ref.startswith("integration:") or auth_ref in seen:
+            continue
+        seen.add(auth_ref)
+        names.append(auth_ref)
+    return names
+
+
 def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | None:
     if scope == WorkflowScope.SYSTEM:
         return None
@@ -455,8 +473,9 @@ def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | Non
 
 
 def _can_manage_system_workflows(principal: Principal) -> bool:
-    allowed_roles = {"ting:admin", "volundr:developer"}
-    return bool(set(principal.roles) & allowed_roles)
+    allowed_roles = {"admin", "ting:admin", "volundr:admin", "volundr:developer"}
+    normalized_roles = {role.strip() for role in principal.roles if role.strip()}
+    return bool(normalized_roles & allowed_roles)
 
 
 def _assert_can_manage_scope(scope: WorkflowScope, principal: Principal) -> None:

@@ -113,6 +113,115 @@ describe('useSkuldChat', () => {
     expect(parseEvent('not-json')).toBeNull();
   });
 
+  it('discovers and stores slash commands reported by the active session', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/api/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    sendJson.mockClear();
+
+    act(() => {
+      wsHandlers.onOpen?.();
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'capabilities',
+          slash_commands: true,
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: true }),
+    );
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'slash_commands',
+          commands: [
+            { name: '/compact', description: 'Compact the current conversation' },
+            { name: 'review', kind: 'command' },
+            { name: 'agent-deployment', kind: 'skill' },
+          ],
+        }),
+      );
+    });
+
+    expect(result.current.availableCommands).toEqual([
+      { name: 'compact', type: 'command', description: 'Compact the current conversation' },
+      { name: 'review', type: 'command', description: undefined },
+      { name: 'agent-deployment', type: 'skill', description: undefined },
+    ]);
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'available_commands',
+          slash_commands: ['help'],
+          skills: ['browser'],
+        }),
+      );
+    });
+
+    expect(result.current.availableCommands).toEqual([
+      { name: 'help', type: 'command' },
+      { name: 'browser', type: 'skill' },
+    ]);
+  });
+
+  it('falls back to the live session slash-command API when websocket discovery stalls', async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () =>
+        url.includes('/api/slash-commands')
+          ? {
+              commands: [
+                { name: '/agents', description: 'Manage agent teams and subagents' },
+                { name: '/compact', description: 'Compact the current conversation' },
+              ],
+            }
+          : { turns: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() =>
+      useSkuldChat('wss://sessions.example.test/s/session-1/session'),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    sendJson.mockClear();
+
+    act(() => {
+      wsHandlers.onOpen?.();
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'capabilities',
+          slash_commands: true,
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: true }),
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+    });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://sessions.example.test/s/session-1/api/slash-commands?refresh=false',
+        expect.any(Object),
+      ),
+    );
+    await waitFor(() =>
+      expect(result.current.availableCommands).toEqual([
+        { name: 'agents', type: 'command', description: 'Manage agent teams and subagents' },
+        { name: 'compact', type: 'command', description: 'Compact the current conversation' },
+      ]),
+    );
+  });
+
   it('serializes and revives persisted message and event state', () => {
     const createdAt = new Date('2026-05-11T10:00:00Z');
     const timestamp = new Date('2026-05-11T10:05:00Z');
@@ -853,6 +962,14 @@ page_path: council/demo/opinion-b.md
     });
 
     act(() => {
+      result.current.sendResendPrompt();
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'resend_initial_prompt',
+    });
+
+    act(() => {
       wsHandlers.onMessage?.(
         JSON.stringify({
           type: 'control_request',
@@ -1179,6 +1296,47 @@ page_path: council/demo/opinion-b.md
         }),
       ),
     );
+  });
+
+  it('dispatches advertised slash commands through the control channel', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'available_commands',
+          slash_commands: [{ name: '/compact', description: 'Compact the thread' }],
+        }),
+      );
+    });
+    expect(result.current.availableCommands).toEqual([
+      { name: 'compact', type: 'command', description: 'Compact the thread' },
+    ]);
+
+    sendJson.mockClear();
+    await act(async () => {
+      result.current.sendMessage('/compact', []);
+    });
+
+    await waitFor(() => {
+      expect(sendJson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'slash_command',
+          command: '/compact',
+          arguments: '',
+          request_id: expect.any(String),
+        }),
+      );
+    });
+    expect(sendJson).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'user', content: '/compact' }),
+    );
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: '/compact',
+    });
   });
 
   it('emits the remaining control websocket commands', async () => {
@@ -1893,6 +2051,7 @@ page_path: council/demo/opinion-b.md
       terminal_output: false,
       terminal_panes: false,
       terminal_resize: false,
+      room_prompt_resend: false,
     });
     expect(result.current.messages.slice(1).map((message) => message.content)).toEqual([
       'Session initialized · claude-sonnet-4-6',

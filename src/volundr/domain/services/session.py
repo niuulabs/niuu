@@ -631,9 +631,9 @@ class SessionService:
         failures are logged but do not prevent session deletion, since the
         primary goal is to clean up the session record.
 
-        Optional *cleanup_targets* lists additional resources to permanently
-        remove (e.g. workspace PVC, chronicles).  An empty/None list preserves
-        the current default behaviour (archive workspace, keep chronicles).
+        Session-scoped workspace storage is always removed. Optional
+        *cleanup_targets* lists additional resources to permanently remove
+        (e.g. chronicles).
         """
         session = await self._repository.get(session_id)
         if session is None:
@@ -641,21 +641,20 @@ class SessionService:
 
         await self._check_access(session, principal, "delete")
 
-        targets = set(cleanup_targets or [])
+        targets = {CleanupTarget.WORKSPACE_STORAGE, *(cleanup_targets or [])}
 
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
 
-        if self._should_stop_infrastructure_on_delete(session.status):
-            try:
-                await self._pod_manager.stop(session)
-            except Exception as e:
-                logger.warning(
-                    "Failed to stop infrastructure for session %s during deletion: %s. "
-                    "Proceeding with session deletion.",
-                    _sanitize_log(session_id),
-                    _sanitize_log(e),
-                )
+        try:
+            await self._pod_manager.stop(session)
+        except Exception as e:
+            logger.warning(
+                "Failed to stop infrastructure for session %s during deletion: %s. "
+                "Proceeding with session deletion.",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
 
         # Run contributor cleanup in reverse order
         await self._run_cleanup(session, principal)
@@ -670,17 +669,6 @@ class SessionService:
             await self._broadcaster.publish_session_deleted(session_id)
 
         return deleted
-
-    @staticmethod
-    def _should_stop_infrastructure_on_delete(status: SessionStatus) -> bool:
-        """Return True when a session may have runtime infrastructure to remove."""
-        return status in {
-            SessionStatus.STARTING,
-            SessionStatus.PROVISIONING,
-            SessionStatus.RUNNING,
-            SessionStatus.STOPPING,
-            SessionStatus.FAILED,
-        }
 
     async def _run_targeted_cleanup(
         self,

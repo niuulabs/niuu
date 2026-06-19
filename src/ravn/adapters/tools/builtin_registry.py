@@ -11,6 +11,7 @@ Groups
 ``skill``     — skill_list, skill_run  (conditional on settings.skill.enabled)
 ``kubernetes``— read-only Kubernetes inspection tools for resident Valkyries
 ``platform``  — volundr/ting platform tools  (conditional on gateway.platform.enabled)
+``workflow``  — workflow catalog discovery/launch tools backed by capability_sources
 ``cascade``   — marker group; cascade tools are wired externally via build_cascade_tools()
 
 Runtime context keys
@@ -77,6 +78,18 @@ def _build_skill_port(settings: Settings, workspace: Any) -> Any:
         include_builtin=settings.skill.include_builtin,
         cwd=workspace,
     )
+
+
+def _platform_kwargs(settings: Settings) -> dict[str, Any]:
+    platform = settings.gateway.platform
+    return {
+        "base_url": platform.base_url,
+        "timeout": platform.timeout,
+        "pat_token": platform.pat_token,
+        "workload_token_file": platform.workload_token_file,
+        "exchange_url": platform.workload_exchange_url,
+        "audiences": platform.workload_audiences,
+    }
 
 
 def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[str, Any]:
@@ -320,51 +333,76 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.VolundrSessionTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "volundr_git": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.VolundrGitTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_saga": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingSagaTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_workflow": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+    ),
+    # =========================================================================
+    # workflow — resident workflow catalog tools backed by capability_sources
+    # =========================================================================
+    "workflow_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowListTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_describe": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowDescribeTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_launch": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowLaunchTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_status": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowStatusTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_events": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowEventsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifacts": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifact_read": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactReadTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
     ),
     # =========================================================================
     # ravn — persona management tools
@@ -376,5 +414,15 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
     "persona_save": BuiltinToolDef(
         adapter="ravn.adapters.tools.persona_tools.PersonaSaveTool",
         groups=frozenset({"ravn"}),
+    ),
+    "capability_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.capability_catalog.CapabilityListTool",
+        groups=frozenset({"ravn"}),
+        required_context=frozenset({"capability_tools_provider"}),
+        kwargs_fn=lambda _s, ctx: {
+            "tools_provider": ctx["capability_tools_provider"],
+            "skill_port": ctx.get("skill_port"),
+            "workflow_sources": ctx.get("workflow_sources") or [],
+        },
     ),
 }

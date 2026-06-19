@@ -270,12 +270,24 @@ class ToolGroupConfig(BaseModel):
     """Named tool group configuration — controls which tool groups are active."""
 
     include_groups: list[str] = Field(
-        default=["core", "extended", "skill", "platform", "cascade", "mimir"],
+        default=[
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+            "workflow",
+            "ravn",
+        ],
         description=(
-            "Tool groups to include. Built-in groups: core, extended, skill, platform, mimir. "
+            "Tool groups to include. Built-in groups: core, extended, skill, platform, "
+            "mimir, workflow, ravn. "
             "The 'cascade' group signals that cascade tools (wired via build_cascade_tools) "
             "should be appended when the profile is selected by the coordinator. "
-            "The 'mimir' group enables the six mimir_* knowledge-base tools."
+            "The 'mimir' group enables mimir_* knowledge-base tools. "
+            "The 'workflow' group enables workflow_* tools backed by capability_sources. "
+            "The 'ravn' group enables persona, skill, and capability catalog tools."
         ),
     )
     include_mcp: bool = Field(
@@ -942,6 +954,21 @@ class PlatformToolsConfig(BaseModel):
         description="Personal Access Token for platform API authentication. "
         "Falls back to RAVN_GATEWAY__PLATFORM__PAT_TOKEN env var.",
     )
+    workload_token_file: str = Field(
+        default="/var/run/secrets/kubernetes.io/serviceaccount/token",
+        description="Projected workload identity token file used when pat_token is not set.",
+    )
+    workload_exchange_url: str = Field(
+        default="",
+        description=(
+            "Optional workload token exchange URL. Defaults to "
+            "base_url /api/v1/tokens/workload/exchange."
+        ),
+    )
+    workload_audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
+        description="Target service audiences requested from workload token exchange.",
+    )
 
 
 class DiscordChannelConfig(BaseModel):
@@ -1313,6 +1340,14 @@ class MimirAuthConfig(BaseModel):
     token: str | None = Field(
         default=None,
         description="Bearer token value (when type=bearer).",
+    )
+    token_file: str | None = Field(
+        default=None,
+        description="File containing a bearer token (when type=bearer).",
+    )
+    token_env: str | None = Field(
+        default=None,
+        description="Environment variable containing a bearer token (when type=bearer).",
     )
     trust_domain: str | None = Field(
         default=None,
@@ -2437,6 +2472,23 @@ class ResidentWakefulnessConfig(BaseModel):
     )
 
 
+class WorkflowSelectorConfig(BaseModel):
+    """Select workflows from an existing workflow catalog."""
+
+    names: list[str] = Field(
+        default_factory=list,
+        description="Workflow names or ids allowed by this selector.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Workflow tags allowed by this selector.",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="Require every configured tag instead of any matching tag.",
+    )
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2500,6 +2552,15 @@ class ResidentEvolutionConfig(BaseModel):
         description=(
             "Constructor kwargs for the tool build adapter (base_url, "
             "workflow_id, pat_env, model, poll intervals, ...)."
+        ),
+    )
+    tool_builder_workflow: WorkflowSelectorConfig = Field(
+        default_factory=WorkflowSelectorConfig,
+        description=(
+            "Optional selector for the tool-builder workflow. When configured "
+            "with a Ting workflow build backend, the backend discovers the "
+            "matching workflow from the catalog instead of requiring a "
+            "hardcoded workflow_id."
         ),
     )
 
@@ -2818,6 +2879,18 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class CapabilitySourceConfig(BaseModel):
+    """Dynamic adapter entry for remote workflow capability discovery."""
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified WorkflowCapabilityPort implementation.",
+    )
+    enabled: bool = True
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class SignalSourceConfig(BaseModel):
     """Adapter-backed signal source for a resident Valkyrie Environment."""
 
@@ -2906,6 +2979,12 @@ class EnvironmentConfig(BaseModel):
         default_factory=list,
         description="Adapter-backed signal feeds this Valkyrie should watch.",
     )
+    capability_sources: list[CapabilitySourceConfig] = Field(
+        default_factory=list,
+        description=(
+            "Dynamic adapters that discover remote workflow capabilities from existing catalogs."
+        ),
+    )
     signal_poll_interval_seconds: float = Field(
         default=10.0,
         description="Seconds between polling enabled signal sources.",
@@ -2984,9 +3063,7 @@ class WardenDiscoveryConfig(BaseModel):
         if not isinstance(raw_adapters, list):
             msg = "warden_discovery.adapters_json must be a JSON list"
             raise ValueError(msg)
-        self.adapters = [
-            WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
-        ]
+        self.adapters = [WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters]
         return self
 
 
