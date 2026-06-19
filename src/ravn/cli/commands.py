@@ -1130,6 +1130,10 @@ _WORKFLOW_TOOL_NAMES: list[str] = [
     "workflow_list",
     "workflow_describe",
     "workflow_launch",
+    "workflow_status",
+    "workflow_events",
+    "workflow_artifacts",
+    "workflow_artifact_read",
 ]
 
 _TOOL_GROUP_ALIASES: dict[str, list[str]] = {

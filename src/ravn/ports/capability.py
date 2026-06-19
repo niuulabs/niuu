@@ -40,6 +40,66 @@ class WorkflowLaunchResult:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class WorkflowRunReference:
+    """Identifiers returned by workflow launch or known by a caller."""
+
+    session_id: str = ""
+    slug: str = ""
+    workflow_id: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowRunStatus:
+    """Workflow runtime state as reported by the workflow owner."""
+
+    state: str
+    session_id: str = ""
+    slug: str = ""
+    workflow_id: str = ""
+    workflow_name: str = ""
+    session_name: str = ""
+    cluster_name: str = ""
+    active_stage_id: str = ""
+    stage_state: list[dict[str, Any]] = field(default_factory=list)
+    terminal: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WorkflowRunEvent:
+    """Raw/reported workflow event from the workflow ledger."""
+
+    event_type: str
+    data: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = ""
+    source: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WorkflowArtifact:
+    """Artifact pointer reported by a workflow owner."""
+
+    path: str
+    title: str = ""
+    kind: str = ""
+    summary: str = ""
+    publish_state: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    canonical: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WorkflowArtifactContent:
+    """Readable workflow artifact content when the owner can serve it."""
+
+    artifact: WorkflowArtifact
+    content: str
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 class WorkflowCapabilityPort(ABC):
     """Discover and launch workflow capabilities through an existing catalog."""
 
@@ -51,4 +111,33 @@ class WorkflowCapabilityPort(ABC):
     @abstractmethod
     async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
         """Launch a workflow through the catalog's existing execution API."""
+        raise NotImplementedError
+
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        """Return run/campaign status from the workflow owner's ledger."""
+        raise NotImplementedError
+
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        """Return raw/reported workflow events when the owner exposes them."""
+        raise NotImplementedError
+
+    async def list_workflow_artifacts(
+        self,
+        reference: WorkflowRunReference,
+    ) -> list[WorkflowArtifact]:
+        """Return artifact pointers reported by the workflow owner."""
+        raise NotImplementedError
+
+    async def read_workflow_artifact(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        path: str,
+    ) -> WorkflowArtifactContent:
+        """Read one artifact from the workflow owner."""
         raise NotImplementedError

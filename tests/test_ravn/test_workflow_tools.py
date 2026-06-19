@@ -5,12 +5,24 @@ import json
 import pytest
 
 from ravn.adapters.tools.workflow_tools import (
+    WorkflowArtifactReadTool,
+    WorkflowArtifactsTool,
     WorkflowDescribeTool,
+    WorkflowEventsTool,
     WorkflowLaunchTool,
     WorkflowListTool,
+    WorkflowStatusTool,
 )
 from ravn.domain.capability_catalog import WorkflowCapability
-from ravn.ports.capability import WorkflowLaunchRequest, WorkflowLaunchResult
+from ravn.ports.capability import (
+    WorkflowArtifact,
+    WorkflowArtifactContent,
+    WorkflowLaunchRequest,
+    WorkflowLaunchResult,
+    WorkflowRunEvent,
+    WorkflowRunReference,
+    WorkflowRunStatus,
+)
 
 
 class FakeWorkflowCapabilitySource:
@@ -58,6 +70,64 @@ class FakeWorkflowCapabilitySource:
             workload_subject="system:serviceaccount:ravn:valkyrie",
             workload_name="valkyrie",
             raw={"sessionId": "session-1", "status": "started"},
+        )
+
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        assert reference.session_id == "session-1"
+        return WorkflowRunStatus(
+            state="completed",
+            session_id=reference.session_id,
+            slug="build-missing-tool",
+            workflow_id="wf-build",
+            workflow_name="Build Missing Tool",
+            terminal=True,
+            raw={"status": "completed"},
+        )
+
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        assert reference.session_id == "session-1"
+        return [
+            WorkflowRunEvent(
+                event_type="capability.ready",
+                data={"session_id": "session-1", "tool": "printer"},
+                timestamp="2026-06-18T12:00:00Z",
+                source="ting",
+            )
+        ][:limit]
+
+    async def list_workflow_artifacts(
+        self,
+        reference: WorkflowRunReference,
+    ) -> list[WorkflowArtifact]:
+        assert reference.session_id == "session-1"
+        return [
+            WorkflowArtifact(
+                path="research/campaigns/build-missing-tool/summary.md",
+                title="Summary",
+                kind="summary",
+                summary="Workflow proof artifact.",
+                publish_state="published",
+                canonical=True,
+            )
+        ]
+
+    async def read_workflow_artifact(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        path: str,
+    ) -> WorkflowArtifactContent:
+        assert reference.session_id == "session-1"
+        assert path == "research/campaigns/build-missing-tool/summary.md"
+        return WorkflowArtifactContent(
+            artifact=WorkflowArtifact(path=path, title="Summary", kind="summary"),
+            content="The workflow produced a usable artifact.",
+            raw={"path": path},
         )
 
 
@@ -113,6 +183,22 @@ async def test_workflow_launch_uses_discovered_source_and_records_provenance() -
 
 
 @pytest.mark.asyncio
+async def test_workflow_launch_accepts_prefixed_capability_id() -> None:
+    source = FakeWorkflowCapabilitySource()
+    tool = WorkflowLaunchTool([source])
+
+    result = await tool.execute(
+        {
+            "workflow_id": "workflow:wf-build",
+            "prompt": "Build the printer tool",
+        }
+    )
+
+    assert not result.is_error
+    assert source.launch_requests[0].workflow_id == "wf-build"
+
+
+@pytest.mark.asyncio
 async def test_workflow_launch_requires_prompt() -> None:
     tool = WorkflowLaunchTool([FakeWorkflowCapabilitySource()])
 
@@ -120,3 +206,44 @@ async def test_workflow_launch_requires_prompt() -> None:
 
     assert result.is_error
     assert result.content == "prompt is required"
+
+
+@pytest.mark.asyncio
+async def test_workflow_status_reads_run_state() -> None:
+    tool = WorkflowStatusTool([FakeWorkflowCapabilitySource()])
+
+    result = await tool.execute({"session_id": "session-1"})
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    assert payload["status"]["state"] == "completed"
+    assert payload["status"]["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_workflow_events_returns_raw_reported_events() -> None:
+    tool = WorkflowEventsTool([FakeWorkflowCapabilitySource()])
+
+    result = await tool.execute({"session_id": "session-1"})
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    assert payload["events"][0]["event_type"] == "capability.ready"
+    assert payload["events"][0]["data"]["tool"] == "printer"
+
+
+@pytest.mark.asyncio
+async def test_workflow_artifacts_list_and_read_content() -> None:
+    source = FakeWorkflowCapabilitySource()
+    list_tool = WorkflowArtifactsTool([source])
+    read_tool = WorkflowArtifactReadTool([source])
+
+    listed = await list_tool.execute({"session_id": "session-1"})
+    assert not listed.is_error
+    artifact_path = json.loads(listed.content)["artifacts"][0]["path"]
+
+    read = await read_tool.execute({"session_id": "session-1", "path": artifact_path})
+
+    assert not read.is_error
+    payload = json.loads(read.content)
+    assert payload["artifact"]["content"] == "The workflow produced a usable artifact."

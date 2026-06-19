@@ -5,7 +5,7 @@ import json
 import pytest
 
 from ravn.adapters.capabilities.ting_workflows import TingWorkflowCapabilityAdapter
-from ravn.ports.capability import WorkflowLaunchRequest
+from ravn.ports.capability import WorkflowLaunchRequest, WorkflowRunReference
 
 
 class _FakeResponse:
@@ -72,6 +72,91 @@ class _FakeAsyncClient:
                     "status": "running",
                     "slug": "incident-session",
                     "clusterName": "ymir",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/research/campaigns/proof"):
+            return _FakeResponse(
+                200,
+                {
+                    "id": "campaign-1",
+                    "slug": "proof",
+                    "status": "completed",
+                    "workflowId": "wf-1",
+                    "workflowName": "Incident Investigation",
+                    "sessionId": "session-1",
+                    "sessionName": "proof",
+                    "activeStageId": "publish",
+                    "stageState": [{"stageId": "publish", "status": "complete"}],
+                    "canonicalArtifacts": {"summary": "research/campaigns/proof/summary.md"},
+                    "updatedAt": "2026-06-18T12:00:00Z",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/research/campaigns"):
+            return _FakeResponse(
+                200,
+                [
+                    {
+                        "id": "campaign-1",
+                        "slug": "proof",
+                        "status": "completed",
+                        "sessionId": "session-1",
+                    }
+                ],
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/research/campaigns/proof/artifacts"):
+            return _FakeResponse(
+                200,
+                [
+                    {
+                        "path": "research/campaigns/proof/summary.md",
+                        "title": "Summary",
+                        "kind": "summary",
+                        "summary": "A concise summary.",
+                        "publishState": "published",
+                        "sourceIds": ["source-1"],
+                    }
+                ],
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/research/campaigns/proof/artifact"):
+            return _FakeResponse(
+                200,
+                {
+                    "path": kwargs["params"]["path"],
+                    "title": "Summary",
+                    "kind": "summary",
+                    "summary": "A concise summary.",
+                    "publishState": "published",
+                    "sourceIds": ["source-1"],
+                    "content": "The campaign produced this artifact.",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/dispatcher/log"):
+            return _FakeResponse(
+                200,
+                {
+                    "events": [
+                        {
+                            "id": "event-1",
+                            "event": "research.completed",
+                            "data": {
+                                "session_id": "session-1",
+                                "slug": "proof",
+                                "structured_outcome": {"summary": "done"},
+                            },
+                            "timestamp": "2026-06-18T12:01:00Z",
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/sessions/session-1"):
+            return _FakeResponse(
+                200,
+                {
+                    "session_id": "session-1",
+                    "status": "running",
+                    "run_name": "proof",
+                    "cluster_name": "ymir",
                 },
             )
         return _FakeResponse(
@@ -165,3 +250,39 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
     assert result.owner_id == "owner-1"
     assert result.tenant_id == "tenant-1"
     assert result.workload_subject == "system:serviceaccount:nats:valkyrie"
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_reads_campaign_status_artifacts_and_events(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    token_file = tmp_path / "token.jwt"
+    token_file.write_text("projected-token", encoding="utf-8")
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        workload_token_file=str(token_file),
+    )
+
+    status = await adapter.get_workflow_status(reference=WorkflowRunReference(slug="proof"))
+    artifacts = await adapter.list_workflow_artifacts(reference=WorkflowRunReference(slug="proof"))
+    content = await adapter.read_workflow_artifact(
+        reference=WorkflowRunReference(slug="proof"),
+        path="research/campaigns/proof/summary.md",
+    )
+    events = await adapter.list_workflow_events(
+        reference=WorkflowRunReference(session_id="session-1", slug="proof"),
+    )
+
+    assert status.state == "completed"
+    assert status.terminal is True
+    assert artifacts[0].canonical is True
+    assert artifacts[0].publish_state == "published"
+    assert content.content == "The campaign produced this artifact."
+    assert any(event.event_type == "research.completed" for event in events)

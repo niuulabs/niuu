@@ -359,7 +359,10 @@ class EnvironmentSignalRuntime:
                 "`workflow_list` to inspect the catalog and `workflow_launch` only "
                 "when the task genuinely needs a workflow-backed build, research, "
                 "or operations run. Treat them like any other tool: choose based "
-                "on the current task, not on a hidden signal policy.\n"
+                "on the current task, not on a hidden signal policy. After launching, "
+                "do not treat the launch receipt as the outcome; use `workflow_status` "
+                "and then `workflow_events`, `workflow_artifacts`, or "
+                "`workflow_artifact_read` to inspect what Ting reports.\n"
             )
 
         payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)

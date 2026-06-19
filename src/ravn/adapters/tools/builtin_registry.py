@@ -388,6 +388,30 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         required_context=frozenset({"workflow_sources"}),
         kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
     ),
+    "workflow_status": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowStatusTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_events": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowEventsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifacts": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifact_read": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactReadTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
     # =========================================================================
     # ravn — persona management tools
     # =========================================================================

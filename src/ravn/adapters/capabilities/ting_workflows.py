@@ -15,9 +15,14 @@ import httpx
 
 from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.ports.capability import (
+    WorkflowArtifact,
+    WorkflowArtifactContent,
     WorkflowCapabilityPort,
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
+    WorkflowRunEvent,
+    WorkflowRunReference,
+    WorkflowRunStatus,
 )
 
 
@@ -95,6 +100,106 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             raw=raw,
         )
 
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        campaign = await self._resolve_campaign(reference)
+        if campaign is not None:
+            return _status_from_campaign(campaign)
+
+        if reference.session_id:
+            session = await self._get_session(reference.session_id)
+            if session is not None:
+                return _status_from_session(session, reference=reference)
+
+        raise RuntimeError("Workflow run not found")
+
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        events: list[WorkflowRunEvent] = []
+        campaign = await self._resolve_campaign(reference)
+        if campaign is not None:
+            events.append(_event_from_campaign(campaign))
+
+        resp = await self._request(
+            "GET",
+            f"{self._base_url}/api/v1/ting/dispatcher/log",
+            params={"limit": max(1, min(1000, int(limit)))},
+        )
+        if resp.status_code == 404:
+            return events[:limit]
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ting workflow event lookup returned HTTP {resp.status_code}")
+        raw = resp.json()
+        items = raw.get("events") if isinstance(raw, dict) else raw
+        if not isinstance(items, list):
+            return events[:limit]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            event = _event_from_log_item(item)
+            if _event_matches_reference(event, reference, campaign):
+                events.append(event)
+        return events[:limit]
+
+    async def list_workflow_artifacts(
+        self,
+        reference: WorkflowRunReference,
+    ) -> list[WorkflowArtifact]:
+        campaign = await self._resolve_campaign(reference)
+        if campaign is None:
+            return []
+        slug = str(campaign.get("slug") or reference.slug)
+        resp = await self._request(
+            "GET",
+            f"{self._base_url}/api/v1/ting/research/campaigns/{slug}/artifacts",
+        )
+        if resp.status_code == 404:
+            return []
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ting workflow artifact lookup returned HTTP {resp.status_code}")
+        body = resp.json()
+        if not isinstance(body, list):
+            return []
+        canonical = _canonical_artifact_paths(campaign)
+        return [
+            _artifact_from_body(item, canonical=canonical)
+            for item in body
+            if isinstance(item, dict)
+        ]
+
+    async def read_workflow_artifact(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        path: str,
+    ) -> WorkflowArtifactContent:
+        campaign = await self._resolve_campaign(reference)
+        if campaign is None:
+            raise RuntimeError("Workflow run has no readable Ting campaign artifact owner")
+        slug = str(campaign.get("slug") or reference.slug)
+        resp = await self._request(
+            "GET",
+            f"{self._base_url}/api/v1/ting/research/campaigns/{slug}/artifact",
+            params={"path": path},
+        )
+        if resp.status_code == 404:
+            raise RuntimeError("Workflow artifact not found")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ting workflow artifact read returned HTTP {resp.status_code}")
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("Ting workflow artifact read returned a non-object body")
+        canonical = _canonical_artifact_paths(campaign)
+        artifact = _artifact_from_body(body, canonical=canonical)
+        return WorkflowArtifactContent(
+            artifact=artifact,
+            content=str(body.get("content") or ""),
+            raw=body,
+        )
+
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         token = await self._workload_bearer_token()
         headers = dict(kwargs.pop("headers", {}) or {})
@@ -127,6 +232,60 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         await self._workload_bearer_token()
         return dict(self._cached_identity)
 
+    async def _resolve_campaign(self, reference: WorkflowRunReference) -> dict[str, Any] | None:
+        if reference.slug:
+            campaign = await self._get_campaign_by_slug(reference.slug)
+            if campaign is not None:
+                return campaign
+
+        if not reference.session_id:
+            return None
+
+        resp = await self._request("GET", f"{self._base_url}/api/v1/ting/research/campaigns")
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ting campaign lookup returned HTTP {resp.status_code}")
+        body = resp.json()
+        if not isinstance(body, list):
+            return None
+        for item in body:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("sessionId") or item.get("session_id") or "") != reference.session_id:
+                continue
+            slug = str(item.get("slug") or "")
+            if slug:
+                return await self._get_campaign_by_slug(slug) or item
+            return item
+        return None
+
+    async def _get_campaign_by_slug(self, slug: str) -> dict[str, Any] | None:
+        resp = await self._request(
+            "GET",
+            f"{self._base_url}/api/v1/ting/research/campaigns/{slug}",
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ting campaign lookup returned HTTP {resp.status_code}")
+        body = resp.json()
+        return body if isinstance(body, dict) else None
+
+    async def _get_session(self, session_id: str) -> dict[str, Any] | None:
+        for path in (
+            f"/api/v1/ting/sessions/{session_id}",
+            f"/api/v1/forge/sessions/{session_id}",
+        ):
+            resp = await self._request("GET", f"{self._base_url}{path}")
+            if resp.status_code == 404:
+                continue
+            if resp.status_code != 200:
+                raise RuntimeError(f"Ting session lookup returned HTTP {resp.status_code}")
+            body = resp.json()
+            return body if isinstance(body, dict) else None
+        return None
+
 
 def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
     tags = body.get("tags")
@@ -143,6 +302,154 @@ def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
             "owner_id": body.get("ownerId") or body.get("owner_id"),
         },
     )
+
+
+def _status_from_campaign(body: dict[str, Any]) -> WorkflowRunStatus:
+    state = str(body.get("status") or "")
+    return WorkflowRunStatus(
+        state=state,
+        session_id=str(body.get("sessionId") or body.get("session_id") or ""),
+        slug=str(body.get("slug") or ""),
+        workflow_id=str(body.get("workflowId") or body.get("workflow_id") or ""),
+        workflow_name=str(body.get("workflowName") or body.get("workflow_name") or ""),
+        session_name=str(body.get("sessionName") or body.get("session_name") or ""),
+        cluster_name=str(body.get("clusterName") or body.get("cluster_name") or ""),
+        active_stage_id=str(body.get("activeStageId") or body.get("active_stage_id") or ""),
+        stage_state=_dict_list(body.get("stageState") or body.get("stage_state")),
+        terminal=state.casefold() in {"completed", "failed"},
+        raw=body,
+    )
+
+
+def _status_from_session(
+    body: dict[str, Any],
+    *,
+    reference: WorkflowRunReference,
+) -> WorkflowRunStatus:
+    state = str(body.get("status") or body.get("state") or "")
+    session_id = str(
+        body.get("sessionId")
+        or body.get("session_id")
+        or body.get("id")
+        or reference.session_id
+    )
+    session_name = str(
+        body.get("sessionName") or body.get("session_name") or body.get("name") or ""
+    )
+    cluster_name = str(
+        body.get("clusterName")
+        or body.get("cluster_name")
+        or body.get("instance_name")
+        or ""
+    )
+    terminal = state.casefold() in {"completed", "complete", "failed", "stopped", "cancelled"}
+    return WorkflowRunStatus(
+        state=state,
+        session_id=session_id,
+        slug=reference.slug,
+        workflow_id=reference.workflow_id,
+        session_name=session_name,
+        cluster_name=cluster_name,
+        terminal=terminal,
+        raw=body,
+    )
+
+
+def _event_from_campaign(body: dict[str, Any]) -> WorkflowRunEvent:
+    return WorkflowRunEvent(
+        event_type="workflow.campaign.status",
+        data={
+            "status": body.get("status"),
+            "slug": body.get("slug"),
+            "session_id": body.get("sessionId") or body.get("session_id"),
+            "workflow_id": body.get("workflowId") or body.get("workflow_id"),
+            "active_stage_id": body.get("activeStageId") or body.get("active_stage_id"),
+            "stage_state": body.get("stageState") or body.get("stage_state") or [],
+            "canonical_artifacts": body.get("canonicalArtifacts")
+            or body.get("canonical_artifacts")
+            or {},
+        },
+        timestamp=str(body.get("updatedAt") or body.get("updated_at") or ""),
+        source="ting:campaign",
+        raw=body,
+    )
+
+
+def _event_from_log_item(item: dict[str, Any]) -> WorkflowRunEvent:
+    data = item.get("data")
+    timestamp = str(
+        item.get("timestamp") or item.get("createdAt") or item.get("created_at") or ""
+    )
+    return WorkflowRunEvent(
+        event_type=str(item.get("event") or item.get("event_type") or ""),
+        data=dict(data) if isinstance(data, dict) else {},
+        timestamp=timestamp,
+        source=str(item.get("source") or "ting:dispatcher"),
+        raw=item,
+    )
+
+
+def _event_matches_reference(
+    event: WorkflowRunEvent,
+    reference: WorkflowRunReference,
+    campaign: dict[str, Any] | None,
+) -> bool:
+    data = event.data
+    candidates = {
+        str(data.get("session_id") or data.get("sessionId") or ""),
+        str(data.get("campaign_id") or data.get("campaignId") or ""),
+        str(data.get("slug") or ""),
+        str(data.get("workflow_id") or data.get("workflowId") or ""),
+    }
+    if campaign is not None:
+        candidates.update(
+            {
+                str(campaign.get("id") or ""),
+                str(campaign.get("slug") or ""),
+                str(campaign.get("sessionId") or campaign.get("session_id") or ""),
+                str(campaign.get("workflowId") or campaign.get("workflow_id") or ""),
+            }
+        )
+    return any(
+        value
+        and value
+        in {
+            reference.session_id,
+            reference.slug,
+            reference.workflow_id,
+        }
+        for value in candidates
+    )
+
+
+def _artifact_from_body(body: dict[str, Any], *, canonical: set[str]) -> WorkflowArtifact:
+    path = str(body.get("path") or "")
+    source_ids = body.get("sourceIds") or body.get("source_ids") or []
+    return WorkflowArtifact(
+        path=path,
+        title=str(body.get("title") or ""),
+        kind=str(body.get("kind") or ""),
+        summary=str(body.get("summary") or ""),
+        publish_state=str(body.get("publishState") or body.get("publish_state") or ""),
+        source_ids=[str(item) for item in source_ids if str(item).strip()]
+        if isinstance(source_ids, list)
+        else [],
+        canonical=path in canonical,
+        raw=body,
+    )
+
+
+def _canonical_artifact_paths(body: dict[str, Any]) -> set[str]:
+    raw = body.get("canonicalArtifacts") or body.get("canonical_artifacts") or {}
+    if not isinstance(raw, dict):
+        return set()
+    return {str(value) for value in raw.values() if str(value).strip()}
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _identity_from_exchange(body: dict[str, Any]) -> dict[str, Any]:
