@@ -339,7 +339,10 @@ def _create_contributors(
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("ravn_flock"):
-        contributors.append(RavnFlockContributor(**ports))
+        ravn_kwargs = dict(ports)
+        if settings.ravn_flock_image:
+            ravn_kwargs["ravn_image"] = settings.ravn_flock_image
+        contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 
     if not _has_contributor("session_mcp"):

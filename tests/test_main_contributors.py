@@ -59,3 +59,12 @@ def test_create_contributors_auto_wires_workload_config_once() -> None:
     ]
 
     assert len(workload_contributors) == 1
+
+
+def test_create_contributors_passes_ravn_flock_image_to_auto_wired_contributor() -> None:
+    settings = Settings(ravn_flock_image="ghcr.io/niuulabs/skuld:dev-test")
+
+    contributors = _create_contributors(settings)
+    ravn_flock = next(contributor for contributor in contributors if contributor.name == "ravn_flock")
+
+    assert ravn_flock._ravn_image == "ghcr.io/niuulabs/skuld:dev-test"

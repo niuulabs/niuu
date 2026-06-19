@@ -1626,6 +1626,13 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
+    ravn_flock_image: str = Field(
+        default="",
+        description=(
+            "Optional image used for auto-wired Ravn flock sidecars. "
+            "When empty, the contributor's built-in default is used."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
