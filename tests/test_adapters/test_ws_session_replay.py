@@ -23,9 +23,11 @@ from tests.test_adapters.test_rest_session_log import InMemoryLog
 from volundr.adapters.inbound.ws_session_replay import _run, create_session_replay_router
 from volundr.config import ReplayConfig
 from volundr.domain.models import SessionLogEntry
+from volundr.replay.fixtures import default_fixtures_dir
 from volundr.replay.pacing import PacingConfig
 
-_FIXTURES_DIR = str(Path(__file__).resolve().parents[1] / "test_volundr" / "fixtures" / "replay")
+# The SINGLE packaged fixture corpus (what prod serves) — no duplicate test copy.
+_FIXTURES_DIR = str(default_fixtures_dir())
 _BASE = datetime(2026, 6, 18, 9, 0, 0, tzinfo=UTC)
 
 

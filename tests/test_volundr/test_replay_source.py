@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -12,7 +11,8 @@ import pytest
 from volundr.replay.fixtures import default_fixtures_dir, resolve_fixture
 from volundr.replay.source import load_fixture_entries
 
-_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "replay"
+# Use the SINGLE packaged fixture corpus (what prod serves) — no duplicate copy.
+_FIXTURES = default_fixtures_dir()
 
 
 def test_load_fixture_entries_parses_and_sorts_by_seq(tmp_path):
@@ -20,8 +20,12 @@ def test_load_fixture_entries_parses_and_sorts_by_seq(tmp_path):
     rows = [
         {"seq": 3, "kind": "result", "ts": "2026-06-18T09:00:16Z", "payload": {"type": "result"}},
         {"seq": 1, "kind": "user", "ts": "2026-06-18T09:00:00Z", "payload": {"type": "user"}},
-        {"seq": 2, "kind": "assistant", "ts": "2026-06-18T09:00:03Z",
-         "payload": {"type": "assistant"}},
+        {
+            "seq": 2,
+            "kind": "assistant",
+            "ts": "2026-06-18T09:00:03Z",
+            "payload": {"type": "assistant"},
+        },
     ]
     p = tmp_path / "x.frames.json"
     p.write_text(json.dumps(rows), encoding="utf-8")
@@ -54,8 +58,9 @@ def test_missing_ts_is_tolerated(tmp_path):
 
 def test_z_suffix_ts_is_parsed_to_aware_datetime(tmp_path):
     sid = uuid4()
-    rows = [{"seq": 1, "kind": "user", "ts": "2026-06-18T09:00:00.000Z",
-             "payload": {"type": "user"}}]
+    rows = [
+        {"seq": 1, "kind": "user", "ts": "2026-06-18T09:00:00.000Z", "payload": {"type": "user"}}
+    ]
     p = tmp_path / "z.frames.json"
     p.write_text(json.dumps(rows), encoding="utf-8")
 
