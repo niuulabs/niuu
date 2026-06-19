@@ -322,6 +322,25 @@ class TestInMemoryEventBroadcaster:
         assert event.data["status"] == sample_session.status.value
 
     @pytest.mark.asyncio
+    async def test_session_event_carries_needs_attention(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        """The session payload exposes needs_attention so a badge lights up
+        from session_updated alone."""
+        from volundr.domain.models import SessionActivityState
+
+        sample_session.activity_state = SessionActivityState.TOOL_EXECUTING
+        busy = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+        assert busy.data["needs_attention"] is False
+
+        sample_session.activity_state = SessionActivityState.AWAITING_INPUT
+        blocked = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+        assert blocked.data["needs_attention"] is True
+        assert blocked.data["activity_state"] == "awaiting_input"
+
+    @pytest.mark.asyncio
     async def test_create_stats_event(
         self,
         broadcaster: InMemoryEventBroadcaster,
@@ -656,6 +675,45 @@ class TestInMemoryEventBroadcasterSleipnirForwarding:
 
         arg: SleipnirEvent = publisher.publish.call_args[0][0]
         assert arg.event_type == registry.VOLUNDR_SESSION_CREATED
+
+    @pytest.mark.asyncio
+    async def test_session_needs_input_forwarded_with_high_urgency(self):
+        """SESSION_NEEDS_INPUT is forwarded to the bus at high urgency so it
+        outranks routine churn for urgency-gated notification consumers."""
+        from sleipnir.domain import registry
+        from sleipnir.domain.events import SleipnirEvent
+
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+        event = RealtimeEvent(
+            type=EventType.SESSION_NEEDS_INPUT,
+            data={"session_id": "sess-1", "kind": "question"},
+            timestamp=datetime.now(UTC),
+        )
+
+        await b.publish(event)
+
+        arg: SleipnirEvent = publisher.publish.call_args[0][0]
+        assert arg.event_type == registry.VOLUNDR_SESSION_NEEDS_INPUT
+        assert arg.urgency == 0.9
+        assert arg.payload["kind"] == "question"
+
+    @pytest.mark.asyncio
+    async def test_session_activity_not_forwarded_to_bus(self):
+        """Routine activity stays SSE-only — it must not flood the platform bus."""
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+        event = RealtimeEvent(
+            type=EventType.SESSION_ACTIVITY,
+            data={"session_id": "sess-1", "state": "tool_executing"},
+            timestamp=datetime.now(UTC),
+        )
+
+        await b.publish(event)
+
+        publisher.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_custom_source_used_in_sleipnir_event(self):

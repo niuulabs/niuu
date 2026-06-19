@@ -174,6 +174,7 @@ class EventType(StrEnum):
     PR_CREATED = "pr_created"
     PR_MERGED = "pr_merged"
     SESSION_ACTIVITY = "session_activity"
+    SESSION_NEEDS_INPUT = "session_needs_input"
 
 
 class CommunicationPlatform(StrEnum):

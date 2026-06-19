@@ -133,6 +133,90 @@ class TestUpdateActivity:
         assert activity_events[0].data["session_id"] == str(session.id)
 
     @pytest.mark.asyncio
+    async def test_awaiting_input_emits_needs_input_event(self, service, broadcaster):
+        """Entering awaiting_input fires a dedicated SESSION_NEEDS_INPUT event."""
+        session = await service.create_session(
+            name="Blocked",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        broadcaster._events.clear()
+
+        await service.update_activity(
+            session.id,
+            SessionActivityState.AWAITING_INPUT,
+            {"kind": "question", "prompt": "Which DB?", "request_id": "askq-1"},
+        )
+
+        needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
+        assert len(needs) == 1
+        assert needs[0].data["kind"] == "question"
+        assert needs[0].data["prompt"] == "Which DB?"
+        assert needs[0].data["request_id"] == "askq-1"
+        assert needs[0].data["session_id"] == str(session.id)
+        # The routine activity event is still emitted alongside it.
+        activity = [e for e in broadcaster._events if e.type == EventType.SESSION_ACTIVITY]
+        assert len(activity) == 1
+
+    @pytest.mark.asyncio
+    async def test_needs_input_not_re_emitted_for_same_request(self, service, broadcaster):
+        """A repeated report for the same pending request must not re-fire."""
+        session = await service.create_session(
+            name="Blocked",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        meta = {"kind": "question", "request_id": "askq-1"}
+        await service.update_activity(session.id, SessionActivityState.AWAITING_INPUT, dict(meta))
+        broadcaster._events.clear()
+
+        await service.update_activity(session.id, SessionActivityState.AWAITING_INPUT, dict(meta))
+
+        needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
+        assert needs == []
+
+    @pytest.mark.asyncio
+    async def test_needs_input_re_emitted_for_new_request(self, service, broadcaster):
+        """A second question (new request_id) while still awaiting fires again."""
+        session = await service.create_session(
+            name="Blocked",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        await service.update_activity(
+            session.id, SessionActivityState.AWAITING_INPUT, {"request_id": "askq-1"}
+        )
+        broadcaster._events.clear()
+
+        await service.update_activity(
+            session.id, SessionActivityState.AWAITING_INPUT, {"request_id": "askq-2"}
+        )
+
+        needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
+        assert len(needs) == 1
+        assert needs[0].data["request_id"] == "askq-2"
+
+    @pytest.mark.asyncio
+    async def test_busy_states_do_not_emit_needs_input(self, service, broadcaster):
+        """active/idle/tool_executing never raise a needs-input signal."""
+        session = await service.create_session(
+            name="Working",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        broadcaster._events.clear()
+
+        for state in (
+            SessionActivityState.ACTIVE,
+            SessionActivityState.TOOL_EXECUTING,
+            SessionActivityState.IDLE,
+        ):
+            await service.update_activity(session.id, state, {"turn_count": 1})
+
+        needs = [e for e in broadcaster._events if e.type == EventType.SESSION_NEEDS_INPUT]
+        assert needs == []
+
+    @pytest.mark.asyncio
     async def test_update_activity_not_found(self, service):
         """update_activity should raise SessionNotFoundError for missing session."""
         from uuid import uuid4
@@ -267,12 +351,25 @@ class TestSessionActivityState:
         assert SessionActivityState.ACTIVE == "active"
         assert SessionActivityState.IDLE == "idle"
         assert SessionActivityState.TOOL_EXECUTING == "tool_executing"
+        assert SessionActivityState.AWAITING_INPUT == "awaiting_input"
 
     def test_from_string(self) -> None:
         assert SessionActivityState("active") == SessionActivityState.ACTIVE
         assert SessionActivityState("idle") == SessionActivityState.IDLE
         assert SessionActivityState("tool_executing") == SessionActivityState.TOOL_EXECUTING
+        assert SessionActivityState("awaiting_input") == SessionActivityState.AWAITING_INPUT
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):
             SessionActivityState("invalid")
+
+    def test_is_busy(self) -> None:
+        assert SessionActivityState.ACTIVE.is_busy
+        assert SessionActivityState.TOOL_EXECUTING.is_busy
+        assert not SessionActivityState.IDLE.is_busy
+        assert not SessionActivityState.AWAITING_INPUT.is_busy
+
+    def test_needs_attention(self) -> None:
+        assert SessionActivityState.AWAITING_INPUT.needs_attention
+        assert not SessionActivityState.ACTIVE.needs_attention
+        assert not SessionActivityState.IDLE.needs_attention

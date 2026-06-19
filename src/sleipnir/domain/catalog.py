@@ -92,6 +92,19 @@ class VolundrSessionFailedPayload:
 
 
 @dataclass(frozen=True)
+class VolundrSessionNeedsInputPayload:
+    session_id: str
+    session_name: str
+    owner_id: str
+    #: What the session is blocked on: "question" | "confirmation" | "permission".
+    kind: str
+    #: Human-readable prompt to show the user (best-effort; may be empty).
+    prompt: str = ""
+    #: Opaque correlation id for the pending request (matches the chat WS frame).
+    request_id: str = ""
+
+
+@dataclass(frozen=True)
 class TingSagaCreatedPayload:
     saga_id: str
     template: str
@@ -597,6 +610,44 @@ def volundr_session_failed(
         summary=f"Volundr session failed: {session_id} — {error[:80]}",
         urgency=0.8,
         domain="infrastructure",
+        timestamp=datetime.now(UTC),
+        correlation_id=correlation_id or session_id,
+    )
+
+
+def volundr_session_needs_input(
+    *,
+    session_id: str,
+    session_name: str,
+    owner_id: str,
+    kind: str,
+    prompt: str = "",
+    request_id: str = "",
+    source: str,
+    correlation_id: str | None = None,
+) -> SleipnirEvent:
+    """Emit when a session blocks waiting on the user.
+
+    This is the platform-wide "needs attention" signal — a notification /
+    push fan-out subscribes to it to alert the owner that the session cannot
+    progress until they respond. High urgency so it outranks routine activity.
+    """
+    return SleipnirEvent(
+        event_type=registry.VOLUNDR_SESSION_NEEDS_INPUT,
+        source=source,
+        payload=dataclasses.asdict(
+            VolundrSessionNeedsInputPayload(
+                session_id=session_id,
+                session_name=session_name,
+                owner_id=owner_id,
+                kind=kind,
+                prompt=prompt,
+                request_id=request_id,
+            )
+        ),
+        summary=f"Session needs input ({kind}): {session_name or session_id}",
+        urgency=0.9,
+        domain="code",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or session_id,
     )

@@ -361,6 +361,11 @@ class SessionService:
         if cli_session_id and cli_session_id != session.cli_session_id:
             session.cli_session_id = cli_session_id
 
+        # Capture the prior attention context BEFORE we overwrite it, so we can
+        # tell a fresh "needs the user" transition from a repeated report.
+        previous_state = session.activity_state
+        previous_request_id = (session.activity_metadata or {}).get("request_id")
+
         session.activity_state = state
         session.activity_metadata = metadata
         # Treat each activity report as a liveness heartbeat so the reconciler can
@@ -386,9 +391,49 @@ class SessionService:
                     timestamp=updated.updated_at,
                 )
             )
+            # A fresh "needs the user" transition (or a new pending request while
+            # already awaiting) fires a dedicated, high-urgency event. Unlike the
+            # routine activity event above, this one is forwarded to the platform
+            # bus so a notification / push fan-out can alert the owner.
+            if self._is_new_attention_request(state, previous_state, metadata, previous_request_id):
+                await self._broadcaster.publish(
+                    RealtimeEvent(
+                        type=EventType.SESSION_NEEDS_INPUT,
+                        data={
+                            "session_id": str(session_id),
+                            "session_name": updated.name,
+                            "owner_id": session.owner_id or "",
+                            "tenant_id": session.tenant_id or "",
+                            "kind": metadata.get("kind", "question"),
+                            "prompt": metadata.get("prompt", "") or "",
+                            "request_id": metadata.get("request_id", "") or "",
+                        },
+                        timestamp=updated.updated_at,
+                    )
+                )
         if self._should_auto_stop_after_activity(updated, state, metadata):
             self._schedule_activity_stop(updated.id)
         return updated
+
+    @staticmethod
+    def _is_new_attention_request(
+        state: SessionActivityState,
+        previous_state: SessionActivityState | None,
+        metadata: dict,
+        previous_request_id: str | None,
+    ) -> bool:
+        """True when a report represents a NEW request for the user's attention.
+
+        Fires on the transition into ``awaiting_input``, and again if a new
+        pending request (different ``request_id``) arrives while the session is
+        still awaiting — so a second question is not swallowed. Re-reports of the
+        same pending request do not re-fire, avoiding notification spam.
+        """
+        if state is not SessionActivityState.AWAITING_INPUT:
+            return False
+        if previous_state is not SessionActivityState.AWAITING_INPUT:
+            return True
+        return metadata.get("request_id") != previous_request_id
 
     async def reconcile_liveness(self, stale_after_seconds: int) -> int:
         """Mark running sessions with no recent activity heartbeat as stopped.
