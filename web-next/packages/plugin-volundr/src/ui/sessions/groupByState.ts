@@ -2,6 +2,7 @@ import type { Session, SessionState } from '../../domain/session';
 
 /** States shown as subnav tabs in the Sessions page, in display order. */
 export const SESSION_STATES: SessionState[] = [
+  'awaiting_input',
   'running',
   'idle',
   'provisioning',
@@ -23,6 +24,7 @@ export function groupByState(sessions: Session[]): SessionsByState {
     ready: [],
     running: [],
     idle: [],
+    awaiting_input: [],
     terminating: [],
     terminated: [],
     archived: [],

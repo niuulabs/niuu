@@ -36,6 +36,13 @@
   border-color: var(--color-border-subtle);
 }
 
+.niuu-lifecycle-badge--awaiting_input {
+  color: var(--status-amber);
+  border-color: color-mix(in srgb, var(--status-amber) 45%, transparent);
+  background: color-mix(in srgb, var(--status-amber) 16%, transparent);
+  font-weight: 600;
+}
+
 .niuu-lifecycle-badge--terminating {
   color: var(--brand-400);
   border-color: color-mix(in srgb, var(--brand-400) 35%, transparent);

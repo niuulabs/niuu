@@ -193,6 +193,49 @@ describe('ForgePage', () => {
     expect(screen.getByText('IDE')).toBeInTheDocument();
   });
 
+  it('surfaces awaiting_input sessions in a "Needs your input" panel', async () => {
+    const session: Session = {
+      id: 'sess-blocked',
+      ravnId: 'r-blocked',
+      name: 'fix-auth',
+      personaName: 'dev',
+      templateId: 'tpl-default',
+      clusterId: 'cl-eitri',
+      state: 'awaiting_input',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 5_000).toISOString(),
+      preview: 'Which database should we use?',
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.3,
+        memRequestMi: 512,
+        memLimitMi: 1_024,
+        memUsedMi: 200,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getByTestId('attention-strip')).toBeInTheDocument());
+    const strip = screen.getByTestId('attention-strip');
+    expect(within(strip).getByText('Needs your input')).toBeInTheDocument();
+    expect(within(strip).getByText('Which database should we use?')).toBeInTheDocument();
+    expect(within(strip).getByText('needs you')).toBeInTheDocument();
+  });
+
   it('renders token and cost stats on active pod cards', async () => {
     const session: Session = {
       id: 'sess-stats',

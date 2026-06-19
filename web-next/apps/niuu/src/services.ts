@@ -648,6 +648,8 @@ function toSessionState(session: VolundrSession): Session['state'] {
     case 'provisioning':
       return 'provisioning';
     case 'running':
+      if (session.needsAttention || session.activityState === 'awaiting_input')
+        return 'awaiting_input';
       return session.activityState === 'idle' ? 'idle' : 'running';
     case 'stopping':
       return 'terminating';

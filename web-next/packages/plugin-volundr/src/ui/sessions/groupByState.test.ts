@@ -100,6 +100,7 @@ describe('countByState', () => {
 describe('SESSION_STATES', () => {
   it('contains the subnav states in display order', () => {
     expect(SESSION_STATES).toEqual([
+      'awaiting_input',
       'running',
       'idle',
       'provisioning',

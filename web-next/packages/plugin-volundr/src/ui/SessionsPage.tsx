@@ -52,6 +52,7 @@ interface SessionSection {
 }
 
 const POD_GROUPS: PodGroupDef[] = [
+  { label: 'NEEDS YOU', states: ['awaiting_input'] },
   { label: 'ACTIVE', states: ['running'] },
   { label: 'IDLE', states: ['idle'] },
   { label: 'BOOTING', states: ['provisioning', 'requested'] },
@@ -67,6 +68,7 @@ const POD_GROUPS: PodGroupDef[] = [
 const SESSION_DOT: Record<SessionState, DotState> = {
   running: 'running',
   idle: 'idle',
+  awaiting_input: 'attention',
   provisioning: 'processing',
   requested: 'queued',
   ready: 'healthy',
@@ -249,7 +251,10 @@ function PodEntry({
           <Check className="niuu:h-3 niuu:w-3" />
         </span>
       ) : null}
-      <StateDot state={SESSION_DOT[session.state]} pulse={session.state === 'running'} />
+      <StateDot
+        state={SESSION_DOT[session.state]}
+        pulse={session.state === 'running' || session.state === 'awaiting_input'}
+      />
       {collapsed ? null : (
         <>
           <div className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-0.5">
