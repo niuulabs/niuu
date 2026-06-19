@@ -238,6 +238,11 @@ class TmuxInteractiveTransport(CLITransport):
             interrupt=True,
             slash_commands=True,
             steer=True,
+            # The interactive CLI inserts queued input at the right moment, so a
+            # new message is delivered by typing it into the live pane — never by
+            # stopping and restarting the turn. The broker routes EVERY message
+            # (mid-turn or idle) through the steer path for native transports.
+            steering_mode="native",
             terminal_output=True,
             terminal_input=True,
             terminal_keys=True,
@@ -323,33 +328,54 @@ class TmuxInteractiveTransport(CLITransport):
             await self._run_tmux("kill-session", "-t", self._session_name, check=False)
 
     async def send_message(self, content: str) -> None:
+        """Deliver a user message by typing it into the live interactive CLI.
+
+        This is real steering: we never stop/restart the turn. The CLI queues
+        the keystrokes and inserts them at the right moment (mid-turn it steers
+        the running turn; idle it starts a fresh one). We do NOT block waiting
+        for the turn to finish — the response streams back asynchronously via
+        the pane tail / Claude hooks, and completion is detected by the
+        watchdog or the Stop hook.
+        """
+        await self._deliver_user_text(content)
+
+    async def _deliver_user_text(self, content: str) -> None:
+        """Paste content into the pane and ensure a turn is being tracked.
+
+        The send lock is held only for the paste (to keep concurrent messages
+        ordered), NOT for the whole turn — so a follow-up message is never
+        blocked behind an in-flight turn the way a turn-scoped lock would do.
+        """
         async with self._send_lock:
             if not self.is_alive:
                 await self._ensure_started()
             if self._turn_active:
-                await self._finish_synthetic_turn(reason="superseded")
-            done = asyncio.Event()
-            self._turn_done = done
-            self._turn_active = True
-            self._turn_started_at = time.monotonic()
-            self._turn_last_output_at = None
-            self._turn_stream_started = False
-            self._turn_buffer = []
-            self._turn_last_clean_text = ""
+                # Mid-turn steer: keep the SAME turn alive. Refresh the idle
+                # clock so the completion watchdog doesn't fire in the gap
+                # before the CLI echoes the steered input.
+                self._turn_last_output_at = time.monotonic()
+            else:
+                self._begin_turn()
+            await self._paste_text(content, enter=True)
+
+    def _begin_turn(self) -> None:
+        """Start tracking a new turn so its output streams and completion fires.
+
+        Used by both a fresh message and the first message of an idle session.
+        Does NOT finish any prior turn — delivery is non-disruptive.
+        """
+        self._turn_done = asyncio.Event()
+        self._turn_active = True
+        self._turn_started_at = time.monotonic()
+        self._turn_last_output_at = None
+        self._turn_stream_started = False
+        self._turn_buffer = []
+        self._turn_last_clean_text = ""
+        if self._turn_watchdog_task is None or self._turn_watchdog_task.done():
             self._turn_watchdog_task = asyncio.create_task(
-                self._watch_turn_completion(done),
+                self._watch_turn_completion(self._turn_done),
                 name=f"tmux-turn-watch-{self._session_name}",
             )
-            try:
-                await self._paste_text(content, enter=True)
-                await done.wait()
-            finally:
-                if self._turn_watchdog_task is not None:
-                    self._turn_watchdog_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await self._turn_watchdog_task
-                    self._turn_watchdog_task = None
-                self._turn_done = None
 
     async def interrupt(self) -> None:
         await self.send_control("interrupt")
@@ -412,7 +438,9 @@ class TmuxInteractiveTransport(CLITransport):
         if subtype in {"redirect", "steer"}:
             content = self._coerce_str(kwargs.get("content"))
             if content:
-                await self._paste_text(content, enter=True)
+                # Same native delivery as a regular message: type it into the
+                # live CLI and ensure the turn is tracked so the reply streams.
+                await self._deliver_user_text(content)
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
         """Discover slash commands from Claude Code's live `/` autocomplete menu."""
