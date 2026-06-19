@@ -93,12 +93,20 @@ def create_session_replay_router(
     ) -> None:
         # Auth runs BEFORE accept(). extract_principal only reads .app.state /
         # .headers / .query_params, all present on a WebSocket connection. We
-        # cannot raise HTTPException after the WS scope, so a denied principal
-        # closes with policy-violation 1008.
+        # cannot raise HTTPException after the WS scope, so both an
+        # unauthenticated principal (extract_principal -> HTTPException) and a
+        # denied principal (_check_access -> SessionAccessDeniedError) close with
+        # policy-violation 1008 instead of dropping the handshake.
         if session_service is not None:
+            from fastapi import HTTPException
+
             from volundr.adapters.inbound.auth import extract_principal
 
-            principal = await extract_principal(websocket)
+            try:
+                principal = await extract_principal(websocket)
+            except HTTPException:
+                await websocket.close(code=1008)
+                return
             session = await session_service.get_session(session_id)
             if session is not None:
                 try:
@@ -185,8 +193,12 @@ async def _run(
                     TransportCapabilities(
                         send_message=False,
                         steer=False,
-                        slash_commands=True,
-                        skills=True,
+                        # Read-only replay cannot run slash commands or skills,
+                        # and the live ``available_commands`` catalog is not
+                        # persisted to the durable log — so advertise these as
+                        # False rather than rendering a dead /-menu on the client.
+                        slash_commands=False,
+                        skills=False,
                     )
                 ),
             }

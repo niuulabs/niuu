@@ -123,7 +123,10 @@ def test_preamble_order_and_no_conversation_history_at_after_zero():
     # Read-only capabilities advertised.
     assert frames[1]["send_message"] is False
     assert frames[1]["steer"] is False
-    assert frames[1]["slash_commands"] is True
+    # Read-only replay cannot honor slash commands / skills (the live
+    # available_commands catalog is not in the durable log).
+    assert frames[1]["slash_commands"] is False
+    assert frames[1]["skills"] is False
     # No conversation_history when attaching from zero (the stream IS history).
     assert not any(f.get("type") == "conversation_history" for f in frames)
 
@@ -289,6 +292,106 @@ def test_fixture_route_full_name_also_works():
         ) as ws:
             frames = _drain(ws)
     assert len(frames) >= 2
+
+
+# --------------------------------------------------------------------------- #
+# Auth path (session_service wired)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeSessionService:
+    """Minimal SessionService stub exercising the auth branch DB-free.
+
+    ``get_session`` returns a sentinel session (non-None so ``_check_access``
+    runs); ``_check_access`` either raises ``SessionAccessDeniedError`` or
+    returns, per ``deny``.
+    """
+
+    def __init__(self, *, deny: bool) -> None:
+        self._deny = deny
+
+    async def get_session(self, session_id):  # noqa: ANN001
+        return object()  # sentinel: non-None so _check_access is invoked
+
+    async def _check_access(self, session, principal, action="read"):  # noqa: ANN001
+        if self._deny:
+            from volundr.domain.services.session import SessionAccessDeniedError
+
+            raise SessionAccessDeniedError(uuid4(), "user-x")
+
+
+def _app_with_session_service(service, **cfg_kwargs) -> tuple[FastAPI, InMemoryLog]:
+    repo = InMemoryLog()
+    cfg = ReplayConfig(
+        enabled=True,
+        fixtures_enabled=cfg_kwargs.pop("fixtures_enabled", True),
+        fixtures_dir=cfg_kwargs.pop("fixtures_dir", _FIXTURES_DIR),
+        max_gap_seconds=cfg_kwargs.pop("max_gap_seconds", 0.0),
+        default_show_internal=cfg_kwargs.pop("default_show_internal", True),
+        **cfg_kwargs,
+    )
+    app = FastAPI()
+    app.include_router(
+        create_session_replay_router(repo, session_service=service, config=cfg)
+    )
+    # Allow-all identity so extract_principal succeeds without an Authorization
+    # header (the deny/success behavior is driven by _check_access, not auth).
+    # Subclass to satisfy the isinstance(AllowAllIdentityAdapter) branch without
+    # standing up a real UserRepository.
+    from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
+
+    class _AllowAll(AllowAllIdentityAdapter):
+        def __init__(self) -> None:  # noqa: D401
+            self._default_tenant_id = "default"
+
+    app.state.identity = _AllowAll()
+    return app, repo
+
+
+def test_access_denied_closes_1008():
+    sid = uuid4()
+    app, repo = _app_with_session_service(_FakeSessionService(deny=True))
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        _expect_close(
+            client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008
+        )
+
+
+def test_access_granted_streams():
+    sid = uuid4()
+    app, repo = _app_with_session_service(_FakeSessionService(deny=False))
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000"
+        ) as ws:
+            frames = _drain(ws)
+
+    # Preamble + full body streamed once access is granted.
+    assert frames[0]["type"] == "system"
+    assert frames[1]["type"] == "capabilities"
+    body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
+    assert [f["type"] for f in body] == ["user", "assistant", "user", "assistant", "result"]
+
+
+def test_missing_token_closes_1008():
+    # Token-mode identity (neither AllowAll nor Envoy) with no Authorization
+    # header -> extract_principal raises HTTPException -> graceful close(1008)
+    # before accept(), not an uncaught handshake drop.
+    class _TokenModeIdentity:
+        """Not an AllowAll/Envoy adapter, so extract_principal hits the
+        token-validation branch and raises on the missing header."""
+
+    sid = uuid4()
+    service = _FakeSessionService(deny=False)
+    app, repo = _app_with_session_service(service)
+    app.state.identity = _TokenModeIdentity()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        _expect_close(
+            client, f"/api/v1/forge/sessions/{sid}/replay?speed=1000", code=1008
+        )
 
 
 # --------------------------------------------------------------------------- #
