@@ -124,13 +124,16 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_send_message_pastes_text_and_synthesizes_chat_turn(tmp_path: Path) -> None:
+async def test_send_message_pastes_text_and_streams_turn(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)
     await transport.start()
 
-    send_task = asyncio.create_task(transport.send_message("hello Claude"))
-    await _wait_until(lambda: any(args[0] == "paste-buffer" for args, _ in transport.commands))
+    # Delivery is non-blocking: send_message returns once the text is typed into
+    # the live CLI; the response streams + completes asynchronously.
+    await transport.send_message("hello Claude")
+    assert transport.is_turn_active
+
     transport.capture_stdout = "\n".join(
         [
             "❯ hello Claude",
@@ -146,7 +149,8 @@ async def test_send_message_pastes_text_and_synthesizes_chat_turn(tmp_path: Path
         transport._panes["%1"],  # noqa: SLF001
         b"\x1b[32mClaude says hi\x1b[0m\r\n",
     )
-    _ = await send_task
+    # The watchdog detects terminal idle and finishes the turn on its own.
+    await _wait_until(lambda: any(event["type"] == "result" for event in events))
     await transport.stop()
 
     command_names = _command_names(transport)
@@ -438,19 +442,23 @@ async def test_claude_tool_hooks_emit_sdk_shaped_tool_events(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_hook_enabled_turn_waits_for_stop_not_terminal_idle(tmp_path: Path) -> None:
+async def test_hook_enabled_turn_completes_on_stop_not_terminal_idle(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
     events = await _collect_events(transport)
     await transport.start()
 
-    send_task = asyncio.create_task(transport.send_message("hello"))
-    await _wait_until(lambda: transport.is_turn_active)
+    # Non-blocking delivery — the turn is tracked but send_message returns.
+    await transport.send_message("hello")
+    assert transport.is_turn_active
     await transport._handle_pane_output(  # noqa: SLF001
         transport._panes["%1"],  # noqa: SLF001
         b"terminal redraw\n",
     )
+    # In hook mode the terminal-idle watchdog must NOT end the turn; only the
+    # Stop hook does. Wait past the idle timeout and confirm the turn is alive.
     await asyncio.sleep(0.08)
-    assert not send_task.done()
+    assert transport.is_turn_active
+    assert not any(event["type"] == "result" for event in events)
 
     await transport.handle_claude_hook(
         {
@@ -458,9 +466,51 @@ async def test_hook_enabled_turn_waits_for_stop_not_terminal_idle(tmp_path: Path
             "last_assistant_message": "done from hook",
         }
     )
-    _ = await send_task
+    await _wait_until(lambda: not transport.is_turn_active)
     await transport.stop()
 
     assert any(
         event["type"] == "result" and event["result"] == "done from hook" for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertise_native_steering(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    caps = transport.capabilities
+    assert caps.steer is True
+    assert caps.steering_mode == "native"
+
+
+@pytest.mark.asyncio
+async def test_send_message_is_non_blocking(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+
+    # Must return promptly even though the turn is still running (hook mode:
+    # only the Stop hook ends it). Old behavior blocked here for the whole turn.
+    await asyncio.wait_for(transport.send_message("hello"), timeout=0.5)
+    assert transport.is_turn_active
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_message_steers_without_stopping_turn(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.send_message("first")
+    assert transport.is_turn_active
+    pastes_before = sum(1 for args, _ in transport.commands if args[0] == "paste-buffer")
+
+    # A second message mid-turn is real steering: it types into the live CLI and
+    # must NOT emit a result / finish the running turn (no disruptive restart).
+    await transport.send_control("steer", content="actually do X instead")
+
+    assert transport.is_turn_active
+    assert not any(event["type"] == "result" for event in events)
+    pastes_after = sum(1 for args, _ in transport.commands if args[0] == "paste-buffer")
+    assert pastes_after == pastes_before + 1
+    await transport.stop()

@@ -1528,6 +1528,25 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_dispatch_native_steering_redirects_even_when_idle(self, test_broker):
+        # A "native" transport (tmux interactive) lets the live CLI insert
+        # queued input itself, so EVERY message is delivered by steering — even
+        # when no turn is currently active — never a disruptive send/restart.
+        test_broker._transport.capabilities = TransportCapabilities(
+            steer=True, steering_mode="native"
+        )
+        test_broker._transport.is_turn_active = False
+
+        await test_broker._dispatch_browser_message({"content": "do the thing"})
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_message.assert_not_called()
+        test_broker._transport.send_control.assert_called_once_with(
+            "redirect",
+            content="do the thing",
+        )
+
+    @pytest.mark.asyncio
     async def test_dispatch_structured_user_message_redirects_with_normalized_text(
         self, test_broker
     ):

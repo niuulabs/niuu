@@ -3537,10 +3537,16 @@ class Broker:
                     }
                 )
 
-                if (
-                    getattr(self._transport.capabilities, "steer", False) is True
-                    and getattr(self._transport, "is_turn_active", False) is True
-                ):
+                caps = self._transport.capabilities
+                steer_capable = getattr(caps, "steer", False) is True
+                # "native" transports (e.g. tmux interactive) let the live CLI
+                # insert queued input itself, so EVERY message — mid-turn or idle
+                # — is delivered by steering, never by a disruptive stop/restart.
+                # "interrupt_resume" transports (the SDK) only steer while a turn
+                # is genuinely in flight; an idle message starts a fresh turn.
+                native_steering = getattr(caps, "steering_mode", "none") == "native"
+                turn_active = getattr(self._transport, "is_turn_active", False) is True
+                if steer_capable and (native_steering or turn_active):
                     asyncio.create_task(
                         self._safe_transport_control(
                             self._transport,
