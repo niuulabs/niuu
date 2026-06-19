@@ -270,10 +270,10 @@ def _create_contributors(
     """
     from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
     from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
+    from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
     from volundr.adapters.outbound.contributors.workload_identity import (
         WorkloadIdentityContributor,
     )
-    from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
 
     contributors: list[SessionContributor] = []
 
