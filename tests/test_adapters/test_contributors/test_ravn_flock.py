@@ -1485,27 +1485,22 @@ class TestPersonaSourceHttp:
             session,
             "http",
             persona_source_http_base_url="http://volundr:8080",
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         volume_names = {v["name"] for v in pod_spec.volumes}
         assert "ravn-personas" not in volume_names
 
-    async def test_token_env_injected_from_secret(self, session) -> None:
+    async def test_workload_identity_env_used_for_http_personas(self, session) -> None:
         _, pod_spec = await _contribute_with_mode(
             session,
             "http",
             persona_source_http_base_url="http://volundr:8080",
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         for container in pod_spec.extra_containers:
-            token_envs = [e for e in container["env"] if e["name"] == "RAVN_VOLUNDR_TOKEN"]
-            assert len(token_envs) == 1
-            ref = token_envs[0]["valueFrom"]["secretKeyRef"]
-            assert ref["name"] == "volundr-ravn-token"
-            assert ref["key"] == "token"
+            env = {e["name"]: e for e in container["env"]}
+            assert "RAVN_VOLUNDR_TOKEN" not in env
+            assert env["NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"]["value"].endswith("/token")
 
-    async def test_no_token_env_without_secret_name(self, session) -> None:
-        """When no token secret name is given, no env var is injected."""
+    async def test_no_legacy_token_env_injected(self, session) -> None:
         _, pod_spec = await _contribute_with_mode(
             session,
             "http",
@@ -1521,7 +1516,6 @@ class TestPersonaSourceHttp:
             session,
             "http",
             persona_source_http_base_url=base_url,
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         config_yaml = _extract_mounted_config(pod_spec, "coordinator")
         assert "HttpPersonaAdapter" in config_yaml

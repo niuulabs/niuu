@@ -190,8 +190,8 @@ class _CaptureAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def test_pat_bearer_header_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Adapter sends Authorization: Bearer when RAVN_VOLUNDR_TOKEN env var is set."""
+def test_external_bearer_header_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adapter sends Authorization: Bearer when an external token env var is configured."""
     received: dict[str, str] = {}
 
     personas_dir = str(tmp_path / "personas")
@@ -202,12 +202,13 @@ def test_pat_bearer_header_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     app.add_middleware(_CaptureAuthMiddleware, store=received)
     app.include_router(create_personas_router(loader))
 
-    monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", "simple-bearer-token")
+    monkeypatch.setenv("EXTERNAL_PERSONA_TOKEN", "simple-bearer-token")
 
     with TestClient(app) as tc:
         transport = _SyncASGITransport(tc)
         adapter = HttpPersonaAdapter(
             base_url="http://testserver",
+            external_token_env="EXTERNAL_PERSONA_TOKEN",
             _transport=transport,
         )
         # 404 is fine — we only care that the auth header was sent.
@@ -216,8 +217,10 @@ def test_pat_bearer_header_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert received.get("authorization") == "Bearer simple-bearer-token"
 
 
-def test_pat_real_issuance_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """End-to-end: MemoryTokenIssuer issues a real JWT; adapter sends it as Bearer."""
+def test_external_real_token_issuance_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: MemoryTokenIssuer issues a JWT; adapter sends it as Bearer."""
     from niuu.adapters.memory_token_issuer import MemoryTokenIssuer
 
     received: dict[str, str] = {}
@@ -236,12 +239,13 @@ def test_pat_real_issuance_end_to_end(tmp_path: Path, monkeypatch: pytest.Monkey
     )
     raw_token = issued.raw_token
 
-    monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", raw_token)
+    monkeypatch.setenv("EXTERNAL_PERSONA_TOKEN", raw_token)
 
     with TestClient(app) as tc:
         transport = _SyncASGITransport(tc)
         adapter = HttpPersonaAdapter(
             base_url="http://testserver",
+            external_token_env="EXTERNAL_PERSONA_TOKEN",
             _transport=transport,
         )
         adapter.load("any-persona")
@@ -263,13 +267,13 @@ def test_no_auth_header_when_env_var_absent(
     app.add_middleware(_CaptureAuthMiddleware, store=received)
     app.include_router(create_personas_router(loader))
 
-    monkeypatch.delenv("RAVN_VOLUNDR_TOKEN", raising=False)
+    monkeypatch.delenv("EXTERNAL_PERSONA_TOKEN", raising=False)
 
     with TestClient(app) as tc:
         transport = _SyncASGITransport(tc)
         adapter = HttpPersonaAdapter(
             base_url="http://testserver",
-            token_env="RAVN_VOLUNDR_TOKEN",
+            external_token_env="EXTERNAL_PERSONA_TOKEN",
             _transport=transport,
         )
         adapter.load("some-persona")

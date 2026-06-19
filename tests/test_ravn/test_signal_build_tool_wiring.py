@@ -48,7 +48,7 @@ def test_build_tool_build_backend_is_inline_by_default_and_dynamic_when_configur
     configured = Settings(
         resident_evolution={
             "tool_build_adapter": "ravn.adapters.tool_build.ForgeSessionToolBuildBackend",
-            "tool_build_kwargs": {"base_url": "http://forge", "pat_env": "UNSET_PAT"},
+            "tool_build_kwargs": {"base_url": "http://forge"},
         }
     )
     backend = _build_tool_build_backend(configured)
@@ -60,7 +60,7 @@ def test_build_tool_build_backend_injects_configured_workflow_selector() -> None
     configured = Settings(
         resident_evolution={
             "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
-            "tool_build_kwargs": {"base_url": "http://ting", "pat_env": "UNSET_PAT"},
+            "tool_build_kwargs": {"base_url": "http://ting"},
             "tool_builder_workflow": {"tags": ["tool-builder"]},
         }
     )

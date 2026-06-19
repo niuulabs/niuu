@@ -1,14 +1,22 @@
-"""Minimal async JSON HTTP client seam for tool-build backends.
+"""Minimal async JSON HTTP client boundary for tool-build backends.
 
 A tiny protocol so the Forge/Ting backends are unit-testable with a fake
-client (no live services, no docker) while the real implementation wraps
-httpx with the same PAT bearer-token pattern ravn already uses to reach Ting.
+client while the real implementation authenticates with projected workload
+identity inside the cluster.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+import httpx
+
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
+from niuu.ports.http_auth import HttpAuthPort
 
 
 @dataclass(frozen=True)
@@ -18,7 +26,7 @@ class HttpResponse:
 
 
 class AsyncJsonHttpClient(Protocol):
-    """Bearer-authenticated JSON GET/POST used by the build backends."""
+    """Authenticated JSON GET/POST used by the build backends."""
 
     async def get(self, url: str) -> HttpResponse:
         raise NotImplementedError
@@ -27,30 +35,56 @@ class AsyncJsonHttpClient(Protocol):
         raise NotImplementedError
 
 
-def client_from_pat_env(pat_env: str) -> HttpxJsonClient:
-    """Build the real client, bearer-authenticated from an env-var-named PAT.
+def client_from_workload_identity(
+    *,
+    base_url: str,
+    external_token_env: str = "",
+    workload_token_file: str = "",
+    workload_exchange_url: str = "",
+    workload_audiences: list[str] | None = None,
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> HttpxJsonClient:
+    """Build the real client for dynamic tool-build adapters.
 
-    Backend constructors take plain YAML kwargs (dynamic-adapter rule), so
-    config names the env var and the token resolves here at construction
-    time — it is never stored in config.
+    In-cluster Ravn/Valkyrie calls use projected workload identity by default.
+    ``external_token_env`` is intentionally explicit for non-cluster callers
+    that still need to bring an already-issued bearer token.
     """
-    import os  # noqa: PLC0415
-
-    token = os.environ.get(pat_env, "") if pat_env else ""
-    return HttpxJsonClient(token=token)
+    if external_token_env:
+        return HttpxJsonClient(
+            auth=StaticBearerTokenAuthAdapter(token_env=external_token_env),
+            timeout_seconds=timeout_seconds,
+        )
+    return HttpxJsonClient(
+        auth=WorkloadIdentityBearerTokenAuthAdapter(
+            base_url=base_url,
+            token_file=workload_token_file,
+            exchange_url=workload_exchange_url,
+            audiences=workload_audiences,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        ),
+        timeout_seconds=timeout_seconds,
+    )
 
 
 class HttpxJsonClient:
-    """httpx-backed :class:`AsyncJsonHttpClient` with PAT bearer auth."""
+    """httpx-backed :class:`AsyncJsonHttpClient` with pluggable bearer auth."""
 
-    def __init__(self, *, token: str = "", timeout_seconds: float = 30.0) -> None:
-        self._token = token
+    def __init__(
+        self,
+        *,
+        auth: HttpAuthPort | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self._auth = auth
         self._timeout = timeout_seconds
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        if self._auth is not None:
+            headers.update(self._auth.headers())
         return headers
 
     async def get(self, url: str) -> HttpResponse:

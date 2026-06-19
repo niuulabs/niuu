@@ -1055,25 +1055,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             auth_type="api_key",
         ),
-        IntegrationDefinitionConfig(
-            slug="volundr",
-            name="Volundr API",
-            description="Volundr API connection — PAT for session-to-control-plane auth",
-            integration_type="code_forge",
-            icon="volundr",
-            credential_schema={
-                "required": ["token"],
-                "properties": {
-                    "token": {
-                        "label": "Personal Access Token",
-                        "type": "password",
-                        "description": "PAT for authenticating to the Volundr API",
-                    },
-                },
-            },
-            env_from_credentials={"VOLUNDR_API_TOKEN": "token"},
-            auth_type="pat",
-        ),
     ]
 
 

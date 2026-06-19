@@ -4029,12 +4029,12 @@ class Broker:
         """Build authentication headers for Volundr API calls.
 
         Priority:
-        1. VOLUNDR_API_TOKEN when explicitly injected for legacy/external use.
+        1. VOLUNDR_EXTERNAL_API_TOKEN when explicitly injected for external use.
         2. Short-lived workload JWT exchanged from projected service-account token.
         3. User JWT from WebSocket connection (fallback for dev/local).
         4. Empty (dev mode — no auth, Volundr backend must accept).
         """
-        service_token = os.environ.get("VOLUNDR_API_TOKEN", "")
+        service_token = os.environ.get("VOLUNDR_EXTERNAL_API_TOKEN", "")
         if service_token:
             return {"Authorization": f"Bearer {service_token}"}
 

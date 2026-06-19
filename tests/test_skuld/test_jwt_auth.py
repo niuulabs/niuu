@@ -165,12 +165,12 @@ class TestBrokerJwtIntegration:
     def test_build_auth_headers_with_jwt(self, test_broker):
         token = _make_jwt({"sub": "u1"})
         test_broker._user_jwt = token
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             headers = test_broker._build_auth_headers()
         assert headers == {"Authorization": f"Bearer {token}"}
 
     def test_build_auth_headers_no_token_returns_empty(self, test_broker, monkeypatch):
-        monkeypatch.delenv("VOLUNDR_API_TOKEN", raising=False)
+        monkeypatch.delenv("VOLUNDR_EXTERNAL_API_TOKEN", raising=False)
         test_broker._user_jwt = None
         headers = test_broker._build_auth_headers()
         assert headers == {}
@@ -180,7 +180,7 @@ class TestBrokerJwtIntegration:
         token = _make_jwt({"sub": "u1"})
         test_broker._user_jwt = token
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             client = await test_broker._get_http_client()
         assert client.headers.get("authorization") == f"Bearer {token}"
 
@@ -193,7 +193,7 @@ class TestBrokerJwtIntegration:
         token1 = _make_jwt({"sub": "u1"})
         token2 = _make_jwt({"sub": "u1", "refreshed": True})
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             test_broker._user_jwt = token1
             client1 = await test_broker._get_http_client()
 
@@ -217,7 +217,7 @@ class TestBrokerJwtIntegration:
         ws.headers = {"authorization": f"Bearer {token}"}
         ws.query_params = {}
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             test_broker._update_jwt_from_websocket(ws)
 
         mock_watcher.update_headers.assert_called_once_with({"Authorization": f"Bearer {token}"})
@@ -249,8 +249,8 @@ class TestBrokerJwtIntegration:
 
     @pytest.mark.asyncio
     async def test_get_http_client_fallback_when_no_jwt(self, test_broker, monkeypatch):
-        """When no JWT or PAT is set, client has no auth headers."""
-        monkeypatch.delenv("VOLUNDR_API_TOKEN", raising=False)
+        """When no JWT or external token is set, client has no auth headers."""
+        monkeypatch.delenv("VOLUNDR_EXTERNAL_API_TOKEN", raising=False)
         test_broker._user_jwt = None
         client = await test_broker._get_http_client()
         assert "authorization" not in {k.lower() for k in client.headers.keys()}

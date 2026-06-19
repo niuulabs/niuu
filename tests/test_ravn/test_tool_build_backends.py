@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import httpx
 import pytest
 
 from ravn.adapters.tool_build import (
@@ -12,6 +14,7 @@ from ravn.adapters.tool_build import (
     TingWorkflowToolBuildBackend,
 )
 from ravn.adapters.tool_build._contract import parse_tool_build_response, poll_until
+from ravn.adapters.tool_build.http import client_from_workload_identity
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
 
@@ -247,9 +250,10 @@ async def test_ting_workflow_backend_resolves_workflow_selector() -> None:
 
 def test_backends_construct_from_plain_yaml_kwargs() -> None:
     """The dynamic-adapter contract: dotted path + plain kwargs, no client."""
-    forge = ForgeSessionToolBuildBackend(base_url="http://forge", pat_env="UNSET_PROOF_PAT")
+    forge = ForgeSessionToolBuildBackend(base_url="http://forge")
     ting = TingWorkflowToolBuildBackend(
-        base_url="http://ting", workflow_id="wf-1", pat_env="UNSET_PROOF_PAT"
+        base_url="http://ting",
+        workflow_id="wf-1",
     )
     assert forge.name == "forge_session"
     assert ting.name == "ting_workflow"
@@ -332,14 +336,37 @@ async def test_ting_uses_inline_campaign_result() -> None:
     assert result.tool_code.startswith("def run")
 
 
-def test_client_from_pat_env_resolves_the_token(monkeypatch) -> None:
-    from ravn.adapters.tool_build.http import client_from_pat_env
+def test_client_from_workload_identity_exchanges_projected_token(tmp_path: Path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("projected-proof", encoding="utf-8")
 
-    monkeypatch.setenv("PROOF_PAT", "secret-123")
-    client = client_from_pat_env("PROOF_PAT")
-    assert client._headers()["Authorization"] == "Bearer secret-123"
-    # No env var name -> no Authorization header (anonymous client).
-    assert "Authorization" not in client_from_pat_env("")._headers()
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://forge.example/api/v1/tokens/workload/exchange"
+        assert json.loads(request.content) == {
+            "token": "projected-proof",
+            "audiences": ["forge"],
+        }
+        return httpx.Response(200, json={"token": "workload-jwt", "expires_in": 300})
+
+    client = client_from_workload_identity(
+        base_url="https://forge.example",
+        workload_token_file=str(token_file),
+        workload_audiences=["forge"],
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert client._headers()["Authorization"] == "Bearer workload-jwt"
+
+
+def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
+
+    client = client_from_workload_identity(
+        base_url="https://forge.example",
+        external_token_env="EXTERNAL_TOOL_BUILD_TOKEN",
+    )
+
+    assert client._headers()["Authorization"] == "Bearer external-123"
 
 
 async def test_ting_workflow_backend_raises_without_artifact() -> None:

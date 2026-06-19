@@ -1,8 +1,7 @@
 """Commission a learned-tool build inside a Volundr Forge session.
 
 ravn never imports volundr — it drives the session over the Forge REST surface
-(`/api/v1/forge/sessions`) with a PAT bearer token, the same boundary-respecting
-HTTP pattern ravn already uses to reach Ting.
+(`/api/v1/forge/sessions`) with workload-authenticated HTTP.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from ravn.adapters.tool_build._contract import (
     parse_tool_build_response,
     poll_until,
 )
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_pat_env
+from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,
@@ -36,14 +35,27 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
         *,
         base_url: str,
         client: AsyncJsonHttpClient | None = None,
-        pat_env: str = "",
+        external_token_env: str = "",
+        workload_token_file: str = "",
+        workload_exchange_url: str = "",
+        workload_audiences: list[str] | None = None,
         model: str = "",
         source: dict[str, Any] | None = None,
         max_poll_attempts: int = 60,
         poll_interval_seconds: float = 5.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self._client = client if client is not None else client_from_pat_env(pat_env)
+        self._client = (
+            client
+            if client is not None
+            else client_from_workload_identity(
+                base_url=base_url,
+                external_token_env=external_token_env,
+                workload_token_file=workload_token_file,
+                workload_exchange_url=workload_exchange_url,
+                workload_audiences=workload_audiences,
+            )
+        )
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._source = source

@@ -200,7 +200,7 @@ class TestSecretInjectionContributor:
         """Mimir auth refs can target an integration slug portably."""
         defn = _definition(
             slug="volundr",
-            env_from_credentials={"VOLUNDR_API_TOKEN": "token"},
+            env_from_credentials={"EXTERNAL_SERVICE_TOKEN": "token"},
         )
         registry = _registry([defn])
 
@@ -230,7 +230,7 @@ class TestSecretInjectionContributor:
 
         mappings = adapter.ensure_secret_provider_class.call_args[0][1]
         assert mappings[0].credential_name == "volundr-session-runtime-valhalla"
-        assert mappings[0].env_mappings == {"VOLUNDR_API_TOKEN": "token"}
+        assert mappings[0].env_mappings == {"EXTERNAL_SERVICE_TOKEN": "token"}
         assert mappings[0].file_mappings == {
             "/run/secrets/mimir/integration-volundr/token": "token",
         }

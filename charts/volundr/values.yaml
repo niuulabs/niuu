@@ -1699,8 +1699,8 @@ lifecycle: {}
 #
 #   http
 #     Ravn sidecars fetch personas at runtime via the volundr REST API.
-#     No ConfigMap volume is needed.  A Secret holding the PAT is mounted
-#     and the RAVN_VOLUNDR_TOKEN env var is injected into each sidecar.
+#     No ConfigMap volume is needed. Sidecars authenticate with their
+#     projected workload identity and the configured Envoy-facing Volundr URL.
 #
 #   filesystem (dev / single-node)
 #     Sidecars use only the bundled built-in personas shipped in the ravn image.
@@ -1715,8 +1715,3 @@ personaSource:
   mountPath: /etc/ravn/personas
   # -- Volundr base URL that sidecars call to fetch personas (http mode)
   httpBaseUrl: http://volundr:8080
-  # -- PAT value written into the ravn-token Secret (http mode, leave empty to skip)
-  ravnToken: ""
-  # -- Name of the existing Secret holding the PAT (http mode).
-  # Defaults to "<fullname>-ravn-token" if ravnToken is set above.
-  existingTokenSecret: ""

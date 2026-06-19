@@ -104,7 +104,6 @@ _PERSONA_SOURCE_HTTP = "http"
 _PERSONA_CM_VOLUME_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_NAME = "ravn-personas"
 _PERSONA_CM_DEFAULT_MOUNT_PATH = "/etc/ravn/personas"
-_PERSONA_TOKEN_ENV = "RAVN_VOLUNDR_TOKEN"
 _OPENBAO_INJECT_CONTAINERS_ANNOTATION = "vault.hashicorp.com/agent-inject-containers"
 _OPENBAO_SECRET_VOLUME_PATH = "/run/secrets"
 
@@ -718,7 +717,6 @@ class RavnFlockContributor(SessionContributor):
         persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
-        persona_source_token_secret_name: str = "",
         persona_source_http_base_url: str = "",
         workload_identity_volume_name: str = "niuu-workload-identity",
         workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
@@ -732,7 +730,6 @@ class RavnFlockContributor(SessionContributor):
         self._persona_source_mode = persona_source_mode
         self._persona_source_configmap_name = persona_source_configmap_name
         self._persona_source_mount_path = persona_source_mount_path
-        self._persona_source_token_secret_name = persona_source_token_secret_name
         self._persona_source_http_base_url = persona_source_http_base_url
         self._workload_identity_volume_name = workload_identity_volume_name
         self._workload_identity_mount_path = workload_identity_mount_path.rstrip("/")
@@ -807,7 +804,6 @@ class RavnFlockContributor(SessionContributor):
             persona_source_mode=self._persona_source_mode,
             persona_source_configmap_name=self._persona_source_configmap_name,
             persona_source_mount_path=self._persona_source_mount_path,
-            persona_source_token_secret_name=self._persona_source_token_secret_name,
             persona_source_http_base_url=self._persona_source_http_base_url,
             workflow=workflow_cfg,
         )
@@ -839,7 +835,6 @@ class RavnFlockContributor(SessionContributor):
         persona_source_mode: str = _PERSONA_SOURCE_FILESYSTEM,
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
-        persona_source_token_secret_name: str = "",
         persona_source_http_base_url: str = "",
         workflow: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
@@ -991,7 +986,6 @@ class RavnFlockContributor(SessionContributor):
         # Persona source volume (shared across all ravn sidecars)
         persona_source_volumes: list[dict] = []
         persona_source_volume_mounts: list[dict] = []
-        persona_source_envs: list[dict] = []
 
         if persona_source_mode == _PERSONA_SOURCE_MOUNTED_VOLUME:
             persona_source_volumes.append(
@@ -1005,18 +999,6 @@ class RavnFlockContributor(SessionContributor):
                     "name": _PERSONA_CM_VOLUME_NAME,
                     "mountPath": persona_source_mount_path,
                     "readOnly": True,
-                }
-            )
-        elif persona_source_mode == _PERSONA_SOURCE_HTTP and persona_source_token_secret_name:
-            persona_source_envs.append(
-                {
-                    "name": _PERSONA_TOKEN_ENV,
-                    "valueFrom": {
-                        "secretKeyRef": {
-                            "name": persona_source_token_secret_name,
-                            "key": "token",
-                        }
-                    },
                 }
             )
 
@@ -1094,8 +1076,6 @@ class RavnFlockContributor(SessionContributor):
                         "value": ",".join(sleipnir_publish_urls),
                     }
                 )
-
-            ravn_env.extend(persona_source_envs)
 
             volume_mounts: list[dict] = [
                 {

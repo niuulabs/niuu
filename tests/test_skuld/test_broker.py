@@ -2351,16 +2351,16 @@ class TestReportUsage:
         await client.aclose()
 
     @pytest.mark.asyncio
-    async def test_get_http_client_uses_pat_for_auth(self, tmp_path, monkeypatch):
-        """HTTP client uses VOLUNDR_API_TOKEN (PAT) for Bearer auth."""
-        monkeypatch.setenv("VOLUNDR_API_TOKEN", "test-pat-token")
+    async def test_get_http_client_uses_external_token_for_auth(self, tmp_path, monkeypatch):
+        """HTTP client uses explicit external bearer token auth."""
+        monkeypatch.setenv("VOLUNDR_EXTERNAL_API_TOKEN", "test-external-token")
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             volundr_api_url="http://volundr-internal.volundr.svc",
         )
         b = Broker(settings=settings)
         headers = b._build_auth_headers()
-        assert headers["Authorization"] == "Bearer test-pat-token"
+        assert headers["Authorization"] == "Bearer test-external-token"
 
 
 class TestSessionArtifacts:

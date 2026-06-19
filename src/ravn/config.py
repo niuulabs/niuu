@@ -951,8 +951,11 @@ class PlatformToolsConfig(BaseModel):
     timeout: float = Field(default=30.0)
     pat_token: str = Field(
         default="",
-        description="Personal Access Token for platform API authentication. "
-        "Falls back to RAVN_GATEWAY__PLATFORM__PAT_TOKEN env var.",
+        description=(
+            "Explicit external bearer token for platform API authentication. "
+            "In-cluster Ravn/Valkyrie callers should leave this empty and use "
+            "projected workload identity."
+        ),
     )
     workload_token_file: str = Field(
         default="/var/run/secrets/kubernetes.io/serviceaccount/token",
@@ -2562,7 +2565,8 @@ class ResidentEvolutionConfig(BaseModel):
         default_factory=dict,
         description=(
             "Constructor kwargs for the tool build adapter (base_url, "
-            "workflow_id, pat_env, model, poll intervals, ...)."
+            "workflow_id, external_token_env, workload token settings, model, "
+            "poll intervals, ...)."
         ),
     )
     tool_builder_workflow: WorkflowSelectorConfig = Field(
