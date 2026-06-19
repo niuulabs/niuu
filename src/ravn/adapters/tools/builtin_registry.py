@@ -80,6 +80,18 @@ def _build_skill_port(settings: Settings, workspace: Any) -> Any:
     )
 
 
+def _platform_kwargs(settings: Settings) -> dict[str, Any]:
+    platform = settings.gateway.platform
+    return {
+        "base_url": platform.base_url,
+        "timeout": platform.timeout,
+        "pat_token": platform.pat_token,
+        "workload_token_file": platform.workload_token_file,
+        "exchange_url": platform.workload_exchange_url,
+        "audiences": platform.workload_audiences,
+    }
+
+
 def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[str, Any]:
     """Construct kwargs for WebSearchTool, including the dynamic provider."""
     from ravn.cli.commands import _import_class, _inject_secrets  # noqa: PLC0415
@@ -321,51 +333,31 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.VolundrSessionTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "volundr_git": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.VolundrGitTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_saga": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingSagaTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_workflow": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     # =========================================================================
     # workflow — resident workflow catalog tools backed by capability_sources

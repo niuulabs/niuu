@@ -71,7 +71,7 @@ def _service(proof_key: rsa.RSAPrivateKey) -> WorkloadIdentityService:
         SimpleNamespace(
             enabled=True,
             issuer=EXCHANGE_ISSUER,
-            audiences=["volundr-api"],
+            audiences=["volundr-api", "forge", "ting", "mimir", "guild"],
             token_ttl_seconds=900,
             key_id="niuu-workload-test",
             signing_key_pem="",
@@ -131,6 +131,42 @@ async def test_workload_identity_exchange_mints_owner_scoped_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workload_identity_exchange_mints_requested_service_audiences() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        audiences=["ting", "mimir"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="mimir",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["aud"] == ["ting", "mimir"]
+    assert claims["resource_access"]["ting"]["roles"] == ["admin", "volundr:developer"]
+    assert claims["resource_access"]["mimir"]["roles"] == ["admin", "volundr:developer"]
+    assert claims["resource_access"]["volundr-api"]["roles"] == [
+        "admin",
+        "volundr:developer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_rejects_unconfigured_audience() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    with pytest.raises(WorkloadIdentityError, match="not allowed: unknown"):
+        await service.exchange(_workload_token(proof_key), audiences=["unknown"])
+
+
+@pytest.mark.asyncio
 async def test_workload_identity_exchange_rejects_unmapped_subject() -> None:
     proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     service = _service(proof_key)
@@ -153,7 +189,7 @@ def test_workload_exchange_route_does_not_require_user_principal() -> None:
 
     response = TestClient(app).post(
         "/api/v1/tokens/workload/exchange",
-        json={"token": _workload_token(proof_key)},
+        json={"token": _workload_token(proof_key), "audiences": ["ting", "mimir"]},
     )
 
     assert response.status_code == 201
@@ -258,11 +294,7 @@ def test_skuld_accepts_workload_jwt_at_gateway_and_sidecar() -> None:
     assert 'address: "yggdrasil.niuu.world"' in result.stdout
 
     documents = list(yaml.safe_load_all(result.stdout))
-    security_policy = next(
-        doc
-        for doc in documents
-        if doc and doc.get("kind") == "SecurityPolicy"
-    )
+    security_policy = next(doc for doc in documents if doc and doc.get("kind") == "SecurityPolicy")
     providers = security_policy["spec"]["jwt"]["providers"]
     assert [provider["name"] for provider in providers] == ["volundr-idp", "workload"]
 

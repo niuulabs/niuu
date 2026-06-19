@@ -35,6 +35,7 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         base_url: str,
         workload_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token",
         exchange_url: str = "",
+        audiences: list[str] | None = None,
         token_ttl_skew_seconds: int = 30,
         timeout_seconds: float = 30.0,
     ) -> None:
@@ -43,6 +44,7 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         self._exchange_url = exchange_url.rstrip("/") or (
             f"{self._base_url}/api/v1/tokens/workload/exchange"
         )
+        self._audiences = audiences or ["volundr-api", "forge", "ting", "mimir", "guild"]
         self._token_ttl_skew_seconds = token_ttl_skew_seconds
         self._timeout_seconds = timeout_seconds
         self._cached_token = ""
@@ -216,7 +218,10 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         if not proof:
             raise RuntimeError(f"workload token file is empty: {self._workload_token_file}")
         async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-            resp = await client.post(self._exchange_url, json={"token": proof})
+            resp = await client.post(
+                self._exchange_url,
+                json={"token": proof, "audiences": self._audiences},
+            )
         if resp.status_code not in (200, 201):
             raise RuntimeError(f"workload token exchange returned HTTP {resp.status_code}")
         body = resp.json()
@@ -328,19 +333,13 @@ def _status_from_session(
 ) -> WorkflowRunStatus:
     state = str(body.get("status") or body.get("state") or "")
     session_id = str(
-        body.get("sessionId")
-        or body.get("session_id")
-        or body.get("id")
-        or reference.session_id
+        body.get("sessionId") or body.get("session_id") or body.get("id") or reference.session_id
     )
     session_name = str(
         body.get("sessionName") or body.get("session_name") or body.get("name") or ""
     )
     cluster_name = str(
-        body.get("clusterName")
-        or body.get("cluster_name")
-        or body.get("instance_name")
-        or ""
+        body.get("clusterName") or body.get("cluster_name") or body.get("instance_name") or ""
     )
     terminal = state.casefold() in {"completed", "complete", "failed", "stopped", "cancelled"}
     return WorkflowRunStatus(
@@ -377,9 +376,7 @@ def _event_from_campaign(body: dict[str, Any]) -> WorkflowRunEvent:
 
 def _event_from_log_item(item: dict[str, Any]) -> WorkflowRunEvent:
     data = item.get("data")
-    timestamp = str(
-        item.get("timestamp") or item.get("createdAt") or item.get("created_at") or ""
-    )
+    timestamp = str(item.get("timestamp") or item.get("createdAt") or item.get("created_at") or "")
     return WorkflowRunEvent(
         event_type=str(item.get("event") or item.get("event_type") or ""),
         data=dict(data) if isinstance(data, dict) else {},

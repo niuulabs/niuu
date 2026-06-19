@@ -81,6 +81,14 @@ class WorkloadExchangeRequest(BaseModel):
     """Request model for exchanging a workload identity proof."""
 
     token: str = Field(min_length=1, description="Projected workload identity JWT.")
+    audience: str | None = Field(
+        default=None,
+        description="Optional single target service audience for the exchanged token.",
+    )
+    audiences: list[str] = Field(
+        default_factory=list,
+        description="Optional target service audiences for the exchanged token.",
+    )
 
 
 class WorkloadPrincipalResponse(BaseModel):
@@ -177,7 +185,10 @@ def create_pats_router(
         """Exchange a validated workload proof for a short-lived Volundr JWT."""
         service = workload_identity_service(request)
         try:
-            result = await service.exchange(body.token)
+            result = await service.exchange(
+                body.token,
+                audiences=_requested_workload_audiences(body),
+            )
         except WorkloadIdentityError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -196,6 +207,14 @@ def create_pats_router(
             workload_subject=result.workload_subject,
             workload_name=result.workload_name,
         )
+
+    def _requested_workload_audiences(body: WorkloadExchangeRequest) -> list[str] | None:
+        audiences = [str(item).strip() for item in body.audiences if str(item).strip()]
+        if body.audience and body.audience.strip():
+            audiences.append(body.audience.strip())
+        if not audiences:
+            return None
+        return list(dict.fromkeys(audiences))
 
     @router.post(
         "",

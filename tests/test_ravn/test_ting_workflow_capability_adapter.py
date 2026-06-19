@@ -32,6 +32,13 @@ class _FakeAsyncClient:
     async def post(self, url: str, **kwargs):  # noqa: ANN003
         self.calls.append(("POST", url, kwargs))
         if url.endswith("/api/v1/tokens/workload/exchange"):
+            assert kwargs["json"]["audiences"] == [
+                "volundr-api",
+                "forge",
+                "ting",
+                "mimir",
+                "guild",
+            ]
             return _FakeResponse(
                 201,
                 {
@@ -198,7 +205,10 @@ async def test_ting_workflow_adapter_exchanges_workload_token_and_discovers_work
     assert workflows[0].tags == ["incident", "k8s"]
     exchange_call, list_call = _FakeAsyncClient.calls
     assert exchange_call[0] == "POST"
-    assert exchange_call[2]["json"] == {"token": "projected-token"}
+    assert exchange_call[2]["json"] == {
+        "token": "projected-token",
+        "audiences": ["volundr-api", "forge", "ting", "mimir", "guild"],
+    }
     assert list_call[0] == "GET"
     assert list_call[2]["headers"]["Authorization"] == "Bearer exchanged-token"
 

@@ -555,9 +555,9 @@ class SessionService:
         failures are logged but do not prevent session deletion, since the
         primary goal is to clean up the session record.
 
-        Optional *cleanup_targets* lists additional resources to permanently
-        remove (e.g. workspace PVC, chronicles).  An empty/None list preserves
-        the current default behaviour (archive workspace, keep chronicles).
+        Session-scoped workspace storage is always removed. Optional
+        *cleanup_targets* lists additional resources to permanently remove
+        (e.g. chronicles).
         """
         session = await self._repository.get(session_id)
         if session is None:
@@ -565,7 +565,7 @@ class SessionService:
 
         await self._check_access(session, principal, "delete")
 
-        targets = set(cleanup_targets or [])
+        targets = {CleanupTarget.WORKSPACE_STORAGE, *(cleanup_targets or [])}
 
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)

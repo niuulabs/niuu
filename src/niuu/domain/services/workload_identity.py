@@ -98,7 +98,12 @@ class WorkloadIdentityService:
             ]
         }
 
-    async def exchange(self, token: str) -> WorkloadExchangeResult:
+    async def exchange(
+        self,
+        token: str,
+        *,
+        audiences: list[str] | None = None,
+    ) -> WorkloadExchangeResult:
         if not self.enabled:
             raise WorkloadIdentityError("Workload identity exchange is disabled")
         if not token.strip():
@@ -117,10 +122,23 @@ class WorkloadIdentityService:
                 last_error = exc
                 continue
             if self._matches(mapping, claims):
-                return self._issue(mapping, claims)
+                return self._issue(mapping, claims, audiences=self._resolve_audiences(audiences))
 
         detail = f": {last_error}" if last_error else ""
         raise WorkloadIdentityError(f"No workload identity mapping matched{detail}")
+
+    def _resolve_audiences(self, requested: list[str] | None) -> list[str]:
+        allowed = [str(aud) for aud in (getattr(self._config, "audiences", []) or ["volundr-api"])]
+        if not requested:
+            return allowed
+
+        normalized = [str(aud).strip() for aud in requested if str(aud).strip()]
+        unknown = sorted(set(normalized) - set(allowed))
+        if unknown:
+            raise WorkloadIdentityError(
+                "Requested workload audiences are not allowed: " + ", ".join(unknown)
+            )
+        return normalized or allowed
 
     def _matches(self, mapping: Any, claims: dict[str, Any]) -> bool:
         subject = str(getattr(mapping, "subject", "") or "").strip()
@@ -134,7 +152,13 @@ class WorkloadIdentityService:
                 return False
         return True
 
-    def _issue(self, mapping: Any, claims: dict[str, Any]) -> WorkloadExchangeResult:
+    def _issue(
+        self,
+        mapping: Any,
+        claims: dict[str, Any],
+        *,
+        audiences: list[str],
+    ) -> WorkloadExchangeResult:
         owner_id = str(getattr(mapping, "owner_id", "") or "").strip()
         if not owner_id:
             raise WorkloadIdentityError("Matched workload identity has no owner_id")
@@ -144,8 +168,10 @@ class WorkloadIdentityService:
         expires_at = now + int(getattr(self._config, "token_ttl_seconds", 900))
         workload_subject = str(claims.get("sub") or "")
         workload_name = str(getattr(mapping, "name", "") or workload_subject)
-        audiences = list(getattr(self._config, "audiences", []) or ["volundr-api"])
         email = str(getattr(mapping, "email", "") or "")
+        resource_access = {
+            audience: {"roles": roles} for audience in _resource_access_audiences(audiences)
+        }
         payload: dict[str, Any] = {
             "iss": getattr(self._config, "issuer", "") or "niuu-workload",
             "sub": owner_id,
@@ -162,11 +188,7 @@ class WorkloadIdentityService:
             "workload_sub": workload_subject,
             "workload_name": workload_name,
             "workload_issuer": str(claims.get("iss") or ""),
-            "resource_access": {
-                "volundr-api": {"roles": roles},
-                "volundr": {"roles": roles},
-                "ting": {"roles": roles},
-            },
+            "resource_access": resource_access,
         }
         metadata = dict(getattr(mapping, "metadata", {}) or {})
         for key, value in metadata.items():
@@ -213,3 +235,16 @@ class WorkloadIdentityService:
             .decode("utf-8")
             .strip()
         )
+
+
+def _resource_access_audiences(audiences: list[str]) -> list[str]:
+    """Return role buckets for each accepted service audience and stable aliases."""
+    values = {"volundr-api", "volundr"}
+    for audience in audiences:
+        audience = str(audience).strip()
+        if not audience:
+            continue
+        values.add(audience)
+        if audience.endswith("-api"):
+            values.add(audience.removesuffix("-api"))
+    return sorted(values)

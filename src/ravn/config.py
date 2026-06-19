@@ -954,6 +954,21 @@ class PlatformToolsConfig(BaseModel):
         description="Personal Access Token for platform API authentication. "
         "Falls back to RAVN_GATEWAY__PLATFORM__PAT_TOKEN env var.",
     )
+    workload_token_file: str = Field(
+        default="/var/run/secrets/kubernetes.io/serviceaccount/token",
+        description="Projected workload identity token file used when pat_token is not set.",
+    )
+    workload_exchange_url: str = Field(
+        default="",
+        description=(
+            "Optional workload token exchange URL. Defaults to "
+            "base_url /api/v1/tokens/workload/exchange."
+        ),
+    )
+    workload_audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
+        description="Target service audiences requested from workload token exchange.",
+    )
 
 
 class DiscordChannelConfig(BaseModel):
@@ -3048,9 +3063,7 @@ class WardenDiscoveryConfig(BaseModel):
         if not isinstance(raw_adapters, list):
             msg = "warden_discovery.adapters_json must be a JSON list"
             raise ValueError(msg)
-        self.adapters = [
-            WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
-        ]
+        self.adapters = [WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters]
         return self
 
 
