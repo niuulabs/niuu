@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from ravn.domain.models import TokenUsage, ToolCall, TurnResult
+from ravn.domain.resident_continuation import (
+    ContinuationDecisionKind,
+    ResidentBudgetLimits,
+    ResidentMemoryEntry,
+    ResidentPolicyDecision,
+    ResidentPolicyObservation,
+    ResidentTurnRecord,
+)
+from ravn.resident_continuation import (
+    ConfigurableResidentPolicy,
+    LocalResidentMemory,
+    MimirResidentMemory,
+    ResidentContinuationKernel,
+    ResidentRunBudget,
+)
+
+MANDATE = (
+    "Kanuck Valley Models is my small 3D printing company. "
+    "You are its resident Ravn. "
+    "Help it become easier to run, more creative, and more successful. "
+    "Ask before spending money or operating physical machines."
+)
+
+
+def _outcome(selected_next_action: str, *, rationale: str = "safe local work") -> str:
+    return f"""\
+---outcome---
+verdict: oriented
+orientation_summary: Oriented from mandate and discovered context.
+domain_hypotheses: [recurring domain concerns should be mapped from evidence]
+open_questions: []
+self_authored_work: [continue evidence-backed discovery]
+capability_gaps: []
+selected_next_action: {selected_next_action}
+rationale: {rationale}
+---end---
+"""
+
+
+class FakeBackendAgent:
+    """Executor-shaped fake proving the kernel does not depend on RavnAgent."""
+
+    def __init__(self, responses: list[TurnResult]) -> None:
+        self._responses = iter(responses)
+        self.prompts: list[str] = []
+        self.tools = [_NamedTool("mimir_write"), _NamedTool("glob_search")]
+        self.max_iterations = 99
+        self.llm_adapter_name = "fake-backend"
+        self.checkpoint_port = None
+        self.task_id = "test"
+        self._tools = {}
+        self._interrupt_reason = None
+        self.supports_steering = False
+        self.steering_mode = "none"
+        self.session = object()
+
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.prompts.append(user_input)
+        return next(self._responses)
+
+    def interrupt(self, reason: Any) -> None:
+        self._interrupt_reason = reason
+
+    async def steer(self, content: str) -> bool:
+        return False
+
+
+class _NamedTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class RecordingMemory:
+    def __init__(self, recall_entries: list[ResidentMemoryEntry] | None = None) -> None:
+        self.recall_entries = recall_entries or []
+        self.recall_calls: list[str] = []
+        self.turns: list[ResidentTurnRecord] = []
+        self.budgets: list[Any] = []
+        self.policy_observations: list[ResidentPolicyObservation] = []
+
+    async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
+        self.recall_calls.append(mandate)
+        return self.recall_entries[:limit]
+
+    async def write_turn(self, record: ResidentTurnRecord) -> str:
+        self.turns.append(record)
+        return f"turn-{record.turn_index}"
+
+    async def write_budget(self, snapshot: Any) -> str:
+        self.budgets.append(snapshot)
+        return "budget"
+
+    async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
+        self.policy_observations.append(observation)
+        return "policy"
+
+
+class RecordingPolicy:
+    def __init__(self, decision: ResidentPolicyDecision) -> None:
+        self.decision = decision
+        self.contexts: list[Any] = []
+
+    async def assess(self, action: Any, *, context: Any) -> ResidentPolicyDecision:
+        self.contexts.append(context)
+        return self.decision
+
+
+def _turn(text: str, *, tool_name: str = "mimir_write", tokens: int = 10) -> TurnResult:
+    return TurnResult(
+        response=text,
+        tool_calls=[ToolCall(id=f"tc-{tool_name}", name=tool_name, input={})],
+        tool_results=[],
+        usage=TokenUsage(input_tokens=tokens, output_tokens=tokens),
+    )
+
+
+@pytest.mark.asyncio
+async def test_continuation_kernel_is_backend_agnostic_and_continues_safe_action() -> None:
+    agent = FakeBackendAgent(
+        [
+            _turn(_outcome("Write a compact local domain map from discovered notes.")),
+            _turn(_outcome("Sleep until new context appears.")),
+        ]
+    )
+    memory = RecordingMemory()
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 2
+    assert agent.prompts[0] == MANDATE
+    assert "resident continuing its own selected safe next action" in agent.prompts[1]
+    assert run.decisions[0].kind == ContinuationDecisionKind.CONTINUE
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.STOP
+    assert "max turns reached" in run.final_decision.reason
+    assert [record.turn_index for record in memory.turns] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_unsafe_or_uncertain_action_asks_instead_of_executing() -> None:
+    agent = FakeBackendAgent(
+        [_turn(_outcome("Operate a physical machine to validate the next iteration."))]
+    )
+    memory = RecordingMemory()
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=4)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 1
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert "physical_operation" in run.final_decision.reason
+    assert len(agent.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_safe_action_with_negated_risk_in_rationale_can_continue() -> None:
+    agent = FakeBackendAgent(
+        [
+            _turn(
+                _outcome(
+                    "Build an initial operating binder in the workspace.",
+                    rationale="It costs nothing and does not operate machines.",
+                )
+            ),
+            _turn(_outcome("Sleep until new context appears.")),
+        ]
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=RecordingMemory(),
+        policy=ConfigurableResidentPolicy(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 2
+    assert run.decisions[0].kind == ContinuationDecisionKind.CONTINUE
+
+
+@pytest.mark.asyncio
+async def test_safe_action_with_negated_risk_in_title_can_continue() -> None:
+    agent = FakeBackendAgent(
+        [
+            _turn(_outcome("Create a no-spend, non-machine operating template.")),
+            _turn(_outcome("Sleep until new context appears.")),
+        ]
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=RecordingMemory(),
+        policy=ConfigurableResidentPolicy(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 2
+    assert run.decisions[0].kind == ContinuationDecisionKind.CONTINUE
+
+
+@pytest.mark.asyncio
+async def test_budget_exhaustion_stops_cleanly_after_turn() -> None:
+    agent = FakeBackendAgent([_turn(_outcome("Write a compact local note."))])
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=RecordingMemory(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 1
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.STOP
+    assert run.final_decision.reason == "max turns reached: 1"
+
+
+@pytest.mark.asyncio
+async def test_memory_is_written_and_recalled_before_decision() -> None:
+    memory = RecordingMemory(
+        [ResidentMemoryEntry(path="resident/continuation/turns/old.md", summary="prior map")]
+    )
+    policy = RecordingPolicy(
+        ResidentPolicyDecision(
+            allowed=True,
+            needs_approval=False,
+            reason="test policy allows",
+        )
+    )
+    agent = FakeBackendAgent(
+        [
+            _turn(_outcome("Write a compact local domain map.")),
+            _turn(_outcome("Sleep until a new signal arrives.")),
+        ]
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=policy,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    await kernel.run(MANDATE)
+
+    assert memory.turns
+    assert memory.budgets
+    assert memory.recall_calls == [MANDATE, MANDATE]
+    assert policy.contexts[0].recent_memory[0].summary == "prior map"
+
+
+@pytest.mark.asyncio
+async def test_operator_answer_becomes_persisted_policy_observation() -> None:
+    async def answer(question: str) -> str:
+        return "For this environment, ask every time before operating hardware."
+
+    agent = FakeBackendAgent([_turn(_outcome("Start a physical device for validation."))])
+    memory = RecordingMemory()
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=3)),
+        ask_operator=answer,
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert len(memory.policy_observations) == 1
+    assert memory.policy_observations[0].source == "operator_answer"
+    assert "operating hardware" in memory.policy_observations[0].observation
+
+
+@pytest.mark.asyncio
+async def test_local_memory_persists_turn_budget_and_policy_observation(tmp_path: Path) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    record = ResidentTurnRecord(
+        turn_index=1,
+        prompt="mandate",
+        response="response",
+        outcome_fields={"selected_next_action": "write note"},
+        tool_names=("mimir_write",),
+        usage=TokenUsage(input_tokens=1, output_tokens=2),
+    )
+
+    turn_ref = await memory.write_turn(record)
+    budget_ref = await memory.write_budget(
+        ResidentRunBudget(ResidentBudgetLimits(max_turns=1)).snapshot()
+    )
+    policy_ref = await memory.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="boundary:physical_operation",
+            observation="ask first",
+            source="operator_answer",
+        )
+    )
+
+    assert (tmp_path / turn_ref).exists()
+    assert (tmp_path / budget_ref).exists()
+    assert (tmp_path / policy_ref).exists()
+    recalled = await memory.recall(MANDATE)
+    assert any(entry.path == turn_ref for entry in recalled)
+
+
+class FakeMimir:
+    def __init__(self) -> None:
+        self.pages: dict[str, str] = {}
+
+    async def search(self, query: str) -> list[Any]:
+        class Meta:
+            def __init__(self, path: str) -> None:
+                self.path = path
+                self.summary = "summary"
+
+        class Page:
+            def __init__(self, path: str, content: str) -> None:
+                self.meta = Meta(path)
+                self.content = content
+
+        return [Page(path, content) for path, content in self.pages.items()]
+
+    async def upsert_page(
+        self,
+        path: str,
+        content: str,
+        mimir: str | None = None,
+        meta: Any | None = None,
+    ) -> None:
+        self.pages[path] = content
+
+
+@pytest.mark.asyncio
+async def test_mimir_memory_writes_and_reads_existing_mimir_pages() -> None:
+    mimir = FakeMimir()
+    memory = MimirResidentMemory(mimir)  # type: ignore[arg-type]
+    record = ResidentTurnRecord(
+        turn_index=1,
+        prompt="mandate",
+        response="response",
+        outcome_fields={"selected_next_action": "write note"},
+        tool_names=("mimir_write",),
+        usage=TokenUsage(input_tokens=1, output_tokens=2),
+    )
+
+    ref = await memory.write_turn(record)
+    recalled = await memory.recall(MANDATE)
+
+    assert ref in mimir.pages
+    assert recalled
+    assert recalled[0].path == ref
+
+
+def test_continuation_kernel_contains_no_domain_specific_playbook_terms() -> None:
+    source = Path("src/ravn/resident_continuation.py").read_text(encoding="utf-8").casefold()
+
+    for forbidden in ("kanuck", "inventory", "3d printing", "slicer", "stl", "catalog/product"):
+        assert forbidden not in source

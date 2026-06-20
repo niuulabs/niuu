@@ -88,6 +88,7 @@ class TestBuildAgentReflectionWiring:
         persona.name = "reviewer"
         persona.system_prompt_template = ""
         persona.iteration_budget = 0
+        persona.stop_on_outcome = True
         persona.llm = MagicMock()
         persona.llm.max_tokens = 0
         persona.permission_mode = "suggest"
@@ -96,6 +97,8 @@ class TestBuildAgentReflectionWiring:
 
         agent, _ = _build_agent(settings, persona_config=persona)
         assert agent._persona == "reviewer"
+        assert agent._persona_config is persona
+        assert agent._stop_on_outcome is True
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_persona_name_empty_when_no_persona_config(self, settings: Settings) -> None:

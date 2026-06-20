@@ -1,0 +1,527 @@
+"""Wakeful resident runtime V0.
+
+This layer coordinates multiple bounded resident expert passes.  It does not
+schedule time and it does not contain a domain playbook; it records why the
+resident woke, what changed, and why the runtime continued, asked, slept, or
+stopped.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ravn.domain.models import TokenUsage
+from ravn.domain.resident_continuation import ResidentBudgetLimits, ResidentBudgetSnapshot
+from ravn.domain.resident_expert import (
+    ExpertLoopDecisionKind,
+    ResidentDomainExpertMemoryPort,
+    ResidentDomainExpertRun,
+    ResidentDomainModel,
+    ResidentWorkstream,
+    ResidentWorkstreamStatus,
+)
+from ravn.domain.wakeful_resident import (
+    ResidentExpertLoopPort,
+    WakefulResidentCycleRecord,
+    WakefulResidentDecisionKind,
+    WakefulResidentMemoryPort,
+    WakefulResidentRun,
+)
+from ravn.ports.mimir import MimirPort
+from ravn.resident_continuation import ResidentRunBudget, _compact_line
+
+_DOMAIN_MODEL_REF = "resident/domain-expert/domain-model.md"
+_WAKE_PREFIX = "resident/wakeful"
+
+
+@dataclass(frozen=True)
+class WakefulResidentConfig:
+    """Bounds and idle behavior for one wakeful runtime invocation."""
+
+    max_wake_cycles: int = 3
+    max_wall_clock_seconds: float = 1800.0
+    max_tokens: int = 0
+    sleep_when_idle: bool = False
+
+
+class LocalWakefulResidentMemory(WakefulResidentMemoryPort):
+    """Filesystem-backed wake cycle memory."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root)
+
+    async def list_wake_records(
+        self,
+        mandate: str,
+        *,
+        limit: int = 5,
+    ) -> list[WakefulResidentCycleRecord]:
+        base = self._root / _WAKE_PREFIX / "cycles"
+        if not base.exists():
+            return []
+        paths = sorted(base.glob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+        records: list[WakefulResidentCycleRecord] = []
+        for path in paths:
+            parsed = _parse_wake_record(path.read_text(encoding="utf-8"), mandate=mandate)
+            if parsed is not None:
+                records.append(parsed)
+            if len(records) >= limit:
+                break
+        return records
+
+    async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str:
+        stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
+        rel = Path(_WAKE_PREFIX) / "cycles" / f"{stamp}-{record.cycle_number}.md"
+        path = self._root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_render_wake_record(record), encoding="utf-8")
+        return str(rel)
+
+
+class MimirWakefulResidentMemory(WakefulResidentMemoryPort):
+    """Mimir-backed wake cycle memory."""
+
+    def __init__(self, mimir: MimirPort) -> None:
+        self._mimir = mimir
+
+    async def list_wake_records(
+        self,
+        mandate: str,
+        *,
+        limit: int = 5,
+    ) -> list[WakefulResidentCycleRecord]:
+        pages = await self._mimir.list_pages(prefix=f"{_WAKE_PREFIX}/cycles")
+        records: list[WakefulResidentCycleRecord] = []
+        for meta in sorted(pages, key=lambda page: getattr(page, "path", ""), reverse=True):
+            try:
+                content = await self._mimir.read_page(meta.path)
+            except FileNotFoundError:
+                continue
+            parsed = _parse_wake_record(content, mandate=mandate)
+            if parsed is not None:
+                records.append(parsed)
+            if len(records) >= limit:
+                break
+        return records
+
+    async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str:
+        stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
+        path = f"{_WAKE_PREFIX}/cycles/{stamp}-{record.cycle_number}.md"
+        await self._mimir.upsert_page(path, _render_wake_record(record))
+        return path
+
+
+class WakefulResidentRuntime:
+    """Runs multiple bounded wake cycles from a mandate."""
+
+    def __init__(
+        self,
+        *,
+        expert_loop: ResidentExpertLoopPort,
+        expert_memory: ResidentDomainExpertMemoryPort,
+        wake_memory: WakefulResidentMemoryPort,
+        config: WakefulResidentConfig | None = None,
+    ) -> None:
+        self._expert_loop = expert_loop
+        self._expert_memory = expert_memory
+        self._wake_memory = wake_memory
+        self._config = config or WakefulResidentConfig()
+
+    async def run(self, mandate: str) -> WakefulResidentRun:
+        budget = ResidentRunBudget(
+            ResidentBudgetLimits(
+                max_turns=self._config.max_wake_cycles,
+                max_wall_clock_seconds=self._config.max_wall_clock_seconds,
+                max_tokens=self._config.max_tokens,
+            )
+        )
+        cycles: list[WakefulResidentCycleRecord] = []
+        final_decision = WakefulResidentDecisionKind.STOP
+        final_reason = "no wake cycles ran"
+
+        for cycle_number in range(1, self._config.max_wake_cycles + 1):
+            budget_decision = budget.can_continue()
+            if not budget_decision.allowed:
+                final_decision = WakefulResidentDecisionKind.STOP
+                final_reason = budget_decision.reason
+                break
+
+            prior_model = await self._expert_memory.read_domain_model(mandate)
+            prior_ref = _DOMAIN_MODEL_REF if prior_model is not None else ""
+            prior_workstreams = await _list_workstreams(self._expert_memory, prior_model)
+            prior_wake_records = await self._wake_memory.list_wake_records(mandate, limit=5)
+            attention_reason = derive_attention_reason(
+                mandate=mandate,
+                domain_model=prior_model,
+                workstreams=tuple(prior_workstreams),
+                recent_wake_records=tuple(prior_wake_records),
+                budget=budget.snapshot(),
+            )
+
+            operator_workstream = _operator_gated_workstream(prior_workstreams)
+            if operator_workstream is not None:
+                record = _build_operator_needed_record(
+                    cycle_number=cycle_number,
+                    mandate=mandate,
+                    prior_ref=prior_ref,
+                    attention_reason=attention_reason,
+                    workstream=operator_workstream,
+                    budget=budget.record_usage(TokenUsage(input_tokens=0, output_tokens=0)),
+                )
+                await self._wake_memory.write_wake_record(record)
+                cycles.append(record)
+                final_decision = record.decision
+                final_reason = record.decision_reason
+                break
+
+            expert_run = await self._expert_loop.run(mandate)
+            snapshot = budget.record_usage(expert_run.budget.usage)
+            decision, reason = _runtime_decision_after_expert_run(
+                expert_run,
+                snapshot=snapshot,
+                budget=budget,
+                config=self._config,
+            )
+            record = _build_wake_record(
+                cycle_number=cycle_number,
+                mandate=mandate,
+                prior_ref=prior_ref,
+                attention_reason=attention_reason,
+                prior_model=prior_model,
+                prior_workstreams=tuple(prior_workstreams),
+                expert_run=expert_run,
+                decision=decision,
+                decision_reason=reason,
+                budget=snapshot,
+            )
+            await self._wake_memory.write_wake_record(record)
+            cycles.append(record)
+            final_decision = decision
+            final_reason = reason
+
+            if decision != WakefulResidentDecisionKind.CONTINUE:
+                break
+
+        return WakefulResidentRun(
+            mandate=mandate,
+            cycles=tuple(cycles),
+            final_decision=final_decision,
+            final_reason=final_reason,
+            budget=budget.snapshot(),
+        )
+
+
+def derive_attention_reason(
+    *,
+    mandate: str,
+    domain_model: ResidentDomainModel | None,
+    workstreams: tuple[ResidentWorkstream, ...],
+    recent_wake_records: tuple[WakefulResidentCycleRecord, ...] = (),
+    budget: ResidentBudgetSnapshot | None = None,
+) -> str:
+    """Derive why a resident wake cycle deserves attention from state."""
+
+    if domain_model is None:
+        return "no domain model exists; orient from the resident mandate"
+
+    operator_needed = _operator_gated_workstream(workstreams)
+    if operator_needed is not None:
+        return f"operator input is needed for workstream: {operator_needed.title}"
+
+    actionable = _actionable_workstreams(workstreams)
+    if actionable:
+        return f"actionable resident workstream exists: {actionable[0].title}"
+
+    if domain_model.open_questions:
+        return f"open domain question needs attention: {domain_model.open_questions[0]}"
+    if domain_model.capability_gaps:
+        return f"capability gap may deserve work: {domain_model.capability_gaps[0]}"
+    if domain_model.opportunities:
+        return f"domain opportunity may deserve work: {domain_model.opportunities[0]}"
+    if domain_model.hypotheses:
+        return f"domain hypothesis may deserve work: {domain_model.hypotheses[0]}"
+    if recent_wake_records:
+        return f"recent wake cycle ended with {recent_wake_records[0].decision.value}"
+    if budget is not None:
+        return f"resident budget remains after {budget.turns_used} wake cycles"
+    if mandate.strip():
+        return "resident mandate remains active"
+    return "resident state is empty"
+
+
+def _runtime_decision_after_expert_run(
+    expert_run: ResidentDomainExpertRun,
+    *,
+    snapshot: ResidentBudgetSnapshot,
+    budget: ResidentRunBudget,
+    config: WakefulResidentConfig,
+) -> tuple[WakefulResidentDecisionKind, str]:
+    final = expert_run.final_decision
+    if final is not None and final.kind == ExpertLoopDecisionKind.ASK_OPERATOR:
+        return WakefulResidentDecisionKind.ASK_OPERATOR, final.reason
+
+    next_budget = budget.can_continue()
+    if not next_budget.allowed:
+        return WakefulResidentDecisionKind.STOP, next_budget.reason
+
+    if _expert_run_is_idle(expert_run) and config.sleep_when_idle:
+        return WakefulResidentDecisionKind.SLEEP, "no useful resident work selected this cycle"
+
+    return (
+        WakefulResidentDecisionKind.CONTINUE,
+        f"cycle {snapshot.turns_used} completed and wake budget remains",
+    )
+
+
+def _expert_run_is_idle(expert_run: ResidentDomainExpertRun) -> bool:
+    final = expert_run.final_decision
+    no_execution = not expert_run.execution_results
+    no_artifacts = not expert_run.artifacts
+    slept = final is not None and final.kind == ExpertLoopDecisionKind.SLEEP
+    return no_execution and no_artifacts and slept
+
+
+async def _list_workstreams(
+    expert_memory: ResidentDomainExpertMemoryPort,
+    model: ResidentDomainModel | None,
+) -> list[ResidentWorkstream]:
+    if model is None:
+        return []
+    return await expert_memory.list_workstreams(_DOMAIN_MODEL_REF)
+
+
+def _operator_gated_workstream(
+    workstreams: list[ResidentWorkstream] | tuple[ResidentWorkstream, ...],
+) -> ResidentWorkstream | None:
+    for workstream in workstreams:
+        if workstream.status == ResidentWorkstreamStatus.NEEDS_OPERATOR.value:
+            return workstream
+    return None
+
+
+def _actionable_workstreams(
+    workstreams: tuple[ResidentWorkstream, ...],
+) -> tuple[ResidentWorkstream, ...]:
+    statuses = {
+        ResidentWorkstreamStatus.PROPOSED.value,
+        ResidentWorkstreamStatus.ACTIVE.value,
+        ResidentWorkstreamStatus.PAUSED.value,
+    }
+    return tuple(workstream for workstream in workstreams if workstream.status in statuses)
+
+
+def _build_operator_needed_record(
+    *,
+    cycle_number: int,
+    mandate: str,
+    prior_ref: str,
+    attention_reason: str,
+    workstream: ResidentWorkstream,
+    budget: ResidentBudgetSnapshot,
+) -> WakefulResidentCycleRecord:
+    return WakefulResidentCycleRecord(
+        cycle_number=cycle_number,
+        mandate=mandate,
+        prior_domain_model_ref=prior_ref,
+        attention_reason=attention_reason,
+        selected_action=workstream.title,
+        work_created_or_advanced=(f"{workstream.id}: {workstream.status}",),
+        artifact_refs=(),
+        finding_summaries=(),
+        decision=WakefulResidentDecisionKind.ASK_OPERATOR,
+        decision_reason=f"operator input required for workstream: {workstream.title}",
+        budget=budget,
+    )
+
+
+def _build_wake_record(
+    *,
+    cycle_number: int,
+    mandate: str,
+    prior_ref: str,
+    attention_reason: str,
+    prior_model: ResidentDomainModel | None,
+    prior_workstreams: tuple[ResidentWorkstream, ...],
+    expert_run: ResidentDomainExpertRun,
+    decision: WakefulResidentDecisionKind,
+    decision_reason: str,
+    budget: ResidentBudgetSnapshot,
+) -> WakefulResidentCycleRecord:
+    changed_work = _changed_workstreams(prior_workstreams, expert_run.workstreams)
+    new_artifacts = _new_artifact_refs(prior_model, expert_run)
+    findings = _finding_summaries(expert_run)
+    selected_action = ""
+    if expert_run.final_decision is not None and expert_run.final_decision.workstream is not None:
+        selected_action = expert_run.final_decision.workstream.title
+    elif changed_work:
+        selected_action = changed_work[0]
+
+    return WakefulResidentCycleRecord(
+        cycle_number=cycle_number,
+        mandate=mandate,
+        prior_domain_model_ref=prior_ref,
+        attention_reason=attention_reason,
+        selected_action=selected_action or "none",
+        work_created_or_advanced=changed_work,
+        artifact_refs=new_artifacts,
+        finding_summaries=findings,
+        decision=decision,
+        decision_reason=decision_reason,
+        budget=budget,
+    )
+
+
+def _changed_workstreams(
+    prior: tuple[ResidentWorkstream, ...],
+    current: tuple[ResidentWorkstream, ...],
+) -> tuple[str, ...]:
+    prior_status = {workstream.id: workstream.status for workstream in prior}
+    changed: list[str] = []
+    for workstream in current:
+        previous = prior_status.get(workstream.id)
+        if previous is None:
+            changed.append(f"{workstream.id}: created [{workstream.status}]")
+        elif previous != workstream.status:
+            changed.append(f"{workstream.id}: {previous} -> {workstream.status}")
+    return tuple(changed)
+
+
+def _new_artifact_refs(
+    prior_model: ResidentDomainModel | None,
+    expert_run: ResidentDomainExpertRun,
+) -> tuple[str, ...]:
+    prior_paths = {artifact.path for artifact in prior_model.artifacts} if prior_model else set()
+    return tuple(
+        artifact.path
+        for artifact in expert_run.artifacts
+        if artifact.path and artifact.path not in prior_paths
+    )
+
+
+def _finding_summaries(expert_run: ResidentDomainExpertRun) -> tuple[str, ...]:
+    findings: list[str] = []
+    for result in expert_run.execution_results:
+        if result.summary:
+            findings.append(_compact_line(result.summary, limit=220))
+    if not findings:
+        findings.extend(expert_run.domain_model.recent_outcomes[-3:])
+    return tuple(findings[:5])
+
+
+def _render_wake_record(record: WakefulResidentCycleRecord) -> str:
+    return (
+        f"# Wake Cycle {record.cycle_number}\n\n"
+        f"- cycle_number: {record.cycle_number}\n"
+        f"- created_at: {record.created_at.isoformat()}\n"
+        f"- decision: {record.decision.value}\n"
+        f"- decision_reason: {record.decision_reason}\n"
+        f"- prior_domain_model_ref: {record.prior_domain_model_ref}\n"
+        f"- selected_action: {record.selected_action}\n"
+        f"- budget_turns_used: {record.budget.turns_used}\n"
+        f"- budget_input_tokens: {record.budget.usage.input_tokens}\n"
+        f"- budget_output_tokens: {record.budget.usage.output_tokens}\n"
+        f"- budget_total_tokens: {record.budget.total_tokens}\n\n"
+        "## Mandate\n\n"
+        f"{record.mandate}\n\n"
+        "## Attention Reason\n\n"
+        f"{record.attention_reason}\n\n"
+        f"## Work Created Or Advanced\n\n{_render_list(record.work_created_or_advanced)}\n\n"
+        f"## Artifact References\n\n{_render_list(record.artifact_refs)}\n\n"
+        f"## Findings\n\n{_render_list(record.finding_summaries)}\n"
+    )
+
+
+def _parse_wake_record(content: str, *, mandate: str) -> WakefulResidentCycleRecord | None:
+    metadata = _metadata(content)
+    cycle = _int_value(metadata.get("cycle_number"))
+    if cycle <= 0:
+        return None
+    decision = _decision_value(metadata.get("decision"))
+    usage = TokenUsage(
+        input_tokens=_int_value(metadata.get("budget_input_tokens")),
+        output_tokens=_int_value(metadata.get("budget_output_tokens")),
+    )
+    return WakefulResidentCycleRecord(
+        cycle_number=cycle,
+        mandate=_section(content, "Mandate") or mandate,
+        prior_domain_model_ref=metadata.get("prior_domain_model_ref", ""),
+        attention_reason=_section(content, "Attention Reason"),
+        selected_action=metadata.get("selected_action", ""),
+        work_created_or_advanced=tuple(_section_items(content, "Work Created Or Advanced")),
+        artifact_refs=tuple(_section_items(content, "Artifact References")),
+        finding_summaries=tuple(_section_items(content, "Findings")),
+        decision=decision,
+        decision_reason=metadata.get("decision_reason", ""),
+        budget=ResidentBudgetSnapshot(
+            turns_used=_int_value(metadata.get("budget_turns_used")),
+            usage=usage,
+        ),
+    )
+
+
+def _decision_value(value: str | None) -> WakefulResidentDecisionKind:
+    try:
+        return WakefulResidentDecisionKind(str(value or "stop"))
+    except ValueError:
+        return WakefulResidentDecisionKind.STOP
+
+
+def _metadata(content: str) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for line in content.splitlines():
+        if not line.startswith("- ") or ":" not in line:
+            continue
+        key, value = line[2:].split(":", 1)
+        data[key.strip()] = value.strip()
+    return data
+
+
+def _section(content: str, name: str) -> str:
+    lines = _section_lines(content, name)
+    return "\n".join(line for line in lines if not line.startswith("- ")).strip()
+
+
+def _section_items(content: str, name: str) -> list[str]:
+    items: list[str] = []
+    for line in _section_lines(content, name):
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            value = stripped[2:].strip()
+            if value and value != "none":
+                items.append(value)
+    return items
+
+
+def _section_lines(content: str, name: str) -> list[str]:
+    wanted = f"## {name}".casefold()
+    lines = content.splitlines()
+    start = -1
+    for idx, line in enumerate(lines):
+        if line.strip().casefold() == wanted:
+            start = idx + 1
+            break
+    if start < 0:
+        return []
+    collected: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        if line.strip():
+            collected.append(line)
+    return collected
+
+
+def _render_list(items: Any) -> str:
+    values = [str(item).strip() for item in items if str(item).strip()]
+    if not values:
+        return "- none"
+    return "\n".join(f"- {item}" for item in values)
+
+
+def _int_value(value: str | None) -> int:
+    try:
+        return int(str(value or "0"))
+    except ValueError:
+        return 0

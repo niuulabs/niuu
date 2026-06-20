@@ -1795,6 +1795,8 @@ def _build_agent(
         sleipnir_publisher=sleipnir_publisher,
         reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
+        persona_config=persona_config,
+        stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
     )
 
     return agent, channel

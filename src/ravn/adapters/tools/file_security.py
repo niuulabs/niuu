@@ -49,7 +49,8 @@ def resolve_safe(path: str | Path, workspace: Path) -> Path:
     """
     workspace = workspace.resolve()
     raw = Path(path)
-    resolved = raw.resolve()
+    target = raw if raw.is_absolute() else workspace / raw
+    resolved = target.resolve()
 
     # Check system prefixes on both the original (pre-resolve) and resolved
     # paths so that macOS symlinks (/etc → /private/etc) are caught correctly.
