@@ -13,7 +13,9 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.resident_portfolio import (
+    ResidentDelegationRecord,
     ResidentDelegationStatus,
+    ResidentExecutionResult,
     ResidentObjective,
     ResidentObjectiveKind,
     ResidentObjectiveStatus,
@@ -32,6 +34,7 @@ AUTONOMY_MANDATE = (
     "They should learn, plan, create work, use tools, manage execution, remember "
     "outcomes, and improve without being babysat."
 )
+_LOCAL_BACKENDS = frozenset({"local-simulated", "local-subprocess"})
 
 
 def _parse_args() -> argparse.Namespace:
@@ -151,6 +154,48 @@ def _workflow_source_auth_mode(source_kwargs: dict[str, Any]) -> str:
     return f"workload_token_file:{source_kwargs.get('workload_token_file', 'default')}"
 
 
+def _real_delegation_records(
+    delegations: list[ResidentDelegationRecord],
+) -> list[ResidentDelegationRecord]:
+    return [
+        delegation
+        for delegation in delegations
+        if delegation.backend_name not in _LOCAL_BACKENDS and delegation.backend_session_id
+    ]
+
+
+def _observed_real_results(
+    real_delegations: list[ResidentDelegationRecord],
+    observed_results: list[ResidentExecutionResult],
+) -> list[ResidentExecutionResult]:
+    real_session_ids = {delegation.backend_session_id for delegation in real_delegations}
+    return [result for result in observed_results if result.session_id in real_session_ids]
+
+
+def _successful_real_results(
+    real_delegations: list[ResidentDelegationRecord],
+    observed_results: list[ResidentExecutionResult],
+) -> list[ResidentExecutionResult]:
+    return [
+        result
+        for result in _observed_real_results(real_delegations, observed_results)
+        if result.status != ResidentDelegationStatus.FAILED.value
+        and (result.output_refs or result.findings)
+    ]
+
+
+def _sample_delegation_result_pair(
+    delegations: list[ResidentDelegationRecord],
+    observed_results: list[ResidentExecutionResult],
+) -> tuple[ResidentDelegationRecord, ResidentExecutionResult] | None:
+    result_by_session = {result.session_id: result for result in observed_results}
+    for delegation in delegations:
+        result = result_by_session.get(delegation.backend_session_id)
+        if result is not None:
+            return delegation, result
+    return None
+
+
 async def _main() -> None:
     args = _parse_args()
     if args.config:
@@ -201,7 +246,12 @@ async def _main() -> None:
     persisted_refs = list(report.persisted_refs)
     attempts = max(1, int(args.poll_attempts))
     for attempt in range(1, attempts):
-        if observed_results:
+        current_delegations = created_delegations or await backend.list_delegations(mandate)
+        if args.require_real_session:
+            real_delegations = _real_delegation_records(list(current_delegations))
+            if _successful_real_results(real_delegations, observed_results):
+                break
+        elif observed_results:
             break
         await asyncio.sleep(max(0.0, float(args.poll_interval_seconds)))
         report = await runtime.run(mandate)
@@ -241,26 +291,31 @@ async def _main() -> None:
         )
     for question in operator_questions:
         print(f"[proof] operator_question={question}")
-    if delegation_evidence and observed_results:
+    if sample := _sample_delegation_result_pair(delegation_evidence, observed_results):
+        sample_delegation, sample_result = sample
         print()
-        print(render_delegation_result(delegation_evidence[0], observed_results[0]))
+        print(render_delegation_result(sample_delegation, sample_result))
 
-    if not seeded:
-        return
     if len(delegation_evidence) < 1:
         raise SystemExit("[proof] expected at least one persisted delegation")
-    local_backends = {"local-simulated", "local-subprocess"}
-    if not args.allow_local_backend and any(
-        delegation.backend_name in local_backends for delegation in delegation_evidence
+    real_delegations = _real_delegation_records(delegation_evidence)
+    launched_delegations = created_delegations if created_delegations else delegation_evidence
+    if seeded and not args.allow_local_backend and any(
+        delegation.backend_name in _LOCAL_BACKENDS for delegation in launched_delegations
     ):
         raise SystemExit("[proof] local delegation backends do not count as real proof")
-    if args.require_real_session and not any(
-        delegation.backend_name not in local_backends and delegation.backend_session_id
-        for delegation in delegation_evidence
-    ):
+    if args.require_real_session and not real_delegations:
         raise SystemExit("[proof] expected at least one real delegated worker session")
     if not observed_results:
         raise SystemExit("[proof] expected observed delegated results")
+    if args.require_real_session and not _successful_real_results(
+        real_delegations,
+        observed_results,
+    ):
+        raise SystemExit(
+            "[proof] expected non-failed observed result with evidence from a real "
+            "delegated worker session"
+        )
     if not delegations:
         raise SystemExit("[proof] expected persisted delegation records")
     if not any(ref.startswith("resident/delegations/") for ref in persisted_refs):

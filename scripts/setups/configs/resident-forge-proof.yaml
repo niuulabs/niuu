@@ -1,6 +1,6 @@
 # ─── resident-forge-proof ───────────────────────────────────────────────────
 #
-# Resident delegation profile for real Forge-backed proof runs.
+# Resident delegation profile for real local Forge-backed proof runs.
 #
 # This profile keeps resident execution on the existing hexagonal route:
 #   ResidentExecutionPort
@@ -9,6 +9,8 @@
 #     -> Volundr/Forge session
 #
 # It does not use the local simulated/subprocess delegation backends.
+# It expects `./start-dev` to be running on http://127.0.0.1:8080 with
+# `auth.allow_anonymous_dev: true`.
 #
 # Launch preflight:
 #   uv run python scripts/prove_resident_delegation.py \
@@ -46,13 +48,13 @@ resident_delegation_execution:
   kwargs:
     workflow_source_adapter: ravn.adapters.capabilities.ting_workflows.TingWorkflowCapabilityAdapter
     workflow_source_kwargs:
-      base_url: "https://yggdrasil.niuu.world"
-      # Put a real PAT/workload token in this file for local proof runs.
-      # In-cluster runs can omit this and use workload_token_file exchange instead.
-      bearer_token_file: "~/.niuu/credentials/user/dev-user/volundr-token.txt"
+      base_url: "http://127.0.0.1:8080"
+      allow_anonymous: true
       timeout_seconds: 30.0
-    workflow_id: ""
-    connection_id: ""
+    # Research Campaign. Pinning avoids accidentally selecting a tool-builder
+    # workflow for a generic resident proof objective.
+    workflow_id: "1bfc01b1-4d01-5d20-86e1-2956dff11464"
+    connection_id: "local"
     repo: ""
     branch: ""
     model: "gpt-5.5"

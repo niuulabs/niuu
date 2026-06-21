@@ -244,6 +244,22 @@ async def test_workflow_adapter_launches_real_capability_port() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workflow_adapter_keeps_session_name_within_ting_limit() -> None:
+    workflows = RecordingWorkflowPort()
+    adapter = WorkflowResidentExecutionAdapter(workflows=workflows)
+    objective = _objective(
+        "follow-up-delegated-result-review-workflow-output-for-session-66c93f37-7237",
+        "Review delegated workflow output",
+    )
+
+    await adapter.launch(build_worker_brief(MANDATE, objective))
+
+    assert workflows.launches
+    assert workflows.launches[0].session_name.startswith("resident-")
+    assert len(workflows.launches[0].session_name) <= 63
+
+
+@pytest.mark.asyncio
 async def test_local_subprocess_executor_is_not_the_simulator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

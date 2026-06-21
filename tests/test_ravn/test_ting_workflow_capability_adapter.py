@@ -186,6 +186,54 @@ class _FakeAsyncClient:
                     "code_endpoint": f"file://{self.local_workspace}",
                 },
             )
+        if method == "GET" and url.endswith("/api/v1/ting/sessions/conversation-session"):
+            return _FakeResponse(404, {})
+        if method == "GET" and url.endswith("/api/v1/forge/sessions/conversation-session"):
+            return _FakeResponse(
+                200,
+                {
+                    "id": "conversation-session",
+                    "status": "stopped",
+                    "name": "conversation-proof",
+                    "code_endpoint": "",
+                },
+            )
+        if method == "GET" and url.endswith(
+            "/api/v1/forge/sessions/conversation-session/conversation"
+        ):
+            return _FakeResponse(
+                200,
+                {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "content": "Worker brief",
+                            "created_at": "2026-06-21T14:00:00Z",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Worker produced a useful outcome.",
+                            "created_at": "2026-06-21T14:01:00Z",
+                        },
+                    ]
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/ting/sessions/starting-session"):
+            return _FakeResponse(404, {})
+        if method == "GET" and url.endswith("/api/v1/forge/sessions/starting-session"):
+            return _FakeResponse(
+                200,
+                {
+                    "id": "starting-session",
+                    "status": "running",
+                    "name": "starting-proof",
+                    "code_endpoint": "",
+                },
+            )
+        if method == "GET" and url.endswith(
+            "/api/v1/forge/sessions/starting-session/conversation"
+        ):
+            return _FakeResponse(503, {"detail": "broker not ready"})
         return _FakeResponse(
             200,
             [
@@ -424,3 +472,57 @@ async def test_ting_workflow_adapter_reads_local_session_artifacts_when_campaign
     assert artifacts[0].path == "research/campaigns/local-proof/plan.md"
     assert artifacts[0].publish_state == "local"
     assert content.content == "Local plan artifact"
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_falls_back_to_forge_conversation_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    token_file = tmp_path / "token.jwt"
+    token_file.write_text("projected-token", encoding="utf-8")
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.local_workspace = ""
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        workload_token_file=str(token_file),
+    )
+
+    reference = WorkflowRunReference(session_id="conversation-session")
+    artifacts = await adapter.list_workflow_artifacts(reference)
+    content = await adapter.read_workflow_artifact(reference, path=artifacts[0].path)
+
+    assert artifacts[0].path == "forge/sessions/conversation-session/conversation.md"
+    assert artifacts[0].publish_state == "forge-session"
+    assert "Worker produced a useful outcome." in content.content
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_treats_transient_conversation_503_as_no_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    token_file = tmp_path / "token.jwt"
+    token_file.write_text("projected-token", encoding="utf-8")
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.local_workspace = ""
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        workload_token_file=str(token_file),
+    )
+
+    artifacts = await adapter.list_workflow_artifacts(
+        WorkflowRunReference(session_id="starting-session")
+    )
+
+    assert artifacts == []

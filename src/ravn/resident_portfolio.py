@@ -1487,7 +1487,7 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             WorkflowLaunchRequest(
                 workflow_id=workflow_id,
                 prompt=render_worker_brief(brief),
-                session_name=_compact_line(f"resident-{brief.objective_id}", limit=80),
+                session_name=_compact_line(f"resident-{brief.objective_id}", limit=63),
                 repo=self._repo,
                 branch=self._branch,
                 connection_id=self._connection_id,
@@ -1742,14 +1742,23 @@ class ResidentDelegationRuntime:
         operator_questions: list[str] = []
         reviews: list[ResidentDelegationReview] = []
         objective_updates: dict[str, ResidentObjective] = {item.id: item for item in objectives}
+        pending_operator_questions = {
+            objective.pending_question
+            for objective in objectives
+            if objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value
+            if objective.pending_question
+        }
 
         for objective in gated:
             question = _delegation_operator_question(objective)
+            if question in pending_operator_questions:
+                continue
             operator_objective = _delegation_operator_objective(
                 mandate,
                 objective,
                 question=question,
             )
+            pending_operator_questions.add(question)
             operator_questions.append(question)
             follow_ups.append(operator_objective)
             objective_updates[operator_objective.id] = operator_objective

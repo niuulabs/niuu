@@ -22,6 +22,12 @@ from ravn.resident_portfolio import (
     build_worker_brief,
     select_delegation_candidates,
 )
+from scripts.prove_resident_delegation import (
+    _observed_real_results,
+    _real_delegation_records,
+    _sample_delegation_result_pair,
+    _successful_real_results,
+)
 
 MANDATE = (
     "Help evolve Valkyries/Ravn into autonomous, self-improving domain experts. "
@@ -211,6 +217,24 @@ async def test_risky_work_creates_operator_objective_instead_of_launching(
 
 
 @pytest.mark.asyncio
+async def test_risky_work_does_not_repeat_existing_operator_question(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective("risky", "Risky delegated objective", risk_boundaries=("spending",)),
+    )
+    runtime = ResidentDelegationRuntime(backend=backend, executor=RecordingExecutor())
+
+    first = await runtime.run(MANDATE)
+    second = await runtime.run(MANDATE)
+
+    assert first.operator_questions
+    assert second.operator_questions == ()
+
+
+@pytest.mark.asyncio
 async def test_delegation_records_persist_and_reload(tmp_path: Path) -> None:
     backend = LocalResidentWorkItemBackend(tmp_path)
     await _write_portfolio(backend, _objective("one", "First delegated objective"))
@@ -261,3 +285,51 @@ def test_resident_delegation_contains_no_domain_specific_playbook_terms() -> Non
         "product catalog",
     ):
         assert forbidden not in source
+
+
+def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
+    objective = _objective("one", "First delegated objective")
+    local = ResidentDelegationRecord(
+        id="delegation-local",
+        source_objective_id=objective.id,
+        backend_session_id="local-session",
+        backend_name="local-subprocess",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.COMPLETED.value,
+        reason="historical local proof",
+    )
+    real = ResidentDelegationRecord(
+        id="delegation-real",
+        source_objective_id=objective.id,
+        backend_session_id="real-session",
+        backend_name="workflow",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.COMPLETED.value,
+        reason="real worker proof",
+    )
+    unmatched = ResidentExecutionResult(
+        session_id="other-session",
+        status=ResidentDelegationStatus.COMPLETED.value,
+        summary="not the proof result",
+    )
+    failed = ResidentExecutionResult(
+        session_id="real-session",
+        status=ResidentDelegationStatus.FAILED.value,
+        summary="failed launch metadata is not proof",
+    )
+    matched = ResidentExecutionResult(
+        session_id="real-session",
+        status=ResidentDelegationStatus.COMPLETED.value,
+        summary="real proof result",
+        output_refs=("forge/sessions/real-session/conversation.md",),
+    )
+
+    real_records = _real_delegation_records([local, real])
+    real_results = _observed_real_results(real_records, [unmatched, failed, matched])
+    successful_results = _successful_real_results(real_records, [unmatched, failed, matched])
+    sample = _sample_delegation_result_pair([local, real], [unmatched, matched])
+
+    assert real_records == [real]
+    assert real_results == [failed, matched]
+    assert successful_results == [matched]
+    assert sample == (real, matched)

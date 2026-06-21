@@ -99,7 +99,10 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             json=body,
         )
         if resp.status_code not in (200, 201):
-            raise RuntimeError(f"Ting workflow launch returned HTTP {resp.status_code}")
+            raise RuntimeError(
+                "Ting workflow launch returned "
+                f"HTTP {resp.status_code}: {_response_excerpt(resp)}"
+            )
         raw = resp.json()
         if not isinstance(raw, dict):
             raise RuntimeError("Ting workflow launch returned a non-object body")
@@ -173,9 +176,10 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             )
             artifacts = _local_session_artifacts(session)
             if not artifacts and reference.session_id:
-                artifacts = _local_session_artifacts(
-                    await self._get_forge_session(reference.session_id)
-                )
+                forge_session = await self._get_forge_session(reference.session_id)
+                artifacts = _local_session_artifacts(forge_session)
+                if not artifacts:
+                    artifacts = await self._session_conversation_artifacts(reference.session_id)
             return artifacts
         slug = str(campaign.get("slug") or reference.slug)
         resp = await self._request(
@@ -210,12 +214,23 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             try:
                 return _read_local_session_artifact(session, path=path)
             except RuntimeError:
+                if _is_session_conversation_artifact(reference, path):
+                    return await self._read_session_conversation_artifact(
+                        reference.session_id,
+                        path,
+                    )
                 if not reference.session_id:
                     raise
-                return _read_local_session_artifact(
-                    await self._get_forge_session(reference.session_id),
-                    path=path,
-                )
+                forge_session = await self._get_forge_session(reference.session_id)
+                try:
+                    return _read_local_session_artifact(forge_session, path=path)
+                except RuntimeError:
+                    if _is_session_conversation_artifact(reference, path):
+                        return await self._read_session_conversation_artifact(
+                            reference.session_id,
+                            path,
+                        )
+                    raise
         slug = str(campaign.get("slug") or reference.slug)
         resp = await self._request(
             "GET",
@@ -367,6 +382,68 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         body = resp.json()
         return body if isinstance(body, dict) else None
 
+    async def _session_conversation_artifacts(self, session_id: str) -> list[WorkflowArtifact]:
+        conversation = await self._get_session_conversation(session_id)
+        if not conversation:
+            return []
+        assistant_count = sum(1 for turn in conversation if turn.get("role") == "assistant")
+        if assistant_count < 1:
+            return []
+        path = _session_conversation_artifact_path(session_id)
+        return [
+            WorkflowArtifact(
+                path=path,
+                title="Forge Session Conversation",
+                kind="conversation",
+                summary=(
+                    f"Forge session conversation with {assistant_count} assistant "
+                    f"turn(s) for {session_id}"
+                ),
+                publish_state="forge-session",
+                canonical=True,
+                raw={"path": path, "source": "forge-conversation", "session_id": session_id},
+            )
+        ]
+
+    async def _read_session_conversation_artifact(
+        self,
+        session_id: str,
+        path: str,
+    ) -> WorkflowArtifactContent:
+        conversation = await self._get_session_conversation(session_id)
+        if not conversation:
+            raise RuntimeError("Forge session conversation artifact not found")
+        artifact = WorkflowArtifact(
+            path=path,
+            title="Forge Session Conversation",
+            kind="conversation",
+            summary=f"Forge session conversation for {session_id}",
+            publish_state="forge-session",
+            canonical=True,
+            raw={"path": path, "source": "forge-conversation", "session_id": session_id},
+        )
+        return WorkflowArtifactContent(
+            artifact=artifact,
+            content=_render_session_conversation(conversation),
+            raw={"path": path, "source": "forge-conversation", "session_id": session_id},
+        )
+
+    async def _get_session_conversation(self, session_id: str) -> list[dict[str, Any]]:
+        resp = await self._request(
+            "GET",
+            f"{self._base_url}/api/v1/forge/sessions/{session_id}/conversation",
+        )
+        if resp.status_code in {404, 503}:
+            return []
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Forge session conversation lookup returned HTTP {resp.status_code}"
+            )
+        body = resp.json()
+        if not isinstance(body, dict):
+            return []
+        return _dict_list(body.get("turns"))
+
 
 def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
     tags = body.get("tags")
@@ -383,6 +460,16 @@ def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
             "owner_id": body.get("ownerId") or body.get("owner_id"),
         },
     )
+
+
+def _response_excerpt(response: httpx.Response, *, limit: int = 500) -> str:
+    try:
+        text = response.text.strip()
+    except Exception:
+        return "(response body unavailable)"
+    if not text:
+        return "(empty response body)"
+    return text[:limit]
 
 
 def _status_from_campaign(body: dict[str, Any]) -> WorkflowRunStatus:
@@ -575,6 +662,32 @@ def _read_local_session_artifact(
         content=target.read_text(encoding="utf-8"),
         raw={"path": path, "source": "forge-workspace"},
     )
+
+
+def _session_conversation_artifact_path(session_id: str) -> str:
+    return f"forge/sessions/{session_id}/conversation.md"
+
+
+def _is_session_conversation_artifact(
+    reference: WorkflowRunReference,
+    path: str,
+) -> bool:
+    if not reference.session_id:
+        return False
+    return path == _session_conversation_artifact_path(reference.session_id)
+
+
+def _render_session_conversation(turns: list[dict[str, Any]]) -> str:
+    sections = ["# Forge Session Conversation", ""]
+    for turn in turns:
+        role = str(turn.get("role") or "unknown").strip() or "unknown"
+        created_at = str(turn.get("created_at") or turn.get("createdAt") or "").strip()
+        content = str(turn.get("content") or "").strip()
+        heading = f"## {role}"
+        if created_at:
+            heading = f"{heading} ({created_at})"
+        sections.extend([heading, "", content or "(empty)", ""])
+    return "\n".join(sections).strip() + "\n"
 
 
 def _session_workspace_root(session: dict[str, Any] | None) -> Path | None:
