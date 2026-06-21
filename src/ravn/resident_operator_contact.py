@@ -58,6 +58,7 @@ class ResidentOperatorReplyIngestionReport:
 
     handled: bool
     contact_ref: str = ""
+    answer_ref: str = ""
     objective_ref: str = ""
     portfolio_ref: str = ""
     decision_ref: str = ""
@@ -179,6 +180,9 @@ async def ingest_resident_operator_reply(
         responded_at=datetime.now(UTC),
     )
     contact_ref = await backend.write_operator_contact(result)
+    answer_ref = ""
+    if memory is not None:
+        answer_ref = await memory.write_operator_answer(result.answer)
     objective_ref = ""
     portfolio_ref = ""
     if objective is not None:
@@ -208,6 +212,7 @@ async def ingest_resident_operator_reply(
     return ResidentOperatorReplyIngestionReport(
         handled=True,
         contact_ref=contact_ref,
+        answer_ref=answer_ref,
         objective_ref=objective_ref,
         portfolio_ref=portfolio_ref,
         decision_ref=decision_ref,

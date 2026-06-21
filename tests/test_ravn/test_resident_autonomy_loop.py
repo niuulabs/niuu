@@ -900,7 +900,12 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
 
     assert report.handled is True
     assert report.approved is True
+    assert report.answer_ref == "resident/continuation/operator-answers/latest.md"
     assert len(report.policy_observations) == 3
+    assert await memory.read_operator_needed() is None
+    answer = await memory.read_operator_answer()
+    assert answer is not None
+    assert "Yes, approved for this specific objective." in answer.content
     observations = await memory.list_policy_observations()
     assert len(observations) == 3
     assert observations[0].subject == "operator-contact:approval"
@@ -912,11 +917,16 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
     assert updated.pending_question == ""
     assert any("operator approved risk boundary" in item for item in updated.proof_progress)
 
-    run = await ResidentAutonomyLoopRuntime(
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
         backend=backend,
         executor=LocalSubprocessResidentExecutor(),
-        config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
-    ).run(MANDATE)
+        operator_memory=memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+
+    run = await trigger.run_once()
 
     assert run.cycles[0].delegation_report.created_delegations
     assert run.cycles[0].delegation_report.created_delegations[0].source_objective_id == "risky"
