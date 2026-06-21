@@ -3007,6 +3007,26 @@ class SignalSourceConfig(BaseModel):
     )
 
 
+class PhysicalDeviceConfig(BaseModel):
+    """Dynamic adapter entry for resident physical-world capabilities."""
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified PhysicalDevicePort implementation.",
+    )
+    enabled: bool = True
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+    command_timeout_seconds: float = Field(
+        default=30.0,
+        description="Maximum seconds a physical adapter command may run.",
+    )
+    max_output_bytes: int = Field(
+        default=12000,
+        description="Maximum stdout/stderr bytes persisted from one physical adapter command.",
+    )
+
+
 class EnvironmentVocabularyConfig(BaseModel):
     """Deployment-defined vocabulary extensions for Environment models.
 
@@ -3066,6 +3086,13 @@ class EnvironmentConfig(BaseModel):
         default_factory=list,
         description=(
             "Dynamic adapters that discover remote workflow capabilities from existing catalogs."
+        ),
+    )
+    physical_devices: list[PhysicalDeviceConfig] = Field(
+        default_factory=list,
+        description=(
+            "Dynamic adapters that expose read-only, dry-run, or approval-gated "
+            "physical-world capabilities."
         ),
     )
     signal_poll_interval_seconds: float = Field(
