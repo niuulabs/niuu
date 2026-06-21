@@ -16,6 +16,7 @@ from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import (
     ResidentBudgetLimits,
     ResidentBudgetSnapshot,
+    ResidentMemoryEntry,
     ResidentMemoryPort,
 )
 from ravn.domain.resident_expert import (
@@ -266,6 +267,11 @@ class WakefulResidentRuntime:
                 else None
             )
             if pending_operator is not None:
+                attention_reason = _pending_operator_attention_reason(pending_operator)
+                runtime_audit = (
+                    *runtime_audit,
+                    f"pending_operator_question: {pending_operator.path}",
+                )
                 record = _build_pending_operator_record(
                     cycle_number=cycle_number,
                     mandate=mandate,
@@ -282,6 +288,18 @@ class WakefulResidentRuntime:
                 final_decision = record.decision
                 final_reason = record.decision_reason
                 break
+
+            operator_answer = (
+                await self._operator_memory.read_operator_answer()
+                if self._operator_memory is not None
+                else None
+            )
+            if operator_answer is not None:
+                attention_reason = _operator_answer_attention_reason(operator_answer)
+                runtime_audit = (
+                    *runtime_audit,
+                    f"operator_answer_available: {operator_answer.path}",
+                )
 
             operator_workstream = _operator_gated_workstream(prior_workstreams)
             if operator_workstream is not None:
@@ -538,6 +556,21 @@ def derive_runtime_duplication_audit(
 
     audit.append("duplication_check: resident wake memory shows canonical runtime continuity")
     return tuple(audit)
+
+
+def _operator_answer_attention_reason(answer: ResidentMemoryEntry) -> str:
+    summary = _compact_line(_operator_answer_excerpt(answer.content) or answer.summary, limit=160)
+    if summary:
+        return f"operator answer is available; resume resident work from: {summary}"
+    return "operator answer is available; resume resident work"
+
+
+def _pending_operator_attention_reason(pending: ResidentMemoryEntry) -> str:
+    question = _operator_marker_question(pending.content)
+    summary = _compact_line(question or pending.summary, limit=160)
+    if summary:
+        return f"operator input is pending; sleep until reply for: {summary}"
+    return "operator input is pending; sleep until reply"
 
 
 def derive_portfolio_steward_attention_reason(
@@ -840,6 +873,16 @@ def _operator_marker_question(content: str) -> str:
         if stripped.startswith("- question:"):
             return stripped.removeprefix("- question:").strip()
     return ""
+
+
+def _operator_answer_excerpt(content: str) -> str:
+    lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+            continue
+        lines.append(stripped)
+    return _compact_line(" ".join(lines), limit=160)
 
 
 def _render_wake_record(record: WakefulResidentCycleRecord) -> str:

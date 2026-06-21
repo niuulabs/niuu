@@ -5,8 +5,7 @@ from pathlib import Path
 import pytest
 
 from ravn.domain.models import TokenUsage
-from ravn.domain.resident_continuation import ResidentBudgetSnapshot
-from ravn.domain.resident_continuation import ResidentTurnRecord
+from ravn.domain.resident_continuation import ResidentBudgetSnapshot, ResidentTurnRecord
 from ravn.domain.resident_expert import (
     ExpertArtifact,
     ExpertLoopDecision,
@@ -18,8 +17,8 @@ from ravn.domain.resident_expert import (
     WorkstreamExecutionResult,
 )
 from ravn.domain.wakeful_resident import WakefulResidentCycleRecord, WakefulResidentDecisionKind
-from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_continuation import LocalResidentMemory
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
     WakefulResidentConfig,
@@ -273,6 +272,43 @@ async def test_first_cycle_can_orient_from_mandate_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_operator_answer_is_recorded_as_wake_attention_signal(tmp_path: Path) -> None:
+    expert_memory = RecordingExpertMemory(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    operator_memory = LocalResidentMemory(tmp_path / "operator")
+    await operator_memory.write_operator_answer("Use the Prusa MK4 and PLA.")
+    ws = _workstream("resume", "Resume from operator answer")
+    loop = StatefulExpertLoop(
+        expert_memory,
+        [
+            _run(
+                model=_model(opportunities=("Resume from operator answer",)),
+                workstreams=(ws,),
+                execution_results=(_result("resume"),),
+                artifacts=(_artifact(),),
+            )
+        ],
+    )
+    runtime = WakefulResidentRuntime(
+        expert_loop=loop,
+        expert_memory=expert_memory,
+        wake_memory=wake_memory,
+        operator_memory=operator_memory,
+        config=WakefulResidentConfig(max_wake_cycles=1),
+    )
+
+    run = await runtime.run(MANDATE)
+
+    assert run.cycles[0].attention_reason == (
+        "operator answer is available; resume resident work from: Use the Prusa MK4 and PLA."
+    )
+    assert "operator_answer_available: resident/continuation/operator-answers/latest.md" in (
+        run.cycles[0].runtime_audit
+    )
+    assert loop.calls == [MANDATE]
+
+
+@pytest.mark.asyncio
 async def test_later_cycle_can_continue_existing_workstream(tmp_path: Path) -> None:
     expert_memory = RecordingExpertMemory(tmp_path)
     existing = _workstream(
@@ -500,8 +536,14 @@ async def test_pending_operator_marker_sleeps_before_spending_expert_turn(
     assert run.budget.total_tokens == 0
     assert records[0].decision == WakefulResidentDecisionKind.SLEEP
     assert records[0].decision_reason == "waiting_for_operator"
+    assert records[0].attention_reason == (
+        "operator input is pending; sleep until reply for: Which printer profile should I use?"
+    )
     assert "Which printer profile should I use?" in records[0].selected_action
     assert records[0].budget.turns_used == 0
+    assert "pending_operator_question: resident/continuation/operator-needed/latest.md" in (
+        records[0].runtime_audit
+    )
 
 
 @pytest.mark.asyncio
