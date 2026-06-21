@@ -16,9 +16,20 @@ from ravn.cli.commands import (
     _resolve_persona,
 )
 from ravn.config import ProjectConfig, Settings
-from ravn.domain.resident_continuation import ResidentPolicyObservation
+from ravn.domain.resident_continuation import (
+    ResidentActionCandidate,
+    ResidentBudgetSnapshot,
+    ResidentContinuationContext,
+    ResidentPolicyObservation,
+    ResidentTurnRecord,
+)
 from ravn.domain.resident_expert import ResidentDomainModel
-from ravn.resident_continuation import LocalResidentMemory, MimirResidentMemory
+from ravn.resident_continuation import (
+    ConfigurableResidentPolicy,
+    LocalResidentMemory,
+    MimirResidentMemory,
+    ResidentPolicyBoundary,
+)
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
     MimirResidentDomainExpertMemory,
@@ -59,6 +70,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Require memory hygiene notes and operator-answer policy capture.",
     )
+    parser.add_argument(
+        "--expect-evolvable-policy",
+        action="store_true",
+        help=(
+            "Require persisted operator policy feedback and prove it calibrates a "
+            "later soft-boundary decision while hard safety boundaries still ask."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -83,6 +102,63 @@ async def _list_proof_refs(
     if not base.exists():
         return []
     return sorted(str(path.relative_to(local_root)) for path in base.glob("*.md"))
+
+
+async def _prove_evolvable_policy(memory: Any) -> None:
+    observations = tuple(await memory.list_policy_observations())
+    accepted_subjects = {
+        observation.subject
+        for observation in observations
+        if observation.status == "accepted"
+    }
+    if "soft-allow:research" not in accepted_subjects:
+        raise SystemExit("[proof] expected accepted soft-allow:research observation")
+
+    policy = ConfigurableResidentPolicy(
+        soft_boundaries=(
+            ResidentPolicyBoundary(name="research", terms=("research",), hard=False),
+        )
+    )
+    context = ResidentContinuationContext(
+        mandate=KANUCK_VALLEY_MANDATE,
+        turn_record=ResidentTurnRecord(
+            turn_index=0,
+            prompt=KANUCK_VALLEY_MANDATE,
+            response="",
+            outcome_fields={},
+            tool_names=(),
+            usage=ResidentBudgetSnapshot().usage,
+        ),
+        budget=ResidentBudgetSnapshot(),
+        policy_observations=observations,
+    )
+    soft_decision = await policy.assess(
+        ResidentActionCandidate(
+            title="Research generic domain options",
+            action="Research generic domain options using local notes.",
+            reason="Operator accepted this soft boundary for safe continuation.",
+            risk_boundaries=("research",),
+        ),
+        context=context,
+    )
+    hard_decision = await policy.assess(
+        ResidentActionCandidate(
+            title="Operate a physical machine",
+            action="Operate a physical machine to validate output.",
+            reason="Hard boundaries must not be bypassed by learned preferences.",
+        ),
+        context=context,
+    )
+    print(
+        "[proof] evolvable_policy="
+        f"observations:{len(observations)} "
+        f"soft_allowed:{soft_decision.allowed} "
+        f"hard_needs_approval:{hard_decision.needs_approval}"
+    )
+    if not soft_decision.allowed or soft_decision.needs_approval:
+        raise SystemExit("[proof] expected accepted soft policy to allow later research")
+    if not hard_decision.needs_approval:
+        raise SystemExit("[proof] expected hard physical boundary to remain approval-gated")
 
 
 async def _main() -> None:
@@ -244,6 +320,8 @@ async def _main() -> None:
             raise SystemExit("[proof] expected operator answer policy observation")
         if not policy_refs:
             raise SystemExit("[proof] expected persisted continuation policy observation")
+    if args.expect_evolvable_policy:
+        await _prove_evolvable_policy(continuation_memory)
 
 
 if __name__ == "__main__":

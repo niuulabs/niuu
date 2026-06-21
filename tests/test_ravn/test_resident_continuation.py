@@ -11,6 +11,7 @@ from ravn.domain.resident_continuation import (
     ResidentBudgetLimits,
     ResidentMemoryEntry,
     ResidentPolicyDecision,
+    ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
 )
@@ -18,6 +19,7 @@ from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     LocalResidentMemory,
     MimirResidentMemory,
+    ResidentPolicyBoundary,
     ResidentContinuationKernel,
     ResidentRunBudget,
 )
@@ -120,6 +122,7 @@ class RecordingMemory:
         self.turns: list[ResidentTurnRecord] = []
         self.budgets: list[Any] = []
         self.policy_observations: list[ResidentPolicyObservation] = []
+        self.policy_decisions: list[ResidentPolicyDecisionRecord] = []
         self.pending_question: str = ""
         self.pending_reason: str = ""
         self.answer: str = ""
@@ -139,6 +142,13 @@ class RecordingMemory:
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         self.policy_observations.append(observation)
         return "policy"
+
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        return list(self.policy_observations)
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        self.policy_decisions.append(decision)
+        return "policy-decision"
 
     async def write_operator_needed(
         self,
@@ -343,7 +353,10 @@ async def test_memory_is_written_and_recalled_before_decision() -> None:
 @pytest.mark.asyncio
 async def test_operator_answer_becomes_persisted_policy_observation() -> None:
     async def answer(question: str) -> str:
-        return "For this environment, ask every time before operating hardware."
+        return (
+            "For this environment, ask every time before operating hardware.\n"
+            "policy: accept soft-ask:physical_operation because hardware stays gated."
+        )
 
     agent = FakeBackendAgent([_turn(_outcome("Start a physical device for validation."))])
     memory = RecordingMemory()
@@ -359,9 +372,11 @@ async def test_operator_answer_becomes_persisted_policy_observation() -> None:
 
     assert run.final_decision is not None
     assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
-    assert len(memory.policy_observations) == 1
+    assert len(memory.policy_observations) == 2
     assert memory.policy_observations[0].source == "operator_answer"
     assert "operating hardware" in memory.policy_observations[0].observation
+    assert memory.policy_observations[1].subject == "soft-ask:physical_operation"
+    assert memory.policy_observations[1].status == "accepted"
 
 
 @pytest.mark.asyncio
@@ -437,6 +452,34 @@ async def test_operator_answer_is_injected_into_resume_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preseeded_operator_answer_policy_line_is_preserved() -> None:
+    agent = FakeBackendAgent([_turn(_outcome("Research candidate tools using local notes."))])
+    memory = RecordingMemory()
+    await memory.write_operator_answer(
+        "Safe research may continue.\n"
+        "policy: accept soft-allow:research because Safe research is low risk."
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(
+            soft_boundaries=(
+                ResidentPolicyBoundary(name="research", terms=("research",), hard=False),
+            )
+        ),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert any(
+        observation.subject == "soft-allow:research"
+        and observation.status == "accepted"
+        for observation in run.policy_observations
+    )
+
+
+@pytest.mark.asyncio
 async def test_blocked_operator_outcome_writes_pending_marker() -> None:
     agent = FakeBackendAgent([_turn(_blocked_operator_outcome())])
     memory = RecordingMemory()
@@ -482,6 +525,139 @@ async def test_local_memory_persists_turn_budget_and_policy_observation(tmp_path
     assert (tmp_path / policy_ref).exists()
     recalled = await memory.recall(MANDATE)
     assert any(entry.path == turn_ref for entry in recalled)
+    listed = await memory.list_policy_observations()
+    assert listed[0].subject == "boundary:physical_operation"
+
+
+@pytest.mark.asyncio
+async def test_soft_policy_observation_loaded_from_local_memory_allows_repeat_action(
+    tmp_path: Path,
+) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    await memory.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="soft-allow:research",
+            observation="Safe research can continue without asking again.",
+            source="operator_answer",
+            status="accepted",
+        )
+    )
+    agent = FakeBackendAgent(
+        [
+            _turn(_outcome("Research candidate tools using local notes.")),
+            _turn(_outcome("Sleep until new context appears.")),
+        ]
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(
+            soft_boundaries=(
+                ResidentPolicyBoundary(name="research", terms=("research",), hard=False),
+            )
+        ),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.decisions[0].kind == ContinuationDecisionKind.CONTINUE
+    decision_files = sorted((tmp_path / "resident/continuation/policy-decisions").glob("*.md"))
+    assert decision_files
+    assert "accepted soft allowance: research" in decision_files[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_soft_boundary_asks_without_accepted_observation(tmp_path: Path) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    agent = FakeBackendAgent(
+        [_turn(_outcome("Research candidate tools using local notes."))]
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(
+            soft_boundaries=(
+                ResidentPolicyBoundary(name="research", terms=("research",), hard=False),
+            )
+        ),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert "research" in run.final_decision.reason
+
+
+@pytest.mark.asyncio
+async def test_soft_allow_observation_cannot_bypass_hard_boundary(tmp_path: Path) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    await memory.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="soft-allow:physical_operation",
+            observation="A mistaken soft allowance must not bypass hard gates.",
+            source="operator_answer",
+            status="accepted",
+        )
+    )
+    agent = FakeBackendAgent([_turn(_outcome("Operate a physical machine."))])
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert "physical_operation" in run.final_decision.reason
+
+
+@pytest.mark.asyncio
+async def test_contradictory_policy_observations_keep_soft_boundary_as_ask(
+    tmp_path: Path,
+) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    await memory.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="soft-allow:research",
+            observation="Safe research can continue.",
+            source="operator_answer",
+            status="accepted",
+        )
+    )
+    await memory.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="soft-ask:research",
+            observation="Ask before research until the operator reviews this.",
+            source="operator_answer",
+            status="accepted",
+        )
+    )
+    agent = FakeBackendAgent([_turn(_outcome("Research candidate tools."))])
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=ConfigurableResidentPolicy(
+            soft_boundaries=(
+                ResidentPolicyBoundary(name="research", terms=("research",), hard=False),
+            )
+        ),
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert any(
+        "contradictory accepted observations keep ask boundary: research" in note
+        for note in run.final_decision.calibration_notes
+    )
 
 
 class FakeMimir:
@@ -515,6 +691,22 @@ class FakeMimir:
             return self.pages[path]
         except KeyError as exc:
             raise FileNotFoundError(path) from exc
+
+    async def list_pages(
+        self,
+        category: str | None = None,
+        prefix: str | None = None,
+    ) -> list[Any]:
+        class Meta:
+            def __init__(self, path: str) -> None:
+                self.path = path
+                self.summary = "summary"
+
+        return [
+            Meta(path)
+            for path in sorted(self.pages)
+            if prefix is None or path.startswith(prefix)
+        ]
 
 
 @pytest.mark.asyncio

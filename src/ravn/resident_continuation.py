@@ -24,6 +24,7 @@ from ravn.domain.resident_continuation import (
     ResidentMemoryEntry,
     ResidentMemoryPort,
     ResidentPolicyDecision,
+    ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentPolicyPort,
     ResidentTurnRecord,
@@ -99,6 +100,7 @@ class ResidentPolicyBoundary:
     terms: tuple[str, ...]
     approval_required: bool = True
     question: str = ""
+    hard: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class ConfigurableResidentPolicy(ResidentPolicyPort):
             for name, terms in _DEFAULT_BOUNDARY_TERMS.items()
         )
     )
+    soft_boundaries: tuple[ResidentPolicyBoundary, ...] = ()
     allowed_boundaries: tuple[str, ...] = ()
 
     async def assess(
@@ -124,18 +127,34 @@ class ConfigurableResidentPolicy(ResidentPolicyPort):
         *,
         context: ResidentContinuationContext,
     ) -> ResidentPolicyDecision:
-        observed_allows = _allowed_boundaries_from_observations(context.policy_observations)
-        allowed = set(self.allowed_boundaries) | observed_allows
+        calibration = _calibration_from_observations(context.policy_observations)
+        configured_soft_allows = set(self.allowed_boundaries)
+        soft_allows = calibration.allowed_boundaries | configured_soft_allows
         detected = set(action.risk_boundaries)
         text = _risk_scan_text(" ".join(part for part in (action.title, action.action) if part))
 
-        for boundary in self.boundaries:
-            if boundary.name in allowed:
+        all_boundaries = tuple(self.boundaries) + tuple(self.soft_boundaries)
+        hard_boundary_names = {boundary.name for boundary in self.boundaries if boundary.hard}
+        for boundary in all_boundaries:
+            if not boundary.hard and boundary.name in soft_allows:
                 continue
             if boundary.name in detected or _contains_term(text, boundary.terms):
                 detected.add(boundary.name)
 
-        gated = tuple(sorted(name for name in detected if name not in allowed))
+        hard_gated = tuple(sorted(name for name in detected if name in hard_boundary_names))
+        soft_gated = tuple(
+            sorted(
+                name
+                for name in detected
+                if name not in hard_boundary_names
+                and name not in soft_allows
+            )
+        )
+        explicit_ask = tuple(
+            sorted(name for name in calibration.ask_boundaries if name in detected)
+        )
+        gated = tuple(dict.fromkeys((*hard_gated, *soft_gated, *explicit_ask)))
+        notes = calibration.notes
         if gated:
             joined = ", ".join(gated)
             question = f"May I proceed with this resident action despite {joined}: {action.action}"
@@ -145,6 +164,7 @@ class ConfigurableResidentPolicy(ResidentPolicyPort):
                 reason=f"action crosses approval boundary: {joined}",
                 risk_boundaries=gated,
                 question=question,
+                calibration_notes=notes,
             )
 
         return ResidentPolicyDecision(
@@ -152,6 +172,7 @@ class ConfigurableResidentPolicy(ResidentPolicyPort):
             needs_approval=False,
             reason="within current resident policy and learned observations",
             risk_boundaries=tuple(sorted(detected)),
+            calibration_notes=notes,
         )
 
 
@@ -184,17 +205,58 @@ def _risk_scan_text(text: str) -> str:
     return " ".join(cleaned.split())
 
 
-def _allowed_boundaries_from_observations(
+@dataclass(frozen=True)
+class _PolicyCalibration:
+    allowed_boundaries: set[str] = field(default_factory=set)
+    ask_boundaries: set[str] = field(default_factory=set)
+    notes: tuple[str, ...] = ()
+
+
+def _calibration_from_observations(
     observations: tuple[ResidentPolicyObservation, ...],
-) -> set[str]:
+) -> _PolicyCalibration:
     allowed: set[str] = set()
+    ask: set[str] = set()
+    notes: list[str] = []
     for observation in observations:
         if observation.status != "accepted":
             continue
         subject = observation.subject.strip()
         if subject.startswith("boundary:"):
-            allowed.add(subject.removeprefix("boundary:").strip())
-    return allowed
+            boundary = subject.removeprefix("boundary:").strip()
+            allowed.add(boundary)
+            notes.append(f"accepted legacy boundary allowance: {boundary}")
+            continue
+        if subject.startswith("soft-allow:"):
+            boundary = subject.removeprefix("soft-allow:").strip()
+            allowed.add(boundary)
+            notes.append(f"accepted soft allowance: {boundary}")
+            continue
+        if subject.startswith("preference:continue:"):
+            boundary = subject.removeprefix("preference:continue:").strip()
+            allowed.add(boundary)
+            notes.append(f"accepted continue preference: {boundary}")
+            continue
+        if subject.startswith("soft-ask:"):
+            boundary = subject.removeprefix("soft-ask:").strip()
+            ask.add(boundary)
+            notes.append(f"accepted soft ask preference: {boundary}")
+            continue
+        if subject.startswith("preference:ask:"):
+            boundary = subject.removeprefix("preference:ask:").strip()
+            ask.add(boundary)
+            notes.append(f"accepted ask preference: {boundary}")
+
+    contradictions = allowed & ask
+    if contradictions:
+        for boundary in sorted(contradictions):
+            allowed.discard(boundary)
+            notes.append(f"contradictory accepted observations keep ask boundary: {boundary}")
+    return _PolicyCalibration(
+        allowed_boundaries=allowed,
+        ask_boundaries=ask,
+        notes=tuple(notes),
+    )
 
 
 class ResidentRunBudget:
@@ -275,6 +337,12 @@ class NullResidentMemory(ResidentMemoryPort):
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         return ""
 
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        return []
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        return ""
+
     async def write_operator_needed(
         self,
         *,
@@ -331,6 +399,28 @@ class MimirResidentMemory(ResidentMemoryPort):
         slug = _slug(observation.subject) or "policy-observation"
         path = f"{self._prefix}/policy/{slug}.md"
         await self._mimir.upsert_page(path, _render_policy_observation(observation))
+        return path
+
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        observations: list[ResidentPolicyObservation] = []
+        pages = await self._mimir.list_pages(prefix=f"{self._prefix}/policy")
+        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
+            path = str(getattr(meta, "path", "") or "")
+            if not path:
+                continue
+            try:
+                parsed = _parse_policy_observation(await self._mimir.read_page(path))
+            except FileNotFoundError:
+                continue
+            if parsed is not None:
+                observations.append(parsed)
+        return observations
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        stamp = decision.created_at.strftime("%Y%m%dT%H%M%SZ")
+        slug = _slug(decision.action_title) or "policy-decision"
+        path = f"{self._prefix}/policy-decisions/{stamp}-{decision.turn_index}-{slug}.md"
+        await self._mimir.upsert_page(path, _render_policy_decision(decision))
         return path
 
     async def write_operator_needed(
@@ -431,6 +521,23 @@ class LocalResidentMemory(ResidentMemoryPort):
         rel = self._prefix / "policy" / f"{_slug(observation.subject) or 'policy-observation'}.md"
         return self._write(rel, _render_policy_observation(observation))
 
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        base = self._root / self._prefix / "policy"
+        if not base.exists():
+            return []
+        observations: list[ResidentPolicyObservation] = []
+        for path in sorted(base.glob("*.md")):
+            parsed = _parse_policy_observation(path.read_text(encoding="utf-8"))
+            if parsed is not None:
+                observations.append(parsed)
+        return observations
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        stamp = decision.created_at.strftime("%Y%m%dT%H%M%SZ")
+        slug = _slug(decision.action_title) or "policy-decision"
+        rel = self._prefix / "policy-decisions" / f"{stamp}-{decision.turn_index}-{slug}.md"
+        return self._write(rel, _render_policy_decision(decision))
+
     async def write_operator_needed(
         self,
         *,
@@ -523,6 +630,9 @@ class ResidentContinuationKernel:
     async def run(self, mandate: str) -> ResidentContinuationRun:
         decisions: list[ResidentContinuationDecision] = []
         records: list[ResidentTurnRecord] = []
+        self._policy_observations = _merge_policy_observations(
+            tuple(await self._memory.list_policy_observations())
+        )
         pending = await self._memory.read_operator_needed()
         if pending is not None:
             decisions.append(
@@ -585,6 +695,10 @@ class ResidentContinuationKernel:
             )
             decision = await self.decide(context)
             decisions.append(decision)
+            if record.selected_next_action is not None:
+                await self._memory.write_policy_decision(
+                    _policy_decision_record(record, decision)
+                )
 
             if decision.kind == ContinuationDecisionKind.CONTINUE and decision.prompt:
                 prompt = decision.prompt
@@ -638,12 +752,16 @@ class ResidentContinuationKernel:
                 reason=policy_decision.reason,
                 action=action,
                 question=policy_decision.question,
+                risk_boundaries=policy_decision.risk_boundaries,
+                calibration_notes=policy_decision.calibration_notes,
             )
         if not policy_decision.allowed:
             return ResidentContinuationDecision(
                 kind=ContinuationDecisionKind.STOP,
                 reason=policy_decision.reason,
                 action=action,
+                risk_boundaries=policy_decision.risk_boundaries,
+                calibration_notes=policy_decision.calibration_notes,
             )
 
         return ResidentContinuationDecision(
@@ -651,6 +769,8 @@ class ResidentContinuationKernel:
             reason=f"selected action is safe and budget remains: {policy_decision.reason}",
             action=action,
             prompt=_build_continuation_prompt(context, action),
+            risk_boundaries=policy_decision.risk_boundaries,
+            calibration_notes=policy_decision.calibration_notes,
         )
 
     async def _handle_operator_question(
@@ -692,8 +812,9 @@ class ResidentContinuationKernel:
             observation=str(answer),
             source="operator_answer",
         )
-        self._policy_observations.append(observation)
-        await self._memory.write_policy_observation(observation)
+        await self._record_policy_observation(observation)
+        for parsed in _policy_observations_from_operator_text(str(answer)):
+            await self._record_policy_observation(parsed)
 
     async def _record_operator_answer_observation(self, answer: ResidentMemoryEntry) -> None:
         observation_text = _operator_answer_text(answer.content)
@@ -704,10 +825,15 @@ class ResidentContinuationKernel:
             observation=observation_text,
             source="operator_answer",
         )
+        await self._record_policy_observation(observation)
+        for parsed in _policy_observations_from_operator_text(
+            _operator_answer_policy_text(answer.content)
+        ):
+            await self._record_policy_observation(parsed)
+
+    async def _record_policy_observation(self, observation: ResidentPolicyObservation) -> None:
         if any(
-            existing.subject == observation.subject
-            and existing.source == observation.source
-            and existing.observation == observation.observation
+            _same_policy_observation(existing, observation)
             for existing in self._policy_observations
         ):
             return
@@ -936,14 +1062,117 @@ def _render_policy_observation(observation: ResidentPolicyObservation) -> str:
     )
 
 
+def _render_policy_decision(decision: ResidentPolicyDecisionRecord) -> str:
+    boundaries = ", ".join(decision.risk_boundaries) if decision.risk_boundaries else "none"
+    notes = "\n".join(f"- {note}" for note in decision.calibration_notes) or "- none"
+    return (
+        f"# Resident Policy Decision: {decision.action_title}\n\n"
+        f"- created_at: {decision.created_at.isoformat()}\n"
+        f"- turn: {decision.turn_index}\n"
+        f"- decision_kind: {decision.decision_kind}\n"
+        f"- allowed: {str(decision.allowed).lower()}\n"
+        f"- needs_approval: {str(decision.needs_approval).lower()}\n"
+        f"- risk_boundaries: {boundaries}\n"
+        f"- reason: {_compact_line(decision.reason, limit=700)}\n"
+        f"- question: {_compact_line(decision.question, limit=700)}\n\n"
+        "## Action\n\n"
+        f"{decision.action}\n\n"
+        "## Calibration Notes\n\n"
+        f"{notes}\n"
+    )
+
+
+def _parse_policy_observation(content: str) -> ResidentPolicyObservation | None:
+    subject_match = re.search(
+        r"^#\s*Resident Policy Observation:\s*(.+?)\s*$",
+        content,
+        flags=re.MULTILINE,
+    )
+    if not subject_match:
+        return None
+    status_match = re.search(r"^-\s*status:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    source_match = re.search(r"^-\s*source:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    created_match = re.search(r"^-\s*created_at:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    created_at = datetime.now(UTC)
+    if created_match:
+        try:
+            created_at = datetime.fromisoformat(created_match.group(1).strip())
+        except ValueError:
+            created_at = datetime.now(UTC)
+    return ResidentPolicyObservation(
+        subject=subject_match.group(1).strip(),
+        observation=_policy_observation_body(content),
+        source=(source_match.group(1).strip() if source_match else "memory"),
+        status=(status_match.group(1).strip() if status_match else "candidate"),
+        created_at=created_at,
+    )
+
+
+def _policy_observation_body(content: str) -> str:
+    body_started = False
+    lines: list[str] = []
+    for line in content.splitlines():
+        if not body_started:
+            if line.strip() == "":
+                body_started = True
+            continue
+        stripped = line.strip()
+        if stripped.startswith("- ") or stripped.startswith("#"):
+            continue
+        if stripped:
+            lines.append(stripped)
+    return _compact_line(" ".join(lines), limit=1000)
+
+
+def _policy_observations_from_operator_text(text: str) -> tuple[ResidentPolicyObservation, ...]:
+    observations: list[ResidentPolicyObservation] = []
+    for line in str(text or "").splitlines():
+        match = re.match(
+            r"^\s*policy\s*:\s*(accept|accepted|candidate|reject|rejected)\s+"
+            r"((?:soft-allow|soft-ask|preference:continue|preference:ask):[a-z0-9_-]+)"
+            r"(?:\s+because\s+(.+))?\s*$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        status_word = match.group(1).casefold()
+        status = {
+            "accept": "accepted",
+            "accepted": "accepted",
+            "candidate": "candidate",
+            "reject": "rejected",
+            "rejected": "rejected",
+        }[status_word]
+        subject = match.group(2).casefold()
+        reason = _compact_line(match.group(3) or "operator supplied explicit policy feedback")
+        observations.append(
+            ResidentPolicyObservation(
+                subject=subject,
+                observation=reason,
+                source="operator_answer",
+                status=status,
+            )
+        )
+    return tuple(observations)
+
+
 def _operator_answer_text(content: str) -> str:
+    return _compact_line(" ".join(_operator_answer_body_lines(content)), limit=1000)
+
+
+def _operator_answer_policy_text(content: str) -> str:
+    return "\n".join(_operator_answer_body_lines(content))
+
+
+def _operator_answer_body_lines(content: str) -> list[str]:
     lines: list[str] = []
     for line in content.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or stripped.startswith("- "):
             continue
         lines.append(stripped)
-    return _compact_line(" ".join(lines), limit=1000)
+    return lines
 
 
 def _compact_line(text: str, *, limit: int = 240) -> str:
@@ -951,6 +1180,48 @@ def _compact_line(text: str, *, limit: int = 240) -> str:
     if len(compact) > limit:
         compact = compact[: limit - 1].rstrip() + "…"
     return compact
+
+
+def _policy_decision_record(
+    record: ResidentTurnRecord,
+    decision: ResidentContinuationDecision,
+) -> ResidentPolicyDecisionRecord:
+    action = record.selected_next_action
+    return ResidentPolicyDecisionRecord(
+        turn_index=record.turn_index,
+        action_title=action.title if action is not None else "Selected next action",
+        action=action.action if action is not None else "",
+        decision_kind=decision.kind.value,
+        allowed=decision.kind == ContinuationDecisionKind.CONTINUE,
+        needs_approval=decision.kind == ContinuationDecisionKind.ASK_OPERATOR,
+        reason=decision.reason,
+        risk_boundaries=decision.risk_boundaries
+        or (action.risk_boundaries if action is not None else ()),
+        question=decision.question,
+        calibration_notes=decision.calibration_notes,
+    )
+
+
+def _merge_policy_observations(
+    observations: tuple[ResidentPolicyObservation, ...],
+) -> list[ResidentPolicyObservation]:
+    merged: list[ResidentPolicyObservation] = []
+    for observation in observations:
+        if not any(_same_policy_observation(existing, observation) for existing in merged):
+            merged.append(observation)
+    return merged
+
+
+def _same_policy_observation(
+    left: ResidentPolicyObservation,
+    right: ResidentPolicyObservation,
+) -> bool:
+    return (
+        left.subject == right.subject
+        and left.source == right.source
+        and left.status == right.status
+        and left.observation == right.observation
+    )
 
 
 def _first_heading_or_line(content: str) -> str:

@@ -59,6 +59,23 @@ class ResidentPolicyObservation:
 
 
 @dataclass(frozen=True)
+class ResidentPolicyDecisionRecord:
+    """Persistable audit record for one resident policy decision."""
+
+    turn_index: int
+    action_title: str
+    action: str
+    decision_kind: str
+    allowed: bool
+    needs_approval: bool
+    reason: str
+    risk_boundaries: tuple[str, ...] = ()
+    question: str = ""
+    calibration_notes: tuple[str, ...] = ()
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
 class ResidentMemoryEntry:
     """Compact resident memory recalled before a continuation decision."""
 
@@ -130,6 +147,7 @@ class ResidentPolicyDecision:
     reason: str
     risk_boundaries: tuple[str, ...] = ()
     question: str = ""
+    calibration_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,6 +157,8 @@ class ResidentContinuationDecision:
     action: ResidentActionCandidate | None = None
     prompt: str = ""
     question: str = ""
+    risk_boundaries: tuple[str, ...] = ()
+    calibration_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,6 +190,12 @@ class ResidentMemoryPort(Protocol):
 
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         """Persist an operator-derived policy/preference candidate."""
+
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        """Return persisted policy/preference observations."""
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        """Persist an auditable policy decision."""
 
     async def write_operator_needed(
         self,
