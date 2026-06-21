@@ -491,6 +491,18 @@ def build_domain_model_from_continuation(
         prior_model.domain_risks if prior_model is not None else (),
         _risk_like_items(gaps + _outcome_items(fields, last, "open_questions")),
     )
+    decisions = _merge_items(
+        prior_model.resident_decisions if prior_model is not None else (),
+        _decision_items(fields),
+    )
+    failure_notes = _merge_items(
+        prior_model.failure_notes if prior_model is not None else (),
+        _failure_like_items(fields, last),
+    )
+    open_threads = _merge_items(
+        prior_model.open_threads if prior_model is not None else (),
+        _open_thread_items(fields, last),
+    )
 
     return ResidentDomainModel(
         mandate=mandate,
@@ -499,6 +511,9 @@ def build_domain_model_from_continuation(
         known_facts=known_facts,
         open_questions=open_questions,
         domain_risks=risks,
+        resident_decisions=decisions,
+        failure_notes=failure_notes,
+        open_threads=open_threads,
         opportunities=opportunities,
         capability_gaps=gaps,
         active_workstreams=prior_model.active_workstreams if prior_model is not None else (),
@@ -620,6 +635,15 @@ def consolidate_workstream_result(
     facts = _merge_items(model.known_facts, result.facts)
     gaps = _merge_items(model.capability_gaps, result.capability_gaps)
     outcomes = _merge_items(model.recent_outcomes, (result.summary,), max_items=12)
+    decisions = _merge_items(
+        model.resident_decisions,
+        (f"advanced workstream {workstream.id}: {result.status}",),
+    )
+    failure_notes = _merge_items(
+        model.failure_notes,
+        _workstream_failure_notes(workstream, result),
+    )
+    open_threads = _merge_items(model.open_threads, result.lessons)
     artifacts = _merge_artifacts(model.artifacts, (artifact,))
     policy_observations = _merge_policy_observations(
         model.learned_policy_observations,
@@ -629,6 +653,9 @@ def consolidate_workstream_result(
         workstreams=workstreams,
         recent_outcomes=outcomes,
         known_facts=facts,
+        resident_decisions=decisions,
+        failure_notes=failure_notes,
+        open_threads=open_threads,
         capability_gaps=gaps,
         learned_policy_observations=policy_observations,
         artifacts=artifacts,
@@ -724,6 +751,9 @@ def _render_domain_model(model: ResidentDomainModel) -> str:
         f"## Known Facts\n\n{_render_list(model.known_facts)}\n\n"
         f"## Open Questions\n\n{_render_list(model.open_questions)}\n\n"
         f"## Domain Risks\n\n{_render_list(model.domain_risks)}\n\n"
+        f"## Resident Decisions\n\n{_render_list(model.resident_decisions)}\n\n"
+        f"## Failure Notes\n\n{_render_list(model.failure_notes)}\n\n"
+        f"## Open Threads\n\n{_render_list(model.open_threads)}\n\n"
         f"## Opportunities\n\n{_render_list(model.opportunities)}\n\n"
         f"## Capability Gaps\n\n{_render_list(model.capability_gaps)}\n\n"
         "## Active Workstreams\n\n"
@@ -819,6 +849,9 @@ def _parse_domain_model_page(content: str, *, mandate: str) -> ResidentDomainMod
         known_facts=tuple(_section_items(content, "Known Facts")),
         open_questions=tuple(_section_items(content, "Open Questions")),
         domain_risks=tuple(_section_items(content, "Domain Risks")),
+        resident_decisions=tuple(_section_items(content, "Resident Decisions")),
+        failure_notes=tuple(_section_items(content, "Failure Notes")),
+        open_threads=tuple(_section_items(content, "Open Threads")),
         opportunities=tuple(_section_items(content, "Opportunities")),
         capability_gaps=tuple(_section_items(content, "Capability Gaps")),
         recent_outcomes=tuple(_section_items(content, "Recent Outcomes")),
@@ -970,6 +1003,67 @@ def _selected_action_items(fields: dict[str, Any]) -> tuple[str, ...]:
         text = str(raw.get("action") or raw.get("title") or "").strip()
         return (text,) if text else ()
     return _string_items(raw)
+
+
+def _decision_items(fields: dict[str, Any]) -> tuple[str, ...]:
+    actions = _selected_action_items(fields)
+    rationale = str(fields.get("rationale") or fields.get("reason") or "").strip()
+    decisions: list[str] = []
+    for action in actions:
+        if rationale:
+            decisions.append(f"selected next action: {action} because {rationale}")
+        else:
+            decisions.append(f"selected next action: {action}")
+    verdict = str(fields.get("verdict") or "").strip()
+    if verdict:
+        decisions.append(f"resident verdict: {verdict}")
+    return tuple(decisions)
+
+
+def _failure_like_items(fields: dict[str, Any], record: Any) -> tuple[str, ...]:
+    candidates = _merge_items(
+        _outcome_items(fields, record, "capability_gaps"),
+        _outcome_items(fields, record, "attempted"),
+        _outcome_items(fields, record, "reason"),
+        _outcome_items(fields, record, "rationale"),
+        max_items=20,
+    )
+    terms = (
+        "blocked",
+        "could not",
+        "failed",
+        "failure",
+        "unavailable",
+        "inaccessible",
+        "denied",
+        "error",
+        "sandbox",
+        "no actual",
+        "not present",
+    )
+    return tuple(item for item in candidates if _has_any(item.casefold(), terms))
+
+
+def _open_thread_items(fields: dict[str, Any], record: Any) -> tuple[str, ...]:
+    threads = []
+    for question in _outcome_items(fields, record, "open_questions"):
+        threads.append(f"question: {question}")
+    for action in _selected_action_items(fields):
+        threads.append(f"next action: {action}")
+    recommendation = str(fields.get("recommendation") or "").strip()
+    if recommendation:
+        threads.append(f"recommendation: {recommendation}")
+    return tuple(threads)
+
+
+def _workstream_failure_notes(
+    workstream: ResidentWorkstream,
+    result: WorkstreamExecutionResult,
+) -> tuple[str, ...]:
+    if result.status == ResidentWorkstreamStatus.COMPLETED.value:
+        return ()
+    note = f"workstream {workstream.id} ended as {result.status}: {result.summary}"
+    return (note,)
 
 
 def _risk_like_items(items: tuple[str, ...]) -> tuple[str, ...]:

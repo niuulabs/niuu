@@ -116,6 +116,9 @@ class ResidentDomainModel:
     known_facts: tuple[str, ...] = ()
     open_questions: tuple[str, ...] = ()
     domain_risks: tuple[str, ...] = ()
+    resident_decisions: tuple[str, ...] = ()
+    failure_notes: tuple[str, ...] = ()
+    open_threads: tuple[str, ...] = ()
     opportunities: tuple[str, ...] = ()
     capability_gaps: tuple[str, ...] = ()
     active_workstreams: tuple[ResidentWorkstream, ...] = ()
@@ -135,6 +138,9 @@ class ResidentDomainModel:
             known_facts=self.known_facts,
             open_questions=self.open_questions,
             domain_risks=self.domain_risks,
+            resident_decisions=self.resident_decisions,
+            failure_notes=self.failure_notes,
+            open_threads=self.open_threads,
             opportunities=self.opportunities,
             capability_gaps=self.capability_gaps,
             active_workstreams=workstreams,
@@ -150,6 +156,9 @@ class ResidentDomainModel:
         workstreams: tuple[ResidentWorkstream, ...] | None = None,
         recent_outcomes: tuple[str, ...] | None = None,
         known_facts: tuple[str, ...] | None = None,
+        resident_decisions: tuple[str, ...] | None = None,
+        failure_notes: tuple[str, ...] | None = None,
+        open_threads: tuple[str, ...] | None = None,
         capability_gaps: tuple[str, ...] | None = None,
         learned_policy_observations: tuple[ResidentPolicyObservation, ...] | None = None,
         artifacts: tuple[ExpertArtifact, ...] | None = None,
@@ -161,6 +170,11 @@ class ResidentDomainModel:
             known_facts=known_facts if known_facts is not None else self.known_facts,
             open_questions=self.open_questions,
             domain_risks=self.domain_risks,
+            resident_decisions=resident_decisions
+            if resident_decisions is not None
+            else self.resident_decisions,
+            failure_notes=failure_notes if failure_notes is not None else self.failure_notes,
+            open_threads=open_threads if open_threads is not None else self.open_threads,
             opportunities=self.opportunities,
             capability_gaps=capability_gaps
             if capability_gaps is not None

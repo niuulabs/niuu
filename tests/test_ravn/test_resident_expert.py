@@ -129,6 +129,10 @@ async def test_domain_model_is_persisted_and_updated_from_outcomes(tmp_path: Pat
     assert run.domain_model.hypotheses
     assert run.domain_model.open_questions
     assert run.domain_model.capability_gaps
+    assert run.domain_model.resident_decisions
+    assert run.domain_model.failure_notes
+    assert run.domain_model.open_threads
+    assert "selected next action" in run.domain_model.resident_decisions[0]
 
 
 @pytest.mark.asyncio
@@ -164,6 +168,9 @@ async def test_domain_model_readback_preserves_artifacts_and_policy_observations
     model = ResidentDomainModel(
         mandate=MANDATE,
         current_understanding="Resident understanding",
+        resident_decisions=("selected next action: Evaluate capability gap",),
+        failure_notes=("tracker search failed under sandbox networking",),
+        open_threads=("next action: rerun tracker search when access exists",),
         learned_policy_observations=(
             ResidentPolicyObservation(
                 subject="question:approval-boundary",
@@ -190,6 +197,9 @@ async def test_domain_model_readback_preserves_artifacts_and_policy_observations
     assert restored.learned_policy_observations[0].subject == "question:approval-boundary"
     assert restored.artifacts
     assert restored.artifacts[0].path == "resident/domain-expert/artifacts/capability-brief.md"
+    assert restored.resident_decisions == ("selected next action: Evaluate capability gap",)
+    assert restored.failure_notes == ("tracker search failed under sandbox networking",)
+    assert restored.open_threads == ("next action: rerun tracker search when access exists",)
 
 
 def test_domain_model_recovers_colon_bearing_outcome_lists_from_raw_response() -> None:
@@ -209,6 +219,7 @@ rationale: safe local work
         prompt=MANDATE,
         response=response,
         outcome_fields={
+            "verdict": "oriented",
             "orientation_summary": "Resident oriented.",
             "domain_hypotheses": '["Inferred: first concern", "',
             "open_questions": '["Question: which source matters?", "',
@@ -234,6 +245,15 @@ rationale: safe local work
     )
     assert model.capability_gaps == ("Gap: no source data yet",)
     assert "Created: domain map" in model.opportunities
+    assert model.resident_decisions == (
+        "selected next action: Write a compact brief. because safe local work",
+        "resident verdict: oriented",
+    )
+    assert model.open_threads == (
+        "question: Question: which source matters?",
+        "question: Question: which gap is urgent?",
+        "next action: Write a compact brief.",
+    )
 
 
 def test_work_product_selection_is_generic_not_domain_specific() -> None:
@@ -305,6 +325,31 @@ async def test_safe_workstream_advances_and_consolidates_into_domain_model(
     assert run.domain_model.learned_policy_observations
     assert run.artifacts
     assert (tmp_path / run.artifacts[-1].path).exists()
+
+
+@pytest.mark.asyncio
+async def test_blocked_workstream_consolidates_failure_note(tmp_path: Path) -> None:
+    agent = FakeBackendAgent([_turn(_outcome("Write a blocked capability brief."))])
+    result = WorkstreamExecutionResult(
+        workstream_id="placeholder",
+        status=ResidentWorkstreamStatus.BLOCKED.value,
+        summary="Tracker access blocked by sandbox networking.",
+        artifact_refs=("briefs/blocked.md",),
+        facts=("tracker client exists",),
+        usage=TokenUsage(input_tokens=3, output_tokens=2),
+    )
+    loop = ResidentDomainExpertLoop(
+        agent=agent,
+        expert_memory=LocalResidentDomainExpertMemory(tmp_path),
+        executor=RecordingExecutor(result),
+        config=ResidentDomainExpertConfig(),
+    )
+
+    run = await loop.run(MANDATE)
+
+    assert run.domain_model.failure_notes
+    assert "blocked" in run.domain_model.failure_notes[-1]
+    assert "tracker client exists" in run.domain_model.known_facts
 
 
 @pytest.mark.asyncio
