@@ -6,6 +6,7 @@ import pytest
 
 from ravn.domain.resident_opportunity import ResidentOpportunitySignal
 from ravn.domain.resident_portfolio import ResidentObjectiveStatus
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_opportunity import (
     LocalResidentOpportunityBackend,
     ResidentOpportunityConfig,
@@ -45,6 +46,7 @@ def _config() -> ResidentOpportunityConfig:
 
 @pytest.mark.asyncio
 async def test_opportunity_generation_creates_evidence_backed_work(tmp_path: Path) -> None:
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
     source = StaticOpportunitySource(
         (
             ResidentOpportunitySignal(
@@ -65,10 +67,12 @@ async def test_opportunity_generation_creates_evidence_backed_work(tmp_path: Pat
         backend=LocalResidentWorkItemBackend(tmp_path),
         opportunity_backend=LocalResidentOpportunityBackend(tmp_path),
         sources=(source,),
+        expert_memory=expert_memory,
         config=_config(),
     )
 
     report = await runtime.run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert source.calls == 1
     assert [item.duplicate_key for item in report.selected_opportunities] == ["modular-terrain"]
@@ -81,6 +85,9 @@ async def test_opportunity_generation_creates_evidence_backed_work(tmp_path: Pat
     )
     assert any(ref.startswith("resident/opportunities/") for ref in report.persisted_refs)
     assert any(ref.startswith("resident/opportunity-reports/") for ref in report.persisted_refs)
+    assert model is not None
+    assert any("modular terrain" in item for item in model.opportunities)
+    assert any("opportunity experiment pending" in item for item in model.open_threads)
 
 
 @pytest.mark.asyncio
@@ -98,15 +105,20 @@ async def test_opportunity_generation_suppresses_repeated_opportunities(
     )
     backend = LocalResidentWorkItemBackend(tmp_path)
     opportunity_backend = LocalResidentOpportunityBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
     runtime = ResidentOpportunityRuntime(
         backend=backend,
         opportunity_backend=opportunity_backend,
         sources=(StaticOpportunitySource((signal,)),),
+        expert_memory=expert_memory,
         config=_config(),
     )
 
     first = await runtime.run("A resident Ravn helps manage a home automation environment.")
     second = await runtime.run("A resident Ravn helps manage a home automation environment.")
+    model = await expert_memory.read_domain_model(
+        "A resident Ravn helps manage a home automation environment."
+    )
 
     assert first.selected_opportunities
     assert second.selected_opportunities == ()
@@ -118,6 +130,8 @@ async def test_opportunity_generation_suppresses_repeated_opportunities(
         "A resident Ravn helps manage a home automation environment."
     )
     assert len(objectives) == 1
+    assert model is not None
+    assert any("suppressed duplicate opportunity" in item for item in model.memory_hygiene_notes)
 
 
 @pytest.mark.asyncio

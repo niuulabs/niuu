@@ -162,6 +162,7 @@ class ResidentDomainModel:
         failure_notes: tuple[str, ...] | None = None,
         open_threads: tuple[str, ...] | None = None,
         memory_hygiene_notes: tuple[str, ...] | None = None,
+        opportunities: tuple[str, ...] | None = None,
         capability_gaps: tuple[str, ...] | None = None,
         learned_policy_observations: tuple[ResidentPolicyObservation, ...] | None = None,
         artifacts: tuple[ExpertArtifact, ...] | None = None,
@@ -181,7 +182,7 @@ class ResidentDomainModel:
             memory_hygiene_notes=memory_hygiene_notes
             if memory_hygiene_notes is not None
             else self.memory_hygiene_notes,
-            opportunities=self.opportunities,
+            opportunities=opportunities if opportunities is not None else self.opportunities,
             capability_gaps=capability_gaps
             if capability_gaps is not None
             else self.capability_gaps,

@@ -9,7 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ravn.domain.resident_expert import ResidentDomainExpertMemoryPort, ResidentDomainModel
+from ravn.domain.resident_expert import (
+    ResidentDomainExpertMemoryPort,
+    ResidentDomainModel,
+    WorkstreamExecutionResult,
+)
 from ravn.domain.resident_opportunity import (
     ResidentOpportunityCandidate,
     ResidentOpportunityReport,
@@ -79,12 +83,17 @@ class ResidentOpportunityConfig:
         "better",
         "company",
         "domain",
+        "experiment",
+        "explore",
         "from",
         "have",
         "into",
         "more",
         "resident",
+        "opportunity",
         "sells",
+        "safe",
+        "selected",
         "should",
         "small",
         "that",
@@ -151,6 +160,15 @@ class ResidentOpportunityRuntime:
                 merged_objectives,
             )
             persisted_refs.append(portfolio_ref)
+        persisted_refs.extend(
+            await self._consolidate_opportunity_learning(
+                mandate,
+                domain_model=domain_model,
+                selected=selected,
+                suppressed=suppressed,
+                duplicate_notes=duplicate_notes,
+            )
+        )
 
         report = ResidentOpportunityReport(
             mandate=mandate,
@@ -185,6 +203,32 @@ class ResidentOpportunityRuntime:
         if self._expert_memory is None:
             return None
         return await self._expert_memory.read_domain_model(mandate)
+
+    async def _consolidate_opportunity_learning(
+        self,
+        mandate: str,
+        *,
+        domain_model: ResidentDomainModel | None,
+        selected: tuple[ResidentOpportunityCandidate, ...],
+        suppressed: tuple[ResidentOpportunityCandidate, ...],
+        duplicate_notes: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if self._expert_memory is None:
+            return ()
+        if not selected and not suppressed and not duplicate_notes:
+            return ()
+        model = domain_model or ResidentDomainModel(mandate=mandate)
+        result = _opportunity_consolidation_result(selected, suppressed, duplicate_notes)
+        updated = _domain_model_with_opportunity_learning(
+            model,
+            selected=selected,
+            suppressed=suppressed,
+            duplicate_notes=duplicate_notes,
+            result=result,
+        )
+        model_ref = await self._expert_memory.write_domain_model(updated)
+        consolidation_ref = await self._expert_memory.write_consolidation(updated, result)
+        return (model_ref, consolidation_ref)
 
     async def _collect_signals(
         self,
@@ -461,6 +505,62 @@ def parse_environment_signal_record(content: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _opportunity_consolidation_result(
+    selected: tuple[ResidentOpportunityCandidate, ...],
+    suppressed: tuple[ResidentOpportunityCandidate, ...],
+    duplicate_notes: tuple[str, ...],
+) -> WorkstreamExecutionResult:
+    selected_titles = tuple(item.title for item in selected)
+    suppressed_titles = tuple(item.title for item in suppressed[:4])
+    summary = (
+        f"Selected {len(selected)} opportunity(ies), suppressed {len(suppressed)} "
+        "opportunity candidate(s)."
+    )
+    return WorkstreamExecutionResult(
+        workstream_id="resident-opportunity-generation",
+        status="completed" if selected else "sleep",
+        summary=summary,
+        artifact_refs=tuple(f"{_OPPORTUNITY_PREFIX}/{item.id}.md" for item in selected),
+        facts=selected_titles,
+        lessons=(
+            *tuple(f"selected opportunity: {item.summary}" for item in selected),
+            *tuple(f"suppressed opportunity: {item}" for item in suppressed_titles),
+            *duplicate_notes,
+        ),
+    )
+
+
+def _domain_model_with_opportunity_learning(
+    model: ResidentDomainModel,
+    *,
+    selected: tuple[ResidentOpportunityCandidate, ...],
+    suppressed: tuple[ResidentOpportunityCandidate, ...],
+    duplicate_notes: tuple[str, ...],
+    result: WorkstreamExecutionResult,
+) -> ResidentDomainModel:
+    selected_items = tuple(
+        f"{item.title} | safe next experiment: {item.safe_next_experiment}"
+        for item in selected
+    )
+    open_threads = tuple(
+        f"opportunity experiment pending: {item.duplicate_key}" for item in selected
+    )
+    hygiene_notes = tuple(
+        f"opportunity suppressed: {item.duplicate_key}" for item in suppressed[:4]
+    ) + duplicate_notes
+    return model.with_consolidation(
+        recent_outcomes=_merge_text(model.recent_outcomes, (result.summary,)),
+        known_facts=_merge_text(model.known_facts, result.facts),
+        resident_decisions=_merge_text(
+            model.resident_decisions,
+            tuple(f"selected opportunity for safe experiment: {item.title}" for item in selected),
+        ),
+        open_threads=_merge_text(model.open_threads, open_threads),
+        memory_hygiene_notes=_merge_text(model.memory_hygiene_notes, hygiene_notes),
+        opportunities=_merge_text(model.opportunities, selected_items),
+    )
+
+
 def parse_opportunity(content: str) -> ResidentOpportunityCandidate | None:
     metadata = _metadata(content)
     title = _title(content)
@@ -559,7 +659,7 @@ def _select_opportunities(
     duplicate_notes: list[str] = []
     duplicate_keys, duplicate_evidence = _known_duplicate_state(objectives, prior_opportunities)
     for candidate in candidates:
-        if candidate.duplicate_key in duplicate_keys:
+        if _known_duplicate_key(candidate.duplicate_key, duplicate_keys):
             suppressed_candidate = candidate.with_stage(ResidentOpportunityStage.SUPPRESSED.value)
             suppressed.append(suppressed_candidate)
             duplicate_notes.append(
@@ -643,6 +743,8 @@ def _signals_from_domain_model(
 ) -> tuple[ResidentOpportunitySignal, ...]:
     signals: list[ResidentOpportunitySignal] = []
     for index, item in enumerate(model.opportunities):
+        if "safe next experiment:" in item.casefold():
+            continue
         signals.append(
             ResidentOpportunitySignal(
                 id=f"domain-opportunity-{index}",
@@ -694,7 +796,7 @@ def _score_opportunity(
     config: ResidentOpportunityConfig,
 ) -> ResidentOpportunityScore:
     duplicate_keys, _duplicate_evidence = _known_duplicate_state(objectives, prior_opportunities)
-    duplicate = _dedupe_key(theme) in duplicate_keys
+    duplicate = _known_duplicate_key(_dedupe_key(theme), duplicate_keys)
     risk = min(config.score_max, len(risks) * config.risk_penalty)
     cost = min(config.score_max, len(risks) * config.cost_penalty)
     expected_value = min(
@@ -767,6 +869,19 @@ def _known_duplicate_state(
     for objective in objectives:
         evidence_keys.update(_evidence_keys(objective.source_evidence))
     return keys, evidence_keys
+
+
+def _known_duplicate_key(candidate_key: str, known_keys: set[str]) -> bool:
+    key = candidate_key.strip("-")
+    if not key:
+        return False
+    for known in known_keys:
+        known = known.strip("-")
+        if not known:
+            continue
+        if key == known or key.startswith(f"{known}-") or known.startswith(f"{key}-"):
+            return True
+    return False
 
 
 def _summary_for_theme(
