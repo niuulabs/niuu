@@ -220,6 +220,20 @@ def _sample_delegation_result_pair(
     return None
 
 
+def _successful_real_source_objective_ids(
+    real_delegations: list[ResidentDelegationRecord],
+    observed_results: list[ResidentExecutionResult],
+) -> set[str]:
+    successful_session_ids = {
+        result.session_id for result in _successful_real_results(real_delegations, observed_results)
+    }
+    return {
+        delegation.source_objective_id
+        for delegation in real_delegations
+        if delegation.backend_session_id in successful_session_ids
+    }
+
+
 async def _main() -> None:
     args = _parse_args()
     if args.config:
@@ -374,10 +388,14 @@ async def _main() -> None:
         raise SystemExit("[proof] expected persisted delegation record ref")
     if not any(ref.startswith("resident/delegation-results/") for ref in persisted_refs):
         raise SystemExit("[proof] expected persisted delegation result ref")
+    successful_source_ids = _successful_real_source_objective_ids(
+        real_delegations,
+        observed_results,
+    )
     if not any(
         objective.status == ResidentObjectiveStatus.COMPLETED.value
         for objective in after_objectives
-        if objective.id in {"generic-research-one", "generic-research-two"}
+        if objective.id in successful_source_ids
     ):
         raise SystemExit("[proof] expected delegated source objective to be completed")
     if not any(

@@ -30,6 +30,7 @@ from scripts.prove_resident_delegation import (
     _real_delegation_records,
     _sample_delegation_result_pair,
     _successful_real_results,
+    _successful_real_source_objective_ids,
 )
 
 MANDATE = (
@@ -744,4 +745,7 @@ def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
     assert _cancelled_real_delegation_records([local, real, cancelled]) == [cancelled]
     assert real_results == [failed, matched]
     assert successful_results == [matched]
+    assert _successful_real_source_objective_ids(real_records, [unmatched, failed, matched]) == {
+        objective.id
+    }
     assert sample == (real, matched)
