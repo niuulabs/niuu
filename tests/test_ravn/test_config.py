@@ -26,6 +26,7 @@ from ravn.config import (
     ResidentCapabilityDiscoveryConfig,
     ResidentDelegationExecutionConfig,
     ResidentEvolutionConfig,
+    ResidentReviewConfig,
     Settings,
     SignalSourceConfig,
     ThreadConfig,
@@ -227,6 +228,23 @@ class TestPhysicalDeviceConfig:
         assert c.secret_kwargs_env["token"] == "PRINTER_TOKEN"
         assert c.command_timeout_seconds == 12.5
         assert c.max_output_bytes == 4096
+
+
+class TestResidentReviewConfig:
+    def test_dynamic_verification_adapter_config_accepts_kwargs_and_bounds(self) -> None:
+        c = ResidentReviewConfig(
+            verification_adapter="pkg.RealVerifier",
+            verification_kwargs={"timeout_seconds": 7},
+            verification_secret_kwargs_env={"token": "VERIFY_TOKEN"},
+            max_follow_up_objectives=2,
+            duplicate_review_enabled=True,
+        )
+
+        assert c.verification_adapter == "pkg.RealVerifier"
+        assert c.verification_kwargs["timeout_seconds"] == 7
+        assert c.verification_secret_kwargs_env["token"] == "VERIFY_TOKEN"
+        assert c.max_follow_up_objectives == 2
+        assert c.duplicate_review_enabled is True
 
 
 class TestMemoryConfig:

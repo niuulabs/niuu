@@ -2648,6 +2648,31 @@ class ResidentDelegationExecutionConfig(BaseModel):
     )
 
 
+class ResidentReviewConfig(BaseModel):
+    """Resident self-review adapter and orchestration bounds."""
+
+    verification_adapter: str = Field(
+        default="ravn.adapters.review.command.CommandResidentVerificationAdapter",
+        description="Fully-qualified ResidentVerificationPort adapter class.",
+    )
+    verification_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs for the verification adapter.",
+    )
+    verification_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps verification adapter kwarg names to env var names.",
+    )
+    max_follow_up_objectives: int = Field(
+        default=1,
+        description="Maximum follow-up objectives created from one failed review.",
+    )
+    duplicate_review_enabled: bool = Field(
+        default=False,
+        description="Whether to rerun checks for an already-reviewed artifact key.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3266,6 +3291,7 @@ class Settings(BaseSettings):
     resident_delegation_execution: ResidentDelegationExecutionConfig = Field(
         default_factory=ResidentDelegationExecutionConfig
     )
+    resident_review: ResidentReviewConfig = Field(default_factory=ResidentReviewConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
