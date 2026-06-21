@@ -39,6 +39,7 @@ from ravn.resident_portfolio import (
     MimirResidentWorkItemBackend,
     ResidentLongHorizonWorkManager,
     ResidentPortfolioConfig,
+    ResidentPortfolioValidator,
 )
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
@@ -74,6 +75,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-workstream-turns", type=int, default=1)
     parser.add_argument("--max-wall-clock-seconds", type=float, default=1800.0)
     parser.add_argument("--max-tokens", type=int, default=0)
+    parser.add_argument(
+        "--proof-cycles",
+        type=int,
+        default=1,
+        help="Run the resident portfolio manager repeatedly against the same backend.",
+    )
+    parser.add_argument(
+        "--min-selection-decisions",
+        type=int,
+        default=1,
+        help="Minimum real manager selections required across proof cycles.",
+    )
     return parser.parse_args()
 
 
@@ -262,9 +275,49 @@ async def _main() -> None:
     print(f"[proof] memory={memory_label}")
     print(f"[proof] seeded_fixture={args.seed_autonomy_memory}")
     print(f"[proof] max_objectives_selected={args.max_objectives_selected}")
+    print(f"[proof] proof_cycles={args.proof_cycles}")
     print(f"[proof] max_wake_cycles={args.max_wake_cycles}\n")
 
-    run = await manager.run(mandate)
+    validator = ResidentPortfolioValidator(
+        backend=work_backend,
+        max_selected=args.max_objectives_selected,
+        max_active=args.max_active_objectives,
+    )
+    runs: list[Any] = []
+    for proof_cycle in range(1, max(1, args.proof_cycles) + 1):
+        validation_before = await validator.validate(mandate)
+        _print_validation_report(
+            proof_cycle=proof_cycle,
+            phase="before",
+            report=validation_before,
+        )
+        run = await manager.run(mandate)
+        runs.append(run)
+        for selected in run.selected_objectives:
+            print(
+                f"[selection-decision] cycle={proof_cycle} "
+                f"objective={selected.id} status={selected.status} "
+                f"priority={selected.priority_score} reason={selected.priority_rationale}"
+            )
+        for advanced in run.advanced_objectives:
+            print(
+                f"[cycle-advanced] cycle={proof_cycle} "
+                f"objective={advanced.id} status={advanced.status} "
+                f"proof={len(advanced.proof_progress)} "
+                f"artifacts={len(advanced.artifact_links)} "
+                f"wake_links={len(advanced.wake_links)}"
+            )
+        validation_after = await validator.validate(mandate)
+        _print_validation_report(
+            proof_cycle=proof_cycle,
+            phase="after",
+            report=validation_after,
+        )
+
+    run = runs[-1]
+    discovered = tuple(item for proof_run in runs for item in proof_run.discovered_objectives)
+    selected_decisions = tuple(item for proof_run in runs for item in proof_run.selected_objectives)
+    advanced_decisions = tuple(item for proof_run in runs for item in proof_run.advanced_objectives)
     portfolio_refs = await _list_refs(backend=work_backend, prefix="resident/portfolio")
     wake_refs = await _list_refs(backend=work_backend, prefix="resident/wakeful/cycles")
     artifact_refs = await _list_refs(
@@ -279,9 +332,9 @@ async def _main() -> None:
     print("\n[proof] Resident portfolio proof complete.")
     print(f"[proof] portfolio_ref={run.portfolio_ref}")
     print(f"[proof] objectives={len(run.portfolio.objectives)}")
-    print(f"[proof] discovered={len(run.discovered_objectives)}")
-    print(f"[proof] selected={len(run.selected_objectives)}")
-    print(f"[proof] advanced={len(run.advanced_objectives)}")
+    print(f"[proof] discovered={len(discovered)}")
+    print(f"[proof] selected={len(selected_decisions)}")
+    print(f"[proof] advanced={len(advanced_decisions)}")
     print(f"[proof] portfolio_refs={len(portfolio_refs)}")
     print(f"[proof] wake_refs={len(wake_refs)}")
     print(f"[proof] artifact_refs={len(artifact_refs)}")
@@ -296,17 +349,17 @@ async def _main() -> None:
         f"total:{run.budget.total_tokens}"
     )
 
-    for objective in run.discovered_objectives[:8]:
+    for objective in discovered[:8]:
         print(
             f"[candidate] {objective.id} status={objective.status} "
             f"kind={objective.kind} title={objective.title}"
         )
-    for objective in run.selected_objectives:
+    for objective in selected_decisions:
         print(
             f"[selected] {objective.id} status={objective.status} "
             f"priority={objective.priority_score} reason={objective.priority_rationale}"
         )
-    for objective in run.advanced_objectives:
+    for objective in advanced_decisions:
         print(
             f"[advanced] {objective.id} status={objective.status} "
             f"proof={len(objective.proof_progress)} artifacts={len(objective.artifact_links)} "
@@ -319,17 +372,20 @@ async def _main() -> None:
 
     if not run.portfolio_ref:
         raise SystemExit("[proof] expected durable portfolio")
-    if len(run.discovered_objectives) < 2:
+    if len(discovered) < 2:
         raise SystemExit("[proof] expected multiple inferred candidate objectives")
-    if not run.selected_objectives:
-        raise SystemExit("[proof] expected one selected objective")
-    if run.selected_objectives[0].status != ResidentObjectiveStatus.ACTIVE.value:
+    if len(selected_decisions) < args.min_selection_decisions:
+        raise SystemExit(
+            "[proof] expected at least "
+            f"{args.min_selection_decisions} selected objective decision(s)"
+        )
+    if selected_decisions[0].status != ResidentObjectiveStatus.ACTIVE.value:
         raise SystemExit("[proof] expected selected objective to be active")
-    if not run.selected_objectives[0].priority_rationale:
+    if not selected_decisions[0].priority_rationale:
         raise SystemExit("[proof] expected priority rationale")
-    if not run.advanced_objectives:
+    if not advanced_decisions:
         raise SystemExit("[proof] expected bounded objective advancement")
-    advanced = run.advanced_objectives[0]
+    advanced = advanced_decisions[0]
     if not advanced.proof_criteria or not advanced.budget_estimate:
         raise SystemExit("[proof] expected proof criteria and budget estimate")
     if not advanced.wake_links or not advanced.artifact_links:
@@ -338,6 +394,31 @@ async def _main() -> None:
         raise SystemExit("[proof] expected consolidation linked through backend")
     if run.decision.value != "stop" or "max turns reached" not in run.decision_reason:
         raise SystemExit("[proof] expected stop caused by configured portfolio budget")
+
+
+def _print_validation_report(
+    *,
+    proof_cycle: int,
+    phase: str,
+    report: Any,
+) -> None:
+    selected = report.selected_objective.objective_id if report.selected_objective else "none"
+    issues = ",".join(item.code for item in report.issues) or "none"
+    warnings = ",".join(item.code for item in report.warnings) or "none"
+    hints = " | ".join(report.stale_duplicate_superseded_hints) or "none"
+    counts = ",".join(
+        f"{status}:{count}" for status, count in report.objective_counts_by_status
+    ) or "none"
+    print(
+        f"[validation] cycle={proof_cycle} phase={phase} "
+        f"verdict={report.verdict} selected={selected} issues={issues} "
+        f"warnings={warnings} counts={counts}"
+    )
+    print(f"[duplicate-stale-check] cycle={proof_cycle} phase={phase} hints={hints}")
+    print(
+        f"[dependency-check] cycle={proof_cycle} phase={phase} "
+        f"{report.dependency_graph_summary}"
+    )
 
 
 if __name__ == "__main__":
