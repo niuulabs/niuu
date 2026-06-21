@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from ravn.adapters.triggers.resident_autonomy import ResidentAutonomyTrigger
 from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.operator_contact import (
@@ -488,6 +489,70 @@ async def test_autonomy_loop_runs_multiple_cycles_and_persists_wake_records(
     assert len(wake_records) == 2
     assert any(item.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value for item in objectives)
     assert any(item.title.startswith("Follow up delegated result") for item in objectives)
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_runs_kernel_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective("daemon-one", "Daemon resident objective"),
+    )
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        poll_interval_seconds=0.01,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+
+    assert run is not None
+    assert len(run.cycles) == 1
+    assert len(wake_records) == 1
+    assert decisions
+    assert "resident_autonomy_trigger" in decisions[-1].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_sleeps_for_pending_operator(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    pending = _objective("daemon-pending", "Daemon pending objective").with_updates(
+        status=ResidentObjectiveStatus.NEEDS_OPERATOR.value,
+        pending_question="May I operate the physical printer?",
+    )
+    await _write_portfolio(backend, pending)
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+
+    assert run is None
+    assert wake_records == []
+    assert decisions
+    assert "slept: pending operator input" in decisions[-1].read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

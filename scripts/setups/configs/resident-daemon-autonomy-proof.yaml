@@ -1,0 +1,122 @@
+# ─── resident-daemon-autonomy-proof ──────────────────────────────────────────
+#
+# Real daemon proof for resident autonomy.
+#
+# This config intentionally runs through the production daemon path:
+#
+#   ravn daemon
+#     -> DriveLoop
+#     -> ResidentAutonomyTrigger
+#     -> ResidentLongHorizonWorkManager
+#     -> ResidentAutonomyLoopRuntime
+#     -> resident_delegation_execution workflow adapter
+#     -> Ting workflow launch
+#     -> Volundr/Forge/Codex worker session
+#
+# There is no seeded task list and no proof-script resident loop here. The only
+# resident input is the mandate below.
+#
+# Expected local preflight:
+#   ./start-dev
+#
+# If start-dev prints a different bind address, update workflow_source_kwargs.base_url
+# below to match it before running the daemon proof.
+#
+# Proof command:
+#   uv run ravn daemon --config scripts/setups/configs/resident-daemon-autonomy-proof.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+llm:
+  model: gpt-5.5
+  max_tokens: 8192
+  timeout: 180
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: "http://localhost:8088"
+
+memory:
+  backend: sqlite
+
+mimir:
+  enabled: true
+  path: /private/tmp/resident-daemon-autonomy-proof-codex-final/mimir
+  search:
+    backend: fts
+  source_trigger:
+    enabled: false
+  staleness_trigger:
+    enabled: false
+
+resident_autonomy:
+  enabled: true
+  mandate: |
+    Kanuck Valley Models is my small 3D printing company.
+    You are its resident Ravn.
+    Help it become easier to run, more creative, and more successful.
+    Ask before spending money or operating physical machines.
+  bootstrap_portfolio: true
+  persona: resident-codex
+  operator_contact: pending
+  poll_interval_seconds: 60
+  initial_delay_seconds: 5
+  max_cycles_per_wake: 2
+  max_wall_clock_seconds: 1800
+  sleep_between_cycles_seconds: 20
+  max_objectives_selected: 2
+  max_active_objectives: 3
+  max_wake_cycles: 2
+  orientation_turns: 1
+  max_workstream_turns: 1
+
+resident_delegation_execution:
+  adapter: ravn.adapters.resident_execution.workflow.ConfiguredWorkflowResidentExecutionAdapter
+  kwargs:
+    workflow_source_adapter: ravn.adapters.capabilities.ting_workflows.TingWorkflowCapabilityAdapter
+    workflow_source_kwargs:
+      base_url: "http://192.168.1.106:8080"
+      allow_anonymous: true
+      timeout_seconds: 30.0
+    workflow_id: "1bfc01b1-4d01-5d20-86e1-2956dff11464"
+    connection_id: "local"
+    model: "gpt-5.5"
+    definition: "skuldCodex"
+  max_delegations: 1
+  max_observations: 8
+  max_follow_up_objectives: 4
+  abandon_after_seconds: 0
+
+budget:
+  daily_cap_usd: 5.0
+
+initiative:
+  enabled: true
+  max_concurrent_tasks: 1
+  queue_journal_path: /private/tmp/resident-daemon-autonomy-proof-codex-final/queue.json
+
+thread:
+  enabled: false
+
+wakefulness:
+  enabled: false
+
+recap:
+  enabled: false
+
+dream_cycle:
+  enabled: false
+
+gateway:
+  enabled: false
+
+sleipnir:
+  enabled: false
+
+mesh:
+  enabled: false
+
+skuld:
+  enabled: false
+
+logging:
+  level: info

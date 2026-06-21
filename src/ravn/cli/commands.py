@@ -2915,6 +2915,7 @@ async def _run_daemon(
                 settings,
                 llm=llm,
                 interaction_tracker=interaction_tracker,
+                agent_factory=_agent_factory,
             )
 
         # Wire task dispatch subscription when requested (--listen / --daemon)
@@ -3491,6 +3492,7 @@ def _wire_mimir_triggers(
     settings: Settings,
     llm: Any = None,
     interaction_tracker: Any = None,
+    agent_factory: Any | None = None,
 ) -> None:
     """Register Mímir source, staleness, and thread triggers on the drive loop.
 
@@ -3621,6 +3623,190 @@ def _wire_mimir_triggers(
             settings.dream_cycle.token_budget_usd,
             settings.dream_cycle.poll_interval_seconds,
         )
+
+    if settings.resident_autonomy.enabled:
+        mandate = settings.resident_autonomy.mandate.strip()
+        if not mandate:
+            logger.warning("resident_autonomy: enabled but mandate is empty; skipping")
+        else:
+            from ravn.adapters.channels.silent import SilentChannel
+            from ravn.adapters.triggers.resident_autonomy import ResidentAutonomyTrigger
+            from ravn.domain.operator_contact import (
+                ChannelOperatorContact,
+                PendingOperatorContact,
+            )
+            from ravn.resident_continuation import MimirResidentMemory
+            from ravn.resident_expert import (
+                MimirResidentDomainExpertMemory,
+                ResidentDomainExpertConfig,
+                ResidentDomainExpertLoop,
+            )
+            from ravn.resident_portfolio import (
+                MimirResidentWorkItemBackend,
+                ResidentAutonomyLoopConfig,
+                ResidentLongHorizonWorkManager,
+                ResidentPortfolioConfig,
+            )
+            from ravn.wakeful_resident import (
+                MimirWakefulResidentMemory,
+                WakefulResidentConfig,
+                WakefulResidentRuntime,
+            )
+
+            contact = None
+            if settings.resident_autonomy.operator_contact == "pending":
+                contact = PendingOperatorContact()
+            elif settings.resident_autonomy.operator_contact == "skuld":
+                channel = (
+                    drive_loop.operator_contact_channel()
+                    if hasattr(drive_loop, "operator_contact_channel")
+                    else None
+                )
+                if channel is None:
+                    logger.warning(
+                        "resident_autonomy: operator_contact=skuld but skuld channel is "
+                        "disabled; falling back to pending contact"
+                    )
+                    contact = PendingOperatorContact()
+                else:
+                    contact = ChannelOperatorContact(
+                        channel=channel,
+                        source="resident-autonomy-daemon",
+                        persona=settings.initiative.default_persona or "resident-ravn",
+                        session_id="resident-autonomy-daemon",
+                    )
+
+            exec_cfg = settings.resident_delegation_execution
+            executor_cls = _import_class(exec_cfg.adapter)
+            executor = executor_cls(
+                **_inject_secrets(dict(exec_cfg.kwargs), exec_cfg.secret_kwargs_env)
+            )
+            backend = MimirResidentWorkItemBackend(mimir)
+            wake_memory = MimirWakefulResidentMemory(mimir)
+            expert_memory = MimirResidentDomainExpertMemory(mimir)
+            portfolio_manager = None
+            if settings.resident_autonomy.bootstrap_portfolio:
+                if agent_factory is None:
+                    logger.warning(
+                        "resident_autonomy: bootstrap_portfolio enabled but no daemon "
+                        "agent factory is available; delegation will run against existing state"
+                    )
+                else:
+                    task_persona = (
+                        settings.resident_autonomy.persona
+                        or settings.initiative.default_persona
+                        or None
+                    )
+                    bootstrap_agent = agent_factory(
+                        SilentChannel(),
+                        task_id="resident-autonomy-bootstrap",
+                        task_persona=task_persona,
+                        triggered_by="resident_autonomy:bootstrap",
+                    )
+                    expert_loop = ResidentDomainExpertLoop(
+                        agent=bootstrap_agent,
+                        expert_memory=expert_memory,
+                        continuation_memory=MimirResidentMemory(mimir),
+                        config=ResidentDomainExpertConfig(
+                            orientation_turns=max(0, settings.resident_autonomy.orientation_turns),
+                            max_active_workstreams=max(
+                                0,
+                                settings.resident_autonomy.max_active_objectives,
+                            ),
+                            max_workstream_turns=max(
+                                0,
+                                settings.resident_autonomy.max_workstream_turns,
+                            ),
+                            max_wall_clock_seconds=max(
+                                0.0,
+                                settings.resident_autonomy.max_wall_clock_seconds,
+                            ),
+                            max_tokens=max(0, settings.resident_autonomy.max_tokens),
+                        ),
+                    )
+                    wake_runtime = WakefulResidentRuntime(
+                        expert_loop=expert_loop,
+                        expert_memory=expert_memory,
+                        wake_memory=wake_memory,
+                        operator_memory=MimirResidentMemory(mimir),
+                        config=WakefulResidentConfig(
+                            max_wake_cycles=max(0, settings.resident_autonomy.max_wake_cycles),
+                            max_wall_clock_seconds=max(
+                                0.0,
+                                settings.resident_autonomy.max_wall_clock_seconds,
+                            ),
+                            max_tokens=max(0, settings.resident_autonomy.max_tokens),
+                        ),
+                    )
+                    portfolio_manager = ResidentLongHorizonWorkManager(
+                        backend=backend,
+                        wake_runtime=wake_runtime,
+                        expert_memory=expert_memory,
+                        wake_memory=wake_memory,
+                        config=ResidentPortfolioConfig(
+                            max_objectives_selected=max(
+                                0,
+                                settings.resident_autonomy.max_objectives_selected,
+                            ),
+                            max_active_objectives=max(
+                                0,
+                                settings.resident_autonomy.max_active_objectives,
+                            ),
+                            max_wake_cycles=max(0, settings.resident_autonomy.max_wake_cycles),
+                            max_workstream_turns=max(
+                                0,
+                                settings.resident_autonomy.max_workstream_turns,
+                            ),
+                            max_wall_clock_seconds=max(
+                                0.0,
+                                settings.resident_autonomy.max_wall_clock_seconds,
+                            ),
+                            max_tokens=max(0, settings.resident_autonomy.max_tokens),
+                            bootstrap_when_empty=True,
+                        ),
+                    )
+            drive_loop.register_trigger(
+                ResidentAutonomyTrigger(
+                    mandate=mandate,
+                    backend=backend,
+                    executor=executor,
+                    wake_memory=wake_memory,
+                    expert_memory=expert_memory,
+                    ask_operator=contact,
+                    portfolio_manager=portfolio_manager,
+                    loop_config=ResidentAutonomyLoopConfig(
+                        max_cycles=max(0, settings.resident_autonomy.max_cycles_per_wake),
+                        max_delegations_per_cycle=max(0, exec_cfg.max_delegations),
+                        max_observations_per_cycle=max(1, exec_cfg.max_observations),
+                        max_review_attempts=max(0, exec_cfg.max_follow_up_objectives),
+                        max_retry_follow_up_depth=max(0, exec_cfg.max_retry_follow_up_depth),
+                        max_wall_clock_seconds=max(
+                            0.0,
+                            settings.resident_autonomy.max_wall_clock_seconds,
+                        ),
+                        sleep_between_cycles_seconds=max(
+                            0.0,
+                            settings.resident_autonomy.sleep_between_cycles_seconds,
+                        ),
+                        approved_risk_objective_ids=tuple(
+                            exec_cfg.approved_risk_objective_ids
+                        ),
+                        abandon_after_seconds=max(0.0, exec_cfg.abandon_after_seconds),
+                        reconcile_duplicate_delegations=exec_cfg.reconcile_duplicate_delegations,
+                    ),
+                    poll_interval_seconds=settings.resident_autonomy.poll_interval_seconds,
+                    initial_delay_seconds=settings.resident_autonomy.initial_delay_seconds,
+                    skip_when_operator_pending=(
+                        settings.resident_autonomy.skip_when_operator_pending
+                    ),
+                )
+            )
+            logger.info(
+                "resident_autonomy: trigger registered (poll=%.1fs, cycles=%d, contact=%s)",
+                settings.resident_autonomy.poll_interval_seconds,
+                settings.resident_autonomy.max_cycles_per_wake,
+                settings.resident_autonomy.operator_contact,
+            )
 
 
 def _wire_cron(

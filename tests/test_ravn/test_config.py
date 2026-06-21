@@ -23,6 +23,7 @@ from ravn.config import (
     PermissionConfig,
     PermissionRuleConfig,
     PhysicalDeviceConfig,
+    ResidentAutonomyTriggerConfig,
     ResidentCapabilityDiscoveryConfig,
     ResidentDelegationExecutionConfig,
     ResidentEvolutionConfig,
@@ -220,6 +221,39 @@ class TestResidentDelegationExecutionConfig:
         assert c.approved_risk_objective_ids == ("approved-objective",)
         assert c.abandon_after_seconds == 3600.0
         assert c.reconcile_duplicate_delegations is False
+
+
+class TestResidentAutonomyTriggerConfig:
+    def test_defaults_are_disabled_until_mandate_is_configured(self) -> None:
+        c = ResidentAutonomyTriggerConfig()
+
+        assert c.enabled is False
+        assert c.mandate == ""
+        assert c.bootstrap_portfolio is True
+        assert c.operator_contact == "pending"
+        assert c.max_cycles_per_wake == 2
+        assert c.poll_interval_seconds > 0
+
+    def test_yaml_driven_daemon_autonomy_bounds(self) -> None:
+        c = ResidentAutonomyTriggerConfig(
+            enabled=True,
+            mandate="Kanuck Valley Models is my small 3D printing company.",
+            operator_contact="skuld",
+            persona="domain-drive",
+            max_cycles_per_wake=4,
+            max_objectives_selected=2,
+            max_wake_cycles=3,
+            poll_interval_seconds=30.0,
+        )
+
+        assert c.enabled is True
+        assert c.mandate.startswith("Kanuck Valley Models")
+        assert c.operator_contact == "skuld"
+        assert c.persona == "domain-drive"
+        assert c.max_cycles_per_wake == 4
+        assert c.max_objectives_selected == 2
+        assert c.max_wake_cycles == 3
+        assert c.poll_interval_seconds == 30.0
 
 
 class TestPhysicalDeviceConfig:

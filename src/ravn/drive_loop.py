@@ -859,6 +859,10 @@ class DriveLoop:
         """Register a trigger source before calling ``run()``."""
         self._triggers.append(trigger)
 
+    def operator_contact_channel(self) -> ChannelPort | None:
+        """Return the daemon's existing outbound operator channel, when enabled."""
+        return self._skuld_channel
+
     async def enqueue(self, task: AgentTask) -> None:
         """Add a task to the priority queue, honouring deadline and capacity."""
         if task.deadline is not None and datetime.now(UTC) > task.deadline:

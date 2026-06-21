@@ -2750,6 +2750,93 @@ class ResidentDelegationExecutionConfig(BaseModel):
     )
 
 
+class ResidentAutonomyTriggerConfig(BaseModel):
+    """Daemon-managed resident autonomy wake trigger.
+
+    This is the production bridge from the existing ``ravn daemon`` drive loop
+    into the resident autonomy/delegation kernel.  It is intentionally disabled
+    by default until a deployment supplies a resident mandate.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Run resident autonomy wake passes inside ravn daemon.",
+    )
+    mandate: str = Field(
+        default="",
+        description="Small resident domain mandate used for daemon wake passes.",
+    )
+    poll_interval_seconds: float = Field(
+        default=300.0,
+        description="Seconds between resident autonomy wake checks.",
+    )
+    initial_delay_seconds: float = Field(
+        default=0.0,
+        description="Optional delay before the first resident autonomy wake check.",
+    )
+    max_cycles_per_wake: int = Field(
+        default=2,
+        description="Maximum resident autonomy cycles in one daemon wake pass.",
+    )
+    max_wall_clock_seconds: float = Field(
+        default=1800.0,
+        description="Maximum wall-clock seconds for one daemon wake pass.",
+    )
+    sleep_between_cycles_seconds: float = Field(
+        default=0.0,
+        description="Pause between resident autonomy cycles in one wake pass.",
+    )
+    operator_contact: Literal["pending", "skuld", "none"] = Field(
+        default="pending",
+        description=(
+            "How daemon resident asks are handled: pending persists a wait state, "
+            "skuld emits help_needed through the existing Skuld channel, none disables asks."
+        ),
+    )
+    skip_when_operator_pending: bool = Field(
+        default=True,
+        description=(
+            "Sleep without running the resident kernel when any objective is already "
+            "waiting on operator input."
+        ),
+    )
+    bootstrap_portfolio: bool = Field(
+        default=True,
+        description=(
+            "Run the existing long-horizon resident portfolio manager before delegation "
+            "so mandate-only residents can create their own work."
+        ),
+    )
+    persona: str = Field(
+        default="",
+        description="Optional persona used for mandate orientation/portfolio bootstrap.",
+    )
+    max_objectives_selected: int = Field(
+        default=1,
+        description="Maximum portfolio objectives selected during one daemon wake pass.",
+    )
+    max_active_objectives: int = Field(
+        default=3,
+        description="Maximum active resident objectives considered during portfolio selection.",
+    )
+    max_wake_cycles: int = Field(
+        default=1,
+        description="Maximum wakeful domain-expert cycles during portfolio bootstrap.",
+    )
+    orientation_turns: int = Field(
+        default=1,
+        description="Maximum orientation turns for mandate/domain modeling.",
+    )
+    max_workstream_turns: int = Field(
+        default=1,
+        description="Maximum workstream turns during domain-expert bootstrap.",
+    )
+    max_tokens: int = Field(
+        default=0,
+        description="Optional token limit for resident bootstrap loops; 0 uses runtime defaults.",
+    )
+
+
 class ResidentReviewConfig(BaseModel):
     """Resident self-review adapter and orchestration bounds."""
 
@@ -3392,6 +3479,9 @@ class Settings(BaseSettings):
     # NIU-1067: resident delegated execution adapter
     resident_delegation_execution: ResidentDelegationExecutionConfig = Field(
         default_factory=ResidentDelegationExecutionConfig
+    )
+    resident_autonomy: ResidentAutonomyTriggerConfig = Field(
+        default_factory=ResidentAutonomyTriggerConfig
     )
     resident_review: ResidentReviewConfig = Field(default_factory=ResidentReviewConfig)
     resident_opportunity_generation: ResidentOpportunityGenerationConfig = Field(

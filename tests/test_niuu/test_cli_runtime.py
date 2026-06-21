@@ -104,6 +104,50 @@ async def test_cli_turn_runner_falls_back_to_streamed_delta_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cli_turn_runner_concatenates_streamed_token_chunks_without_newlines() -> None:
+    transport = StubTransport(
+        {
+            "first": [
+                {"type": "content_block_delta", "delta": {"text": "STRUCT"}},
+                {"type": "content_block_delta", "delta": {"text": "URED"}},
+                {"type": "content_block_delta", "delta": {"text": " OUT"}},
+                {"type": "content_block_delta", "delta": {"text": "COME"}},
+                {"type": "result", "result": ""},
+            ]
+        }
+    )
+    runner = CliTurnRunner(transport)
+
+    result = await runner.run_prompt("first", "req-1")
+
+    assert result == "STRUCTURED OUTCOME"
+
+
+@pytest.mark.asyncio
+async def test_cli_turn_runner_separates_distinct_text_blocks() -> None:
+    transport = StubTransport(
+        {
+            "first": [
+                {"type": "content_block_start", "content_block": {"type": "text"}},
+                {"type": "content_block_delta", "delta": {"text": "First"}},
+                {"type": "content_block_delta", "delta": {"text": " block."}},
+                {"type": "content_block_stop"},
+                {"type": "content_block_start", "content_block": {"type": "text"}},
+                {"type": "content_block_delta", "delta": {"text": "Second"}},
+                {"type": "content_block_delta", "delta": {"text": " block."}},
+                {"type": "content_block_stop"},
+                {"type": "result", "result": ""},
+            ]
+        }
+    )
+    runner = CliTurnRunner(transport)
+
+    result = await runner.run_prompt("first", "req-1")
+
+    assert result == "First block.\n\nSecond block."
+
+
+@pytest.mark.asyncio
 async def test_cli_turn_runner_serializes_overlapping_prompts() -> None:
     emitted: list[str] = []
 
