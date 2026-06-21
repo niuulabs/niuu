@@ -3115,6 +3115,8 @@ def _delegation_capability_gaps(
     result: ResidentExecutionResult,
     review: ResidentDelegationReview,
 ) -> tuple[str, ...]:
+    if review.decision == ResidentDelegationReviewDecision.COMPLETE.value:
+        return ()
     text = " ".join((result.summary, result.blocked_reason, review.reason)).casefold()
     if not _has_any(text, ("capability", "tool", "workflow", "adapter", "unavailable")):
         return ()

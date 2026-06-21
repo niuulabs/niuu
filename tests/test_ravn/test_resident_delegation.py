@@ -375,6 +375,35 @@ async def test_delegation_review_consolidates_into_domain_expert_memory(
 
 
 @pytest.mark.asyncio
+async def test_completed_workflow_delegation_does_not_create_capability_gap(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-workflow",
+            status=ResidentDelegationStatus.COMPLETED.value,
+            summary="Local workflow artifact research/campaigns/proof/plan.md",
+            output_refs=("research/campaigns/proof/plan.md",),
+            findings=("workflow artifact snapshot observed while session remained running",),
+            follow_up_suggestions=("Review workflow output for session session-workflow",),
+        )
+    )
+
+    await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        expert_memory=expert_memory,
+    ).run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
+
+    assert model is not None
+    assert model.capability_gaps == ()
+
+
+@pytest.mark.asyncio
 async def test_resident_abandons_stale_delegation_without_relaunching(
     tmp_path: Path,
 ) -> None:
