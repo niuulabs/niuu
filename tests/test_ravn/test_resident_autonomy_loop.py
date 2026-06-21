@@ -35,6 +35,7 @@ from ravn.ports.capability import (
     WorkflowRunReference,
     WorkflowRunStatus,
 )
+from ravn.resident_continuation import LocalResidentMemory
 from ravn.resident_operator_contact import ingest_resident_operator_reply
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
@@ -623,6 +624,7 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     backend = LocalResidentWorkItemBackend(tmp_path)
+    memory = LocalResidentMemory(tmp_path / "memory")
     pending = _objective(
         "risky",
         "Risky autonomous objective",
@@ -636,7 +638,11 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
     report = await ingest_resident_operator_reply(
         backend=backend,
         mandate=MANDATE,
-        content="Yes, approved for this specific objective.",
+        content=(
+            "Yes, approved for this specific objective.\n"
+            "Policy: Spending under $20 for this objective is ok after this approval.\n"
+            "Preference: Prefer PLA before resin for quick terrain prototypes."
+        ),
         metadata={
             "help_summary": "May I spend money for this objective?",
             "help_context": {
@@ -647,10 +653,17 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
                 "impact": "Allows this objective to be delegated.",
             },
         },
+        memory=memory,
     )
 
     assert report.handled is True
     assert report.approved is True
+    assert len(report.policy_observations) == 3
+    observations = await memory.list_policy_observations()
+    assert len(observations) == 3
+    assert observations[0].subject == "operator-contact:approval"
+    assert any(item.subject == "operator-feedback:policy" for item in observations)
+    assert any(item.subject == "operator-feedback:preference" for item in observations)
     objectives = await backend.list_objectives(MANDATE)
     updated = next(item for item in objectives if item.id == "risky")
     assert updated.status == ResidentObjectiveStatus.CANDIDATE.value

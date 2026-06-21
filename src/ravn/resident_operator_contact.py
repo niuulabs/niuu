@@ -63,6 +63,7 @@ class ResidentOperatorReplyIngestionReport:
     decision_ref: str = ""
     source_objective_id: str = ""
     approved: bool | None = None
+    policy_observations: tuple[ResidentPolicyObservation, ...] = ()
     reason: str = ""
 
 
@@ -143,6 +144,7 @@ async def ingest_resident_operator_reply(
     mandate: str,
     content: str,
     metadata: dict[str, Any] | None,
+    memory: ResidentMemoryPort | None = None,
 ) -> ResidentOperatorReplyIngestionReport:
     """Persist a directed operator reply for a resident pending approval."""
     context = _operator_reply_context(metadata)
@@ -191,6 +193,10 @@ async def ingest_resident_operator_reply(
                 f"approved={_approval_label(approved)}"
             ),
         )
+    policy_observations = await _persist_operator_reply_policy_observations(
+        memory,
+        result,
+    )
     decision_ref = await backend.append_decision(
         mandate,
         (
@@ -207,6 +213,7 @@ async def ingest_resident_operator_reply(
         decision_ref=decision_ref,
         source_objective_id=result.request.source_objective_id,
         approved=approved,
+        policy_observations=policy_observations,
         reason="operator reply persisted",
     )
 
@@ -220,6 +227,24 @@ def approved_risk_objective_ids_from_objectives(
         if any(item.startswith(_APPROVAL_MARKER_PREFIX) for item in objective.proof_progress):
             approved.append(objective.id)
     return tuple(sorted(set(approved)))
+
+
+async def _persist_operator_reply_policy_observations(
+    memory: ResidentMemoryPort | None,
+    result: OperatorContactResult,
+) -> tuple[ResidentPolicyObservation, ...]:
+    if memory is None:
+        return ()
+    observations = (
+        _answer_observation(result.request, result),
+        *_policy_observations_from_operator_text(result.answer),
+    )
+    limit = ResidentOperatorContactConfig().max_policy_observations_per_answer
+    persisted: list[ResidentPolicyObservation] = []
+    for observation in observations[:limit]:
+        await memory.write_policy_observation(observation)
+        persisted.append(observation)
+    return tuple(persisted)
 
 
 def _with_inferred_purpose(request: OperatorContactRequest) -> OperatorContactRequest:

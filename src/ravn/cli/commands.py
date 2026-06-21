@@ -3685,6 +3685,7 @@ def _wire_mimir_triggers(
             backend = MimirResidentWorkItemBackend(mimir)
             wake_memory = MimirWakefulResidentMemory(mimir)
             expert_memory = MimirResidentDomainExpertMemory(mimir)
+            continuation_memory = MimirResidentMemory(mimir)
 
             async def _resident_operator_reply_interceptor(
                 content: str,
@@ -3695,14 +3696,16 @@ def _wire_mimir_triggers(
                     mandate=mandate,
                     content=content,
                     metadata=metadata,
+                    memory=continuation_memory,
                 )
                 if report.handled:
                     logger.info(
                         "resident_autonomy: ingested operator reply "
-                        "(objective=%s, approved=%s, contact_ref=%s)",
+                        "(objective=%s, approved=%s, contact_ref=%s, policy_observations=%d)",
                         report.source_objective_id,
                         report.approved,
                         report.contact_ref,
+                        len(report.policy_observations),
                     )
                 return report.handled
 
@@ -3732,7 +3735,7 @@ def _wire_mimir_triggers(
                     expert_loop = ResidentDomainExpertLoop(
                         agent=bootstrap_agent,
                         expert_memory=expert_memory,
-                        continuation_memory=MimirResidentMemory(mimir),
+                        continuation_memory=continuation_memory,
                         config=ResidentDomainExpertConfig(
                             orientation_turns=max(0, settings.resident_autonomy.orientation_turns),
                             max_active_workstreams=max(
@@ -3754,7 +3757,7 @@ def _wire_mimir_triggers(
                         expert_loop=expert_loop,
                         expert_memory=expert_memory,
                         wake_memory=wake_memory,
-                        operator_memory=MimirResidentMemory(mimir),
+                        operator_memory=continuation_memory,
                         config=WakefulResidentConfig(
                             max_wake_cycles=max(0, settings.resident_autonomy.max_wake_cycles),
                             max_wall_clock_seconds=max(
