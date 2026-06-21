@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from niuu.utils import resolve_secret_kwargs
 from ravn.cli.commands import (
     _build_agent,
     _build_mimir,
@@ -79,6 +80,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--persona", default="domain-drive", help="Resident persona name")
     parser.add_argument("--workspace", default="", help="Workspace root for proof artifacts")
     parser.add_argument(
+        "--force-local-memory",
+        action="store_true",
+        help="Use local .ravn proof memory even when configured Mimir adapters exist.",
+    )
+    parser.add_argument(
         "--telegram-credentials",
         default="/Users/jozefvaneenbergen/.niuu/credentials/user/dev-user/telegram-main.json",
     )
@@ -134,11 +140,12 @@ async def _main() -> None:
 
     settings = Settings()
     _configure_logging(settings)
+    _preflight_llm_credentials(settings)
     project_config = ProjectConfig.discover()
     persona = _resolve_persona(args.persona, project_config, settings=settings, cwd=Path.cwd())
     agent, _unused_channel = _build_agent(settings, persona_config=persona)
 
-    mimir = _build_mimir(settings)
+    mimir = None if args.force_local_memory else _build_mimir(settings)
     if mimir is not None:
         continuation_memory: Any = MimirResidentMemory(mimir)
         expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
@@ -217,7 +224,10 @@ async def _main() -> None:
         print(f"[proof] memory={memory_label}")
         print("[proof] telegram_notify_only=False")
         print(f"[proof] telegram_topic_mode={args.telegram_topic_mode}")
-        print(f"[proof] telegram_message_thread_id={telegram.communication_route().get('thread_id')}")
+        print(
+            "[proof] telegram_message_thread_id="
+            f"{telegram.communication_route().get('thread_id')}"
+        )
         print(
             "[proof] telegram_allow_any_inbound_chat="
             f"{args.telegram_allow_any_inbound_chat}"
@@ -250,7 +260,9 @@ async def _main() -> None:
 
         first_kind = first.final_decision.kind.value if first.final_decision else ""
         first_reason = first.final_decision.reason if first.final_decision else ""
-        waiting_on_existing_pending = first_kind == "sleep" and first_reason == "waiting_for_operator"
+        waiting_on_existing_pending = (
+            first_kind == "sleep" and first_reason == "waiting_for_operator"
+        )
         if not proof_channel.sent_events and not waiting_on_existing_pending:
             raise SystemExit("[proof] expected a Telegram help_needed event")
         if first_kind not in {"ask_operator", "sleep"}:
@@ -329,6 +341,34 @@ def _parse_message_date(value: str) -> datetime | None:
 def _operator_question_from_marker(content: str) -> str:
     match = re.search(r"^- question:\s*(.+?)\s*$", content, flags=re.MULTILINE)
     return match.group(1).strip() if match else ""
+
+
+def _preflight_llm_credentials(settings: Settings) -> None:
+    provider = settings.llm.provider
+    adapter = str(provider.adapter or "")
+    kwargs = resolve_secret_kwargs(
+        dict(provider.kwargs or {}),
+        dict(provider.secret_kwargs_env or {}),
+    )
+    adapter_lower = adapter.casefold()
+    if adapter.endswith("AnthropicAdapter") and "bifrost" not in adapter_lower:
+        if not str(kwargs.get("api_key") or "").strip():
+            raise SystemExit(
+                "[proof] configured Ravn LLM is AnthropicAdapter but no api_key is "
+                "available. Provide a real key in the proof YAML or configure a real "
+                "non-Anthropic provider before running the Telegram roundtrip."
+            )
+    if adapter.endswith("OpenAICompatibleAdapter"):
+        base_url = str(kwargs.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+        if base_url == "https://api.openai.com/v1" and not str(
+            kwargs.get("api_key") or ""
+        ).strip():
+            raise SystemExit(
+                "[proof] configured Ravn LLM is OpenAICompatibleAdapter against "
+                "api.openai.com but no api_key is available. Provide a real key in "
+                "the proof YAML or point base_url at an authenticated/local compatible "
+                "server."
+            )
 
 
 if __name__ == "__main__":
