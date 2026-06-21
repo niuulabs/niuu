@@ -6,6 +6,7 @@ import pytest
 
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
+from ravn.domain.resident_continuation import ResidentTurnRecord
 from ravn.domain.resident_expert import (
     ExpertArtifact,
     ExpertLoopDecision,
@@ -18,6 +19,7 @@ from ravn.domain.resident_expert import (
 )
 from ravn.domain.wakeful_resident import WakefulResidentCycleRecord, WakefulResidentDecisionKind
 from ravn.resident_expert import LocalResidentDomainExpertMemory
+from ravn.resident_continuation import LocalResidentMemory
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
     WakefulResidentConfig,
@@ -457,6 +459,49 @@ async def test_policy_gated_work_routes_to_operator_without_running_expert_loop(
     assert loop.calls == []
     assert run.final_decision == WakefulResidentDecisionKind.ASK_OPERATOR
     assert run.cycles[0].decision == WakefulResidentDecisionKind.ASK_OPERATOR
+
+
+@pytest.mark.asyncio
+async def test_pending_operator_marker_sleeps_before_spending_expert_turn(
+    tmp_path: Path,
+) -> None:
+    expert_memory = RecordingExpertMemory(tmp_path)
+    await expert_memory.write_domain_model(_model(opportunities=()))
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    operator_memory = LocalResidentMemory(tmp_path)
+    await operator_memory.write_operator_needed(
+        question="Which printer profile should I use?",
+        reason="Need operator judgment before touching a physical workflow.",
+        turn=ResidentTurnRecord(
+            turn_index=1,
+            prompt=MANDATE,
+            response="",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        ),
+    )
+    loop = StatefulExpertLoop(expert_memory, [])
+    runtime = WakefulResidentRuntime(
+        expert_loop=loop,
+        expert_memory=expert_memory,
+        wake_memory=wake_memory,
+        operator_memory=operator_memory,
+        config=WakefulResidentConfig(max_wake_cycles=3),
+    )
+
+    run = await runtime.run(MANDATE)
+    records = await wake_memory.list_wake_records(MANDATE)
+
+    assert loop.calls == []
+    assert run.final_decision == WakefulResidentDecisionKind.SLEEP
+    assert run.final_reason == "waiting_for_operator"
+    assert run.budget.turns_used == 0
+    assert run.budget.total_tokens == 0
+    assert records[0].decision == WakefulResidentDecisionKind.SLEEP
+    assert records[0].decision_reason == "waiting_for_operator"
+    assert "Which printer profile should I use?" in records[0].selected_action
+    assert records[0].budget.turns_used == 0
 
 
 @pytest.mark.asyncio

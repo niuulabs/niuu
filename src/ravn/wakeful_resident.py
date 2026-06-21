@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from ravn.domain.models import TokenUsage
-from ravn.domain.resident_continuation import ResidentBudgetLimits, ResidentBudgetSnapshot
+from ravn.domain.resident_continuation import (
+    ResidentBudgetLimits,
+    ResidentBudgetSnapshot,
+    ResidentMemoryPort,
+)
 from ravn.domain.resident_expert import (
     ExpertLoopDecisionKind,
     ResidentDomainExpertMemoryPort,
@@ -210,11 +214,13 @@ class WakefulResidentRuntime:
         expert_loop: ResidentExpertLoopPort,
         expert_memory: ResidentDomainExpertMemoryPort,
         wake_memory: WakefulResidentMemoryPort,
+        operator_memory: ResidentMemoryPort | None = None,
         config: WakefulResidentConfig | None = None,
     ) -> None:
         self._expert_loop = expert_loop
         self._expert_memory = expert_memory
         self._wake_memory = wake_memory
+        self._operator_memory = operator_memory
         self._config = config or WakefulResidentConfig()
 
     async def run(self, mandate: str) -> WakefulResidentRun:
@@ -253,6 +259,29 @@ class WakefulResidentRuntime:
                 recent_wake_records=tuple(prior_wake_records),
                 budget=budget.snapshot(),
             )
+
+            pending_operator = (
+                await self._operator_memory.read_operator_needed()
+                if self._operator_memory is not None
+                else None
+            )
+            if pending_operator is not None:
+                record = _build_pending_operator_record(
+                    cycle_number=cycle_number,
+                    mandate=mandate,
+                    prior_ref=prior_ref,
+                    attention_reason=attention_reason,
+                    pending_ref=pending_operator.path,
+                    pending_summary=pending_operator.summary,
+                    pending_question=_operator_marker_question(pending_operator.content),
+                    budget=budget.snapshot(),
+                    runtime_audit=runtime_audit,
+                )
+                await self._wake_memory.write_wake_record(record)
+                cycles.append(record)
+                final_decision = record.decision
+                final_reason = record.decision_reason
+                break
 
             operator_workstream = _operator_gated_workstream(prior_workstreams)
             if operator_workstream is not None:
@@ -698,6 +727,37 @@ def _build_operator_needed_record(
     )
 
 
+def _build_pending_operator_record(
+    *,
+    cycle_number: int,
+    mandate: str,
+    prior_ref: str,
+    attention_reason: str,
+    pending_ref: str,
+    pending_summary: str,
+    pending_question: str,
+    budget: ResidentBudgetSnapshot,
+    runtime_audit: tuple[str, ...],
+) -> WakefulResidentCycleRecord:
+    pending_label = pending_question or pending_summary or pending_ref
+    return WakefulResidentCycleRecord(
+        cycle_number=cycle_number,
+        mandate=mandate,
+        prior_domain_model_ref=prior_ref,
+        attention_reason=attention_reason,
+        selected_action=pending_label or "wait for operator",
+        work_created_or_advanced=(
+            f"{pending_ref}: pending operator input" if pending_ref else "pending operator input",
+        ),
+        artifact_refs=(),
+        finding_summaries=(),
+        decision=WakefulResidentDecisionKind.SLEEP,
+        decision_reason="waiting_for_operator",
+        budget=budget,
+        runtime_audit=runtime_audit,
+    )
+
+
 def _build_wake_record(
     *,
     cycle_number: int,
@@ -772,6 +832,14 @@ def _finding_summaries(expert_run: ResidentDomainExpertRun) -> tuple[str, ...]:
     if not findings:
         findings.extend(expert_run.domain_model.recent_outcomes[-3:])
     return tuple(findings[:5])
+
+
+def _operator_marker_question(content: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- question:"):
+            return stripped.removeprefix("- question:").strip()
+    return ""
 
 
 def _render_wake_record(record: WakefulResidentCycleRecord) -> str:
