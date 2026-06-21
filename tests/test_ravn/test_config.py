@@ -196,6 +196,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.secret_kwargs_env == {}
         assert c.max_delegations == 1
         assert c.max_observations > 0
+        assert c.max_retry_follow_up_depth == 1
         assert c.abandon_after_seconds == 0.0
 
     def test_dynamic_adapter_config_accepts_kwargs_and_bounds(self) -> None:
@@ -204,6 +205,7 @@ class TestResidentDelegationExecutionConfig:
             kwargs={"workflow_id": "wf-resident"},
             secret_kwargs_env={"token": "VOLUNDR_TOKEN"},
             max_delegations=3,
+            max_retry_follow_up_depth=2,
             approved_risk_objective_ids=("approved-objective",),
             abandon_after_seconds=3600.0,
         )
@@ -212,6 +214,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.kwargs["workflow_id"] == "wf-resident"
         assert c.secret_kwargs_env["token"] == "VOLUNDR_TOKEN"
         assert c.max_delegations == 3
+        assert c.max_retry_follow_up_depth == 2
         assert c.approved_risk_objective_ids == ("approved-objective",)
         assert c.abandon_after_seconds == 3600.0
 

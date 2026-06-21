@@ -209,6 +209,10 @@ async def _main() -> None:
                 1,
                 int(settings.resident_delegation_execution.max_observations),
             ),
+            max_retry_follow_up_depth=max(
+                0,
+                int(settings.resident_delegation_execution.max_retry_follow_up_depth),
+            ),
             approved_risk_objective_ids=tuple(
                 settings.resident_delegation_execution.approved_risk_objective_ids
             ),

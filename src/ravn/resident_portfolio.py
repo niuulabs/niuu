@@ -134,6 +134,7 @@ class ResidentDelegationConfig:
     max_delegations: int = 2
     max_observations: int = 4
     max_follow_up_objectives: int = 4
+    max_retry_follow_up_depth: int = 1
     approved_risk_objective_ids: tuple[str, ...] = ()
     abandon_after_seconds: float = 0.0
 
@@ -146,6 +147,7 @@ class ResidentAutonomyLoopConfig:
     max_delegations_per_cycle: int = 1
     max_observations_per_cycle: int = 4
     max_review_attempts: int = 4
+    max_retry_follow_up_depth: int = 1
     max_wall_clock_seconds: float = 1800.0
     approved_risk_objective_ids: tuple[str, ...] = ()
     abandon_after_seconds: float = 0.0
@@ -1855,10 +1857,12 @@ class ResidentDelegationRuntime:
                 mandate,
                 source,
                 result,
+                review,
                 limit=max(
                     0,
                     self._config.max_follow_up_objectives - len(follow_ups),
                 ),
+                max_retry_depth=max(0, self._config.max_retry_follow_up_depth),
             )
             for follow_up in created_from_result:
                 follow_ups.append(follow_up)
@@ -1866,6 +1870,11 @@ class ResidentDelegationRuntime:
                 persisted_refs.append(await self._backend.write_objective(follow_up))
             if source is not None:
                 absorbed = _absorb_delegation_result(source, result, review, result_ref)
+                if (
+                    review.decision != ResidentDelegationReviewDecision.COMPLETE.value
+                    and created_from_result
+                ):
+                    absorbed = absorbed.with_updates(superseded_by=created_from_result[0].id)
                 updated_objectives.append(absorbed)
                 objective_updates[source.id] = absorbed
                 persisted_refs.append(await self._backend.write_objective(absorbed))
@@ -2034,6 +2043,7 @@ class ResidentAutonomyLoopRuntime:
                     max_delegations=self._config.max_delegations_per_cycle,
                     max_observations=self._config.max_observations_per_cycle,
                     max_follow_up_objectives=self._config.max_review_attempts,
+                    max_retry_follow_up_depth=self._config.max_retry_follow_up_depth,
                     approved_risk_objective_ids=tuple(sorted(approved_risk_objective_ids)),
                     abandon_after_seconds=self._config.abandon_after_seconds,
                 ),
@@ -2832,6 +2842,8 @@ def _is_delegation_ready(
     objective: ResidentObjective,
     completed_ids: set[str],
 ) -> bool:
+    if objective.superseded_by:
+        return False
     if objective.status not in {
         ResidentObjectiveStatus.CANDIDATE.value,
         ResidentObjectiveStatus.ACTIVE.value,
@@ -2988,12 +3000,15 @@ def _follow_ups_from_delegation_result(
     mandate: str,
     source: ResidentObjective | None,
     result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
     *,
     limit: int,
+    max_retry_depth: int,
 ) -> tuple[ResidentObjective, ...]:
     if source is None or limit <= 0:
         return ()
     follow_ups: list[ResidentObjective] = []
+    dependencies = _delegation_follow_up_dependencies(source, review)
     for suggestion in result.follow_up_suggestions:
         if len(follow_ups) >= limit:
             break
@@ -3006,7 +3021,37 @@ def _follow_ups_from_delegation_result(
                 kind=_kind_for_text(text),
                 reasoning="Delegated execution produced a useful follow-up suggestion.",
                 proof="Follow-up is resolved, retired, or converted into durable evidence.",
-                dependencies=(source.id,),
+                dependencies=dependencies,
+            )
+        )
+    if (
+        review.decision == ResidentDelegationReviewDecision.RETRY.value
+        and len(follow_ups) < limit
+    ):
+        follow_ups.append(
+            _retry_or_review_failed_delegation_objective(
+                mandate,
+                source,
+                result,
+                review,
+                max_retry_depth=max_retry_depth,
+            )
+        )
+    if (
+        review.decision == ResidentDelegationReviewDecision.NEEDS_FOLLOW_UP.value
+        and review.missing_evidence
+        and len(follow_ups) < limit
+    ):
+        missing = ", ".join(review.missing_evidence)
+        follow_ups.append(
+            _objective_from_text(
+                mandate,
+                title=f"Gather delegated evidence: {source.title}",
+                source=f"{result.session_id}: missing {missing}",
+                kind=ResidentObjectiveKind.VERIFICATION,
+                reasoning="Delegated execution returned insufficient evidence for completion.",
+                proof="Missing delegated evidence is found, recreated, or explicitly waived.",
+                dependencies=dependencies,
             )
         )
     if result.blocked_reason and len(follow_ups) < limit:
@@ -3018,10 +3063,56 @@ def _follow_ups_from_delegation_result(
                 kind=ResidentObjectiveKind.REVIEW,
                 reasoning="Delegated execution reported a blocker that needs resident review.",
                 proof="Blocker has a decision, workaround, or replacement objective.",
-                dependencies=(source.id,),
+                dependencies=dependencies,
             )
         )
     return tuple(follow_ups)
+
+
+def _delegation_follow_up_dependencies(
+    source: ResidentObjective,
+    review: ResidentDelegationReview,
+) -> tuple[str, ...]:
+    if review.decision == ResidentDelegationReviewDecision.COMPLETE.value:
+        return (source.id,)
+    return ()
+
+
+def _retry_or_review_failed_delegation_objective(
+    mandate: str,
+    source: ResidentObjective,
+    result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
+    *,
+    max_retry_depth: int,
+) -> ResidentObjective:
+    retry_depth = len(source.supersedes)
+    if retry_depth >= max_retry_depth:
+        return _objective_from_text(
+            mandate,
+            title=f"Review repeated delegation failure: {source.title}",
+            source=f"{result.session_id}: {review.reason}",
+            kind=ResidentObjectiveKind.REVIEW,
+            reasoning=(
+                "Delegated execution already used the configured retry depth; "
+                "the resident should replan instead of retrying blindly."
+            ),
+            proof="A reviewed decision records whether to retry, replan, or ask the operator.",
+            dependencies=(),
+        )
+    retry = _objective_from_text(
+        mandate,
+        title=f"Retry delegated result: {source.title}",
+        source=f"{result.session_id}: {review.reason}",
+        kind=ResidentObjectiveKind.REMOTE_EXECUTION,
+        reasoning=(
+            "Delegated execution failed or became unavailable; the resident should "
+            "try one bounded replacement worker before escalating."
+        ),
+        proof="A retry delegation produces evidence, a reviewed blocker, or a replacement plan.",
+        dependencies=(),
+    )
+    return retry.with_updates(supersedes=_merge_text(source.supersedes, (source.id,)))
 
 
 def _delegation_next_action(

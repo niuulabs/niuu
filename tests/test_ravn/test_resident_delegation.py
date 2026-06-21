@@ -111,6 +111,39 @@ class StaleDelegationExecutor:
         )
 
 
+class ResultExecutor:
+    def __init__(self, result: ResidentExecutionResult) -> None:
+        self.result = result
+        self.briefs: list[ResidentWorkerBrief] = []
+        self.sessions: dict[str, ResidentExecutionSession] = {}
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        self.briefs.append(brief)
+        session = ResidentExecutionSession(
+            session_id=self.result.session_id,
+            status=self.result.status,
+            backend_name="recording",
+            summary=self.result.summary,
+        )
+        self.sessions[session.session_id] = session
+        return session
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        return self.sessions[session_id]
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        assert session_id == self.result.session_id
+        return self.result
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.CANCELLED.value,
+            backend_name="recording",
+            summary=reason,
+        )
+
+
 def _objective(
     objective_id: str,
     title: str,
@@ -348,6 +381,118 @@ async def test_resident_abandons_stale_delegation_without_relaunching(
         for item in objectives["stale"].proof_progress
     )
     assert any(item.id == "stale" for item in report.updated_objectives)
+
+
+@pytest.mark.asyncio
+async def test_failed_delegation_creates_actionable_retry_objective(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-failed",
+            status=ResidentDelegationStatus.FAILED.value,
+            summary="worker failed before producing evidence",
+        )
+    )
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_retry_follow_up_depth=1),
+    ).run(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+    retry = objectives["retry-delegated-result-first-delegated-objective"]
+
+    assert report.reviews[0].decision == "retry"
+    assert objectives["one"].status == ResidentObjectiveStatus.PAUSED.value
+    assert retry.status == ResidentObjectiveStatus.CANDIDATE.value
+    assert retry.dependencies == ()
+    assert retry.supersedes == ("one",)
+    selected, gated = select_delegation_candidates(
+        tuple(objectives.values()),
+        delegations=tuple(await backend.list_delegations(MANDATE)),
+        mandate=MANDATE,
+        max_selected=1,
+    )
+    assert gated == ()
+    assert selected[0].id == retry.id
+
+
+@pytest.mark.asyncio
+async def test_incomplete_delegation_creates_actionable_evidence_work(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-incomplete",
+            status=ResidentDelegationStatus.COMPLETED.value,
+            summary="worker reported completion but no evidence",
+        )
+    )
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+    ).run(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+    evidence = objectives["gather-delegated-evidence-first-delegated-objective"]
+
+    assert report.reviews[0].decision == "needs_follow_up"
+    assert objectives["one"].status == ResidentObjectiveStatus.PAUSED.value
+    assert evidence.dependencies == ()
+    selected, gated = select_delegation_candidates(
+        tuple(objectives.values()),
+        delegations=tuple(await backend.list_delegations(MANDATE)),
+        mandate=MANDATE,
+        max_selected=1,
+    )
+    assert gated == ()
+    assert selected[0].id == evidence.id
+
+
+@pytest.mark.asyncio
+async def test_repeated_failed_delegation_creates_review_instead_of_retry_loop(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    retry_source = _objective(
+        "retry-delegated-result-first-delegated-objective",
+        "Retry delegated result: First delegated objective",
+    ).with_updates(supersedes=("one",))
+    await _write_portfolio(backend, retry_source)
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-failed-again",
+            status=ResidentDelegationStatus.FAILED.value,
+            summary="retry failed before producing evidence",
+        )
+    )
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_retry_follow_up_depth=1),
+    ).run(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+
+    assert report.reviews[0].decision == "retry"
+    repeated_retry_id = (
+        "retry-delegated-result-retry-delegated-result-first-delegated-objective"
+    )
+    assert repeated_retry_id not in objectives
+    assert objectives[retry_source.id].superseded_by
+    expected_title = (
+        "Review repeated delegation failure: Retry delegated result: "
+        "First delegated objective"
+    )
+    assert any(
+        item.title == expected_title
+        for item in objectives.values()
+    )
 
 
 def test_resident_delegation_contains_no_domain_specific_playbook_terms() -> None:

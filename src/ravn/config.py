@@ -2721,6 +2721,13 @@ class ResidentDelegationExecutionConfig(BaseModel):
         default=4,
         description="Maximum follow-up objectives created from delegated results.",
     )
+    max_retry_follow_up_depth: int = Field(
+        default=1,
+        description=(
+            "Maximum automatic retry-objective depth after failed delegated execution "
+            "before the resident creates review/replan work instead."
+        ),
+    )
     approved_risk_objective_ids: tuple[str, ...] = Field(
         default_factory=tuple,
         description="Risky objective ids explicitly approved for delegated execution.",

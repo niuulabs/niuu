@@ -257,6 +257,7 @@ async def _main() -> None:
             max_delegations=max(1, int(delegation_cfg.max_delegations)),
             max_observations=max(1, int(delegation_cfg.max_observations)),
             max_follow_up_objectives=max(0, int(delegation_cfg.max_follow_up_objectives)),
+            max_retry_follow_up_depth=max(0, int(delegation_cfg.max_retry_follow_up_depth)),
             approved_risk_objective_ids=tuple(delegation_cfg.approved_risk_objective_ids),
             abandon_after_seconds=max(0.0, float(delegation_cfg.abandon_after_seconds)),
         ),
