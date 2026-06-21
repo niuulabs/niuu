@@ -213,6 +213,55 @@ class StaleStatusPublishedWorkflowPort(RecordingWorkflowPort):
         ]
 
 
+class SlugOnlyWorkflowPort(RecordingWorkflowPort):
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launches.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Generic Worker",
+            session_id="",
+            session_name=request.session_name,
+            status="completed",
+            slug="resident-proof-campaign",
+        )
+
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        assert reference.slug == "resident-proof-campaign"
+        return WorkflowRunStatus(
+            state="completed",
+            slug=reference.slug,
+            workflow_id=reference.workflow_id or "generic-worker",
+            terminal=True,
+        )
+
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        assert reference.slug == "resident-proof-campaign"
+        return [
+            WorkflowRunEvent(
+                event_type="workflow.completed",
+                data={"slug": reference.slug},
+            )
+        ][:limit]
+
+    async def list_workflow_artifacts(
+        self,
+        reference: WorkflowRunReference,
+    ) -> list[WorkflowArtifact]:
+        assert reference.slug == "resident-proof-campaign"
+        return [
+            WorkflowArtifact(
+                path="workflow/slug-output.md",
+                title="Slug workflow output",
+                summary="Worker result survived adapter restart.",
+            )
+        ]
+
+
 class ThinResultExecutor:
     async def launch(self, brief: Any) -> ResidentExecutionSession:
         return ResidentExecutionSession(
@@ -382,6 +431,69 @@ async def test_workflow_adapter_completes_stale_status_with_published_manifest()
     assert result is not None
     assert result.status == ResidentDelegationStatus.COMPLETED.value
     assert result.output_refs == ("research/campaigns/proof/manifest.md",)
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_persists_slug_reference_across_restart() -> None:
+    workflows = SlugOnlyWorkflowPort()
+    first_adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
+    objective = _objective("workflow-objective", "Run workflow objective")
+
+    session = await first_adapter.launch(build_worker_brief(MANDATE, objective))
+    restarted_adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
+    result = await restarted_adapter.read_result(session.session_id)
+
+    assert session.session_id.startswith("workflow-ref:")
+    assert result is not None
+    assert result.status == ResidentDelegationStatus.COMPLETED.value
+    assert result.output_refs == ("workflow/slug-output.md",)
+
+
+@pytest.mark.asyncio
+async def test_delegation_observes_slug_workflow_after_adapter_restart(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    workflows = SlugOnlyWorkflowPort()
+    objective = _objective("workflow-objective", "Run workflow objective")
+    await _write_portfolio(backend, objective)
+
+    await ResidentDelegationRuntime(
+        backend=backend,
+        executor=WorkflowResidentExecutionAdapter(
+            workflows=workflows,
+            model="gpt-5.5",
+            definition="skuldCodex",
+        ),
+        config=ResidentDelegationConfig(max_delegations=1, max_observations=0),
+    ).run(MANDATE)
+    stored = await backend.list_delegations(MANDATE)
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=WorkflowResidentExecutionAdapter(
+            workflows=workflows,
+            model="gpt-5.5",
+            definition="skuldCodex",
+        ),
+        config=ResidentDelegationConfig(max_delegations=1, max_observations=1),
+    ).run(MANDATE)
+
+    assert stored[0].backend_session_id.startswith("workflow-ref:")
+    assert report.observed_results
+    assert report.observed_results[0].output_refs == ("workflow/slug-output.md",)
+    updated_objective = {
+        item.id: item for item in await backend.list_objectives(MANDATE)
+    }["workflow-objective"]
+    assert any("resident/delegation-results/" in ref for ref in updated_objective.artifact_links)
 
 
 @pytest.mark.asyncio

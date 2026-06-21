@@ -1511,12 +1511,12 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
                 },
             )
         )
-        session_id = launch.session_id or launch.slug or launch.workflow_id
         reference = WorkflowRunReference(
             session_id=launch.session_id,
             slug=launch.slug,
             workflow_id=launch.workflow_id,
         )
+        session_id = _workflow_reference_key(reference)
         self._references[session_id] = reference
         return ResidentExecutionSession(
             session_id=session_id,
@@ -1634,7 +1634,47 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         return scored[0].workflow_id
 
     def _reference(self, session_id: str) -> WorkflowRunReference:
-        return self._references.get(session_id) or WorkflowRunReference(session_id=session_id)
+        return (
+            self._references.get(session_id)
+            or _workflow_reference_from_key(session_id)
+            or WorkflowRunReference(session_id=session_id)
+        )
+
+
+_WORKFLOW_REFERENCE_PREFIX = "workflow-ref:"
+
+
+def _workflow_reference_key(reference: WorkflowRunReference) -> str:
+    if reference.session_id:
+        return reference.session_id
+    payload = {
+        key: value
+        for key, value in {
+            "session_id": reference.session_id,
+            "slug": reference.slug,
+            "workflow_id": reference.workflow_id,
+        }.items()
+        if value
+    }
+    if not payload:
+        return reference.workflow_id or "workflow"
+    return _WORKFLOW_REFERENCE_PREFIX + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _workflow_reference_from_key(key: str) -> WorkflowRunReference | None:
+    if not key.startswith(_WORKFLOW_REFERENCE_PREFIX):
+        return None
+    try:
+        payload = json.loads(key.removeprefix(_WORKFLOW_REFERENCE_PREFIX))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return WorkflowRunReference(
+        session_id=str(payload.get("session_id") or ""),
+        slug=str(payload.get("slug") or ""),
+        workflow_id=str(payload.get("workflow_id") or ""),
+    )
 
 
 _TERMINAL_DELEGATION_RESULT_STATUSES = frozenset(
