@@ -472,7 +472,7 @@ async def test_completed_workflow_delegation_does_not_create_capability_gap(
             status=ResidentDelegationStatus.COMPLETED.value,
             summary="Local workflow artifact research/campaigns/proof/plan.md",
             output_refs=("research/campaigns/proof/plan.md",),
-            findings=("workflow artifact snapshot observed while session remained running",),
+            findings=("workflow completed with durable artifact output",),
             follow_up_suggestions=("Review workflow output for session session-workflow",),
         )
     )

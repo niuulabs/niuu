@@ -1553,10 +1553,12 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             for event in events[:5]
         )
         if mapped == ResidentDelegationStatus.RUNNING.value and artifacts:
-            mapped = ResidentDelegationStatus.COMPLETED.value
             findings = _merge_text(
                 findings,
-                ("workflow artifact snapshot observed while session remained running",),
+                (
+                    "workflow artifact snapshot observed while session remained running; "
+                    "terminal worker result still pending",
+                ),
             )
         summary_parts = [
             _compact_line(item.summary or item.title or item.path, limit=160)
@@ -1575,7 +1577,15 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
                 if output_refs or findings
                 else ()
             ),
-            blocked_reason="" if mapped == ResidentDelegationStatus.COMPLETED.value else summary,
+            blocked_reason=(
+                summary
+                if mapped
+                in {
+                    ResidentDelegationStatus.BLOCKED.value,
+                    ResidentDelegationStatus.FAILED.value,
+                }
+                else ""
+            ),
         )
 
     async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
@@ -2700,6 +2710,13 @@ def review_delegation_result(
     if result.blocked_reason:
         decision = ResidentDelegationReviewDecision.BLOCKED.value
         reason = f"Delegated result reported a blocker: {result.blocked_reason}"
+    elif result.status in {
+        ResidentDelegationStatus.LAUNCHED.value,
+        ResidentDelegationStatus.RUNNING.value,
+    }:
+        decision = ResidentDelegationReviewDecision.NEEDS_FOLLOW_UP.value
+        reason = f"Delegated result is still {result.status}; terminal evidence is pending."
+        missing.append("terminal worker status")
     elif result.status in {
         ResidentDelegationStatus.FAILED.value,
         ResidentDelegationStatus.UNAVAILABLE.value,

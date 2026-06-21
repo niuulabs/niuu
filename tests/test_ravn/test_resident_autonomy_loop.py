@@ -136,6 +136,26 @@ class RecordingWorkflowPort:
         )
 
 
+class RunningArtifactWorkflowPort(RecordingWorkflowPort):
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launches.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Generic Worker",
+            session_id="workflow-session-running",
+            session_name=request.session_name,
+            status="running",
+        )
+
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        return WorkflowRunStatus(
+            state="running",
+            session_id=reference.session_id or "workflow-session-running",
+            workflow_id=reference.workflow_id or "generic-worker",
+            terminal=False,
+        )
+
+
 class ThinResultExecutor:
     async def launch(self, brief: Any) -> ResidentExecutionSession:
         return ResidentExecutionSession(
@@ -256,6 +276,36 @@ async def test_workflow_adapter_launches_real_capability_port() -> None:
     assert workflows.launches[0].definition == "skuldCodex"
     assert result is not None
     assert result.output_refs == ("workflow/output.md",)
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_does_not_complete_running_artifact_snapshot() -> None:
+    workflows = RunningArtifactWorkflowPort()
+    adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
+    objective = _objective("workflow-objective", "Run workflow objective")
+    session = await adapter.launch(build_worker_brief(MANDATE, objective))
+    result = await adapter.read_result(session.session_id)
+    delegation = ResidentDelegationRecord(
+        id="delegation-workflow",
+        source_objective_id=objective.id,
+        backend_session_id=session.session_id,
+        backend_name=session.backend_name,
+        brief=build_worker_brief(MANDATE, objective),
+        status=session.status,
+        reason="test running workflow artifact snapshot",
+    )
+
+    assert result is not None
+    assert result.status == ResidentDelegationStatus.RUNNING.value
+    assert result.output_refs == ("workflow/output.md",)
+    assert any("terminal worker result still pending" in item for item in result.findings)
+    review = review_delegation_result(objective, delegation, result)
+    assert review.decision == ResidentDelegationReviewDecision.NEEDS_FOLLOW_UP.value
+    assert "terminal worker status" in review.missing_evidence
 
 
 @pytest.mark.asyncio
