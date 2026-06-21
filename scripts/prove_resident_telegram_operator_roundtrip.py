@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from niuu.utils import resolve_secret_kwargs
+from ravn.adapters.channels.skuld_telegram import TelegramRavnChannel
 from ravn.cli.commands import (
     _build_agent,
     _build_mimir,
@@ -21,8 +22,6 @@ from ravn.cli.commands import (
     _resolve_persona,
 )
 from ravn.config import ProjectConfig, Settings
-from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.ports.channel import ChannelPort
 from ravn.resident_continuation import LocalResidentMemory, MimirResidentMemory
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
@@ -31,8 +30,6 @@ from ravn.resident_expert import (
     ResidentDomainExpertLoop,
 )
 from skuld.channels import TelegramChannel
-from skuld.room_bridge import help_needed_frame_to_room_notification
-from skuld.room_models import ParticipantMeta
 
 KANUCK_VALLEY_MANDATE = (
     "Kanuck Valley Models is my small 3D printing company.\n"
@@ -40,39 +37,6 @@ KANUCK_VALLEY_MANDATE = (
     "Help it become easier to run, more creative, and more successful.\n"
     "Ask before spending money or operating physical machines."
 )
-
-
-class TelegramRavnChannel(ChannelPort):
-    """Send resident help_needed events through the existing Skuld Telegram channel."""
-
-    def __init__(self, telegram: TelegramChannel) -> None:
-        self._telegram = telegram
-        self.sent_events: list[RavnEvent] = []
-
-    async def emit(self, event: RavnEvent) -> None:
-        self.sent_events.append(event)
-        if event.type != RavnEventType.HELP_NEEDED:
-            return
-        meta = ParticipantMeta(
-            peer_id=event.source,
-            persona=str(event.payload.get("persona") or "resident"),
-            color="cyan",
-            participant_type="ravn",
-            display_name=str(event.payload.get("persona") or "Resident Ravn"),
-            participant_kind="ravn",
-            wakefulness="wakeful",
-        )
-        frame = {
-            "session_id": event.session_id,
-            "type": str(event.type),
-            "data": event.payload,
-            "metadata": {"urgency": event.urgency},
-            "source": event.source,
-            "persona": str(event.payload.get("persona") or "resident"),
-            "root_correlation_id": event.root_correlation_id,
-            "correlation_id": event.correlation_id,
-        }
-        await self._telegram.send_event(help_needed_frame_to_room_notification(meta, frame))
 
 
 def _parse_args() -> argparse.Namespace:

@@ -5,15 +5,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
+from ravn.adapters.channels.skuld_telegram import TelegramRavnChannel
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.events import RavnEvent
 from ravn.domain.operator_contact import (
+    BroadcastThenCallbackOperatorContact,
+    CallbackOperatorContact,
+    ChannelOperatorContact,
     OperatorContactResult,
     answer_operator_contact,
     emit_help_needed_operator_contact,
@@ -32,6 +39,7 @@ from ravn.resident_portfolio import (
     ResidentAutonomyLoopRuntime,
 )
 from ravn.wakeful_resident import LocalWakefulResidentMemory, MimirWakefulResidentMemory
+from skuld.channels import TelegramChannel
 
 AUTONOMY_MANDATE = (
     "Help evolve Valkyries/Ravn into autonomous, self-improving domain experts.\n"
@@ -71,14 +79,43 @@ def _parse_args() -> argparse.Namespace:
         help="Maximum delegated worker launches per autonomy cycle.",
     )
     parser.add_argument(
+        "--cycle-sleep-seconds",
+        type=float,
+        default=0.0,
+        help="Pause between autonomy cycles so real delegated sessions can progress.",
+    )
+    parser.add_argument(
         "--ask-operator",
-        choices=("pending", "approve", "none"),
+        choices=("pending", "telegram", "approve", "none"),
         default="pending",
         help=(
-            "How to handle resident operator questions: emit pending help_needed, "
-            "auto-answer approval for proof, or leave unwired."
+            "How to handle resident operator questions: emit pending help_needed, wait "
+            "for a real Telegram reply, auto-answer approval for local development, or "
+            "leave unwired."
         ),
     )
+    parser.add_argument(
+        "--telegram-credentials",
+        default="/Users/jozefvaneenbergen/.niuu/credentials/user/dev-user/telegram-main.json",
+    )
+    parser.add_argument(
+        "--telegram-topic-mode",
+        choices=("shared_chat", "fixed_topic", "topic_per_session"),
+        default="topic_per_session",
+    )
+    parser.add_argument("--telegram-message-thread-id", type=int, default=None)
+    parser.add_argument(
+        "--telegram-inbound-chat-id",
+        action="append",
+        default=[],
+        help="Extra Telegram chat ID accepted for inbound replies, e.g. operator DM chat.",
+    )
+    parser.add_argument(
+        "--telegram-allow-any-inbound-chat",
+        action="store_true",
+        help="Accept the first Telegram text reply from any chat while this proof is waiting.",
+    )
+    parser.add_argument("--reply-timeout-seconds", type=float, default=900.0)
     parser.add_argument(
         "--require-real-session",
         action="store_true",
@@ -164,6 +201,98 @@ def _ask_operator(mode: str) -> Any:
     return PendingProofContact()
 
 
+async def _telegram_operator_contact(args: argparse.Namespace) -> tuple[Any, TelegramChannel]:
+    creds = json.loads(Path(args.telegram_credentials).read_text(encoding="utf-8"))
+    bot_token = str(creds.get("bot_token") or "").strip()
+    chat_id = str(creds.get("chat_id") or "").strip()
+    if not bot_token or not chat_id:
+        raise SystemExit("[proof] missing Telegram bot_token/chat_id")
+
+    reply_event = asyncio.Event()
+    reply_payload: dict[str, Any] = {}
+    reply_text: dict[str, str] = {"value": ""}
+    accepting_replies = False
+    accept_replies_after: datetime | None = None
+
+    async def on_telegram_message(message: dict[str, Any]) -> None:
+        nonlocal accepting_replies, accept_replies_after
+        print(f"[proof] inbound_telegram={message}")
+        if message.get("type") != "message":
+            return
+        if not accepting_replies:
+            print("[proof] inbound_telegram_ignored=before_operator_wait")
+            return
+        message_date = _parse_message_date(str(message.get("date") or ""))
+        if accept_replies_after is not None and message_date is not None:
+            if message_date < accept_replies_after:
+                print("[proof] inbound_telegram_ignored=stale_before_operator_wait")
+                return
+        content = str(message.get("content") or "").strip()
+        if not content:
+            return
+        reply_text["value"] = content
+        reply_payload.update(message)
+        reply_event.set()
+
+    telegram = TelegramChannel(
+        bot_token=bot_token,
+        chat_id=chat_id,
+        notify_only=False,
+        topic_mode=args.telegram_topic_mode,
+        message_thread_id=args.telegram_message_thread_id,
+        topic_name="Resident autonomy operator proof",
+        inbound_chat_ids=args.telegram_inbound_chat_id,
+        allow_any_inbound_chat=args.telegram_allow_any_inbound_chat,
+        on_message=on_telegram_message,
+    )
+    await telegram.start()
+    channel = TelegramRavnChannel(telegram)
+
+    async def await_reply(question: str) -> str:
+        nonlocal accepting_replies, accept_replies_after
+        accepting_replies = True
+        accept_replies_after = datetime.now(UTC)
+        await telegram.send_event(
+            {
+                "type": "room_notification",
+                "notificationType": "help_needed",
+                "participant": {
+                    "display_name": "Resident Ravn",
+                    "persona": "resident-autonomy",
+                    "participantId": "resident-autonomy-proof",
+                },
+                "summary": "Resident is waiting for your Telegram reply.",
+                "reason": question,
+                "recommendation": (
+                    "Reply with approval or denial for this specific operator question. "
+                    "Use words like yes/approve or no/deny so the resident can continue."
+                ),
+            }
+        )
+        print(f"[proof] telegram_last_send_wait_prompt={telegram.last_send_results}")
+        print("[proof] Waiting for a real Telegram reply...")
+        try:
+            await asyncio.wait_for(reply_event.wait(), timeout=args.reply_timeout_seconds)
+        except TimeoutError as exc:
+            raise RuntimeError("timed out waiting for real Telegram reply") from exc
+        print(f"[proof] reply_payload={reply_payload}")
+        return reply_text["value"]
+
+    contact = BroadcastThenCallbackOperatorContact(
+        broadcast=ChannelOperatorContact(
+            channel=channel,
+            source="resident-autonomy-proof",
+            persona="resident-proof-ravn",
+            session_id="resident-autonomy-proof",
+        ),
+        callback=CallbackOperatorContact(
+            ask_operator=await_reply,
+            approval_decider=_operator_reply_grants_approval,
+        ),
+    )
+    return contact, telegram
+
+
 def _build_executor(settings: Settings) -> Any:
     cfg = settings.resident_delegation_execution
     cls = import_class(cfg.adapter)
@@ -171,7 +300,32 @@ def _build_executor(settings: Settings) -> Any:
     return cls(**kwargs)
 
 
+def _parse_message_date(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _operator_reply_grants_approval(answer: str) -> bool | None:
+    normalized = f" {answer.casefold().strip()} "
+    approval_tokens = (" approve", " approved", " yes", " proceed", " allow")
+    if any(token in normalized for token in approval_tokens):
+        return True
+    if any(token in normalized for token in (" deny", " denied", " no", " reject", " stop")):
+        return False
+    return None
+
+
 async def _main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     args = _parse_args()
     if args.config:
         os.environ["RAVN_CONFIG"] = args.config
@@ -200,35 +354,45 @@ async def _main() -> None:
     if seeded:
         await _seed_portfolio(backend, mandate)
 
-    run = await ResidentAutonomyLoopRuntime(
-        backend=backend,
-        executor=_build_executor(settings),
-        ask_operator=_ask_operator(args.ask_operator),
-        wake_memory=wake_memory,
-        expert_memory=expert_memory,
-        config=ResidentAutonomyLoopConfig(
-            max_cycles=max(0, int(args.cycles)),
-            max_delegations_per_cycle=max(0, int(args.delegations_per_cycle)),
-            max_observations_per_cycle=max(
-                1,
-                int(settings.resident_delegation_execution.max_observations),
+    telegram: TelegramChannel | None = None
+    ask_operator = _ask_operator(args.ask_operator)
+    if args.ask_operator == "telegram":
+        ask_operator, telegram = await _telegram_operator_contact(args)
+
+    try:
+        run = await ResidentAutonomyLoopRuntime(
+            backend=backend,
+            executor=_build_executor(settings),
+            ask_operator=ask_operator,
+            wake_memory=wake_memory,
+            expert_memory=expert_memory,
+            config=ResidentAutonomyLoopConfig(
+                max_cycles=max(0, int(args.cycles)),
+                max_delegations_per_cycle=max(0, int(args.delegations_per_cycle)),
+                max_observations_per_cycle=max(
+                    1,
+                    int(settings.resident_delegation_execution.max_observations),
+                ),
+                sleep_between_cycles_seconds=max(0.0, float(args.cycle_sleep_seconds)),
+                max_retry_follow_up_depth=max(
+                    0,
+                    int(settings.resident_delegation_execution.max_retry_follow_up_depth),
+                ),
+                approved_risk_objective_ids=tuple(
+                    settings.resident_delegation_execution.approved_risk_objective_ids
+                ),
+                abandon_after_seconds=max(
+                    0.0,
+                    float(settings.resident_delegation_execution.abandon_after_seconds),
+                ),
+                reconcile_duplicate_delegations=bool(
+                    settings.resident_delegation_execution.reconcile_duplicate_delegations
+                ),
             ),
-            max_retry_follow_up_depth=max(
-                0,
-                int(settings.resident_delegation_execution.max_retry_follow_up_depth),
-            ),
-            approved_risk_objective_ids=tuple(
-                settings.resident_delegation_execution.approved_risk_objective_ids
-            ),
-            abandon_after_seconds=max(
-                0.0,
-                float(settings.resident_delegation_execution.abandon_after_seconds),
-            ),
-            reconcile_duplicate_delegations=bool(
-                settings.resident_delegation_execution.reconcile_duplicate_delegations
-            ),
-        ),
-    ).run(mandate)
+        ).run(mandate)
+    finally:
+        if telegram is not None:
+            await telegram.close()
     objectives = await backend.list_objectives(mandate)
     delegations = await backend.list_delegations(mandate)
     wake_records = await wake_memory.list_wake_records(mandate, limit=10)
@@ -240,6 +404,15 @@ async def _main() -> None:
     print(f"[proof] persisted_refs={len(run.persisted_refs)}")
     print(f"[proof] operator_questions={len(run.operator_questions)}")
     print(f"[proof] operator_contacts={len(run.operator_contacts)}")
+    if args.ask_operator == "telegram":
+        print("[proof] telegram_notify_only=False")
+        print(f"[proof] telegram_topic_mode={args.telegram_topic_mode}")
+        if telegram is not None:
+            print(
+                "[proof] telegram_message_thread_id="
+                f"{telegram.communication_route().get('thread_id')}"
+            )
+            print(f"[proof] telegram_last_send_results={telegram.last_send_results}")
     print(f"[proof] objectives_after={len(objectives)}")
     print(f"[proof] delegations_after={len(delegations)}")
     print(f"[proof] wake_records={len(wake_records)}")
@@ -284,6 +457,15 @@ async def _main() -> None:
         if not any(ref.startswith("resident/operator-contacts/") for ref in run.persisted_refs):
             raise SystemExit("[proof] expected persisted operator contact")
         return
+    if args.ask_operator == "telegram":
+        if not run.operator_contacts:
+            raise SystemExit("[proof] expected answered Telegram operator contact")
+        if not any(contact.status == "answered" for contact in run.operator_contacts):
+            raise SystemExit("[proof] expected answered Telegram operator contact status")
+        if not any(contact.approved is True for contact in run.operator_contacts):
+            raise SystemExit("[proof] expected Telegram operator approval")
+        if not any(ref.startswith("resident/operator-contacts/") for ref in run.persisted_refs):
+            raise SystemExit("[proof] expected persisted Telegram operator contact")
     if len(run.cycles) < 2:
         raise SystemExit("[proof] expected at least two autonomy cycles")
     if not any(cycle.delegation_report.created_delegations for cycle in run.cycles):

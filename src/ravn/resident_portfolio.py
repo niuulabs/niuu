@@ -153,6 +153,7 @@ class ResidentAutonomyLoopConfig:
     max_review_attempts: int = 4
     max_retry_follow_up_depth: int = 1
     max_wall_clock_seconds: float = 1800.0
+    sleep_between_cycles_seconds: float = 0.0
     approved_risk_objective_ids: tuple[str, ...] = ()
     abandon_after_seconds: float = 0.0
     reconcile_duplicate_delegations: bool = True
@@ -2253,6 +2254,13 @@ class ResidentAutonomyLoopRuntime:
                 break
             if not _delegation_report_had_activity(delegation):
                 break
+            if cycle_number < max(0, self._config.max_cycles):
+                remaining = self._config.max_wall_clock_seconds - (
+                    datetime.now(UTC) - started
+                ).total_seconds()
+                pause = min(max(0.0, self._config.sleep_between_cycles_seconds), remaining)
+                if pause > 0:
+                    await asyncio.sleep(pause)
 
         final = _autonomy_final_suggestion(cycles, operator_contacts)
         return ResidentAutonomyRun(
