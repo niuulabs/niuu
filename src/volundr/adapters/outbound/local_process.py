@@ -121,6 +121,7 @@ class ProcessInfo:
             error=data.get("error"),
             flock_dir=data.get("flock_dir", ""),
             flock_base_port=data.get("flock_base_port"),
+            managed_by=data.get("managed_by", "local_process"),
         )
 
 

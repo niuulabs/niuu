@@ -498,18 +498,25 @@ class TestProcessInfo:
             workspace="/tmp/ws",
             state=ProcessState.RUNNING,
             error=None,
+            managed_by="local_process",
         )
         restored = ProcessInfo.from_dict(info.to_dict())
         assert restored.session_id == info.session_id
         assert restored.pid == info.pid
         assert restored.port == info.port
         assert restored.state == info.state
+        assert restored.managed_by == info.managed_by
+
+    def test_from_dict_preserves_non_local_owner(self) -> None:
+        info = ProcessInfo.from_dict({"session_id": "x", "managed_by": "external"})
+        assert info.managed_by == "external"
 
     def test_from_dict_defaults(self) -> None:
         info = ProcessInfo.from_dict({"session_id": "x"})
         assert info.pid is None
         assert info.port is None
         assert info.state == ProcessState.STOPPED
+        assert info.managed_by == "local_process"
 
 
 # ------------------------------------------------------------------
