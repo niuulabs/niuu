@@ -12,14 +12,15 @@ from typing import Any
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.operator_contact import (
+    BroadcastThenCallbackOperatorContact,
+    CallbackOperatorContact,
+    ChannelOperatorContact,
     OperatorContactKind,
     OperatorContactPort,
     OperatorContactPurpose,
     OperatorContactRequest,
-    OperatorContactResult,
     OperatorContactStatus,
-    answer_operator_contact,
-    emit_help_needed_operator_contact,
+    PendingOperatorContact,
 )
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
@@ -650,41 +651,37 @@ class LocalResidentMemory(ResidentMemoryPort):
         return str(rel)
 
 
-class _ContinuationOperatorContact(OperatorContactPort):
-    """Adapter from continuation's existing channel/callback shape to OperatorContactPort."""
-
-    def __init__(
-        self,
-        *,
-        channel: ChannelPort | None,
-        ask_operator: Any | None,
-        source: str,
-        persona: str,
-        session_id: str,
-    ) -> None:
-        self._channel = channel
-        self._ask_operator = ask_operator
-        self._source = source
-        self._persona = persona
-        self._session_id = session_id
-
-    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
-        if self._channel is not None:
-            pending = await emit_help_needed_operator_contact(
-                self._channel,
-                request,
-                source=self._source,
-                persona=self._persona,
-                session_id=self._session_id,
-            )
-            if self._ask_operator is None:
-                return pending
-        if self._ask_operator is None:
-            return OperatorContactResult(
-                request=request,
-                status=OperatorContactStatus.PENDING.value,
-            )
-        return await answer_operator_contact(request, self._ask_operator)
+def _continuation_operator_contact(
+    *,
+    channel: ChannelPort | None,
+    ask_operator: Any | None,
+    source: str,
+    persona: str,
+    session_id: str,
+) -> OperatorContactPort:
+    channel_contact = (
+        ChannelOperatorContact(
+            channel=channel,
+            source=source,
+            persona=persona,
+            session_id=session_id,
+        )
+        if channel is not None
+        else None
+    )
+    callback_contact = (
+        CallbackOperatorContact(ask_operator=ask_operator) if ask_operator is not None else None
+    )
+    if channel_contact is not None and callback_contact is not None:
+        return BroadcastThenCallbackOperatorContact(
+            broadcast=channel_contact,
+            callback=callback_contact,
+        )
+    if channel_contact is not None:
+        return channel_contact
+    if callback_contact is not None:
+        return callback_contact
+    return PendingOperatorContact()
 
 
 class ResidentContinuationKernel:
@@ -869,7 +866,7 @@ class ResidentContinuationKernel:
     ) -> None:
         if not decision.question:
             return
-        contact = _ContinuationOperatorContact(
+        contact = _continuation_operator_contact(
             channel=self._channel,
             ask_operator=self._ask_operator,
             source=self._source,

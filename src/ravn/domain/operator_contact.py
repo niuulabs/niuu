@@ -74,6 +74,67 @@ class OperatorContactPort(Protocol):
         """Emit an operator request and return an answer when available."""
 
 
+@dataclass(frozen=True)
+class ChannelOperatorContact(OperatorContactPort):
+    """Operator contact over the existing Ravn/Skuld channel stack.
+
+    This is the canonical headless/daemon path: emit an existing help_needed
+    event and let the configured channel, such as Telegram, carry it outward.
+    """
+
+    channel: ChannelPort
+    source: str
+    persona: str
+    session_id: str = ""
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        return await emit_help_needed_operator_contact(
+            self.channel,
+            request,
+            source=self.source,
+            persona=self.persona,
+            session_id=self.session_id,
+        )
+
+
+@dataclass(frozen=True)
+class CallbackOperatorContact(OperatorContactPort):
+    """Operator contact through an interactive ask-user style callback."""
+
+    ask_operator: Callable[[str], str | Awaitable[str]]
+    approval_decider: Callable[[str], bool | None] | None = None
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        return await answer_operator_contact(
+            request,
+            self.ask_operator,
+            approval_decider=self.approval_decider,
+        )
+
+
+@dataclass(frozen=True)
+class BroadcastThenCallbackOperatorContact(OperatorContactPort):
+    """Emit help_needed for audit/visibility, then await an interactive answer."""
+
+    broadcast: ChannelOperatorContact
+    callback: CallbackOperatorContact
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        await self.broadcast.ask(request)
+        return await self.callback.ask(request)
+
+
+@dataclass(frozen=True)
+class PendingOperatorContact(OperatorContactPort):
+    """Fallback contact port when no outbound channel or callback is configured."""
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        return OperatorContactResult(
+            request=request,
+            status=OperatorContactStatus.PENDING.value,
+        )
+
+
 async def answer_operator_contact(
     request: OperatorContactRequest,
     ask_operator: Callable[[str], str | Awaitable[str]],

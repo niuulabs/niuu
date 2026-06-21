@@ -7,6 +7,9 @@ import pytest
 
 from ravn.domain.models import TokenUsage, ToolCall, TurnResult
 from ravn.domain.operator_contact import (
+    BroadcastThenCallbackOperatorContact,
+    CallbackOperatorContact,
+    ChannelOperatorContact,
     OperatorContactRequest,
     OperatorContactResult,
     OperatorContactStatus,
@@ -235,6 +238,69 @@ class RecordingChannel:
 
     async def emit(self, event: Any) -> None:
         self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_channel_operator_contact_emits_existing_help_needed_event() -> None:
+    channel = RecordingChannel()
+    contact = ChannelOperatorContact(
+        channel=channel,
+        source="resident-proof",
+        persona="domain-drive",
+        session_id="session-1",
+    )
+    request = OperatorContactRequest(
+        id="approval-1",
+        question="May I operate the printer?",
+        reason="physical machines require approval",
+        impact="Resident will wait instead of operating the machine.",
+        source_objective_id="objective-1",
+        risk_boundaries=("physical_operation",),
+    )
+
+    result = await contact.ask(request)
+
+    assert result.status == OperatorContactStatus.PENDING.value
+    assert len(channel.events) == 1
+    event = channel.events[0]
+    assert event.type.value == "help_needed"
+    assert event.correlation_id == "approval-1"
+    assert event.session_id == "session-1"
+    assert event.payload["summary"] == "May I operate the printer?"
+    assert event.payload["context"]["source_objective_id"] == "objective-1"
+    assert event.payload["context"]["risk_boundaries"] == ["physical_operation"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_then_callback_operator_contact_keeps_audit_and_answer() -> None:
+    channel = RecordingChannel()
+    broadcast = ChannelOperatorContact(
+        channel=channel,
+        source="resident-proof",
+        persona="domain-drive",
+    )
+
+    async def answer(question: str) -> str:
+        assert question == "Which printer should I use?"
+        return "Use the Prusa MK4."
+
+    contact = BroadcastThenCallbackOperatorContact(
+        broadcast=broadcast,
+        callback=CallbackOperatorContact(ask_operator=answer),
+    )
+
+    result = await contact.ask(
+        OperatorContactRequest(
+            id="clarify-1",
+            question="Which printer should I use?",
+            reason="needs operator facts",
+            impact="Resident cannot safely continue without an answer.",
+        )
+    )
+
+    assert len(channel.events) == 1
+    assert result.status == OperatorContactStatus.ANSWERED.value
+    assert result.answer == "Use the Prusa MK4."
 
 
 def _turn(text: str, *, tool_name: str = "mimir_write", tokens: int = 10) -> TurnResult:

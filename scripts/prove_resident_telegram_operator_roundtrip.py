@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,9 @@ async def _list_refs(
 
 
 async def _main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     args = _parse_args()
     if args.config:
         os.environ["RAVN_CONFIG"] = args.config
