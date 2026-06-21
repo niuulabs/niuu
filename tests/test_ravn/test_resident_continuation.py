@@ -132,6 +132,7 @@ class RecordingMemory:
         self.pending_question: str = ""
         self.pending_reason: str = ""
         self.answer: str = ""
+        self.consumed_answers: list[str] = []
 
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         self.recall_calls.append(mandate)
@@ -192,6 +193,11 @@ class RecordingMemory:
             summary="Operator Answer",
             content=f"# Operator Answer\n\n{self.answer}\n",
         )
+
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        self.consumed_answers.append(answer.path)
+        self.answer = ""
+        return answer.path
 
 
 class RecordingPolicy:
@@ -566,6 +572,33 @@ async def test_operator_answer_is_injected_into_resume_prompt() -> None:
     assert run.policy_observations[0].source == "operator_answer"
     assert "Use the Prusa MK4 and PLA." in run.policy_observations[0].observation
     assert memory.policy_observations
+    assert memory.consumed_answers == ["resident/continuation/operator-answers/latest.md"]
+
+
+@pytest.mark.asyncio
+async def test_consumed_operator_answer_is_not_reused_on_next_wake() -> None:
+    first_agent = FakeBackendAgent([_turn(_outcome("Apply the operator-provided setup facts."))])
+    memory = RecordingMemory()
+    await memory.write_operator_answer("Use the Prusa MK4 and PLA.")
+    first_kernel = ResidentContinuationKernel(
+        agent=first_agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
+    )
+
+    await first_kernel.run(MANDATE)
+
+    second_agent = FakeBackendAgent([_turn(_outcome("Inspect current resident memory."))])
+    second_kernel = ResidentContinuationKernel(
+        agent=second_agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
+    )
+
+    await second_kernel.run(MANDATE)
+
+    assert "Operator answer memory" in first_agent.prompts[0]
+    assert "Operator answer memory" not in second_agent.prompts[0]
 
 
 @pytest.mark.asyncio
@@ -644,6 +677,25 @@ async def test_local_memory_persists_turn_budget_and_policy_observation(tmp_path
     assert any(entry.path == turn_ref for entry in recalled)
     listed = await memory.list_policy_observations()
     assert listed[0].subject == "boundary:physical_operation"
+
+
+@pytest.mark.asyncio
+async def test_local_memory_consumes_operator_answer_without_losing_audit(tmp_path: Path) -> None:
+    memory = LocalResidentMemory(tmp_path)
+    await memory.write_operator_answer("Use the Prusa MK4 and PLA.")
+
+    answer = await memory.read_operator_answer()
+    assert answer is not None
+    assert "Use the Prusa MK4 and PLA." in answer.content
+
+    consumed_ref = await memory.consume_operator_answer(answer)
+
+    assert consumed_ref == "resident/continuation/operator-answers/latest.md"
+    assert await memory.read_operator_answer() is None
+    latest = tmp_path / "resident/continuation/operator-answers/latest.md"
+    assert "- status: consumed" in latest.read_text(encoding="utf-8")
+    history = sorted((tmp_path / "resident/continuation/operator-answers").glob("*.md"))
+    assert any(path.name != "latest.md" for path in history)
 
 
 @pytest.mark.asyncio

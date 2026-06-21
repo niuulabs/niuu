@@ -374,6 +374,9 @@ class NullResidentMemory(ResidentMemoryPort):
     async def read_operator_answer(self) -> ResidentMemoryEntry | None:
         return None
 
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        return ""
+
 
 class MimirResidentMemory(ResidentMemoryPort):
     """Resident continuation memory backed by existing Mimir pages."""
@@ -473,6 +476,11 @@ class MimirResidentMemory(ResidentMemoryPort):
         now = datetime.now(UTC)
         answer_path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
         await self._mimir.upsert_page(answer_path, _render_operator_answer(answer, answered_at=now))
+        history_path = f"{self._prefix}/operator-answers/{_timestamp_slug(now)}.md"
+        await self._mimir.upsert_page(
+            history_path,
+            _render_operator_answer(answer, answered_at=now),
+        )
         marker_path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
         try:
             prior = await self._mimir.read_page(marker_path)
@@ -490,11 +498,25 @@ class MimirResidentMemory(ResidentMemoryPort):
             content = await self._mimir.read_page(path)
         except FileNotFoundError:
             return None
+        if _operator_answer_is_consumed(content):
+            return None
         return ResidentMemoryEntry(
             path=path,
             summary=_first_heading_or_line(content),
             content=content,
         )
+
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        path = answer.path or f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        try:
+            prior = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            prior = answer.content
+        await self._mimir.upsert_page(
+            path,
+            _render_consumed_operator_answer(prior, consumed_at=datetime.now(UTC)),
+        )
+        return path
 
 
 class LocalResidentMemory(ResidentMemoryPort):
@@ -587,6 +609,8 @@ class LocalResidentMemory(ResidentMemoryPort):
         now = datetime.now(UTC)
         answer_rel = self._prefix / _OPERATOR_ANSWER_PATH
         answer_ref = self._write(answer_rel, _render_operator_answer(answer, answered_at=now))
+        history_rel = self._prefix / "operator-answers" / f"{_timestamp_slug(now)}.md"
+        self._write(history_rel, _render_operator_answer(answer, answered_at=now))
         marker_rel = self._prefix / _OPERATOR_NEEDED_PATH
         marker_path = self._root / marker_rel
         prior = marker_path.read_text(encoding="utf-8") if marker_path.exists() else ""
@@ -602,10 +626,21 @@ class LocalResidentMemory(ResidentMemoryPort):
         if not path.exists():
             return None
         content = path.read_text(encoding="utf-8")
+        if _operator_answer_is_consumed(content):
+            return None
         return ResidentMemoryEntry(
             path=str(rel),
             summary=_first_heading_or_line(content),
             content=content,
+        )
+
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        rel = Path(answer.path) if answer.path else self._prefix / _OPERATOR_ANSWER_PATH
+        path = self._root / rel
+        prior = path.read_text(encoding="utf-8") if path.exists() else answer.content
+        return self._write(
+            rel,
+            _render_consumed_operator_answer(prior, consumed_at=datetime.now(UTC)),
         )
 
     def _write(self, rel: Path, content: str) -> str:
@@ -705,6 +740,7 @@ class ResidentContinuationKernel:
         if answer is not None:
             await self._record_operator_answer_observation(answer)
         prompt = _build_resume_prompt(mandate, answer) if answer is not None else mandate
+        answer_to_consume = answer
 
         while True:
             budget_decision = self._budget.can_continue()
@@ -733,6 +769,9 @@ class ResidentContinuationKernel:
             records.append(record)
             await self._memory.write_turn(record)
             await self._memory.write_budget(snapshot)
+            if answer_to_consume is not None:
+                await self._memory.consume_operator_answer(answer_to_consume)
+                answer_to_consume = None
 
             recent_memory = tuple(await self._memory.recall(mandate, limit=5))
             context = ResidentContinuationContext(
@@ -1005,9 +1044,24 @@ def _render_operator_needed(
 def _render_operator_answer(answer: str, *, answered_at: datetime) -> str:
     return (
         "# Operator Answer\n\n"
+        "- status: available\n"
         f"- answered_at: {answered_at.isoformat()}\n\n"
         f"{str(answer).strip()}\n"
     )
+
+
+def _render_consumed_operator_answer(content: str, *, consumed_at: datetime) -> str:
+    if content.strip():
+        rendered = re.sub(r"^- status: .*$", "- status: consumed", content, flags=re.MULTILINE)
+        if rendered == content and "- status:" not in rendered:
+            rendered = rendered.replace(
+                "# Operator Answer\n",
+                "# Operator Answer\n\n- status: consumed\n",
+                1,
+            )
+    else:
+        rendered = "# Operator Answer\n\n- status: consumed\n"
+    return rendered.rstrip() + "\n" + f"- consumed_at: {consumed_at.isoformat()}\n"
 
 
 def _render_answered_operator_needed(
@@ -1036,6 +1090,10 @@ def _render_answered_operator_needed(
 
 def _operator_marker_is_pending(content: str) -> bool:
     return bool(re.search(r"^- status:\s*pending\s*$", content, flags=re.MULTILINE))
+
+
+def _operator_answer_is_consumed(content: str) -> bool:
+    return bool(re.search(r"^- status:\s*consumed\s*$", content, flags=re.MULTILINE))
 
 
 def _operator_marker_question(content: str) -> str:
@@ -1305,3 +1363,7 @@ def _first_heading_or_line(content: str) -> str:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
     return slug[:80]
+
+
+def _timestamp_slug(value: datetime) -> str:
+    return value.strftime("%Y%m%dT%H%M%S%fZ")

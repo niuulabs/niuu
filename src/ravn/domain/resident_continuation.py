@@ -215,6 +215,9 @@ class ResidentMemoryPort(Protocol):
     async def read_operator_answer(self) -> ResidentMemoryEntry | None:
         """Return the latest operator answer when one exists."""
 
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        """Mark an operator answer as consumed after it has resumed resident work."""
+
 
 class ResidentPolicyPort(Protocol):
     """Policy boundary for action approval and learned preferences."""
