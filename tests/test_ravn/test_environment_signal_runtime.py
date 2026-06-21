@@ -104,6 +104,14 @@ class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
         )
 
 
+class WakefulnessProbe:
+    def __init__(self) -> None:
+        self.activity_count = 0
+
+    def notify_activity(self) -> None:
+        self.activity_count += 1
+
+
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
     environment = build_runtime_environment(_settings())
 
@@ -261,6 +269,12 @@ async def test_daemon_environment_signals_become_resident_opportunity_evidence(
     report = await opportunity_runtime.run(
         "A resident Ravn manages the host environment and should keep it reliable."
     )
+    remaining = await source.collect(
+        mandate="A resident Ravn manages the host environment.",
+        domain_model=None,
+        objectives=tuple(report.created_objectives),
+        limit=5,
+    )
 
     assert count == 1
     assert len(pages) == 1
@@ -273,6 +287,30 @@ async def test_daemon_environment_signals_become_resident_opportunity_evidence(
     assert report.created_objectives
     assert report.created_objectives[0].source_evidence
     assert "resident/environment-signals/" in report.created_objectives[0].source_evidence[0]
+    assert remaining == ()
+
+
+@pytest.mark.asyncio
+async def test_daemon_environment_signal_recording_notifies_wakefulness(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    settings.resident_autonomy.enabled = True
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    wakefulness = WakefulnessProbe()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        resident_wakefulness=wakefulness,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    await runtime.collect_once()
+
+    assert wakefulness.activity_count == 1
 
 
 @pytest.mark.asyncio

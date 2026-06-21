@@ -328,14 +328,21 @@ class MimirEnvironmentSignalOpportunitySource(ResidentOpportunitySourcePort):
         objectives: tuple[ResidentObjective, ...],
         limit: int,
     ) -> tuple[ResidentOpportunitySignal, ...]:
-        del mandate, domain_model, objectives
+        del mandate, domain_model
         if limit <= 0:
             return ()
+        used_refs = {
+            source_evidence
+            for objective in objectives
+            for source_evidence in objective.source_evidence
+        }
         metas = await self._mimir.list_pages(prefix=self._prefix)
         signals: list[ResidentOpportunitySignal] = []
         for meta in sorted(metas, key=lambda item: getattr(item, "path", ""), reverse=True):
             path = str(getattr(meta, "path", "") or "")
             if not path:
+                continue
+            if any(path in source_evidence for source_evidence in used_refs):
                 continue
             try:
                 record = parse_environment_signal_record(await self._mimir.read_page(path))

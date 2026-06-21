@@ -3223,6 +3223,8 @@ def _build_environment_signal_runtime(
         result: dict[str, Any] = {}
         if resident_signal_recorder is not None:
             ref = await resident_signal_recorder.write_event(event)
+            if resident_wakefulness is not None:
+                resident_wakefulness.notify_activity()
             result.update(
                 {
                     "residentAutonomySignalPersisted": True,
@@ -3230,7 +3232,7 @@ def _build_environment_signal_runtime(
                 }
             )
         if resident_learning_runtime is not None:
-            if resident_wakefulness is not None:
+            if resident_wakefulness is not None and resident_signal_recorder is None:
                 resident_wakefulness.notify_activity()
             learned = await resident_learning_runtime.process_signal(event)
             if isinstance(learned, dict):
@@ -3765,22 +3767,6 @@ def _wire_mimir_triggers(
                 _resident_operator_reply_interceptor
             )
 
-            async def _resident_wake_attention(
-                *,
-                name: str,
-                should_run: bool,
-                priority: int,
-                reason: str,
-                observations: tuple[str, ...] = (),
-            ) -> ResidentWakeAttention:
-                return ResidentWakeAttention(
-                    name=name,
-                    should_run=should_run,
-                    priority=priority,
-                    reason=reason,
-                    observations=observations,
-                )
-
             async def _capability_discovery_attention(
                 active_mandate: str,
                 *,
@@ -3814,6 +3800,65 @@ def _wire_mimir_triggers(
                         else "no current objectives show capability/tool gaps"
                     ),
                     observations=tuple(objective.id for objective in needing_capabilities[:5]),
+                )
+
+            async def _opportunity_attention(
+                active_mandate: str,
+                *,
+                backend: MimirResidentWorkItemBackend,
+                environment_source: MimirEnvironmentSignalOpportunitySource | None,
+                has_configured_sources: bool,
+            ) -> ResidentWakeAttention:
+                objectives = tuple(await backend.list_objectives(active_mandate))
+                if environment_source is not None:
+                    signals = await environment_source.collect(
+                        mandate=active_mandate,
+                        domain_model=None,
+                        objectives=objectives,
+                        limit=3,
+                    )
+                    if signals:
+                        return ResidentWakeAttention(
+                            name="opportunity_generation",
+                            should_run=True,
+                            priority=65,
+                            reason=(
+                                f"{len(signals)} unprocessed environment signal(s) "
+                                "are available as resident opportunity evidence"
+                            ),
+                            observations=tuple(signal.evidence_ref for signal in signals),
+                        )
+                domain_model = await expert_memory.read_domain_model(active_mandate)
+                domain_hints = ()
+                if domain_model is not None:
+                    domain_hints = (
+                        *domain_model.opportunities,
+                        *domain_model.capability_gaps,
+                        *domain_model.failure_notes,
+                    )
+                if domain_hints:
+                    return ResidentWakeAttention(
+                        name="opportunity_generation",
+                        should_run=True,
+                        priority=25,
+                        reason=(
+                            f"{len(domain_hints)} domain-memory hint(s) may imply "
+                            "resident opportunity work"
+                        ),
+                        observations=tuple(str(item) for item in domain_hints[:3]),
+                    )
+                if has_configured_sources:
+                    return ResidentWakeAttention(
+                        name="opportunity_generation",
+                        should_run=True,
+                        priority=15,
+                        reason="configured opportunity sources are available for exploration",
+                    )
+                return ResidentWakeAttention(
+                    name="opportunity_generation",
+                    should_run=False,
+                    priority=0,
+                    reason="no resident opportunity evidence is currently available",
                 )
 
             async def _review_attention(
@@ -3862,10 +3907,12 @@ def _wire_mimir_triggers(
             opportunity_cfg = settings.resident_opportunity_generation
             if opportunity_cfg.enabled:
                 opportunity_sources = []
+                configured_opportunity_sources = 0
                 for source_cfg in opportunity_cfg.sources:
                     if not source_cfg.enabled:
                         continue
                     source_cls = _import_class(source_cfg.adapter)
+                    configured_opportunity_sources += 1
                     opportunity_sources.append(
                         source_cls(
                             **_inject_secrets(
@@ -3874,11 +3921,15 @@ def _wire_mimir_triggers(
                             )
                         )
                     )
+                environment_opportunity_source = None
                 if (
                     opportunity_cfg.include_environment_signals
                     and any(source.enabled for source in settings.environment.signal_sources)
                 ):
-                    opportunity_sources.append(MimirEnvironmentSignalOpportunitySource(mimir))
+                    environment_opportunity_source = MimirEnvironmentSignalOpportunitySource(
+                        mimir
+                    )
+                    opportunity_sources.append(environment_opportunity_source)
                 opportunity_runtime = build_mimir_opportunity_runtime(
                     mimir=mimir,
                     sources=tuple(opportunity_sources),
@@ -3907,14 +3958,11 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="opportunity_generation",
                         run=opportunity_runtime.run,
-                        inspect=lambda active_mandate: _resident_wake_attention(
-                            name="opportunity_generation",
-                            should_run=True,
-                            priority=20,
-                            reason=(
-                                "scan resident memory and configured sources for "
-                                "domain opportunities"
-                            ),
+                        inspect=lambda active_mandate: _opportunity_attention(
+                            active_mandate,
+                            backend=backend,
+                            environment_source=environment_opportunity_source,
+                            has_configured_sources=configured_opportunity_sources > 0,
                         ),
                     )
                 )
