@@ -7,6 +7,7 @@ import pytest
 
 from ravn.adapters.triggers.resident_autonomy import (
     ResidentAutonomyTrigger,
+    ResidentWakeAttention,
     ResidentWakeExtension,
 )
 from ravn.domain.capability_catalog import WorkflowCapability
@@ -573,7 +574,72 @@ async def test_daemon_resident_autonomy_trigger_runs_wake_extensions(
     assert run is not None
     assert order == [MANDATE]
     assert any("extension wrote real resident decision" in item for item in decisions)
+    assert any("[resident_attention] selected=proof_extension" in item for item in decisions)
     assert any("[resident_wake_extension] proof_extension" in item for item in decisions)
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_selects_one_extension_by_attention(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    ran: list[str] = []
+    inspected: list[str] = []
+
+    async def inspect_low(mandate: str) -> ResidentWakeAttention:
+        inspected.append(f"low:{mandate}")
+        return ResidentWakeAttention(
+            name="low",
+            should_run=True,
+            priority=10,
+            reason="lower-value wake candidate",
+        )
+
+    async def inspect_high(mandate: str) -> ResidentWakeAttention:
+        inspected.append(f"high:{mandate}")
+        return ResidentWakeAttention(
+            name="high",
+            should_run=True,
+            priority=80,
+            reason="higher-value wake candidate",
+        )
+
+    class ExtensionResult:
+        persisted_refs: tuple[str, ...] = ()
+        final_suggested_next_action = "attention-selected extension completed"
+
+    async def run_low(mandate: str) -> ExtensionResult:
+        ran.append(f"low:{mandate}")
+        return ExtensionResult()
+
+    async def run_high(mandate: str) -> ExtensionResult:
+        ran.append(f"high:{mandate}")
+        return ExtensionResult()
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_extensions=(
+            ResidentWakeExtension(name="low", run=run_low, inspect=inspect_low),
+            ResidentWakeExtension(name="high", run=run_high, inspect=inspect_high),
+        ),
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=0, max_delegations_per_cycle=0),
+        poll_interval_seconds=0.01,
+    )
+
+    await trigger.run_once()
+    decisions = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    ]
+
+    assert inspected == [f"low:{MANDATE}", f"high:{MANDATE}"]
+    assert ran == [f"high:{MANDATE}"]
+    assert any("[resident_attention] selected=high" in item for item in decisions)
+    assert any("higher-value wake candidate" in item for item in decisions)
+    assert any("[resident_wake_extension] high" in item for item in decisions)
+    assert not any("[resident_wake_extension] low" in item for item in decisions)
 
 
 @pytest.mark.asyncio

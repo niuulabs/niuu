@@ -3632,6 +3632,7 @@ def _wire_mimir_triggers(
             from ravn.adapters.channels.silent import SilentChannel
             from ravn.adapters.triggers.resident_autonomy import (
                 ResidentAutonomyTrigger,
+                ResidentWakeAttention,
                 ResidentWakeExtension,
             )
             from ravn.domain.operator_contact import (
@@ -3663,6 +3664,12 @@ def _wire_mimir_triggers(
             )
             from ravn.resident_portfolio import (
                 ResidentCapabilityDiscoveryConfig as RuntimeCapabilityDiscoveryConfig,
+            )
+            from ravn.resident_review import (
+                MimirResidentReviewMemory,
+                ResidentReviewRuntime,
+                ResidentReviewRuntimeConfig,
+                run_resident_review_wake_pass,
             )
             from ravn.wakeful_resident import (
                 MimirWakefulResidentMemory,
@@ -3730,6 +3737,100 @@ def _wire_mimir_triggers(
                 _resident_operator_reply_interceptor
             )
 
+            async def _resident_wake_attention(
+                *,
+                name: str,
+                should_run: bool,
+                priority: int,
+                reason: str,
+                observations: tuple[str, ...] = (),
+            ) -> ResidentWakeAttention:
+                return ResidentWakeAttention(
+                    name=name,
+                    should_run=should_run,
+                    priority=priority,
+                    reason=reason,
+                    observations=observations,
+                )
+
+            async def _capability_discovery_attention(
+                active_mandate: str,
+                *,
+                backend: MimirResidentWorkItemBackend,
+            ) -> ResidentWakeAttention:
+                objectives = await backend.list_objectives(active_mandate)
+                needing_capabilities = [
+                    objective
+                    for objective in objectives
+                    if objective.required_capabilities
+                    or objective.status == "blocked"
+                    or any(
+                        "capability" in item.lower()
+                        or "tool" in item.lower()
+                        or "adapter" in item.lower()
+                        for item in (
+                            *objective.blockers,
+                            *objective.questions,
+                            *objective.proof_progress,
+                        )
+                    )
+                ]
+                count = len(needing_capabilities)
+                return ResidentWakeAttention(
+                    name="capability_discovery",
+                    should_run=count > 0,
+                    priority=60,
+                    reason=(
+                        f"{count} resident objective(s) show capability/tool gaps"
+                        if count
+                        else "no current objectives show capability/tool gaps"
+                    ),
+                    observations=tuple(objective.id for objective in needing_capabilities[:5]),
+                )
+
+            async def _review_attention(
+                active_mandate: str,
+                *,
+                target_source: Any,
+            ) -> ResidentWakeAttention:
+                targets = await target_source.list_targets(active_mandate)
+                return ResidentWakeAttention(
+                    name="self_review",
+                    should_run=bool(targets),
+                    priority=70,
+                    reason=(
+                        f"{len(targets)} resident artifact(s) need concrete review"
+                        if targets
+                        else "no configured resident artifacts need review"
+                    ),
+                    observations=tuple(target.id for target in targets[:5]),
+                )
+
+            async def _physical_attention(
+                active_mandate: str,
+                *,
+                continuation_memory: MimirResidentMemory,
+            ) -> ResidentWakeAttention:
+                del active_mandate
+                pending = await continuation_memory.read_operator_needed()
+                if pending is not None:
+                    return ResidentWakeAttention(
+                        name="physical_world",
+                        should_run=False,
+                        priority=0,
+                        reason=(
+                            "physical-world work is waiting for the existing "
+                            "resident operator-needed answer"
+                        ),
+                        observations=(pending.path,),
+                    )
+                return ResidentWakeAttention(
+                    name="physical_world",
+                    should_run=True,
+                    priority=80,
+                    reason="configured physical devices require safe resident inspection",
+                )
+
             opportunity_cfg = settings.resident_opportunity_generation
             if opportunity_cfg.enabled:
                 opportunity_sources = []
@@ -3773,6 +3874,15 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="opportunity_generation",
                         run=opportunity_runtime.run,
+                        inspect=lambda active_mandate: _resident_wake_attention(
+                            name="opportunity_generation",
+                            should_run=True,
+                            priority=20,
+                            reason=(
+                                "scan resident memory and configured sources for "
+                                "domain opportunities"
+                            ),
+                        ),
                     )
                 )
 
@@ -3808,6 +3918,53 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="capability_discovery",
                         run=capability_runtime.run,
+                        inspect=lambda active_mandate: _capability_discovery_attention(
+                            active_mandate,
+                            backend=backend,
+                        ),
+                    )
+                )
+
+            review_cfg = settings.resident_review
+            if review_cfg.enabled:
+                source_cls = _import_class(review_cfg.target_source_adapter)
+                source_kwargs = _inject_secrets(
+                    dict(review_cfg.target_source_kwargs),
+                    review_cfg.target_source_secret_kwargs_env,
+                )
+                source_kwargs.setdefault("max_targets", int(review_cfg.max_targets_per_wake))
+                review_target_source = source_cls(backend=backend, **source_kwargs)
+                verifier_cls = _import_class(review_cfg.verification_adapter)
+                verifier = verifier_cls(
+                    **_inject_secrets(
+                        dict(review_cfg.verification_kwargs),
+                        review_cfg.verification_secret_kwargs_env,
+                    )
+                )
+                review_runtime = ResidentReviewRuntime(
+                    backend=backend,
+                    memory=MimirResidentReviewMemory(mimir),
+                    verifier=verifier,
+                    config=ResidentReviewRuntimeConfig(
+                        max_follow_up_objectives=max(
+                            0,
+                            review_cfg.max_follow_up_objectives,
+                        ),
+                        duplicate_review_enabled=review_cfg.duplicate_review_enabled,
+                    ),
+                )
+                wake_extensions.append(
+                    ResidentWakeExtension(
+                        name="self_review",
+                        run=lambda active_mandate: run_resident_review_wake_pass(
+                            active_mandate,
+                            runtime=review_runtime,
+                            target_source=review_target_source,
+                        ),
+                        inspect=lambda active_mandate: _review_attention(
+                            active_mandate,
+                            target_source=review_target_source,
+                        ),
                     )
                 )
 
@@ -3844,6 +4001,10 @@ def _wire_mimir_triggers(
                         run=lambda active_mandate: run_resident_physical_wake_pass(
                             active_mandate,
                             tuple(physical_runtimes),
+                        ),
+                        inspect=lambda active_mandate: _physical_attention(
+                            active_mandate,
+                            continuation_memory=continuation_memory,
                         ),
                     )
                 )

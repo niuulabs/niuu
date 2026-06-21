@@ -20,11 +20,25 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class ResidentWakeAttention:
+    """A resident wake candidate and the reason it deserves attention now."""
+
+    name: str
+    should_run: bool
+    priority: int = 0
+    reason: str = ""
+    observations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResidentWakeExtension:
-    """One ordered resident layer pass run inside the daemon wake sequence."""
+    """One resident layer pass that can compete for wake attention."""
 
     name: str
     run: Callable[[str], Awaitable[Any]]
+    inspect: Callable[[str], Awaitable[ResidentWakeAttention]] | None = None
+    priority: int = 10
+    reason: str = "configured resident wake extension"
 
 
 class ResidentAutonomyTrigger(TriggerPort):
@@ -116,7 +130,8 @@ class ResidentAutonomyTrigger(TriggerPort):
                 )
                 return None
 
-        for extension in self._wake_extensions:
+        extension = await self._select_wake_extension()
+        if extension is not None:
             result = await extension.run(self._mandate)
             refs = tuple(getattr(result, "persisted_refs", ()) or ())
             logger.info(
@@ -174,6 +189,65 @@ class ResidentAutonomyTrigger(TriggerPort):
             len(run.operator_contacts),
         )
         return run
+
+    async def _select_wake_extension(self) -> ResidentWakeExtension | None:
+        if not self._wake_extensions:
+            return None
+
+        candidates: list[tuple[ResidentWakeAttention, ResidentWakeExtension]] = []
+        for extension in self._wake_extensions:
+            attention = await self._inspect_wake_extension(extension)
+            candidates.append((attention, extension))
+
+        runnable = [item for item in candidates if item[0].should_run]
+        runnable.sort(key=lambda item: item[0].priority, reverse=True)
+        selected = runnable[0] if runnable else None
+        candidate_summary = "; ".join(
+            (
+                f"{attention.name}:run={attention.should_run}:"
+                f"priority={attention.priority}:reason={attention.reason}"
+            )
+            for attention, _extension in candidates
+        )
+        selected_name = selected[1].name if selected is not None else "none"
+        selected_reason = (
+            selected[0].reason
+            if selected is not None
+            else "no candidate needed attention"
+        )
+        await self._backend.append_decision(
+            self._mandate,
+            (
+                f"{datetime.now(UTC).isoformat()} [resident_attention] "
+                f"selected={selected_name} reason={selected_reason} "
+                f"candidates={candidate_summary}"
+            ),
+        )
+        if selected is None:
+            return None
+        return selected[1]
+
+    async def _inspect_wake_extension(
+        self,
+        extension: ResidentWakeExtension,
+    ) -> ResidentWakeAttention:
+        if extension.inspect is None:
+            return ResidentWakeAttention(
+                name=extension.name,
+                should_run=True,
+                priority=extension.priority,
+                reason=extension.reason,
+            )
+        attention = await extension.inspect(self._mandate)
+        if attention.name != extension.name:
+            return ResidentWakeAttention(
+                name=extension.name,
+                should_run=attention.should_run,
+                priority=attention.priority,
+                reason=attention.reason,
+                observations=attention.observations,
+            )
+        return attention
 
     async def _pending_operator_objective(self) -> Any | None:
         objectives = await self._backend.list_objectives(self._mandate)

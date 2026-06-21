@@ -20,6 +20,7 @@ from ravn.domain.resident_review import (
     ResidentReviewDecision,
     ResidentReviewReport,
     ResidentReviewTarget,
+    ResidentVerificationCheck,
     ResidentVerificationEvidence,
 )
 from ravn.ports.mimir import MimirPort
@@ -35,6 +36,24 @@ class ResidentReviewRuntimeConfig:
 
     max_follow_up_objectives: int = 1
     duplicate_review_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class ResidentReviewWakeReport:
+    """Aggregated resident self-review pass for one daemon wake."""
+
+    mandate: str
+    targets: tuple[ResidentReviewTarget, ...]
+    reports: tuple[ResidentReviewReport, ...]
+    persisted_refs: tuple[str, ...]
+    final_suggested_next_action: str = "No reviewable resident artifacts found."
+
+
+class ResidentReviewTargetSourcePort(Protocol):
+    """Discovers concrete review targets with explicit checks."""
+
+    async def list_targets(self, mandate: str) -> list[ResidentReviewTarget]:
+        """Return concrete review targets for the mandate."""
 
 
 class ResidentReviewMemoryPort(Protocol):
@@ -119,6 +138,42 @@ class MimirResidentReviewMemory(ResidentReviewMemoryPort):
         path = f"{_REVIEW_AUDIT_PREFIX}/{_stamp(datetime.now(UTC))}.md"
         await self._mimir.upsert_page(path, content)
         return path
+
+
+class PortfolioArtifactReviewTargetSource(ResidentReviewTargetSourcePort):
+    """Build review targets from resident portfolio artifacts using configured rules."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        rules: list[dict[str, object]] | tuple[dict[str, object], ...],
+        max_targets: int = 4,
+    ) -> None:
+        self._backend = backend
+        self._rules = tuple(_review_rule(item) for item in rules)
+        self._max_targets = max(0, int(max_targets))
+
+    async def list_targets(self, mandate: str) -> list[ResidentReviewTarget]:
+        if self._max_targets <= 0:
+            return []
+        objectives = await self._backend.list_objectives(mandate)
+        targets: list[ResidentReviewTarget] = []
+        for objective in objectives:
+            if objective.status in {
+                ResidentObjectiveStatus.COMPLETED.value,
+                ResidentObjectiveStatus.CANCELLED.value,
+                ResidentObjectiveStatus.SUPERSEDED.value,
+            }:
+                continue
+            for artifact_ref in objective.artifact_links:
+                rule = _matching_review_rule(artifact_ref, self._rules)
+                if rule is None:
+                    continue
+                targets.append(_target_from_rule(objective, artifact_ref, rule))
+                if len(targets) >= self._max_targets:
+                    return targets
+        return targets
 
 
 class ResidentReviewRuntime:
@@ -291,6 +346,140 @@ class ResidentReviewRuntime:
         return tuple(refs)
 
 
+async def run_resident_review_wake_pass(
+    mandate: str,
+    *,
+    runtime: ResidentReviewRuntime,
+    target_source: ResidentReviewTargetSourcePort,
+) -> ResidentReviewWakeReport:
+    """Review configured resident artifacts during one daemon wake pass."""
+    targets = tuple(await target_source.list_targets(mandate))
+    reports: list[ResidentReviewReport] = []
+    refs: list[str] = []
+    for target in targets:
+        report = await runtime.review(mandate, target)
+        reports.append(report)
+        refs.extend(report.persisted_refs)
+    return ResidentReviewWakeReport(
+        mandate=mandate,
+        targets=targets,
+        reports=tuple(reports),
+        persisted_refs=tuple(refs),
+        final_suggested_next_action=_review_wake_next_action(tuple(reports)),
+    )
+
+
+def _review_rule(raw: dict[str, object]) -> dict[str, object]:
+    checks = raw.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("resident review target rule requires at least one check")
+    return {
+        "artifact_kind": str(raw.get("artifact_kind") or "artifact"),
+        "artifact_ref_contains": _strings(raw.get("artifact_ref_contains")),
+        "artifact_ref_suffixes": _strings(raw.get("artifact_ref_suffixes")),
+        "complete_objective_on_pass": bool(raw.get("complete_objective_on_pass", False)),
+        "checks": tuple(_review_check_template(item) for item in checks),
+    }
+
+
+def _review_check_template(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raise ValueError("resident review check must be a mapping")
+    command = raw.get("command")
+    if not isinstance(command, list) or not command:
+        raise ValueError("resident review check requires a non-empty command argv")
+    return {
+        "id": str(raw.get("id") or "review-check"),
+        "description": str(raw.get("description") or "Verify resident artifact."),
+        "command": tuple(str(item) for item in command),
+        "working_dir": str(raw.get("working_dir") or ""),
+        "expected_exit_code": int(raw.get("expected_exit_code") or 0),
+    }
+
+
+def _matching_review_rule(
+    artifact_ref: str,
+    rules: tuple[dict[str, object], ...],
+) -> dict[str, object] | None:
+    for rule in rules:
+        contains = tuple(rule.get("artifact_ref_contains") or ())
+        suffixes = tuple(rule.get("artifact_ref_suffixes") or ())
+        contains_match = not contains or any(item in artifact_ref for item in contains)
+        suffix_match = not suffixes or any(artifact_ref.endswith(item) for item in suffixes)
+        if contains_match and suffix_match:
+            return rule
+    return None
+
+
+def _target_from_rule(
+    objective: ResidentObjective,
+    artifact_ref: str,
+    rule: dict[str, object],
+) -> ResidentReviewTarget:
+    artifact_kind = str(rule.get("artifact_kind") or "artifact")
+    checks = tuple(
+        _check_from_template(template, objective=objective, artifact_ref=artifact_ref)
+        for template in tuple(rule.get("checks") or ())
+    )
+    return ResidentReviewTarget(
+        id=_slug(f"{objective.id}-{artifact_ref}-{artifact_kind}"),
+        title=f"Review artifact for {objective.title}",
+        artifact_ref=artifact_ref,
+        artifact_kind=artifact_kind,
+        source_objective_id=objective.id,
+        complete_objective_on_pass=bool(rule.get("complete_objective_on_pass", False)),
+        review_key=f"{objective.id}:{artifact_ref}:{artifact_kind}",
+        checks=checks,
+        evidence=(artifact_ref, *objective.proof_progress),
+    )
+
+
+def _check_from_template(
+    template: dict[str, object],
+    *,
+    objective: ResidentObjective,
+    artifact_ref: str,
+) -> ResidentVerificationCheck:
+    variables = {
+        "artifact_ref": artifact_ref,
+        "objective_id": objective.id,
+        "objective_title": objective.title,
+    }
+    return ResidentVerificationCheck(
+        id=_format_template(str(template.get("id") or "review-check"), variables),
+        description=_format_template(
+            str(template.get("description") or "Verify resident artifact."),
+            variables,
+        ),
+        command=tuple(
+            _format_template(str(item), variables)
+            for item in tuple(template.get("command") or ())
+        ),
+        working_dir=_format_template(str(template.get("working_dir") or ""), variables),
+        expected_exit_code=int(template.get("expected_exit_code") or 0),
+    )
+
+
+def _review_wake_next_action(reports: tuple[ResidentReviewReport, ...]) -> str:
+    if not reports:
+        return "No reviewable resident artifacts found."
+    failed = [
+        item
+        for item in reports
+        if item.review.decision == ResidentReviewDecision.FAILED.value
+    ]
+    if failed:
+        return "Advance review follow-up objectives before trusting failed artifacts."
+    skipped = [
+        item
+        for item in reports
+        if item.review.decision == ResidentReviewDecision.SKIPPED_DUPLICATE.value
+    ]
+    if skipped and len(skipped) == len(reports):
+        return "Reuse existing review evidence; no duplicate verification needed."
+    return "Use passed review evidence to trust resident artifacts."
+
+
 def _follow_up_objective(
     mandate: str,
     target: ResidentReviewTarget,
@@ -458,6 +647,24 @@ def _render_list(items: tuple[str, ...]) -> str:
 
 def _merge_text(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*left, *right)))
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    if isinstance(value, list | tuple):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def _format_template(value: str, variables: dict[str, str]) -> str:
+    rendered = value
+    for key, replacement in variables.items():
+        rendered = rendered.replace("{" + key + "!r}", repr(replacement))
+        rendered = rendered.replace("{" + key + "}", replacement)
+    return rendered
 
 
 def _slug(value: str) -> str:

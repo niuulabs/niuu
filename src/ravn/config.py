@@ -2848,6 +2848,32 @@ class ResidentAutonomyTriggerConfig(BaseModel):
 class ResidentReviewConfig(BaseModel):
     """Resident self-review adapter and orchestration bounds."""
 
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the resident daemon should run configured self-review targets "
+            "during wake passes."
+        ),
+    )
+    target_source_adapter: str = Field(
+        default="ravn.resident_review.PortfolioArtifactReviewTargetSource",
+        description="Fully-qualified ResidentReviewTargetSourcePort adapter class.",
+    )
+    target_source_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Constructor kwargs for the review target source. The daemon injects "
+            "the resident work backend."
+        ),
+    )
+    target_source_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps target source adapter kwarg names to env var names.",
+    )
+    max_targets_per_wake: int = Field(
+        default=4,
+        description="Maximum review targets selected during one daemon wake pass.",
+    )
     verification_adapter: str = Field(
         default="ravn.adapters.review.command.CommandResidentVerificationAdapter",
         description="Fully-qualified ResidentVerificationPort adapter class.",

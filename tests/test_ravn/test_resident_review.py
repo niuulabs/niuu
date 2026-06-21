@@ -17,7 +17,12 @@ from ravn.domain.resident_review import (
     ResidentVerificationCheck,
 )
 from ravn.resident_portfolio import LocalResidentWorkItemBackend
-from ravn.resident_review import LocalResidentReviewMemory, ResidentReviewRuntime
+from ravn.resident_review import (
+    LocalResidentReviewMemory,
+    PortfolioArtifactReviewTargetSource,
+    ResidentReviewRuntime,
+    run_resident_review_wake_pass,
+)
 
 MANDATE = (
     "A resident Ravn should create useful artifacts, verify them with concrete evidence, "
@@ -138,3 +143,105 @@ async def test_duplicate_review_key_skips_redundant_verification(tmp_path: Path)
     assert second.duplicate_skipped is True
     reviews = await memory.list_reviews(target.review_key)
     assert len(reviews) == 2
+
+
+async def test_portfolio_artifact_target_source_uses_configured_checks(
+    tmp_path: Path,
+) -> None:
+    backend = await _seed_backend(tmp_path)
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# Product Note\n\nProof: command verified this file.\n", encoding="utf-8")
+    source = PortfolioArtifactReviewTargetSource(
+        backend=backend,
+        max_targets=2,
+        rules=[
+            {
+                "artifact_kind": "markdown",
+                "artifact_ref_suffixes": [".md"],
+                "complete_objective_on_pass": True,
+                "checks": [
+                    {
+                        "id": "proof-line",
+                        "description": "Artifact {artifact_ref} must include proof.",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import pathlib, sys; "
+                                "text=pathlib.Path({artifact_ref!r}).read_text(); "
+                                "sys.exit(0 if 'Proof:' in text else 1)"
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    objective = (await backend.list_objectives(MANDATE))[0]
+    await backend.write_objective(
+        objective.with_updates(artifact_links=(str(artifact),))
+    )
+
+    targets = await source.list_targets(MANDATE)
+
+    assert len(targets) == 1
+    assert targets[0].artifact_ref == str(artifact)
+    assert targets[0].artifact_kind == "markdown"
+    assert targets[0].checks[0].command[0] == sys.executable
+    assert str(artifact) in targets[0].checks[0].command[-1]
+
+
+async def test_review_wake_pass_reviews_portfolio_artifacts_with_real_command(
+    tmp_path: Path,
+) -> None:
+    backend = await _seed_backend(tmp_path)
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# Product Note\n\nProof: command verified this file.\n", encoding="utf-8")
+    objective = (await backend.list_objectives(MANDATE))[0]
+    await backend.write_objective(objective.with_updates(artifact_links=(str(artifact),)))
+    memory = LocalResidentReviewMemory(tmp_path / "memory")
+    runtime = ResidentReviewRuntime(
+        backend=backend,
+        memory=memory,
+        verifier=CommandResidentVerificationAdapter(timeout_seconds=5, max_output_bytes=4000),
+    )
+    source = PortfolioArtifactReviewTargetSource(
+        backend=backend,
+        rules=[
+            {
+                "artifact_kind": "markdown",
+                "artifact_ref_suffixes": [".md"],
+                "complete_objective_on_pass": True,
+                "checks": [
+                    {
+                        "id": "proof-line",
+                        "description": "Artifact must include a concrete Proof line.",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import pathlib, sys; "
+                                f"text=pathlib.Path({str(artifact)!r}).read_text(); "
+                                "print('proof line present'); "
+                                "sys.exit(0 if 'Proof:' in text else 1)"
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    report = await run_resident_review_wake_pass(
+        MANDATE,
+        runtime=runtime,
+        target_source=source,
+    )
+    source_objective = {item.id: item for item in await backend.list_objectives(MANDATE)}[
+        "artifact-objective"
+    ]
+
+    assert len(report.targets) == 1
+    assert report.reports[0].review.decision == ResidentReviewDecision.PASSED.value
+    assert source_objective.status == ResidentObjectiveStatus.COMPLETED.value
+    assert any("resident/reviews/" in ref for ref in report.persisted_refs)
