@@ -2615,6 +2615,39 @@ class ResidentCapabilityDiscoveryConfig(BaseModel):
     )
 
 
+class ResidentDelegationExecutionConfig(BaseModel):
+    """Resident delegation adapter and orchestration bounds."""
+
+    adapter: str = Field(
+        default="ravn.adapters.resident_execution.workflow.ConfiguredWorkflowResidentExecutionAdapter",
+        description="Fully-qualified ResidentExecutionPort adapter class for delegation.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the resident execution adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+    max_delegations: int = Field(
+        default=1,
+        description="Maximum worker sessions launched by one delegation pass.",
+    )
+    max_observations: int = Field(
+        default=4,
+        description="Maximum existing worker sessions observed by one delegation pass.",
+    )
+    max_follow_up_objectives: int = Field(
+        default=4,
+        description="Maximum follow-up objectives created from delegated results.",
+    )
+    approved_risk_objective_ids: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Risky objective ids explicitly approved for delegated execution.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3200,6 +3233,11 @@ class Settings(BaseSettings):
     # NIU-1066: resident capability discovery adapter
     resident_capability_discovery: ResidentCapabilityDiscoveryConfig = Field(
         default_factory=ResidentCapabilityDiscoveryConfig
+    )
+
+    # NIU-1067: resident delegated execution adapter
+    resident_delegation_execution: ResidentDelegationExecutionConfig = Field(
+        default_factory=ResidentDelegationExecutionConfig
     )
 
     # NIU-588: post-session reflection → Mímir learnings

@@ -1520,14 +1520,14 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         reference = self._reference(session_id)
         status = await self._workflows.get_workflow_status(reference)
         mapped = _delegation_status_from_external(status.state)
+        events = await self._workflows.list_workflow_events(reference, limit=20)
+        artifacts = await self._workflows.list_workflow_artifacts(reference)
         if mapped not in {
             ResidentDelegationStatus.COMPLETED.value,
             ResidentDelegationStatus.BLOCKED.value,
             ResidentDelegationStatus.FAILED.value,
-        }:
+        } and not artifacts:
             return None
-        events = await self._workflows.list_workflow_events(reference, limit=20)
-        artifacts = await self._workflows.list_workflow_artifacts(reference)
         output_refs = tuple(item.path for item in artifacts if item.path)
         findings = tuple(
             _compact_line(
@@ -1536,6 +1536,12 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             )
             for event in events[:5]
         )
+        if mapped == ResidentDelegationStatus.RUNNING.value and artifacts:
+            mapped = ResidentDelegationStatus.COMPLETED.value
+            findings = _merge_text(
+                findings,
+                ("workflow artifact snapshot observed while session remained running",),
+            )
         summary_parts = [
             _compact_line(item.summary or item.title or item.path, limit=160)
             for item in artifacts[:3]

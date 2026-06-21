@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from niuu.utils import import_class, resolve_secret_kwargs
+
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.events import RavnEvent
@@ -25,7 +27,6 @@ from ravn.domain.resident_portfolio import (
 )
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    LocalSubprocessResidentExecutor,
     MimirResidentWorkItemBackend,
     ResidentAutonomyLoopConfig,
     ResidentAutonomyLoopRuntime,
@@ -77,6 +78,16 @@ def _parse_args() -> argparse.Namespace:
             "How to handle resident operator questions: emit pending help_needed, "
             "auto-answer approval for proof, or leave unwired."
         ),
+    )
+    parser.add_argument(
+        "--require-real-session",
+        action="store_true",
+        help="Fail unless at least one non-local delegated backend session is launched.",
+    )
+    parser.add_argument(
+        "--allow-local-backend",
+        action="store_true",
+        help="Allow local-subprocess/local-simulated backends for development only.",
     )
     return parser.parse_args()
 
@@ -153,6 +164,13 @@ def _ask_operator(mode: str) -> Any:
     return PendingProofContact()
 
 
+def _build_executor(settings: Settings) -> Any:
+    cfg = settings.resident_delegation_execution
+    cls = import_class(cfg.adapter)
+    kwargs = resolve_secret_kwargs(dict(cfg.kwargs), dict(cfg.secret_kwargs_env))
+    return cls(**kwargs)
+
+
 async def _main() -> None:
     args = _parse_args()
     if args.config:
@@ -182,12 +200,19 @@ async def _main() -> None:
 
     run = await ResidentAutonomyLoopRuntime(
         backend=backend,
-        executor=LocalSubprocessResidentExecutor(),
+        executor=_build_executor(settings),
         ask_operator=_ask_operator(args.ask_operator),
         wake_memory=wake_memory,
         config=ResidentAutonomyLoopConfig(
             max_cycles=max(0, int(args.cycles)),
             max_delegations_per_cycle=max(0, int(args.delegations_per_cycle)),
+            max_observations_per_cycle=max(
+                1,
+                int(settings.resident_delegation_execution.max_observations),
+            ),
+            approved_risk_objective_ids=tuple(
+                settings.resident_delegation_execution.approved_risk_objective_ids
+            ),
         ),
     ).run(mandate)
     objectives = await backend.list_objectives(mandate)
@@ -249,12 +274,19 @@ async def _main() -> None:
         raise SystemExit("[proof] expected at least two autonomy cycles")
     if not any(cycle.delegation_report.created_delegations for cycle in run.cycles):
         raise SystemExit("[proof] expected delegated execution")
-    if not any(
-        delegation.backend_name == "local-subprocess"
+    local_backends = {"local-simulated", "local-subprocess"}
+    if not args.allow_local_backend and any(
+        delegation.backend_name in local_backends
         for cycle in run.cycles
         for delegation in cycle.delegation_report.created_delegations
     ):
-        raise SystemExit("[proof] expected non-simulated local subprocess backend")
+        raise SystemExit("[proof] local delegation backends do not count as real proof")
+    if args.require_real_session and not any(
+        delegation.backend_name not in local_backends and delegation.backend_session_id
+        for cycle in run.cycles
+        for delegation in cycle.delegation_report.created_delegations
+    ):
+        raise SystemExit("[proof] expected at least one real delegated worker session")
     if not any(cycle.delegation_report.observed_results for cycle in run.cycles):
         raise SystemExit("[proof] expected observed delegated result")
     if not any(cycle.review_decisions for cycle in run.cycles):

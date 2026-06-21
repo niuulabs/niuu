@@ -7,9 +7,11 @@ that Envoy already accepts. Ravn does not import Ting internals.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -36,6 +38,9 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         workload_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token",
         exchange_url: str = "",
         audiences: list[str] | None = None,
+        bearer_token: str = "",
+        external_token_env: str = "",
+        allow_anonymous: bool = False,
         token_ttl_skew_seconds: int = 30,
         timeout_seconds: float = 30.0,
     ) -> None:
@@ -45,6 +50,9 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             f"{self._base_url}/api/v1/tokens/workload/exchange"
         )
         self._audiences = audiences or ["volundr-api", "forge", "ting", "mimir", "guild"]
+        self._bearer_token = bearer_token
+        self._external_token_env = external_token_env
+        self._allow_anonymous = allow_anonymous
         self._token_ttl_skew_seconds = token_ttl_skew_seconds
         self._timeout_seconds = timeout_seconds
         self._cached_token = ""
@@ -152,7 +160,13 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     ) -> list[WorkflowArtifact]:
         campaign = await self._resolve_campaign(reference)
         if campaign is None:
-            return []
+            session = await self._get_session(reference.session_id) if reference.session_id else None
+            artifacts = _local_session_artifacts(session)
+            if not artifacts and reference.session_id:
+                artifacts = _local_session_artifacts(
+                    await self._get_forge_session(reference.session_id)
+                )
+            return artifacts
         slug = str(campaign.get("slug") or reference.slug)
         resp = await self._request(
             "GET",
@@ -180,7 +194,16 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     ) -> WorkflowArtifactContent:
         campaign = await self._resolve_campaign(reference)
         if campaign is None:
-            raise RuntimeError("Workflow run has no readable Ting campaign artifact owner")
+            session = await self._get_session(reference.session_id) if reference.session_id else None
+            try:
+                return _read_local_session_artifact(session, path=path)
+            except RuntimeError:
+                if not reference.session_id:
+                    raise
+                return _read_local_session_artifact(
+                    await self._get_forge_session(reference.session_id),
+                    path=path,
+                )
         slug = str(campaign.get("slug") or reference.slug)
         resp = await self._request(
             "GET",
@@ -205,17 +228,28 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         token = await self._workload_bearer_token()
         headers = dict(kwargs.pop("headers", {}) or {})
-        headers["Authorization"] = f"Bearer {token}"
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
             return await client.request(method, url, headers=headers, **kwargs)
 
     async def _workload_bearer_token(self) -> str:
+        static = self._static_bearer_token()
+        if static:
+            return static
+
         now = int(time.time())
         if self._cached_token and self._cached_expires_at - self._token_ttl_skew_seconds > now:
             return self._cached_token
 
+        if not self._workload_token_file.exists():
+            if self._allow_anonymous:
+                return ""
+            raise RuntimeError(f"workload token file does not exist: {self._workload_token_file}")
         proof = self._workload_token_file.read_text(encoding="utf-8").strip()
         if not proof:
+            if self._allow_anonymous:
+                return ""
             raise RuntimeError(f"workload token file is empty: {self._workload_token_file}")
         async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
             resp = await client.post(
@@ -234,8 +268,22 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         return token
 
     async def _workload_identity_metadata(self) -> dict[str, Any]:
+        if self._static_bearer_token():
+            return {}
         await self._workload_bearer_token()
         return dict(self._cached_identity)
+
+    def _static_bearer_token(self) -> str:
+        if self._bearer_token:
+            return self._bearer_token
+        if not self._external_token_env:
+            return ""
+        token = os.environ.get(self._external_token_env, "")
+        if not token:
+            raise RuntimeError(
+                f"external token env var is not set: {self._external_token_env}"
+            )
+        return token
 
     async def _resolve_campaign(self, reference: WorkflowRunReference) -> dict[str, Any] | None:
         if reference.slug:
@@ -290,6 +338,15 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             body = resp.json()
             return body if isinstance(body, dict) else None
         return None
+
+    async def _get_forge_session(self, session_id: str) -> dict[str, Any] | None:
+        resp = await self._request("GET", f"{self._base_url}/api/v1/forge/sessions/{session_id}")
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(f"Forge session lookup returned HTTP {resp.status_code}")
+        body = resp.json()
+        return body if isinstance(body, dict) else None
 
 
 def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
@@ -447,6 +504,69 @@ def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _local_session_artifacts(session: dict[str, Any] | None) -> list[WorkflowArtifact]:
+    root = _session_workspace_root(session)
+    if root is None:
+        return []
+    files: list[WorkflowArtifact] = []
+    for candidate in sorted((root / "research" / "campaigns").glob("*/*.md")):
+        if not candidate.is_file():
+            continue
+        rel = candidate.relative_to(root).as_posix()
+        files.append(
+            WorkflowArtifact(
+                path=rel,
+                title=candidate.stem.replace("-", " ").replace("_", " ").title(),
+                kind=candidate.stem,
+                summary=f"Local workflow artifact {rel}",
+                publish_state="local",
+                canonical=candidate.name in {"summary.md", "plan.md", "brief.md"},
+                raw={"path": rel, "source": "forge-workspace"},
+            )
+        )
+    return files
+
+
+def _read_local_session_artifact(
+    session: dict[str, Any] | None,
+    *,
+    path: str,
+) -> WorkflowArtifactContent:
+    root = _session_workspace_root(session)
+    if root is None:
+        raise RuntimeError("Workflow run has no readable Ting campaign artifact owner")
+    target = (root / path).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        raise RuntimeError("Workflow artifact not found")
+    artifact = next(
+        (item for item in _local_session_artifacts(session) if item.path == path),
+        WorkflowArtifact(
+            path=path,
+            title=Path(path).stem.replace("-", " ").replace("_", " ").title(),
+            kind=Path(path).stem,
+            summary=f"Local workflow artifact {path}",
+            publish_state="local",
+            raw={"path": path, "source": "forge-workspace"},
+        ),
+    )
+    return WorkflowArtifactContent(
+        artifact=artifact,
+        content=target.read_text(encoding="utf-8"),
+        raw={"path": path, "source": "forge-workspace"},
+    )
+
+
+def _session_workspace_root(session: dict[str, Any] | None) -> Path | None:
+    if not isinstance(session, dict):
+        return None
+    endpoint = str(session.get("code_endpoint") or "")
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "file":
+        return None
+    root = Path(unquote(parsed.path)).expanduser().resolve()
+    return root if root.exists() and root.is_dir() else None
 
 
 def _identity_from_exchange(body: dict[str, Any]) -> dict[str, Any]:

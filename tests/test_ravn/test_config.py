@@ -23,6 +23,7 @@ from ravn.config import (
     PermissionConfig,
     PermissionRuleConfig,
     ResidentCapabilityDiscoveryConfig,
+    ResidentDelegationExecutionConfig,
     ResidentEvolutionConfig,
     Settings,
     SignalSourceConfig,
@@ -178,6 +179,35 @@ class TestResidentCapabilityDiscoveryConfig:
         assert c.adapter == "pkg.RealCapabilityDiscovery"
         assert c.kwargs["num_results"] == 3
         assert c.include_builtin_catalog is True
+
+
+class TestResidentDelegationExecutionConfig:
+    def test_defaults_use_configured_workflow_adapter(self) -> None:
+        c = ResidentDelegationExecutionConfig()
+
+        assert (
+            c.adapter
+            == "ravn.adapters.resident_execution.workflow.ConfiguredWorkflowResidentExecutionAdapter"
+        )
+        assert c.kwargs == {}
+        assert c.secret_kwargs_env == {}
+        assert c.max_delegations == 1
+        assert c.max_observations > 0
+
+    def test_dynamic_adapter_config_accepts_kwargs_and_bounds(self) -> None:
+        c = ResidentDelegationExecutionConfig(
+            adapter="pkg.RealResidentExecutor",
+            kwargs={"workflow_id": "wf-resident"},
+            secret_kwargs_env={"token": "VOLUNDR_TOKEN"},
+            max_delegations=3,
+            approved_risk_objective_ids=("approved-objective",),
+        )
+
+        assert c.adapter == "pkg.RealResidentExecutor"
+        assert c.kwargs["workflow_id"] == "wf-resident"
+        assert c.secret_kwargs_env["token"] == "VOLUNDR_TOKEN"
+        assert c.max_delegations == 3
+        assert c.approved_risk_objective_ids == ("approved-objective",)
 
 
 class TestMemoryConfig:

@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from niuu.utils import import_class, resolve_secret_kwargs
+
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.resident_portfolio import (
@@ -20,7 +22,6 @@ from ravn.domain.resident_portfolio import (
 )
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    LocalSimulatedResidentExecutor,
     MimirResidentWorkItemBackend,
     ResidentDelegationConfig,
     ResidentDelegationRuntime,
@@ -43,6 +44,28 @@ def _parse_args() -> argparse.Namespace:
         "--no-seed",
         action="store_true",
         help="Run against the existing configured portfolio instead of seeding proof data.",
+    )
+    parser.add_argument(
+        "--require-real-session",
+        action="store_true",
+        help="Fail unless at least one non-local delegated backend session is launched.",
+    )
+    parser.add_argument(
+        "--allow-local-backend",
+        action="store_true",
+        help="Allow local-subprocess/local-simulated backends for development only.",
+    )
+    parser.add_argument(
+        "--poll-attempts",
+        type=int,
+        default=1,
+        help="Number of resident delegation runtime passes to observe real workers.",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=10.0,
+        help="Delay between polling passes when waiting for real workers.",
     )
     return parser.parse_args()
 
@@ -89,6 +112,13 @@ async def _seed_portfolio(backend: Any, mandate: str) -> None:
     )
 
 
+def _build_executor(settings: Settings) -> Any:
+    cfg = settings.resident_delegation_execution
+    cls = import_class(cfg.adapter)
+    kwargs = resolve_secret_kwargs(dict(cfg.kwargs), dict(cfg.secret_kwargs_env))
+    return cls(**kwargs)
+
+
 async def _main() -> None:
     args = _parse_args()
     if args.config:
@@ -114,52 +144,92 @@ async def _main() -> None:
     if seeded:
         await _seed_portfolio(backend, mandate)
 
-    executor = LocalSimulatedResidentExecutor()
-    report = await ResidentDelegationRuntime(
+    executor = _build_executor(settings)
+    delegation_cfg = settings.resident_delegation_execution
+    runtime = ResidentDelegationRuntime(
         backend=backend,
         executor=executor,
-        config=ResidentDelegationConfig(max_delegations=2, max_observations=4),
-    ).run(mandate)
+        config=ResidentDelegationConfig(
+            max_delegations=max(1, int(delegation_cfg.max_delegations)),
+            max_observations=max(1, int(delegation_cfg.max_observations)),
+            max_follow_up_objectives=max(0, int(delegation_cfg.max_follow_up_objectives)),
+            approved_risk_objective_ids=tuple(delegation_cfg.approved_risk_objective_ids),
+        ),
+    )
+    report = await runtime.run(mandate)
+    created_delegations = list(report.created_delegations)
+    observed_results = list(report.observed_results)
+    gated_objectives = list(report.skipped_or_gated_objectives)
+    operator_questions = list(report.operator_questions)
+    follow_up_objectives = list(report.created_follow_up_objectives)
+    persisted_refs = list(report.persisted_refs)
+    attempts = max(1, int(args.poll_attempts))
+    for attempt in range(1, attempts):
+        if observed_results:
+            break
+        await asyncio.sleep(max(0.0, float(args.poll_interval_seconds)))
+        report = await runtime.run(mandate)
+        created_delegations.extend(report.created_delegations)
+        observed_results.extend(report.observed_results)
+        gated_objectives.extend(report.skipped_or_gated_objectives)
+        operator_questions.extend(report.operator_questions)
+        follow_up_objectives.extend(report.created_follow_up_objectives)
+        persisted_refs.extend(report.persisted_refs)
+        print(
+            "[proof] poll="
+            f"{attempt + 1}/{attempts} launched={len(report.created_delegations)} "
+            f"observed_results={len(report.observed_results)}"
+        )
     after_objectives = await backend.list_objectives(mandate)
     delegations = await backend.list_delegations(mandate)
+    delegation_evidence = created_delegations or list(delegations)
 
     print("[proof] Resident delegation orchestration proof.")
     print(f"[proof] memory={memory_label}")
+    print(f"[proof] executor_adapter={delegation_cfg.adapter}")
     print(f"[proof] seeded={seeded}")
     print(f"[proof] selected={len(report.selected_objectives)}")
-    print(f"[proof] launched={len(report.created_delegations)}")
-    print(f"[proof] observed_results={len(report.observed_results)}")
-    print(f"[proof] gated={len(report.skipped_or_gated_objectives)}")
-    print(f"[proof] operator_questions={len(report.operator_questions)}")
-    print(f"[proof] follow_ups={len(report.created_follow_up_objectives)}")
-    print(f"[proof] persisted_refs={len(report.persisted_refs)}")
+    print(f"[proof] launched={len(created_delegations)}")
+    print(f"[proof] observed_results={len(observed_results)}")
+    print(f"[proof] gated={len(gated_objectives)}")
+    print(f"[proof] operator_questions={len(operator_questions)}")
+    print(f"[proof] follow_ups={len(follow_up_objectives)}")
+    print(f"[proof] persisted_refs={len(persisted_refs)}")
     print(f"[proof] objectives_after={len(after_objectives)}")
     print(f"[proof] delegations_after={len(delegations)}")
     print(f"[proof] final_suggested_next_action={report.final_suggested_next_action}")
-    for delegation in report.created_delegations:
+    for delegation in delegation_evidence:
         print(
             "[proof] delegation="
             f"{delegation.id} session={delegation.backend_session_id} status={delegation.status}"
         )
-    for question in report.operator_questions:
+    for question in operator_questions:
         print(f"[proof] operator_question={question}")
-    if report.created_delegations and report.observed_results:
+    if delegation_evidence and observed_results:
         print()
-        print(render_delegation_result(report.created_delegations[0], report.observed_results[0]))
+        print(render_delegation_result(delegation_evidence[0], observed_results[0]))
 
     if not seeded:
         return
-    if len(report.created_delegations) < 2:
-        raise SystemExit("[proof] expected at least two created delegations")
-    if len(executor.launched) < 2:
-        raise SystemExit("[proof] expected executor port to launch at least two sessions")
-    if not report.observed_results:
+    if len(delegation_evidence) < 1:
+        raise SystemExit("[proof] expected at least one persisted delegation")
+    local_backends = {"local-simulated", "local-subprocess"}
+    if not args.allow_local_backend and any(
+        delegation.backend_name in local_backends for delegation in delegation_evidence
+    ):
+        raise SystemExit("[proof] local delegation backends do not count as real proof")
+    if args.require_real_session and not any(
+        delegation.backend_name not in local_backends and delegation.backend_session_id
+        for delegation in delegation_evidence
+    ):
+        raise SystemExit("[proof] expected at least one real delegated worker session")
+    if not observed_results:
         raise SystemExit("[proof] expected observed delegated results")
     if not delegations:
         raise SystemExit("[proof] expected persisted delegation records")
-    if not any(ref.startswith("resident/delegations/") for ref in report.persisted_refs):
+    if not any(ref.startswith("resident/delegations/") for ref in persisted_refs):
         raise SystemExit("[proof] expected persisted delegation record ref")
-    if not any(ref.startswith("resident/delegation-results/") for ref in report.persisted_refs):
+    if not any(ref.startswith("resident/delegation-results/") for ref in persisted_refs):
         raise SystemExit("[proof] expected persisted delegation result ref")
     if not any(
         objective.status == ResidentObjectiveStatus.COMPLETED.value

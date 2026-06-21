@@ -19,6 +19,7 @@ class _FakeResponse:
 
 class _FakeAsyncClient:
     calls: list[tuple[str, str, dict]] = []
+    local_workspace: str = ""
 
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         pass
@@ -166,6 +167,25 @@ class _FakeAsyncClient:
                     "cluster_name": "ymir",
                 },
             )
+        if method == "GET" and url.endswith("/api/v1/ting/sessions/local-session"):
+            return _FakeResponse(
+                200,
+                {
+                    "session_id": "local-session",
+                    "status": "running",
+                    "run_name": "local-proof",
+                },
+            )
+        if method == "GET" and url.endswith("/api/v1/forge/sessions/local-session"):
+            return _FakeResponse(
+                200,
+                {
+                    "id": "local-session",
+                    "status": "running",
+                    "name": "local-proof",
+                    "code_endpoint": f"file://{self.local_workspace}",
+                },
+            )
         return _FakeResponse(
             200,
             [
@@ -211,6 +231,53 @@ async def test_ting_workflow_adapter_exchanges_workload_token_and_discovers_work
     }
     assert list_call[0] == "GET"
     assert list_call[2]["headers"]["Authorization"] == "Bearer exchanged-token"
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_uses_external_token_without_exchange(monkeypatch) -> None:
+    _FakeAsyncClient.calls = []
+    monkeypatch.setenv("TING_PROOF_TOKEN", "external-token")
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        external_token_env="TING_PROOF_TOKEN",
+    )
+
+    workflows = await adapter.list_workflows()
+
+    assert workflows[0].workflow_id == "wf-1"
+    assert [call[0] for call in _FakeAsyncClient.calls] == ["GET"]
+    assert _FakeAsyncClient.calls[0][2]["headers"]["Authorization"] == (
+        "Bearer external-token"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_can_use_anonymous_local_dev_mode(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="http://127.0.0.1:8080",
+        workload_token_file=str(tmp_path / "missing-token.jwt"),
+        allow_anonymous=True,
+    )
+
+    workflows = await adapter.list_workflows()
+
+    assert workflows[0].workflow_id == "wf-1"
+    assert [call[0] for call in _FakeAsyncClient.calls] == ["GET"]
+    assert "Authorization" not in _FakeAsyncClient.calls[0][2]["headers"]
 
 
 @pytest.mark.asyncio
@@ -296,3 +363,35 @@ async def test_ting_workflow_adapter_reads_campaign_status_artifacts_and_events(
     assert artifacts[0].publish_state == "published"
     assert content.content == "The campaign produced this artifact."
     assert any(event.event_type == "research.completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_reads_local_session_artifacts_when_campaign_is_absent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "session"
+    artifact_path = workspace / "research" / "campaigns" / "local-proof" / "plan.md"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text("Local plan artifact", encoding="utf-8")
+    token_file = tmp_path / "token.jwt"
+    token_file.write_text("projected-token", encoding="utf-8")
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.local_workspace = str(workspace)
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        workload_token_file=str(token_file),
+    )
+
+    reference = WorkflowRunReference(session_id="local-session")
+    artifacts = await adapter.list_workflow_artifacts(reference)
+    content = await adapter.read_workflow_artifact(reference, path=artifacts[0].path)
+
+    assert artifacts[0].path == "research/campaigns/local-proof/plan.md"
+    assert artifacts[0].publish_state == "local"
+    assert content.content == "Local plan artifact"
