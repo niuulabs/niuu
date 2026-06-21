@@ -45,6 +45,41 @@ rationale: {rationale}
 """
 
 
+def _help_needed_outcome(question: str) -> str:
+    return f"""\
+---outcome---
+verdict: help_needed
+orientation_summary: The resident needs operator facts before continuing.
+domain_hypotheses: []
+open_questions: [{question}]
+self_authored_work: []
+capability_gaps: []
+selected_next_action: Wait for operator input.
+rationale: continuing would require guessing
+reason: Need operator-provided facts.
+recommendation: {question}
+attempted: [prepared safe local scaffolding]
+---end---
+"""
+
+
+def _blocked_operator_outcome() -> str:
+    return """\
+---outcome---
+verdict: blocked
+orientation_summary: The selected work is blocked on operator input.
+domain_hypotheses: []
+open_questions: []
+self_authored_work: []
+capability_gaps: []
+selected_next_action: Wait for operator-provided setup facts.
+rationale: importing now would fabricate records
+reason: Blocked on real facts from the operator.
+recommendation: Provide the missing facts.
+---end---
+"""
+
+
 class FakeBackendAgent:
     """Executor-shaped fake proving the kernel does not depend on RavnAgent."""
 
@@ -85,6 +120,9 @@ class RecordingMemory:
         self.turns: list[ResidentTurnRecord] = []
         self.budgets: list[Any] = []
         self.policy_observations: list[ResidentPolicyObservation] = []
+        self.pending_question: str = ""
+        self.pending_reason: str = ""
+        self.answer: str = ""
 
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         self.recall_calls.append(mandate)
@@ -101,6 +139,40 @@ class RecordingMemory:
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         self.policy_observations.append(observation)
         return "policy"
+
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        self.pending_question = question
+        self.pending_reason = reason
+        return "resident/continuation/operator-needed/latest.md"
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        if not self.pending_question:
+            return None
+        return ResidentMemoryEntry(
+            path="resident/continuation/operator-needed/latest.md",
+            summary="Operator Input Needed",
+            content=f"# Operator Input Needed\n\n- status: pending\n- question: {self.pending_question}\n",
+        )
+
+    async def write_operator_answer(self, answer: str) -> str:
+        self.answer = answer
+        self.pending_question = ""
+        return "resident/continuation/operator-answers/latest.md"
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        if not self.answer:
+            return None
+        return ResidentMemoryEntry(
+            path="resident/continuation/operator-answers/latest.md",
+            summary="Operator Answer",
+            content=f"# Operator Answer\n\n{self.answer}\n",
+        )
 
 
 class RecordingPolicy:
@@ -293,6 +365,91 @@ async def test_operator_answer_becomes_persisted_policy_observation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_help_needed_writes_pending_marker_and_stops_without_looping() -> None:
+    agent = FakeBackendAgent([_turn(_help_needed_outcome("What printer should I use?"))])
+    memory = RecordingMemory()
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=5)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert len(run.turns) == 1
+    assert len(agent.prompts) == 1
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert "operator-provided facts" in run.final_decision.reason
+    assert memory.pending_question == "What printer should I use?"
+
+
+@pytest.mark.asyncio
+async def test_pending_operator_question_sleeps_before_spending_turn() -> None:
+    agent = FakeBackendAgent([_turn(_outcome("This should not run."))])
+    memory = RecordingMemory()
+    await memory.write_operator_needed(
+        question="What printer should I use?",
+        reason="Need operator facts.",
+        turn=ResidentTurnRecord(
+            turn_index=1,
+            prompt=MANDATE,
+            response="",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        ),
+    )
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=5)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.turns == ()
+    assert agent.prompts == []
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.SLEEP
+    assert run.final_decision.reason == "waiting_for_operator"
+
+
+@pytest.mark.asyncio
+async def test_operator_answer_is_injected_into_resume_prompt() -> None:
+    agent = FakeBackendAgent([_turn(_outcome("Apply the operator-provided setup facts."))])
+    memory = RecordingMemory()
+    await memory.write_operator_answer("Use the Prusa MK4 and PLA.")
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
+    )
+
+    await kernel.run(MANDATE)
+
+    assert "Operator answer memory" in agent.prompts[0]
+    assert "Use the Prusa MK4 and PLA." in agent.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_blocked_operator_outcome_writes_pending_marker() -> None:
+    agent = FakeBackendAgent([_turn(_blocked_operator_outcome())])
+    memory = RecordingMemory()
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=5)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert memory.pending_question == "Provide the missing facts."
+
+
+@pytest.mark.asyncio
 async def test_local_memory_persists_turn_budget_and_policy_observation(tmp_path: Path) -> None:
     memory = LocalResidentMemory(tmp_path)
     record = ResidentTurnRecord(
@@ -348,6 +505,12 @@ class FakeMimir:
         meta: Any | None = None,
     ) -> None:
         self.pages[path] = content
+
+    async def read_page(self, path: str) -> str:
+        try:
+            return self.pages[path]
+        except KeyError as exc:
+            raise FileNotFoundError(path) from exc
 
 
 @pytest.mark.asyncio

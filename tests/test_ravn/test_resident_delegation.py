@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from ravn.domain.resident_portfolio import (
+    ResidentDelegationRecord,
+    ResidentDelegationStatus,
+    ResidentExecutionResult,
+    ResidentExecutionSession,
+    ResidentObjective,
+    ResidentObjectiveKind,
+    ResidentObjectiveStatus,
+    ResidentPortfolio,
+    ResidentWorkerBrief,
+)
+from ravn.resident_portfolio import (
+    LocalResidentWorkItemBackend,
+    ResidentDelegationConfig,
+    ResidentDelegationRuntime,
+    build_worker_brief,
+    select_delegation_candidates,
+)
+
+MANDATE = (
+    "Help evolve Valkyries/Ravn into autonomous, self-improving domain experts. "
+    "They should learn, plan, create work, use tools, manage execution, remember "
+    "outcomes, and improve without being babysat."
+)
+
+
+class RecordingExecutor:
+    def __init__(self) -> None:
+        self.briefs: list[ResidentWorkerBrief] = []
+        self.sessions: dict[str, ResidentExecutionSession] = {}
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        self.briefs.append(brief)
+        session = ResidentExecutionSession(
+            session_id=f"session-{brief.objective_id}",
+            status=ResidentDelegationStatus.COMPLETED.value,
+            backend_name="recording",
+            summary="completed",
+        )
+        self.sessions[session.session_id] = session
+        return session
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        return self.sessions[session_id]
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        return ResidentExecutionResult(
+            session_id=session_id,
+            status=ResidentDelegationStatus.COMPLETED.value,
+            summary=f"Result for {session_id}",
+            output_refs=(f"outputs/{session_id}.md",),
+            findings=(f"finding from {session_id}",),
+            follow_up_suggestions=(f"review output from {session_id}",),
+        )
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.CANCELLED.value,
+            backend_name="recording",
+            summary=reason,
+        )
+
+
+def _objective(
+    objective_id: str,
+    title: str,
+    *,
+    status: str = ResidentObjectiveStatus.CANDIDATE.value,
+    risk_boundaries: tuple[str, ...] = (),
+    dependencies: tuple[str, ...] = (),
+    priority_score: int = 0,
+) -> ResidentObjective:
+    return ResidentObjective(
+        id=objective_id,
+        title=title,
+        purpose=f"Advance {title}",
+        serves_mandate_because="It advances the resident mandate.",
+        expected_outcome="A bounded worker result exists.",
+        proof_criteria=("A bounded worker result exists.",),
+        kind=ResidentObjectiveKind.RESEARCH.value,
+        dependencies=dependencies,
+        risk_boundaries=risk_boundaries,
+        status=status,
+        priority_score=priority_score,
+        source_evidence=(f"evidence for {title}",),
+        reasoning="ready for delegated bounded work",
+    )
+
+
+async def _write_portfolio(
+    backend: LocalResidentWorkItemBackend,
+    *objectives: ResidentObjective,
+) -> None:
+    for objective in objectives:
+        await backend.write_objective(objective)
+    await backend.write_portfolio(ResidentPortfolio(mandate=MANDATE, objectives=objectives))
+
+
+def test_delegation_selection_respects_dependencies_and_existing_records() -> None:
+    done = _objective(
+        "done",
+        "Completed dependency",
+        status=ResidentObjectiveStatus.COMPLETED.value,
+    )
+    ready = _objective("ready", "Ready objective", dependencies=("done",))
+    blocked = _objective("blocked", "Blocked objective", dependencies=("missing",))
+    existing = ResidentDelegationRecord(
+        id="delegation-ready",
+        source_objective_id="ready",
+        backend_session_id="session-ready",
+        backend_name="recording",
+        brief=build_worker_brief(MANDATE, ready),
+        status=ResidentDelegationStatus.RUNNING.value,
+        reason="already running",
+    )
+
+    selected, gated = select_delegation_candidates(
+        (done, ready, blocked),
+        delegations=(existing,),
+        mandate=MANDATE,
+        max_selected=3,
+    )
+
+    assert selected == ()
+    assert gated == ()
+
+
+def test_worker_brief_is_generated_from_objective_context() -> None:
+    objective = _objective(
+        "brief",
+        "Review generic evidence",
+        risk_boundaries=("external_side_effect",),
+    )
+
+    brief = build_worker_brief(MANDATE, objective)
+
+    assert brief.mandate == MANDATE
+    assert brief.objective_id == "brief"
+    assert brief.desired_outcome == objective.expected_outcome
+    assert brief.proof_criteria == objective.proof_criteria
+    assert "evidence for Review generic evidence" in brief.evidence
+    assert "external_side_effect" in brief.risk_boundaries
+
+
+@pytest.mark.asyncio
+async def test_delegation_uses_backend_agnostic_execution_port(tmp_path: Path) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = RecordingExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+    ).run(MANDATE)
+
+    assert len(executor.briefs) == 1
+    assert report.created_delegations[0].backend_name == "recording"
+    assert report.observed_results
+
+
+@pytest.mark.asyncio
+async def test_multiple_delegated_workstreams_can_exist_at_once(tmp_path: Path) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective("one", "First delegated objective"),
+        _objective("two", "Second delegated objective"),
+        _objective("three", "Third delegated objective"),
+    )
+    executor = RecordingExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_delegations=2),
+    ).run(MANDATE)
+
+    assert len(report.created_delegations) == 2
+    assert len(executor.briefs) == 2
+
+
+@pytest.mark.asyncio
+async def test_risky_work_creates_operator_objective_instead_of_launching(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective("safe", "Safe delegated objective"),
+        _objective("risky", "Risky delegated objective", risk_boundaries=("spending",)),
+    )
+    executor = RecordingExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_delegations=2),
+    ).run(MANDATE)
+    objectives = await backend.list_objectives(MANDATE)
+
+    assert len(executor.briefs) == 1
+    assert report.operator_questions
+    assert any(item.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value for item in objectives)
+
+
+@pytest.mark.asyncio
+async def test_delegation_records_persist_and_reload(tmp_path: Path) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+
+    await ResidentDelegationRuntime(
+        backend=backend,
+        executor=RecordingExecutor(),
+    ).run(MANDATE)
+    restored = await backend.list_delegations(MANDATE)
+
+    assert len(restored) == 1
+    assert restored[0].source_objective_id == "one"
+    assert restored[0].brief.objective_title == "First delegated objective"
+    assert restored[0].result_refs
+
+
+@pytest.mark.asyncio
+async def test_results_merge_back_into_portfolio_and_create_followups(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=RecordingExecutor(),
+    ).run(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+
+    assert objectives["one"].status == ResidentObjectiveStatus.COMPLETED.value
+    assert objectives["one"].artifact_links
+    assert report.created_follow_up_objectives
+    assert any("Follow up delegated result" in item.title for item in objectives.values())
+
+
+def test_resident_delegation_contains_no_domain_specific_playbook_terms() -> None:
+    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+
+    for forbidden in (
+        "kanuck",
+        "inventory",
+        "3d printing",
+        "prd",
+        "srd",
+        "forge",
+        "blender",
+        "slicing",
+        "product catalog",
+    ):
+        assert forbidden not in source

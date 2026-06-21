@@ -170,6 +170,24 @@ class ResidentMemoryPort(Protocol):
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         """Persist an operator-derived policy/preference candidate."""
 
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        """Persist the latest pending operator question."""
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        """Return the latest pending operator question when one exists."""
+
+    async def write_operator_answer(self, answer: str) -> str:
+        """Persist the latest operator answer and mark the pending question answered."""
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        """Return the latest operator answer when one exists."""
+
 
 class ResidentPolicyPort(Protocol):
     """Policy boundary for action approval and learned preferences."""

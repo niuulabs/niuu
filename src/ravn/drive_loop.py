@@ -38,6 +38,7 @@ from ravn.config import BudgetConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
+from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
@@ -2200,12 +2201,12 @@ class DriveLoop:
                 "workflow_node_id": task.workflow_node_id,
                 "session_id": task.session_id,
             }
-            help_event = RavnEvent.help_needed(
+            help_event = build_help_needed_event(
                 source=self._source_id,
                 persona=self._persona_config.name,
                 reason=str(outcome_fields.get("reason") or "needs_context"),
                 summary=summary or "Agent requested human input before continuing.",
-                attempted=[str(item) for item in attempted if str(item).strip()],
+                attempted=attempted,
                 recommendation=str(
                     outcome_fields.get("recommendation")
                     or "Reply directly to this agent with the missing guidance."

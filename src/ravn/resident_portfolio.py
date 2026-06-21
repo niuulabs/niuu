@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ravn.domain.resident_continuation import ResidentBudgetLimits
+from ravn.domain.models import TokenUsage
+from ravn.domain.operator_contact import (
+    OperatorContactKind,
+    OperatorContactPort,
+    OperatorContactRequest,
+    OperatorContactResult,
+    OperatorContactStatus,
+)
+from ravn.domain.resident_continuation import ResidentBudgetLimits, ResidentBudgetSnapshot
 from ravn.domain.resident_expert import (
     ResidentDomainExpertMemoryPort,
     ResidentDomainModel,
@@ -15,22 +26,60 @@ from ravn.domain.resident_expert import (
     ResidentWorkstreamStatus,
 )
 from ravn.domain.resident_portfolio import (
+    CapabilityDiscoveryPort,
+    ResidentAutonomyCycleReport,
+    ResidentAutonomyRun,
+    ResidentCapabilityDiscoveryReport,
+    ResidentCapabilityDiscoveryResult,
+    ResidentCapabilityGap,
+    ResidentCapabilityOption,
+    ResidentDelegationRecord,
+    ResidentDelegationReport,
+    ResidentDelegationReview,
+    ResidentDelegationReviewDecision,
+    ResidentDelegationStatus,
+    ResidentExecutionPort,
+    ResidentExecutionResult,
+    ResidentExecutionSession,
     ResidentObjective,
+    ResidentObjectiveDryRunPreview,
     ResidentObjectiveKind,
     ResidentObjectiveStatus,
     ResidentPortfolio,
     ResidentPortfolioDecisionKind,
+    ResidentPortfolioRepairRecord,
     ResidentPortfolioRun,
+    ResidentPortfolioStewardActionKind,
+    ResidentPortfolioStewardPassReport,
+    ResidentPortfolioStewardRun,
+    ResidentPortfolioValidationFinding,
+    ResidentPortfolioValidationReport,
+    ResidentPortfolioValidationSeverity,
+    ResidentWorkerBrief,
     ResidentWorkItemBackend,
 )
-from ravn.domain.wakeful_resident import WakefulResidentRun
+from ravn.domain.wakeful_resident import (
+    WakefulResidentCycleRecord,
+    WakefulResidentDecisionKind,
+    WakefulResidentMemoryPort,
+    WakefulResidentRun,
+)
+from ravn.ports.capability import (
+    WorkflowCapabilityPort,
+    WorkflowLaunchRequest,
+    WorkflowRunReference,
+)
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line, _slug
-from ravn.wakeful_resident import WakefulResidentMemoryPort
 
 _PORTFOLIO_PATH = "resident/portfolio/portfolio.md"
 _OBJECTIVE_PREFIX = "resident/portfolio/objectives"
 _DECISION_PREFIX = "resident/portfolio/decisions"
+_CAPABILITY_DISCOVERY_PREFIX = "resident/capability-discovery"
+_DELEGATION_PREFIX = "resident/delegations"
+_DELEGATION_RESULT_PREFIX = "resident/delegation-results"
+_DELEGATION_REVIEW_PREFIX = "resident/delegation-reviews"
+_OPERATOR_CONTACT_PREFIX = "resident/operator-contacts"
 _DOMAIN_MODEL_REF = "resident/domain-expert/domain-model.md"
 
 
@@ -51,6 +100,50 @@ class ResidentPortfolioConfig:
     max_workstream_turns: int = 1
     max_wall_clock_seconds: float = 1800.0
     max_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class ResidentPortfolioStewardConfig:
+    """Bounds for resident portfolio stewardship."""
+
+    max_passes: int = 3
+    max_repairs_per_pass: int = 4
+    max_follow_up_objectives: int = 3
+    max_objectives_selected: int = 1
+    max_active_objectives: int = 3
+    max_advancements: int = 1
+    repair_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ResidentCapabilityDiscoveryConfig:
+    """Bounds for one resident capability discovery pass."""
+
+    max_gaps: int = 1
+    max_options: int = 4
+    max_follow_up_objectives: int = 4
+
+
+@dataclass(frozen=True)
+class ResidentDelegationConfig:
+    """Bounds for one resident delegation orchestration pass."""
+
+    max_delegations: int = 2
+    max_observations: int = 4
+    max_follow_up_objectives: int = 4
+    approved_risk_objective_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResidentAutonomyLoopConfig:
+    """Bounds for one resident autonomy loop invocation."""
+
+    max_cycles: int = 2
+    max_delegations_per_cycle: int = 1
+    max_observations_per_cycle: int = 4
+    max_review_attempts: int = 4
+    max_wall_clock_seconds: float = 1800.0
+    approved_risk_objective_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,7 +193,7 @@ class LocalResidentWorkItemBackend(ResidentWorkItemBackend):
         return self._write(rel, _render_objective(objective))
 
     async def append_decision(self, mandate: str, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         rel = Path(_DECISION_PREFIX) / f"{stamp}.md"
         return self._write(rel, f"# Resident Portfolio Decision\n\n{entry}\n")
 
@@ -109,6 +202,47 @@ class LocalResidentWorkItemBackend(ResidentWorkItemBackend):
         if not base.exists():
             return []
         return sorted(str(path.relative_to(self._root)) for path in base.glob("*.md"))
+
+    async def write_capability_discovery(self, discovery_id: str, content: str) -> str:
+        rel = Path(_CAPABILITY_DISCOVERY_PREFIX) / f"{_slug(discovery_id)}.md"
+        return self._write(rel, content)
+
+    async def list_delegations(self, mandate: str) -> list[ResidentDelegationRecord]:
+        base = self._root / _DELEGATION_PREFIX
+        if not base.exists():
+            return []
+        delegations: list[ResidentDelegationRecord] = []
+        for path in sorted(base.glob("*.md")):
+            parsed = _parse_delegation(path.read_text(encoding="utf-8"))
+            if parsed is not None:
+                delegations.append(parsed)
+        return delegations
+
+    async def write_delegation(self, delegation: ResidentDelegationRecord) -> str:
+        rel = Path(_DELEGATION_PREFIX) / f"{delegation.id}.md"
+        return self._write(rel, _render_delegation(delegation))
+
+    async def write_delegation_result(
+        self,
+        delegation_id: str,
+        result: ResidentExecutionResult,
+        content: str,
+    ) -> str:
+        filename = f"{_slug(delegation_id)}-{_slug(result.session_id)}.md"
+        rel = Path(_DELEGATION_RESULT_PREFIX) / filename
+        return self._write(rel, content)
+
+    async def write_delegation_review(
+        self,
+        review: ResidentDelegationReview,
+        content: str,
+    ) -> str:
+        rel = Path(_DELEGATION_REVIEW_PREFIX) / f"{review.id}.md"
+        return self._write(rel, content)
+
+    async def write_operator_contact(self, result: OperatorContactResult) -> str:
+        rel = Path(_OPERATOR_CONTACT_PREFIX) / f"{result.request.id}.md"
+        return self._write(rel, _render_operator_contact(result))
 
     def _write(self, rel: Path, content: str) -> str:
         path = self._root / rel
@@ -158,7 +292,7 @@ class MimirResidentWorkItemBackend(ResidentWorkItemBackend):
         return path
 
     async def append_decision(self, mandate: str, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         path = f"{_DECISION_PREFIX}/{stamp}.md"
         await self._mimir.upsert_page(path, f"# Resident Portfolio Decision\n\n{entry}\n")
         return path
@@ -166,6 +300,54 @@ class MimirResidentWorkItemBackend(ResidentWorkItemBackend):
     async def list_refs(self, prefix: str) -> list[str]:
         pages = await self._mimir.list_pages(prefix=prefix)
         return sorted(getattr(page, "path", "") for page in pages if getattr(page, "path", ""))
+
+    async def write_capability_discovery(self, discovery_id: str, content: str) -> str:
+        path = f"{_CAPABILITY_DISCOVERY_PREFIX}/{_slug(discovery_id)}.md"
+        await self._mimir.upsert_page(path, content)
+        return path
+
+    async def list_delegations(self, mandate: str) -> list[ResidentDelegationRecord]:
+        pages = await self._mimir.list_pages(prefix=_DELEGATION_PREFIX)
+        delegations: list[ResidentDelegationRecord] = []
+        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
+            try:
+                content = await self._mimir.read_page(meta.path)
+            except FileNotFoundError:
+                continue
+            parsed = _parse_delegation(content)
+            if parsed is not None:
+                delegations.append(parsed)
+        return delegations
+
+    async def write_delegation(self, delegation: ResidentDelegationRecord) -> str:
+        path = f"{_DELEGATION_PREFIX}/{delegation.id}.md"
+        await self._mimir.upsert_page(path, _render_delegation(delegation))
+        return path
+
+    async def write_delegation_result(
+        self,
+        delegation_id: str,
+        result: ResidentExecutionResult,
+        content: str,
+    ) -> str:
+        filename = f"{_slug(delegation_id)}-{_slug(result.session_id)}.md"
+        path = f"{_DELEGATION_RESULT_PREFIX}/{filename}"
+        await self._mimir.upsert_page(path, content)
+        return path
+
+    async def write_delegation_review(
+        self,
+        review: ResidentDelegationReview,
+        content: str,
+    ) -> str:
+        path = f"{_DELEGATION_REVIEW_PREFIX}/{review.id}.md"
+        await self._mimir.upsert_page(path, content)
+        return path
+
+    async def write_operator_contact(self, result: OperatorContactResult) -> str:
+        path = f"{_OPERATOR_CONTACT_PREFIX}/{result.request.id}.md"
+        await self._mimir.upsert_page(path, _render_operator_contact(result))
+        return path
 
 
 class ResidentLongHorizonWorkManager:
@@ -367,6 +549,1512 @@ class ResidentLongHorizonWorkManager:
         return await self._backend.write_portfolio(portfolio)
 
 
+class ResidentPortfolioValidator:
+    """Read-only validator and dry-run selector for resident portfolios."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        max_selected: int = 1,
+        max_active: int = 3,
+    ) -> None:
+        self._backend = backend
+        self._max_selected = max_selected
+        self._max_active = max_active
+
+    async def validate(self, mandate: str) -> ResidentPortfolioValidationReport:
+        portfolio = await self._backend.read_portfolio(mandate)
+        objectives = tuple(await self._backend.list_objectives(mandate))
+        issues: list[ResidentPortfolioValidationFinding] = []
+        warnings: list[ResidentPortfolioValidationFinding] = []
+        if portfolio is None:
+            issues.append(
+                _finding(
+                    "missing_portfolio",
+                    "Resident portfolio is missing.",
+                )
+            )
+            portfolio = ResidentPortfolio(mandate=mandate, objectives=objectives)
+        elif objectives:
+            portfolio = portfolio.with_objectives(objectives)
+
+        objectives_by_id: dict[str, list[ResidentObjective]] = {}
+        for objective in objectives:
+            objectives_by_id.setdefault(objective.id, []).append(objective)
+            _validate_required_fields(objective, issues)
+            _validate_status(objective, issues)
+            _validate_stable_id(objective, warnings)
+            _validate_objective_state(objective, issues, warnings)
+
+        for objective_id, matches in objectives_by_id.items():
+            if len(matches) > 1:
+                issues.append(
+                    _finding(
+                        "duplicate_objective_id",
+                        f"Objective id appears {len(matches)} times.",
+                        objective_id=objective_id,
+                    )
+                )
+
+        known_ids = set(objectives_by_id)
+        for objective in objectives:
+            for dependency in objective.dependencies:
+                if dependency not in known_ids:
+                    issues.append(
+                        _finding(
+                            "missing_dependency",
+                            f"Dependency does not refer to a known objective: {dependency}",
+                            objective_id=objective.id,
+                        )
+                    )
+
+        _validate_portfolio_links(portfolio, warnings)
+        prioritized = prioritize_objectives(objectives, mandate=mandate)
+        dry_run_candidates = tuple(
+            objective
+            for objective in prioritized
+            if objective.status != ResidentObjectiveStatus.NEEDS_OPERATOR.value
+        )
+        selected = select_objectives(
+            dry_run_candidates,
+            max_selected=self._max_selected,
+            max_active=self._max_active,
+        )
+        completed_ids = {
+            item.id for item in objectives if item.status == ResidentObjectiveStatus.COMPLETED.value
+        }
+        previews = tuple(
+            _preview_objective(item, objectives, completed_ids=completed_ids)
+            for item in prioritized
+        )
+        selected_preview = (
+            _preview_objective(selected[0], objectives, completed_ids=completed_ids)
+            if selected
+            else None
+        )
+        eligible_ids = {
+            item.id
+            for item in select_objectives(
+                dry_run_candidates,
+                max_selected=999,
+                max_active=999,
+            )
+        }
+        blocked = tuple(
+            preview
+            for preview in previews
+            if _is_blocked_objective(
+                _objective_by_id(objectives, preview.objective_id),
+                completed_ids,
+            )
+        )
+        operator_needed = tuple(
+            preview
+            for preview in previews
+            if _objective_by_id(objectives, preview.objective_id).status
+            == ResidentObjectiveStatus.NEEDS_OPERATOR.value
+        )
+        eligible = tuple(preview for preview in previews if preview.objective_id in eligible_ids)
+        selected_ids = {item.id for item in selected}
+        skipped = tuple(
+            _dry_run_non_selection_reason(
+                objective,
+                known_ids=known_ids,
+                completed_ids=completed_ids,
+                eligible_ids=eligible_ids,
+                selected_ids=selected_ids,
+            )
+            for objective in prioritized
+            if objective.id not in selected_ids
+        )
+        issue_tuple = tuple(issues)
+        warning_tuple = tuple(warnings)
+        verdict = "invalid" if issue_tuple else "warning" if warning_tuple else "valid"
+        return ResidentPortfolioValidationReport(
+            verdict=verdict,
+            issues=issue_tuple,
+            warnings=warning_tuple,
+            selected_objective=selected_preview,
+            eligible_objectives=eligible,
+            blocked_objectives=blocked,
+            operator_needed_objectives=operator_needed,
+            skipped_reasons=tuple(reason for reason in skipped if reason),
+            objective_counts_by_status=_counts_by_status(objectives),
+            dependency_graph_summary=_dependency_summary(objectives),
+            stale_duplicate_superseded_hints=_hints(objectives, issues, warnings),
+            suggested_safe_next_action=_suggested_action(verdict, selected_preview),
+            mutated_state=False,
+        )
+
+
+class ResidentPortfolioStewardRuntime:
+    """Maintains and advances a resident portfolio over bounded steward passes."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        wake_runtime: WakefulRuntimePort,
+        config: ResidentPortfolioStewardConfig | None = None,
+    ) -> None:
+        self._backend = backend
+        self._wake_runtime = wake_runtime
+        self._config = config or ResidentPortfolioStewardConfig()
+
+    async def run(self, mandate: str) -> ResidentPortfolioStewardRun:
+        passes: list[ResidentPortfolioStewardPassReport] = []
+        advancements = 0
+        max_passes = max(0, self._config.max_passes)
+        if max_passes == 0:
+            return ResidentPortfolioStewardRun(
+                mandate=mandate,
+                passes=(),
+                final_action=ResidentPortfolioStewardActionKind.STOP,
+                final_suggested_next_action="No stewardship passes allowed by config.",
+            )
+
+        for pass_number in range(1, max_passes + 1):
+            report = await self._run_pass(
+                mandate,
+                pass_number=pass_number,
+                advancements_used=advancements,
+            )
+            passes.append(report)
+            if report.action_taken == ResidentPortfolioStewardActionKind.ADVANCE:
+                advancements += 1
+                continue
+            if report.action_taken == ResidentPortfolioStewardActionKind.REPAIR:
+                continue
+            if report.action_taken in {
+                ResidentPortfolioStewardActionKind.ASK_OPERATOR,
+                ResidentPortfolioStewardActionKind.STOP,
+                ResidentPortfolioStewardActionKind.SLEEP,
+            }:
+                break
+
+        if len(passes) >= max_passes and passes[-1].action_taken in {
+            ResidentPortfolioStewardActionKind.ADVANCE,
+            ResidentPortfolioStewardActionKind.REPAIR,
+        }:
+            final_action = ResidentPortfolioStewardActionKind.STOP
+            final_suggestion = f"Stopped after configured steward pass limit: {max_passes}."
+        else:
+            final_action = passes[-1].action_taken
+            final_suggestion = passes[-1].final_suggested_next_action
+        return ResidentPortfolioStewardRun(
+            mandate=mandate,
+            passes=tuple(passes),
+            final_action=final_action,
+            final_suggested_next_action=final_suggestion,
+            budget=_sum_budget(tuple(item.budget for item in passes)),
+        )
+
+    async def _run_pass(
+        self,
+        mandate: str,
+        *,
+        pass_number: int,
+        advancements_used: int,
+    ) -> ResidentPortfolioStewardPassReport:
+        validator = ResidentPortfolioValidator(
+            backend=self._backend,
+            max_selected=self._config.max_objectives_selected,
+            max_active=self._config.max_active_objectives,
+        )
+        validation_before = await validator.validate(mandate)
+        repairs_attempted: list[ResidentPortfolioRepairRecord] = []
+        repairs_skipped: list[ResidentPortfolioRepairRecord] = []
+        persisted_refs: list[str] = []
+
+        if self._config.repair_enabled:
+            repair_result = await self._repair_safe_drift(
+                mandate,
+                validation_before,
+            )
+            repairs_attempted.extend(repair_result[0])
+            repairs_skipped.extend(repair_result[1])
+            persisted_refs.extend(item.ref for item in repair_result[0] if item.ref)
+
+        if repairs_attempted:
+            decision_ref = await self._backend.append_decision(
+                mandate,
+                _steward_decision_entry(
+                    pass_number,
+                    ResidentPortfolioStewardActionKind.REPAIR,
+                    f"repaired {len(repairs_attempted)} portfolio metadata issue(s)",
+                ),
+            )
+            persisted_refs.append(decision_ref)
+            validation_after = await validator.validate(mandate)
+            return ResidentPortfolioStewardPassReport(
+                pass_number=pass_number,
+                validation_before=validation_before,
+                validation_after=validation_after,
+                repairs_attempted=tuple(repairs_attempted),
+                repairs_skipped=tuple(repairs_skipped),
+                selected_objective=validation_after.selected_objective,
+                action_taken=ResidentPortfolioStewardActionKind.REPAIR,
+                persisted_refs=tuple(persisted_refs),
+                final_suggested_next_action=validation_after.suggested_safe_next_action,
+            )
+
+        selected = validation_before.selected_objective
+        if selected is None:
+            operator_questions = tuple(
+                item.title for item in validation_before.operator_needed_objectives
+            )
+            action = (
+                ResidentPortfolioStewardActionKind.ASK_OPERATOR
+                if operator_questions
+                else ResidentPortfolioStewardActionKind.SLEEP
+            )
+            reason = (
+                f"operator input needed for: {operator_questions[0]}"
+                if operator_questions
+                else "no eligible objective selected"
+            )
+            decision_ref = await self._backend.append_decision(
+                mandate,
+                _steward_decision_entry(pass_number, action, reason),
+            )
+            validation_after = await validator.validate(mandate)
+            return ResidentPortfolioStewardPassReport(
+                pass_number=pass_number,
+                validation_before=validation_before,
+                validation_after=validation_after,
+                repairs_attempted=tuple(repairs_attempted),
+                repairs_skipped=tuple(repairs_skipped),
+                selected_objective=None,
+                action_taken=action,
+                operator_questions=operator_questions,
+                persisted_refs=(decision_ref,),
+                final_suggested_next_action=reason,
+            )
+
+        if advancements_used >= self._config.max_advancements:
+            reason = (
+                f"selected {selected.objective_id} but advancement limit "
+                f"{self._config.max_advancements} is reached"
+            )
+            decision_ref = await self._backend.append_decision(
+                mandate,
+                _steward_decision_entry(
+                    pass_number,
+                    ResidentPortfolioStewardActionKind.SLEEP,
+                    reason,
+                ),
+            )
+            validation_after = await validator.validate(mandate)
+            return ResidentPortfolioStewardPassReport(
+                pass_number=pass_number,
+                validation_before=validation_before,
+                validation_after=validation_after,
+                repairs_attempted=tuple(repairs_attempted),
+                repairs_skipped=tuple(repairs_skipped),
+                selected_objective=selected,
+                action_taken=ResidentPortfolioStewardActionKind.SLEEP,
+                persisted_refs=(decision_ref,),
+                final_suggested_next_action=reason,
+            )
+
+        return await self._advance_selected(
+            mandate,
+            pass_number=pass_number,
+            validation_before=validation_before,
+            repairs_skipped=tuple(repairs_skipped),
+        )
+
+    async def _repair_safe_drift(
+        self,
+        mandate: str,
+        validation: ResidentPortfolioValidationReport,
+    ) -> tuple[
+        tuple[ResidentPortfolioRepairRecord, ...],
+        tuple[ResidentPortfolioRepairRecord, ...],
+    ]:
+        listed = await self._backend.list_objectives(mandate)
+        objectives = {objective.id: objective for objective in listed}
+        attempted: list[ResidentPortfolioRepairRecord] = []
+        skipped: list[ResidentPortfolioRepairRecord] = []
+
+        for finding in tuple(validation.issues) + tuple(validation.warnings):
+            if len(attempted) >= self._config.max_repairs_per_pass:
+                skipped.append(
+                    ResidentPortfolioRepairRecord(
+                        code=finding.code,
+                        objective_id=finding.objective_id,
+                        action="skip",
+                        reason="repair pass budget exhausted",
+                    )
+                )
+                continue
+            objective = objectives.get(finding.objective_id)
+            if objective is None:
+                skipped.append(_skipped_repair(finding, "no matching objective loaded"))
+                continue
+
+            repaired = self._repair_finding(finding, objective)
+            if repaired is None:
+                skipped.append(_skipped_repair(finding, _repair_skip_reason(finding)))
+                continue
+
+            updated, record = repaired
+            ref = await self._backend.write_objective(updated)
+            record = ResidentPortfolioRepairRecord(
+                code=record.code,
+                objective_id=record.objective_id,
+                action=record.action,
+                reason=record.reason,
+                before=record.before,
+                after=record.after,
+                ref=ref,
+            )
+            attempted.append(record)
+            objectives[updated.id] = updated
+
+        if attempted:
+            await self._persist_portfolio_with_objectives(
+                mandate,
+                tuple(objectives.values()),
+                decision_entry=f"steward repaired {len(attempted)} portfolio issue(s)",
+            )
+        return tuple(attempted), tuple(skipped)
+
+    def _repair_finding(
+        self,
+        finding: ResidentPortfolioValidationFinding,
+        objective: ResidentObjective,
+    ) -> tuple[ResidentObjective, ResidentPortfolioRepairRecord] | None:
+        if finding.code == "resume_reason_missing" and _has_meaningful_items(
+            objective.source_evidence
+        ):
+            reason = (
+                f"Resume because stored evidence remains relevant: {objective.source_evidence[0]}"
+            )
+            return (
+                objective.with_updates(reasoning=reason),
+                ResidentPortfolioRepairRecord(
+                    code=finding.code,
+                    objective_id=objective.id,
+                    action="repair",
+                    reason="derived resume rationale from source evidence",
+                    before=objective.reasoning,
+                    after=reason,
+                ),
+            )
+        if finding.code == "audit_context_missing" and _has_meaningful_items(
+            objective.source_evidence
+        ):
+            reason = (
+                "Terminal decision retained because source evidence says: "
+                f"{objective.source_evidence[0]}"
+            )
+            return (
+                objective.with_updates(reasoning=reason),
+                ResidentPortfolioRepairRecord(
+                    code=finding.code,
+                    objective_id=objective.id,
+                    action="repair",
+                    reason="derived terminal audit context from source evidence",
+                    before=objective.reasoning,
+                    after=reason,
+                ),
+            )
+        if finding.code == "operator_question_missing":
+            question = f"What operator judgment is needed before continuing '{objective.title}'?"
+            return (
+                objective.with_updates(
+                    pending_question=question,
+                    reasoning=objective.reasoning
+                    or "Steward needs human judgment before this objective can advance.",
+                ),
+                ResidentPortfolioRepairRecord(
+                    code=finding.code,
+                    objective_id=objective.id,
+                    action="repair",
+                    reason="kept objective operator-gated and added a concrete question",
+                    before=objective.pending_question,
+                    after=question,
+                ),
+            )
+        if finding.code == "missing_dependency":
+            reason = f"Blocked because a dependency is not known: {finding.message}"
+            return (
+                objective.with_updates(
+                    status=ResidentObjectiveStatus.BLOCKED.value,
+                    reasoning=reason,
+                ),
+                ResidentPortfolioRepairRecord(
+                    code=finding.code,
+                    objective_id=objective.id,
+                    action="repair",
+                    reason="marked objective blocked until dependency is represented",
+                    before=objective.status,
+                    after=ResidentObjectiveStatus.BLOCKED.value,
+                ),
+            )
+        return None
+
+    async def _advance_selected(
+        self,
+        mandate: str,
+        *,
+        pass_number: int,
+        validation_before: ResidentPortfolioValidationReport,
+        repairs_skipped: tuple[ResidentPortfolioRepairRecord, ...],
+    ) -> ResidentPortfolioStewardPassReport:
+        selected = validation_before.selected_objective
+        if selected is None:
+            raise ValueError("cannot advance without a selected objective")
+
+        objectives = tuple(await self._backend.list_objectives(mandate))
+        objective = _objective_by_id(objectives, selected.objective_id)
+        active = objective.with_updates(
+            status=ResidentObjectiveStatus.ACTIVE.value,
+            last_advanced_at=datetime.now(UTC),
+        )
+        persisted_refs = [await self._backend.write_objective(active)]
+        wake_run = await self._wake_runtime.run(_objective_mandate(mandate, active))
+        updated = await self._review_steward_objective(active, wake_run)
+        persisted_refs.append(await self._backend.write_objective(updated))
+        follow_ups = self._follow_up_objectives(
+            mandate,
+            updated,
+            wake_run,
+            existing_objectives=objectives,
+        )
+        for follow_up in follow_ups:
+            persisted_refs.append(await self._backend.write_objective(follow_up))
+
+        decision_entry = _steward_decision_entry(
+            pass_number,
+            ResidentPortfolioStewardActionKind.ADVANCE,
+            f"advanced {updated.id}; created {len(follow_ups)} follow-up objective(s)",
+        )
+        portfolio_ref = await self._persist_portfolio_with_objectives(
+            mandate,
+            tuple(
+                item
+                for item in objectives
+                if item.id not in {updated.id, *(follow_up.id for follow_up in follow_ups)}
+            )
+            + (updated,)
+            + follow_ups,
+            decision_entry=decision_entry,
+        )
+        persisted_refs.append(portfolio_ref)
+        persisted_refs.append(await self._backend.append_decision(mandate, decision_entry))
+        validation_after = await ResidentPortfolioValidator(
+            backend=self._backend,
+            max_selected=self._config.max_objectives_selected,
+            max_active=self._config.max_active_objectives,
+        ).validate(mandate)
+        operator_questions = tuple(
+            item.pending_question for item in follow_ups if item.pending_question
+        )
+        return ResidentPortfolioStewardPassReport(
+            pass_number=pass_number,
+            validation_before=validation_before,
+            validation_after=validation_after,
+            repairs_attempted=(),
+            repairs_skipped=repairs_skipped,
+            selected_objective=selected,
+            action_taken=ResidentPortfolioStewardActionKind.ADVANCE,
+            advanced_objective_id=updated.id,
+            new_follow_up_objectives=follow_ups,
+            operator_questions=operator_questions,
+            persisted_refs=tuple(persisted_refs),
+            budget=wake_run.budget,
+            final_suggested_next_action=validation_after.suggested_safe_next_action,
+        )
+
+    async def _review_steward_objective(
+        self,
+        objective: ResidentObjective,
+        wake_run: WakefulResidentRun,
+    ) -> ResidentObjective:
+        wake_links = tuple(await self._backend.list_refs("resident/wakeful/cycles"))
+        artifact_links = _merge_text(
+            tuple(await self._backend.list_refs("resident/domain-expert/artifacts")),
+            tuple(ref for cycle in wake_run.cycles for ref in cycle.artifact_refs),
+        )
+        workstream_links = tuple(
+            await self._backend.list_refs("resident/domain-expert/workstreams")
+        )
+        consolidation_links = tuple(
+            await self._backend.list_refs("resident/domain-expert/consolidations")
+        )
+        proof_progress = _proof_progress_from_wake(wake_run)
+        status = (
+            ResidentObjectiveStatus.COMPLETED.value
+            if _proof_satisfied(proof_progress, artifact_links, consolidation_links)
+            else ResidentObjectiveStatus.PAUSED.value
+        )
+        return objective.with_updates(
+            status=status,
+            proof_progress=_merge_text(objective.proof_progress, proof_progress),
+            artifact_links=_merge_text(objective.artifact_links, artifact_links),
+            wake_links=_merge_text(objective.wake_links, wake_links),
+            workstream_links=_merge_text(objective.workstream_links, workstream_links),
+            consolidation_links=_merge_text(objective.consolidation_links, consolidation_links),
+            last_reviewed_at=datetime.now(UTC),
+        )
+
+    def _follow_up_objectives(
+        self,
+        mandate: str,
+        objective: ResidentObjective,
+        wake_run: WakefulResidentRun,
+        *,
+        existing_objectives: tuple[ResidentObjective, ...],
+    ) -> tuple[ResidentObjective, ...]:
+        existing_ids = {item.id for item in existing_objectives}
+        follow_ups: list[ResidentObjective] = []
+        if objective.status != ResidentObjectiveStatus.COMPLETED.value:
+            follow_ups.append(
+                _objective_from_text(
+                    mandate,
+                    title=f"Resolve proof gap: {objective.title}",
+                    source=objective.expected_outcome,
+                    kind=ResidentObjectiveKind.VERIFICATION,
+                    reasoning="Advanced work did not yet satisfy objective proof criteria.",
+                    proof="Proof gap is resolved, retired, or converted into a clearer objective.",
+                    dependencies=(objective.id,),
+                )
+            )
+
+        for cycle in wake_run.cycles:
+            for finding in cycle.finding_summaries:
+                follow_up = _follow_up_from_finding(
+                    mandate,
+                    objective,
+                    finding,
+                )
+                if follow_up is not None:
+                    follow_ups.append(follow_up)
+            if cycle.decision == WakefulResidentDecisionKind.ASK_OPERATOR:
+                question = cycle.decision_reason or f"How should '{objective.title}' proceed?"
+                follow_ups.append(
+                    _objective_from_text(
+                        mandate,
+                        title=f"Ask operator: {question}",
+                        source=question,
+                        kind=ResidentObjectiveKind.OPERATOR_QUESTION,
+                        reasoning="Wakeful runtime requires human judgment before continuing.",
+                        proof="Operator answer is recorded and converted into policy or next work.",
+                        status=ResidentObjectiveStatus.NEEDS_OPERATOR,
+                        dependencies=(objective.id,),
+                        pending_question=question,
+                    )
+                )
+
+        unique: list[ResidentObjective] = []
+        seen = set(existing_ids)
+        for follow_up in follow_ups:
+            if follow_up.id in seen:
+                continue
+            seen.add(follow_up.id)
+            unique.append(follow_up)
+            if len(unique) >= self._config.max_follow_up_objectives:
+                break
+        return tuple(unique)
+
+    async def _persist_portfolio_with_objectives(
+        self,
+        mandate: str,
+        objectives: tuple[ResidentObjective, ...],
+        *,
+        decision_entry: str,
+    ) -> str:
+        stored = await self._backend.read_portfolio(mandate)
+        portfolio = stored or ResidentPortfolio(mandate=mandate)
+        merged = merge_objectives(objectives)
+        for objective in merged:
+            await self._backend.write_objective(objective)
+        portfolio = portfolio.with_objectives(
+            merged,
+            decision_history=_merge_text(portfolio.decision_history, (decision_entry,), limit=40),
+            wake_record_links=tuple(await self._backend.list_refs("resident/wakeful/cycles")),
+            workstream_links=tuple(
+                await self._backend.list_refs("resident/domain-expert/workstreams")
+            ),
+            artifact_links=tuple(await self._backend.list_refs("resident/domain-expert/artifacts")),
+            consolidation_links=tuple(
+                await self._backend.list_refs("resident/domain-expert/consolidations")
+            ),
+        )
+        return await self._backend.write_portfolio(portfolio)
+
+
+class LocalCapabilityDiscoveryBackend(CapabilityDiscoveryPort):
+    """Deterministic bounded capability discovery backend for local proof/tests."""
+
+    async def discover(
+        self,
+        mandate: str,
+        gap: ResidentCapabilityGap,
+    ) -> ResidentCapabilityDiscoveryResult:
+        capability = _compact_line(gap.capability or gap.summary, limit=120)
+        safe_option = ResidentCapabilityOption(
+            id=f"evaluate-{_slug(capability)}",
+            title=f"Evaluate available capability path for {capability}",
+            summary=(
+                "Inspect existing tools, workflows, and documentation before building anything new."
+            ),
+            required_tools=("read_only_catalog_inspection",),
+            required_workflows=("local_dry_run",),
+            safe_next_experiment=(
+                "Run a read-only catalog/workspace inspection and record whether a path exists."
+            ),
+            evidence=gap.source_evidence,
+        )
+        adapter_option = ResidentCapabilityOption(
+            id=f"build-adapter-{_slug(capability)}",
+            title=f"Build or wrap a capability adapter for {capability}",
+            summary="Create the smallest adapter/workflow after existing paths are ruled out.",
+            required_tools=("code", "tests"),
+            required_workflows=("adapter_prototype",),
+            required_adapters=("resident_capability_adapter",),
+            risks=gap.risk_boundaries,
+            approval_required=bool(gap.risk_boundaries),
+            safe_next_experiment="Draft an adapter contract and dry-run it without side effects.",
+            evidence=gap.source_evidence,
+        )
+        options = [safe_option, adapter_option]
+        if gap.risk_boundaries:
+            options.append(
+                ResidentCapabilityOption(
+                    id=f"approve-{_slug(capability)}",
+                    title=f"Ask operator about risk boundaries for {capability}",
+                    summary="Clarify human approval before touching bounded or external effects.",
+                    risks=gap.risk_boundaries,
+                    approval_required=True,
+                    safe_next_experiment="Ask the operator for explicit approval boundaries.",
+                    evidence=gap.source_evidence,
+                )
+            )
+        return ResidentCapabilityDiscoveryResult(
+            gap=gap,
+            capability_summary=f"Capability gap: {capability}",
+            why_it_matters=(
+                "The resident cannot safely advance related objectives until this capability "
+                "has a known path, adapter, or approval boundary."
+            ),
+            known_constraints=tuple(
+                item
+                for item in (
+                    *gap.risk_boundaries,
+                    *gap.blocked_dependencies,
+                    *gap.required_capabilities,
+                )
+                if item
+            ),
+            candidate_options=tuple(options),
+            recommended_option_id=safe_option.id,
+            recommended_safe_next_experiment=safe_option.safe_next_experiment,
+            unresolved_questions=(
+                ("What approval boundary applies?",) if gap.risk_boundaries else ()
+            ),
+        )
+
+
+class ResidentCapabilityDiscoveryRuntime:
+    """Discovers ways to close resident capability gaps from portfolio state."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        discovery: CapabilityDiscoveryPort,
+        config: ResidentCapabilityDiscoveryConfig | None = None,
+    ) -> None:
+        self._backend = backend
+        self._discovery = discovery
+        self._config = config or ResidentCapabilityDiscoveryConfig()
+
+    async def run(self, mandate: str) -> ResidentCapabilityDiscoveryReport:
+        objectives = tuple(await self._backend.list_objectives(mandate))
+        gaps = detect_capability_gaps(objectives)
+        if not gaps:
+            return ResidentCapabilityDiscoveryReport(
+                mandate=mandate,
+                selected_gap=None,
+                discovery_result=None,
+                created_or_updated_objectives=(),
+                operator_questions=(),
+                persisted_refs=(),
+                budget_notes="no capability gap selected",
+                final_suggested_next_action="No capability gap needs discovery.",
+            )
+
+        gap = gaps[0]
+        result = await self._discovery.discover(mandate, gap)
+        result = _limit_discovery_options(result, self._config.max_options)
+        discovery_ref = await self._backend.write_capability_discovery(
+            result.gap.id,
+            render_capability_discovery_result(result),
+        )
+        follow_ups = _objectives_from_capability_discovery(
+            result,
+            limit=self._config.max_follow_up_objectives,
+        )
+        persisted_refs = [discovery_ref]
+        for objective in follow_ups:
+            persisted_refs.append(await self._backend.write_objective(objective))
+
+        updated_objectives = follow_ups
+        source = _objective_by_id_or_none(objectives, gap.source_objective_id)
+        if source is not None:
+            updated = source.with_updates(
+                artifact_links=_merge_text(source.artifact_links, (discovery_ref,)),
+                proof_progress=_merge_text(
+                    source.proof_progress,
+                    (f"capability discovery persisted: {discovery_ref}",),
+                ),
+                reasoning=source.reasoning
+                or f"Capability discovery selected for gap: {gap.capability}",
+            )
+            persisted_refs.append(await self._backend.write_objective(updated))
+            updated_objectives = (updated,) + follow_ups
+
+        portfolio_ref = await self._persist_portfolio(
+            mandate,
+            tuple(item for item in objectives if item.id != gap.source_objective_id)
+            + updated_objectives,
+            decision_entry=(
+                f"capability discovery completed for {gap.capability}; "
+                f"created {len(follow_ups)} follow-up objective(s)"
+            ),
+        )
+        persisted_refs.append(portfolio_ref)
+        decision_ref = await self._backend.append_decision(
+            mandate,
+            f"{datetime.now(UTC).isoformat()} [capability_discovery] {gap.capability}",
+        )
+        persisted_refs.append(decision_ref)
+        operator_questions = tuple(
+            objective.pending_question for objective in follow_ups if objective.pending_question
+        )
+        return ResidentCapabilityDiscoveryReport(
+            mandate=mandate,
+            selected_gap=gap,
+            discovery_result=result,
+            created_or_updated_objectives=updated_objectives,
+            operator_questions=operator_questions,
+            persisted_refs=tuple(persisted_refs),
+            budget_notes=result.budget_notes,
+            final_suggested_next_action=(
+                f"Run safe experiment: {result.recommended_safe_next_experiment}"
+            ),
+        )
+
+    async def _persist_portfolio(
+        self,
+        mandate: str,
+        objectives: tuple[ResidentObjective, ...],
+        *,
+        decision_entry: str,
+    ) -> str:
+        stored = await self._backend.read_portfolio(mandate)
+        portfolio = stored or ResidentPortfolio(mandate=mandate)
+        merged = merge_objectives(objectives)
+        for objective in merged:
+            await self._backend.write_objective(objective)
+        portfolio = portfolio.with_objectives(
+            merged,
+            decision_history=_merge_text(portfolio.decision_history, (decision_entry,), limit=40),
+            artifact_links=_merge_text(
+                portfolio.artifact_links,
+                tuple(await self._backend.list_refs(_CAPABILITY_DISCOVERY_PREFIX)),
+            ),
+        )
+        return await self._backend.write_portfolio(portfolio)
+
+
+class LocalSimulatedResidentExecutor(ResidentExecutionPort):
+    """Deterministic resident execution backend for local proofs and tests."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, tuple[ResidentWorkerBrief, ResidentExecutionSession]] = {}
+        self.launched: list[ResidentWorkerBrief] = []
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        session_id = f"local-{brief.id}"
+        session = ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.COMPLETED.value,
+            backend_name="local-simulated",
+            summary=f"Simulated bounded execution for {brief.objective_title}.",
+        )
+        self._sessions[session_id] = (brief, session)
+        self.launched.append(brief)
+        return session
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        stored = self._sessions.get(session_id)
+        if stored is None:
+            return ResidentExecutionSession(
+                session_id=session_id,
+                status=ResidentDelegationStatus.UNAVAILABLE.value,
+                backend_name="local-simulated",
+                summary="session is not available in local simulator",
+            )
+        return stored[1]
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        stored = self._sessions.get(session_id)
+        if stored is None:
+            return None
+        brief, session = stored
+        if session.status != ResidentDelegationStatus.COMPLETED.value:
+            return None
+        return ResidentExecutionResult(
+            session_id=session_id,
+            status=ResidentDelegationStatus.COMPLETED.value,
+            summary=f"Completed delegated work for {brief.objective_title}.",
+            output_refs=(f"local-simulated/{brief.id}.md",),
+            findings=(f"Delegated worker produced bounded evidence for {brief.objective_id}.",),
+            follow_up_suggestions=(f"Review delegated output for {brief.objective_title}",),
+            usage=ResidentBudgetSnapshot(turns_used=1),
+        )
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        stored = self._sessions.get(session_id)
+        brief = stored[0] if stored is not None else None
+        session = ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.CANCELLED.value,
+            backend_name="local-simulated",
+            summary=reason,
+        )
+        if brief is not None:
+            self._sessions[session_id] = (brief, session)
+        return session
+
+
+class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
+    """Resident execution adapter backed by an existing workflow capability port."""
+
+    def __init__(
+        self,
+        *,
+        workflows: WorkflowCapabilityPort,
+        workflow_id: str = "",
+        connection_id: str = "",
+        repo: str = "",
+        branch: str = "",
+    ) -> None:
+        self._workflows = workflows
+        self._workflow_id = workflow_id
+        self._connection_id = connection_id
+        self._repo = repo
+        self._branch = branch
+        self._references: dict[str, WorkflowRunReference] = {}
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        workflow_id = self._workflow_id or await self._select_workflow_id(brief)
+        launch = await self._workflows.launch_workflow(
+            WorkflowLaunchRequest(
+                workflow_id=workflow_id,
+                prompt=render_worker_brief(brief),
+                session_name=_compact_line(f"resident-{brief.objective_id}", limit=80),
+                repo=self._repo,
+                branch=self._branch,
+                connection_id=self._connection_id,
+                provenance={
+                    "resident_objective_id": brief.objective_id,
+                    "resident_brief_id": brief.id,
+                },
+            )
+        )
+        session_id = launch.session_id or launch.slug or launch.workflow_id
+        reference = WorkflowRunReference(
+            session_id=launch.session_id,
+            slug=launch.slug,
+            workflow_id=launch.workflow_id,
+        )
+        self._references[session_id] = reference
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=_delegation_status_from_external(launch.status),
+            backend_name="workflow",
+            summary=launch.workflow_name or launch.session_name or "workflow launched",
+        )
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        reference = self._reference(session_id)
+        status = await self._workflows.get_workflow_status(reference)
+        return ResidentExecutionSession(
+            session_id=status.session_id or session_id,
+            status=_delegation_status_from_external(status.state),
+            backend_name="workflow",
+            summary=status.workflow_name or status.session_name or status.state,
+        )
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        reference = self._reference(session_id)
+        status = await self._workflows.get_workflow_status(reference)
+        mapped = _delegation_status_from_external(status.state)
+        if mapped not in {
+            ResidentDelegationStatus.COMPLETED.value,
+            ResidentDelegationStatus.BLOCKED.value,
+            ResidentDelegationStatus.FAILED.value,
+        }:
+            return None
+        events = await self._workflows.list_workflow_events(reference, limit=20)
+        artifacts = await self._workflows.list_workflow_artifacts(reference)
+        output_refs = tuple(item.path for item in artifacts if item.path)
+        findings = tuple(
+            _compact_line(
+                f"{event.event_type}: {json.dumps(event.data, sort_keys=True)}",
+                limit=240,
+            )
+            for event in events[:5]
+        )
+        summary_parts = [
+            _compact_line(item.summary or item.title or item.path, limit=160)
+            for item in artifacts[:3]
+            if item.summary or item.title or item.path
+        ]
+        summary = "; ".join(summary_parts) or status.state or "workflow result observed"
+        return ResidentExecutionResult(
+            session_id=status.session_id or session_id,
+            status=mapped,
+            summary=summary,
+            output_refs=output_refs,
+            findings=findings,
+            follow_up_suggestions=(
+                (f"Review workflow output for session {status.session_id or session_id}",)
+                if output_refs or findings
+                else ()
+            ),
+            blocked_reason="" if mapped == ResidentDelegationStatus.COMPLETED.value else summary,
+        )
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.UNAVAILABLE.value,
+            backend_name="workflow",
+            summary=f"workflow cancellation is not available through this adapter: {reason}",
+        )
+
+    async def _select_workflow_id(self, brief: ResidentWorkerBrief) -> str:
+        workflows = await self._workflows.list_workflows()
+        if not workflows:
+            raise RuntimeError("No workflow capability is available for resident delegation")
+        capability_words = {
+            word
+            for item in brief.constraints + brief.proof_criteria + (brief.objective_title,)
+            for word in _slug(item).split("-")
+            if len(word) > 3
+        }
+        scored = sorted(
+            workflows,
+            key=lambda item: len(
+                capability_words
+                & set(
+                    _slug(
+                        " ".join(
+                            (
+                                item.workflow_id,
+                                item.name,
+                                item.description,
+                                " ".join(item.tags),
+                            )
+                        )
+                    ).split("-")
+                )
+            ),
+            reverse=True,
+        )
+        return scored[0].workflow_id
+
+    def _reference(self, session_id: str) -> WorkflowRunReference:
+        return self._references.get(session_id) or WorkflowRunReference(session_id=session_id)
+
+
+class LocalSubprocessResidentExecutor(ResidentExecutionPort):
+    """Resident execution adapter that runs a local worker process."""
+
+    def __init__(self, command: tuple[str, ...] | None = None) -> None:
+        self._command = command or (sys.executable, "-c", _LOCAL_WORKER_SCRIPT)
+        self._sessions: dict[str, ResidentExecutionSession] = {}
+        self._results: dict[str, ResidentExecutionResult] = {}
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        session_id = f"subprocess-{brief.id}"
+        proc = await asyncio.create_subprocess_exec(
+            *self._command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(render_worker_brief(brief).encode("utf-8"))
+        status = (
+            ResidentDelegationStatus.COMPLETED.value
+            if proc.returncode == 0
+            else ResidentDelegationStatus.FAILED.value
+        )
+        summary, findings, follow_ups = _subprocess_payload(stdout, stderr)
+        output_refs = (f"local-worker/{brief.id}.json",) if proc.returncode == 0 else ()
+        result = ResidentExecutionResult(
+            session_id=session_id,
+            status=status,
+            summary=summary,
+            output_refs=output_refs,
+            findings=findings,
+            follow_up_suggestions=follow_ups,
+            blocked_reason="" if proc.returncode == 0 else summary,
+        )
+        if output_refs:
+            artifact_path = Path.cwd() / output_refs[0]
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "session_id": session_id,
+                        "status": status,
+                        "backend_name": "local-subprocess",
+                        "summary": summary,
+                        "findings": list(findings),
+                        "follow_up_suggestions": list(follow_ups),
+                        "brief": {
+                            "id": brief.id,
+                            "objective_id": brief.objective_id,
+                            "objective_title": brief.objective_title,
+                            "desired_outcome": brief.desired_outcome,
+                            "proof_criteria": list(brief.proof_criteria),
+                            "evidence": list(brief.evidence),
+                            "artifact_links": list(brief.artifact_links),
+                            "constraints": list(brief.constraints),
+                            "risk_boundaries": list(brief.risk_boundaries),
+                        },
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        session = ResidentExecutionSession(
+            session_id=session_id,
+            status=status,
+            backend_name="local-subprocess",
+            summary=summary,
+        )
+        self._sessions[session_id] = session
+        self._results[session_id] = result
+        return session
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        return self._sessions.get(
+            session_id,
+            ResidentExecutionSession(
+                session_id=session_id,
+                status=ResidentDelegationStatus.UNAVAILABLE.value,
+                backend_name="local-subprocess",
+                summary="local worker session is not available",
+            ),
+        )
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        return self._results.get(session_id)
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        session = ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.CANCELLED.value,
+            backend_name="local-subprocess",
+            summary=reason,
+        )
+        self._sessions[session_id] = session
+        return session
+
+
+class ResidentDelegationRuntime:
+    """Orchestrates bounded delegated execution from resident portfolio objectives."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        executor: ResidentExecutionPort,
+        config: ResidentDelegationConfig | None = None,
+    ) -> None:
+        self._backend = backend
+        self._executor = executor
+        self._config = config or ResidentDelegationConfig()
+
+    async def run(self, mandate: str) -> ResidentDelegationReport:
+        objectives = tuple(await self._backend.list_objectives(mandate))
+        delegations = tuple(await self._backend.list_delegations(mandate))
+        selected, gated = select_delegation_candidates(
+            objectives,
+            delegations=delegations,
+            mandate=mandate,
+            max_selected=self._config.max_delegations,
+            approved_risk_objective_ids=self._config.approved_risk_objective_ids,
+        )
+
+        persisted_refs: list[str] = []
+        created_delegations: list[ResidentDelegationRecord] = []
+        updated_objectives: list[ResidentObjective] = []
+        follow_ups: list[ResidentObjective] = []
+        operator_questions: list[str] = []
+        reviews: list[ResidentDelegationReview] = []
+        objective_updates: dict[str, ResidentObjective] = {item.id: item for item in objectives}
+
+        for objective in gated:
+            question = _delegation_operator_question(objective)
+            operator_objective = _delegation_operator_objective(
+                mandate,
+                objective,
+                question=question,
+            )
+            operator_questions.append(question)
+            follow_ups.append(operator_objective)
+            objective_updates[operator_objective.id] = operator_objective
+            persisted_refs.append(await self._backend.write_objective(operator_objective))
+
+        for objective in selected:
+            brief = build_worker_brief(mandate, objective)
+            session = await self._executor.launch(brief)
+            record = ResidentDelegationRecord(
+                id=_delegation_id(objective),
+                source_objective_id=objective.id,
+                backend_session_id=session.session_id,
+                backend_name=session.backend_name,
+                brief=brief,
+                status=session.status,
+                reason=_delegation_reason(objective),
+                risk_boundaries=objective.risk_boundaries,
+            )
+            created_delegations.append(record)
+            persisted_refs.append(await self._backend.write_delegation(record))
+            advanced = objective.with_updates(
+                status=ResidentObjectiveStatus.ACTIVE.value,
+                proof_progress=_merge_text(
+                    objective.proof_progress,
+                    (f"delegated to {session.backend_name}:{session.session_id}",),
+                ),
+                last_advanced_at=datetime.now(UTC),
+            )
+            updated_objectives.append(advanced)
+            objective_updates[objective.id] = advanced
+            persisted_refs.append(await self._backend.write_objective(advanced))
+
+        observed_results: list[ResidentExecutionResult] = []
+        observable = tuple(created_delegations) + tuple(
+            item
+            for item in delegations
+            if not item.result_refs
+            if item.status
+            in {
+                ResidentDelegationStatus.LAUNCHED.value,
+                ResidentDelegationStatus.RUNNING.value,
+                ResidentDelegationStatus.COMPLETED.value,
+            }
+        )
+        seen_delegations: set[str] = set()
+        for record in observable:
+            if len(observed_results) >= self._config.max_observations:
+                break
+            if record.id in seen_delegations:
+                continue
+            seen_delegations.add(record.id)
+            status = await self._executor.read_status(record.backend_session_id)
+            result = await self._executor.read_result(record.backend_session_id)
+            if result is None:
+                updated_record = record.with_updates(status=status.status)
+                persisted_refs.append(await self._backend.write_delegation(updated_record))
+                continue
+            observed_results.append(result)
+            result_ref = await self._backend.write_delegation_result(
+                record.id,
+                result,
+                render_delegation_result(record, result),
+            )
+            persisted_refs.append(result_ref)
+            source = objective_updates.get(record.source_objective_id) or _objective_by_id_or_none(
+                objectives,
+                record.source_objective_id,
+            )
+            review = review_delegation_result(source, record, result)
+            reviews.append(review)
+            review_ref = await self._backend.write_delegation_review(
+                review,
+                render_delegation_review(review),
+            )
+            persisted_refs.append(review_ref)
+            created_from_result = _follow_ups_from_delegation_result(
+                mandate,
+                source,
+                result,
+                limit=max(
+                    0,
+                    self._config.max_follow_up_objectives - len(follow_ups),
+                ),
+            )
+            for follow_up in created_from_result:
+                follow_ups.append(follow_up)
+                objective_updates[follow_up.id] = follow_up
+                persisted_refs.append(await self._backend.write_objective(follow_up))
+            if source is not None:
+                absorbed = _absorb_delegation_result(source, result, review, result_ref)
+                updated_objectives.append(absorbed)
+                objective_updates[source.id] = absorbed
+                persisted_refs.append(await self._backend.write_objective(absorbed))
+            updated_record = record.with_updates(
+                status=result.status,
+                result_refs=_merge_text(record.result_refs, (result_ref,)),
+                follow_up_objective_refs=_merge_text(
+                    record.follow_up_objective_refs,
+                    tuple(item.id for item in created_from_result),
+                ),
+            )
+            persisted_refs.append(await self._backend.write_delegation(updated_record))
+
+        portfolio_ref = await self._persist_portfolio(
+            mandate,
+            tuple(objective_updates.values()),
+            decision_entry=(
+                f"delegation pass launched {len(created_delegations)} session(s), "
+                f"observed {len(observed_results)} result(s), "
+                f"gated {len(gated)} objective(s)"
+            ),
+        )
+        persisted_refs.append(portfolio_ref)
+        decision_ref = await self._backend.append_decision(
+            mandate,
+            f"{datetime.now(UTC).isoformat()} [delegation] "
+            f"launched={len(created_delegations)} "
+            f"observed={len(observed_results)} gated={len(gated)}",
+        )
+        persisted_refs.append(decision_ref)
+
+        return ResidentDelegationReport(
+            mandate=mandate,
+            selected_objectives=selected,
+            created_delegations=tuple(created_delegations),
+            skipped_or_gated_objectives=gated,
+            observed_results=tuple(observed_results),
+            reviews=tuple(reviews),
+            updated_objectives=tuple(updated_objectives),
+            created_follow_up_objectives=tuple(follow_ups),
+            operator_questions=tuple(operator_questions),
+            persisted_refs=tuple(persisted_refs),
+            final_suggested_next_action=_delegation_next_action(
+                created_delegations,
+                observed_results,
+                operator_questions,
+            ),
+        )
+
+    async def _persist_portfolio(
+        self,
+        mandate: str,
+        objectives: tuple[ResidentObjective, ...],
+        *,
+        decision_entry: str,
+    ) -> str:
+        stored = await self._backend.read_portfolio(mandate)
+        portfolio = stored or ResidentPortfolio(mandate=mandate)
+        merged = merge_objectives(objectives)
+        for objective in merged:
+            await self._backend.write_objective(objective)
+        portfolio = portfolio.with_objectives(
+            merged,
+            decision_history=_merge_text(portfolio.decision_history, (decision_entry,), limit=40),
+            workstream_links=_merge_text(
+                portfolio.workstream_links,
+                tuple(await self._backend.list_refs(_DELEGATION_PREFIX)),
+            ),
+            artifact_links=_merge_text(
+                portfolio.artifact_links,
+                tuple(await self._backend.list_refs(_DELEGATION_RESULT_PREFIX)),
+            ),
+            consolidation_links=_merge_text(
+                portfolio.consolidation_links,
+                tuple(await self._backend.list_refs(_DELEGATION_REVIEW_PREFIX)),
+            ),
+        )
+        return await self._backend.write_portfolio(portfolio)
+
+
+class ResidentAutonomyLoopRuntime:
+    """Runs bounded multi-cycle resident autonomy over portfolio and delegation."""
+
+    def __init__(
+        self,
+        *,
+        backend: ResidentWorkItemBackend,
+        executor: ResidentExecutionPort,
+        ask_operator: OperatorContactPort | None = None,
+        wake_memory: WakefulResidentMemoryPort | None = None,
+        config: ResidentAutonomyLoopConfig | None = None,
+    ) -> None:
+        self._backend = backend
+        self._executor = executor
+        self._ask_operator = ask_operator
+        self._wake_memory = wake_memory
+        self._config = config or ResidentAutonomyLoopConfig()
+
+    async def run(self, mandate: str) -> ResidentAutonomyRun:
+        started = datetime.now(UTC)
+        cycles: list[ResidentAutonomyCycleReport] = []
+        persisted_refs: list[str] = []
+        operator_questions: list[str] = []
+        operator_contacts: list[OperatorContactResult] = []
+        approved_risk_objective_ids = set(self._config.approved_risk_objective_ids)
+
+        for cycle_number in range(1, max(0, self._config.max_cycles) + 1):
+            if (datetime.now(UTC) - started).total_seconds() > self._config.max_wall_clock_seconds:
+                break
+            delegation = await ResidentDelegationRuntime(
+                backend=self._backend,
+                executor=self._executor,
+                config=ResidentDelegationConfig(
+                    max_delegations=self._config.max_delegations_per_cycle,
+                    max_observations=self._config.max_observations_per_cycle,
+                    max_follow_up_objectives=self._config.max_review_attempts,
+                    approved_risk_objective_ids=tuple(sorted(approved_risk_objective_ids)),
+                ),
+            ).run(mandate)
+            operator_questions.extend(delegation.operator_questions)
+            cycle_refs = list(delegation.persisted_refs)
+            cycle_contacts = await self._contact_operator_for_delegation(mandate, delegation)
+            for contact in cycle_contacts:
+                contact_ref = await self._backend.write_operator_contact(contact)
+                cycle_refs.append(contact_ref)
+                if contact.status == OperatorContactStatus.ANSWERED.value:
+                    decision_ref = await self._backend.append_decision(
+                        mandate,
+                        (
+                            f"{datetime.now(UTC).isoformat()} [operator_contact] "
+                            f"{contact.request.id} status={contact.status} "
+                            f"approved={contact.approved}"
+                        ),
+                    )
+                    cycle_refs.append(decision_ref)
+                if contact.approved is True and contact.request.source_objective_id:
+                    approved_risk_objective_ids.add(contact.request.source_objective_id)
+            operator_contacts.extend(cycle_contacts)
+            wake_ref = await self._write_autonomy_wake_record(
+                mandate,
+                cycle_number=cycle_number,
+                delegation=delegation,
+                operator_contacts=tuple(cycle_contacts),
+            )
+            if wake_ref:
+                cycle_refs.append(wake_ref)
+            cycle = ResidentAutonomyCycleReport(
+                cycle_number=cycle_number,
+                delegation_report=delegation,
+                selected_objectives=delegation.selected_objectives,
+                review_decisions=delegation.reviews,
+                persisted_refs=tuple(cycle_refs),
+                operator_questions=delegation.operator_questions,
+                final_suggested_next_action=delegation.final_suggested_next_action,
+                operator_contacts=tuple(cycle_contacts),
+            )
+            cycles.append(cycle)
+            persisted_refs.extend(cycle_refs)
+            if any(
+                contact.status == OperatorContactStatus.PENDING.value
+                for contact in cycle_contacts
+            ):
+                break
+            if delegation.operator_questions and not any(
+                contact.approved is True for contact in cycle_contacts
+            ):
+                break
+            if not _delegation_report_had_activity(delegation):
+                break
+
+        final = _autonomy_final_suggestion(cycles, operator_contacts)
+        return ResidentAutonomyRun(
+            mandate=mandate,
+            cycles=tuple(cycles),
+            persisted_refs=tuple(persisted_refs),
+            operator_questions=tuple(operator_questions),
+            final_suggested_next_action=final,
+            operator_contacts=tuple(operator_contacts),
+        )
+
+    async def _contact_operator_for_delegation(
+        self,
+        mandate: str,
+        delegation: ResidentDelegationReport,
+    ) -> tuple[OperatorContactResult, ...]:
+        if self._ask_operator is None or not delegation.operator_questions:
+            return ()
+        contacts: list[OperatorContactResult] = []
+        for question in delegation.operator_questions:
+            objective = _gated_objective_for_question(delegation, question)
+            request = _operator_contact_request(mandate, question, objective)
+            try:
+                result = await self._ask_operator.ask(request)
+            except Exception as exc:
+                result = OperatorContactResult(
+                    request=request,
+                    status=OperatorContactStatus.FAILED.value,
+                    answer=str(exc),
+                    approved=False,
+                    responded_at=datetime.now(UTC),
+                )
+            contacts.append(result)
+            if result.status == OperatorContactStatus.PENDING.value:
+                break
+        return tuple(contacts)
+
+    async def _write_autonomy_wake_record(
+        self,
+        mandate: str,
+        *,
+        cycle_number: int,
+        delegation: ResidentDelegationReport,
+        operator_contacts: tuple[OperatorContactResult, ...] = (),
+    ) -> str:
+        if self._wake_memory is None:
+            return ""
+        pending_contacts = tuple(
+            item
+            for item in operator_contacts
+            if item.status == OperatorContactStatus.PENDING.value
+        )
+        if pending_contacts:
+            decision = WakefulResidentDecisionKind.ASK_OPERATOR
+            reason = f"waiting for operator answer: {pending_contacts[0].request.question}"
+        elif delegation.operator_questions:
+            decision = WakefulResidentDecisionKind.ASK_OPERATOR
+            reason = delegation.operator_questions[0]
+        elif _delegation_report_had_activity(delegation):
+            decision = WakefulResidentDecisionKind.CONTINUE
+            reason = delegation.final_suggested_next_action
+        else:
+            decision = WakefulResidentDecisionKind.SLEEP
+            reason = "no delegate-ready resident work"
+        record = WakefulResidentCycleRecord(
+            cycle_number=cycle_number,
+            mandate=mandate,
+            prior_domain_model_ref=_DOMAIN_MODEL_REF,
+            attention_reason=_autonomy_attention_reason(delegation),
+            selected_action="resident autonomy delegation pass",
+            work_created_or_advanced=tuple(_delegation_cycle_work_items(delegation)),
+            artifact_refs=tuple(delegation.persisted_refs),
+            finding_summaries=tuple(_delegation_cycle_findings(delegation)),
+            decision=decision,
+            decision_reason=reason,
+            budget=ResidentBudgetSnapshot(
+                turns_used=1,
+                usage=_result_usage(delegation.observed_results),
+            ),
+        )
+        return await self._wake_memory.write_wake_record(record)
+
+
 def discover_objectives(
     mandate: str,
     *,
@@ -527,6 +2215,49 @@ def select_objectives(
     return tuple(selected)
 
 
+def select_delegation_candidates(
+    objectives: tuple[ResidentObjective, ...],
+    *,
+    delegations: tuple[ResidentDelegationRecord, ...],
+    mandate: str,
+    max_selected: int,
+    approved_risk_objective_ids: tuple[str, ...] = (),
+) -> tuple[tuple[ResidentObjective, ...], tuple[ResidentObjective, ...]]:
+    """Select objectives ready for delegated execution and separate gated work."""
+
+    if max_selected <= 0:
+        return (), ()
+    active_sources = {
+        item.source_objective_id
+        for item in delegations
+        if item.status
+        in {
+            ResidentDelegationStatus.LAUNCHED.value,
+            ResidentDelegationStatus.RUNNING.value,
+        }
+    }
+    completed_ids = {
+        objective.id
+        for objective in objectives
+        if objective.status == ResidentObjectiveStatus.COMPLETED.value
+    }
+    selected: list[ResidentObjective] = []
+    gated: list[ResidentObjective] = []
+    approved_risk_ids = set(approved_risk_objective_ids)
+    prioritized = prioritize_objectives(objectives, mandate=mandate)
+    for objective in prioritized:
+        if objective.id in active_sources:
+            continue
+        if not _is_delegation_ready(objective, completed_ids):
+            continue
+        if objective.risk_boundaries and objective.id not in approved_risk_ids:
+            gated.append(objective)
+            continue
+        if len(selected) < max_selected:
+            selected.append(objective)
+    return tuple(selected), tuple(gated)
+
+
 def merge_objectives(objectives: tuple[ResidentObjective, ...]) -> tuple[ResidentObjective, ...]:
     by_id: dict[str, ResidentObjective] = {}
     for objective in objectives:
@@ -544,6 +2275,637 @@ def merge_objectives(objectives: tuple[ResidentObjective, ...]) -> tuple[Residen
             source_evidence=_merge_text(kept.source_evidence, duplicate.source_evidence),
         )
     return tuple(by_id.values())
+
+
+def detect_capability_gaps(
+    objectives: tuple[ResidentObjective, ...],
+) -> tuple[ResidentCapabilityGap, ...]:
+    """Extract generic capability gaps from resident portfolio objectives."""
+
+    known_ids = {objective.id for objective in objectives}
+    gaps: list[ResidentCapabilityGap] = []
+    for objective in objectives:
+        gap_sources = _capability_gap_sources(objective, known_ids)
+        for source, reason in gap_sources:
+            capability = _capability_name_from_text(source) or _compact_line(source, limit=80)
+            gap_id = _slug(f"{objective.id}-{capability}") or f"{objective.id}-capability-gap"
+            gaps.append(
+                ResidentCapabilityGap(
+                    id=gap_id,
+                    capability=capability,
+                    summary=_compact_line(source, limit=220),
+                    source_objective_id=objective.id,
+                    source_evidence=_merge_text(objective.source_evidence, (source,)),
+                    required_capabilities=objective.required_capabilities,
+                    risk_boundaries=objective.risk_boundaries,
+                    blocked_dependencies=tuple(
+                        dep for dep in objective.dependencies if dep not in known_ids
+                    ),
+                    reason=reason,
+                )
+            )
+    return tuple(_dedupe_gaps(gaps))
+
+
+def render_capability_discovery_result(result: ResidentCapabilityDiscoveryResult) -> str:
+    return (
+        f"# Capability Discovery: {result.gap.capability}\n\n"
+        f"- gap_id: {result.gap.id}\n"
+        f"- source_objective_id: {result.gap.source_objective_id}\n"
+        f"- recommended_option_id: {result.recommended_option_id}\n"
+        f"- budget_notes: {result.budget_notes}\n\n"
+        f"## Capability Summary\n\n{result.capability_summary}\n\n"
+        f"## Why It Matters\n\n{result.why_it_matters}\n\n"
+        f"## Known Constraints\n\n{_render_list(result.known_constraints)}\n\n"
+        "## Candidate Options\n\n"
+        f"{_render_list(_capability_option_line(item) for item in result.candidate_options)}\n\n"
+        "## Recommended Safe Next Experiment\n\n"
+        f"{result.recommended_safe_next_experiment}\n\n"
+        f"## Unresolved Questions\n\n{_render_list(result.unresolved_questions)}\n\n"
+        f"## Source Evidence\n\n{_render_list(result.gap.source_evidence)}\n"
+    )
+
+
+def render_worker_brief(brief: ResidentWorkerBrief) -> str:
+    return (
+        f"# Resident Worker Brief: {brief.objective_title}\n\n"
+        f"- brief_id: {brief.id}\n"
+        f"- objective_id: {brief.objective_id}\n\n"
+        f"## Resident Mandate\n\n{brief.mandate}\n\n"
+        f"## Source Objective\n\n{brief.objective_title}\n\n"
+        f"## Desired Outcome\n\n{brief.desired_outcome}\n\n"
+        f"## Proof Criteria\n\n{_render_list(brief.proof_criteria)}\n\n"
+        f"## Evidence\n\n{_render_list(brief.evidence)}\n\n"
+        f"## Artifact Links\n\n{_render_list(brief.artifact_links)}\n\n"
+        f"## Constraints\n\n{_render_list(brief.constraints)}\n\n"
+        f"## Risk Boundaries\n\n{_render_list(brief.risk_boundaries)}\n\n"
+        f"## Expected Output Shape\n\n{brief.expected_output_shape}\n"
+    )
+
+
+def render_delegation_result(
+    delegation: ResidentDelegationRecord,
+    result: ResidentExecutionResult,
+) -> str:
+    return (
+        f"# Delegated Result: {delegation.brief.objective_title}\n\n"
+        f"- delegation_id: {delegation.id}\n"
+        f"- source_objective_id: {delegation.source_objective_id}\n"
+        f"- session_id: {result.session_id}\n"
+        f"- status: {result.status}\n"
+        f"- backend_name: {delegation.backend_name}\n\n"
+        f"## Summary\n\n{result.summary}\n\n"
+        f"## Output Refs\n\n{_render_list(result.output_refs)}\n\n"
+        f"## Findings\n\n{_render_list(result.findings)}\n\n"
+        f"## Follow-Up Suggestions\n\n{_render_list(result.follow_up_suggestions)}\n\n"
+        f"## Blocked Reason\n\n{result.blocked_reason or 'none'}\n\n"
+        f"## Worker Brief\n\n{render_worker_brief(delegation.brief)}"
+    )
+
+
+def render_delegation_review(review: ResidentDelegationReview) -> str:
+    return (
+        f"# Delegated Result Review: {review.delegation_id}\n\n"
+        f"- id: {review.id}\n"
+        f"- delegation_id: {review.delegation_id}\n"
+        f"- source_objective_id: {review.source_objective_id}\n"
+        f"- result_session_id: {review.result_session_id}\n"
+        f"- decision: {review.decision}\n"
+        f"- created_at: {review.created_at.isoformat()}\n\n"
+        f"## Reason\n\n{review.reason}\n\n"
+        f"## Proof Criteria Checked\n\n{_render_list(review.proof_criteria_checked)}\n\n"
+        f"## Missing Evidence\n\n{_render_list(review.missing_evidence)}\n\n"
+        f"## Follow-Up Suggestions\n\n{_render_list(review.follow_up_suggestions)}\n"
+    )
+
+
+def review_delegation_result(
+    source: ResidentObjective | None,
+    delegation: ResidentDelegationRecord,
+    result: ResidentExecutionResult,
+) -> ResidentDelegationReview:
+    proof = source.proof_criteria if source is not None else delegation.brief.proof_criteria
+    missing: list[str] = []
+    if result.blocked_reason:
+        decision = ResidentDelegationReviewDecision.BLOCKED.value
+        reason = f"Delegated result reported a blocker: {result.blocked_reason}"
+    elif result.status in {
+        ResidentDelegationStatus.FAILED.value,
+        ResidentDelegationStatus.UNAVAILABLE.value,
+    }:
+        decision = ResidentDelegationReviewDecision.RETRY.value
+        reason = f"Delegated result ended with status {result.status}."
+    else:
+        if not result.summary.strip():
+            missing.append("summary")
+        if not result.output_refs and not result.findings:
+            missing.append("output refs or findings")
+        if missing:
+            decision = ResidentDelegationReviewDecision.NEEDS_FOLLOW_UP.value
+            reason = "Delegated result needs follow-up evidence before completion."
+        else:
+            decision = ResidentDelegationReviewDecision.COMPLETE.value
+            reason = "Delegated result satisfies the bounded review checks" + (
+                " and produced follow-up work." if result.follow_up_suggestions else "."
+            )
+    return ResidentDelegationReview(
+        id=_slug(f"review-{delegation.id}-{result.session_id}") or f"review-{delegation.id}",
+        delegation_id=delegation.id,
+        source_objective_id=delegation.source_objective_id,
+        result_session_id=result.session_id,
+        decision=decision,
+        reason=reason,
+        proof_criteria_checked=proof,
+        missing_evidence=tuple(missing),
+        follow_up_suggestions=result.follow_up_suggestions,
+    )
+
+
+def build_worker_brief(mandate: str, objective: ResidentObjective) -> ResidentWorkerBrief:
+    constraints = _merge_text(
+        objective.required_capabilities,
+        (f"budget estimate: {objective.budget_estimate}",),
+    )
+    return ResidentWorkerBrief(
+        id=_slug(f"brief-{objective.id}") or f"brief-{objective.id}",
+        mandate=mandate,
+        objective_id=objective.id,
+        objective_title=objective.title,
+        desired_outcome=objective.expected_outcome,
+        proof_criteria=objective.proof_criteria,
+        evidence=objective.source_evidence,
+        artifact_links=_merge_text(
+            objective.artifact_links,
+            objective.wake_links,
+            objective.workstream_links,
+            objective.consolidation_links,
+        ),
+        constraints=constraints,
+        risk_boundaries=objective.risk_boundaries,
+        expected_output_shape=(
+            "Return a concise summary, output references, findings, blocked reason "
+            "if any, and suggested follow-up work."
+        ),
+    )
+
+
+def _capability_gap_sources(
+    objective: ResidentObjective,
+    known_ids: set[str],
+) -> tuple[tuple[str, str], ...]:
+    sources: list[tuple[str, str]] = []
+    for capability in objective.required_capabilities:
+        sources.append((capability, "objective declares a required capability"))
+    for dependency in objective.dependencies:
+        if dependency not in known_ids:
+            sources.append((dependency, "objective depends on a missing objective/capability"))
+    for text in (
+        objective.title,
+        objective.purpose,
+        objective.expected_outcome,
+        objective.reasoning,
+        *objective.source_evidence,
+        *objective.proof_progress,
+    ):
+        lowered = str(text).casefold()
+        if _has_any(lowered, ("missing capability", "capability gap", "missing tool")):
+            sources.append((str(text), "objective evidence names a capability gap"))
+        elif _has_any(lowered, ("missing workflow", "missing adapter", "no safe execution path")):
+            sources.append((str(text), "objective evidence names a missing execution path"))
+    if objective.status == ResidentObjectiveStatus.BLOCKED.value and _has_any(
+        _objective_text(objective),
+        ("capability", "tool", "workflow", "adapter", "execution path"),
+    ):
+        sources.append(
+            (objective.reasoning or objective.title, "blocked objective lacks capability path")
+        )
+    return tuple(sources)
+
+
+def _dedupe_gaps(gaps: list[ResidentCapabilityGap]) -> list[ResidentCapabilityGap]:
+    seen: set[str] = set()
+    unique: list[ResidentCapabilityGap] = []
+    for gap in gaps:
+        key = gap.id
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(gap)
+    return unique
+
+
+def _capability_name_from_text(text: str) -> str:
+    value = _compact_line(text, limit=120)
+    lowered = value.casefold()
+    for marker in (
+        "missing capability:",
+        "capability gap:",
+        "missing tool:",
+        "missing workflow:",
+        "missing adapter:",
+    ):
+        if marker in lowered:
+            idx = lowered.index(marker) + len(marker)
+            return _compact_line(value[idx:].strip(" :-"), limit=100)
+    return value
+
+
+def _limit_discovery_options(
+    result: ResidentCapabilityDiscoveryResult,
+    limit: int,
+) -> ResidentCapabilityDiscoveryResult:
+    if limit <= 0 or len(result.candidate_options) <= limit:
+        return result
+    return ResidentCapabilityDiscoveryResult(
+        gap=result.gap,
+        capability_summary=result.capability_summary,
+        why_it_matters=result.why_it_matters,
+        known_constraints=result.known_constraints,
+        candidate_options=result.candidate_options[:limit],
+        recommended_option_id=result.recommended_option_id,
+        recommended_safe_next_experiment=result.recommended_safe_next_experiment,
+        unresolved_questions=result.unresolved_questions,
+        budget_notes=result.budget_notes,
+    )
+
+
+def _objectives_from_capability_discovery(
+    result: ResidentCapabilityDiscoveryResult,
+    *,
+    limit: int,
+) -> tuple[ResidentObjective, ...]:
+    objectives: list[ResidentObjective] = []
+    for option in result.candidate_options:
+        status = (
+            ResidentObjectiveStatus.NEEDS_OPERATOR.value
+            if option.approval_required
+            else ResidentObjectiveStatus.CANDIDATE.value
+        )
+        kind = (
+            ResidentObjectiveKind.OPERATOR_QUESTION.value
+            if option.approval_required
+            else ResidentObjectiveKind.TOOL_BUILDING.value
+            if option.required_adapters
+            else ResidentObjectiveKind.VERIFICATION.value
+        )
+        pending_question = (
+            f"What approval boundary applies before using option '{option.title}'?"
+            if option.approval_required
+            else ""
+        )
+        objective_id = _slug(f"capability-{option.id}") or "capability-discovery-follow-up"
+        objectives.append(
+            ResidentObjective(
+                id=objective_id,
+                title=option.title,
+                purpose=option.summary,
+                serves_mandate_because=result.why_it_matters,
+                expected_outcome=option.safe_next_experiment
+                or "A safe capability path is evaluated.",
+                proof_criteria=(
+                    option.safe_next_experiment
+                    or "The option is evaluated and linked to a decision.",
+                ),
+                kind=kind,
+                dependencies=(result.gap.source_objective_id,)
+                if result.gap.source_objective_id
+                else (),
+                required_capabilities=option.required_tools
+                + option.required_workflows
+                + option.required_adapters,
+                risk_boundaries=option.risks,
+                status=status,
+                source_evidence=option.evidence or result.gap.source_evidence,
+                reasoning=(
+                    f"Capability discovery option for {result.gap.capability}: {option.summary}"
+                ),
+                pending_question=pending_question,
+            )
+        )
+        if len(objectives) >= limit:
+            break
+    return tuple(objectives)
+
+
+def _capability_option_line(option: ResidentCapabilityOption) -> str:
+    approval = "approval required" if option.approval_required else "safe/read-only first"
+    tools = ", ".join(option.required_tools + option.required_workflows + option.required_adapters)
+    risks = ", ".join(option.risks) or "none"
+    return f"{option.id}: {option.title}; {approval}; tools={tools or 'none'}; risks={risks}"
+
+
+_LOCAL_WORKER_SCRIPT = r"""
+import json
+import sys
+
+brief = sys.stdin.read()
+lines = [line for line in brief.splitlines() if line.strip()]
+payload = {
+    "summary": f"Processed resident worker brief with {len(lines)} non-empty lines.",
+    "findings": [
+        "worker brief was executed by a local subprocess",
+        f"brief characters: {len(brief)}",
+    ],
+    "follow_up_suggestions": [
+        "Review local worker output and decide the next bounded resident objective"
+    ],
+}
+print(json.dumps(payload, sort_keys=True))
+"""
+
+
+def _delegation_status_from_external(value: str) -> str:
+    lowered = str(value or "").casefold()
+    if lowered in {"completed", "complete", "succeeded", "success", "stopped", "archived"}:
+        return ResidentDelegationStatus.COMPLETED.value
+    if lowered in {"failed", "error"}:
+        return ResidentDelegationStatus.FAILED.value
+    if lowered in {"blocked", "needs_operator"}:
+        return ResidentDelegationStatus.BLOCKED.value
+    if lowered in {"cancelled", "canceled"}:
+        return ResidentDelegationStatus.CANCELLED.value
+    if lowered in {"running", "active", "in_progress", "started"}:
+        return ResidentDelegationStatus.RUNNING.value
+    return ResidentDelegationStatus.LAUNCHED.value
+
+
+def _subprocess_payload(
+    stdout: bytes,
+    stderr: bytes,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    raw = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = {"summary": raw}
+    else:
+        data = {"summary": err or "local worker produced no output"}
+    summary = _compact_line(str(data.get("summary") or err or raw), limit=240)
+    findings = tuple(str(item) for item in data.get("findings", ()) if str(item).strip())
+    follow_ups = tuple(
+        str(item) for item in data.get("follow_up_suggestions", ()) if str(item).strip()
+    )
+    if err:
+        findings = _merge_text(findings, (f"stderr: {_compact_line(err, limit=180)}",))
+    return summary, findings, follow_ups
+
+
+def _is_delegation_ready(
+    objective: ResidentObjective,
+    completed_ids: set[str],
+) -> bool:
+    if objective.status not in {
+        ResidentObjectiveStatus.CANDIDATE.value,
+        ResidentObjectiveStatus.ACTIVE.value,
+        ResidentObjectiveStatus.PAUSED.value,
+    }:
+        return False
+    if objective.dependencies and not set(objective.dependencies).issubset(completed_ids):
+        return False
+    return bool(objective.proof_criteria)
+
+
+def _delegation_id(objective: ResidentObjective) -> str:
+    return _slug(f"delegation-{objective.id}") or f"delegation-{objective.id}"
+
+
+def _delegation_reason(objective: ResidentObjective) -> str:
+    return (
+        objective.priority_rationale
+        or objective.reasoning
+        or "Objective is ready for bounded delegated execution."
+    )
+
+
+def _delegation_operator_question(objective: ResidentObjective) -> str:
+    risks = ", ".join(objective.risk_boundaries) or "bounded risk"
+    return f"May I delegate '{objective.title}' despite these risk boundaries: {risks}?"
+
+
+def _delegation_operator_objective(
+    mandate: str,
+    objective: ResidentObjective,
+    *,
+    question: str,
+) -> ResidentObjective:
+    return _objective_from_text(
+        mandate,
+        title=f"Ask operator before delegation: {objective.title}",
+        source=question,
+        kind=ResidentObjectiveKind.OPERATOR_QUESTION,
+        reasoning="Delegated execution would cross a configured risk boundary.",
+        proof="Operator decision is recorded before delegated execution proceeds.",
+        status=ResidentObjectiveStatus.NEEDS_OPERATOR,
+        dependencies=(objective.id,),
+        pending_question=question,
+    )
+
+
+def _gated_objective_for_question(
+    report: ResidentDelegationReport,
+    question: str,
+) -> ResidentObjective | None:
+    for objective in report.skipped_or_gated_objectives:
+        if _delegation_operator_question(objective) == question:
+            return objective
+    return None
+
+
+def _operator_contact_request(
+    mandate: str,
+    question: str,
+    objective: ResidentObjective | None,
+) -> OperatorContactRequest:
+    objective_id = objective.id if objective is not None else ""
+    contact_id = _slug(f"operator-contact-{objective_id or question}") or "operator-contact"
+    risks = objective.risk_boundaries if objective is not None else ()
+    return OperatorContactRequest(
+        id=contact_id,
+        question=question,
+        reason=(
+            "Resident delegated execution would cross a risk boundary and needs "
+            "operator judgment before continuing."
+        ),
+        impact=(
+            "A positive answer allows this specific objective to be delegated; "
+            "no answer keeps the resident waiting."
+        ),
+        source_objective_id=objective_id,
+        risk_boundaries=risks,
+        kind=OperatorContactKind.HELP_NEEDED,
+    )
+
+
+def _autonomy_final_suggestion(
+    cycles: list[ResidentAutonomyCycleReport],
+    contacts: list[OperatorContactResult],
+) -> str:
+    pending = next(
+        (
+            item
+            for item in reversed(contacts)
+            if item.status == OperatorContactStatus.PENDING.value
+        ),
+        None,
+    )
+    if pending is not None:
+        return f"Waiting for operator answer: {pending.request.question}"
+    if cycles:
+        return cycles[-1].final_suggested_next_action
+    return "No autonomy cycles were allowed by config."
+
+
+def _render_operator_contact(result: OperatorContactResult) -> str:
+    approved = "unknown" if result.approved is None else "true" if result.approved else "false"
+    responded_at = result.responded_at.isoformat() if result.responded_at else ""
+    return (
+        f"# Resident Operator Contact: {result.request.question}\n\n"
+        f"- id: {result.request.id}\n"
+        f"- status: {result.status}\n"
+        f"- contact_kind: {result.request.kind.value}\n"
+        f"- source_objective_id: {result.request.source_objective_id}\n"
+        f"- approved: {approved}\n"
+        f"- emitted_ref: {result.emitted_ref}\n"
+        f"- created_at: {result.request.created_at.isoformat()}\n"
+        f"- responded_at: {responded_at}\n\n"
+        f"## Question\n\n{result.request.question}\n\n"
+        f"## Reason\n\n{result.request.reason}\n\n"
+        f"## Impact\n\n{result.request.impact}\n\n"
+        f"## Risk Boundaries\n\n{_render_list(result.request.risk_boundaries)}\n\n"
+        f"## Answer\n\n{result.answer or 'none'}\n"
+    )
+
+
+def _absorb_delegation_result(
+    objective: ResidentObjective,
+    result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
+    result_ref: str,
+) -> ResidentObjective:
+    if review.decision == ResidentDelegationReviewDecision.COMPLETE.value:
+        status = ResidentObjectiveStatus.COMPLETED.value
+    elif review.decision == ResidentDelegationReviewDecision.BLOCKED.value:
+        status = ResidentObjectiveStatus.BLOCKED.value
+    elif review.decision == ResidentDelegationReviewDecision.ASK_OPERATOR.value:
+        status = ResidentObjectiveStatus.NEEDS_OPERATOR.value
+    else:
+        status = ResidentObjectiveStatus.PAUSED.value
+    progress = _merge_text(
+        objective.proof_progress,
+        (f"delegation result {result.session_id}: {result.status}: {result.summary}",),
+        (f"delegation review {review.id}: {review.decision}: {review.reason}",),
+        result.findings,
+    )
+    return objective.with_updates(
+        status=status,
+        proof_progress=progress,
+        artifact_links=_merge_text(objective.artifact_links, (result_ref,), result.output_refs),
+        last_reviewed_at=datetime.now(UTC),
+    )
+
+
+def _follow_ups_from_delegation_result(
+    mandate: str,
+    source: ResidentObjective | None,
+    result: ResidentExecutionResult,
+    *,
+    limit: int,
+) -> tuple[ResidentObjective, ...]:
+    if source is None or limit <= 0:
+        return ()
+    follow_ups: list[ResidentObjective] = []
+    for suggestion in result.follow_up_suggestions:
+        if len(follow_ups) >= limit:
+            break
+        text = _compact_line(suggestion, limit=160)
+        follow_ups.append(
+            _objective_from_text(
+                mandate,
+                title=f"Follow up delegated result: {text}",
+                source=f"{result.session_id}: {text}",
+                kind=_kind_for_text(text),
+                reasoning="Delegated execution produced a useful follow-up suggestion.",
+                proof="Follow-up is resolved, retired, or converted into durable evidence.",
+                dependencies=(source.id,),
+            )
+        )
+    if result.blocked_reason and len(follow_ups) < limit:
+        follow_ups.append(
+            _objective_from_text(
+                mandate,
+                title=f"Resolve delegated blocker: {result.blocked_reason}",
+                source=result.blocked_reason,
+                kind=ResidentObjectiveKind.REVIEW,
+                reasoning="Delegated execution reported a blocker that needs resident review.",
+                proof="Blocker has a decision, workaround, or replacement objective.",
+                dependencies=(source.id,),
+            )
+        )
+    return tuple(follow_ups)
+
+
+def _delegation_next_action(
+    created: list[ResidentDelegationRecord],
+    observed: list[ResidentExecutionResult],
+    questions: list[str],
+) -> str:
+    if questions:
+        return f"Ask operator: {questions[0]}"
+    if observed:
+        return "Review absorbed delegated results and select the next portfolio objective."
+    if created:
+        return "Observe delegated sessions and absorb their outputs."
+    return "No delegate-ready objective found."
+
+
+def _delegation_report_had_activity(report: ResidentDelegationReport) -> bool:
+    return bool(
+        report.selected_objectives
+        or report.created_delegations
+        or report.observed_results
+        or report.created_follow_up_objectives
+        or report.operator_questions
+    )
+
+
+def _autonomy_attention_reason(report: ResidentDelegationReport) -> str:
+    if report.selected_objectives:
+        titles = ", ".join(item.title for item in report.selected_objectives[:2])
+        return f"delegate-ready resident objective(s): {titles}"
+    if report.operator_questions:
+        return f"operator judgment needed: {report.operator_questions[0]}"
+    if report.observed_results:
+        return "delegated result(s) available for review"
+    return "portfolio inspection found no delegate-ready work"
+
+
+def _delegation_cycle_work_items(report: ResidentDelegationReport) -> tuple[str, ...]:
+    items: list[str] = []
+    items.extend(
+        f"delegated {item.source_objective_id} via {item.backend_name}:{item.backend_session_id}"
+        for item in report.created_delegations
+    )
+    items.extend(f"review {item.id}: {item.decision}" for item in report.reviews)
+    items.extend(f"follow-up objective: {item.id}" for item in report.created_follow_up_objectives)
+    return tuple(items)
+
+
+def _delegation_cycle_findings(report: ResidentDelegationReport) -> tuple[str, ...]:
+    findings: list[str] = []
+    for result in report.observed_results:
+        findings.append(f"{result.session_id}: {result.summary}")
+        findings.extend(result.findings[:2])
+    findings.extend(report.operator_questions[:2])
+    return tuple(_compact_line(item, limit=220) for item in findings if item)
+
+
+def _result_usage(results: tuple[ResidentExecutionResult, ...]) -> TokenUsage:
+    usage = TokenUsage(input_tokens=0, output_tokens=0)
+    for result in results:
+        usage += result.usage.usage
+    return usage
 
 
 def _score_objective(
@@ -784,6 +3146,24 @@ def _render_objective(objective: ResidentObjective) -> str:
     )
 
 
+def _render_delegation(delegation: ResidentDelegationRecord) -> str:
+    return (
+        f"# Resident Delegation: {delegation.brief.objective_title}\n\n"
+        f"- id: {delegation.id}\n"
+        f"- source_objective_id: {delegation.source_objective_id}\n"
+        f"- backend_session_id: {delegation.backend_session_id}\n"
+        f"- backend_name: {delegation.backend_name}\n"
+        f"- status: {delegation.status}\n"
+        f"- created_at: {delegation.created_at.isoformat()}\n"
+        f"- updated_at: {delegation.updated_at.isoformat()}\n\n"
+        f"## Reason\n\n{delegation.reason}\n\n"
+        f"## Risk Boundaries\n\n{_render_list(delegation.risk_boundaries)}\n\n"
+        f"## Result Refs\n\n{_render_list(delegation.result_refs)}\n\n"
+        f"## Follow-Up Objective Refs\n\n{_render_list(delegation.follow_up_objective_refs)}\n\n"
+        f"## Worker Brief\n\n{render_worker_brief(delegation.brief)}"
+    )
+
+
 def _parse_portfolio(content: str, *, mandate: str) -> ResidentPortfolio:
     metadata = _metadata(content)
     return ResidentPortfolio(
@@ -829,6 +3209,602 @@ def _parse_objective(content: str) -> ResidentObjective | None:
         consolidation_links=tuple(_section_items(content, "Consolidation Links")),
         supersedes=tuple(_section_items(content, "Supersedes")),
         superseded_by=metadata.get("superseded_by") or "",
+    )
+
+
+def _parse_delegation(content: str) -> ResidentDelegationRecord | None:
+    metadata = _metadata(content)
+    delegation_id = metadata.get("id") or _slug(_title(content))
+    source_objective_id = metadata.get("source_objective_id", "")
+    if not delegation_id or not source_objective_id:
+        return None
+    brief = _parse_worker_brief(_section_tail(content, "Worker Brief"))
+    if brief is None:
+        brief = ResidentWorkerBrief(
+            id=f"brief-{delegation_id}",
+            mandate="",
+            objective_id=source_objective_id,
+            objective_title=_title(content).removeprefix("Resident Delegation: ").strip(),
+            desired_outcome="",
+            proof_criteria=(),
+        )
+    return ResidentDelegationRecord(
+        id=delegation_id,
+        source_objective_id=source_objective_id,
+        backend_session_id=metadata.get("backend_session_id", ""),
+        backend_name=metadata.get("backend_name", ""),
+        brief=brief,
+        status=metadata.get("status") or ResidentDelegationStatus.LAUNCHED.value,
+        reason=_section(content, "Reason"),
+        risk_boundaries=tuple(_section_items(content, "Risk Boundaries")),
+        result_refs=tuple(_section_items(content, "Result Refs")),
+        follow_up_objective_refs=tuple(_section_items(content, "Follow-Up Objective Refs")),
+        created_at=_datetime_value(metadata.get("created_at")),
+        updated_at=_datetime_value(metadata.get("updated_at")),
+    )
+
+
+def _parse_worker_brief(content: str) -> ResidentWorkerBrief | None:
+    metadata = _metadata(content)
+    objective_id = metadata.get("objective_id", "")
+    title = _title(content).removeprefix("Resident Worker Brief: ").strip()
+    if not objective_id or not title:
+        return None
+    return ResidentWorkerBrief(
+        id=metadata.get("brief_id") or f"brief-{objective_id}",
+        mandate=_section(content, "Resident Mandate"),
+        objective_id=objective_id,
+        objective_title=title,
+        desired_outcome=_section(content, "Desired Outcome"),
+        proof_criteria=tuple(_section_items(content, "Proof Criteria")),
+        evidence=tuple(_section_items(content, "Evidence")),
+        artifact_links=tuple(_section_items(content, "Artifact Links")),
+        constraints=tuple(_section_items(content, "Constraints")),
+        risk_boundaries=tuple(_section_items(content, "Risk Boundaries")),
+        expected_output_shape=_section(content, "Expected Output Shape"),
+    )
+
+
+def _steward_decision_entry(
+    pass_number: int,
+    action: ResidentPortfolioStewardActionKind,
+    reason: str,
+) -> str:
+    return f"{datetime.now(UTC).isoformat()} [steward:{action.value}] pass {pass_number}: {reason}"
+
+
+def _skipped_repair(
+    finding: ResidentPortfolioValidationFinding,
+    reason: str,
+) -> ResidentPortfolioRepairRecord:
+    return ResidentPortfolioRepairRecord(
+        code=finding.code,
+        objective_id=finding.objective_id,
+        action="skip",
+        reason=reason,
+        ref=finding.ref,
+    )
+
+
+def _repair_skip_reason(finding: ResidentPortfolioValidationFinding) -> str:
+    if finding.code == "completed_without_proof":
+        return "cannot invent proof for a completed objective"
+    if finding.code == "unstable_objective_id":
+        return "backend cannot safely atomically rename objective and update all references"
+    if finding.code == "missing_required_field":
+        return "missing required semantics need resident or operator judgment"
+    if finding.code == "invalid_status":
+        return "invalid status needs review before the steward can choose a replacement"
+    if finding.code == "implausible_portfolio_link":
+        return "portfolio link target must be inspected before rewriting"
+    if finding.code == "duplicate_objective_id":
+        return "duplicate objective records need explicit merge review"
+    return "no conservative repair is available"
+
+
+def _follow_up_from_finding(
+    mandate: str,
+    objective: ResidentObjective,
+    finding: str,
+) -> ResidentObjective | None:
+    text = _compact_line(finding, limit=180)
+    lowered = text.casefold()
+    if not _has_any(
+        lowered,
+        (
+            "gap",
+            "missing",
+            "blocked",
+            "partial",
+            "failed",
+            "opportunity",
+            "question",
+            "judgment",
+            "approval",
+        ),
+    ):
+        return None
+    needs_operator = _has_any(lowered, ("question", "judgment", "approval", "operator", "human"))
+    if needs_operator:
+        return _objective_from_text(
+            mandate,
+            title=f"Ask operator: {text}",
+            source=text,
+            kind=ResidentObjectiveKind.OPERATOR_QUESTION,
+            reasoning="Wake evidence indicates human judgment is needed.",
+            proof="Operator answer is recorded and converted into policy or follow-up work.",
+            status=ResidentObjectiveStatus.NEEDS_OPERATOR,
+            dependencies=(objective.id,),
+            pending_question=text,
+        )
+    if _has_any(lowered, ("gap", "missing", "capability", "tool", "workflow", "adapter")):
+        return _objective_from_text(
+            mandate,
+            title=f"Discover capability path: {text}",
+            source=text,
+            kind=ResidentObjectiveKind.RESEARCH,
+            reasoning="Wake evidence exposed a capability gap that needs bounded discovery.",
+            proof="Capability discovery is persisted and converted into safe follow-up work.",
+            dependencies=(objective.id,),
+        )
+    kind = (
+        ResidentObjectiveKind.TOOL_BUILDING
+        if _has_any(lowered, ("gap", "missing", "capability", "unavailable"))
+        else ResidentObjectiveKind.REVIEW
+        if _has_any(lowered, ("failed", "partial", "blocked"))
+        else ResidentObjectiveKind.RESEARCH
+    )
+    return _objective_from_text(
+        mandate,
+        title=f"Follow up: {text}",
+        source=text,
+        kind=kind,
+        reasoning="Wake evidence exposed new useful resident work.",
+        proof="Follow-up is resolved, retired, or advanced into a durable artifact.",
+        dependencies=(objective.id,),
+    )
+
+
+def _sum_budget(budgets: tuple[ResidentBudgetSnapshot, ...]) -> ResidentBudgetSnapshot:
+    turns = sum(item.turns_used for item in budgets)
+    usage = TokenUsage(input_tokens=0, output_tokens=0)
+    for budget in budgets:
+        usage += budget.usage
+    return ResidentBudgetSnapshot(turns_used=turns, usage=usage)
+
+
+def render_validation_report(report: ResidentPortfolioValidationReport) -> str:
+    selected = (
+        _preview_line(report.selected_objective)
+        if report.selected_objective is not None
+        else "none"
+    )
+    return (
+        "# Resident Portfolio Validation Report\n\n"
+        f"- verdict: {report.verdict}\n"
+        f"- mutated_state: {str(report.mutated_state).lower()}\n"
+        f"- selected_objective: {selected}\n\n"
+        f"## Issues\n\n{_render_list(_finding_line(item) for item in report.issues)}\n\n"
+        f"## Warnings\n\n{_render_list(_finding_line(item) for item in report.warnings)}\n\n"
+        "## Objective Counts By Status\n\n"
+        f"{_render_list(_count_line(item) for item in report.objective_counts_by_status)}\n\n"
+        "## Eligible Objectives\n\n"
+        f"{_render_list(_preview_line(item) for item in report.eligible_objectives)}\n\n"
+        "## Blocked Objectives\n\n"
+        f"{_render_list(_preview_line(item) for item in report.blocked_objectives)}\n\n"
+        "## Operator Needed Objectives\n\n"
+        f"{_render_list(_preview_line(item) for item in report.operator_needed_objectives)}\n\n"
+        f"## Skipped Reasons\n\n{_render_list(report.skipped_reasons)}\n\n"
+        f"## Dependency Graph\n\n{report.dependency_graph_summary}\n\n"
+        f"## Hints\n\n{_render_list(report.stale_duplicate_superseded_hints)}\n\n"
+        f"## Suggested Safe Next Action\n\n{report.suggested_safe_next_action}\n"
+    )
+
+
+def render_steward_report(run: ResidentPortfolioStewardRun) -> str:
+    pass_blocks = []
+    for report in run.passes:
+        selected = (
+            _preview_line(report.selected_objective)
+            if report.selected_objective is not None
+            else "none"
+        )
+        pass_blocks.append(
+            f"## Pass {report.pass_number}\n\n"
+            f"- validation_before: {report.validation_before.verdict}\n"
+            f"- validation_after: {report.validation_after.verdict}\n"
+            f"- action_taken: {report.action_taken.value}\n"
+            f"- selected_objective: {selected}\n"
+            f"- advanced_objective_id: {report.advanced_objective_id or 'none'}\n"
+            f"- budget_turns: {report.budget.turns_used}\n"
+            f"- persisted_refs: {', '.join(report.persisted_refs) or 'none'}\n"
+            f"- final_suggested_next_action: {report.final_suggested_next_action}\n\n"
+            "### Repairs Attempted\n\n"
+            f"{_render_list(_repair_line(item) for item in report.repairs_attempted)}\n\n"
+            "### Repairs Skipped\n\n"
+            f"{_render_list(_repair_line(item) for item in report.repairs_skipped)}\n\n"
+            "### Follow-Up Objectives\n\n"
+            f"{_render_list(_objective_line(item) for item in report.new_follow_up_objectives)}\n\n"
+            f"### Operator Questions\n\n{_render_list(report.operator_questions)}"
+        )
+    return (
+        "# Resident Portfolio Steward Report\n\n"
+        f"- final_action: {run.final_action.value}\n"
+        f"- final_suggested_next_action: {run.final_suggested_next_action}\n"
+        f"- total_passes: {len(run.passes)}\n"
+        f"- budget_turns: {run.budget.turns_used}\n\n" + "\n\n".join(pass_blocks)
+    )
+
+
+def _repair_line(record: ResidentPortfolioRepairRecord) -> str:
+    target = f" ({record.objective_id})" if record.objective_id else ""
+    ref = f"; ref={record.ref}" if record.ref else ""
+    change = f"; {record.before} -> {record.after}" if record.before or record.after else ""
+    return f"{record.action}:{record.code}{target}: {record.reason}{change}{ref}"
+
+
+def _validate_required_fields(
+    objective: ResidentObjective,
+    issues: list[ResidentPortfolioValidationFinding],
+) -> None:
+    required = {
+        "id": objective.id,
+        "title": objective.title,
+        "purpose": objective.purpose,
+        "serves_mandate_because": objective.serves_mandate_because,
+        "expected_outcome": objective.expected_outcome,
+        "kind": objective.kind,
+        "status": objective.status,
+    }
+    for field_name, value in required.items():
+        if not str(value).strip():
+            issues.append(
+                _finding(
+                    "missing_required_field",
+                    f"Missing required objective field: {field_name}",
+                    objective_id=objective.id,
+                )
+            )
+    if not objective.proof_criteria:
+        issues.append(
+            _finding(
+                "missing_required_field",
+                "Missing required objective field: proof_criteria",
+                objective_id=objective.id,
+            )
+        )
+
+
+def _validate_status(
+    objective: ResidentObjective,
+    issues: list[ResidentPortfolioValidationFinding],
+) -> None:
+    valid = {status.value for status in ResidentObjectiveStatus}
+    if objective.status not in valid:
+        issues.append(
+            _finding(
+                "invalid_status",
+                f"Invalid objective status: {objective.status}",
+                objective_id=objective.id,
+            )
+        )
+
+
+def _validate_stable_id(
+    objective: ResidentObjective,
+    warnings: list[ResidentPortfolioValidationFinding],
+) -> None:
+    stable = _slug(objective.id)
+    if not objective.id or stable != objective.id:
+        warnings.append(
+            _finding(
+                "unstable_objective_id",
+                "Objective id is not slug-stable.",
+                objective_id=objective.id,
+                severity=ResidentPortfolioValidationSeverity.WARNING,
+            )
+        )
+
+
+def _validate_objective_state(
+    objective: ResidentObjective,
+    issues: list[ResidentPortfolioValidationFinding],
+    warnings: list[ResidentPortfolioValidationFinding],
+) -> None:
+    if (
+        objective.status == ResidentObjectiveStatus.COMPLETED.value
+        and not objective.proof_progress
+        and not objective.artifact_links
+        and not objective.consolidation_links
+    ):
+        issues.append(
+            _finding(
+                "completed_without_proof",
+                (
+                    "Completed objective has no proof progress, artifact links, "
+                    "or consolidation links."
+                ),
+                objective_id=objective.id,
+            )
+        )
+    if objective.status in {
+        ResidentObjectiveStatus.ACTIVE.value,
+        ResidentObjectiveStatus.PAUSED.value,
+    } and not (
+        _has_meaningful_text(objective.reasoning)
+        or _has_meaningful_text(objective.priority_rationale)
+    ):
+        warnings.append(
+            _finding(
+                "resume_reason_missing",
+                "Active/paused objective lacks enough reason to resume.",
+                objective_id=objective.id,
+                severity=ResidentPortfolioValidationSeverity.WARNING,
+            )
+        )
+    if (
+        objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value
+        and not objective.pending_question
+    ):
+        issues.append(
+            _finding(
+                "operator_question_missing",
+                "needs_operator objective has no pending question.",
+                objective_id=objective.id,
+            )
+        )
+    if objective.status in {
+        ResidentObjectiveStatus.SUPERSEDED.value,
+        ResidentObjectiveStatus.CANCELLED.value,
+    } and not (
+        _has_meaningful_text(objective.reasoning)
+        or _has_meaningful_text(objective.superseded_by)
+        or _has_meaningful_items(objective.supersedes)
+    ):
+        warnings.append(
+            _finding(
+                "audit_context_missing",
+                "Superseded/cancelled objective lacks audit context.",
+                objective_id=objective.id,
+                severity=ResidentPortfolioValidationSeverity.WARNING,
+            )
+        )
+
+
+def _validate_portfolio_links(
+    portfolio: ResidentPortfolio,
+    warnings: list[ResidentPortfolioValidationFinding],
+) -> None:
+    expected = (
+        ("wake_record", portfolio.wake_record_links, "resident/wakeful/cycles/"),
+        ("workstream", portfolio.workstream_links, "resident/domain-expert/workstreams/"),
+        ("artifact", portfolio.artifact_links, "resident/domain-expert/artifacts/"),
+        (
+            "consolidation",
+            portfolio.consolidation_links,
+            "resident/domain-expert/consolidations/",
+        ),
+    )
+    for kind, refs, prefix in expected:
+        for ref in refs:
+            if not ref.startswith(prefix) or not ref.endswith(".md"):
+                warnings.append(
+                    _finding(
+                        "implausible_portfolio_link",
+                        f"Portfolio {kind} link has an unexpected shape: {ref}",
+                        ref=ref,
+                        severity=ResidentPortfolioValidationSeverity.WARNING,
+                    )
+                )
+
+
+def _preview_objective(
+    objective: ResidentObjective,
+    all_objectives: tuple[ResidentObjective, ...],
+    *,
+    completed_ids: set[str],
+) -> ResidentObjectiveDryRunPreview:
+    known_ids = {item.id for item in all_objectives}
+    return ResidentObjectiveDryRunPreview(
+        objective_id=objective.id,
+        title=objective.title,
+        status=objective.status,
+        priority_score=objective.priority_score,
+        priority_rationale=objective.priority_rationale,
+        dependency_readiness=_dependency_readiness(objective, known_ids, completed_ids),
+        budget_notes=f"budget estimate: {objective.budget_estimate or 'unknown'}",
+        risk_notes=", ".join(objective.risk_boundaries) if objective.risk_boundaries else "none",
+    )
+
+
+def _objective_by_id(
+    objectives: tuple[ResidentObjective, ...],
+    objective_id: str,
+) -> ResidentObjective:
+    for objective in objectives:
+        if objective.id == objective_id:
+            return objective
+    return objectives[0]
+
+
+def _objective_by_id_or_none(
+    objectives: tuple[ResidentObjective, ...],
+    objective_id: str,
+) -> ResidentObjective | None:
+    for objective in objectives:
+        if objective.id == objective_id:
+            return objective
+    return None
+
+
+def _dependency_readiness(
+    objective: ResidentObjective,
+    known_ids: set[str],
+    completed_ids: set[str],
+) -> str:
+    if not objective.dependencies:
+        return "ready: no dependencies"
+    missing = tuple(item for item in objective.dependencies if item not in known_ids)
+    if missing:
+        return f"blocked: missing dependencies {', '.join(missing)}"
+    incomplete = tuple(item for item in objective.dependencies if item not in completed_ids)
+    if incomplete:
+        return f"blocked: incomplete dependencies {', '.join(incomplete)}"
+    return "ready: dependencies completed"
+
+
+def _is_dependency_blocked(objective: ResidentObjective, completed_ids: set[str]) -> bool:
+    return bool(objective.dependencies and not set(objective.dependencies).issubset(completed_ids))
+
+
+def _is_blocked_objective(objective: ResidentObjective, completed_ids: set[str]) -> bool:
+    return objective.status == ResidentObjectiveStatus.BLOCKED.value or _is_dependency_blocked(
+        objective,
+        completed_ids,
+    )
+
+
+def _dry_run_non_selection_reason(
+    objective: ResidentObjective,
+    *,
+    known_ids: set[str],
+    completed_ids: set[str],
+    eligible_ids: set[str],
+    selected_ids: set[str],
+) -> str:
+    reason = _skip_reason(objective, known_ids, completed_ids)
+    if reason:
+        return reason
+    if objective.id in eligible_ids:
+        selected = ", ".join(sorted(selected_ids)) or "none"
+        return f"{objective.id} not selected: dry-run selection budget filled by {selected}"
+    return f"{objective.id} skipped: not eligible for dry-run selection"
+
+
+def _skip_reason(
+    objective: ResidentObjective,
+    known_ids: set[str],
+    completed_ids: set[str],
+) -> str:
+    if objective.status in {
+        ResidentObjectiveStatus.CANCELLED.value,
+        ResidentObjectiveStatus.SUPERSEDED.value,
+        ResidentObjectiveStatus.COMPLETED.value,
+    }:
+        return f"{objective.id} skipped: terminal status {objective.status}"
+    if objective.status == ResidentObjectiveStatus.BLOCKED.value:
+        return f"{objective.id} skipped: blocked"
+    if objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value:
+        return f"{objective.id} skipped: operator input needed"
+    if objective.dependencies:
+        missing = set(objective.dependencies) - known_ids
+        if missing:
+            return f"{objective.id} skipped: dependencies missing"
+        if _is_dependency_blocked(objective, completed_ids):
+            return f"{objective.id} skipped: dependencies incomplete"
+    return ""
+
+
+def _counts_by_status(
+    objectives: tuple[ResidentObjective, ...],
+) -> tuple[tuple[str, int], ...]:
+    counts: dict[str, int] = {}
+    for objective in objectives:
+        counts[objective.status] = counts.get(objective.status, 0) + 1
+    return tuple(sorted(counts.items()))
+
+
+def _dependency_summary(objectives: tuple[ResidentObjective, ...]) -> str:
+    total_edges = sum(len(objective.dependencies) for objective in objectives)
+    known = {objective.id for objective in objectives}
+    missing = tuple(
+        dependency
+        for objective in objectives
+        for dependency in objective.dependencies
+        if dependency not in known
+    )
+    if missing:
+        return (
+            f"{len(objectives)} objectives, {total_edges} dependencies, "
+            f"missing: {', '.join(missing)}"
+        )
+    return f"{len(objectives)} objectives, {total_edges} dependencies, all known"
+
+
+def _hints(
+    objectives: tuple[ResidentObjective, ...],
+    issues: list[ResidentPortfolioValidationFinding],
+    warnings: list[ResidentPortfolioValidationFinding],
+) -> tuple[str, ...]:
+    hints: list[str] = []
+    if any(item.code == "duplicate_objective_id" for item in issues):
+        hints.append("duplicate objective ids should be merged or superseded")
+    stale = tuple(
+        objective.id
+        for objective in objectives
+        if objective.status
+        in {ResidentObjectiveStatus.ACTIVE.value, ResidentObjectiveStatus.PAUSED.value}
+        and objective.last_advanced_at is None
+    )
+    if stale:
+        hints.append(f"objectives may need review before resume: {', '.join(stale[:5])}")
+    if any(item.code == "audit_context_missing" for item in warnings):
+        hints.append("terminal objectives should preserve audit context")
+    superseded = tuple(
+        objective.id
+        for objective in objectives
+        if objective.status == ResidentObjectiveStatus.SUPERSEDED.value
+    )
+    if superseded:
+        hints.append(f"superseded objectives present: {', '.join(superseded[:5])}")
+    return tuple(hints)
+
+
+def _suggested_action(
+    verdict: str,
+    selected: ResidentObjectiveDryRunPreview | None,
+) -> str:
+    if verdict == "invalid":
+        return "Fix portfolio validation issues before advancing resident work."
+    if selected is None:
+        return "No eligible objective; sleep or ask for operator input."
+    return f"Dry-run would advance: {selected.title}"
+
+
+def _finding(
+    code: str,
+    message: str,
+    *,
+    objective_id: str = "",
+    ref: str = "",
+    severity: ResidentPortfolioValidationSeverity = ResidentPortfolioValidationSeverity.ISSUE,
+) -> ResidentPortfolioValidationFinding:
+    return ResidentPortfolioValidationFinding(
+        severity=severity,
+        code=code,
+        message=message,
+        objective_id=objective_id,
+        ref=ref,
+    )
+
+
+def _finding_line(finding: ResidentPortfolioValidationFinding) -> str:
+    target = finding.objective_id or finding.ref
+    suffix = f" ({target})" if target else ""
+    return f"[{finding.severity.value}] {finding.code}: {finding.message}{suffix}"
+
+
+def _count_line(item: tuple[str, int]) -> str:
+    status, count = item
+    return f"{status}: {count}"
+
+
+def _preview_line(preview: ResidentObjectiveDryRunPreview) -> str:
+    return (
+        f"{preview.objective_id}: {preview.title} [{preview.status}] "
+        f"priority={preview.priority_score}; {preview.dependency_readiness}; "
+        f"{preview.budget_notes}; risks={preview.risk_notes}; "
+        f"reason={preview.priority_rationale or 'none'}"
     )
 
 
@@ -906,6 +3882,15 @@ def _section_lines(content: str, name: str) -> list[str]:
     return collected
 
 
+def _section_tail(content: str, name: str) -> str:
+    wanted = f"## {name}".casefold()
+    lines = content.splitlines()
+    for idx, line in enumerate(lines):
+        if line.strip().casefold() == wanted:
+            return "\n".join(lines[idx + 1 :]).strip()
+    return ""
+
+
 def _render_list(items: Any) -> str:
     values = [str(item).strip() for item in items if str(item).strip()]
     if not values:
@@ -954,6 +3939,15 @@ def _has_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
 
+def _has_meaningful_text(value: str) -> bool:
+    normalized = str(value).strip()
+    return bool(normalized) and normalized.casefold() != "none"
+
+
+def _has_meaningful_items(values: tuple[str, ...]) -> bool:
+    return any(_has_meaningful_text(value) for value in values)
+
+
 def _mandate_overlap(mandate: str, text: str) -> int:
     mandate_words = {
         word
@@ -973,3 +3967,10 @@ def _int_value(value: str | None) -> int:
         return int(str(value or "0"))
     except ValueError:
         return 0
+
+
+def _datetime_value(value: str | None) -> datetime:
+    try:
+        return datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return datetime.now(UTC)

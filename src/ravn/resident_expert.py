@@ -17,6 +17,7 @@ import yaml
 
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import (
+    ContinuationDecisionKind,
     ResidentActionCandidate,
     ResidentBudgetLimits,
     ResidentContinuationContext,
@@ -39,6 +40,7 @@ from ravn.domain.resident_expert import (
     WorkstreamExecutionResult,
 )
 from ravn.ports.executor import ExecutionAgentPort
+from ravn.ports.channel import ChannelPort
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
@@ -241,6 +243,7 @@ class ResidentDomainExpertLoop:
         persona_config: Any | None = None,
         config: ResidentDomainExpertConfig | None = None,
         ask_operator: Any | None = None,
+        channel: ChannelPort | None = None,
     ) -> None:
         self._agent = agent
         self._expert_memory = expert_memory
@@ -253,6 +256,7 @@ class ResidentDomainExpertLoop:
         self._persona_config = persona_config
         self._config = config or ResidentDomainExpertConfig()
         self._ask_operator = ask_operator
+        self._channel = channel
 
     async def run(self, mandate: str) -> ResidentDomainExpertRun:
         prior_model = await self._expert_memory.read_domain_model(mandate)
@@ -270,6 +274,8 @@ class ResidentDomainExpertLoop:
             budget=orientation_budget,
             persona_config=self._persona_config,
             ask_operator=self._ask_operator,
+            channel=self._channel,
+            source="resident-domain-expert",
         )
         continuation_run = await continuation.run(mandate)
         model = build_domain_model_from_continuation(
@@ -278,6 +284,35 @@ class ResidentDomainExpertLoop:
             turns=continuation_run.turns,
         )
         model_ref = await self._expert_memory.write_domain_model(model)
+
+        if continuation_run.final_decision is not None and continuation_run.final_decision.kind in {
+            ContinuationDecisionKind.ASK_OPERATOR,
+            ContinuationDecisionKind.SLEEP,
+        }:
+            reason = continuation_run.final_decision.reason
+            if (
+                continuation_run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+                or reason == "waiting_for_operator"
+            ):
+                return ResidentDomainExpertRun(
+                    mandate=mandate,
+                    domain_model_ref=model_ref,
+                    domain_model=model,
+                    workstreams=(),
+                    artifacts=(),
+                    execution_results=(),
+                    decisions=(
+                        ExpertLoopDecision(
+                            kind=ExpertLoopDecisionKind.ASK_OPERATOR
+                            if continuation_run.final_decision.kind
+                            == ContinuationDecisionKind.ASK_OPERATOR
+                            else ExpertLoopDecisionKind.SLEEP,
+                            reason=reason,
+                            question=continuation_run.final_decision.question,
+                        ),
+                    ),
+                    budget=continuation_run.budget,
+                )
 
         existing = await self._expert_memory.list_workstreams(model_ref)
         existing_to_advance = _select_workstreams_to_advance(

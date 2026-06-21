@@ -609,6 +609,8 @@ class TestTelegramChannelMocked:
             ch._notify_only = True
             ch._topic_mode = "shared_chat"
             ch._message_thread_id = None
+            ch._inbound_chat_ids = {"12345"}
+            ch._allow_any_inbound_chat = False
             ch._topic_name = "Volundr session"
             ch._on_message = None
             ch._bot = AsyncMock()
@@ -687,6 +689,24 @@ class TestTelegramChannelMocked:
         assert "<pre>" in kwargs["text"]
         assert "Peer" in kwargs["text"]
         assert "blocked" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_help_needed_notification_uses_reply_markup(self, channel):
+        event = {
+            "type": "room_notification",
+            "notificationType": "help_needed",
+            "participant": {"persona": "resident"},
+            "summary": "Need operator input",
+            "reason": "needs_context",
+            "recommendation": "Reply with the missing facts.",
+        }
+
+        await channel.send_event(event)
+
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["parse_mode"] == "HTML"
+        assert "reply_markup" in kwargs
 
     @pytest.mark.asyncio
     async def test_send_event_skips_none_format(self, channel):
@@ -771,6 +791,18 @@ class TestTelegramChannelMocked:
         update.effective_chat.id = 99999
         assert channel._validate_chat(update) is False
 
+    def test_validate_chat_extra_inbound_id(self, channel):
+        channel._inbound_chat_ids.add("99999")
+        update = MagicMock()
+        update.effective_chat.id = 99999
+        assert channel._validate_chat(update) is True
+
+    def test_validate_chat_allow_any_inbound(self, channel):
+        channel._allow_any_inbound_chat = True
+        update = MagicMock()
+        update.effective_chat.id = 99999
+        assert channel._validate_chat(update) is True
+
     def test_validate_chat_no_chat(self, channel):
         update = MagicMock()
         update.effective_chat = None
@@ -853,7 +885,11 @@ class TestTelegramChannelMocked:
         update.effective_chat.id = 12345
         update.message.text = "hello bot"
         await channel._handle_text_message(update, None)
-        on_message.assert_called_once_with({"type": "message", "content": "hello bot"})
+        on_message.assert_called_once()
+        payload = on_message.call_args.args[0]
+        assert payload["type"] == "message"
+        assert payload["content"] == "hello bot"
+        assert payload["chat_id"] == "12345"
 
     @pytest.mark.asyncio
     async def test_handle_text_message_empty(self, channel):

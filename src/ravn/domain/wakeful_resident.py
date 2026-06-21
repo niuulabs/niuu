@@ -9,10 +9,21 @@ from typing import Protocol
 
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
 from ravn.domain.resident_expert import ResidentDomainExpertRun
+from ravn.domain.resident_portfolio import (
+    ResidentObjectiveDryRunPreview,
+    ResidentPortfolioStewardRun,
+)
 
 
 class WakefulResidentDecisionKind(StrEnum):
     CONTINUE = "continue"
+    ASK_OPERATOR = "ask_operator"
+    SLEEP = "sleep"
+    STOP = "stop"
+
+
+class WakefulPortfolioStewardActionKind(StrEnum):
+    RUN_STEWARD = "run_steward"
     ASK_OPERATOR = "ask_operator"
     SLEEP = "sleep"
     STOP = "stop"
@@ -47,6 +58,37 @@ class WakefulResidentRun:
     budget: ResidentBudgetSnapshot
 
 
+@dataclass(frozen=True)
+class WakefulPortfolioStewardRecord:
+    """Persisted record of one wakeful portfolio stewardship pass."""
+
+    wake_number: int
+    mandate: str
+    attention_reason: str
+    validation_verdict: str
+    selected_objective: ResidentObjectiveDryRunPreview | None
+    action_taken: WakefulPortfolioStewardActionKind
+    steward_pass_count: int = 0
+    steward_final_action: str = ""
+    steward_summary: tuple[str, ...] = ()
+    operator_questions: tuple[str, ...] = ()
+    persisted_refs: tuple[str, ...] = ()
+    budget: ResidentBudgetSnapshot = field(default_factory=ResidentBudgetSnapshot)
+    final_suggested_next_action: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
+class WakefulPortfolioStewardRun:
+    """Transparent result of bounded wakeful portfolio stewardship."""
+
+    mandate: str
+    records: tuple[WakefulPortfolioStewardRecord, ...]
+    final_action: WakefulPortfolioStewardActionKind
+    final_reason: str
+    budget: ResidentBudgetSnapshot = field(default_factory=ResidentBudgetSnapshot)
+
+
 class WakefulResidentMemoryPort(Protocol):
     """Persistence boundary for wake cycle records."""
 
@@ -67,3 +109,25 @@ class ResidentExpertLoopPort(Protocol):
 
     async def run(self, mandate: str) -> ResidentDomainExpertRun:
         """Run one bounded resident expert pass from the mandate."""
+
+
+class WakefulPortfolioStewardMemoryPort(Protocol):
+    """Persistence boundary for wakeful portfolio stewardship records."""
+
+    async def list_records(
+        self,
+        mandate: str,
+        *,
+        limit: int = 5,
+    ) -> list[WakefulPortfolioStewardRecord]:
+        """Return recent wakeful portfolio stewardship records."""
+
+    async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
+        """Persist one wakeful portfolio stewardship record and return its reference."""
+
+
+class ResidentPortfolioStewardPort(Protocol):
+    """Boundary for running bounded portfolio stewardship from wakefulness."""
+
+    async def run(self, mandate: str) -> ResidentPortfolioStewardRun:
+        """Run bounded resident portfolio stewardship."""

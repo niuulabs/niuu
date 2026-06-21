@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
@@ -30,7 +31,11 @@ from ravn.domain.resident_continuation import (
     selected_action_from_outcome,
 )
 from ravn.ports.executor import ExecutionAgentPort
+from ravn.ports.channel import ChannelPort
 from ravn.ports.mimir import MimirPort
+
+_OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
+_OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
 
 _DEFAULT_BOUNDARY_TERMS: dict[str, tuple[str, ...]] = {
     RiskBoundary.SPENDING.value: (
@@ -270,6 +275,24 @@ class NullResidentMemory(ResidentMemoryPort):
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
         return ""
 
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        return ""
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        return None
+
+    async def write_operator_answer(self, answer: str) -> str:
+        return ""
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        return None
+
 
 class MimirResidentMemory(ResidentMemoryPort):
     """Resident continuation memory backed by existing Mimir pages."""
@@ -310,6 +333,66 @@ class MimirResidentMemory(ResidentMemoryPort):
         await self._mimir.upsert_page(path, _render_policy_observation(observation))
         return path
 
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        await self._mimir.upsert_page(
+            path,
+            _render_operator_needed(
+                question=question,
+                reason=reason,
+                turn=turn,
+                status="pending",
+            ),
+        )
+        return path
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        if not _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
+    async def write_operator_answer(self, answer: str) -> str:
+        now = datetime.now(UTC)
+        answer_path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        await self._mimir.upsert_page(answer_path, _render_operator_answer(answer, answered_at=now))
+        marker_path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        try:
+            prior = await self._mimir.read_page(marker_path)
+        except FileNotFoundError:
+            prior = ""
+        await self._mimir.upsert_page(
+            marker_path,
+            _render_answered_operator_needed(prior, answer_path=answer_path, answered_at=now),
+        )
+        return answer_path
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
 
 class LocalResidentMemory(ResidentMemoryPort):
     """Filesystem fallback that mirrors the Mimir memory shape."""
@@ -348,6 +431,63 @@ class LocalResidentMemory(ResidentMemoryPort):
         rel = self._prefix / "policy" / f"{_slug(observation.subject) or 'policy-observation'}.md"
         return self._write(rel, _render_policy_observation(observation))
 
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        rel = self._prefix / _OPERATOR_NEEDED_PATH
+        return self._write(
+            rel,
+            _render_operator_needed(
+                question=question,
+                reason=reason,
+                turn=turn,
+                status="pending",
+            ),
+        )
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        rel = self._prefix / _OPERATOR_NEEDED_PATH
+        path = self._root / rel
+        if not path.exists():
+            return None
+        content = path.read_text(encoding="utf-8")
+        if not _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=str(rel),
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
+    async def write_operator_answer(self, answer: str) -> str:
+        now = datetime.now(UTC)
+        answer_rel = self._prefix / _OPERATOR_ANSWER_PATH
+        answer_ref = self._write(answer_rel, _render_operator_answer(answer, answered_at=now))
+        marker_rel = self._prefix / _OPERATOR_NEEDED_PATH
+        marker_path = self._root / marker_rel
+        prior = marker_path.read_text(encoding="utf-8") if marker_path.exists() else ""
+        self._write(
+            marker_rel,
+            _render_answered_operator_needed(prior, answer_path=answer_ref, answered_at=now),
+        )
+        return answer_ref
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        rel = self._prefix / _OPERATOR_ANSWER_PATH
+        path = self._root / rel
+        if not path.exists():
+            return None
+        content = path.read_text(encoding="utf-8")
+        return ResidentMemoryEntry(
+            path=str(rel),
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     def _write(self, rel: Path, content: str) -> str:
         path = self._root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -367,6 +507,8 @@ class ResidentContinuationKernel:
         budget: ResidentRunBudget | None = None,
         persona_config: Any | None = None,
         ask_operator: Any | None = None,
+        channel: ChannelPort | None = None,
+        source: str = "resident-continuation",
     ) -> None:
         self._agent = agent
         self._memory = memory or NullResidentMemory()
@@ -374,12 +516,32 @@ class ResidentContinuationKernel:
         self._budget = budget or ResidentRunBudget(ResidentBudgetLimits())
         self._persona_config = persona_config
         self._ask_operator = ask_operator
+        self._channel = channel
+        self._source = source
         self._policy_observations: list[ResidentPolicyObservation] = []
 
     async def run(self, mandate: str) -> ResidentContinuationRun:
         decisions: list[ResidentContinuationDecision] = []
         records: list[ResidentTurnRecord] = []
-        prompt = mandate
+        pending = await self._memory.read_operator_needed()
+        if pending is not None:
+            decisions.append(
+                ResidentContinuationDecision(
+                    kind=ContinuationDecisionKind.SLEEP,
+                    reason="waiting_for_operator",
+                    question=_operator_marker_question(pending.content),
+                )
+            )
+            await self._memory.write_budget(self._budget.snapshot())
+            return ResidentContinuationRun(
+                mandate=mandate,
+                decisions=tuple(decisions),
+                turns=tuple(records),
+                budget=self._budget.snapshot(),
+            )
+
+        answer = await self._memory.read_operator_answer()
+        prompt = _build_resume_prompt(mandate, answer) if answer is not None else mandate
 
         while True:
             budget_decision = self._budget.can_continue()
@@ -426,7 +588,7 @@ class ResidentContinuationKernel:
                 continue
 
             if decision.kind == ContinuationDecisionKind.ASK_OPERATOR:
-                await self._handle_operator_question(decision)
+                await self._handle_operator_question(decision, record)
             break
 
         return ResidentContinuationRun(
@@ -440,6 +602,16 @@ class ResidentContinuationKernel:
         self,
         context: ResidentContinuationContext,
     ) -> ResidentContinuationDecision:
+        verdict = _verdict_from_record(context.turn_record)
+        if verdict == "help_needed" or _blocked_needs_operator(context.turn_record.outcome_fields):
+            question = _question_from_outcome(context.turn_record.outcome_fields)
+            return ResidentContinuationDecision(
+                kind=ContinuationDecisionKind.ASK_OPERATOR,
+                reason=_reason_from_outcome(context.turn_record.outcome_fields),
+                action=context.turn_record.selected_next_action,
+                question=question,
+            )
+
         action = context.turn_record.selected_next_action
         if action is None:
             return ResidentContinuationDecision(
@@ -477,10 +649,40 @@ class ResidentContinuationKernel:
             prompt=_build_continuation_prompt(context, action),
         )
 
-    async def _handle_operator_question(self, decision: ResidentContinuationDecision) -> None:
-        if self._ask_operator is None or not decision.question:
+    async def _handle_operator_question(
+        self,
+        decision: ResidentContinuationDecision,
+        turn: ResidentTurnRecord,
+    ) -> None:
+        if not decision.question:
+            return
+        await self._memory.write_operator_needed(
+            question=decision.question,
+            reason=decision.reason,
+            turn=turn,
+        )
+        if self._channel is not None:
+            await self._channel.emit(
+                build_help_needed_event(
+                    source=self._source,
+                    persona=str(getattr(self._persona_config, "name", "") or "resident"),
+                    reason=decision.reason or "needs_context",
+                    summary=decision.question,
+                    attempted=_attempted_from_outcome(turn.outcome_fields),
+                    recommendation="Reply with the requested information so the resident can resume.",
+                    correlation_id=f"resident-operator-{turn.turn_index}",
+                    session_id=str(getattr(self._agent, "task_id", "") or ""),
+                    task_id=str(getattr(self._agent, "task_id", "") or ""),
+                    context={
+                        "resident_operator_pending": True,
+                        "turn_index": turn.turn_index,
+                    },
+                )
+            )
+        if self._ask_operator is None:
             return
         answer = await self._ask_operator(decision.question)
+        await self._memory.write_operator_answer(str(answer))
         observation = ResidentPolicyObservation(
             subject=f"question:{_slug(decision.question)}",
             observation=str(answer),
@@ -540,6 +742,21 @@ def _build_continuation_prompt(
     )
 
 
+def _build_resume_prompt(mandate: str, answer: ResidentMemoryEntry | None) -> str:
+    if answer is None:
+        return mandate
+    return (
+        "Continue resident work from the mandate below. The operator has replied to the "
+        "resident's pending question; use that answer as new context and continue the "
+        "original work.\n\n"
+        f"Mandate:\n{mandate}\n\n"
+        f"Operator answer memory ({answer.path}):\n{answer.content}\n\n"
+        "Use the answer directly where it resolves the pending blocker. If the answer is "
+        "partial, proceed with the parts that are now known and keep unknowns explicit. "
+        "Finish with the persona's structured outcome."
+    )
+
+
 def _render_turn_record(record: ResidentTurnRecord) -> str:
     action = record.selected_next_action
     action_text = action.action if action is not None else ""
@@ -560,6 +777,117 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         "## Selected Next Action\n\n"
         f"{action_text or 'none'}\n"
     )
+
+
+def _render_operator_needed(
+    *,
+    question: str,
+    reason: str,
+    turn: ResidentTurnRecord,
+    status: str,
+) -> str:
+    return (
+        "# Operator Input Needed\n\n"
+        f"- status: {status}\n"
+        f"- turn: {turn.turn_index}\n"
+        f"- reason: {_compact_line(reason, limit=500)}\n"
+        f"- question: {_compact_line(question, limit=1000)}\n"
+        f"- created_at: {datetime.now(UTC).isoformat()}\n\n"
+        "## Selected Next Action\n\n"
+        f"{turn.selected_next_action.action if turn.selected_next_action else 'none'}\n"
+    )
+
+
+def _render_operator_answer(answer: str, *, answered_at: datetime) -> str:
+    return (
+        "# Operator Answer\n\n"
+        f"- answered_at: {answered_at.isoformat()}\n\n"
+        f"{str(answer).strip()}\n"
+    )
+
+
+def _render_answered_operator_needed(
+    prior: str,
+    *,
+    answer_path: str,
+    answered_at: datetime,
+) -> str:
+    if prior.strip():
+        content = re.sub(r"^- status: .*$", "- status: answered", prior, flags=re.MULTILINE)
+        if content == prior and "- status:" not in content:
+            content = content.replace("# Operator Input Needed\n", "# Operator Input Needed\n\n- status: answered\n", 1)
+    else:
+        content = "# Operator Input Needed\n\n- status: answered\n"
+    return (
+        content.rstrip()
+        + "\n"
+        + f"- answered_at: {answered_at.isoformat()}\n"
+        + f"- answer_ref: {answer_path}\n"
+    )
+
+
+def _operator_marker_is_pending(content: str) -> bool:
+    return bool(re.search(r"^- status:\s*pending\s*$", content, flags=re.MULTILINE))
+
+
+def _operator_marker_question(content: str) -> str:
+    match = re.search(r"^- question:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    return _unquote(match.group(1).strip()) if match else ""
+
+
+def _verdict_from_record(record: ResidentTurnRecord) -> str:
+    verdict = _unquote(str(record.outcome_fields.get("verdict") or "").strip()).replace(" ", "_")
+    if verdict:
+        return verdict
+    match = re.search(
+        r"\bverdict\s*:\s*[\"']?"
+        r"(help[_ ]needed|blocked|oriented|continue|sleep|stop|ask[_ ]operator)",
+        record.response,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return _unquote(match.group(1).strip()).replace(" ", "_")
+
+
+def _question_from_outcome(fields: dict[str, Any]) -> str:
+    for key in ("question", "recommendation", "selected_next_action", "reason"):
+        value = fields.get(key)
+        if value is None:
+            continue
+        text = _unquote(_compact_line(str(value), limit=1000))
+        if text:
+            return text
+    return "Resident needs operator input to continue."
+
+
+def _reason_from_outcome(fields: dict[str, Any]) -> str:
+    return _unquote(_compact_line(str(fields.get("reason") or "needs_context"), limit=500))
+
+
+def _blocked_needs_operator(fields: dict[str, Any]) -> bool:
+    verdict = _unquote(str(fields.get("verdict") or "").strip()).replace(" ", "_")
+    if verdict != "blocked":
+        return False
+    text = " ".join(
+        str(fields.get(key) or "")
+        for key in ("reason", "recommendation", "selected_next_action", "rationale")
+    ).casefold()
+    return any(term in text for term in ("operator", "human", "user input", "approval"))
+
+
+def _attempted_from_outcome(fields: dict[str, Any]) -> list[str]:
+    attempted = fields.get("attempted")
+    if isinstance(attempted, list):
+        return [str(item) for item in attempted if str(item).strip()][:3]
+    return []
+
+
+def _unquote(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1].strip()
+    return text
 
 
 def _render_budget_snapshot(snapshot: ResidentBudgetSnapshot, *, updated_at: datetime) -> str:

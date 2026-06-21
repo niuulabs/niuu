@@ -8,12 +8,8 @@ not a scheduler, memory architecture, or UI flow.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 
-
-class OperatorContactKind(StrEnum):
-    ASK_USER = "ask_user"
-    HELP_NEEDED = "help_needed"
+from ravn.domain.operator_contact import OperatorContactKind, OperatorContactRequest
 
 
 @dataclass(frozen=True)
@@ -81,17 +77,6 @@ class DomainDriveOrientation:
             "capability_gaps": [asdict(gap) for gap in self.capability_gaps],
             "selected_next_action": asdict(self.selected_next_action),
         }
-
-
-@dataclass(frozen=True)
-class OperatorContactRequest:
-    kind: OperatorContactKind
-    question: str
-    reason: str
-    impact: str
-    tool_name: str = ""
-    tool_input: dict[str, str] = field(default_factory=dict)
-    help_needed_outcome: dict[str, object] = field(default_factory=dict)
 
 
 def orient_domain_from_mandate(

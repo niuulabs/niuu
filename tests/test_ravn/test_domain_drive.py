@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from ravn.domain.domain_drive import (
-    OperatorContactKind,
-    choose_operator_contact,
-    orient_domain_from_mandate,
-)
+from ravn.domain.domain_drive import choose_operator_contact, orient_domain_from_mandate
+from ravn.domain.operator_contact import OperatorContactKind
 
 KANUCK_MANDATE = (
     "Kanuck Valley Models is my small 3D printing company. "
