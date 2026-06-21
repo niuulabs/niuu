@@ -252,6 +252,33 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             raw=body,
         )
 
+    async def cancel_workflow(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        reason: str,
+    ) -> WorkflowRunStatus:
+        if not reference.session_id:
+            raise RuntimeError("Workflow cancellation requires a session_id")
+        resp = await self._request(
+            "POST",
+            f"{self._base_url}/api/v1/forge/sessions/{reference.session_id}/stop",
+            json={"reason": reason},
+        )
+        if resp.status_code == 409:
+            current = await self._get_forge_session(reference.session_id)
+            if current is not None:
+                return _status_from_session(current, reference=reference)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(
+                "Forge workflow cancellation returned "
+                f"HTTP {resp.status_code}: {_response_excerpt(resp)}"
+            )
+        body = resp.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("Forge workflow cancellation returned a non-object body")
+        return _status_from_session(body, reference=reference)
+
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         token = await self._workload_bearer_token()
         headers = dict(kwargs.pop("headers", {}) or {})

@@ -58,6 +58,7 @@ MANDATE = (
 class RecordingWorkflowPort:
     def __init__(self) -> None:
         self.launches: list[WorkflowLaunchRequest] = []
+        self.cancellations: list[tuple[WorkflowRunReference, str]] = []
 
     async def list_workflows(self) -> list[WorkflowCapability]:
         return [
@@ -119,6 +120,20 @@ class RecordingWorkflowPort:
         path: str,
     ) -> Any:
         raise NotImplementedError
+
+    async def cancel_workflow(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        reason: str,
+    ) -> WorkflowRunStatus:
+        self.cancellations.append((reference, reason))
+        return WorkflowRunStatus(
+            state="stopped",
+            session_id=reference.session_id or "workflow-session-1",
+            workflow_id=reference.workflow_id or "generic-worker",
+            raw={"status": "stopped", "name": "Generic Worker"},
+        )
 
 
 class ThinResultExecutor:
@@ -257,6 +272,21 @@ async def test_workflow_adapter_keeps_session_name_within_ting_limit() -> None:
     assert workflows.launches
     assert workflows.launches[0].session_name.startswith("resident-")
     assert len(workflows.launches[0].session_name) <= 63
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_cancels_through_capability_port() -> None:
+    workflows = RecordingWorkflowPort()
+    adapter = WorkflowResidentExecutionAdapter(workflows=workflows)
+    objective = _objective("workflow-objective", "Run workflow objective")
+
+    session = await adapter.launch(build_worker_brief(MANDATE, objective))
+    cancelled = await adapter.cancel(session.session_id, "resident capacity cleanup")
+
+    assert workflows.cancellations
+    assert workflows.cancellations[0][0].session_id == "workflow-session-1"
+    assert workflows.cancellations[0][1] == "resident capacity cleanup"
+    assert cancelled.status == ResidentDelegationStatus.CANCELLED.value
 
 
 @pytest.mark.asyncio

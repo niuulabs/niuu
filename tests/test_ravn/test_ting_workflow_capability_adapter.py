@@ -16,6 +16,10 @@ class _FakeResponse:
     def json(self) -> object:
         return self._body
 
+    @property
+    def text(self) -> str:
+        return json.dumps(self._body)
+
 
 class _FakeAsyncClient:
     calls: list[tuple[str, str, dict]] = []
@@ -79,6 +83,16 @@ class _FakeAsyncClient:
                     "sessionName": "incident-session",
                     "status": "running",
                     "slug": "incident-session",
+                    "clusterName": "ymir",
+                },
+            )
+        if method == "POST" and url.endswith("/api/v1/forge/sessions/session-1/stop"):
+            return _FakeResponse(
+                200,
+                {
+                    "id": "session-1",
+                    "status": "stopped",
+                    "name": "incident-session",
                     "clusterName": "ymir",
                 },
             )
@@ -404,6 +418,34 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
     assert result.owner_id == "owner-1"
     assert result.tenant_id == "tenant-1"
     assert result.workload_subject == "system:serviceaccount:nats:valkyrie"
+
+
+@pytest.mark.asyncio
+async def test_ting_workflow_adapter_cancels_forge_session(tmp_path, monkeypatch) -> None:
+    token_file = tmp_path / "token.jwt"
+    token_file.write_text("projected-token", encoding="utf-8")
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        workload_token_file=str(token_file),
+    )
+
+    status = await adapter.cancel_workflow(
+        WorkflowRunReference(session_id="session-1", workflow_id="wf-1"),
+        reason="resident capacity cleanup",
+    )
+
+    stop_call = _FakeAsyncClient.calls[-1]
+    assert stop_call[0] == "POST"
+    assert stop_call[1].endswith("/api/v1/forge/sessions/session-1/stop")
+    assert stop_call[2]["json"] == {"reason": "resident capacity cleanup"}
+    assert status.session_id == "session-1"
+    assert status.state == "stopped"
 
 
 @pytest.mark.asyncio

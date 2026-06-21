@@ -69,6 +69,7 @@ from ravn.ports.capability import (
     WorkflowCapabilityPort,
     WorkflowLaunchRequest,
     WorkflowRunReference,
+    WorkflowRunStatus,
 )
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line, _slug
@@ -1520,7 +1521,7 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             session_id=status.session_id or session_id,
             status=_delegation_status_from_external(status.state),
             backend_name="workflow",
-            summary=status.workflow_name or status.session_name or status.state,
+            summary=_workflow_status_summary(status),
         )
 
     async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
@@ -1554,7 +1555,7 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             for item in artifacts[:3]
             if item.summary or item.title or item.path
         ]
-        summary = "; ".join(summary_parts) or status.state or "workflow result observed"
+        summary = "; ".join(summary_parts) or _workflow_status_summary(status)
         return ResidentExecutionResult(
             session_id=status.session_id or session_id,
             status=mapped,
@@ -1570,11 +1571,13 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         )
 
     async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        reference = self._reference(session_id)
+        status = await self._workflows.cancel_workflow(reference, reason=reason)
         return ResidentExecutionSession(
-            session_id=session_id,
-            status=ResidentDelegationStatus.UNAVAILABLE.value,
+            session_id=status.session_id or session_id,
+            status=_delegation_status_from_cancel(status.state),
             backend_name="workflow",
-            summary=f"workflow cancellation is not available through this adapter: {reason}",
+            summary=_workflow_status_summary(status),
         )
 
     async def _select_workflow_id(self, brief: ResidentWorkerBrief) -> str:
@@ -2719,6 +2722,20 @@ def _delegation_status_from_external(value: str) -> str:
     if lowered in {"running", "active", "in_progress", "started"}:
         return ResidentDelegationStatus.RUNNING.value
     return ResidentDelegationStatus.LAUNCHED.value
+
+
+def _delegation_status_from_cancel(value: str) -> str:
+    lowered = str(value or "").casefold()
+    if lowered in {"stopped", "cancelled", "canceled"}:
+        return ResidentDelegationStatus.CANCELLED.value
+    return _delegation_status_from_external(value)
+
+
+def _workflow_status_summary(status: WorkflowRunStatus) -> str:
+    error = str(status.raw.get("error") or status.raw.get("detail") or "").strip()
+    if error:
+        return error
+    return status.workflow_name or status.session_name or status.state or "workflow result observed"
 
 
 def _subprocess_payload(

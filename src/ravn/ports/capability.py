@@ -143,3 +143,12 @@ class WorkflowCapabilityPort(ABC):
     ) -> WorkflowArtifactContent:
         """Read one artifact from the workflow owner."""
         raise NotImplementedError
+
+    async def cancel_workflow(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        reason: str,
+    ) -> WorkflowRunStatus:
+        """Cancel or stop a workflow run when the owner exposes a lifecycle API."""
+        raise NotImplementedError

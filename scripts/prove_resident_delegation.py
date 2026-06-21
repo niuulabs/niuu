@@ -74,6 +74,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate and print the configured delegation path without launching a worker.",
     )
+    parser.add_argument(
+        "--cancel-launched-after-proof",
+        action="store_true",
+        help="After successful assertions, cancel real sessions launched by this proof run.",
+    )
     return parser.parse_args()
 
 
@@ -342,6 +347,16 @@ async def _main() -> None:
         for delegation in delegations
     ):
         raise SystemExit("[proof] expected completed delegation record with result ref")
+    if args.cancel_launched_after_proof:
+        for delegation in _real_delegation_records(created_delegations):
+            cancelled = await executor.cancel(
+                delegation.backend_session_id,
+                "resident proof cleanup after evidence capture",
+            )
+            print(
+                "[proof] cancelled="
+                f"{delegation.id} session={cancelled.session_id} status={cancelled.status}"
+            )
 
 
 if __name__ == "__main__":
