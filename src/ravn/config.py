@@ -2615,6 +2615,85 @@ class ResidentCapabilityDiscoveryConfig(BaseModel):
     )
 
 
+class ResidentOpportunitySourceConfig(BaseModel):
+    """Dynamic resident opportunity source adapter entry."""
+
+    adapter: str = Field(
+        default="ravn.adapters.opportunity.web_search.WebSearchOpportunitySource",
+        description="Fully-qualified ResidentOpportunitySourcePort implementation.",
+    )
+    enabled: bool = Field(default=True, description="Whether this source is active.")
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the opportunity source adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+
+
+class ResidentOpportunityGenerationConfig(BaseModel):
+    """Resident imagination/opportunity generation bounds and scoring."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether resident opportunity generation is enabled.",
+    )
+    sources: list[ResidentOpportunitySourceConfig] = Field(
+        default_factory=list,
+        description="Dynamic source adapters for memory/research opportunity signals.",
+    )
+    max_signals: int = Field(default=8, description="Maximum source signals per pass.")
+    max_candidates: int = Field(default=6, description="Maximum candidate opportunities.")
+    max_selected: int = Field(default=2, description="Maximum opportunities selected.")
+    min_total_score: int = Field(
+        default=18,
+        description="Minimum opportunity score required before creating work.",
+    )
+    score_max: int = Field(default=10, description="Maximum score for one dimension.")
+    score_mid: int = Field(default=5, description="Neutral midpoint score.")
+    evidence_score_step: int = Field(default=2, description="Score per evidence item.")
+    outcome_score_step: int = Field(default=2, description="Score per aligned outcome.")
+    signal_score_step: int = Field(default=1, description="Score per reinforcing signal.")
+    risk_penalty: int = Field(default=3, description="Penalty per detected risk.")
+    cost_penalty: int = Field(default=2, description="Penalty per likely cost/risk.")
+    duplicate_penalty: int = Field(default=5, description="Penalty for known duplicates.")
+    rationale_outcome_limit: int = Field(
+        default=3,
+        description="Maximum outcomes named in opportunity rationale.",
+    )
+    domain_term_limit: int = Field(
+        default=3,
+        description="Maximum domain terms used in opportunity source queries.",
+    )
+    stop_words: tuple[str, ...] = Field(
+        default_factory=lambda: (
+            "about",
+            "after",
+            "and",
+            "before",
+            "better",
+            "company",
+            "domain",
+            "from",
+            "have",
+            "into",
+            "more",
+            "resident",
+            "sells",
+            "should",
+            "small",
+            "that",
+            "this",
+            "what",
+            "with",
+            "work",
+        ),
+        description="Generic low-signal words ignored when deriving opportunity themes.",
+    )
+
+
 class ResidentDelegationExecutionConfig(BaseModel):
     """Resident delegation adapter and orchestration bounds."""
 
@@ -3292,6 +3371,9 @@ class Settings(BaseSettings):
         default_factory=ResidentDelegationExecutionConfig
     )
     resident_review: ResidentReviewConfig = Field(default_factory=ResidentReviewConfig)
+    resident_opportunity_generation: ResidentOpportunityGenerationConfig = Field(
+        default_factory=ResidentOpportunityGenerationConfig
+    )
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
