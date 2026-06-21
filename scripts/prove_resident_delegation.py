@@ -193,7 +193,7 @@ def _successful_real_results(
     return [
         result
         for result in _observed_real_results(real_delegations, observed_results)
-        if result.status != ResidentDelegationStatus.FAILED.value
+        if result.status == ResidentDelegationStatus.COMPLETED.value
         and (result.output_refs or result.findings)
     ]
 

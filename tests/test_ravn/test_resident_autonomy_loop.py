@@ -155,6 +155,54 @@ class RunningArtifactWorkflowPort(RecordingWorkflowPort):
             terminal=False,
         )
 
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        return []
+
+
+class StaleStatusPublishedWorkflowPort(RecordingWorkflowPort):
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launches.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Generic Worker",
+            session_id="workflow-session-published",
+            session_name=request.session_name,
+            status="launched",
+        )
+
+    async def get_workflow_status(self, reference: WorkflowRunReference) -> WorkflowRunStatus:
+        return WorkflowRunStatus(
+            state="launched",
+            session_id=reference.session_id or "workflow-session-published",
+            workflow_id=reference.workflow_id or "generic-worker",
+            terminal=False,
+        )
+
+    async def list_workflow_events(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        limit: int = 100,
+    ) -> list[WorkflowRunEvent]:
+        return []
+
+    async def list_workflow_artifacts(
+        self,
+        reference: WorkflowRunReference,
+    ) -> list[WorkflowArtifact]:
+        return [
+            WorkflowArtifact(
+                path="research/campaigns/proof/manifest.md",
+                title="Published manifest",
+                summary="Publisher produced the terminal workflow manifest.",
+            )
+        ]
+
 
 class ThinResultExecutor:
     async def launch(self, brief: Any) -> ResidentExecutionSession:
@@ -306,6 +354,25 @@ async def test_workflow_adapter_does_not_complete_running_artifact_snapshot() ->
     review = review_delegation_result(objective, delegation, result)
     assert review.decision == ResidentDelegationReviewDecision.NEEDS_FOLLOW_UP.value
     assert "terminal worker status" in review.missing_evidence
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_completes_stale_status_with_published_manifest() -> None:
+    workflows = StaleStatusPublishedWorkflowPort()
+    adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
+    objective = _objective("workflow-objective", "Run workflow objective")
+
+    session = await adapter.launch(build_worker_brief(MANDATE, objective))
+    result = await adapter.read_result(session.session_id)
+
+    assert session.status == ResidentDelegationStatus.LAUNCHED.value
+    assert result is not None
+    assert result.status == ResidentDelegationStatus.COMPLETED.value
+    assert result.output_refs == ("research/campaigns/proof/manifest.md",)
 
 
 @pytest.mark.asyncio

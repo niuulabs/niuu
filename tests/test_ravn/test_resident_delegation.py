@@ -294,6 +294,38 @@ async def test_active_delegation_consumes_launch_capacity(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_running_delegation_snapshot_remains_observable_without_completion(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-running",
+            status=ResidentDelegationStatus.RUNNING.value,
+            summary="workflow artifact snapshot while worker is still running",
+            output_refs=("research/campaigns/proof/plan.md",),
+            findings=("terminal worker result still pending",),
+        )
+    )
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+    ).run(MANDATE)
+    delegations = {item.id: item for item in await backend.list_delegations(MANDATE)}
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+
+    assert report.observed_results == ()
+    assert delegations["delegation-one"].status == ResidentDelegationStatus.RUNNING.value
+    assert delegations["delegation-one"].result_refs == ()
+    assert objectives["one"].status == ResidentObjectiveStatus.ACTIVE.value
+    assert not any(
+        ref.startswith("resident/delegation-results/") for ref in report.persisted_refs
+    )
+
+
+@pytest.mark.asyncio
 async def test_duplicate_active_delegations_are_reconciled_without_new_launch(
     tmp_path: Path,
 ) -> None:
@@ -729,6 +761,12 @@ def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
         status=ResidentDelegationStatus.FAILED.value,
         summary="failed launch metadata is not proof",
     )
+    running = ResidentExecutionResult(
+        session_id="real-session",
+        status=ResidentDelegationStatus.RUNNING.value,
+        summary="running artifact snapshot is not terminal proof",
+        output_refs=("forge/sessions/real-session/partial.md",),
+    )
     matched = ResidentExecutionResult(
         session_id="real-session",
         status=ResidentDelegationStatus.COMPLETED.value,
@@ -737,15 +775,14 @@ def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
     )
 
     real_records = _real_delegation_records([local, real, cancelled])
-    real_results = _observed_real_results(real_records, [unmatched, failed, matched])
-    successful_results = _successful_real_results(real_records, [unmatched, failed, matched])
+    observed = [unmatched, failed, running, matched]
+    real_results = _observed_real_results(real_records, observed)
+    successful_results = _successful_real_results(real_records, observed)
     sample = _sample_delegation_result_pair([local, real, cancelled], [unmatched, matched])
 
     assert real_records == [real, cancelled]
     assert _cancelled_real_delegation_records([local, real, cancelled]) == [cancelled]
-    assert real_results == [failed, matched]
+    assert real_results == [failed, running, matched]
     assert successful_results == [matched]
-    assert _successful_real_source_objective_ids(real_records, [unmatched, failed, matched]) == {
-        objective.id
-    }
+    assert _successful_real_source_objective_ids(real_records, observed) == {objective.id}
     assert sample == (real, matched)

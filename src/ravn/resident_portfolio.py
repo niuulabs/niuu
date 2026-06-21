@@ -70,6 +70,7 @@ from ravn.domain.wakeful_resident import (
 from ravn.ports.capability import (
     WorkflowCapabilityPort,
     WorkflowLaunchRequest,
+    WorkflowRunEvent,
     WorkflowRunReference,
     WorkflowRunStatus,
 )
@@ -1552,7 +1553,8 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             )
             for event in events[:5]
         )
-        if mapped == ResidentDelegationStatus.RUNNING.value and artifacts:
+        result_status = _workflow_result_status(mapped, output_refs, events)
+        if result_status == ResidentDelegationStatus.RUNNING.value and artifacts:
             findings = _merge_text(
                 findings,
                 (
@@ -1568,7 +1570,7 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         summary = "; ".join(summary_parts) or _workflow_status_summary(status)
         return ResidentExecutionResult(
             session_id=status.session_id or session_id,
-            status=mapped,
+            status=result_status,
             summary=summary,
             output_refs=output_refs,
             findings=findings,
@@ -1579,7 +1581,7 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             ),
             blocked_reason=(
                 summary
-                if mapped
+                if result_status
                 in {
                     ResidentDelegationStatus.BLOCKED.value,
                     ResidentDelegationStatus.FAILED.value,
@@ -1631,6 +1633,18 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
 
     def _reference(self, session_id: str) -> WorkflowRunReference:
         return self._references.get(session_id) or WorkflowRunReference(session_id=session_id)
+
+
+_TERMINAL_DELEGATION_RESULT_STATUSES = frozenset(
+    {
+        ResidentDelegationStatus.COMPLETED.value,
+        ResidentDelegationStatus.BLOCKED.value,
+        ResidentDelegationStatus.FAILED.value,
+        ResidentDelegationStatus.CANCELLED.value,
+        ResidentDelegationStatus.NEEDS_OPERATOR.value,
+        ResidentDelegationStatus.UNAVAILABLE.value,
+    }
+)
 
 
 class LocalSubprocessResidentExecutor(ResidentExecutionPort):
@@ -1864,6 +1878,10 @@ class ResidentDelegationRuntime:
             result = await self._executor.read_result(record.backend_session_id)
             if result is None:
                 updated_record = record.with_updates(status=status.status)
+                persisted_refs.append(await self._backend.write_delegation(updated_record))
+                continue
+            if result.status not in _TERMINAL_DELEGATION_RESULT_STATUSES:
+                updated_record = record.with_updates(status=result.status or status.status)
                 persisted_refs.append(await self._backend.write_delegation(updated_record))
                 continue
             observed_results.append(result)
@@ -2965,6 +2983,35 @@ def _delegation_status_from_external(value: str) -> str:
     if lowered in {"running", "active", "in_progress", "started"}:
         return ResidentDelegationStatus.RUNNING.value
     return ResidentDelegationStatus.LAUNCHED.value
+
+
+def _workflow_result_status(
+    mapped_status: str,
+    output_refs: tuple[str, ...],
+    events: list[WorkflowRunEvent],
+) -> str:
+    if mapped_status == ResidentDelegationStatus.COMPLETED.value:
+        return mapped_status
+    if any(_workflow_completion_event(event) for event in events):
+        return ResidentDelegationStatus.COMPLETED.value
+    if any(_workflow_completion_artifact(path) for path in output_refs):
+        return ResidentDelegationStatus.COMPLETED.value
+    return mapped_status
+
+
+def _workflow_completion_event(event: WorkflowRunEvent) -> bool:
+    event_type = str(event.event_type or "").casefold()
+    if not event_type:
+        return False
+    return event_type.endswith(".publish.completed") or event_type in {
+        "workflow.completed",
+        "research.completed",
+    }
+
+
+def _workflow_completion_artifact(path: str) -> bool:
+    name = Path(path).name.casefold()
+    return name in {"manifest.md", "summary.md"}
 
 
 def _delegation_status_from_cancel(value: str) -> str:

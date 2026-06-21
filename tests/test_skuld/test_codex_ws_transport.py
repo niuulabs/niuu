@@ -1,6 +1,7 @@
 """Tests for CodexWebSocketTransport (Codex app-server over WebSocket)."""
 
 import asyncio
+import contextlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -72,6 +73,10 @@ class FakeWebSocket:
     def inject(self, msg: dict) -> None:
         """Push a message into the receive queue."""
         self._recv_queue.put_nowait(json.dumps(msg))
+
+
+class FakeRunningProcess:
+    returncode = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +152,27 @@ class TestConstruction:
             key == "mcp_servers.mimir-local.command" and value == '"python3"'
             for key, value in t._mcp_overrides
         )
+
+    @pytest.mark.asyncio
+    async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
+        t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)
+        t._codex_socket_path = str(tmp_path / "codex.sock")
+        t._process = FakeRunningProcess()
+        ws = FakeWebSocket()
+
+        with patch(
+            "skuld.transports.codex_ws.unix_connect",
+            new=AsyncMock(return_value=ws),
+        ) as connect:
+            await t._connect_ws()
+
+        connect.assert_awaited_once()
+        assert connect.await_args.kwargs["max_size"] == 12 * 1024 * 1024
+        assert connect.await_args.kwargs["compression"] is None
+        if t._receive_task is not None:
+            t._receive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t._receive_task
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,8 @@ logger = logging.getLogger("skuld.transport")
 
 _MAX_WS_FRAME_BYTES = 1024 * 1024
 _WS_FRAME_HEADROOM_BYTES = 8 * 1024
+_DEFAULT_MAX_WS_MESSAGE_BYTES = 8 * _MAX_WS_FRAME_BYTES
+_MIN_MAX_WS_MESSAGE_BYTES = _MAX_WS_FRAME_BYTES
 _CODEX_APP_SERVER_SLASH_COMMANDS = [
     {
         "name": "/compact",
@@ -180,6 +182,7 @@ class CodexWebSocketTransport(CLITransport):
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         reasoning_effort: str = "",
+        max_ws_message_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
         **_kwargs: object,
     ) -> None:
         super().__init__()
@@ -197,6 +200,7 @@ class CodexWebSocketTransport(CLITransport):
         self._mcp_servers = list(mcp_servers or [])
         self._mcp_overrides = build_codex_mcp_overrides(self._mcp_servers)
         self._resume_session_id = (resume_session_id or "").strip() or None
+        self._max_ws_message_bytes = max(_MIN_MAX_WS_MESSAGE_BYTES, int(max_ws_message_bytes))
         self._env = dict(os.environ)
 
         self._process: asyncio.subprocess.Process | None = None
@@ -396,7 +400,12 @@ class CodexWebSocketTransport(CLITransport):
             if self._process and self._process.returncode is not None:
                 raise RuntimeError(f"Codex app-server exited with code {self._process.returncode}")
             try:
-                self._ws = await unix_connect(path=socket_path, uri=uri, compression=None)
+                self._ws = await unix_connect(
+                    path=socket_path,
+                    uri=uri,
+                    compression=None,
+                    max_size=self._max_ws_message_bytes,
+                )
                 logger.info("Connected to Codex app-server (attempt %d)", attempt)
                 self._alive = True
                 self._receive_task = asyncio.create_task(self._receive_loop())
