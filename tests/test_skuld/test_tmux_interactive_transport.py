@@ -514,3 +514,188 @@ async def test_mid_turn_message_steers_without_stopping_turn(tmp_path: Path) -> 
     pastes_after = sum(1 for args, _ in transport.commands if args[0] == "paste-buffer")
     assert pastes_after == pastes_before + 1
     await transport.stop()
+
+
+# ──────────────────── CLI-mode questions bridge (2026-06-21) ────────────────────
+#
+# The tmux transport surfaces TTY permission gates + the AskUserQuestion tool as a structured
+# `ask_user_question` (so a remote client reuses its existing answer card), and translates the
+# structured `ask_user_answer` back into the pane keystroke that drives the live menu.
+
+
+def _ask_user_questions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in events if e.get("type") == "ask_user_question"]
+
+
+def _send_keys(transport: FakeTmuxInteractiveTransport) -> list[str]:
+    """The key arguments of every `tmux send-keys` issued (in order)."""
+    return [args[-1] for args, _ in transport.commands if args and args[0] == "send-keys"]
+
+
+_PERMISSION_MENU = "\n".join(
+    [
+        "Do you want to proceed?",
+        "❯ 1. Yes",
+        "  2. Yes, and don't ask again for Bash commands",
+        "  3. No, and tell Claude what to do differently (esc)",
+        "",
+    ]
+)
+
+
+@pytest.mark.asyncio
+async def test_permission_hook_surfaces_structured_ask_user_question(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "npm test"},
+            "permission_suggestions": [],
+        }
+    )
+
+    # The advisory frame still fires AND a structured ask_user_question is surfaced.
+    assert any(e.get("type") == "claude_permission_request" for e in events)
+    questions = _ask_user_questions(events)
+    assert len(questions) == 1
+    q = questions[0]
+    assert q["event_type"] == "ask_user_question"  # flips the broker to awaiting_input
+    assert q["request_id"]
+    opts = [o["label"] for o in q["questions"][0]["options"]]
+    assert opts == ["Allow", "Allow & don't ask again", "Deny"]
+    assert "npm test" in q["questions"][0]["question"]
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_answer_allow_presses_first_menu_digit(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _PERMISSION_MENU
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+    )
+    rid = _ask_user_questions(events)[0]["request_id"]
+
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "Allow"}])
+
+    assert _send_keys(transport)[-1] == "1"  # affirmative row
+    assert any(e.get("type") == "ask_user_resolved" and e["request_id"] == rid for e in events)
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_answer_allow_always_matches_dont_ask_row(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _PERMISSION_MENU
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+    )
+    rid = _ask_user_questions(events)[0]["request_id"]
+
+    await transport.send_control(
+        "ask_user_answer", request_id=rid, answers=[{"answer": "Allow & don't ask again"}]
+    )
+    assert _send_keys(transport)[-1] == "2"  # the "…don't ask again" row
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_answer_deny_presses_escape(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _PERMISSION_MENU
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+    )
+    rid = _ask_user_questions(events)[0]["request_id"]
+
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "Deny"}])
+    assert _send_keys(transport)[-1] == "Escape"  # universal cancel
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_tool_surfaces_and_answers(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = "\n".join(["❯ 1. Postgres", "  2. SQLite", ""])
+
+    questions = [
+        {
+            "header": "Database",
+            "question": "Which DB?",
+            "options": [{"label": "Postgres"}, {"label": "SQLite"}],
+            "multiSelect": False,
+        }
+    ]
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": questions},
+        }
+    )
+
+    surfaced = _ask_user_questions(events)
+    assert len(surfaced) == 1
+    assert surfaced[0]["questions"] == questions  # pass-through of the agent's options
+    rid = surfaced[0]["request_id"]
+    # The tool_use is still emitted for the transcript.
+    assert any(
+        e.get("type") == "assistant"
+        and any(b.get("name") == "AskUserQuestion" for b in e["message"]["content"])
+        for e in events
+    )
+
+    await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "SQLite"}])
+    keys = _send_keys(transport)
+    assert keys[-2:] == ["2", "Enter"]  # select row 2 + confirm
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_resolves_stale_prompt(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+    )
+    rid = _ask_user_questions(events)[0]["request_id"]
+
+    # The turn finishes (e.g. answered in-terminal) → the pending prompt is resolved so a remote
+    # client dismisses its card instead of stranding it.
+    await transport._finish_hook_turn(content="done", reason="stop")  # noqa: SLF001
+    resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
+    assert any(e["request_id"] == rid and e["decision"] == "turn_ended" for e in resolved)
+    await transport.stop()

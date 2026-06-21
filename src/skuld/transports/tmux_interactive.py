@@ -217,6 +217,13 @@ class TmuxInteractiveTransport(CLITransport):
         self._last_frame_signature: dict[str, str] = {}
         self._pane_sequences: dict[str, int] = {}
         self._pane_watcher_task: asyncio.Task[None] | None = None
+        # CLI-mode questions bridge (2026-06-21): the interactive Claude CLI renders permission
+        # gates + AskUserQuestion menus in the TTY (not the SDK's structured ask_user_question).
+        # This map mirrors the SDK's `_pending_questions` (request_id -> pending prompt) so a remote
+        # client can answer structurally; we translate the choice back into pane keystrokes. Popped
+        # on answer; cleared when the turn finishes.
+        self._pending_tty_prompts: dict[str, dict[str, Any]] = {}
+        self._tty_question_seq = 0
         self._last_result: dict | None = None
         self._slash_commands_cache = self._normalize_slash_command_items(
             _BUILT_IN_SLASH_COMMANDS,
@@ -388,6 +395,17 @@ class TmuxInteractiveTransport(CLITransport):
             await self._send_key("C-c", pane_id=self._coerce_str(kwargs.get("pane_id")))
             if self._turn_active:
                 await self._finish_synthetic_turn(reason="interrupted", is_error=True)
+            return
+
+        if subtype == "ask_user_answer":
+            # CLI-mode questions bridge: a remote client answered a TTY permission/question we
+            # surfaced as a structured `ask_user_question`. Translate the choice back into the pane
+            # (digit for the matched menu row; Escape to deny). See `_answer_tty_prompt`.
+            await self._answer_tty_prompt(
+                self._coerce_str(kwargs.get("request_id")),
+                kwargs.get("answers"),
+                pane_id=self._coerce_str(kwargs.get("pane_id")),
+            )
             return
 
         if subtype in {"terminal_input", "input"}:
@@ -572,6 +590,11 @@ class TmuxInteractiveTransport(CLITransport):
         if not tool_name:
             return
         tool_input = payload.get("tool_input")
+        # CLI-mode questions bridge: the AskUserQuestion tool renders its menu in the TTY. Surface
+        # it as a structured `ask_user_question` (its tool_input already carries the questions iOS
+        # parses) so a remote client can answer; the tool_use is still emitted below for history.
+        if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
+            await self._surface_tty_ask_user_question(tool_input)
         tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
         await self._emit(
             {
@@ -644,6 +667,217 @@ class TmuxInteractiveTransport(CLITransport):
                 "metadata": {"source": "claude_hook"},
             }
         )
+        # CLI-mode questions bridge: ALSO surface the gate as a structured `ask_user_question` so a
+        # remote client renders its answer card + the session flips to awaiting_input. The keystroke
+        # translation on answer happens in `_answer_tty_prompt`.
+        await self._surface_tty_permission(payload)
+
+    # ──────────────────────────── CLI-mode questions bridge ────────────────────────────
+    #
+    # The interactive Claude CLI handles permission gates + AskUserQuestion IN THE TTY (a numbered
+    # selection menu — see `_is_terminal_chrome_row`: "Do you want to proceed?" + "1. ./2. ./3. .").
+    # The SDK transport emits a structured, blocking `ask_user_question` (request_id + questions)
+    # the broker turns into `awaiting_input` and iOS answers via `ask_user_answer`. We give the tmux
+    # transport PARITY with no client change: surface the TTY prompt as the SAME structured frame,
+    # then on the structured answer translate the chosen option back into pane keystrokes.
+
+    def _next_tty_request_id(self) -> str:
+        self._tty_question_seq += 1
+        return f"tty-{self._tty_question_seq}-{uuid.uuid4().hex[:8]}"
+
+    async def _surface_tty_permission(self, payload: dict[str, Any]) -> None:
+        """Surface a Claude-CLI permission gate as a structured `ask_user_question`.
+
+        The on-screen rows aren't reliably available yet at hook time (they render a beat later), so
+        we offer Claude's stable 3-option shape (Allow / Allow & don't ask again / Deny) and resolve
+        the actual keystroke against the LIVE menu at answer time (`_answer_tty_prompt`) — race-free
+        (the menu is on screen while the human deliberates) and tolerant of 2-row menus.
+        """
+        tool_name = self._coerce_str(payload.get("tool_name")) or "this action"
+        tool_input = payload.get("tool_input")
+        detail = self._permission_detail(tool_name, tool_input)
+        request_id = self._next_tty_request_id()
+        question = {
+            "header": tool_name,
+            "question": detail or f"Allow {tool_name}?",
+            "options": [
+                {"label": "Allow"},
+                {"label": "Allow & don't ask again"},
+                {"label": "Deny"},
+            ],
+            "multiSelect": False,
+        }
+        self._pending_tty_prompts[request_id] = {"kind": "permission", "tool_name": tool_name}
+        await self._emit_ask_user_question(request_id, [question])
+
+    async def _surface_tty_ask_user_question(self, tool_input: dict[str, Any]) -> None:
+        """Surface the AskUserQuestion tool's TTY menu as a structured `ask_user_question`.
+
+        `tool_input.questions` is already in the shape iOS parses (header/question/options), so this
+        is a pass-through; the on-screen menu mirrors those options, which `_answer_tty_prompt`
+        matches by label at answer time.
+        """
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return
+        request_id = self._next_tty_request_id()
+        self._pending_tty_prompts[request_id] = {"kind": "question", "questions": questions}
+        await self._emit_ask_user_question(request_id, questions)
+
+    async def _emit_ask_user_question(self, request_id: str, questions: list) -> None:
+        # `event_type` makes the broker flip to awaiting_input (its event_type=="ask_user_question"
+        # branch); `type` is what the iOS client switches on (its frame arm). Carry both.
+        await self._emit(
+            {
+                "type": "ask_user_question",
+                "event_type": "ask_user_question",
+                "request_id": request_id,
+                "tool_use_id": request_id,
+                "questions": questions,
+                "metadata": {"source": "tmux_tty_bridge"},
+            }
+        )
+
+    @staticmethod
+    def _permission_detail(tool_name: str, tool_input: object) -> str:
+        """A short human prompt for a gate, e.g. 'Run `npm test`?' / 'Allow Edit on src/app.py?'."""
+        if not isinstance(tool_input, dict):
+            return f"Allow {tool_name}?"
+        if tool_name == "Bash":
+            cmd = str(tool_input.get("command") or "").strip()
+            return f"Run `{cmd}`?" if cmd else "Run this command?"
+        for key in ("file_path", "path", "url", "pattern"):
+            val = str(tool_input.get(key) or "").strip()
+            if val:
+                return f"Allow {tool_name} on {val}?"
+        return f"Allow {tool_name}?"
+
+    async def _answer_tty_prompt(
+        self, request_id: str | None, answers: object, *, pane_id: str | None = None
+    ) -> None:
+        """Translate a structured `ask_user_answer` into the keystroke that drives the TTY menu.
+
+        Robust by design: DENY is always `Escape` (cancels any menu shape); ALLOW/option selection
+        reads the LIVE numbered menu and presses the matched row's digit (race-free, and tolerant of
+        2- vs 3-row menus). For the AskUserQuestion tool we confirm the digit with Enter (its
+        select-list needs it); a permission gate acts on the digit alone.
+        """
+        pending = self._pending_tty_prompts.pop(request_id, None) if request_id else None
+        if pending is None:
+            # Stale/unknown id (e.g. answered in-terminal). If exactly one prompt is pending, answer
+            # that; otherwise no-op rather than guess.
+            if len(self._pending_tty_prompts) == 1:
+                request_id, pending = self._pending_tty_prompts.popitem()
+            else:
+                return
+
+        chosen = self._first_answer_text(answers)
+        kind = pending.get("kind")
+
+        if kind == "permission" and self._is_deny_answer(chosen):
+            await self._send_key("Escape", pane_id=pane_id)
+            await self._emit_ask_user_resolved(request_id, "deny")
+            return
+
+        rows = await self._capture_menu_rows(pane_id=pane_id)
+        digit = self._match_menu_digit(chosen, rows)
+        if digit is None:
+            # No matching numbered row. The affirmative row is the highlighted default, so Enter
+            # accepts it; for a question fall back to the first option then confirm.
+            if kind == "permission":
+                await self._send_key("Enter", pane_id=pane_id)
+            else:
+                await self._send_key("1", pane_id=pane_id)
+                await self._send_key("Enter", pane_id=pane_id)
+        else:
+            await self._send_key(str(digit), pane_id=pane_id)
+            if kind == "question":
+                await self._send_key("Enter", pane_id=pane_id)
+        await self._emit_ask_user_resolved(request_id, chosen or "answered")
+
+    async def _capture_menu_rows(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
+        """Numbered option rows currently on screen, e.g. [(1,'Yes'), (2,'…ask'), (3,'No')]."""
+        target = self._target_pane(pane_id)
+        try:
+            result = await self._run_tmux("capture-pane", "-t", target, "-p", "-S", "-50")
+        except Exception:  # pragma: no cover - capture is best-effort
+            return []
+        out: list[tuple[int, str]] = []
+        seen: set[int] = set()
+        for line in result.stdout.splitlines():
+            match = re.match(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$", line)
+            if match:
+                digit = int(match.group(1))
+                if digit not in seen:
+                    seen.add(digit)
+                    out.append((digit, match.group(2).strip()))
+        return sorted(out)
+
+    @staticmethod
+    def _match_menu_digit(chosen: str, rows: list[tuple[int, str]]) -> int | None:
+        """Map the chosen option label to its on-screen menu digit, or None if no clear match."""
+        low = chosen.strip().lower()
+        if not low or not rows:
+            return None
+        # 1) direct label match (AskUserQuestion options + any verbatim permission row).
+        for digit, label in rows:
+            ll = label.lower()
+            if low == ll or low in ll or ll in low:
+                return digit
+        # 2) "allow & don't ask again" / "always" → the persistent-allow row.
+        if "don't ask" in low or "always" in low:
+            for digit, label in rows:
+                if "don't ask" in label.lower() or "always" in label.lower():
+                    return digit
+        # 3) plain "allow"/"yes" → the first (affirmative) row.
+        if low.startswith(("allow", "yes")):
+            return rows[0][0]
+        # 4) "deny"/"no" → a row that reads as the negative.
+        if low.startswith(("deny", "no")):
+            for digit, label in rows:
+                if label.lower().startswith("no"):
+                    return digit
+        return None
+
+    @staticmethod
+    def _is_deny_answer(chosen: str) -> bool:
+        low = chosen.strip().lower()
+        return low.startswith(("deny", "no"))
+
+    @staticmethod
+    def _first_answer_text(answers: object) -> str:
+        if isinstance(answers, list) and answers:
+            first = answers[0]
+            if isinstance(first, dict):
+                ans = first.get("answer")
+                if isinstance(ans, list):
+                    return str(ans[0]) if ans else ""
+                return str(ans) if ans is not None else ""
+            return str(first)
+        if isinstance(answers, str):
+            return answers
+        return ""
+
+    async def _emit_ask_user_resolved(self, request_id: str | None, decision: str) -> None:
+        await self._emit(
+            {
+                "type": "ask_user_resolved",
+                "event_type": "ask_user.resolved",
+                "request_id": request_id or "",
+                "decision": decision,
+                "metadata": {"source": "tmux_tty_bridge"},
+            }
+        )
+
+    async def _clear_pending_tty_prompts(self, reason: str) -> None:
+        """Resolve + drop any unanswered TTY prompts (turn ended / answered in-terminal) so a remote
+        client dismisses its stale card instead of stranding it."""
+        if not self._pending_tty_prompts:
+            return
+        stale = list(self._pending_tty_prompts.keys())
+        self._pending_tty_prompts.clear()
+        for request_id in stale:
+            await self._emit_ask_user_resolved(request_id, reason)
 
     async def _finish_hook_turn(
         self,
@@ -674,6 +908,9 @@ class TmuxInteractiveTransport(CLITransport):
         }
         self._last_result = result
         await self._emit(result)
+        # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
+        # remote client dismisses its card rather than stranding it.
+        await self._clear_pending_tty_prompts("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
@@ -1093,6 +1330,9 @@ class TmuxInteractiveTransport(CLITransport):
         }
         self._last_result = result
         await self._emit(result)
+        # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
+        # remote client dismisses its card rather than stranding it.
+        await self._clear_pending_tty_prompts("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
