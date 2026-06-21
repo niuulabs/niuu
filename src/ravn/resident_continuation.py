@@ -538,9 +538,12 @@ class ResidentContinuationKernel:
                 decisions=tuple(decisions),
                 turns=tuple(records),
                 budget=self._budget.snapshot(),
+                policy_observations=tuple(self._policy_observations),
             )
 
         answer = await self._memory.read_operator_answer()
+        if answer is not None:
+            await self._record_operator_answer_observation(answer)
         prompt = _build_resume_prompt(mandate, answer) if answer is not None else mandate
 
         while True:
@@ -596,6 +599,7 @@ class ResidentContinuationKernel:
             decisions=tuple(decisions),
             turns=tuple(records),
             budget=self._budget.snapshot(),
+            policy_observations=tuple(self._policy_observations),
         )
 
     async def decide(
@@ -688,6 +692,25 @@ class ResidentContinuationKernel:
             observation=str(answer),
             source="operator_answer",
         )
+        self._policy_observations.append(observation)
+        await self._memory.write_policy_observation(observation)
+
+    async def _record_operator_answer_observation(self, answer: ResidentMemoryEntry) -> None:
+        observation_text = _operator_answer_text(answer.content)
+        if not observation_text:
+            return
+        observation = ResidentPolicyObservation(
+            subject=f"operator-answer:{_slug(answer.path) or 'latest'}",
+            observation=observation_text,
+            source="operator_answer",
+        )
+        if any(
+            existing.subject == observation.subject
+            and existing.source == observation.source
+            and existing.observation == observation.observation
+            for existing in self._policy_observations
+        ):
+            return
         self._policy_observations.append(observation)
         await self._memory.write_policy_observation(observation)
 
@@ -911,6 +934,16 @@ def _render_policy_observation(observation: ResidentPolicyObservation) -> str:
         f"- created_at: {observation.created_at.isoformat()}\n\n"
         f"{observation.observation}\n"
     )
+
+
+def _operator_answer_text(content: str) -> str:
+    lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+            continue
+        lines.append(stripped)
+    return _compact_line(" ".join(lines), limit=1000)
 
 
 def _compact_line(text: str, *, limit: int = 240) -> str:

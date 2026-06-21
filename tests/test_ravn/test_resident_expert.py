@@ -171,6 +171,7 @@ async def test_domain_model_readback_preserves_artifacts_and_policy_observations
         resident_decisions=("selected next action: Evaluate capability gap",),
         failure_notes=("tracker search failed under sandbox networking",),
         open_threads=("next action: rerun tracker search when access exists",),
+        memory_hygiene_notes=("deduplicated known_facts: tracker client exists",),
         learned_policy_observations=(
             ResidentPolicyObservation(
                 subject="question:approval-boundary",
@@ -200,6 +201,57 @@ async def test_domain_model_readback_preserves_artifacts_and_policy_observations
     assert restored.resident_decisions == ("selected next action: Evaluate capability gap",)
     assert restored.failure_notes == ("tracker search failed under sandbox networking",)
     assert restored.open_threads == ("next action: rerun tracker search when access exists",)
+    assert restored.memory_hygiene_notes == (
+        "deduplicated known_facts: tracker client exists",
+    )
+
+
+def test_domain_model_records_duplicate_stale_and_operator_answer_hygiene() -> None:
+    prior = ResidentDomainModel(
+        mandate=MANDATE,
+        current_understanding="Prior understanding",
+        known_facts=("known printer list is stale", "known printer list is stale"),
+        open_threads=("stale: old marketplace assumption",),
+        learned_policy_observations=(
+            ResidentPolicyObservation(
+                subject="operator-answer:latest",
+                observation="Use PLA as default unless I say otherwise.",
+                source="operator_answer",
+            ),
+        ),
+    )
+    record = ResidentTurnRecord(
+        turn_index=1,
+        prompt=MANDATE,
+        response=_outcome("Use PLA as default unless I say otherwise."),
+        outcome_fields={
+            "orientation_summary": "Updated understanding",
+            "domain_hypotheses": ("stale: old marketplace assumption",),
+            "selected_next_action": "Use PLA as default unless I say otherwise.",
+            "rationale": "safe local memory update",
+        },
+        tool_names=("mimir_search", "mimir_search"),
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+    )
+
+    model = build_domain_model_from_continuation(
+        MANDATE,
+        prior_model=prior,
+        turns=(record,),
+        policy_observations=(
+            ResidentPolicyObservation(
+                subject="operator-answer:latest",
+                observation="Use PLA as default unless I say otherwise.",
+                source="operator_answer",
+            ),
+        ),
+    )
+
+    assert model.known_facts.count("known printer list is stale") == 1
+    assert any("deduplicated existing known_facts" in item for item in model.memory_hygiene_notes)
+    assert any("stale marker retained" in item for item in model.memory_hygiene_notes)
+    assert any("operator answer absorbed" in item for item in model.memory_hygiene_notes)
+    assert len(model.learned_policy_observations) == 1
 
 
 def test_domain_model_recovers_colon_bearing_outcome_lists_from_raw_response() -> None:

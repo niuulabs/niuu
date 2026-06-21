@@ -282,6 +282,7 @@ class ResidentDomainExpertLoop:
             mandate,
             prior_model=prior_model,
             turns=continuation_run.turns,
+            policy_observations=continuation_run.policy_observations,
         )
         model_ref = await self._expert_memory.write_domain_model(model)
 
@@ -453,6 +454,7 @@ def build_domain_model_from_continuation(
     *,
     prior_model: ResidentDomainModel | None,
     turns: tuple[Any, ...],
+    policy_observations: tuple[ResidentPolicyObservation, ...] = (),
 ) -> ResidentDomainModel:
     last = turns[-1] if turns else None
     fields = getattr(last, "outcome_fields", {}) if last is not None else {}
@@ -503,6 +505,38 @@ def build_domain_model_from_continuation(
         prior_model.open_threads if prior_model is not None else (),
         _open_thread_items(fields, last),
     )
+    learned_policy_observations = _merge_policy_observations(
+        prior_model.learned_policy_observations if prior_model is not None else (),
+        policy_observations,
+    )
+    hygiene_notes = _merge_items(
+        prior_model.memory_hygiene_notes if prior_model is not None else (),
+        _memory_hygiene_notes(
+            prior_model=prior_model,
+            incoming={
+                "hypotheses": _outcome_items(fields, last, "domain_hypotheses"),
+                "open_questions": _outcome_items(fields, last, "open_questions"),
+                "capability_gaps": _outcome_items(fields, last, "capability_gaps"),
+                "opportunities": _selected_action_items(fields)
+                + _outcome_items(fields, last, "self_authored_work"),
+                "known_facts": (
+                    f"resident turn used tools: {', '.join(tool_names)}",
+                )
+                if tool_names
+                else (),
+                "recent_outcomes": (str(fields.get("rationale") or "").strip(),),
+                "domain_risks": _risk_like_items(
+                    gaps + _outcome_items(fields, last, "open_questions")
+                ),
+                "resident_decisions": _decision_items(fields),
+                "failure_notes": _failure_like_items(fields, last),
+                "open_threads": _open_thread_items(fields, last),
+                "learned_policy_observations": tuple(
+                    _policy_observation_line(item) for item in policy_observations
+                ),
+            },
+        ),
+    )
 
     return ResidentDomainModel(
         mandate=mandate,
@@ -514,13 +548,12 @@ def build_domain_model_from_continuation(
         resident_decisions=decisions,
         failure_notes=failure_notes,
         open_threads=open_threads,
+        memory_hygiene_notes=hygiene_notes,
         opportunities=opportunities,
         capability_gaps=gaps,
         active_workstreams=prior_model.active_workstreams if prior_model is not None else (),
         recent_outcomes=recent_outcomes,
-        learned_policy_observations=prior_model.learned_policy_observations
-        if prior_model is not None
-        else (),
+        learned_policy_observations=learned_policy_observations,
         artifacts=prior_model.artifacts if prior_model is not None else (),
     )
 
@@ -649,6 +682,24 @@ def consolidate_workstream_result(
         model.learned_policy_observations,
         result.policy_observations,
     )
+    hygiene_notes = _merge_items(
+        model.memory_hygiene_notes,
+        _memory_hygiene_notes(
+            prior_model=model,
+            incoming={
+                "known_facts": result.facts,
+                "capability_gaps": result.capability_gaps,
+                "recent_outcomes": (result.summary,),
+                "resident_decisions": (f"advanced workstream {workstream.id}: {result.status}",),
+                "failure_notes": _workstream_failure_notes(workstream, result),
+                "open_threads": result.lessons,
+                "learned_policy_observations": tuple(
+                    _policy_observation_line(item) for item in result.policy_observations
+                ),
+                "artifacts": (artifact.path or artifact.title,),
+            },
+        ),
+    )
     return model.with_consolidation(
         workstreams=workstreams,
         recent_outcomes=outcomes,
@@ -656,6 +707,7 @@ def consolidate_workstream_result(
         resident_decisions=decisions,
         failure_notes=failure_notes,
         open_threads=open_threads,
+        memory_hygiene_notes=hygiene_notes,
         capability_gaps=gaps,
         learned_policy_observations=policy_observations,
         artifacts=artifacts,
@@ -754,6 +806,7 @@ def _render_domain_model(model: ResidentDomainModel) -> str:
         f"## Resident Decisions\n\n{_render_list(model.resident_decisions)}\n\n"
         f"## Failure Notes\n\n{_render_list(model.failure_notes)}\n\n"
         f"## Open Threads\n\n{_render_list(model.open_threads)}\n\n"
+        f"## Memory Hygiene Notes\n\n{_render_list(model.memory_hygiene_notes)}\n\n"
         f"## Opportunities\n\n{_render_list(model.opportunities)}\n\n"
         f"## Capability Gaps\n\n{_render_list(model.capability_gaps)}\n\n"
         "## Active Workstreams\n\n"
@@ -852,6 +905,7 @@ def _parse_domain_model_page(content: str, *, mandate: str) -> ResidentDomainMod
         resident_decisions=tuple(_section_items(content, "Resident Decisions")),
         failure_notes=tuple(_section_items(content, "Failure Notes")),
         open_threads=tuple(_section_items(content, "Open Threads")),
+        memory_hygiene_notes=tuple(_section_items(content, "Memory Hygiene Notes")),
         opportunities=tuple(_section_items(content, "Opportunities")),
         capability_gaps=tuple(_section_items(content, "Capability Gaps")),
         recent_outcomes=tuple(_section_items(content, "Recent Outcomes")),
@@ -1069,6 +1123,77 @@ def _workstream_failure_notes(
 def _risk_like_items(items: tuple[str, ...]) -> tuple[str, ...]:
     terms = ("risk", "approval", "spending", "physical", "external", "credential", "unknown")
     return tuple(item for item in items if _has_any(item.casefold(), terms))
+
+
+def _memory_hygiene_notes(
+    *,
+    prior_model: ResidentDomainModel | None,
+    incoming: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    notes: list[str] = []
+    for section, new_items in incoming.items():
+        prior_items = _prior_memory_items(prior_model, section)
+        prior_seen: set[str] = set()
+        prior_duplicates: set[str] = set()
+        for item in prior_items:
+            compact = _compact_line(item, limit=240)
+            if not compact:
+                continue
+            if compact in prior_seen:
+                prior_duplicates.add(compact)
+            prior_seen.add(compact)
+
+        incoming_seen: set[str] = set()
+        incoming_duplicates: set[str] = set()
+        for item in _string_items(new_items):
+            compact = _compact_line(item, limit=240)
+            if not compact:
+                continue
+            if compact in prior_seen:
+                notes.append(f"deduplicated {section}: already remembered {compact}")
+            if compact in incoming_seen:
+                incoming_duplicates.add(compact)
+            incoming_seen.add(compact)
+            if _is_stale_memory_marker(compact):
+                notes.append(f"stale marker retained for review in {section}: {compact}")
+            if section == "learned_policy_observations" and "operator_answer" in compact:
+                notes.append(f"operator answer absorbed as policy candidate: {compact}")
+
+        for duplicate in sorted(prior_duplicates):
+            notes.append(f"deduplicated existing {section}: {duplicate}")
+        for duplicate in sorted(incoming_duplicates):
+            notes.append(f"deduplicated incoming {section}: {duplicate}")
+
+    return tuple(_merge_items(notes, max_items=20))
+
+
+def _prior_memory_items(
+    prior_model: ResidentDomainModel | None,
+    section: str,
+) -> tuple[str, ...]:
+    if prior_model is None:
+        return ()
+    if section == "learned_policy_observations":
+        return tuple(_policy_observation_line(item) for item in prior_model.learned_policy_observations)
+    if section == "artifacts":
+        return tuple(item.path or item.title for item in prior_model.artifacts)
+    raw = getattr(prior_model, section, ())
+    return tuple(str(item).strip() for item in raw if str(item).strip())
+
+
+def _is_stale_memory_marker(item: str) -> bool:
+    text = item.casefold()
+    return _has_any(
+        text,
+        (
+            "stale",
+            "outdated",
+            "superseded",
+            "contradicted",
+            "contradiction",
+            "no longer true",
+        ),
+    )
 
 
 def _merge_items(*groups: Any, max_items: int = 20) -> tuple[str, ...]:

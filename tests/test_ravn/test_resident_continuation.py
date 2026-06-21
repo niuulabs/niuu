@@ -426,10 +426,14 @@ async def test_operator_answer_is_injected_into_resume_prompt() -> None:
         budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=1)),
     )
 
-    await kernel.run(MANDATE)
+    run = await kernel.run(MANDATE)
 
     assert "Operator answer memory" in agent.prompts[0]
     assert "Use the Prusa MK4 and PLA." in agent.prompts[0]
+    assert run.policy_observations
+    assert run.policy_observations[0].source == "operator_answer"
+    assert "Use the Prusa MK4 and PLA." in run.policy_observations[0].observation
+    assert memory.policy_observations
 
 
 @pytest.mark.asyncio

@@ -149,6 +149,7 @@ class ResidentContinuationRun:
     decisions: tuple[ResidentContinuationDecision, ...]
     turns: tuple[ResidentTurnRecord, ...]
     budget: ResidentBudgetSnapshot
+    policy_observations: tuple[ResidentPolicyObservation, ...] = ()
 
     @property
     def final_decision(self) -> ResidentContinuationDecision | None:

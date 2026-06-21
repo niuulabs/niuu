@@ -16,6 +16,8 @@ from ravn.cli.commands import (
     _resolve_persona,
 )
 from ravn.config import ProjectConfig, Settings
+from ravn.domain.resident_continuation import ResidentPolicyObservation
+from ravn.domain.resident_expert import ResidentDomainModel
 from ravn.resident_continuation import LocalResidentMemory, MimirResidentMemory
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
@@ -42,6 +44,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-workstream-turns", type=int, default=1)
     parser.add_argument("--max-wall-clock-seconds", type=float, default=900.0)
     parser.add_argument("--max-tokens", type=int, default=0)
+    parser.add_argument(
+        "--seed-memory-hygiene-case",
+        action="store_true",
+        help="Seed duplicate/stale prior domain memory before the real run.",
+    )
+    parser.add_argument(
+        "--seed-operator-answer",
+        default="",
+        help="Persist an operator answer before the run so resume memory is consumed.",
+    )
+    parser.add_argument(
+        "--expect-memory-hygiene",
+        action="store_true",
+        help="Require memory hygiene notes and operator-answer policy capture.",
+    )
     return parser.parse_args()
 
 
@@ -97,6 +114,31 @@ async def _main() -> None:
         memory_label = str(root)
         local_memory_root = root
 
+    if args.seed_memory_hygiene_case:
+        prior_ref = await expert_memory.write_domain_model(
+            ResidentDomainModel(
+                mandate=KANUCK_VALLEY_MANDATE,
+                current_understanding="Prior resident memory seeded for hygiene proof.",
+                known_facts=(
+                    "known printer list is stale",
+                    "known printer list is stale",
+                ),
+                hypotheses=("stale: marketplace policy assumption needs review",),
+                open_threads=("stale: old marketplace assumption",),
+                learned_policy_observations=(
+                    ResidentPolicyObservation(
+                        subject="operator-answer:latest",
+                        observation="Prefer PLA as the default material unless I say otherwise.",
+                        source="operator_answer",
+                    ),
+                ),
+            )
+        )
+        print(f"[proof] seeded_prior_domain_model={prior_ref}")
+    if args.seed_operator_answer:
+        answer_ref = await continuation_memory.write_operator_answer(args.seed_operator_answer)
+        print(f"[proof] seeded_operator_answer={answer_ref}")
+
     loop = ResidentDomainExpertLoop(
         agent=agent,
         persona_config=persona,
@@ -126,6 +168,11 @@ async def _main() -> None:
         local_root=local_memory_root,
         prefix="resident/domain-expert/consolidations",
     )
+    policy_refs = await _list_proof_refs(
+        mimir=mimir,
+        local_root=local_memory_root,
+        prefix="resident/continuation/policy",
+    )
 
     print("\n[proof] Resident domain-expert loop complete.")
     print(f"[proof] domain_model_ref={run.domain_model_ref}")
@@ -133,6 +180,9 @@ async def _main() -> None:
     print(f"[proof] artifacts={len(run.artifacts)}")
     print(f"[proof] execution_results={len(run.execution_results)}")
     print(f"[proof] consolidations={len(consolidation_refs)}")
+    print(f"[proof] learned_policy_observations={len(run.domain_model.learned_policy_observations)}")
+    print(f"[proof] memory_hygiene_notes={len(run.domain_model.memory_hygiene_notes)}")
+    print(f"[proof] continuation_policy_refs={policy_refs}")
     print(f"[proof] decisions={len(run.decisions)}")
     print(
         "[proof] workstream_budget="
@@ -151,6 +201,14 @@ async def _main() -> None:
         print(f"[artifact] {artifact.kind}: {artifact.path} — {artifact.title}")
     for consolidation_ref in consolidation_refs:
         print(f"[consolidation] {consolidation_ref}")
+    for note in run.domain_model.memory_hygiene_notes:
+        print(f"[memory-hygiene] {note}")
+    for observation in run.domain_model.learned_policy_observations:
+        print(
+            "[policy-observation] "
+            f"{observation.subject} | {observation.status} | "
+            f"{observation.source} | {observation.observation}"
+        )
     for decision in run.decisions:
         print(f"[decision] {decision.kind.value}: {decision.reason}")
 
@@ -166,6 +224,26 @@ async def _main() -> None:
         raise SystemExit("[proof] expected at least one consolidation back into memory")
     if not run.decisions:
         raise SystemExit("[proof] expected a transparent final decision")
+    if args.expect_memory_hygiene:
+        if not run.domain_model.memory_hygiene_notes:
+            raise SystemExit("[proof] expected memory hygiene notes")
+        if not any(
+            "deduplicated" in note.casefold() for note in run.domain_model.memory_hygiene_notes
+        ):
+            raise SystemExit("[proof] expected duplicate-memory hygiene evidence")
+        if not any(
+            "stale" in note.casefold() for note in run.domain_model.memory_hygiene_notes
+        ):
+            raise SystemExit("[proof] expected stale-memory hygiene evidence")
+        if not run.domain_model.learned_policy_observations:
+            raise SystemExit("[proof] expected learned policy observations")
+        if not any(
+            observation.source == "operator_answer"
+            for observation in run.domain_model.learned_policy_observations
+        ):
+            raise SystemExit("[proof] expected operator answer policy observation")
+        if not policy_refs:
+            raise SystemExit("[proof] expected persisted continuation policy observation")
 
 
 if __name__ == "__main__":
