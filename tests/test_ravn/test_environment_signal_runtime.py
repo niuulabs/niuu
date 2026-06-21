@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
     EnvironmentConfig,
@@ -21,6 +23,13 @@ from ravn.ports.capability import (
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
 )
+from ravn.resident_opportunity import (
+    LocalResidentOpportunityBackend,
+    MimirEnvironmentSignalOpportunitySource,
+    ResidentOpportunityConfig,
+    ResidentOpportunityRuntime,
+)
+from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -209,6 +218,61 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daemon_environment_signals_become_resident_opportunity_evidence(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    settings.resident_autonomy.enabled = True
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    count = await runtime.collect_once()
+    source = MimirEnvironmentSignalOpportunitySource(mimir)
+    signals = await source.collect(
+        mandate="A resident Ravn manages the host environment.",
+        domain_model=None,
+        objectives=(),
+        limit=5,
+    )
+    pages = await mimir.list_pages(prefix="resident/environment-signals")
+    opportunity_runtime = ResidentOpportunityRuntime(
+        backend=LocalResidentWorkItemBackend(tmp_path / "portfolio"),
+        opportunity_backend=LocalResidentOpportunityBackend(tmp_path / "opportunities"),
+        sources=(source,),
+        config=ResidentOpportunityConfig(
+            max_signals=5,
+            max_candidates=4,
+            max_selected=1,
+            min_total_score=10,
+            score_max=10,
+            score_mid=4,
+        ),
+    )
+    report = await opportunity_runtime.run(
+        "A resident Ravn manages the host environment and should keep it reliable."
+    )
+
+    assert count == 1
+    assert len(pages) == 1
+    assert len(signals) == 1
+    assert signals[0].source == "host-events"
+    assert signals[0].kind == "signal.host.event"
+    assert "Disk usage crossed 95%" in signals[0].summary
+    assert signals[0].evidence_ref.startswith("resident/environment-signals/")
+    assert "environment health" in signals[0].outcomes
+    assert report.created_objectives
+    assert report.created_objectives[0].source_evidence
+    assert "resident/environment-signals/" in report.created_objectives[0].source_evidence[0]
 
 
 @pytest.mark.asyncio

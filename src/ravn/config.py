@@ -2652,6 +2652,13 @@ class ResidentOpportunityGenerationConfig(BaseModel):
         default_factory=list,
         description="Dynamic source adapters for memory/research opportunity signals.",
     )
+    include_environment_signals: bool = Field(
+        default=True,
+        description=(
+            "Whether configured Environment signal sources should feed resident "
+            "opportunity evidence through Mimir."
+        ),
+    )
     max_signals: int = Field(default=8, description="Maximum source signals per pass.")
     max_candidates: int = Field(default=6, description="Maximum candidate opportunities.")
     max_selected: int = Field(default=2, description="Maximum opportunities selected.")

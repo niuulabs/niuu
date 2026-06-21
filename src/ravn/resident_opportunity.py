@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ravn.domain.resident_expert import ResidentDomainExpertMemoryPort, ResidentDomainModel
 from ravn.domain.resident_opportunity import (
@@ -35,6 +36,9 @@ from ravn.resident_portfolio import (
 
 _OPPORTUNITY_PREFIX = "resident/opportunities"
 _OPPORTUNITY_REPORT_PREFIX = "resident/opportunity-reports"
+_ENVIRONMENT_SIGNAL_PREFIX = "resident/environment-signals"
+_ENVIRONMENT_SIGNAL_JSON_START = "<resident-environment-signal-json>"
+_ENVIRONMENT_SIGNAL_JSON_END = "</resident-environment-signal-json>"
 
 
 class ResidentOpportunityBackend(Protocol):
@@ -293,6 +297,69 @@ class MimirResidentOpportunityBackend(ResidentOpportunityBackend):
         return path
 
 
+class MimirEnvironmentSignalOpportunitySource(ResidentOpportunitySourcePort):
+    """Expose observed environment signals as resident opportunity evidence."""
+
+    def __init__(
+        self,
+        mimir: MimirPort,
+        *,
+        prefix: str = _ENVIRONMENT_SIGNAL_PREFIX,
+    ) -> None:
+        self._mimir = mimir
+        self._prefix = prefix.strip("/").strip() or _ENVIRONMENT_SIGNAL_PREFIX
+
+    async def write_event(self, event: Any) -> str:
+        """Persist a Sleipnir signal event for later resident attention."""
+        record = _environment_signal_record(event)
+        path = (
+            f"{self._prefix}/"
+            f"{_environment_timestamp_slug(str(record['observed_at']))}-"
+            f"{_slug(record['id']) or 'signal'}.md"
+        )
+        await self._mimir.upsert_page(path, render_environment_signal_record(record))
+        return path
+
+    async def collect(
+        self,
+        *,
+        mandate: str,
+        domain_model: ResidentDomainModel | None,
+        objectives: tuple[ResidentObjective, ...],
+        limit: int,
+    ) -> tuple[ResidentOpportunitySignal, ...]:
+        del mandate, domain_model, objectives
+        if limit <= 0:
+            return ()
+        metas = await self._mimir.list_pages(prefix=self._prefix)
+        signals: list[ResidentOpportunitySignal] = []
+        for meta in sorted(metas, key=lambda item: getattr(item, "path", ""), reverse=True):
+            path = str(getattr(meta, "path", "") or "")
+            if not path:
+                continue
+            try:
+                record = parse_environment_signal_record(await self._mimir.read_page(path))
+            except FileNotFoundError:
+                continue
+            if record is None:
+                continue
+            signals.append(
+                ResidentOpportunitySignal(
+                    id=str(record.get("id") or path),
+                    source=str(record.get("source") or "environment_signal"),
+                    kind=str(record.get("kind") or "environment_signal"),
+                    summary=str(record.get("summary") or "Environment signal observed."),
+                    evidence_ref=path,
+                    themes=_record_strings(record.get("themes")),
+                    outcomes=_record_strings(record.get("outcomes")),
+                    confidence=float(record.get("confidence") or 0.5),
+                )
+            )
+            if len(signals) >= limit:
+                break
+        return tuple(signals)
+
+
 def build_mimir_opportunity_runtime(
     *,
     mimir: MimirPort,
@@ -356,6 +423,35 @@ def render_opportunity_report(report: ResidentOpportunityReport) -> str:
         f"## Budget Notes\n\n{report.budget_notes}\n\n"
         f"## Final Suggested Next Action\n\n{report.final_suggested_next_action}\n"
     )
+
+
+def render_environment_signal_record(record: dict[str, Any]) -> str:
+    summary = _compact_line(str(record.get("summary") or "Environment signal"), limit=120)
+    payload = json.dumps(record, indent=2, sort_keys=True, default=str)
+    return (
+        f"# Environment Signal: {summary}\n\n"
+        f"- id: {record.get('id', '')}\n"
+        f"- kind: {record.get('kind', '')}\n"
+        f"- source: {record.get('source', '')}\n"
+        f"- severity: {record.get('severity', '')}\n"
+        f"- observed_at: {record.get('observed_at', '')}\n\n"
+        f"{_ENVIRONMENT_SIGNAL_JSON_START}\n"
+        f"{payload}\n"
+        f"{_ENVIRONMENT_SIGNAL_JSON_END}\n"
+    )
+
+
+def parse_environment_signal_record(content: str) -> dict[str, Any] | None:
+    start = content.find(_ENVIRONMENT_SIGNAL_JSON_START)
+    end = content.find(_ENVIRONMENT_SIGNAL_JSON_END)
+    if start < 0 or end <= start:
+        return None
+    raw = content[start + len(_ENVIRONMENT_SIGNAL_JSON_START) : end].strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def parse_opportunity(content: str) -> ResidentOpportunityCandidate | None:
@@ -740,6 +836,138 @@ def _merge_signal_items(
             if value and value not in items:
                 items.append(value)
     return tuple(items)
+
+
+def _environment_signal_record(event: Any) -> dict[str, Any]:
+    payload = dict(getattr(event, "payload", {}) or {})
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    event_type = str(getattr(event, "event_type", "") or payload.get("event_type") or "")
+    severity = str(payload.get("severity") or data.get("severity") or "info")
+    event_id = str(
+        getattr(event, "event_id", "")
+        or payload.get("event_id")
+        or data.get("provider_event_id")
+        or data.get("dedupe_key")
+        or getattr(event, "correlation_id", "")
+        or event_type
+    )
+    observed_at = _event_timestamp(event, data)
+    summary = _environment_signal_summary(event, payload, data, severity)
+    themes = _environment_signal_themes(payload, data, summary)
+    return {
+        "id": event_id,
+        "source": str(data.get("source_id") or payload.get("signal_source") or "environment"),
+        "kind": event_type or str(payload.get("signal_kind") or "environment_signal"),
+        "summary": summary,
+        "evidence_ref": str(data.get("raw_payload_ref") or ""),
+        "severity": severity,
+        "observed_at": observed_at,
+        "themes": themes,
+        "outcomes": _environment_signal_outcomes(severity),
+        "confidence": _environment_signal_confidence(severity),
+        "payload": payload,
+    }
+
+
+def _event_timestamp(event: Any, data: dict[str, Any]) -> str:
+    raw = data.get("observed_at") or getattr(event, "timestamp", None)
+    if hasattr(raw, "isoformat"):
+        return raw.isoformat()
+    text = str(raw or "").strip()
+    if text:
+        return text
+    return datetime.now(UTC).isoformat()
+
+
+def _environment_signal_summary(
+    event: Any,
+    payload: dict[str, Any],
+    data: dict[str, Any],
+    severity: str,
+) -> str:
+    message = str(
+        data.get("message")
+        or data.get("reason")
+        or data.get("title")
+        or payload.get("summary")
+        or ""
+    ).strip()
+    explicit = str(getattr(event, "summary", "") or "").strip()
+    if explicit:
+        if message and message not in explicit:
+            return _compact_line(f"{explicit}: {message}", limit=220)
+        return explicit
+    object_ref = data.get("object_ref")
+    if not isinstance(object_ref, dict):
+        object_ref = {}
+    object_label = " ".join(
+        str(object_ref.get(key) or "").strip()
+        for key in ("kind", "namespace", "name")
+        if str(object_ref.get(key) or "").strip()
+    )
+    signal_kind = str(payload.get("signal_kind") or payload.get("kind") or "").strip()
+    parts = [part for part in (signal_kind, object_label, severity, message) if part]
+    return _compact_line(" - ".join(parts) or "Environment signal observed.", limit=220)
+
+
+def _environment_signal_themes(
+    payload: dict[str, Any],
+    data: dict[str, Any],
+    summary: str,
+) -> tuple[str, ...]:
+    themes: list[str] = []
+    for value in (
+        payload.get("signal_kind"),
+        data.get("source_id"),
+        data.get("provider"),
+    ):
+        text = _compact_line(str(value or ""), limit=80)
+        if text and text not in themes:
+            themes.append(text)
+    object_ref = data.get("object_ref")
+    if isinstance(object_ref, dict):
+        object_kind = str(object_ref.get("kind") or "").strip()
+        object_name = str(object_ref.get("name") or "").strip()
+        if object_kind and object_name:
+            themes.append(_compact_line(f"{object_kind} {object_name}", limit=80))
+        elif object_kind:
+            themes.append(_compact_line(object_kind, limit=80))
+    if not themes:
+        themes.extend(_themes_from_text(summary, ResidentOpportunityConfig())[:3])
+    return tuple(dict.fromkeys(item for item in themes if item))
+
+
+def _environment_signal_outcomes(severity: str) -> tuple[str, ...]:
+    outcomes = ["environment health", "reliable operation"]
+    if severity in {"warning", "critical"}:
+        outcomes.append("faster response")
+    return tuple(outcomes)
+
+
+def _environment_signal_confidence(severity: str) -> float:
+    if severity == "critical":
+        return 0.9
+    if severity == "warning":
+        return 0.75
+    return 0.6
+
+
+def _environment_timestamp_slug(value: str) -> str:
+    compact = re.sub(r"[^0-9A-Za-z]+", "", value)
+    return compact[:20] or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _record_strings(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, list | tuple):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
 
 
 def _final_next_action(

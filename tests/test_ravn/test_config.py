@@ -27,6 +27,7 @@ from ravn.config import (
     ResidentCapabilityDiscoveryConfig,
     ResidentDelegationExecutionConfig,
     ResidentEvolutionConfig,
+    ResidentOpportunityGenerationConfig,
     ResidentReviewConfig,
     Settings,
     SignalSourceConfig,
@@ -274,6 +275,13 @@ class TestPhysicalDeviceConfig:
         assert c.secret_kwargs_env["token"] == "PRINTER_TOKEN"
         assert c.command_timeout_seconds == 12.5
         assert c.max_output_bytes == 4096
+
+
+class TestResidentOpportunityGenerationConfig:
+    def test_environment_signal_bridge_is_configurable(self) -> None:
+        c = ResidentOpportunityGenerationConfig(include_environment_signals=False)
+
+        assert c.include_environment_signals is False
 
 
 class TestResidentReviewConfig:

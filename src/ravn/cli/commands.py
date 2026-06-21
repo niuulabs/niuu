@@ -3020,6 +3020,7 @@ async def _run_daemon(
         drive_loop=drive_loop,
         persona_config=persona_config,
         publisher=environment_signal_publisher,
+        mimir=daemon_mimir,
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
         owns_publisher=not resident_learning_owns_publisher,
@@ -3174,6 +3175,7 @@ def _build_environment_signal_runtime(
     drive_loop: Any | None = None,
     persona_config: Any | None = None,
     publisher: Any | None = None,
+    mimir: Any | None = None,
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
     owns_publisher: bool = True,
@@ -3205,17 +3207,42 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
-    if resident_learning_runtime is not None:
-        process_signal = resident_learning_runtime.process_signal
-        if resident_wakefulness is not None:
+    resident_signal_recorder = None
+    if (
+        mimir is not None
+        and settings.resident_autonomy.enabled
+        and settings.resident_opportunity_generation.include_environment_signals
+    ):
+        from ravn.resident_opportunity import (  # noqa: PLC0415
+            MimirEnvironmentSignalOpportunitySource,
+        )
 
-            async def _process_with_wakefulness(event: Any) -> Any:
+        resident_signal_recorder = MimirEnvironmentSignalOpportunitySource(mimir)
+
+    async def _process_resident_signal(event: Any) -> Any:
+        result: dict[str, Any] = {}
+        if resident_signal_recorder is not None:
+            ref = await resident_signal_recorder.write_event(event)
+            result.update(
+                {
+                    "residentAutonomySignalPersisted": True,
+                    "residentAutonomySignalRef": ref,
+                }
+            )
+        if resident_learning_runtime is not None:
+            if resident_wakefulness is not None:
                 resident_wakefulness.notify_activity()
-                return await process_signal(event)
+            learned = await resident_learning_runtime.process_signal(event)
+            if isinstance(learned, dict):
+                result.update(learned)
+            elif learned is not None:
+                result["residentLearningResult"] = learned
+        return result or None
 
-            resident_signal_processor = _process_with_wakefulness
-        else:
-            resident_signal_processor = process_signal
+    if resident_learning_runtime is not None:
+        resident_signal_processor = _process_resident_signal
+    elif resident_signal_recorder is not None:
+        resident_signal_processor = _process_resident_signal
 
     return EnvironmentSignalRuntime(
         settings=settings,
@@ -3647,6 +3674,7 @@ def _wire_mimir_triggers(
             )
             from ravn.resident_operator_contact import ingest_resident_operator_reply
             from ravn.resident_opportunity import (
+                MimirEnvironmentSignalOpportunitySource,
                 ResidentOpportunityConfig,
                 build_mimir_opportunity_runtime,
             )
@@ -3846,6 +3874,11 @@ def _wire_mimir_triggers(
                             )
                         )
                     )
+                if (
+                    opportunity_cfg.include_environment_signals
+                    and any(source.enabled for source in settings.environment.signal_sources)
+                ):
+                    opportunity_sources.append(MimirEnvironmentSignalOpportunitySource(mimir))
                 opportunity_runtime = build_mimir_opportunity_runtime(
                     mimir=mimir,
                     sources=tuple(opportunity_sources),
