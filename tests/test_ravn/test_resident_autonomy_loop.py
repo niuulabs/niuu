@@ -577,6 +577,44 @@ async def test_daemon_resident_autonomy_trigger_runs_wake_extensions(
 
 
 @pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_stops_for_pending_extension(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+
+    class PendingExtensionResult:
+        persisted_refs = ("resident/physical/operator-needed/latest.md",)
+        final_suggested_next_action = "wait for operator"
+        operator_pending = True
+
+    async def run_extension(mandate: str) -> PendingExtensionResult:
+        await backend.append_decision(mandate, "extension requested operator input")
+        return PendingExtensionResult()
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_extensions=(
+            ResidentWakeExtension(name="pending_extension", run=run_extension),
+        ),
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        poll_interval_seconds=0.01,
+    )
+
+    result = await trigger.run_once()
+    decisions = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    ]
+
+    assert isinstance(result, PendingExtensionResult)
+    assert any("extension requested operator input" in item for item in decisions)
+    assert any("[resident_wake_extension] pending_extension" in item for item in decisions)
+    assert not (tmp_path / "local-worker").exists()
+
+
+@pytest.mark.asyncio
 async def test_daemon_resident_autonomy_trigger_sleeps_for_pending_operator(
     tmp_path: Path,
 ) -> None:

@@ -3649,6 +3649,11 @@ def _wire_mimir_triggers(
                 ResidentOpportunityConfig,
                 build_mimir_opportunity_runtime,
             )
+            from ravn.resident_physical import (
+                MimirResidentPhysicalMemory,
+                ResidentPhysicalRuntime,
+                run_resident_physical_wake_pass,
+            )
             from ravn.resident_portfolio import (
                 MimirResidentWorkItemBackend,
                 ResidentAutonomyLoopConfig,
@@ -3803,6 +3808,43 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="capability_discovery",
                         run=capability_runtime.run,
+                    )
+                )
+
+            physical_runtimes = []
+            for device_cfg in settings.environment.physical_devices:
+                if not device_cfg.enabled:
+                    continue
+                if not device_cfg.adapter.strip():
+                    logger.warning(
+                        "resident_autonomy: skipping enabled physical device without adapter"
+                    )
+                    continue
+                device_cls = _import_class(device_cfg.adapter)
+                device_kwargs = _inject_secrets(
+                    dict(device_cfg.kwargs),
+                    device_cfg.secret_kwargs_env,
+                )
+                device_kwargs.setdefault(
+                    "timeout_seconds",
+                    float(device_cfg.command_timeout_seconds),
+                )
+                device_kwargs.setdefault("max_output_bytes", int(device_cfg.max_output_bytes))
+                physical_runtimes.append(
+                    ResidentPhysicalRuntime(
+                        device=device_cls(**device_kwargs),
+                        memory=MimirResidentPhysicalMemory(mimir),
+                        continuation_memory=continuation_memory,
+                    )
+                )
+            if physical_runtimes:
+                wake_extensions.append(
+                    ResidentWakeExtension(
+                        name="physical_world",
+                        run=lambda active_mandate: run_resident_physical_wake_pass(
+                            active_mandate,
+                            tuple(physical_runtimes),
+                        ),
                     )
                 )
 

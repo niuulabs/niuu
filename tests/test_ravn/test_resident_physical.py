@@ -6,7 +6,11 @@ from pathlib import Path
 from ravn.adapters.physical.command import CommandPhysicalDeviceAdapter
 from ravn.domain.physical_device import PhysicalActionKind, PhysicalActionRequest
 from ravn.resident_continuation import LocalResidentMemory
-from ravn.resident_physical import LocalResidentPhysicalMemory, ResidentPhysicalRuntime
+from ravn.resident_physical import (
+    LocalResidentPhysicalMemory,
+    ResidentPhysicalRuntime,
+    run_resident_physical_wake_pass,
+)
 
 MANDATE = (
     "A resident Ravn should safely inspect and improve a physical-world domain. "
@@ -119,3 +123,41 @@ async def test_physical_operation_is_blocked_before_command_executes(tmp_path: P
     assert not marker.exists()
     assert (tmp_path / "memory" / "resident/continuation/operator-needed/latest.md").exists()
     assert "Wait for operator approval" in report.reasoning.safe_next_action
+
+
+async def test_physical_wake_pass_collects_safe_evidence_and_blocks_operation(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "marker.txt"
+    memory = LocalResidentMemory(tmp_path / "memory")
+    report = await run_resident_physical_wake_pass(
+        MANDATE,
+        (
+            ResidentPhysicalRuntime(
+                device=_adapter(tmp_path),
+                memory=LocalResidentPhysicalMemory(tmp_path / "memory"),
+                continuation_memory=memory,
+            ),
+        ),
+    )
+
+    assert report.operator_pending is True
+    assert not marker.exists()
+    assert any(item.capabilities for item in report.reports)
+    assert any(
+        result.kind == PhysicalActionKind.READ_ONLY.value
+        for item in report.reports
+        for result in item.results
+    )
+    assert any(
+        result.kind == PhysicalActionKind.DRY_RUN.value
+        for item in report.reports
+        for result in item.results
+    )
+    assert any(
+        result.kind == PhysicalActionKind.PHYSICAL_OPERATION.value
+        and result.approval_required
+        for item in report.reports
+        for result in item.results
+    )
+    assert "Wait for operator approval" in report.final_suggested_next_action

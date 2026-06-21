@@ -67,6 +67,17 @@ class ResidentPhysicalReport:
     persisted_refs: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ResidentPhysicalWakeReport:
+    """Aggregated resident physical-world pass for one daemon wake."""
+
+    mandate: str
+    reports: tuple[ResidentPhysicalReport, ...]
+    persisted_refs: tuple[str, ...]
+    operator_pending: bool = False
+    final_suggested_next_action: str = "No configured physical capability needed attention."
+
+
 class ResidentPhysicalMemoryPort(Protocol):
     """Persistence boundary for resident physical-world artifacts."""
 
@@ -360,6 +371,72 @@ class ResidentPhysicalRuntime:
         )
 
 
+async def run_resident_physical_wake_pass(
+    mandate: str,
+    runtimes: tuple[ResidentPhysicalRuntime, ...],
+) -> ResidentPhysicalWakeReport:
+    """Run safe physical-world resident checks for configured device runtimes."""
+    reports: list[ResidentPhysicalReport] = []
+    refs: list[str] = []
+    operator_pending = False
+    for runtime in runtimes:
+        discovered = await runtime.discover(mandate)
+        reports.append(discovered)
+        refs.extend(discovered.persisted_refs)
+        operation_gate_checked = False
+        for capability in discovered.capabilities:
+            if capability.telemetry_supported:
+                report = await runtime.read_telemetry(mandate, capability.id)
+                reports.append(report)
+                refs.extend(report.persisted_refs)
+            if capability.dry_run_supported:
+                report = await runtime.dry_run(
+                    mandate,
+                    PhysicalActionRequest(
+                        capability_id=capability.id,
+                        action=f"Run configured dry-run for {capability.name}",
+                        kind=PhysicalActionKind.DRY_RUN.value,
+                        reason=(
+                            "Daemon resident physical wake pass uses dry-run evidence "
+                            "before any physical operation."
+                        ),
+                        risk_boundaries=capability.risk_boundaries,
+                    ),
+                )
+                reports.append(report)
+                refs.extend(report.persisted_refs)
+            if (
+                not operation_gate_checked
+                and PhysicalActionKind.PHYSICAL_OPERATION.value in capability.action_kinds
+            ):
+                report = await runtime.execute(
+                    mandate,
+                    PhysicalActionRequest(
+                        capability_id=capability.id,
+                        action=f"Request approval boundary for {capability.name}",
+                        kind=PhysicalActionKind.PHYSICAL_OPERATION.value,
+                        reason=(
+                            "Confirm hard policy blocks real physical operation until "
+                            "operator approval is present."
+                        ),
+                        risk_boundaries=capability.risk_boundaries,
+                    ),
+                )
+                reports.append(report)
+                refs.extend(report.persisted_refs)
+                operator_pending = operator_pending or any(
+                    item.approval_required for item in report.results
+                )
+                operation_gate_checked = True
+    return ResidentPhysicalWakeReport(
+        mandate=mandate,
+        reports=tuple(reports),
+        persisted_refs=tuple(refs),
+        operator_pending=operator_pending,
+        final_suggested_next_action=_physical_wake_next_action(tuple(reports)),
+    )
+
+
 def _request_with_kind(
     request: PhysicalActionRequest,
     kind: str,
@@ -426,6 +503,23 @@ def _reason_from_results(
         evidence_refs=refs,
         risk_boundaries=risks,
     )
+
+
+def _physical_wake_next_action(reports: tuple[ResidentPhysicalReport, ...]) -> str:
+    blocked = [
+        result
+        for report in reports
+        for result in report.results
+        if result.approval_required or result.status == "blocked"
+    ]
+    if blocked:
+        return "Wait for operator approval before attempting physical operation."
+    results = [result for report in reports for result in report.results]
+    if results:
+        return "Use persisted physical telemetry and dry-run evidence in resident planning."
+    if reports:
+        return "Configured physical capabilities were discovered; choose read-only evidence next."
+    return "No configured physical capability needed attention."
 
 
 def _render_capability(capability: PhysicalCapability) -> str:

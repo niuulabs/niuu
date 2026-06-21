@@ -133,6 +133,12 @@ class ResidentAutonomyTrigger(TriggerPort):
                     f"next={getattr(result, 'final_suggested_next_action', '')}"
                 ),
             )
+            if bool(getattr(result, "operator_pending", False)):
+                logger.info(
+                    "ResidentAutonomyTrigger: wake extension %s is waiting for operator input",
+                    extension.name,
+                )
+                return result
 
         if self._portfolio_manager is not None:
             portfolio_run = await self._portfolio_manager.run(self._mandate)
