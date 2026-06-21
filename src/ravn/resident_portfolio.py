@@ -1753,11 +1753,13 @@ class ResidentDelegationRuntime:
             updated_objectives.extend(abandoned)
 
         selection_objectives = tuple(objective_updates.values())
+        active_delegation_count = _active_unresolved_delegation_count(delegations)
+        launch_capacity = max(0, self._config.max_delegations - active_delegation_count)
         selected, gated = select_delegation_candidates(
             selection_objectives,
             delegations=delegations,
             mandate=mandate,
-            max_selected=self._config.max_delegations,
+            max_selected=launch_capacity,
             approved_risk_objective_ids=self._config.approved_risk_objective_ids,
         )
 
@@ -2468,6 +2470,21 @@ def select_delegation_candidates(
         if len(selected) < max_selected:
             selected.append(objective)
     return tuple(selected), tuple(gated)
+
+
+def _active_unresolved_delegation_count(
+    delegations: tuple[ResidentDelegationRecord, ...],
+) -> int:
+    return sum(
+        1
+        for item in delegations
+        if not item.result_refs
+        if item.status
+        in {
+            ResidentDelegationStatus.LAUNCHED.value,
+            ResidentDelegationStatus.RUNNING.value,
+        }
+    )
 
 
 def merge_objectives(objectives: tuple[ResidentObjective, ...]) -> tuple[ResidentObjective, ...]:

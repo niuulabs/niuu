@@ -264,6 +264,35 @@ async def test_multiple_delegated_workstreams_can_exist_at_once(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_active_delegation_consumes_launch_capacity(tmp_path: Path) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    active = _objective("active", "Already delegated objective")
+    next_objective = _objective("next", "Next delegated objective")
+    await _write_portfolio(backend, active, next_objective)
+    existing = ResidentDelegationRecord(
+        id="delegation-active",
+        source_objective_id=active.id,
+        backend_session_id="session-active",
+        backend_name="recording",
+        brief=build_worker_brief(MANDATE, active),
+        status=ResidentDelegationStatus.RUNNING.value,
+        reason="already delegated",
+    )
+    await backend.write_delegation(existing)
+    executor = StaleDelegationExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_delegations=1),
+    ).run(MANDATE)
+
+    assert report.created_delegations == ()
+    assert executor.launched == []
+    assert report.observed_results == ()
+
+
+@pytest.mark.asyncio
 async def test_risky_work_creates_operator_objective_instead_of_launching(
     tmp_path: Path,
 ) -> None:

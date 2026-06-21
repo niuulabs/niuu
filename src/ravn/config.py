@@ -2711,7 +2711,9 @@ class ResidentDelegationExecutionConfig(BaseModel):
     )
     max_delegations: int = Field(
         default=1,
-        description="Maximum worker sessions launched by one delegation pass.",
+        description=(
+            "Maximum concurrent unresolved worker sessions managed by one delegation pass."
+        ),
     )
     max_observations: int = Field(
         default=4,
