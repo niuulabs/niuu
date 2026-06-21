@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from ravn.resident_portfolio import (
     select_delegation_candidates,
 )
 from scripts.prove_resident_delegation import (
+    _cancelled_real_delegation_records,
     _observed_real_results,
     _real_delegation_records,
     _sample_delegation_result_pair,
@@ -66,6 +68,41 @@ class RecordingExecutor:
         )
 
     async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.CANCELLED.value,
+            backend_name="recording",
+            summary=reason,
+        )
+
+
+class StaleDelegationExecutor:
+    def __init__(self) -> None:
+        self.cancelled: list[tuple[str, str]] = []
+        self.launched: list[ResidentWorkerBrief] = []
+
+    async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
+        self.launched.append(brief)
+        return ResidentExecutionSession(
+            session_id=f"unexpected-{brief.objective_id}",
+            status=ResidentDelegationStatus.RUNNING.value,
+            backend_name="recording",
+            summary="unexpected launch",
+        )
+
+    async def read_status(self, session_id: str) -> ResidentExecutionSession:
+        return ResidentExecutionSession(
+            session_id=session_id,
+            status=ResidentDelegationStatus.RUNNING.value,
+            backend_name="recording",
+            summary="still running",
+        )
+
+    async def read_result(self, session_id: str) -> ResidentExecutionResult | None:
+        return None
+
+    async def cancel(self, session_id: str, reason: str) -> ResidentExecutionSession:
+        self.cancelled.append((session_id, reason))
         return ResidentExecutionSession(
             session_id=session_id,
             status=ResidentDelegationStatus.CANCELLED.value,
@@ -270,6 +307,49 @@ async def test_results_merge_back_into_portfolio_and_create_followups(
     assert any("Follow up delegated result" in item.title for item in objectives.values())
 
 
+@pytest.mark.asyncio
+async def test_resident_abandons_stale_delegation_without_relaunching(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    objective = _objective("stale", "Stale delegated objective")
+    await _write_portfolio(backend, objective)
+    stale_record = ResidentDelegationRecord(
+        id="delegation-stale",
+        source_objective_id=objective.id,
+        backend_session_id="session-stale",
+        backend_name="recording",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.RUNNING.value,
+        reason="resident launched this previously",
+        updated_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    await backend.write_delegation(stale_record)
+    executor = StaleDelegationExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_delegations=1, abandon_after_seconds=1),
+    ).run(MANDATE)
+
+    delegations = {item.id: item for item in await backend.list_delegations(MANDATE)}
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+
+    assert len(executor.cancelled) == 1
+    assert executor.cancelled[0][0] == "session-stale"
+    assert "abandoning stale delegated session" in executor.cancelled[0][1]
+    assert executor.launched == []
+    assert report.created_delegations == ()
+    assert delegations["delegation-stale"].status == ResidentDelegationStatus.CANCELLED.value
+    assert objectives["stale"].status == ResidentObjectiveStatus.BLOCKED.value
+    assert any(
+        "delegation delegation-stale abandoned" in item
+        for item in objectives["stale"].proof_progress
+    )
+    assert any(item.id == "stale" for item in report.updated_objectives)
+
+
 def test_resident_delegation_contains_no_domain_specific_playbook_terms() -> None:
     source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
 
@@ -307,6 +387,15 @@ def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
         status=ResidentDelegationStatus.COMPLETED.value,
         reason="real worker proof",
     )
+    cancelled = ResidentDelegationRecord(
+        id="delegation-cancelled",
+        source_objective_id=objective.id,
+        backend_session_id="cancelled-session",
+        backend_name="workflow",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.CANCELLED.value,
+        reason="resident abandoned stale worker",
+    )
     unmatched = ResidentExecutionResult(
         session_id="other-session",
         status=ResidentDelegationStatus.COMPLETED.value,
@@ -324,12 +413,13 @@ def test_delegation_proof_helpers_match_results_to_real_sessions() -> None:
         output_refs=("forge/sessions/real-session/conversation.md",),
     )
 
-    real_records = _real_delegation_records([local, real])
+    real_records = _real_delegation_records([local, real, cancelled])
     real_results = _observed_real_results(real_records, [unmatched, failed, matched])
     successful_results = _successful_real_results(real_records, [unmatched, failed, matched])
-    sample = _sample_delegation_result_pair([local, real], [unmatched, matched])
+    sample = _sample_delegation_result_pair([local, real, cancelled], [unmatched, matched])
 
-    assert real_records == [real]
+    assert real_records == [real, cancelled]
+    assert _cancelled_real_delegation_records([local, real, cancelled]) == [cancelled]
     assert real_results == [failed, matched]
     assert successful_results == [matched]
     assert sample == (real, matched)

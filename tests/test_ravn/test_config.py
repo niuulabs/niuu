@@ -196,6 +196,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.secret_kwargs_env == {}
         assert c.max_delegations == 1
         assert c.max_observations > 0
+        assert c.abandon_after_seconds == 0.0
 
     def test_dynamic_adapter_config_accepts_kwargs_and_bounds(self) -> None:
         c = ResidentDelegationExecutionConfig(
@@ -204,6 +205,7 @@ class TestResidentDelegationExecutionConfig:
             secret_kwargs_env={"token": "VOLUNDR_TOKEN"},
             max_delegations=3,
             approved_risk_objective_ids=("approved-objective",),
+            abandon_after_seconds=3600.0,
         )
 
         assert c.adapter == "pkg.RealResidentExecutor"
@@ -211,6 +213,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.secret_kwargs_env["token"] == "VOLUNDR_TOKEN"
         assert c.max_delegations == 3
         assert c.approved_risk_objective_ids == ("approved-objective",)
+        assert c.abandon_after_seconds == 3600.0
 
 
 class TestPhysicalDeviceConfig:

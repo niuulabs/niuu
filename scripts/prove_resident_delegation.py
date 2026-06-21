@@ -79,6 +79,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="After successful assertions, cancel real sessions launched by this proof run.",
     )
+    parser.add_argument(
+        "--require-cancelled-session",
+        action="store_true",
+        help=(
+            "Fail unless the resident runtime cancelled at least one real delegated "
+            "worker session before proof cleanup."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -189,6 +197,16 @@ def _successful_real_results(
     ]
 
 
+def _cancelled_real_delegation_records(
+    delegations: list[ResidentDelegationRecord],
+) -> list[ResidentDelegationRecord]:
+    return [
+        delegation
+        for delegation in _real_delegation_records(delegations)
+        if delegation.status == ResidentDelegationStatus.CANCELLED.value
+    ]
+
+
 def _sample_delegation_result_pair(
     delegations: list[ResidentDelegationRecord],
     observed_results: list[ResidentExecutionResult],
@@ -240,6 +258,7 @@ async def _main() -> None:
             max_observations=max(1, int(delegation_cfg.max_observations)),
             max_follow_up_objectives=max(0, int(delegation_cfg.max_follow_up_objectives)),
             approved_risk_objective_ids=tuple(delegation_cfg.approved_risk_objective_ids),
+            abandon_after_seconds=max(0.0, float(delegation_cfg.abandon_after_seconds)),
         ),
     )
     report = await runtime.run(mandate)
@@ -311,6 +330,26 @@ async def _main() -> None:
         raise SystemExit("[proof] local delegation backends do not count as real proof")
     if args.require_real_session and not real_delegations:
         raise SystemExit("[proof] expected at least one real delegated worker session")
+    cancelled_real_delegations = _cancelled_real_delegation_records(list(delegations))
+    if args.require_cancelled_session and not real_delegations:
+        raise SystemExit("[proof] expected at least one real delegated worker session")
+    if args.require_cancelled_session and not cancelled_real_delegations:
+        raise SystemExit("[proof] expected at least one resident-cancelled real worker session")
+    if args.require_cancelled_session:
+        print(f"[proof] cancelled_real_sessions={len(cancelled_real_delegations)}")
+        for delegation in cancelled_real_delegations:
+            print(
+                "[proof] resident_cancelled="
+                f"{delegation.id} session={delegation.backend_session_id}"
+            )
+        if not any(
+            objective.status == ResidentObjectiveStatus.BLOCKED.value
+            for objective in after_objectives
+            if objective.id in {delegation.source_objective_id for delegation in real_delegations}
+        ):
+            raise SystemExit("[proof] expected cancelled source objective to be blocked")
+        return
+
     if not observed_results:
         raise SystemExit("[proof] expected observed delegated results")
     if args.require_real_session and not _successful_real_results(

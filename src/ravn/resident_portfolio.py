@@ -135,6 +135,7 @@ class ResidentDelegationConfig:
     max_observations: int = 4
     max_follow_up_objectives: int = 4
     approved_risk_objective_ids: tuple[str, ...] = ()
+    abandon_after_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,7 @@ class ResidentAutonomyLoopConfig:
     max_review_attempts: int = 4
     max_wall_clock_seconds: float = 1800.0
     approved_risk_objective_ids: tuple[str, ...] = ()
+    abandon_after_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1730,24 +1732,36 @@ class ResidentDelegationRuntime:
     async def run(self, mandate: str) -> ResidentDelegationReport:
         objectives = tuple(await self._backend.list_objectives(mandate))
         delegations = tuple(await self._backend.list_delegations(mandate))
+        persisted_refs: list[str] = []
+        updated_objectives: list[ResidentObjective] = []
+        objective_updates: dict[str, ResidentObjective] = {item.id: item for item in objectives}
+
+        abandoned = await self._abandon_stale_delegations(
+            objectives=objectives,
+            delegations=delegations,
+            objective_updates=objective_updates,
+            persisted_refs=persisted_refs,
+        )
+        if abandoned:
+            delegations = tuple(await self._backend.list_delegations(mandate))
+            updated_objectives.extend(abandoned)
+
+        selection_objectives = tuple(objective_updates.values())
         selected, gated = select_delegation_candidates(
-            objectives,
+            selection_objectives,
             delegations=delegations,
             mandate=mandate,
             max_selected=self._config.max_delegations,
             approved_risk_objective_ids=self._config.approved_risk_objective_ids,
         )
 
-        persisted_refs: list[str] = []
         created_delegations: list[ResidentDelegationRecord] = []
-        updated_objectives: list[ResidentObjective] = []
         follow_ups: list[ResidentObjective] = []
         operator_questions: list[str] = []
         reviews: list[ResidentDelegationReview] = []
-        objective_updates: dict[str, ResidentObjective] = {item.id: item for item in objectives}
         pending_operator_questions = {
             objective.pending_question
-            for objective in objectives
+            for objective in selection_objectives
             if objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value
             if objective.pending_question
         }
@@ -1901,6 +1915,58 @@ class ResidentDelegationRuntime:
             ),
         )
 
+    async def _abandon_stale_delegations(
+        self,
+        *,
+        objectives: tuple[ResidentObjective, ...],
+        delegations: tuple[ResidentDelegationRecord, ...],
+        objective_updates: dict[str, ResidentObjective],
+        persisted_refs: list[str],
+    ) -> list[ResidentObjective]:
+        max_age = float(self._config.abandon_after_seconds)
+        if max_age <= 0:
+            return []
+        now = datetime.now(UTC)
+        updated: list[ResidentObjective] = []
+        for record in delegations:
+            if record.result_refs:
+                continue
+            if record.status not in {
+                ResidentDelegationStatus.LAUNCHED.value,
+                ResidentDelegationStatus.RUNNING.value,
+            }:
+                continue
+            age = (now - record.updated_at).total_seconds()
+            if age < max_age:
+                continue
+            reason = (
+                f"abandoning stale delegated session after {int(age)}s without result refs"
+            )
+            cancelled = await self._executor.cancel(record.backend_session_id, reason)
+            updated_record = record.with_updates(
+                status=cancelled.status,
+                reason=_compact_line(f"{record.reason}; {reason}", limit=240),
+            )
+            persisted_refs.append(await self._backend.write_delegation(updated_record))
+            source = _objective_by_id_or_none(objectives, record.source_objective_id)
+            if source is None:
+                continue
+            blocked = source.with_updates(
+                status=ResidentObjectiveStatus.BLOCKED.value,
+                proof_progress=_merge_text(
+                    source.proof_progress,
+                    (
+                        f"delegation {record.id} abandoned: "
+                        f"{cancelled.status}: {cancelled.summary or reason}",
+                    ),
+                ),
+                last_reviewed_at=now,
+            )
+            objective_updates[source.id] = blocked
+            updated.append(blocked)
+            persisted_refs.append(await self._backend.write_objective(blocked))
+        return updated
+
     async def _persist_portfolio(
         self,
         mandate: str,
@@ -1969,6 +2035,7 @@ class ResidentAutonomyLoopRuntime:
                     max_observations=self._config.max_observations_per_cycle,
                     max_follow_up_objectives=self._config.max_review_attempts,
                     approved_risk_objective_ids=tuple(sorted(approved_risk_objective_ids)),
+                    abandon_after_seconds=self._config.abandon_after_seconds,
                 ),
             ).run(mandate)
             operator_questions.extend(delegation.operator_questions)

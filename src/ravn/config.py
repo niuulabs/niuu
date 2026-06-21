@@ -2725,6 +2725,13 @@ class ResidentDelegationExecutionConfig(BaseModel):
         default_factory=tuple,
         description="Risky objective ids explicitly approved for delegated execution.",
     )
+    abandon_after_seconds: float = Field(
+        default=0.0,
+        description=(
+            "Cancel launched/running delegated sessions with no result refs after this many "
+            "seconds; 0 disables automatic abandonment."
+        ),
+    )
 
 
 class ResidentReviewConfig(BaseModel):

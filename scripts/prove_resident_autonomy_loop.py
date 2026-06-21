@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
-
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.events import RavnEvent
@@ -212,6 +211,10 @@ async def _main() -> None:
             ),
             approved_risk_objective_ids=tuple(
                 settings.resident_delegation_execution.approved_risk_objective_ids
+            ),
+            abandon_after_seconds=max(
+                0.0,
+                float(settings.resident_delegation_execution.abandon_after_seconds),
             ),
         ),
     ).run(mandate)
