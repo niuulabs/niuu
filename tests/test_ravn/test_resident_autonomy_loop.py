@@ -533,6 +533,36 @@ async def test_daemon_resident_autonomy_trigger_runs_kernel_once(
 
 
 @pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_sleeps_when_no_work_needs_attention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        poll_interval_seconds=0.01,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+
+    assert run is None
+    assert wake_records == []
+    assert not (tmp_path / "local-worker").exists()
+    assert decisions
+    assert "slept: no resident work currently needs autonomy loop attention" in decisions[
+        -1
+    ].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_daemon_resident_autonomy_trigger_runs_wake_extensions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

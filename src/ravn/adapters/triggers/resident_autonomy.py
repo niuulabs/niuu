@@ -11,7 +11,11 @@ from typing import Any
 
 from ravn.domain.models import AgentTask
 from ravn.domain.operator_contact import OperatorContactPort
-from ravn.domain.resident_portfolio import ResidentObjectiveStatus, ResidentWorkItemBackend
+from ravn.domain.resident_portfolio import (
+    ResidentDelegationStatus,
+    ResidentObjectiveStatus,
+    ResidentWorkItemBackend,
+)
 from ravn.domain.wakeful_resident import WakefulResidentMemoryPort
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_portfolio import ResidentAutonomyLoopConfig, ResidentAutonomyLoopRuntime
@@ -165,6 +169,17 @@ class ResidentAutonomyTrigger(TriggerPort):
                 len(portfolio_run.advanced_objectives),
             )
 
+        if not await self._has_resident_work():
+            await self._backend.append_decision(
+                self._mandate,
+                (
+                    f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
+                    "slept: no resident work currently needs autonomy loop attention"
+                ),
+            )
+            logger.info("ResidentAutonomyTrigger: sleeping; no resident work is available")
+            return None
+
         run = await ResidentAutonomyLoopRuntime(
             backend=self._backend,
             executor=self._executor,
@@ -279,6 +294,15 @@ class ResidentAutonomyTrigger(TriggerPort):
                 return objective
         return None
 
+    async def _has_resident_work(self) -> bool:
+        objectives = await self._backend.list_objectives(self._mandate)
+        if any(_objective_needs_autonomy_loop(objective) for objective in objectives):
+            return True
+        if not hasattr(self._backend, "list_delegations"):
+            return False
+        delegations = await self._backend.list_delegations(self._mandate)
+        return any(_delegation_needs_autonomy_loop(delegation) for delegation in delegations)
+
 
 def _operator_marker_question(content: str) -> str:
     for line in content.splitlines():
@@ -286,3 +310,21 @@ def _operator_marker_question(content: str) -> str:
         if stripped.startswith("- question:"):
             return stripped.split(":", 1)[1].strip() or "operator input needed"
     return "operator input needed"
+
+
+def _objective_needs_autonomy_loop(objective: Any) -> bool:
+    return str(getattr(objective, "status", "")) not in {
+        ResidentObjectiveStatus.COMPLETED.value,
+        ResidentObjectiveStatus.CANCELLED.value,
+        ResidentObjectiveStatus.SUPERSEDED.value,
+        ResidentObjectiveStatus.NEEDS_OPERATOR.value,
+    }
+
+
+def _delegation_needs_autonomy_loop(delegation: Any) -> bool:
+    return str(getattr(delegation, "status", "")) not in {
+        ResidentDelegationStatus.COMPLETED.value,
+        ResidentDelegationStatus.CANCELLED.value,
+        ResidentDelegationStatus.FAILED.value,
+        ResidentDelegationStatus.UNAVAILABLE.value,
+    }
