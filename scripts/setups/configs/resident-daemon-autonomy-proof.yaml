@@ -86,6 +86,30 @@ resident_delegation_execution:
   max_follow_up_objectives: 4
   abandon_after_seconds: 0
 
+resident_opportunity_generation:
+  enabled: true
+  sources:
+    - adapter: ravn.adapters.opportunity.web_search.WebSearchOpportunitySource
+      enabled: true
+      kwargs:
+        num_results: 3
+        query_templates:
+          - "{domain} tabletop terrain customer pain points"
+          - "{domain} 3d printing workflow improvements"
+          - "{domain} miniature terrain market trends"
+  max_signals: 6
+  max_candidates: 4
+  max_selected: 2
+
+resident_capability_discovery:
+  enabled: true
+  adapter: ravn.adapters.capabilities.resident_discovery.CatalogWebCapabilityDiscoveryBackend
+  include_builtin_catalog: true
+  kwargs:
+    num_results: 3
+  max_options: 4
+  max_follow_up_objectives: 3
+
 budget:
   daily_cap_usd: 5.0
 

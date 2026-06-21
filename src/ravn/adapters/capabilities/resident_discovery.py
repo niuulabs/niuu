@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
-
 from ravn.domain.capability_catalog import Capability, CapabilityKind
 from ravn.domain.resident_portfolio import (
     CapabilityDiscoveryPort,
@@ -53,7 +52,9 @@ class CatalogWebCapabilityDiscoveryBackend(CapabilityDiscoveryPort):
         )
         self._search: WebSearchPort = provider_cls(**provider_kwargs)
         self._num_results = max(1, int(num_results))
-        self._candidate_adapter_configs = tuple(dict(item) for item in candidate_adapter_configs or ())
+        self._candidate_adapter_configs = tuple(
+            dict(item) for item in candidate_adapter_configs or ()
+        )
 
     async def discover(
         self,
@@ -116,7 +117,9 @@ class CatalogWebCapabilityDiscoveryBackend(CapabilityDiscoveryPort):
             candidate_options=options,
             recommended_option_id=recommended.id if recommended else "",
             recommended_safe_next_experiment=(
-                recommended.safe_next_experiment if recommended else "Record that no path was found."
+                recommended.safe_next_experiment
+                if recommended
+                else "Record that no path was found."
             ),
             unresolved_questions=(
                 ("What approval boundary applies?",) if gap.risk_boundaries else ()
@@ -129,6 +132,26 @@ class CatalogWebCapabilityDiscoveryBackend(CapabilityDiscoveryPort):
             research_evidence=research_evidence,
             configuration_evidence=configuration_evidence,
         )
+
+
+def builtin_tool_capabilities() -> list[dict[str, Any]]:
+    """Return built-in Ravn tools as capability-catalog config records."""
+    from ravn.adapters.tools.builtin_registry import BUILTIN_TOOLS
+
+    capabilities: list[dict[str, Any]] = []
+    for name, tool_def in sorted(BUILTIN_TOOLS.items()):
+        capabilities.append(
+            {
+                "id": f"tool:{name}",
+                "kind": CapabilityKind.TOOL.value,
+                "name": name,
+                "description": tool_def.adapter,
+                "tags": sorted(tool_def.groups),
+                "source": "ravn.builtin_registry",
+                "metadata": {"adapter": tool_def.adapter},
+            }
+        )
+    return capabilities
 
 
 def _capability_from_config(raw: Capability | dict[str, Any]) -> Capability:

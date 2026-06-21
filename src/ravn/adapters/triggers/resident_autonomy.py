@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +17,14 @@ from ravn.ports.trigger import TriggerPort
 from ravn.resident_portfolio import ResidentAutonomyLoopConfig, ResidentAutonomyLoopRuntime
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ResidentWakeExtension:
+    """One ordered resident layer pass run inside the daemon wake sequence."""
+
+    name: str
+    run: Callable[[str], Awaitable[Any]]
 
 
 class ResidentAutonomyTrigger(TriggerPort):
@@ -36,6 +45,7 @@ class ResidentAutonomyTrigger(TriggerPort):
         expert_memory: Any | None = None,
         ask_operator: OperatorContactPort | None = None,
         portfolio_manager: Any | None = None,
+        wake_extensions: Sequence[ResidentWakeExtension] = (),
         loop_config: ResidentAutonomyLoopConfig | None = None,
         poll_interval_seconds: float = 300.0,
         initial_delay_seconds: float = 0.0,
@@ -48,6 +58,7 @@ class ResidentAutonomyTrigger(TriggerPort):
         self._expert_memory = expert_memory
         self._ask_operator = ask_operator
         self._portfolio_manager = portfolio_manager
+        self._wake_extensions = tuple(wake_extensions)
         self._loop_config = loop_config or ResidentAutonomyLoopConfig()
         self._poll_interval_seconds = max(0.0, poll_interval_seconds)
         self._initial_delay_seconds = max(0.0, initial_delay_seconds)
@@ -104,6 +115,24 @@ class ResidentAutonomyTrigger(TriggerPort):
                     ref,
                 )
                 return None
+
+        for extension in self._wake_extensions:
+            result = await extension.run(self._mandate)
+            refs = tuple(getattr(result, "persisted_refs", ()) or ())
+            logger.info(
+                "ResidentAutonomyTrigger: wake extension %s completed (refs=%d, next=%s)",
+                extension.name,
+                len(refs),
+                getattr(result, "final_suggested_next_action", ""),
+            )
+            await self._backend.append_decision(
+                self._mandate,
+                (
+                    f"{datetime.now(UTC).isoformat()} [resident_wake_extension] "
+                    f"{extension.name} refs={len(refs)} "
+                    f"next={getattr(result, 'final_suggested_next_action', '')}"
+                ),
+            )
 
         if self._portfolio_manager is not None:
             portfolio_run = await self._portfolio_manager.run(self._mandate)

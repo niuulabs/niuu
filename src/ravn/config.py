@@ -2583,6 +2583,14 @@ class ResidentEvolutionConfig(BaseModel):
 class ResidentCapabilityDiscoveryConfig(BaseModel):
     """Resident capability discovery adapter and proof bounds."""
 
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the resident daemon should run capability discovery during "
+            "wake passes. Disabled by default because the default local backend "
+            "is useful for development but is not real external discovery proof."
+        ),
+    )
     adapter: str = Field(
         default="ravn.resident_portfolio.LocalCapabilityDiscoveryBackend",
         description=(

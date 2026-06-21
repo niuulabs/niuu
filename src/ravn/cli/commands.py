@@ -3630,7 +3630,10 @@ def _wire_mimir_triggers(
             logger.warning("resident_autonomy: enabled but mandate is empty; skipping")
         else:
             from ravn.adapters.channels.silent import SilentChannel
-            from ravn.adapters.triggers.resident_autonomy import ResidentAutonomyTrigger
+            from ravn.adapters.triggers.resident_autonomy import (
+                ResidentAutonomyTrigger,
+                ResidentWakeExtension,
+            )
             from ravn.domain.operator_contact import (
                 ChannelOperatorContact,
                 PendingOperatorContact,
@@ -3642,11 +3645,19 @@ def _wire_mimir_triggers(
                 ResidentDomainExpertLoop,
             )
             from ravn.resident_operator_contact import ingest_resident_operator_reply
+            from ravn.resident_opportunity import (
+                ResidentOpportunityConfig,
+                build_mimir_opportunity_runtime,
+            )
             from ravn.resident_portfolio import (
                 MimirResidentWorkItemBackend,
                 ResidentAutonomyLoopConfig,
+                ResidentCapabilityDiscoveryRuntime,
                 ResidentLongHorizonWorkManager,
                 ResidentPortfolioConfig,
+            )
+            from ravn.resident_portfolio import (
+                ResidentCapabilityDiscoveryConfig as RuntimeCapabilityDiscoveryConfig,
             )
             from ravn.wakeful_resident import (
                 MimirWakefulResidentMemory,
@@ -3686,6 +3697,7 @@ def _wire_mimir_triggers(
             wake_memory = MimirWakefulResidentMemory(mimir)
             expert_memory = MimirResidentDomainExpertMemory(mimir)
             continuation_memory = MimirResidentMemory(mimir)
+            wake_extensions: list[ResidentWakeExtension] = []
 
             async def _resident_operator_reply_interceptor(
                 content: str,
@@ -3712,6 +3724,87 @@ def _wire_mimir_triggers(
             drive_loop.register_directed_message_interceptor(
                 _resident_operator_reply_interceptor
             )
+
+            opportunity_cfg = settings.resident_opportunity_generation
+            if opportunity_cfg.enabled:
+                opportunity_sources = []
+                for source_cfg in opportunity_cfg.sources:
+                    if not source_cfg.enabled:
+                        continue
+                    source_cls = _import_class(source_cfg.adapter)
+                    opportunity_sources.append(
+                        source_cls(
+                            **_inject_secrets(
+                                dict(source_cfg.kwargs),
+                                source_cfg.secret_kwargs_env,
+                            )
+                        )
+                    )
+                opportunity_runtime = build_mimir_opportunity_runtime(
+                    mimir=mimir,
+                    sources=tuple(opportunity_sources),
+                    expert_memory=expert_memory,
+                    config=ResidentOpportunityConfig(
+                        max_signals=max(0, opportunity_cfg.max_signals),
+                        max_candidates=max(0, opportunity_cfg.max_candidates),
+                        max_selected=max(0, opportunity_cfg.max_selected),
+                        min_total_score=max(0, opportunity_cfg.min_total_score),
+                        score_max=max(1, opportunity_cfg.score_max),
+                        score_mid=max(0, opportunity_cfg.score_mid),
+                        evidence_score_step=max(0, opportunity_cfg.evidence_score_step),
+                        outcome_score_step=max(0, opportunity_cfg.outcome_score_step),
+                        signal_score_step=max(0, opportunity_cfg.signal_score_step),
+                        risk_penalty=max(0, opportunity_cfg.risk_penalty),
+                        cost_penalty=max(0, opportunity_cfg.cost_penalty),
+                        duplicate_penalty=max(0, opportunity_cfg.duplicate_penalty),
+                        rationale_outcome_limit=max(
+                            0,
+                            opportunity_cfg.rationale_outcome_limit,
+                        ),
+                        stop_words=tuple(opportunity_cfg.stop_words),
+                    ),
+                )
+                wake_extensions.append(
+                    ResidentWakeExtension(
+                        name="opportunity_generation",
+                        run=opportunity_runtime.run,
+                    )
+                )
+
+            discovery_cfg = settings.resident_capability_discovery
+            if discovery_cfg.enabled:
+                discovery_cls = _import_class(discovery_cfg.adapter)
+                discovery_kwargs = _inject_secrets(
+                    dict(discovery_cfg.kwargs),
+                    discovery_cfg.secret_kwargs_env,
+                )
+                if discovery_cfg.include_builtin_catalog:
+                    from ravn.adapters.capabilities.resident_discovery import (
+                        builtin_tool_capabilities,
+                    )
+
+                    configured_catalog = list(
+                        discovery_kwargs.get("catalog_capabilities") or []
+                    )
+                    configured_catalog.extend(builtin_tool_capabilities())
+                    discovery_kwargs["catalog_capabilities"] = configured_catalog
+                capability_runtime = ResidentCapabilityDiscoveryRuntime(
+                    backend=backend,
+                    discovery=discovery_cls(**discovery_kwargs),
+                    config=RuntimeCapabilityDiscoveryConfig(
+                        max_options=max(1, discovery_cfg.max_options),
+                        max_follow_up_objectives=max(
+                            0,
+                            discovery_cfg.max_follow_up_objectives,
+                        ),
+                    ),
+                )
+                wake_extensions.append(
+                    ResidentWakeExtension(
+                        name="capability_discovery",
+                        run=capability_runtime.run,
+                    )
+                )
 
             portfolio_manager = None
             if settings.resident_autonomy.bootstrap_portfolio:
@@ -3803,6 +3896,7 @@ def _wire_mimir_triggers(
                     expert_memory=expert_memory,
                     ask_operator=contact,
                     portfolio_manager=portfolio_manager,
+                    wake_extensions=tuple(wake_extensions),
                     loop_config=ResidentAutonomyLoopConfig(
                         max_cycles=max(0, settings.resident_autonomy.max_cycles_per_wake),
                         max_delegations_per_cycle=max(0, exec_cfg.max_delegations),

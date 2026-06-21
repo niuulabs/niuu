@@ -165,6 +165,7 @@ class TestResidentCapabilityDiscoveryConfig:
     def test_defaults_use_existing_local_backend(self) -> None:
         c = ResidentCapabilityDiscoveryConfig()
 
+        assert c.enabled is False
         assert c.adapter == "ravn.resident_portfolio.LocalCapabilityDiscoveryBackend"
         assert c.kwargs == {}
         assert c.secret_kwargs_env == {}
@@ -174,11 +175,13 @@ class TestResidentCapabilityDiscoveryConfig:
 
     def test_dynamic_adapter_config_accepts_kwargs(self) -> None:
         c = ResidentCapabilityDiscoveryConfig(
+            enabled=True,
             adapter="pkg.RealCapabilityDiscovery",
             kwargs={"num_results": 3},
             include_builtin_catalog=True,
         )
 
+        assert c.enabled is True
         assert c.adapter == "pkg.RealCapabilityDiscovery"
         assert c.kwargs["num_results"] == 3
         assert c.include_builtin_catalog is True

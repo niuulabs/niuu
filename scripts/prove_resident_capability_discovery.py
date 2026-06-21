@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
-
+from ravn.adapters.capabilities.resident_discovery import builtin_tool_capabilities
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
-from ravn.domain.capability_catalog import CapabilityKind
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
     ResidentObjectiveKind,
@@ -129,22 +128,7 @@ def _build_discovery(settings: Settings) -> Any:
 
 
 def _builtin_catalog_capabilities() -> list[dict[str, Any]]:
-    from ravn.adapters.tools.builtin_registry import BUILTIN_TOOLS
-
-    capabilities: list[dict[str, Any]] = []
-    for name, tool_def in sorted(BUILTIN_TOOLS.items()):
-        capabilities.append(
-            {
-                "id": f"tool:{name}",
-                "kind": CapabilityKind.TOOL.value,
-                "name": name,
-                "description": tool_def.adapter,
-                "tags": sorted(tool_def.groups),
-                "source": "ravn.builtin_registry",
-                "metadata": {"adapter": tool_def.adapter},
-            }
-        )
-    return capabilities
+    return builtin_tool_capabilities()
 
 
 async def _run_configured_safe_experiment(

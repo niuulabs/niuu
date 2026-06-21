@@ -5,7 +5,10 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.triggers.resident_autonomy import ResidentAutonomyTrigger
+from ravn.adapters.triggers.resident_autonomy import (
+    ResidentAutonomyTrigger,
+    ResidentWakeExtension,
+)
 from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.operator_contact import (
@@ -524,6 +527,53 @@ async def test_daemon_resident_autonomy_trigger_runs_kernel_once(
     assert len(wake_records) == 1
     assert decisions
     assert "resident_autonomy_trigger" in decisions[-1].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_runs_wake_extensions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    order: list[str] = []
+    await _write_portfolio(
+        backend,
+        _objective("extension-one", "Daemon extension objective"),
+    )
+
+    class ExtensionResult:
+        persisted_refs = ("resident/extensions/proof.md",)
+        final_suggested_next_action = "extension completed"
+
+    async def run_extension(mandate: str) -> ExtensionResult:
+        order.append(mandate)
+        await backend.append_decision(mandate, "extension wrote real resident decision")
+        return ExtensionResult()
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_memory=wake_memory,
+        wake_extensions=(
+            ResidentWakeExtension(name="proof_extension", run=run_extension),
+        ),
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        poll_interval_seconds=0.01,
+    )
+
+    run = await trigger.run_once()
+    decisions = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    ]
+
+    assert run is not None
+    assert order == [MANDATE]
+    assert any("extension wrote real resident decision" in item for item in decisions)
+    assert any("[resident_wake_extension] proof_extension" in item for item in decisions)
 
 
 @pytest.mark.asyncio
