@@ -16,13 +16,14 @@ from ravn.domain.resident_expert import (
     ResidentWorkstreamStatus,
     WorkstreamExecutionResult,
 )
-from ravn.domain.wakeful_resident import WakefulResidentDecisionKind
+from ravn.domain.wakeful_resident import WakefulResidentCycleRecord, WakefulResidentDecisionKind
 from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
     WakefulResidentConfig,
     WakefulResidentRuntime,
     derive_attention_reason,
+    derive_runtime_duplication_audit,
 )
 
 MANDATE = (
@@ -146,6 +147,22 @@ def _artifact(path: str = "resident/domain-expert/artifacts/brief.md") -> Expert
         path=path,
         purpose="Capture resident work.",
         summary="A durable resident artifact.",
+    )
+
+
+def _cycle_record_without_runtime_audit() -> WakefulResidentCycleRecord:
+    return WakefulResidentCycleRecord(
+        cycle_number=1,
+        mandate=MANDATE,
+        prior_domain_model_ref="",
+        attention_reason="older record",
+        selected_action="none",
+        work_created_or_advanced=(),
+        artifact_refs=(),
+        finding_summaries=(),
+        decision=WakefulResidentDecisionKind.STOP,
+        decision_reason="older record had no runtime audit",
+        budget=_budget(),
     )
 
 
@@ -353,6 +370,64 @@ async def test_cycle_records_are_persisted_with_decisions_and_budget(tmp_path: P
     assert records[0].decision == WakefulResidentDecisionKind.STOP
     assert records[0].budget.turns_used == 1
     assert records[0].budget.total_tokens == 7
+    assert "canonical_runtime: ravn.wakeful_resident.WakefulResidentRuntime" in (
+        records[0].runtime_audit
+    )
+    assert "duplication_check: no prior wake records found" in records[0].runtime_audit
+
+
+@pytest.mark.asyncio
+async def test_later_cycle_audits_prior_canonical_runtime_records(tmp_path: Path) -> None:
+    expert_memory = RecordingExpertMemory(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    first = _workstream("first-audit", "Persist first audit")
+    second = _workstream("second-audit", "Persist second audit")
+    loop = StatefulExpertLoop(
+        expert_memory,
+        [
+            _run(
+                model=_model(opportunities=("Persist first audit",)),
+                workstreams=(first,),
+                execution_results=(_result("first-audit"),),
+                artifacts=(_artifact("resident/domain-expert/artifacts/first-audit.md"),),
+            ),
+            _run(
+                model=_model(opportunities=("Persist second audit",)),
+                workstreams=(first, second),
+                execution_results=(_result("second-audit"),),
+                artifacts=(
+                    _artifact("resident/domain-expert/artifacts/first-audit.md"),
+                    _artifact("resident/domain-expert/artifacts/second-audit.md"),
+                ),
+            ),
+        ],
+    )
+    runtime = WakefulResidentRuntime(
+        expert_loop=loop,
+        expert_memory=expert_memory,
+        wake_memory=wake_memory,
+        config=WakefulResidentConfig(max_wake_cycles=2),
+    )
+
+    run = await runtime.run(MANDATE)
+    records = await wake_memory.list_wake_records(MANDATE)
+
+    assert len(run.cycles) == 2
+    assert "prior_canonical_runtime_records: 1" in run.cycles[1].runtime_audit
+    assert "prior_records_without_runtime_audit: 0" in run.cycles[1].runtime_audit
+    assert any(
+        item == "duplication_check: resident wake memory shows canonical runtime continuity"
+        for item in records[0].runtime_audit
+    )
+
+
+def test_runtime_duplication_audit_flags_unaudited_prior_records() -> None:
+    prior = _cycle_record_without_runtime_audit()
+
+    audit = derive_runtime_duplication_audit(recent_wake_records=(prior,))
+
+    assert "prior_records_without_runtime_audit: 1" in audit
+    assert "duplication_check: prior wake records need canonical audit backfill" in audit
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,7 @@ from ravn.resident_portfolio import ResidentPortfolioValidator
 
 _DOMAIN_MODEL_REF = "resident/domain-expert/domain-model.md"
 _WAKE_PREFIX = "resident/wakeful"
+_CANONICAL_WAKEFUL_RUNTIME = "ravn.wakeful_resident.WakefulResidentRuntime"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class WakefulResidentConfig:
     max_wall_clock_seconds: float = 1800.0
     max_tokens: int = 0
     sleep_when_idle: bool = False
+    recent_wake_record_limit: int = 5
 
 
 @dataclass(frozen=True)
@@ -237,7 +239,13 @@ class WakefulResidentRuntime:
             prior_model = await self._expert_memory.read_domain_model(mandate)
             prior_ref = _DOMAIN_MODEL_REF if prior_model is not None else ""
             prior_workstreams = await _list_workstreams(self._expert_memory, prior_model)
-            prior_wake_records = await self._wake_memory.list_wake_records(mandate, limit=5)
+            prior_wake_records = await self._wake_memory.list_wake_records(
+                mandate,
+                limit=self._config.recent_wake_record_limit,
+            )
+            runtime_audit = derive_runtime_duplication_audit(
+                recent_wake_records=tuple(prior_wake_records),
+            )
             attention_reason = derive_attention_reason(
                 mandate=mandate,
                 domain_model=prior_model,
@@ -255,6 +263,7 @@ class WakefulResidentRuntime:
                     attention_reason=attention_reason,
                     workstream=operator_workstream,
                     budget=budget.record_usage(TokenUsage(input_tokens=0, output_tokens=0)),
+                    runtime_audit=runtime_audit,
                 )
                 await self._wake_memory.write_wake_record(record)
                 cycles.append(record)
@@ -281,6 +290,7 @@ class WakefulResidentRuntime:
                 decision=decision,
                 decision_reason=reason,
                 budget=snapshot,
+                runtime_audit=runtime_audit,
             )
             await self._wake_memory.write_wake_record(record)
             cycles.append(record)
@@ -466,6 +476,41 @@ def derive_attention_reason(
     return "resident state is empty"
 
 
+def derive_runtime_duplication_audit(
+    *,
+    recent_wake_records: tuple[WakefulResidentCycleRecord, ...],
+) -> tuple[str, ...]:
+    """Summarize canonical wakeful runtime continuity from persisted records."""
+
+    audit = [
+        f"canonical_runtime: {_CANONICAL_WAKEFUL_RUNTIME}",
+        f"recent_wake_records_considered: {len(recent_wake_records)}",
+    ]
+    if not recent_wake_records:
+        audit.append("duplication_check: no prior wake records found")
+        return tuple(audit)
+
+    canonical_marker = f"canonical_runtime: {_CANONICAL_WAKEFUL_RUNTIME}"
+    canonical_records = sum(
+        1 for record in recent_wake_records if canonical_marker in record.runtime_audit
+    )
+    unaudited_records = len(recent_wake_records) - canonical_records
+    decisions = ", ".join(record.decision.value for record in recent_wake_records)
+    audit.extend(
+        (
+            f"prior_canonical_runtime_records: {canonical_records}",
+            f"prior_records_without_runtime_audit: {unaudited_records}",
+            f"prior_decisions_considered: {decisions}",
+        )
+    )
+    if unaudited_records:
+        audit.append("duplication_check: prior wake records need canonical audit backfill")
+        return tuple(audit)
+
+    audit.append("duplication_check: resident wake memory shows canonical runtime continuity")
+    return tuple(audit)
+
+
 def derive_portfolio_steward_attention_reason(
     *,
     mandate: str,
@@ -635,6 +680,7 @@ def _build_operator_needed_record(
     attention_reason: str,
     workstream: ResidentWorkstream,
     budget: ResidentBudgetSnapshot,
+    runtime_audit: tuple[str, ...],
 ) -> WakefulResidentCycleRecord:
     return WakefulResidentCycleRecord(
         cycle_number=cycle_number,
@@ -648,6 +694,7 @@ def _build_operator_needed_record(
         decision=WakefulResidentDecisionKind.ASK_OPERATOR,
         decision_reason=f"operator input required for workstream: {workstream.title}",
         budget=budget,
+        runtime_audit=runtime_audit,
     )
 
 
@@ -663,6 +710,7 @@ def _build_wake_record(
     decision: WakefulResidentDecisionKind,
     decision_reason: str,
     budget: ResidentBudgetSnapshot,
+    runtime_audit: tuple[str, ...],
 ) -> WakefulResidentCycleRecord:
     changed_work = _changed_workstreams(prior_workstreams, expert_run.workstreams)
     new_artifacts = _new_artifact_refs(prior_model, expert_run)
@@ -685,6 +733,7 @@ def _build_wake_record(
         decision=decision,
         decision_reason=decision_reason,
         budget=budget,
+        runtime_audit=runtime_audit,
     )
 
 
@@ -744,7 +793,8 @@ def _render_wake_record(record: WakefulResidentCycleRecord) -> str:
         f"{record.attention_reason}\n\n"
         f"## Work Created Or Advanced\n\n{_render_list(record.work_created_or_advanced)}\n\n"
         f"## Artifact References\n\n{_render_list(record.artifact_refs)}\n\n"
-        f"## Findings\n\n{_render_list(record.finding_summaries)}\n"
+        f"## Findings\n\n{_render_list(record.finding_summaries)}\n\n"
+        f"## Runtime Audit\n\n{_render_list(record.runtime_audit)}\n"
     )
 
 
@@ -773,6 +823,7 @@ def _parse_wake_record(content: str, *, mandate: str) -> WakefulResidentCycleRec
             turns_used=_int_value(metadata.get("budget_turns_used")),
             usage=usage,
         ),
+        runtime_audit=tuple(_section_items(content, "Runtime Audit")),
     )
 
 

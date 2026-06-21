@@ -44,6 +44,7 @@ class WakefulResidentCycleRecord:
     decision: WakefulResidentDecisionKind
     decision_reason: str
     budget: ResidentBudgetSnapshot
+    runtime_audit: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 

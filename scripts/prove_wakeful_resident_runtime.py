@@ -183,6 +183,8 @@ async def _main() -> None:
             print(f"[work] {item}")
         for ref in cycle.artifact_refs:
             print(f"[artifact-ref] {ref}")
+        for item in cycle.runtime_audit:
+            print(f"[runtime-audit] {item}")
     for ref in wake_refs:
         print(f"[wake-record] {ref}")
     for ref in consolidation_refs:
