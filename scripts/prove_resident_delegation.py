@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
-
 from ravn.cli.commands import _build_mimir, _configure_logging
 from ravn.config import Settings
 from ravn.domain.resident_portfolio import (
@@ -67,6 +66,11 @@ def _parse_args() -> argparse.Namespace:
         default=10.0,
         help="Delay between polling passes when waiting for real workers.",
     )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate and print the configured delegation path without launching a worker.",
+    )
     return parser.parse_args()
 
 
@@ -119,6 +123,34 @@ def _build_executor(settings: Settings) -> Any:
     return cls(**kwargs)
 
 
+def _print_execution_preflight(settings: Settings) -> None:
+    cfg = settings.resident_delegation_execution
+    kwargs = resolve_secret_kwargs(dict(cfg.kwargs), dict(cfg.secret_kwargs_env))
+    source_kwargs = dict(kwargs.get("workflow_source_kwargs") or {})
+    print("[proof] Resident delegation execution preflight.")
+    print(f"[proof] executor_adapter={cfg.adapter}")
+    print(f"[proof] workflow_source_adapter={kwargs.get('workflow_source_adapter', '')}")
+    print(f"[proof] workflow_id={kwargs.get('workflow_id', '')}")
+    print(f"[proof] connection_id={kwargs.get('connection_id', '')}")
+    print(f"[proof] model={kwargs.get('model', '')}")
+    print(f"[proof] definition={kwargs.get('definition', '')}")
+    if source_kwargs:
+        print(f"[proof] workflow_source_base_url={source_kwargs.get('base_url', '')}")
+        print(f"[proof] workflow_source_auth={_workflow_source_auth_mode(source_kwargs)}")
+
+
+def _workflow_source_auth_mode(source_kwargs: dict[str, Any]) -> str:
+    if source_kwargs.get("bearer_token"):
+        return "bearer_token"
+    if source_kwargs.get("bearer_token_file"):
+        return f"bearer_token_file:{source_kwargs['bearer_token_file']}"
+    if source_kwargs.get("external_token_env"):
+        return f"external_token_env:{source_kwargs['external_token_env']}"
+    if source_kwargs.get("allow_anonymous"):
+        return "anonymous"
+    return f"workload_token_file:{source_kwargs.get('workload_token_file', 'default')}"
+
+
 async def _main() -> None:
     args = _parse_args()
     if args.config:
@@ -131,6 +163,10 @@ async def _main() -> None:
     mandate = str(args.mandate).strip() or AUTONOMY_MANDATE
     settings = Settings()
     _configure_logging(settings)
+    _print_execution_preflight(settings)
+    if args.preflight_only:
+        _build_executor(settings)
+        return
     mimir = _build_mimir(settings)
     if mimir is not None:
         backend: Any = MimirResidentWorkItemBackend(mimir)

@@ -257,6 +257,31 @@ async def test_ting_workflow_adapter_uses_external_token_without_exchange(monkey
 
 
 @pytest.mark.asyncio
+async def test_ting_workflow_adapter_uses_bearer_token_file_without_exchange(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    token_file = tmp_path / "volundr-token.txt"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "ravn.adapters.capabilities.ting_workflows.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+
+    adapter = TingWorkflowCapabilityAdapter(
+        base_url="https://yggdrasil.niuu.world",
+        bearer_token_file=str(token_file),
+    )
+
+    workflows = await adapter.list_workflows()
+
+    assert workflows[0].workflow_id == "wf-1"
+    assert [call[0] for call in _FakeAsyncClient.calls] == ["GET"]
+    assert _FakeAsyncClient.calls[0][2]["headers"]["Authorization"] == "Bearer file-token"
+
+
+@pytest.mark.asyncio
 async def test_ting_workflow_adapter_can_use_anonymous_local_dev_mode(
     tmp_path,
     monkeypatch,

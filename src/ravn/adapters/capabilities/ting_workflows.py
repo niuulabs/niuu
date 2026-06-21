@@ -39,6 +39,7 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
         bearer_token: str = "",
+        bearer_token_file: str = "",
         external_token_env: str = "",
         allow_anonymous: bool = False,
         token_ttl_skew_seconds: int = 30,
@@ -51,6 +52,9 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
         )
         self._audiences = audiences or ["volundr-api", "forge", "ting", "mimir", "guild"]
         self._bearer_token = bearer_token
+        self._bearer_token_file = (
+            Path(bearer_token_file).expanduser() if bearer_token_file else None
+        )
         self._external_token_env = external_token_env
         self._allow_anonymous = allow_anonymous
         self._token_ttl_skew_seconds = token_ttl_skew_seconds
@@ -284,6 +288,13 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     def _static_bearer_token(self) -> str:
         if self._bearer_token:
             return self._bearer_token
+        if self._bearer_token_file is not None:
+            if not self._bearer_token_file.exists():
+                raise RuntimeError(f"bearer token file does not exist: {self._bearer_token_file}")
+            token = self._bearer_token_file.read_text(encoding="utf-8").strip()
+            if not token:
+                raise RuntimeError(f"bearer token file is empty: {self._bearer_token_file}")
+            return token
         if not self._external_token_env:
             return ""
         token = os.environ.get(self._external_token_env, "")
