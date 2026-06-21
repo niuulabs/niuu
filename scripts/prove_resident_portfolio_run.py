@@ -59,6 +59,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="", help="Path to ravn config YAML")
     parser.add_argument("--persona", default="domain-drive", help="Resident persona name")
     parser.add_argument("--workspace", default="", help="Workspace root for proof artifacts")
+    parser.add_argument("--mandate", default=AUTONOMY_MANDATE, help="Resident domain mandate")
+    parser.add_argument("--mandate-file", default="", help="Path to a file containing the mandate")
+    parser.add_argument(
+        "--seed-autonomy-memory",
+        action="store_true",
+        help="Seed the older autonomy milestone fixture before running the manager.",
+    )
     parser.add_argument("--max-objectives-selected", type=int, default=1)
     parser.add_argument("--max-active-objectives", type=int, default=3)
     parser.add_argument("--max-wake-cycles", type=int, default=1)
@@ -86,13 +93,14 @@ async def _list_refs(
 
 async def _seed_autonomy_memory(
     *,
+    mandate: str,
     expert_memory: Any,
     wake_memory: Any,
     work_backend: Any,
 ) -> None:
     await expert_memory.write_domain_model(
         ResidentDomainModel(
-            mandate=AUTONOMY_MANDATE,
+            mandate=mandate,
             current_understanding=(
                 "Resident Domain Expert Loop V0 and Wakeful Resident Runtime V0 are complete. "
                 "The next missing layer is durable long-horizon work ownership."
@@ -152,7 +160,7 @@ async def _seed_autonomy_memory(
     await wake_memory.write_wake_record(
         WakefulResidentCycleRecord(
             cycle_number=1,
-            mandate=AUTONOMY_MANDATE,
+            mandate=mandate,
             prior_domain_model_ref="resident/domain-expert/domain-model.md",
             attention_reason="wakeful runtime proof completed",
             selected_action="record completed resident milestone",
@@ -168,6 +176,10 @@ async def _seed_autonomy_memory(
 
 async def _main() -> None:
     args = _parse_args()
+    mandate = args.mandate
+    if args.mandate_file:
+        mandate = Path(args.mandate_file).read_text(encoding="utf-8").strip()
+
     if args.config:
         os.environ["RAVN_CONFIG"] = args.config
 
@@ -197,11 +209,13 @@ async def _main() -> None:
         work_backend = LocalResidentWorkItemBackend(root)
         memory_label = str(root)
 
-    await _seed_autonomy_memory(
-        expert_memory=expert_memory,
-        wake_memory=wake_memory,
-        work_backend=work_backend,
-    )
+    if args.seed_autonomy_memory:
+        await _seed_autonomy_memory(
+            mandate=mandate,
+            expert_memory=expert_memory,
+            wake_memory=wake_memory,
+            work_backend=work_backend,
+        )
 
     expert_loop = ResidentDomainExpertLoop(
         agent=agent,
@@ -246,10 +260,11 @@ async def _main() -> None:
     print(f"[proof] persona={getattr(persona, 'name', '') or 'default'}")
     print(f"[proof] executor={agent.llm_adapter_name}")
     print(f"[proof] memory={memory_label}")
+    print(f"[proof] seeded_fixture={args.seed_autonomy_memory}")
     print(f"[proof] max_objectives_selected={args.max_objectives_selected}")
     print(f"[proof] max_wake_cycles={args.max_wake_cycles}\n")
 
-    run = await manager.run(AUTONOMY_MANDATE)
+    run = await manager.run(mandate)
     portfolio_refs = await _list_refs(backend=work_backend, prefix="resident/portfolio")
     wake_refs = await _list_refs(backend=work_backend, prefix="resident/wakeful/cycles")
     artifact_refs = await _list_refs(

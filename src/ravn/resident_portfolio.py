@@ -100,6 +100,7 @@ class ResidentPortfolioConfig:
     max_workstream_turns: int = 1
     max_wall_clock_seconds: float = 1800.0
     max_tokens: int = 0
+    bootstrap_when_empty: bool = True
 
 
 @dataclass(frozen=True)
@@ -379,6 +380,18 @@ class ResidentLongHorizonWorkManager:
         portfolio = await self._load_portfolio(mandate)
         evidence = await self._gather_evidence(mandate)
         discovered = discover_objectives(mandate, portfolio=portfolio, evidence=evidence)
+        bootstrap_entries: tuple[str, ...] = ()
+        if _should_bootstrap_portfolio(
+            portfolio=portfolio,
+            evidence=evidence,
+            discovered=discovered,
+            enabled=self._config.bootstrap_when_empty,
+        ):
+            bootstrap_run = await self._wake_runtime.run(mandate)
+            bootstrap_entries = _bootstrap_decision_entries(bootstrap_run)
+            evidence = await self._gather_evidence(mandate)
+            discovered = discover_objectives(mandate, portfolio=portfolio, evidence=evidence)
+
         objectives = merge_objectives(portfolio.objectives + discovered)
         objectives = prioritize_objectives(objectives, mandate=mandate)
         selected = select_objectives(
@@ -393,7 +406,14 @@ class ResidentLongHorizonWorkManager:
 
         updated_by_id = {objective.id: objective for objective in objectives}
         if not selected:
-            portfolio = portfolio.with_objectives(tuple(updated_by_id.values()))
+            portfolio = portfolio.with_objectives(
+                tuple(updated_by_id.values()),
+                decision_history=_merge_text(
+                    portfolio.decision_history,
+                    bootstrap_entries + (reason,),
+                    limit=20,
+                ),
+            )
             portfolio_ref = await self._persist_portfolio(portfolio)
             await self._backend.append_decision(mandate, reason)
             return ResidentPortfolioRun(
@@ -453,7 +473,11 @@ class ResidentLongHorizonWorkManager:
         decision_entry = _decision_entry(decision=decision, reason=reason, selected=selected)
         portfolio = portfolio.with_objectives(
             tuple(updated_by_id.values()),
-            decision_history=_merge_text(portfolio.decision_history, (decision_entry,), limit=20),
+            decision_history=_merge_text(
+                portfolio.decision_history,
+                bootstrap_entries + (decision_entry,),
+                limit=20,
+            ),
             domain_model_ref=_DOMAIN_MODEL_REF
             if evidence.domain_model is not None
             else portfolio.domain_model_ref,
@@ -2213,6 +2237,38 @@ def select_objectives(
         if len(selected) >= limit:
             break
     return tuple(selected)
+
+
+def _should_bootstrap_portfolio(
+    *,
+    portfolio: ResidentPortfolio,
+    evidence: ResidentPortfolioEvidence,
+    discovered: tuple[ResidentObjective, ...],
+    enabled: bool,
+) -> bool:
+    if not enabled:
+        return False
+    if portfolio.objectives or discovered:
+        return False
+    if evidence.domain_model is not None:
+        return False
+    if evidence.workstreams or evidence.wake_records:
+        return False
+    if evidence.artifact_refs or evidence.consolidation_refs:
+        return False
+    return True
+
+
+def _bootstrap_decision_entries(wake_run: WakefulResidentRun) -> tuple[str, ...]:
+    if not wake_run.cycles:
+        return ("bootstrap wakeful orientation produced no wake cycles",)
+    entries: list[str] = []
+    for cycle in wake_run.cycles:
+        entries.append(
+            "bootstrap wakeful orientation "
+            f"cycle {cycle.cycle_number}: {cycle.decision.value}; {cycle.attention_reason}"
+        )
+    return tuple(_compact_line(item, limit=220) for item in entries)
 
 
 def select_delegation_candidates(

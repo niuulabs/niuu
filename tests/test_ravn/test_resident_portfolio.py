@@ -72,6 +72,72 @@ class FakeWakeRuntime:
         )
 
 
+class BootstrapWakeRuntime:
+    def __init__(
+        self,
+        *,
+        expert_memory: LocalResidentDomainExpertMemory,
+        wake_memory: LocalWakefulResidentMemory,
+    ) -> None:
+        self.expert_memory = expert_memory
+        self.wake_memory = wake_memory
+        self.calls: list[str] = []
+
+    async def run(self, mandate: str) -> WakefulResidentRun:
+        self.calls.append(mandate)
+        if len(self.calls) == 1:
+            await self.expert_memory.write_domain_model(
+                ResidentDomainModel(
+                    mandate=MANDATE,
+                    current_understanding="The resident has oriented from a mandate.",
+                    opportunities=("Create a compact resident operating baseline.",),
+                    capability_gaps=("No durable resident work portfolio exists yet.",),
+                    recent_outcomes=("Mandate-only orientation produced useful work.",),
+                )
+            )
+            cycle = WakefulResidentCycleRecord(
+                cycle_number=1,
+                mandate=mandate,
+                prior_domain_model_ref="",
+                attention_reason="no domain model exists; orient from the resident mandate",
+                selected_action="orient from mandate",
+                work_created_or_advanced=("orientation: created [completed]",),
+                artifact_refs=("resident/domain-expert/artifacts/orientation.md",),
+                finding_summaries=("Mandate-only orientation created portfolio evidence.",),
+                decision=WakefulResidentDecisionKind.STOP,
+                decision_reason="max turns reached: 1",
+                budget=ResidentBudgetSnapshot(
+                    turns_used=1,
+                    usage=TokenUsage(input_tokens=5, output_tokens=7),
+                ),
+            )
+            await self.wake_memory.write_wake_record(cycle)
+        else:
+            cycle = WakefulResidentCycleRecord(
+                cycle_number=1,
+                mandate=mandate,
+                prior_domain_model_ref="resident/domain-expert/domain-model.md",
+                attention_reason="selected objective deserves bounded work",
+                selected_action="advance objective",
+                work_created_or_advanced=("objective-workstream: created [completed]",),
+                artifact_refs=("resident/domain-expert/artifacts/objective.md",),
+                finding_summaries=("Objective advanced after mandate-only bootstrap.",),
+                decision=WakefulResidentDecisionKind.STOP,
+                decision_reason="max turns reached: 1",
+                budget=ResidentBudgetSnapshot(
+                    turns_used=1,
+                    usage=TokenUsage(input_tokens=11, output_tokens=13),
+                ),
+            )
+        return WakefulResidentRun(
+            mandate=mandate,
+            cycles=(cycle,),
+            final_decision=WakefulResidentDecisionKind.STOP,
+            final_reason="max turns reached: 1",
+            budget=cycle.budget,
+        )
+
+
 def _objective(
     objective_id: str,
     title: str,
@@ -291,6 +357,35 @@ async def test_selected_objective_hands_off_to_wakeful_runtime_and_updates_links
     assert run.advanced_objectives
     assert run.advanced_objectives[0].artifact_links
     assert run.advanced_objectives[0].proof_progress
+
+
+@pytest.mark.asyncio
+async def test_empty_portfolio_bootstraps_from_mandate_then_advances_objective(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    wake = BootstrapWakeRuntime(expert_memory=expert_memory, wake_memory=wake_memory)
+    manager = ResidentLongHorizonWorkManager(
+        backend=backend,
+        wake_runtime=wake,
+        expert_memory=expert_memory,
+        wake_memory=wake_memory,
+        config=ResidentPortfolioConfig(max_objectives_selected=1),
+    )
+
+    run = await manager.run(MANDATE)
+    restored = await backend.read_portfolio(MANDATE)
+
+    assert len(wake.calls) == 2
+    assert wake.calls[0] == MANDATE
+    assert "Resident portfolio selected this long-horizon objective" in wake.calls[1]
+    assert len(run.discovered_objectives) >= 2
+    assert run.advanced_objectives
+    assert run.advanced_objectives[0].status == ResidentObjectiveStatus.COMPLETED.value
+    assert restored is not None
+    assert any("bootstrap wakeful orientation" in item for item in restored.decision_history)
 
 
 @pytest.mark.asyncio
