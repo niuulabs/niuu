@@ -3987,6 +3987,7 @@ def _wire_mimir_triggers(
                 capability_runtime = ResidentCapabilityDiscoveryRuntime(
                     backend=backend,
                     discovery=discovery_cls(**discovery_kwargs),
+                    expert_memory=expert_memory,
                     config=RuntimeCapabilityDiscoveryConfig(
                         max_options=max(1, discovery_cfg.max_options),
                         max_follow_up_objectives=max(

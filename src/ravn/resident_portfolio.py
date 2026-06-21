@@ -1304,10 +1304,12 @@ class ResidentCapabilityDiscoveryRuntime:
         *,
         backend: ResidentWorkItemBackend,
         discovery: CapabilityDiscoveryPort,
+        expert_memory: ResidentDomainExpertMemoryPort | None = None,
         config: ResidentCapabilityDiscoveryConfig | None = None,
     ) -> None:
         self._backend = backend
         self._discovery = discovery
+        self._expert_memory = expert_memory
         self._config = config or ResidentCapabilityDiscoveryConfig()
 
     async def run(self, mandate: str) -> ResidentCapabilityDiscoveryReport:
@@ -1370,6 +1372,14 @@ class ResidentCapabilityDiscoveryRuntime:
             f"{datetime.now(UTC).isoformat()} [capability_discovery] {gap.capability}",
         )
         persisted_refs.append(decision_ref)
+        persisted_refs.extend(
+            await self._consolidate_capability_learning(
+                mandate,
+                result=result,
+                discovery_ref=discovery_ref,
+                follow_ups=follow_ups,
+            )
+        )
         operator_questions = tuple(
             objective.pending_question for objective in follow_ups if objective.pending_question
         )
@@ -1385,6 +1395,31 @@ class ResidentCapabilityDiscoveryRuntime:
                 f"Run safe experiment: {result.recommended_safe_next_experiment}"
             ),
         )
+
+    async def _consolidate_capability_learning(
+        self,
+        mandate: str,
+        *,
+        result: ResidentCapabilityDiscoveryResult,
+        discovery_ref: str,
+        follow_ups: tuple[ResidentObjective, ...],
+    ) -> tuple[str, ...]:
+        if self._expert_memory is None:
+            return ()
+        existing = await self._expert_memory.read_domain_model(mandate)
+        model = existing or ResidentDomainModel(mandate=mandate)
+        updated_model, consolidation_result = _domain_model_with_capability_learning(
+            model,
+            result=result,
+            discovery_ref=discovery_ref,
+            follow_ups=follow_ups,
+        )
+        model_ref = await self._expert_memory.write_domain_model(updated_model)
+        consolidation_ref = await self._expert_memory.write_consolidation(
+            updated_model,
+            consolidation_result,
+        )
+        return (model_ref, consolidation_ref)
 
     async def _persist_portfolio(
         self,
@@ -3321,6 +3356,102 @@ def _domain_model_with_delegation_learning(
         artifacts=_merge_expert_artifacts(model.artifacts, (artifact,)),
     )
     return updated, consolidation_result
+
+
+def _domain_model_with_capability_learning(
+    model: ResidentDomainModel,
+    *,
+    result: ResidentCapabilityDiscoveryResult,
+    discovery_ref: str,
+    follow_ups: tuple[ResidentObjective, ...],
+) -> tuple[ResidentDomainModel, WorkstreamExecutionResult]:
+    gap = result.gap
+    summary = _compact_line(
+        f"capability discovery for {gap.capability}: {result.recommended_safe_next_experiment}",
+        limit=240,
+    )
+    facts = _capability_discovery_facts(result, discovery_ref)
+    open_threads = _merge_text(
+        result.unresolved_questions,
+        tuple(f"capability follow-up {item.id}: {item.title}" for item in follow_ups),
+    )
+    gaps = _capability_discovery_gaps(result)
+    consolidation_result = WorkstreamExecutionResult(
+        workstream_id=f"capability-discovery-{gap.id}",
+        status="completed",
+        summary=summary,
+        artifact_refs=(discovery_ref,),
+        facts=facts,
+        lessons=open_threads,
+        capability_gaps=gaps,
+    )
+    artifact = ExpertArtifact(
+        title=f"Capability discovery: {gap.capability}",
+        kind="capability_evaluation",
+        path=discovery_ref,
+        purpose="Compact resident memory for a discovered capability path.",
+        summary=result.why_it_matters,
+    )
+    updated = model.with_consolidation(
+        recent_outcomes=_merge_text(model.recent_outcomes, (summary,), limit=12),
+        known_facts=_merge_text(model.known_facts, facts),
+        resident_decisions=_merge_text(
+            model.resident_decisions,
+            (
+                f"capability discovery recommended {result.recommended_option_id}: "
+                f"{result.recommended_safe_next_experiment}",
+            ),
+        ),
+        open_threads=_merge_text(model.open_threads, open_threads),
+        capability_gaps=_merge_text(model.capability_gaps, gaps),
+        memory_hygiene_notes=_merge_text(
+            model.memory_hygiene_notes,
+            tuple(result.duplicate_check_notes),
+        ),
+        artifacts=_merge_expert_artifacts(model.artifacts, (artifact,)),
+    )
+    return updated, consolidation_result
+
+
+def _capability_discovery_facts(
+    result: ResidentCapabilityDiscoveryResult,
+    discovery_ref: str,
+) -> tuple[str, ...]:
+    facts = [
+        f"capability discovery persisted: {discovery_ref}",
+        f"recommended safe experiment for {result.gap.capability}: "
+        f"{result.recommended_safe_next_experiment}",
+    ]
+    facts.extend(f"existing capability available: {item}" for item in result.existing_capabilities)
+    facts.extend(
+        f"candidate adapter configuration: {item}" for item in result.configuration_evidence
+    )
+    facts.extend(
+        f"candidate option {item.id}: {item.title}" for item in result.candidate_options[:4]
+    )
+    return tuple(_compact_line(item, limit=240) for item in facts if item)
+
+
+def _capability_discovery_gaps(
+    result: ResidentCapabilityDiscoveryResult,
+) -> tuple[str, ...]:
+    if result.existing_capabilities:
+        return ()
+    risky = tuple(item for item in result.candidate_options if item.approval_required)
+    if not risky and not result.unresolved_questions:
+        return ()
+    return tuple(
+        _compact_line(item, limit=220)
+        for item in (
+            *result.unresolved_questions,
+            *(
+                f"capability {result.gap.capability} option {item.id} requires approval "
+                f"for {', '.join(item.risks)}"
+                for item in risky
+            ),
+        )
+        if item
+    )
 
 
 def _delegation_capability_gaps(

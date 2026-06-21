@@ -16,6 +16,7 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
 )
 from ravn.ports.web_search import SearchResult
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import (
     LocalCapabilityDiscoveryBackend,
     LocalResidentWorkItemBackend,
@@ -202,6 +203,7 @@ async def test_catalog_web_discovery_suppresses_adapter_when_capability_exists(
     tmp_path: Path,
 ) -> None:
     backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
     await _write_portfolio(
         backend,
         _objective("gap", "Gap", source_evidence=("missing capability: web search",)),
@@ -230,7 +232,9 @@ async def test_catalog_web_discovery_suppresses_adapter_when_capability_exists(
     report = await ResidentCapabilityDiscoveryRuntime(
         backend=backend,
         discovery=discovery,
+        expert_memory=expert_memory,
     ).run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.discovery_result is not None
     assert report.discovery_result.existing_capabilities
@@ -239,6 +243,9 @@ async def test_catalog_web_discovery_suppresses_adapter_when_capability_exists(
     assert all(
         not option.required_adapters for option in report.discovery_result.candidate_options
     )
+    assert model is not None
+    assert any("existing capability available" in item for item in model.known_facts)
+    assert any("adapter creation suppressed" in item for item in model.memory_hygiene_notes)
 
 
 @pytest.mark.asyncio
@@ -246,6 +253,7 @@ async def test_catalog_web_discovery_researches_and_records_dynamic_adapter_conf
     tmp_path: Path,
 ) -> None:
     backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
     await _write_portfolio(
         backend,
         _objective(
@@ -271,7 +279,9 @@ async def test_catalog_web_discovery_researches_and_records_dynamic_adapter_conf
     report = await ResidentCapabilityDiscoveryRuntime(
         backend=backend,
         discovery=discovery,
+        expert_memory=expert_memory,
     ).run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.discovery_result is not None
     assert report.discovery_result.research_evidence
@@ -280,6 +290,8 @@ async def test_catalog_web_discovery_researches_and_records_dynamic_adapter_conf
     assert "example.adapters.MeshLintAdapter" in render_capability_discovery_result(
         report.discovery_result
     )
+    assert model is not None
+    assert any("candidate adapter configuration" in item for item in model.known_facts)
 
 
 @pytest.mark.asyncio
@@ -329,6 +341,7 @@ async def test_safe_options_create_dry_run_evaluation_objectives(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_discovery_artifacts_are_persisted_and_linked(tmp_path: Path) -> None:
     backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
     await _write_portfolio(
         backend,
         _objective("gap", "Gap", source_evidence=("missing capability: generic review",)),
@@ -337,12 +350,18 @@ async def test_discovery_artifacts_are_persisted_and_linked(tmp_path: Path) -> N
     report = await ResidentCapabilityDiscoveryRuntime(
         backend=backend,
         discovery=LocalCapabilityDiscoveryBackend(),
+        expert_memory=expert_memory,
     ).run(MANDATE)
     restored = {item.id: item for item in await backend.list_objectives(MANDATE)}
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert any(ref.startswith("resident/capability-discovery/") for ref in report.persisted_refs)
     assert restored["gap"].artifact_links
     assert restored["gap"].proof_progress
+    assert model is not None
+    assert any("recommended safe experiment" in item for item in model.known_facts)
+    assert any("capability discovery recommended" in item for item in model.resident_decisions)
+    assert any(item.kind == "capability_evaluation" for item in model.artifacts)
 
 
 @pytest.mark.asyncio
