@@ -2370,6 +2370,10 @@ def render_capability_discovery_result(result: ResidentCapabilityDiscoveryResult
         f"- source_objective_id: {result.gap.source_objective_id}\n"
         f"- recommended_option_id: {result.recommended_option_id}\n"
         f"- budget_notes: {result.budget_notes}\n\n"
+        f"## Existing Capability Check\n\n{_render_list(result.existing_capabilities)}\n\n"
+        f"## Duplicate Check Notes\n\n{_render_list(result.duplicate_check_notes)}\n\n"
+        f"## Research Evidence\n\n{_render_list(result.research_evidence)}\n\n"
+        f"## Configuration Evidence\n\n{_render_list(result.configuration_evidence)}\n\n"
         f"## Capability Summary\n\n{result.capability_summary}\n\n"
         f"## Why It Matters\n\n{result.why_it_matters}\n\n"
         f"## Known Constraints\n\n{_render_list(result.known_constraints)}\n\n"
@@ -2582,6 +2586,10 @@ def _limit_discovery_options(
         recommended_safe_next_experiment=result.recommended_safe_next_experiment,
         unresolved_questions=result.unresolved_questions,
         budget_notes=result.budget_notes,
+        existing_capabilities=result.existing_capabilities,
+        duplicate_check_notes=result.duplicate_check_notes,
+        research_evidence=result.research_evidence,
+        configuration_evidence=result.configuration_evidence,
     )
 
 
@@ -2647,7 +2655,13 @@ def _capability_option_line(option: ResidentCapabilityOption) -> str:
     approval = "approval required" if option.approval_required else "safe/read-only first"
     tools = ", ".join(option.required_tools + option.required_workflows + option.required_adapters)
     risks = ", ".join(option.risks) or "none"
-    return f"{option.id}: {option.title}; {approval}; tools={tools or 'none'}; risks={risks}"
+    config = ""
+    if option.configuration:
+        config = f"; config={json.dumps(option.configuration, sort_keys=True)}"
+    return (
+        f"{option.id}: {option.title}; {approval}; "
+        f"tools={tools or 'none'}; risks={risks}{config}"
+    )
 
 
 _LOCAL_WORKER_SCRIPT = r"""

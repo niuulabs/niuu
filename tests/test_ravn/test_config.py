@@ -22,6 +22,7 @@ from ravn.config import (
     MemoryConfig,
     PermissionConfig,
     PermissionRuleConfig,
+    ResidentCapabilityDiscoveryConfig,
     ResidentEvolutionConfig,
     Settings,
     SignalSourceConfig,
@@ -154,6 +155,29 @@ class TestToolsConfig:
         assert "bash" in c.enabled
         assert "write" in c.disabled
         assert len(c.custom) == 1
+
+
+class TestResidentCapabilityDiscoveryConfig:
+    def test_defaults_use_existing_local_backend(self) -> None:
+        c = ResidentCapabilityDiscoveryConfig()
+
+        assert c.adapter == "ravn.resident_portfolio.LocalCapabilityDiscoveryBackend"
+        assert c.kwargs == {}
+        assert c.secret_kwargs_env == {}
+        assert c.include_builtin_catalog is False
+        assert c.max_options > 0
+        assert c.max_follow_up_objectives > 0
+
+    def test_dynamic_adapter_config_accepts_kwargs(self) -> None:
+        c = ResidentCapabilityDiscoveryConfig(
+            adapter="pkg.RealCapabilityDiscovery",
+            kwargs={"num_results": 3},
+            include_builtin_catalog=True,
+        )
+
+        assert c.adapter == "pkg.RealCapabilityDiscovery"
+        assert c.kwargs["num_results"] == 3
+        assert c.include_builtin_catalog is True
 
 
 class TestMemoryConfig:

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.capabilities.resident_discovery import CatalogWebCapabilityDiscoveryBackend
+from ravn.domain.capability_catalog import Capability, CapabilityKind
 from ravn.domain.resident_portfolio import (
     ResidentCapabilityDiscoveryResult,
     ResidentCapabilityGap,
@@ -13,11 +15,13 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
     ResidentPortfolio,
 )
+from ravn.ports.web_search import SearchResult
 from ravn.resident_portfolio import (
     LocalCapabilityDiscoveryBackend,
     LocalResidentWorkItemBackend,
     ResidentCapabilityDiscoveryRuntime,
     detect_capability_gaps,
+    render_capability_discovery_result,
 )
 
 MANDATE = (
@@ -65,6 +69,22 @@ class RecordingDiscovery:
             recommended_safe_next_experiment="Run a read-only local dry-run.",
             unresolved_questions=("Which approval boundary applies?",),
         )
+
+
+class StaticSearchProvider:
+    def __init__(self, results: list[SearchResult] | None = None) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self._results = results or [
+            SearchResult(
+                title="Adapter integration guide",
+                url="https://example.com/adapter-guide",
+                snippet="Compare safe adapter approaches before automating external effects.",
+            )
+        ]
+
+    async def search(self, query: str, *, num_results: int) -> list[SearchResult]:
+        self.calls.append((query, num_results))
+        return self._results[:num_results]
 
 
 def _objective(
@@ -175,6 +195,91 @@ async def test_local_discovery_produces_structured_options(tmp_path: Path) -> No
     assert report.discovery_result is not None
     assert report.discovery_result.candidate_options
     assert report.discovery_result.recommended_safe_next_experiment
+
+
+@pytest.mark.asyncio
+async def test_catalog_web_discovery_suppresses_adapter_when_capability_exists(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective("gap", "Gap", source_evidence=("missing capability: web search",)),
+    )
+    discovery = CatalogWebCapabilityDiscoveryBackend(
+        catalog_capabilities=(
+            Capability(
+                capability_id="tool:web_search",
+                kind=CapabilityKind.TOOL,
+                name="web_search",
+                description="Search the web for current information.",
+                source="ravn.builtin_registry",
+            ),
+        ),
+        search_provider_adapter=(
+            "tests.test_ravn.test_resident_capability_discovery.StaticSearchProvider"
+        ),
+        candidate_adapter_configs=(
+            {
+                "adapter": "example.adapters.WebSearchAdapter",
+                "kwargs": {"mode": "read_only"},
+            },
+        ),
+    )
+
+    report = await ResidentCapabilityDiscoveryRuntime(
+        backend=backend,
+        discovery=discovery,
+    ).run(MANDATE)
+
+    assert report.discovery_result is not None
+    assert report.discovery_result.existing_capabilities
+    assert report.discovery_result.duplicate_check_notes
+    assert not report.discovery_result.configuration_evidence
+    assert all(
+        not option.required_adapters for option in report.discovery_result.candidate_options
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_web_discovery_researches_and_records_dynamic_adapter_config(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(
+        backend,
+        _objective(
+            "gap",
+            "Gap",
+            source_evidence=("missing capability: mesh linting",),
+        ),
+    )
+    discovery = CatalogWebCapabilityDiscoveryBackend(
+        catalog_capabilities=(),
+        search_provider_adapter=(
+            "tests.test_ravn.test_resident_capability_discovery.StaticSearchProvider"
+        ),
+        candidate_adapter_configs=(
+            {
+                "adapter": "example.adapters.MeshLintAdapter",
+                "kwargs": {"dry_run": True},
+                "safe_next_experiment": "Load the adapter and lint a local fixture.",
+            },
+        ),
+    )
+
+    report = await ResidentCapabilityDiscoveryRuntime(
+        backend=backend,
+        discovery=discovery,
+    ).run(MANDATE)
+
+    assert report.discovery_result is not None
+    assert report.discovery_result.research_evidence
+    assert report.discovery_result.configuration_evidence
+    assert any(option.required_adapters for option in report.discovery_result.candidate_options)
+    assert "example.adapters.MeshLintAdapter" in render_capability_discovery_result(
+        report.discovery_result
+    )
 
 
 @pytest.mark.asyncio

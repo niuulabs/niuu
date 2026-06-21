@@ -2580,6 +2580,41 @@ class ResidentEvolutionConfig(BaseModel):
     )
 
 
+class ResidentCapabilityDiscoveryConfig(BaseModel):
+    """Resident capability discovery adapter and proof bounds."""
+
+    adapter: str = Field(
+        default="ravn.resident_portfolio.LocalCapabilityDiscoveryBackend",
+        description=(
+            "Fully-qualified CapabilityDiscoveryPort adapter class used by "
+            "resident capability discovery."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the capability discovery adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+    include_builtin_catalog: bool = Field(
+        default=False,
+        description=(
+            "When a proof/runtime composition root can inspect built-in tools, "
+            "include them as catalog capabilities for duplicate checks."
+        ),
+    )
+    max_options: int = Field(
+        default=4,
+        description="Maximum candidate options persisted for one discovery result.",
+    )
+    max_follow_up_objectives: int = Field(
+        default=4,
+        description="Maximum follow-up objectives created from one discovery result.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3161,6 +3196,11 @@ class Settings(BaseSettings):
 
     # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
     resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
+
+    # NIU-1066: resident capability discovery adapter
+    resident_capability_discovery: ResidentCapabilityDiscoveryConfig = Field(
+        default_factory=ResidentCapabilityDiscoveryConfig
+    )
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

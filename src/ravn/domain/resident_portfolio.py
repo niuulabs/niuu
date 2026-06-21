@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from ravn.domain.operator_contact import OperatorContactResult
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
@@ -309,6 +309,7 @@ class ResidentCapabilityOption:
     approval_required: bool = False
     safe_next_experiment: str = ""
     evidence: tuple[str, ...] = ()
+    configuration: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,10 @@ class ResidentCapabilityDiscoveryResult:
     recommended_safe_next_experiment: str
     unresolved_questions: tuple[str, ...] = ()
     budget_notes: str = "bounded local discovery"
+    existing_capabilities: tuple[str, ...] = ()
+    duplicate_check_notes: tuple[str, ...] = ()
+    research_evidence: tuple[str, ...] = ()
+    configuration_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
