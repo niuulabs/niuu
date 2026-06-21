@@ -6,6 +6,11 @@ from typing import Any
 import pytest
 
 from ravn.domain.models import TokenUsage, ToolCall, TurnResult
+from ravn.domain.operator_contact import (
+    OperatorContactRequest,
+    OperatorContactResult,
+    OperatorContactStatus,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentBudgetLimits,
@@ -19,10 +24,11 @@ from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     LocalResidentMemory,
     MimirResidentMemory,
-    ResidentPolicyBoundary,
     ResidentContinuationKernel,
+    ResidentPolicyBoundary,
     ResidentRunBudget,
 )
+from ravn.resident_operator_contact import ResidentOperatorContactCoordinator
 
 MANDATE = (
     "Kanuck Valley Models is my small 3D printing company. "
@@ -167,7 +173,10 @@ class RecordingMemory:
         return ResidentMemoryEntry(
             path="resident/continuation/operator-needed/latest.md",
             summary="Operator Input Needed",
-            content=f"# Operator Input Needed\n\n- status: pending\n- question: {self.pending_question}\n",
+            content=(
+                "# Operator Input Needed\n\n"
+                f"- status: pending\n- question: {self.pending_question}\n"
+            ),
         )
 
     async def write_operator_answer(self, answer: str) -> str:
@@ -195,12 +204,120 @@ class RecordingPolicy:
         return self.decision
 
 
+class RecordingOperatorContact:
+    def __init__(self, result_answer: str = "") -> None:
+        self.result_answer = result_answer
+        self.requests: list[OperatorContactRequest] = []
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        self.requests.append(request)
+        if self.result_answer:
+            return OperatorContactResult(
+                request=request,
+                status=OperatorContactStatus.ANSWERED.value,
+                answer=self.result_answer,
+            )
+        return OperatorContactResult(
+            request=request,
+            status=OperatorContactStatus.PENDING.value,
+        )
+
+
+class RecordingChannel:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def emit(self, event: Any) -> None:
+        self.events.append(event)
+
+
 def _turn(text: str, *, tool_name: str = "mimir_write", tokens: int = 10) -> TurnResult:
     return TurnResult(
         response=text,
         tool_calls=[ToolCall(id=f"tc-{tool_name}", name=tool_name, input={})],
         tool_results=[],
         usage=TokenUsage(input_tokens=tokens, output_tokens=tokens),
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_contact_coordinator_suppresses_existing_pending_question() -> None:
+    memory = RecordingMemory()
+    memory.pending_question = "Which printer should I use?"
+    contact = RecordingOperatorContact()
+    turn = ResidentTurnRecord(
+        turn_index=1,
+        prompt=MANDATE,
+        response="needs help",
+        outcome_fields={},
+        tool_names=(),
+        usage=TokenUsage(input_tokens=0, output_tokens=0),
+    )
+    coordinator = ResidentOperatorContactCoordinator(memory=memory, contact=contact)
+
+    report = await coordinator.contact_operator(
+        OperatorContactRequest(
+            question="Which printer should I use?",
+            reason="needs_context",
+            impact="Resident cannot safely continue without an answer.",
+        ),
+        turn=turn,
+    )
+
+    assert report.result.status == OperatorContactStatus.SUPPRESSED.value
+    assert report.suppressed_existing_pending is not None
+    assert contact.requests == []
+    assert memory.pending_question == "Which printer should I use?"
+
+
+@pytest.mark.asyncio
+async def test_continuation_operator_contact_uses_purpose_and_persists_feedback() -> None:
+    agent = FakeBackendAgent(
+        [
+            _turn(_outcome("Start the printer to validate the selected terrain model.")),
+        ]
+    )
+    memory = RecordingMemory()
+    policy = RecordingPolicy(
+        ResidentPolicyDecision(
+            allowed=False,
+            needs_approval=True,
+            reason="physical machines require approval",
+            question="May I start the printer for this validation?",
+            risk_boundaries=("physical_operation",),
+        )
+    )
+    channel = RecordingChannel()
+
+    async def approve(question: str) -> str:
+        assert question == "May I start the printer for this validation?"
+        return "Approved for this proof.\npolicy: accepted preference:ask:physical"
+
+    kernel = ResidentContinuationKernel(
+        agent=agent,
+        memory=memory,
+        policy=policy,
+        channel=channel,
+        ask_operator=approve,
+        budget=ResidentRunBudget(ResidentBudgetLimits(max_turns=2)),
+    )
+
+    run = await kernel.run(MANDATE)
+
+    assert run.final_decision is not None
+    assert run.final_decision.kind == ContinuationDecisionKind.ASK_OPERATOR
+    assert memory.pending_reason.startswith("approval:")
+    assert memory.answer.startswith("Approved for this proof.")
+    assert len(channel.events) == 1
+    event = channel.events[0]
+    assert event.payload["context"]["operator_contact_purpose"] == "approval"
+    assert event.payload["context"]["risk_boundaries"] == ["physical_operation"]
+    assert any(
+        item.subject == "operator-contact:approval" for item in memory.policy_observations
+    )
+    assert any(
+        item.subject == "preference:ask:physical" and item.status == "accepted"
+        for item in memory.policy_observations
     )
 
 

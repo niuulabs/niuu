@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
-
 from ravn.domain.resident_portfolio import (
     ResidentExecutionPort,
     ResidentExecutionResult,
@@ -29,6 +28,8 @@ class ConfiguredWorkflowResidentExecutionAdapter(ResidentExecutionPort):
         connection_id: str = "",
         repo: str = "",
         branch: str = "",
+        model: str = "",
+        definition: str = "",
     ) -> None:
         if not workflow_source_adapter:
             raise ValueError("workflow_source_adapter is required")
@@ -44,6 +45,8 @@ class ConfiguredWorkflowResidentExecutionAdapter(ResidentExecutionPort):
             connection_id=connection_id,
             repo=repo,
             branch=branch,
+            model=model,
+            definition=definition,
         )
 
     async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:

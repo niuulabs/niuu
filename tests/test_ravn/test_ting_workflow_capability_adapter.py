@@ -301,6 +301,8 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
             prompt="investigate this",
             session_name="incident-session",
             connection_id="valhalla",
+            model="gpt-5.5",
+            definition="skuldCodex",
             provenance={"signal_id": "sig-1"},
         )
     )
@@ -313,6 +315,8 @@ async def test_ting_workflow_adapter_launches_with_provenance(tmp_path, monkeypa
         "prompt": "investigate this",
         "sessionName": "incident-session",
         "connectionId": "valhalla",
+        "model": "gpt-5.5",
+        "definition": "skuldCodex",
         "provenance": {
             "signal_id": "sig-1",
             "workload_identity": {

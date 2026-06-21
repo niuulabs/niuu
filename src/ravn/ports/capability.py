@@ -19,6 +19,8 @@ class WorkflowLaunchRequest:
     repo: str = ""
     branch: str = ""
     connection_id: str = ""
+    model: str = ""
+    definition: str = ""
     provenance: dict[str, Any] = field(default_factory=dict)
 
 

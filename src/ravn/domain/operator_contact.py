@@ -24,10 +24,21 @@ class OperatorContactKind(StrEnum):
     HELP_NEEDED = "help_needed"
 
 
+class OperatorContactPurpose(StrEnum):
+    CLARIFICATION = "clarification"
+    APPROVAL = "approval"
+    SUMMARY = "summary"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    INTERESTING_FINDING = "interesting_finding"
+    RECOMMENDATION = "recommendation"
+
+
 class OperatorContactStatus(StrEnum):
     PENDING = "pending"
     ANSWERED = "answered"
     FAILED = "failed"
+    SUPPRESSED = "suppressed"
 
 
 @dataclass(frozen=True)
@@ -36,6 +47,7 @@ class OperatorContactRequest:
     reason: str
     impact: str
     kind: OperatorContactKind = OperatorContactKind.HELP_NEEDED
+    purpose: OperatorContactPurpose = OperatorContactPurpose.CLARIFICATION
     id: str = ""
     source_objective_id: str = ""
     risk_boundaries: tuple[str, ...] = ()
@@ -128,6 +140,7 @@ def _operator_help_needed_event(
         task_id=contact_id,
         context={
             "operator_contact_id": contact_id,
+            "operator_contact_purpose": request.purpose.value,
             "source_objective_id": request.source_objective_id,
             "risk_boundaries": list(request.risk_boundaries),
             "impact": request.impact,

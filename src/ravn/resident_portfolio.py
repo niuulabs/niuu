@@ -14,6 +14,7 @@ from ravn.domain.models import TokenUsage
 from ravn.domain.operator_contact import (
     OperatorContactKind,
     OperatorContactPort,
+    OperatorContactPurpose,
     OperatorContactRequest,
     OperatorContactResult,
     OperatorContactStatus,
@@ -1468,12 +1469,16 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         connection_id: str = "",
         repo: str = "",
         branch: str = "",
+        model: str = "",
+        definition: str = "",
     ) -> None:
         self._workflows = workflows
         self._workflow_id = workflow_id
         self._connection_id = connection_id
         self._repo = repo
         self._branch = branch
+        self._model = model
+        self._definition = definition
         self._references: dict[str, WorkflowRunReference] = {}
 
     async def launch(self, brief: ResidentWorkerBrief) -> ResidentExecutionSession:
@@ -1486,6 +1491,8 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
                 repo=self._repo,
                 branch=self._branch,
                 connection_id=self._connection_id,
+                model=self._model,
+                definition=self._definition,
                 provenance={
                     "resident_objective_id": brief.objective_id,
                     "resident_brief_id": brief.id,
@@ -2811,6 +2818,7 @@ def _operator_contact_request(
         source_objective_id=objective_id,
         risk_boundaries=risks,
         kind=OperatorContactKind.HELP_NEEDED,
+        purpose=OperatorContactPurpose.APPROVAL,
     )
 
 
@@ -2841,6 +2849,7 @@ def _render_operator_contact(result: OperatorContactResult) -> str:
         f"- id: {result.request.id}\n"
         f"- status: {result.status}\n"
         f"- contact_kind: {result.request.kind.value}\n"
+        f"- contact_purpose: {result.request.purpose.value}\n"
         f"- source_objective_id: {result.request.source_objective_id}\n"
         f"- approved: {approved}\n"
         f"- emitted_ref: {result.emitted_ref}\n"

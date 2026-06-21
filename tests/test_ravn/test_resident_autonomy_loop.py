@@ -224,7 +224,11 @@ async def _write_portfolio(
 @pytest.mark.asyncio
 async def test_workflow_adapter_launches_real_capability_port() -> None:
     workflows = RecordingWorkflowPort()
-    adapter = WorkflowResidentExecutionAdapter(workflows=workflows)
+    adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
     objective = _objective("workflow-objective", "Run workflow objective")
 
     session = await adapter.launch(build_worker_brief(MANDATE, objective))
@@ -233,6 +237,8 @@ async def test_workflow_adapter_launches_real_capability_port() -> None:
     assert session.backend_name == "workflow"
     assert workflows.launches
     assert "Run workflow objective" in workflows.launches[0].prompt
+    assert workflows.launches[0].model == "gpt-5.5"
+    assert workflows.launches[0].definition == "skuldCodex"
     assert result is not None
     assert result.output_refs == ("workflow/output.md",)
 

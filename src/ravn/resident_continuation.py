@@ -10,8 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
-from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import TokenUsage, TurnResult
+from ravn.domain.operator_contact import (
+    OperatorContactKind,
+    OperatorContactPort,
+    OperatorContactPurpose,
+    OperatorContactRequest,
+    OperatorContactResult,
+    OperatorContactStatus,
+    answer_operator_contact,
+    emit_help_needed_operator_contact,
+)
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentActionCandidate,
@@ -31,9 +40,13 @@ from ravn.domain.resident_continuation import (
     RiskBoundary,
     selected_action_from_outcome,
 )
-from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.channel import ChannelPort
+from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.mimir import MimirPort
+from ravn.resident_operator_contact import (
+    ResidentOperatorContactConfig,
+    ResidentOperatorContactCoordinator,
+)
 
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
@@ -602,6 +615,43 @@ class LocalResidentMemory(ResidentMemoryPort):
         return str(rel)
 
 
+class _ContinuationOperatorContact(OperatorContactPort):
+    """Adapter from continuation's existing channel/callback shape to OperatorContactPort."""
+
+    def __init__(
+        self,
+        *,
+        channel: ChannelPort | None,
+        ask_operator: Any | None,
+        source: str,
+        persona: str,
+        session_id: str,
+    ) -> None:
+        self._channel = channel
+        self._ask_operator = ask_operator
+        self._source = source
+        self._persona = persona
+        self._session_id = session_id
+
+    async def ask(self, request: OperatorContactRequest) -> OperatorContactResult:
+        if self._channel is not None:
+            pending = await emit_help_needed_operator_contact(
+                self._channel,
+                request,
+                source=self._source,
+                persona=self._persona,
+                session_id=self._session_id,
+            )
+            if self._ask_operator is None:
+                return pending
+        if self._ask_operator is None:
+            return OperatorContactResult(
+                request=request,
+                status=OperatorContactStatus.PENDING.value,
+            )
+        return await answer_operator_contact(request, self._ask_operator)
+
+
 class ResidentContinuationKernel:
     """Runs bounded resident continuation through a backend-neutral executor."""
 
@@ -780,41 +830,46 @@ class ResidentContinuationKernel:
     ) -> None:
         if not decision.question:
             return
-        await self._memory.write_operator_needed(
-            question=decision.question,
-            reason=decision.reason,
+        contact = _ContinuationOperatorContact(
+            channel=self._channel,
+            ask_operator=self._ask_operator,
+            source=self._source,
+            persona=str(getattr(self._persona_config, "name", "") or "resident"),
+            session_id=str(getattr(self._agent, "task_id", "") or ""),
+        )
+        coordinator = ResidentOperatorContactCoordinator(
+            memory=self._memory,
+            contact=contact,
+            config=ResidentOperatorContactConfig(persist_operator_feedback=False),
+        )
+        report = await coordinator.contact_operator(
+            OperatorContactRequest(
+                question=decision.question,
+                reason=decision.reason or "needs_context",
+                impact=_operator_contact_impact(turn),
+                kind=OperatorContactKind.HELP_NEEDED
+                if self._channel is not None
+                else OperatorContactKind.ASK_USER,
+                purpose=OperatorContactPurpose.APPROVAL
+                if decision.risk_boundaries
+                else OperatorContactPurpose.CLARIFICATION,
+                id=f"resident-operator-{turn.turn_index}",
+                risk_boundaries=decision.risk_boundaries,
+                help_needed_outcome=dict(turn.outcome_fields),
+                tool_input={"turn_index": str(turn.turn_index)},
+            ),
             turn=turn,
         )
-        if self._channel is not None:
-            await self._channel.emit(
-                build_help_needed_event(
-                    source=self._source,
-                    persona=str(getattr(self._persona_config, "name", "") or "resident"),
-                    reason=decision.reason or "needs_context",
-                    summary=decision.question,
-                    attempted=_attempted_from_outcome(turn.outcome_fields),
-                    recommendation="Reply with the requested information so the resident can resume.",
-                    correlation_id=f"resident-operator-{turn.turn_index}",
-                    session_id=str(getattr(self._agent, "task_id", "") or ""),
-                    task_id=str(getattr(self._agent, "task_id", "") or ""),
-                    context={
-                        "resident_operator_pending": True,
-                        "turn_index": turn.turn_index,
-                    },
+        if report.result.status == OperatorContactStatus.ANSWERED.value:
+            await self._record_policy_observation(
+                ResidentPolicyObservation(
+                    subject=f"operator-contact:{report.request.purpose.value}",
+                    observation=str(report.result.answer),
+                    source="operator_answer",
                 )
             )
-        if self._ask_operator is None:
-            return
-        answer = await self._ask_operator(decision.question)
-        await self._memory.write_operator_answer(str(answer))
-        observation = ResidentPolicyObservation(
-            subject=f"question:{_slug(decision.question)}",
-            observation=str(answer),
-            source="operator_answer",
-        )
-        await self._record_policy_observation(observation)
-        for parsed in _policy_observations_from_operator_text(str(answer)):
-            await self._record_policy_observation(parsed)
+            for parsed in _policy_observations_from_operator_text(str(report.result.answer)):
+                await self._record_policy_observation(parsed)
 
     async def _record_operator_answer_observation(self, answer: ResidentMemoryEntry) -> None:
         observation_text = _operator_answer_text(answer.content)
@@ -964,7 +1019,11 @@ def _render_answered_operator_needed(
     if prior.strip():
         content = re.sub(r"^- status: .*$", "- status: answered", prior, flags=re.MULTILINE)
         if content == prior and "- status:" not in content:
-            content = content.replace("# Operator Input Needed\n", "# Operator Input Needed\n\n- status: answered\n", 1)
+            content = content.replace(
+                "# Operator Input Needed\n",
+                "# Operator Input Needed\n\n- status: answered\n",
+                1,
+            )
     else:
         content = "# Operator Input Needed\n\n- status: answered\n"
     return (
@@ -1012,6 +1071,16 @@ def _question_from_outcome(fields: dict[str, Any]) -> str:
 
 def _reason_from_outcome(fields: dict[str, Any]) -> str:
     return _unquote(_compact_line(str(fields.get("reason") or "needs_context"), limit=500))
+
+
+def _operator_contact_impact(turn: ResidentTurnRecord) -> str:
+    if turn.selected_next_action is None:
+        return "The resident will sleep until the operator answers."
+    return _compact_line(
+        "Answer controls whether the resident may continue with: "
+        f"{turn.selected_next_action.action}",
+        limit=500,
+    )
 
 
 def _blocked_needs_operator(fields: dict[str, Any]) -> bool:

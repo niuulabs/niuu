@@ -79,6 +79,10 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
             body["branch"] = request.branch
         if request.connection_id:
             body["connectionId"] = request.connection_id
+        if request.model:
+            body["model"] = request.model
+        if request.definition:
+            body["definition"] = request.definition
         provenance = dict(request.provenance)
         if identity:
             provenance["workload_identity"] = dict(identity)
@@ -160,7 +164,9 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     ) -> list[WorkflowArtifact]:
         campaign = await self._resolve_campaign(reference)
         if campaign is None:
-            session = await self._get_session(reference.session_id) if reference.session_id else None
+            session = (
+                await self._get_session(reference.session_id) if reference.session_id else None
+            )
             artifacts = _local_session_artifacts(session)
             if not artifacts and reference.session_id:
                 artifacts = _local_session_artifacts(
@@ -194,7 +200,9 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
     ) -> WorkflowArtifactContent:
         campaign = await self._resolve_campaign(reference)
         if campaign is None:
-            session = await self._get_session(reference.session_id) if reference.session_id else None
+            session = (
+                await self._get_session(reference.session_id) if reference.session_id else None
+            )
             try:
                 return _read_local_session_artifact(session, path=path)
             except RuntimeError:
