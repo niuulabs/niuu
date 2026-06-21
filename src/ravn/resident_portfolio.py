@@ -21,10 +21,12 @@ from ravn.domain.operator_contact import (
 )
 from ravn.domain.resident_continuation import ResidentBudgetLimits, ResidentBudgetSnapshot
 from ravn.domain.resident_expert import (
+    ExpertArtifact,
     ResidentDomainExpertMemoryPort,
     ResidentDomainModel,
     ResidentWorkstream,
     ResidentWorkstreamStatus,
+    WorkstreamExecutionResult,
 )
 from ravn.domain.resident_portfolio import (
     CapabilityDiscoveryPort,
@@ -1725,10 +1727,12 @@ class ResidentDelegationRuntime:
         *,
         backend: ResidentWorkItemBackend,
         executor: ResidentExecutionPort,
+        expert_memory: ResidentDomainExpertMemoryPort | None = None,
         config: ResidentDelegationConfig | None = None,
     ) -> None:
         self._backend = backend
         self._executor = executor
+        self._expert_memory = expert_memory
         self._config = config or ResidentDelegationConfig()
 
     async def run(self, mandate: str) -> ResidentDelegationReport:
@@ -1868,8 +1872,24 @@ class ResidentDelegationRuntime:
                 follow_ups.append(follow_up)
                 objective_updates[follow_up.id] = follow_up
                 persisted_refs.append(await self._backend.write_objective(follow_up))
+            consolidation_refs = await self._consolidate_delegation_learning(
+                mandate,
+                record=record,
+                result=result,
+                review=review,
+                result_ref=result_ref,
+                review_ref=review_ref,
+                follow_ups=created_from_result,
+            )
+            persisted_refs.extend(consolidation_refs)
             if source is not None:
-                absorbed = _absorb_delegation_result(source, result, review, result_ref)
+                absorbed = _absorb_delegation_result(
+                    source,
+                    result,
+                    review,
+                    result_ref,
+                    consolidation_refs=tuple(consolidation_refs),
+                )
                 if (
                     review.decision != ResidentDelegationReviewDecision.COMPLETE.value
                     and created_from_result
@@ -1923,6 +1943,37 @@ class ResidentDelegationRuntime:
                 operator_questions,
             ),
         )
+
+    async def _consolidate_delegation_learning(
+        self,
+        mandate: str,
+        *,
+        record: ResidentDelegationRecord,
+        result: ResidentExecutionResult,
+        review: ResidentDelegationReview,
+        result_ref: str,
+        review_ref: str,
+        follow_ups: tuple[ResidentObjective, ...],
+    ) -> tuple[str, ...]:
+        if self._expert_memory is None:
+            return ()
+        existing = await self._expert_memory.read_domain_model(mandate)
+        model = existing or ResidentDomainModel(mandate=mandate)
+        updated_model, consolidation_result = _domain_model_with_delegation_learning(
+            model,
+            record=record,
+            result=result,
+            review=review,
+            result_ref=result_ref,
+            review_ref=review_ref,
+            follow_ups=follow_ups,
+        )
+        model_ref = await self._expert_memory.write_domain_model(updated_model)
+        consolidation_ref = await self._expert_memory.write_consolidation(
+            updated_model,
+            consolidation_result,
+        )
+        return (model_ref, consolidation_ref)
 
     async def _abandon_stale_delegations(
         self,
@@ -2017,12 +2068,14 @@ class ResidentAutonomyLoopRuntime:
         executor: ResidentExecutionPort,
         ask_operator: OperatorContactPort | None = None,
         wake_memory: WakefulResidentMemoryPort | None = None,
+        expert_memory: ResidentDomainExpertMemoryPort | None = None,
         config: ResidentAutonomyLoopConfig | None = None,
     ) -> None:
         self._backend = backend
         self._executor = executor
         self._ask_operator = ask_operator
         self._wake_memory = wake_memory
+        self._expert_memory = expert_memory
         self._config = config or ResidentAutonomyLoopConfig()
 
     async def run(self, mandate: str) -> ResidentAutonomyRun:
@@ -2039,6 +2092,7 @@ class ResidentAutonomyLoopRuntime:
             delegation = await ResidentDelegationRuntime(
                 backend=self._backend,
                 executor=self._executor,
+                expert_memory=self._expert_memory,
                 config=ResidentDelegationConfig(
                     max_delegations=self._config.max_delegations_per_cycle,
                     max_observations=self._config.max_observations_per_cycle,
@@ -2973,6 +3027,8 @@ def _absorb_delegation_result(
     result: ResidentExecutionResult,
     review: ResidentDelegationReview,
     result_ref: str,
+    *,
+    consolidation_refs: tuple[str, ...] = (),
 ) -> ResidentObjective:
     if review.decision == ResidentDelegationReviewDecision.COMPLETE.value:
         status = ResidentObjectiveStatus.COMPLETED.value
@@ -2992,8 +3048,113 @@ def _absorb_delegation_result(
         status=status,
         proof_progress=progress,
         artifact_links=_merge_text(objective.artifact_links, (result_ref,), result.output_refs),
+        consolidation_links=_merge_text(objective.consolidation_links, consolidation_refs),
         last_reviewed_at=datetime.now(UTC),
     )
+
+
+def _domain_model_with_delegation_learning(
+    model: ResidentDomainModel,
+    *,
+    record: ResidentDelegationRecord,
+    result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
+    result_ref: str,
+    review_ref: str,
+    follow_ups: tuple[ResidentObjective, ...],
+) -> tuple[ResidentDomainModel, WorkstreamExecutionResult]:
+    summary = _compact_line(
+        f"delegation {record.id} reviewed as {review.decision}: {result.summary or review.reason}",
+        limit=240,
+    )
+    facts = (
+        result.findings
+        if review.decision == ResidentDelegationReviewDecision.COMPLETE.value
+        else ()
+    )
+    gaps = _delegation_capability_gaps(result, review)
+    failure_notes = _delegation_failure_notes(record, result, review)
+    open_threads = _merge_text(
+        result.follow_up_suggestions,
+        tuple(f"follow-up objective {item.id}: {item.title}" for item in follow_ups),
+    )
+    artifact_refs = _merge_text((result_ref, review_ref), result.output_refs)
+    consolidation_result = WorkstreamExecutionResult(
+        workstream_id=record.id,
+        status=result.status,
+        summary=summary,
+        artifact_refs=artifact_refs,
+        facts=facts,
+        lessons=open_threads,
+        capability_gaps=gaps,
+        usage=result.usage,
+    )
+    artifact = ExpertArtifact(
+        title=f"Delegation review: {record.brief.objective_title}",
+        kind="delegation_review",
+        path=review_ref,
+        purpose="Compact resident memory for a reviewed delegated work result.",
+        summary=review.reason,
+    )
+    updated = model.with_consolidation(
+        recent_outcomes=_merge_text(model.recent_outcomes, (summary,), limit=12),
+        known_facts=_merge_text(model.known_facts, facts),
+        resident_decisions=_merge_text(
+            model.resident_decisions,
+            (f"reviewed delegation {record.id}: {review.decision}",),
+        ),
+        failure_notes=_merge_text(model.failure_notes, failure_notes),
+        open_threads=_merge_text(model.open_threads, open_threads),
+        capability_gaps=_merge_text(model.capability_gaps, gaps),
+        artifacts=_merge_expert_artifacts(model.artifacts, (artifact,)),
+    )
+    return updated, consolidation_result
+
+
+def _delegation_capability_gaps(
+    result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
+) -> tuple[str, ...]:
+    text = " ".join((result.summary, result.blocked_reason, review.reason)).casefold()
+    if not _has_any(text, ("capability", "tool", "workflow", "adapter", "unavailable")):
+        return ()
+    return (
+        _compact_line(
+            result.blocked_reason or review.reason or result.summary,
+            limit=180,
+        ),
+    )
+
+
+def _delegation_failure_notes(
+    record: ResidentDelegationRecord,
+    result: ResidentExecutionResult,
+    review: ResidentDelegationReview,
+) -> tuple[str, ...]:
+    if review.decision == ResidentDelegationReviewDecision.COMPLETE.value:
+        return ()
+    return (
+        _compact_line(
+            f"delegation {record.id} {result.status}: "
+            f"{result.blocked_reason or review.reason or result.summary}",
+            limit=220,
+        ),
+    )
+
+
+def _merge_expert_artifacts(
+    existing: tuple[ExpertArtifact, ...],
+    incoming: tuple[ExpertArtifact, ...],
+) -> tuple[ExpertArtifact, ...]:
+    by_key: dict[str, ExpertArtifact] = {
+        item.path or item.title: item for item in existing if item.path or item.title
+    }
+    for item in incoming:
+        key = item.path or item.title
+        if not key:
+            continue
+        by_key[key] = item
+    return tuple(by_key.values())
 
 
 def _follow_ups_from_delegation_result(

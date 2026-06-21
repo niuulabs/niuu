@@ -16,6 +16,7 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
     ResidentWorkerBrief,
 )
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
     ResidentDelegationConfig,
@@ -341,6 +342,39 @@ async def test_results_merge_back_into_portfolio_and_create_followups(
 
 
 @pytest.mark.asyncio
+async def test_delegation_review_consolidates_into_domain_expert_memory(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=RecordingExecutor(),
+        expert_memory=expert_memory,
+    ).run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+
+    assert model is not None
+    assert "finding from session-one" in model.known_facts
+    assert any(
+        "reviewed delegation delegation-one: complete" in item
+        for item in model.resident_decisions
+    )
+    assert any(item.path.startswith("resident/delegation-reviews/") for item in model.artifacts)
+    assert any(
+        ref.startswith("resident/domain-expert/consolidations/")
+        for ref in report.persisted_refs
+    )
+    assert any(
+        ref.startswith("resident/domain-expert/consolidations/")
+        for ref in objectives["one"].consolidation_links
+    )
+
+
+@pytest.mark.asyncio
 async def test_resident_abandons_stale_delegation_without_relaunching(
     tmp_path: Path,
 ) -> None:
@@ -418,6 +452,36 @@ async def test_failed_delegation_creates_actionable_retry_objective(
     )
     assert gated == ()
     assert selected[0].id == retry.id
+
+
+@pytest.mark.asyncio
+async def test_blocked_delegation_consolidates_failure_without_fact_pollution(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-blocked",
+            status=ResidentDelegationStatus.FAILED.value,
+            summary="workflow adapter unavailable",
+            findings=("stderr is not a domain fact",),
+            blocked_reason="workflow adapter unavailable",
+        )
+    )
+
+    await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        expert_memory=expert_memory,
+    ).run(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
+
+    assert model is not None
+    assert "stderr is not a domain fact" not in model.known_facts
+    assert any("delegation delegation-one failed" in item for item in model.failure_notes)
+    assert "workflow adapter unavailable" in model.capability_gaps
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
     ResidentPortfolio,
 )
+from ravn.resident_expert import LocalResidentDomainExpertMemory, MimirResidentDomainExpertMemory
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
     MimirResidentWorkItemBackend,
@@ -238,10 +239,12 @@ async def _main() -> None:
     mimir = _build_mimir(settings)
     if mimir is not None:
         backend: Any = MimirResidentWorkItemBackend(mimir)
+        expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
         memory_label = "mimir"
     else:
         local_root = Path.cwd() / ".ravn"
         backend = LocalResidentWorkItemBackend(local_root)
+        expert_memory = LocalResidentDomainExpertMemory(local_root)
         memory_label = str(local_root)
 
     seeded = not args.no_seed
@@ -253,6 +256,7 @@ async def _main() -> None:
     runtime = ResidentDelegationRuntime(
         backend=backend,
         executor=executor,
+        expert_memory=expert_memory,
         config=ResidentDelegationConfig(
             max_delegations=max(1, int(delegation_cfg.max_delegations)),
             max_observations=max(1, int(delegation_cfg.max_observations)),
