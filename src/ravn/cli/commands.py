@@ -4026,6 +4026,7 @@ def _wire_mimir_triggers(
                     backend=backend,
                     memory=MimirResidentReviewMemory(mimir),
                     verifier=verifier,
+                    expert_memory=expert_memory,
                     config=ResidentReviewRuntimeConfig(
                         max_follow_up_objectives=max(
                             0,

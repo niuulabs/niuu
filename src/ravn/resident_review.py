@@ -8,6 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from ravn.domain.resident_expert import (
+    ExpertArtifact,
+    ResidentDomainExpertMemoryPort,
+    ResidentDomainModel,
+    WorkstreamExecutionResult,
+)
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
     ResidentObjectiveKind,
@@ -185,11 +191,13 @@ class ResidentReviewRuntime:
         backend: ResidentWorkItemBackend,
         memory: ResidentReviewMemoryPort,
         verifier: ResidentVerificationPort,
+        expert_memory: ResidentDomainExpertMemoryPort | None = None,
         config: ResidentReviewRuntimeConfig | None = None,
     ) -> None:
         self._backend = backend
         self._memory = memory
         self._verifier = verifier
+        self._expert_memory = expert_memory
         self._config = config or ResidentReviewRuntimeConfig()
 
     async def review(self, mandate: str, target: ResidentReviewTarget) -> ResidentReviewReport:
@@ -266,6 +274,14 @@ class ResidentReviewRuntime:
             )
         )
         refs.append(audit_ref)
+        refs.extend(
+            await self._consolidate_review_learning(
+                mandate,
+                target=target,
+                review=review,
+                review_ref=review_ref,
+            )
+        )
         created_follow_up_id = review.follow_up_objective_id
         updated_objective_id = (
             target.source_objective_id
@@ -344,6 +360,30 @@ class ResidentReviewRuntime:
         )
         refs.append(portfolio_ref)
         return tuple(refs)
+
+    async def _consolidate_review_learning(
+        self,
+        mandate: str,
+        *,
+        target: ResidentReviewTarget,
+        review: ResidentArtifactReview,
+        review_ref: str,
+    ) -> tuple[str, ...]:
+        if self._expert_memory is None:
+            return ()
+        existing = await self._expert_memory.read_domain_model(mandate)
+        model = existing or ResidentDomainModel(mandate=mandate)
+        result = _review_consolidation_result(target, review, review_ref)
+        updated = _domain_model_with_review_learning(
+            model,
+            target=target,
+            review=review,
+            review_ref=review_ref,
+            result=result,
+        )
+        model_ref = await self._expert_memory.write_domain_model(updated)
+        consolidation_ref = await self._expert_memory.write_consolidation(updated, result)
+        return (model_ref, consolidation_ref)
 
 
 async def run_resident_review_wake_pass(
@@ -478,6 +518,63 @@ def _review_wake_next_action(reports: tuple[ResidentReviewReport, ...]) -> str:
     if skipped and len(skipped) == len(reports):
         return "Reuse existing review evidence; no duplicate verification needed."
     return "Use passed review evidence to trust resident artifacts."
+
+
+def _review_consolidation_result(
+    target: ResidentReviewTarget,
+    review: ResidentArtifactReview,
+    review_ref: str,
+) -> WorkstreamExecutionResult:
+    facts = ()
+    lessons = (f"resident review evidence persisted: {review_ref}",)
+    if review.decision == ResidentReviewDecision.PASSED.value:
+        facts = (f"review passed for {target.artifact_ref}",)
+    return WorkstreamExecutionResult(
+        workstream_id=f"resident-review-{review.id}",
+        status=review.decision,
+        summary=f"{target.title}: {review.reason}",
+        artifact_refs=(review_ref, target.artifact_ref),
+        facts=facts,
+        lessons=lessons,
+    )
+
+
+def _domain_model_with_review_learning(
+    model: ResidentDomainModel,
+    *,
+    target: ResidentReviewTarget,
+    review: ResidentArtifactReview,
+    review_ref: str,
+    result: WorkstreamExecutionResult,
+) -> ResidentDomainModel:
+    outcome = f"resident review {review.decision}: {target.artifact_ref} ({review_ref})"
+    failure_notes = ()
+    if review.decision == ResidentReviewDecision.FAILED.value:
+        failure_notes = (f"review failed for {target.artifact_ref}: {review.reason}",)
+    memory_hygiene_notes = (
+        f"review evidence consolidated into domain memory: {review_ref}",
+    )
+    artifact = ExpertArtifact(
+        title=f"Resident review for {target.title}",
+        kind="resident_review",
+        path=review_ref,
+        purpose=f"Verification evidence for {target.artifact_ref}.",
+        summary=review.reason,
+    )
+    return model.with_consolidation(
+        recent_outcomes=_merge_text(model.recent_outcomes, (outcome, result.summary)),
+        known_facts=_merge_text(model.known_facts, result.facts),
+        resident_decisions=_merge_text(
+            model.resident_decisions,
+            (f"trusted review decision {review.decision}: {target.artifact_ref}",),
+        ),
+        failure_notes=_merge_text(model.failure_notes, failure_notes),
+        memory_hygiene_notes=_merge_text(
+            model.memory_hygiene_notes,
+            memory_hygiene_notes,
+        ),
+        artifacts=_merge_artifacts(model.artifacts, (artifact,)),
+    )
 
 
 def _follow_up_objective(
@@ -647,6 +744,21 @@ def _render_list(items: tuple[str, ...]) -> str:
 
 def _merge_text(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*left, *right)))
+
+
+def _merge_artifacts(
+    left: tuple[ExpertArtifact, ...],
+    right: tuple[ExpertArtifact, ...],
+) -> tuple[ExpertArtifact, ...]:
+    merged: dict[str, ExpertArtifact] = {
+        item.path or item.title: item for item in left if item.path or item.title
+    }
+    for artifact in right:
+        key = artifact.path or artifact.title
+        if not key:
+            continue
+        merged[key] = artifact
+    return tuple(merged.values())
 
 
 def _strings(value: object) -> tuple[str, ...]:

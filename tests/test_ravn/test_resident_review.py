@@ -16,6 +16,7 @@ from ravn.domain.resident_review import (
     ResidentReviewTarget,
     ResidentVerificationCheck,
 )
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from ravn.resident_review import (
     LocalResidentReviewMemory,
@@ -86,41 +87,53 @@ def _target(path: Path, *, key_suffix: str | None = None) -> ResidentReviewTarge
 
 async def test_failed_review_creates_actionable_follow_up(tmp_path: Path) -> None:
     backend = await _seed_backend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path / "memory")
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Product Note\n\nUseful draft.\n", encoding="utf-8")
     runtime = ResidentReviewRuntime(
         backend=backend,
         memory=LocalResidentReviewMemory(tmp_path / "memory"),
         verifier=CommandResidentVerificationAdapter(timeout_seconds=5, max_output_bytes=4000),
+        expert_memory=expert_memory,
     )
 
     report = await runtime.review(MANDATE, _target(artifact))
     objectives = await backend.list_objectives(MANDATE)
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.review.decision == ResidentReviewDecision.FAILED.value
     assert report.created_follow_up_objective_id
     assert any(item.id == report.created_follow_up_objective_id for item in objectives)
     assert any("missing proof line" in item.summary for item in report.review.evidence)
+    assert model is not None
+    assert any("review failed for" in item for item in model.failure_notes)
+    assert any("resident/reviews/" in item.path for item in model.artifacts)
 
 
 async def test_passing_review_completes_source_objective(tmp_path: Path) -> None:
     backend = await _seed_backend(tmp_path)
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path / "memory")
     artifact = tmp_path / "artifact.md"
     artifact.write_text("# Product Note\n\nProof: command verified this file.\n", encoding="utf-8")
     runtime = ResidentReviewRuntime(
         backend=backend,
         memory=LocalResidentReviewMemory(tmp_path / "memory"),
         verifier=CommandResidentVerificationAdapter(timeout_seconds=5, max_output_bytes=4000),
+        expert_memory=expert_memory,
     )
 
     report = await runtime.review(MANDATE, _target(artifact))
     source = {item.id: item for item in await backend.list_objectives(MANDATE)}[
         "artifact-objective"
     ]
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.review.decision == ResidentReviewDecision.PASSED.value
     assert source.status == ResidentObjectiveStatus.COMPLETED.value
     assert any("review passed" in item for item in source.proof_progress)
+    assert model is not None
+    assert any("review passed for" in item for item in model.known_facts)
+    assert any("resident review passed" in item for item in model.recent_outcomes)
 
 
 async def test_duplicate_review_key_skips_redundant_verification(tmp_path: Path) -> None:
