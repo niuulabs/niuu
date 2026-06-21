@@ -3641,6 +3641,7 @@ def _wire_mimir_triggers(
                 ResidentDomainExpertConfig,
                 ResidentDomainExpertLoop,
             )
+            from ravn.resident_operator_contact import ingest_resident_operator_reply
             from ravn.resident_portfolio import (
                 MimirResidentWorkItemBackend,
                 ResidentAutonomyLoopConfig,
@@ -3684,6 +3685,31 @@ def _wire_mimir_triggers(
             backend = MimirResidentWorkItemBackend(mimir)
             wake_memory = MimirWakefulResidentMemory(mimir)
             expert_memory = MimirResidentDomainExpertMemory(mimir)
+
+            async def _resident_operator_reply_interceptor(
+                content: str,
+                metadata: dict[str, Any] | None,
+            ) -> bool:
+                report = await ingest_resident_operator_reply(
+                    backend=backend,
+                    mandate=mandate,
+                    content=content,
+                    metadata=metadata,
+                )
+                if report.handled:
+                    logger.info(
+                        "resident_autonomy: ingested operator reply "
+                        "(objective=%s, approved=%s, contact_ref=%s)",
+                        report.source_objective_id,
+                        report.approved,
+                        report.contact_ref,
+                    )
+                return report.handled
+
+            drive_loop.register_directed_message_interceptor(
+                _resident_operator_reply_interceptor
+            )
+
             portfolio_manager = None
             if settings.resident_autonomy.bootstrap_portfolio:
                 if agent_factory is None:

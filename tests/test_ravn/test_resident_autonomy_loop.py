@@ -35,6 +35,7 @@ from ravn.ports.capability import (
     WorkflowRunReference,
     WorkflowRunStatus,
 )
+from ravn.resident_operator_contact import ingest_resident_operator_reply
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
     LocalSimulatedResidentExecutor,
@@ -613,6 +614,57 @@ async def test_autonomy_loop_uses_operator_approval_for_next_cycle(
     assert len(run.cycles) == 2
     assert run.cycles[1].delegation_report.created_delegations
     assert run.cycles[1].delegation_report.created_delegations[0].source_objective_id == "risky"
+
+
+@pytest.mark.asyncio
+async def test_directed_operator_reply_persists_approval_for_future_wake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    pending = _objective(
+        "risky",
+        "Risky autonomous objective",
+        risk_boundaries=("spending",),
+    ).with_updates(
+        status=ResidentObjectiveStatus.NEEDS_OPERATOR.value,
+        pending_question="May I spend money for this objective?",
+    )
+    await _write_portfolio(backend, pending)
+
+    report = await ingest_resident_operator_reply(
+        backend=backend,
+        mandate=MANDATE,
+        content="Yes, approved for this specific objective.",
+        metadata={
+            "help_summary": "May I spend money for this objective?",
+            "help_context": {
+                "operator_contact_id": "operator-contact-risky",
+                "operator_contact_purpose": "approval",
+                "source_objective_id": "risky",
+                "risk_boundaries": ["spending"],
+                "impact": "Allows this objective to be delegated.",
+            },
+        },
+    )
+
+    assert report.handled is True
+    assert report.approved is True
+    objectives = await backend.list_objectives(MANDATE)
+    updated = next(item for item in objectives if item.id == "risky")
+    assert updated.status == ResidentObjectiveStatus.CANDIDATE.value
+    assert updated.pending_question == ""
+    assert any("operator approved risk boundary" in item for item in updated.proof_progress)
+
+    run = await ResidentAutonomyLoopRuntime(
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+    ).run(MANDATE)
+
+    assert run.cycles[0].delegation_report.created_delegations
+    assert run.cycles[0].delegation_report.created_delegations[0].source_objective_id == "risky"
 
 
 @pytest.mark.asyncio

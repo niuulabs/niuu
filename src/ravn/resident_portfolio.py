@@ -76,6 +76,7 @@ from ravn.ports.capability import (
 )
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line, _slug
+from ravn.resident_operator_contact import approved_risk_objective_ids_from_objectives
 
 _PORTFOLIO_PATH = "resident/portfolio/portfolio.md"
 _OBJECTIVE_PREFIX = "resident/portfolio/objectives"
@@ -2185,7 +2186,11 @@ class ResidentAutonomyLoopRuntime:
         persisted_refs: list[str] = []
         operator_questions: list[str] = []
         operator_contacts: list[OperatorContactResult] = []
+        stored_objectives = tuple(await self._backend.list_objectives(mandate))
         approved_risk_objective_ids = set(self._config.approved_risk_objective_ids)
+        approved_risk_objective_ids.update(
+            approved_risk_objective_ids_from_objectives(stored_objectives)
+        )
 
         for cycle_number in range(1, max(0, self._config.max_cycles) + 1):
             if (datetime.now(UTC) - started).total_seconds() > self._config.max_wall_clock_seconds:

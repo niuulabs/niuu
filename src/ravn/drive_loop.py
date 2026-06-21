@@ -804,6 +804,9 @@ class DriveLoop:
         self._source_id = "drive_loop"
         self._counter = 0
         self._rpc_handler: MeshRpcHandler | None = None
+        self._directed_message_interceptors: list[
+            Callable[[str, dict[str, Any] | None], Awaitable[bool]]
+        ] = []
         self._result_store: TaskResultStore = TaskResultStore()
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
@@ -862,6 +865,13 @@ class DriveLoop:
     def operator_contact_channel(self) -> ChannelPort | None:
         """Return the daemon's existing outbound operator channel, when enabled."""
         return self._skuld_channel
+
+    def register_directed_message_interceptor(
+        self,
+        handler: Callable[[str, dict[str, Any] | None], Awaitable[bool]],
+    ) -> None:
+        """Register a handler that may consume directed user messages before enqueue."""
+        self._directed_message_interceptors.append(handler)
 
     async def enqueue(self, task: AgentTask) -> None:
         """Add a task to the priority queue, honouring deadline and capacity."""
@@ -1243,6 +1253,14 @@ class DriveLoop:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
+        for handler in list(self._directed_message_interceptors):
+            try:
+                if await handler(content, metadata):
+                    logger.info("drive_loop: directed message consumed by interceptor")
+                    return
+            except Exception:
+                logger.exception("drive_loop: directed message interceptor failed")
+
         if await self._try_steer_active_agent(content):
             return
 
