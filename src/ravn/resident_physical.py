@@ -25,6 +25,12 @@ from ravn.domain.resident_continuation import (
     ResidentTurnRecord,
     RiskBoundary,
 )
+from ravn.domain.resident_expert import (
+    ExpertArtifact,
+    ResidentDomainExpertMemoryPort,
+    ResidentDomainModel,
+    WorkstreamExecutionResult,
+)
 from ravn.ports.mimir import MimirPort
 from ravn.ports.physical_device import PhysicalDevicePort
 from ravn.resident_continuation import ConfigurableResidentPolicy
@@ -175,12 +181,14 @@ class ResidentPhysicalRuntime:
         device: PhysicalDevicePort,
         memory: ResidentPhysicalMemoryPort,
         continuation_memory: ResidentMemoryPort | None = None,
+        expert_memory: ResidentDomainExpertMemoryPort | None = None,
         policy: ResidentPolicyPort | None = None,
         config: ResidentPhysicalRuntimeConfig | None = None,
     ) -> None:
         self._device = device
         self._memory = memory
         self._continuation_memory = continuation_memory
+        self._expert_memory = expert_memory
         self._policy = policy or ConfigurableResidentPolicy()
         self._config = config or ResidentPhysicalRuntimeConfig()
 
@@ -203,6 +211,14 @@ class ResidentPhysicalRuntime:
                     body=f"Discovered {len(capabilities)} configured capability adapter(s).",
                     refs=tuple(refs),
                 )
+            )
+        )
+        refs.extend(
+            await self._consolidate_physical_learning(
+                mandate,
+                capabilities=capabilities,
+                results=(),
+                reasoning=reasoning,
             )
         )
         return ResidentPhysicalReport(
@@ -228,6 +244,14 @@ class ResidentPhysicalRuntime:
                 )
             )
         )
+        refs.extend(
+            await self._consolidate_physical_learning(
+                mandate,
+                capabilities=capabilities,
+                results=(result,),
+                reasoning=reasoning,
+            )
+        )
         return ResidentPhysicalReport(
             mandate=mandate,
             capabilities=capabilities,
@@ -251,6 +275,14 @@ class ResidentPhysicalRuntime:
         refs.append(
             await self._memory.write_audit(
                 _render_audit(title="Physical Dry Run", body=result.summary, refs=tuple(refs))
+            )
+        )
+        refs.extend(
+            await self._consolidate_physical_learning(
+                mandate,
+                capabilities=capabilities,
+                results=(result,),
+                reasoning=reasoning,
             )
         )
         return ResidentPhysicalReport(
@@ -341,6 +373,14 @@ class ResidentPhysicalRuntime:
                     )
                 )
             )
+            refs.extend(
+                await self._consolidate_physical_learning(
+                    mandate,
+                    capabilities=capabilities,
+                    results=(result,),
+                    reasoning=reasoning,
+                )
+            )
             return ResidentPhysicalReport(
                 mandate=mandate,
                 capabilities=capabilities,
@@ -362,6 +402,14 @@ class ResidentPhysicalRuntime:
                 )
             )
         )
+        refs.extend(
+            await self._consolidate_physical_learning(
+                mandate,
+                capabilities=capabilities,
+                results=(result,),
+                reasoning=reasoning,
+            )
+        )
         return ResidentPhysicalReport(
             mandate=mandate,
             capabilities=capabilities,
@@ -369,6 +417,30 @@ class ResidentPhysicalRuntime:
             reasoning=reasoning,
             persisted_refs=tuple(refs),
         )
+
+    async def _consolidate_physical_learning(
+        self,
+        mandate: str,
+        *,
+        capabilities: tuple[PhysicalCapability, ...],
+        results: tuple[PhysicalActionResult, ...],
+        reasoning: ResidentPhysicalReasoning,
+    ) -> tuple[str, ...]:
+        if self._expert_memory is None:
+            return ()
+        existing = await self._expert_memory.read_domain_model(mandate)
+        model = existing or ResidentDomainModel(mandate=mandate)
+        result = _physical_consolidation_result(capabilities, results, reasoning)
+        updated = _domain_model_with_physical_learning(
+            model,
+            capabilities=capabilities,
+            results=results,
+            reasoning=reasoning,
+            result=result,
+        )
+        model_ref = await self._expert_memory.write_domain_model(updated)
+        consolidation_ref = await self._expert_memory.write_consolidation(updated, result)
+        return (model_ref, consolidation_ref)
 
 
 async def run_resident_physical_wake_pass(
@@ -434,6 +506,90 @@ async def run_resident_physical_wake_pass(
         persisted_refs=tuple(refs),
         operator_pending=operator_pending,
         final_suggested_next_action=_physical_wake_next_action(tuple(reports)),
+    )
+
+
+def _physical_consolidation_result(
+    capabilities: tuple[PhysicalCapability, ...],
+    results: tuple[PhysicalActionResult, ...],
+    reasoning: ResidentPhysicalReasoning,
+) -> WorkstreamExecutionResult:
+    status = "completed"
+    if any(item.status == "blocked" or item.approval_required for item in results):
+        status = "blocked"
+    elif any(item.status != "completed" for item in results):
+        status = "failed"
+    facts = tuple(_physical_fact(item) for item in capabilities)
+    if results:
+        facts = (*facts, *tuple(_physical_result_fact(item) for item in results))
+    return WorkstreamExecutionResult(
+        workstream_id="resident-physical-world",
+        status=status,
+        summary=reasoning.summary,
+        artifact_refs=reasoning.evidence_refs,
+        facts=facts,
+        lessons=(reasoning.safe_next_action,),
+    )
+
+
+def _domain_model_with_physical_learning(
+    model: ResidentDomainModel,
+    *,
+    capabilities: tuple[PhysicalCapability, ...],
+    results: tuple[PhysicalActionResult, ...],
+    reasoning: ResidentPhysicalReasoning,
+    result: WorkstreamExecutionResult,
+) -> ResidentDomainModel:
+    blocked = tuple(
+        item for item in results if item.status == "blocked" or item.approval_required
+    )
+    failed = tuple(
+        item for item in results if item.status not in {"completed", "blocked"}
+    )
+    open_threads = tuple(
+        f"physical approval pending for {item.capability_id}: {item.summary}"
+        for item in blocked
+    )
+    failure_notes = tuple(
+        f"physical result failed for {item.capability_id}: {item.summary}"
+        for item in failed
+    ) + tuple(
+        f"physical operation blocked for {item.capability_id}: "
+        f"{item.blocked_reason or item.summary}"
+        for item in blocked
+    )
+    artifacts = tuple(
+        ExpertArtifact(
+            title=f"Physical evidence for {capability.name}",
+            kind="physical_evidence",
+            path=ref,
+            purpose=f"Physical-world evidence for capability {capability.id}.",
+            summary=reasoning.summary,
+        )
+        for capability, ref in zip(capabilities, reasoning.evidence_refs, strict=False)
+    )
+    return model.with_consolidation(
+        recent_outcomes=_merge_text(model.recent_outcomes, (reasoning.summary,)),
+        known_facts=_merge_text(model.known_facts, result.facts),
+        resident_decisions=_merge_text(
+            model.resident_decisions,
+            (f"physical safe next action: {reasoning.safe_next_action}",),
+        ),
+        failure_notes=_merge_text(model.failure_notes, failure_notes),
+        open_threads=_merge_text(model.open_threads, open_threads),
+        artifacts=_merge_artifacts(model.artifacts, artifacts),
+    )
+
+
+def _physical_fact(capability: PhysicalCapability) -> str:
+    actions = ", ".join(capability.action_kinds) or "no actions"
+    return f"physical capability {capability.id} supports {actions}"
+
+
+def _physical_result_fact(result: PhysicalActionResult) -> str:
+    return (
+        f"physical {result.kind} for {result.capability_id} "
+        f"{result.status}: {result.summary}"
     )
 
 
@@ -593,6 +749,25 @@ def _render_mapping(value: dict[str, Any]) -> str:
 
 def _one_line(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _merge_text(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*left, *right)))
+
+
+def _merge_artifacts(
+    left: tuple[ExpertArtifact, ...],
+    right: tuple[ExpertArtifact, ...],
+) -> tuple[ExpertArtifact, ...]:
+    merged: dict[str, ExpertArtifact] = {
+        item.path or item.title: item for item in left if item.path or item.title
+    }
+    for artifact in right:
+        key = artifact.path or artifact.title
+        if not key:
+            continue
+        merged[key] = artifact
+    return tuple(merged.values())
 
 
 def _slug(value: str) -> str:

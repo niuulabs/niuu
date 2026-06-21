@@ -4074,6 +4074,7 @@ def _wire_mimir_triggers(
                         device=device_cls(**device_kwargs),
                         memory=MimirResidentPhysicalMemory(mimir),
                         continuation_memory=continuation_memory,
+                        expert_memory=expert_memory,
                     )
                 )
             if physical_runtimes:

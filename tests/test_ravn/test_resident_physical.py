@@ -6,6 +6,7 @@ from pathlib import Path
 from ravn.adapters.physical.command import CommandPhysicalDeviceAdapter
 from ravn.domain.physical_device import PhysicalActionKind, PhysicalActionRequest
 from ravn.resident_continuation import LocalResidentMemory
+from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_physical import (
     LocalResidentPhysicalMemory,
     ResidentPhysicalRuntime,
@@ -77,10 +78,12 @@ async def test_command_physical_adapter_lists_and_reads_real_telemetry(tmp_path:
 
 
 async def test_resident_physical_runtime_persists_dry_run_reasoning(tmp_path: Path) -> None:
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path / "memory")
     runtime = ResidentPhysicalRuntime(
         device=_adapter(tmp_path),
         memory=LocalResidentPhysicalMemory(tmp_path / "memory"),
         continuation_memory=LocalResidentMemory(tmp_path / "memory"),
+        expert_memory=expert_memory,
     )
 
     report = await runtime.dry_run(
@@ -93,19 +96,25 @@ async def test_resident_physical_runtime_persists_dry_run_reasoning(tmp_path: Pa
         ),
     )
     refs = await LocalResidentPhysicalMemory(tmp_path / "memory").list_refs()
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.results[0].status == "completed"
     assert "dry-run ok" in report.reasoning.summary
     assert any("/results/" in ref for ref in refs)
     assert any("/reasoning/" in ref for ref in refs)
+    assert model is not None
+    assert any("physical dry_run for dry-run completed" in item for item in model.known_facts)
+    assert any("physical safe next action" in item for item in model.resident_decisions)
 
 
 async def test_physical_operation_is_blocked_before_command_executes(tmp_path: Path) -> None:
     marker = tmp_path / "marker.txt"
+    expert_memory = LocalResidentDomainExpertMemory(tmp_path / "memory")
     runtime = ResidentPhysicalRuntime(
         device=_adapter(tmp_path),
         memory=LocalResidentPhysicalMemory(tmp_path / "memory"),
         continuation_memory=LocalResidentMemory(tmp_path / "memory"),
+        expert_memory=expert_memory,
     )
 
     report = await runtime.execute(
@@ -117,12 +126,16 @@ async def test_physical_operation_is_blocked_before_command_executes(tmp_path: P
             reason="Would operate hardware.",
         ),
     )
+    model = await expert_memory.read_domain_model(MANDATE)
 
     assert report.results[0].status == "blocked"
     assert report.results[0].approval_required is True
     assert not marker.exists()
     assert (tmp_path / "memory" / "resident/continuation/operator-needed/latest.md").exists()
     assert "Wait for operator approval" in report.reasoning.safe_next_action
+    assert model is not None
+    assert any("physical operation blocked" in item for item in model.failure_notes)
+    assert any("physical approval pending" in item for item in model.open_threads)
 
 
 async def test_physical_wake_pass_collects_safe_evidence_and_blocks_operation(
