@@ -4178,6 +4178,7 @@ def _wire_mimir_triggers(
                     executor=executor,
                     wake_memory=wake_memory,
                     expert_memory=expert_memory,
+                    operator_memory=continuation_memory,
                     ask_operator=contact,
                     portfolio_manager=portfolio_manager,
                     wake_extensions=tuple(wake_extensions),

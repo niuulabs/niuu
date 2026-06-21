@@ -12,6 +12,7 @@ from ravn.adapters.triggers.resident_autonomy import (
 )
 from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.models import TokenUsage
 from ravn.domain.operator_contact import (
     OperatorContactKind,
     OperatorContactRequest,
@@ -20,6 +21,7 @@ from ravn.domain.operator_contact import (
     answer_operator_contact,
     emit_help_needed_operator_contact,
 )
+from ravn.domain.resident_continuation import ResidentTurnRecord
 from ravn.domain.resident_portfolio import (
     ResidentDelegationRecord,
     ResidentDelegationReviewDecision,
@@ -709,6 +711,62 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_pending_operator(
     assert wake_records == []
     assert decisions
     assert "slept: pending operator input" in decisions[-1].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_sleeps_for_continuation_operator_marker(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    operator_memory = LocalResidentMemory(tmp_path)
+    ran_extension = False
+    await operator_memory.write_operator_needed(
+        question="Should I continue with the physical device check?",
+        reason="Physical-world approval is required.",
+        turn=ResidentTurnRecord(
+            turn_index=1,
+            prompt=MANDATE,
+            response="",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+        ),
+    )
+
+    class ExtensionResult:
+        persisted_refs: tuple[str, ...] = ()
+        final_suggested_next_action = "should not run"
+
+    async def run_extension(_mandate: str) -> ExtensionResult:
+        nonlocal ran_extension
+        ran_extension = True
+        return ExtensionResult()
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        wake_memory=wake_memory,
+        operator_memory=operator_memory,
+        wake_extensions=(
+            ResidentWakeExtension(name="should_not_run", run=run_extension),
+        ),
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+
+    assert run is None
+    assert ran_extension is False
+    assert wake_records == []
+    assert decisions
+    decision_text = decisions[-1].read_text(encoding="utf-8")
+    assert "resident/continuation/operator-needed/latest.md" in decision_text
+    assert "Should I continue with the physical device check?" in decision_text
 
 
 @pytest.mark.asyncio

@@ -57,6 +57,7 @@ class ResidentAutonomyTrigger(TriggerPort):
         executor: Any,
         wake_memory: WakefulResidentMemoryPort | None = None,
         expert_memory: Any | None = None,
+        operator_memory: Any | None = None,
         ask_operator: OperatorContactPort | None = None,
         portfolio_manager: Any | None = None,
         wake_extensions: Sequence[ResidentWakeExtension] = (),
@@ -70,6 +71,7 @@ class ResidentAutonomyTrigger(TriggerPort):
         self._executor = executor
         self._wake_memory = wake_memory
         self._expert_memory = expert_memory
+        self._operator_memory = operator_memory
         self._ask_operator = ask_operator
         self._portfolio_manager = portfolio_manager
         self._wake_extensions = tuple(wake_extensions)
@@ -112,21 +114,20 @@ class ResidentAutonomyTrigger(TriggerPort):
             raise ValueError("resident autonomy mandate must not be empty")
 
         if self._skip_when_operator_pending:
-            pending = await self._pending_operator_objective()
+            pending = await self._pending_operator_input()
             if pending is not None:
-                ref = await self._backend.append_decision(
+                await self._backend.append_decision(
                     self._mandate,
                     (
                         f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
-                        f"slept: pending operator input for {pending.id}: "
-                        f"{pending.pending_question or pending.title}"
+                        f"slept: pending operator input for {pending['ref']}: "
+                        f"{pending['question']}"
                     ),
                 )
                 logger.info(
                     "ResidentAutonomyTrigger: sleeping while operator input is pending "
-                    "(objective=%s, ref=%s)",
-                    pending.id,
-                    ref,
+                    "(ref=%s)",
+                    pending["ref"],
                 )
                 return None
 
@@ -249,9 +250,39 @@ class ResidentAutonomyTrigger(TriggerPort):
             )
         return attention
 
+    async def _pending_operator_input(self) -> dict[str, str] | None:
+        pending_objective = await self._pending_operator_objective()
+        if pending_objective is not None:
+            return {
+                "ref": str(pending_objective.id),
+                "question": str(
+                    pending_objective.pending_question or pending_objective.title
+                ),
+            }
+        if self._operator_memory is None or not hasattr(
+            self._operator_memory,
+            "read_operator_needed",
+        ):
+            return None
+        pending_marker = await self._operator_memory.read_operator_needed()
+        if pending_marker is None:
+            return None
+        return {
+            "ref": str(getattr(pending_marker, "path", "") or "resident operator-needed"),
+            "question": _operator_marker_question(str(getattr(pending_marker, "content", ""))),
+        }
+
     async def _pending_operator_objective(self) -> Any | None:
         objectives = await self._backend.list_objectives(self._mandate)
         for objective in objectives:
             if objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value:
                 return objective
         return None
+
+
+def _operator_marker_question(content: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- question:"):
+            return stripped.split(":", 1)[1].strip() or "operator input needed"
+    return "operator input needed"
