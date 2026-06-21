@@ -198,6 +198,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.max_observations > 0
         assert c.max_retry_follow_up_depth == 1
         assert c.abandon_after_seconds == 0.0
+        assert c.reconcile_duplicate_delegations is True
 
     def test_dynamic_adapter_config_accepts_kwargs_and_bounds(self) -> None:
         c = ResidentDelegationExecutionConfig(
@@ -208,6 +209,7 @@ class TestResidentDelegationExecutionConfig:
             max_retry_follow_up_depth=2,
             approved_risk_objective_ids=("approved-objective",),
             abandon_after_seconds=3600.0,
+            reconcile_duplicate_delegations=False,
         )
 
         assert c.adapter == "pkg.RealResidentExecutor"
@@ -217,6 +219,7 @@ class TestResidentDelegationExecutionConfig:
         assert c.max_retry_follow_up_depth == 2
         assert c.approved_risk_objective_ids == ("approved-objective",)
         assert c.abandon_after_seconds == 3600.0
+        assert c.reconcile_duplicate_delegations is False
 
 
 class TestPhysicalDeviceConfig:

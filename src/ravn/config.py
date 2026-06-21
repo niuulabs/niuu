@@ -2741,6 +2741,13 @@ class ResidentDelegationExecutionConfig(BaseModel):
             "seconds; 0 disables automatic abandonment."
         ),
     )
+    reconcile_duplicate_delegations: bool = Field(
+        default=True,
+        description=(
+            "Cancel duplicate launched/running delegated sessions for the same source "
+            "objective, keeping one canonical worker session."
+        ),
+    )
 
 
 class ResidentReviewConfig(BaseModel):

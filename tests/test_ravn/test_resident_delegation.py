@@ -293,6 +293,61 @@ async def test_active_delegation_consumes_launch_capacity(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_duplicate_active_delegations_are_reconciled_without_new_launch(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    objective = _objective("duplicate-source", "Investigate duplicate worker sessions")
+    await _write_portfolio(backend, objective)
+    keep = ResidentDelegationRecord(
+        id="delegation-duplicate-source-a",
+        source_objective_id=objective.id,
+        backend_session_id="session-keep",
+        backend_name="recording",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.RUNNING.value,
+        reason="first active worker",
+        created_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    duplicate = ResidentDelegationRecord(
+        id="delegation-duplicate-source-b",
+        source_objective_id=objective.id,
+        backend_session_id="session-duplicate",
+        backend_name="recording",
+        brief=build_worker_brief(MANDATE, objective),
+        status=ResidentDelegationStatus.LAUNCHED.value,
+        reason="duplicate active worker",
+        created_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    await backend.write_delegation(keep)
+    await backend.write_delegation(duplicate)
+    executor = StaleDelegationExecutor()
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+        config=ResidentDelegationConfig(max_delegations=1),
+    ).run(MANDATE)
+
+    delegations = {item.id: item for item in await backend.list_delegations(MANDATE)}
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+    decisions = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident/portfolio/decisions").glob("*.md"))
+    )
+    assert report.created_delegations == ()
+    assert executor.launched == []
+    assert [item[0] for item in executor.cancelled] == ["session-duplicate"]
+    assert delegations[keep.id].status == ResidentDelegationStatus.RUNNING.value
+    assert delegations[duplicate.id].status == ResidentDelegationStatus.CANCELLED.value
+    assert any(
+        "duplicate delegation delegation-duplicate-source-b cancelled" in item
+        for item in objectives[objective.id].proof_progress
+    )
+    assert "duplicates_reconciled=1" in decisions
+
+
+@pytest.mark.asyncio
 async def test_risky_work_creates_operator_objective_instead_of_launching(
     tmp_path: Path,
 ) -> None:

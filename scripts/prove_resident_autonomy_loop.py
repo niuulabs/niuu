@@ -224,6 +224,9 @@ async def _main() -> None:
                 0.0,
                 float(settings.resident_delegation_execution.abandon_after_seconds),
             ),
+            reconcile_duplicate_delegations=bool(
+                settings.resident_delegation_execution.reconcile_duplicate_delegations
+            ),
         ),
     ).run(mandate)
     objectives = await backend.list_objectives(mandate)

@@ -139,6 +139,7 @@ class ResidentDelegationConfig:
     max_retry_follow_up_depth: int = 1
     approved_risk_objective_ids: tuple[str, ...] = ()
     abandon_after_seconds: float = 0.0
+    reconcile_duplicate_delegations: bool = True
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,7 @@ class ResidentAutonomyLoopConfig:
     max_wall_clock_seconds: float = 1800.0
     approved_risk_objective_ids: tuple[str, ...] = ()
     abandon_after_seconds: float = 0.0
+    reconcile_duplicate_delegations: bool = True
 
 
 @dataclass(frozen=True)
@@ -1741,6 +1743,19 @@ class ResidentDelegationRuntime:
         persisted_refs: list[str] = []
         updated_objectives: list[ResidentObjective] = []
         objective_updates: dict[str, ResidentObjective] = {item.id: item for item in objectives}
+        duplicate_reconciled_count = 0
+
+        if self._config.reconcile_duplicate_delegations:
+            duplicate_reconciled = await self._reconcile_duplicate_active_delegations(
+                objectives=objectives,
+                delegations=delegations,
+                objective_updates=objective_updates,
+                persisted_refs=persisted_refs,
+            )
+            if duplicate_reconciled:
+                duplicate_reconciled_count = len(duplicate_reconciled)
+                delegations = tuple(await self._backend.list_delegations(mandate))
+                updated_objectives.extend(duplicate_reconciled)
 
         abandoned = await self._abandon_stale_delegations(
             objectives=objectives,
@@ -1916,7 +1931,8 @@ class ResidentDelegationRuntime:
             decision_entry=(
                 f"delegation pass launched {len(created_delegations)} session(s), "
                 f"observed {len(observed_results)} result(s), "
-                f"gated {len(gated)} objective(s)"
+                f"gated {len(gated)} objective(s), "
+                f"reconciled {duplicate_reconciled_count} duplicate session(s)"
             ),
         )
         persisted_refs.append(portfolio_ref)
@@ -1924,7 +1940,8 @@ class ResidentDelegationRuntime:
             mandate,
             f"{datetime.now(UTC).isoformat()} [delegation] "
             f"launched={len(created_delegations)} "
-            f"observed={len(observed_results)} gated={len(gated)}",
+            f"observed={len(observed_results)} gated={len(gated)} "
+            f"duplicates_reconciled={duplicate_reconciled_count}",
         )
         persisted_refs.append(decision_ref)
 
@@ -1976,6 +1993,59 @@ class ResidentDelegationRuntime:
             consolidation_result,
         )
         return (model_ref, consolidation_ref)
+
+    async def _reconcile_duplicate_active_delegations(
+        self,
+        *,
+        objectives: tuple[ResidentObjective, ...],
+        delegations: tuple[ResidentDelegationRecord, ...],
+        objective_updates: dict[str, ResidentObjective],
+        persisted_refs: list[str],
+    ) -> list[ResidentObjective]:
+        active_by_source: dict[str, list[ResidentDelegationRecord]] = {}
+        for record in delegations:
+            if not _active_unresolved_delegation(record):
+                continue
+            active_by_source.setdefault(record.source_objective_id, []).append(record)
+
+        updated: list[ResidentObjective] = []
+        now = datetime.now(UTC)
+        for source_id, records in active_by_source.items():
+            if len(records) <= 1:
+                continue
+            ordered = sorted(records, key=_delegation_keep_sort_key)
+            keep = ordered[0]
+            for duplicate in ordered[1:]:
+                reason = (
+                    "cancelling duplicate active delegated session for source objective "
+                    f"{source_id}; keeping {keep.id}:{keep.backend_session_id}"
+                )
+                cancelled = await self._executor.cancel(duplicate.backend_session_id, reason)
+                updated_record = duplicate.with_updates(
+                    status=cancelled.status,
+                    reason=_compact_line(f"{duplicate.reason}; {reason}", limit=240),
+                )
+                persisted_refs.append(await self._backend.write_delegation(updated_record))
+                source = objective_updates.get(source_id) or _objective_by_id_or_none(
+                    objectives,
+                    source_id,
+                )
+                if source is None:
+                    continue
+                repaired = source.with_updates(
+                    proof_progress=_merge_text(
+                        source.proof_progress,
+                        (
+                            f"duplicate delegation {duplicate.id} cancelled: "
+                            f"{cancelled.status}: {cancelled.summary or reason}",
+                        ),
+                    ),
+                    last_reviewed_at=now,
+                )
+                objective_updates[source_id] = repaired
+                updated.append(repaired)
+                persisted_refs.append(await self._backend.write_objective(repaired))
+        return updated
 
     async def _abandon_stale_delegations(
         self,
@@ -2102,6 +2172,7 @@ class ResidentAutonomyLoopRuntime:
                     max_retry_follow_up_depth=self._config.max_retry_follow_up_depth,
                     approved_risk_objective_ids=tuple(sorted(approved_risk_objective_ids)),
                     abandon_after_seconds=self._config.abandon_after_seconds,
+                    reconcile_duplicate_delegations=self._config.reconcile_duplicate_delegations,
                 ),
             ).run(mandate)
             operator_questions.extend(delegation.operator_questions)
@@ -2475,16 +2546,23 @@ def select_delegation_candidates(
 def _active_unresolved_delegation_count(
     delegations: tuple[ResidentDelegationRecord, ...],
 ) -> int:
-    return sum(
-        1
-        for item in delegations
-        if not item.result_refs
-        if item.status
+    return sum(1 for item in delegations if _active_unresolved_delegation(item))
+
+
+def _active_unresolved_delegation(delegation: ResidentDelegationRecord) -> bool:
+    return (
+        not delegation.result_refs
+        and delegation.status
         in {
             ResidentDelegationStatus.LAUNCHED.value,
             ResidentDelegationStatus.RUNNING.value,
         }
     )
+
+
+def _delegation_keep_sort_key(delegation: ResidentDelegationRecord) -> tuple[int, datetime, str]:
+    status_rank = 0 if delegation.status == ResidentDelegationStatus.RUNNING.value else 1
+    return (status_rank, delegation.created_at, delegation.id)
 
 
 def merge_objectives(objectives: tuple[ResidentObjective, ...]) -> tuple[ResidentObjective, ...]:

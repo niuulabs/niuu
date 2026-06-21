@@ -264,6 +264,9 @@ async def _main() -> None:
             max_retry_follow_up_depth=max(0, int(delegation_cfg.max_retry_follow_up_depth)),
             approved_risk_objective_ids=tuple(delegation_cfg.approved_risk_objective_ids),
             abandon_after_seconds=max(0.0, float(delegation_cfg.abandon_after_seconds)),
+            reconcile_duplicate_delegations=bool(
+                delegation_cfg.reconcile_duplicate_delegations
+            ),
         ),
     )
     report = await runtime.run(mandate)
