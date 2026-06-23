@@ -406,6 +406,43 @@ async def test_claude_stop_hook_emits_semantic_result(tmp_path: Path) -> None:
     assert events[1]["message"]["content"] == [{"type": "text", "text": "Structured final answer."}]
     assert events[2]["result"] == "Structured final answer."
     assert events[2]["metadata"]["source"] == "claude_hook"
+    # BUG-2: a completed hook turn carries a best-effort usage estimate so message_count
+    # advances (the broker's /usage path early-returns on an empty modelUsage).
+    usage = events[2]["modelUsage"]
+    assert usage, "completed turn must report non-empty modelUsage"
+    out_tokens = next(iter(usage.values()))["outputTokens"]
+    assert out_tokens >= 1
+
+
+@pytest.mark.asyncio
+async def test_estimate_model_usage_is_nonzero_and_keyed_by_model(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    usage = transport._estimate_model_usage(in_chars=40, out_chars=80)
+    bucket = usage["claude-sonnet-4-6"]
+    assert bucket["inputTokens"] == 10
+    assert bucket["outputTokens"] == 20
+    # never zero, even for a one-character turn -> guarantees the +1 advance
+    tiny = transport._estimate_model_usage(in_chars=0, out_chars=1)
+    assert next(iter(tiny.values()))["outputTokens"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_claude_stop_hook_empty_message_keeps_empty_usage(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "Stop",
+            "session_id": "claude-session",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "last_assistant_message": "   ",
+        }
+    )
+    results = [e for e in events if e["type"] == "result"]
+    assert results, "Stop hook should still emit a result frame"
+    # empty content -> {} so the broker does NOT count a phantom turn
+    assert results[-1]["modelUsage"] == {}
 
 
 @pytest.mark.asyncio

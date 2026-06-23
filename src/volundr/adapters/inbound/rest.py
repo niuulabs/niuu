@@ -137,6 +137,28 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
     return None
 
 
+def _live_transcript_is_renderable(payload: object) -> bool:
+    """True if a live-pod conversation result is worth returning verbatim.
+
+    BUG-2: a tmux session whose WS crashed mid-turn keeps an alive pod that answers
+    /conversation/history with HTTP 200 but an empty / seed-only body — returning that
+    verbatim renders a "dead" session. This gate lets such a body fall through to the
+    durable-log rebuild WITHOUT discarding a healthy STILL-STREAMING first turn (which is
+    legitimately seed-only but `is_active` / has a `last_activity` hint).
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
+        return False
+    turns = payload["turns"]
+    if payload.get("is_active") or (payload.get("last_activity") or ""):
+        return True  # streaming / thinking — keep verbatim
+    if not turns:
+        return False
+    has_assistant = any(isinstance(t, dict) and t.get("role") == "assistant" for t in turns)
+    if not has_assistant and len(turns) <= 1:
+        return False  # seed-only, not active -> rebuild from the durable log
+    return True
+
+
 def _session_proxy_url(base_url: str, *path_segments: str) -> str:
     """Build a validated session-pod URL from a trusted base and encoded path segments."""
     parsed = urlsplit(base_url)
@@ -2432,7 +2454,17 @@ def create_router(
                         headers=headers,
                     )
                     response.raise_for_status()
-                    return response.json()
+                    live = response.json()
+                    if _live_transcript_is_renderable(live):
+                        return live
+                    # BUG-2: an alive-but-empty / seed-only pod (e.g. a tmux session whose
+                    # WS crashed mid-turn) returns HTTP 200 with nothing renderable. Don't
+                    # short-circuit on it — fall through to the durable-log rebuild below.
+                    logger.info(
+                        "Live conversation for session %s is empty/seed-only; "
+                        "falling through to durable-log rebuild",
+                        _sanitize_log(session_id),
+                    )
         except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",

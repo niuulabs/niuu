@@ -236,6 +236,9 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_stream_started = False
         self._turn_buffer: list[str] = []
         self._turn_last_clean_text = ""
+        # BUG-2: the prompt text delivered this turn, for a best-effort input-token estimate
+        # in the synthesized result frame (so completed tmux turns advance message_count).
+        self._turn_prompt_text = ""
         self._turn_done: asyncio.Event | None = None
         self._turn_watchdog_task: asyncio.Task[None] | None = None
 
@@ -363,6 +366,9 @@ class TmuxInteractiveTransport(CLITransport):
                 self._turn_last_output_at = time.monotonic()
             else:
                 self._begin_turn()
+            # BUG-2: remember the prompt text for the result frame's input-token estimate
+            # (append across a mid-turn steer; _begin_turn reset it for a fresh turn).
+            self._turn_prompt_text += ("\n" if self._turn_prompt_text else "") + content
             await self._paste_text(content, enter=True)
 
     def _begin_turn(self) -> None:
@@ -378,6 +384,7 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_stream_started = False
         self._turn_buffer = []
         self._turn_last_clean_text = ""
+        self._turn_prompt_text = ""
         if self._turn_watchdog_task is None or self._turn_watchdog_task.done():
             self._turn_watchdog_task = asyncio.create_task(
                 self._watch_turn_completion(self._turn_done),
@@ -903,7 +910,16 @@ class TmuxInteractiveTransport(CLITransport):
             "result": content,
             "is_error": is_error,
             "stop_reason": reason,
-            "modelUsage": {},
+            # BUG-2: estimate usage for a completed hook turn so message_count advances;
+            # empty content keeps {} (no phantom +1).
+            "modelUsage": (
+                self._estimate_model_usage(
+                    in_chars=len(self._turn_prompt_text),
+                    out_chars=len(content),
+                )
+                if content
+                else {}
+            ),
             "metadata": {"source": "claude_hook"},
         }
         self._last_result = result
@@ -1307,6 +1323,22 @@ class TmuxInteractiveTransport(CLITransport):
         except asyncio.CancelledError:
             raise
 
+    def _estimate_model_usage(self, *, in_chars: int, out_chars: int) -> dict:
+        """BUG-2: best-effort token estimate so a COMPLETED tmux turn advances
+        ``message_count`` via the broker's ``/usage`` path (which early-returns on an empty
+        ``modelUsage``). ``outputTokens`` is the load-bearing ``> 0`` value; ``inputTokens``
+        is best-effort and never gates the ``+1``. Mirrors the Grok transport's estimate."""
+        chars_per_token = 4
+        model_id = self._model or "interactive"
+        return {
+            model_id: {
+                "inputTokens": max(1, in_chars // chars_per_token),
+                "outputTokens": max(1, out_chars // chars_per_token),
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+            }
+        }
+
     async def _finish_synthetic_turn(self, *, reason: str, is_error: bool = False) -> None:
         if not self._turn_active:
             return
@@ -1325,7 +1357,16 @@ class TmuxInteractiveTransport(CLITransport):
             "result": content,
             "is_error": is_error,
             "stop_reason": reason,
-            "modelUsage": {},
+            # BUG-2: empty content -> {} keeps _report_usage's early-return (no phantom +1);
+            # real content -> estimated usage so a completed tmux turn advances message_count.
+            "modelUsage": (
+                self._estimate_model_usage(
+                    in_chars=len(self._turn_prompt_text),
+                    out_chars=len(content),
+                )
+                if content
+                else {}
+            ),
             "metadata": {"source": "tmux_interactive"},
         }
         self._last_result = result
