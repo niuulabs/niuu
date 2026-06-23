@@ -415,6 +415,25 @@ async def test_claude_stop_hook_emits_semantic_result(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deliver_user_text_raises_when_send_lock_is_wedged(tmp_path: Path) -> None:
+    # BUG-3: after a WS crash/reconnect a wedged prior delivery used to hold the send
+    # lock forever, so every later steering message blocked SILENTLY ("I type and nothing
+    # happens"). The bounded acquire must now raise a clear error the broker turns into a
+    # user_delivery_failed instead of hanging.
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport._alive = True
+    transport._deliver_timeout_s = 0.05
+    await transport._send_lock.acquire()  # simulate a stuck prior delivery
+    try:
+        with pytest.raises(RuntimeError, match="busy"):
+            await transport._deliver_user_text("please steer the session")
+    finally:
+        transport._send_lock.release()
+    # the lock is reusable once the wedged holder releases — no permanent deadlock
+    assert not transport._send_lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_estimate_model_usage_is_nonzero_and_keyed_by_model(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     usage = transport._estimate_model_usage(in_chars=40, out_chars=80)

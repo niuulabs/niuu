@@ -3646,26 +3646,20 @@ class Broker:
                 # is genuinely in flight; an idle message starts a fresh turn.
                 native_steering = getattr(caps, "steering_mode", "none") == "native"
                 turn_active = getattr(self._transport, "is_turn_active", False) is True
-                if steer_capable and (native_steering or turn_active):
-                    asyncio.create_task(
-                        self._safe_transport_control(
-                            self._transport,
-                            "redirect",
-                            content=content_str,
-                        ),
-                        name=f"transport-redirect-{msg_id}",
-                    )
-                    return
-
-                # send_message holds a per-instance lock for the entire
-                # turn. Awaiting inline blocks the WS receive loop, so the
-                # user can't queue a follow-up while Claude is running.
-                # Fire-and-forget: the transport's lock still serialises
-                # invocations, so ordering is preserved; we just don't pin
-                # the WS handler waiting for a turn that may take minutes.
+                use_redirect = steer_capable and (native_steering or turn_active)
+                # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
+                # run for minutes (the transport serialises its own deliveries, so order
+                # holds). BUG-3: the delivery is wrapped so its OUTCOME is confirmed —
+                # the HTTP /messages bridge waits on the emitted ack — instead of being
+                # silently swallowed on a wedged input channel while the API says "sent".
                 asyncio.create_task(
-                    self._safe_transport_send(self._transport, content_str),
-                    name=f"transport-send-{msg_id}",
+                    self._deliver_user_message_and_ack(
+                        content_str,
+                        request_id=request_id,
+                        msg_id=msg_id,
+                        use_redirect=use_redirect,
+                    ),
+                    name=f"transport-deliver-{msg_id}",
                 )
 
     async def _safe_transport_control(
@@ -3731,6 +3725,91 @@ class Broker:
                 await self._channels.broadcast({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
+
+    async def _deliver_user_message_and_ack(
+        self,
+        content: str,
+        *,
+        request_id: str | None,
+        msg_id: str,
+        use_redirect: bool,
+    ) -> None:
+        """Deliver a user message to the transport and emit a delivery ACK (BUG-3).
+
+        The inbound steering path used to fire-and-forget the transport call and never
+        confirm it reached the agent: after a WS crash/reconnect a wedged tmux input
+        channel silently swallowed the message while Volundr still returned HTTP 200
+        "sent". This wraps delivery so every outcome emits a structured
+        ``user_delivered`` / ``user_delivery_failed`` event (correlated by
+        ``request_id``) that the HTTP ``/messages`` bridge waits on — turning a
+        false-positive 200 into a real confirmation, or a surfaced failure.
+
+        A message that arrives while the agent is blocked on an AskUserQuestion is still
+        delivered, but flagged ``blocked_on_question`` so the client can tell the user to
+        answer the open question rather than assume the steer landed.
+        """
+        pending_q = len(self._pending_ask_user_questions)
+        if pending_q:
+            logger.warning(
+                "user message delivered while %d ask_user_question(s) pending "
+                "(request_id=%s) — a free-text steer may not start a turn until the "
+                "question is answered",
+                pending_q,
+                _sanitize_log(request_id),
+            )
+        try:
+            if use_redirect:
+                await self._transport.send_control("redirect", content=content)
+            else:
+                outbound = await self._apply_retrieval_reflex(content)
+                await self._transport.send_message(outbound)
+        except Exception as exc:
+            logger.exception(
+                "user message delivery failed (request_id=%s)", _sanitize_log(request_id)
+            )
+            await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(exc))
+            try:
+                await self._channels.broadcast({"type": "error", "content": str(exc)})
+            except Exception:
+                logger.debug("Failed to broadcast delivery error", exc_info=True)
+            return
+        await self._emit_delivery_ack(
+            request_id,
+            msg_id,
+            "blocked_on_question" if pending_q else "delivered",
+            pending_questions=pending_q,
+        )
+
+    async def _emit_delivery_ack(
+        self,
+        request_id: str | None,
+        msg_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        pending_questions: int = 0,
+    ) -> None:
+        """Broadcast a steering delivery ACK (BUG-3).
+
+        The HTTP ``/messages`` bridge waits for this to confirm the message actually
+        reached the agent; live UI clients can also use it to clear a "sending…" state or
+        warn the user to answer an open question first.
+        """
+        event: dict[str, Any] = {
+            "type": "user_delivery_failed" if status == "failed" else "user_delivered",
+            "status": status,
+            "id": msg_id,
+        }
+        if request_id:
+            event["request_id"] = request_id
+        if error:
+            event["error"] = error
+        if pending_questions:
+            event["pending_questions"] = pending_questions
+        try:
+            await self._channels.broadcast(event)
+        except Exception:
+            logger.debug("Failed to broadcast delivery ack", exc_info=True)
 
     async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
         """Ingest a Claude Code hook payload into the normal event pipeline.

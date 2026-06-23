@@ -1,6 +1,7 @@
 """FastAPI REST adapter for session management."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -2388,36 +2389,66 @@ def create_router(
             ssl_ctx.verify_mode = ssl.CERT_NONE
             connect_kwargs["ssl"] = ssl_ctx
 
+        # BUG-3: correlate this message with the broker's delivery ACK so a 200 means the
+        # message actually reached the agent — not merely the broker socket. The broker
+        # emits user_delivered / user_delivery_failed tagged with this request_id once the
+        # transport accepts (or rejects) the message. Brokers that predate the ACK simply
+        # never send one, so we fall through to the legacy "sent" (delivery=unconfirmed)
+        # response after a bounded grace — no regression for in-flight old sessions.
+        req_id = str(uuid4())
+        delivery: dict[str, Any] | None = None
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
                 # Send immediately. Draining startup traffic *before* sending can
                 # delay or drop the first user turn for transports that emit
                 # welcome or capability events while still coming online.
-                await ws.send(json.dumps({"type": "user", "content": content}))
+                await ws.send(
+                    json.dumps({"type": "user", "content": content, "request_id": req_id})
+                )
 
-                # Then hold the socket open for a short, bounded grace so the
-                # broker's receive loop actually consumes the frame before we
-                # close. A just-restarted broker may still be warming its
-                # transport on this very connection; closing instantly races that
-                # startup and silently drops the message (HTTP 200 "sent" but no
-                # assistant reply). Drain-and-discard broker frames until the
-                # deadline; the cap keeps send latency bounded even while the
-                # assistant streams a reply back over the same channel.
-                import contextlib
-
-                async def _drain() -> None:
+                # Hold the socket open until the broker ACKs delivery for THIS request_id,
+                # or a bounded grace elapses. Draining other frames meanwhile lets a
+                # just-restarted broker finish warming its transport on this very
+                # connection instead of racing a close (which silently drops the message).
+                async def _await_ack() -> dict[str, Any] | None:
                     while True:
-                        await ws.recv()
+                        raw = await ws.recv()
+                        try:
+                            frame = json.loads(raw)
+                        except (ValueError, TypeError):
+                            continue
+                        if (
+                            isinstance(frame, dict)
+                            and frame.get("request_id") == req_id
+                            and frame.get("type") in ("user_delivered", "user_delivery_failed")
+                        ):
+                            return frame
 
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(_drain(), timeout=0.75)
+                    delivery = await asyncio.wait_for(_await_ack(), timeout=3.0)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to send message to session: {e}",
             )
 
-        return {"status": "sent", "session_id": str(session_id)}
+        if isinstance(delivery, dict) and delivery.get("type") == "user_delivery_failed":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Session did not accept the message: "
+                    f"{delivery.get('error') or 'delivery failed'}"
+                ),
+            )
+        delivery_status = (
+            str(delivery.get("status")) if isinstance(delivery, dict) else "unconfirmed"
+        )
+        return {
+            "status": "sent",
+            "session_id": str(session_id),
+            "request_id": req_id,
+            "delivery": delivery_status,
+        }
 
     @router.get(
         "/sessions/{session_id}/conversation",

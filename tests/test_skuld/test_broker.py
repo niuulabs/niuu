@@ -1462,6 +1462,18 @@ class TestBroker:
         assert transport.workspace_dir == str(tmp_path)
 
 
+async def _settle_delivery() -> None:
+    """Await the fire-and-forget ``transport-deliver-*`` task that dispatch schedules,
+    so assertions can observe the transport call + the delivery ack it emits (BUG-3)."""
+    tasks = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class TestDispatchBrowserMessage:
     """Tests for Broker._dispatch_browser_message (Phase 2/3/4)."""
 
@@ -1481,13 +1493,14 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_user_message(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
 
         await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-1"})
-        # send_message now runs in a background task so the WS handler
-        # doesn't block on the per-turn lock; pump the loop so the task runs.
-        await asyncio.sleep(0)
+        # Delivery runs in a fire-and-forget task so the WS loop isn't pinned on a turn
+        # that may take minutes; await it before asserting (BUG-3).
+        await _settle_delivery()
         test_broker._transport.send_message.assert_called_once_with("hello")
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
@@ -1495,10 +1508,21 @@ class TestDispatchBrowserMessage:
                 "request_id": "req-1",
             }
         )
+        # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
+        # message actually reached the agent (not just the broker socket).
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivered",
+                "status": "delivered",
+                "id": ANY,
+                "request_id": "req-1",
+            }
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_structured_user_message_normalizes_attachments(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
         image_data = "a" * 200000
 
         await test_broker._dispatch_browser_message(
@@ -1516,14 +1540,14 @@ class TestDispatchBrowserMessage:
                 ]
             }
         )
-        await asyncio.sleep(0)
+        await _settle_delivery()
 
         expected = (
             "Please review this screenshot\n\n"
             "[User attached 1 image attachment. This transport forwards text only.]"
         )
         test_broker._transport.send_message.assert_called_once_with(expected)
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
@@ -1535,6 +1559,7 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_attachment_only_message_uses_summary_text(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
 
         await test_broker._dispatch_browser_message(
             {
@@ -1550,16 +1575,63 @@ class TestDispatchBrowserMessage:
                 ]
             }
         )
-        await asyncio.sleep(0)
+        await _settle_delivery()
 
         expected = "[User attached 1 image attachment. This transport forwards text only.]"
         test_broker._transport.send_message.assert_called_once_with(expected)
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
                 "content": expected,
                 "request_id": None,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_emits_failure_ack_on_delivery_error(self, test_broker):
+        # BUG-3: a wedged transport (e.g. a tmux input channel stuck after reconnect)
+        # must surface as user_delivery_failed — never a silent drop with a 200 "sent".
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        test_broker._transport.send_message = AsyncMock(
+            side_effect=RuntimeError("input channel busy")
+        )
+
+        await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-9"})
+        await _settle_delivery()
+
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivery_failed",
+                "status": "failed",
+                "id": ANY,
+                "request_id": "req-9",
+                "error": "input channel busy",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_flags_blocked_on_pending_question(self, test_broker):
+        # BUG-3: a free-text message that lands while the agent is blocked on an
+        # AskUserQuestion is still delivered, but flagged so the client can prompt the
+        # user to answer the open question instead of assuming the steer landed.
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        test_broker._pending_ask_user_questions = {"q1": {"type": "ask_user_question"}}
+
+        await test_broker._dispatch_browser_message(
+            {"content": "use postgres", "request_id": "req-7"}
+        )
+        await _settle_delivery()
+
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivered",
+                "status": "blocked_on_question",
+                "id": ANY,
+                "request_id": "req-7",
+                "pending_questions": 1,
             }
         )
 

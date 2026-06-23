@@ -194,6 +194,10 @@ class TmuxInteractiveTransport(CLITransport):
         self._pane_poll_interval_s = self._float_env(
             "SKULD__TMUX_PANE_POLL_INTERVAL_SECONDS", pane_poll_interval_s, 1.0
         )
+        # BUG-3: hard ceiling on a single steering delivery (lock wait + paste). A prior
+        # delivery that wedged the send lock, or a hung tmux subprocess, must surface as a
+        # loud error the client can see — never a silent swallow of the user's message.
+        self._deliver_timeout_s = self._float_env("SKULD__TMUX_DELIVER_TIMEOUT_SECONDS", None, 15.0)
         self._frame_interval_s = self._float_env(
             "SKULD__TMUX_FRAME_INTERVAL_SECONDS", frame_interval_s, 0.12
         )
@@ -355,8 +359,37 @@ class TmuxInteractiveTransport(CLITransport):
         The send lock is held only for the paste (to keep concurrent messages
         ordered), NOT for the whole turn — so a follow-up message is never
         blocked behind an in-flight turn the way a turn-scoped lock would do.
+
+        BUG-3: the lock acquisition AND the paste are bounded by
+        ``_deliver_timeout_s``. After a WS crash/reconnect a wedged prior delivery
+        (or a hung tmux subprocess) used to hold the lock forever, so every later
+        steering message blocked silently — the user typed and "nothing happened".
+        Now a stuck channel raises a clear error the broker turns into a
+        ``user_delivery_failed`` the client can render, instead of a silent drop.
         """
-        async with self._send_lock:
+        preview = content.strip()[:80].replace("\n", "⏎")
+        logger.info(
+            "tmux deliver: %d chars (turn_active=%s, alive=%s, lock_held=%s): %r",
+            len(content),
+            self._turn_active,
+            self._alive,
+            self._send_lock.locked(),
+            preview,
+        )
+        try:
+            await asyncio.wait_for(self._send_lock.acquire(), timeout=self._deliver_timeout_s)
+        except TimeoutError as exc:
+            logger.error(
+                "tmux deliver: send lock held >%.0fs — a prior delivery is wedged; "
+                "message NOT delivered: %r",
+                self._deliver_timeout_s,
+                preview,
+            )
+            raise RuntimeError(
+                "steering message not delivered: the session input channel has been "
+                f"busy for >{self._deliver_timeout_s:.0f}s (prior delivery stuck)"
+            ) from exc
+        try:
             if not self.is_alive:
                 await self._ensure_started()
             if self._turn_active:
@@ -369,7 +402,22 @@ class TmuxInteractiveTransport(CLITransport):
             # BUG-2: remember the prompt text for the result frame's input-token estimate
             # (append across a mid-turn steer; _begin_turn reset it for a fresh turn).
             self._turn_prompt_text += ("\n" if self._turn_prompt_text else "") + content
-            await self._paste_text(content, enter=True)
+            await asyncio.wait_for(
+                self._paste_text(content, enter=True), timeout=self._deliver_timeout_s
+            )
+        except TimeoutError as exc:
+            logger.error(
+                "tmux deliver: paste into pane timed out after %.0fs: %r",
+                self._deliver_timeout_s,
+                preview,
+            )
+            raise RuntimeError(
+                f"steering message not delivered: tmux paste timed out after "
+                f"{self._deliver_timeout_s:.0f}s"
+            ) from exc
+        finally:
+            self._send_lock.release()
+        logger.info("tmux deliver: pasted %d chars into pane OK", len(content))
 
     def _begin_turn(self) -> None:
         """Start tracking a new turn so its output streams and completion fires.
