@@ -512,6 +512,23 @@ class ActivityReport(BaseModel):
     state: str = Field(description="Activity state (active/idle/tool_executing/awaiting_input)")
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _coerce_metadata(cls, value: object) -> dict:
+        """Tolerate a null / JSON-string / non-dict ``metadata`` instead of 422-ing the
+        whole heartbeat. A 30s activity heartbeat that gets rejected freezes the session's
+        ui_status/last_active for every client (FORGE tmux-reconnect bug), so we coerce a
+        malformed-but-recoverable metadata to ``{}`` rather than drop the state update."""
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return value if isinstance(value, dict) else {}
+
 
 class DeviceRegistration(BaseModel):
     """Request model for registering a push device."""

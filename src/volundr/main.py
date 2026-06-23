@@ -6,7 +6,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib.metadata import metadata
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
@@ -543,6 +546,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.admin_settings = {
         "storage": {"home_enabled": True},
     }
+
+    # Observability (FORGE tmux-reconnect bug): FastAPI returns 422 for request-body
+    # validation failures but logs NOTHING about what failed — which made the repeated
+    # tmux `/activity` 422s completely invisible server-side. Log the path + the exact
+    # validation errors + a bounded slice of the offending body so the next schema
+    # mismatch (on /activity, /log, or anything else) is self-documenting. Response
+    # shape is unchanged (still 422 + {"detail": [...]}).
+    @app.exception_handler(RequestValidationError)
+    async def _log_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        try:
+            raw_body = (await request.body())[:2000]
+            body_preview = raw_body.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — best-effort diagnostics, never mask the 422
+            body_preview = "<unreadable>"
+        logger.warning(
+            "422 request validation: %s %s errors=%s body=%s",
+            request.method,
+            request.url.path,
+            exc.errors(),
+            body_preview,
+        )
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
     # Bifrost is its own service/plugin. Volundr no longer co-hosts it; it consumes
     # the model catalog over HTTP from settings.bifrost.url for cost/pricing only.
