@@ -435,6 +435,70 @@ class TestBroker:
         assert test_broker._pending_permission_requests["perm-1"] == data
 
     @pytest.mark.asyncio
+    async def test_handle_cli_event_tracks_ask_user_question_for_replay(self, test_broker):
+        # tmux-reconnect fix: an ask_user_question is a CLI event (not a control_request
+        # RPC), so it must be tracked in its own pending set to be re-surfaced when a
+        # client reconnects WHILE the agent is blocked — otherwise the session looks dead.
+        data = {
+            "type": "ask_user_question",
+            "event_type": "ask_user_question",
+            "request_id": "tty-1-abc",
+            "questions": [{"question": "Proceed?", "options": ["Yes", "No"]}],
+        }
+
+        await test_broker._handle_cli_event(data)
+
+        assert test_broker._pending_ask_user_questions["tty-1-abc"] == data
+        # And it flips the session to awaiting_input (attention is entered async).
+        await asyncio.sleep(0)
+        assert "tty-1-abc" in test_broker._pending_attention
+
+    @pytest.mark.asyncio
+    async def test_handle_cli_event_resolved_clears_ask_user_question(self, test_broker):
+        question = {
+            "type": "ask_user_question",
+            "event_type": "ask_user_question",
+            "request_id": "tty-2",
+            "questions": [],
+        }
+        await test_broker._handle_cli_event(question)
+        assert "tty-2" in test_broker._pending_ask_user_questions
+
+        # An in-terminal keystroke (or turn end) emits ask_user.resolved via the TTY
+        # bridge → the broker drops the replay entry and clears server-side attention,
+        # so the session leaves awaiting_input instead of staying pinned.
+        resolved = {
+            "type": "ask_user_resolved",
+            "event_type": "ask_user.resolved",
+            "request_id": "tty-2",
+            "decision": "answered",
+        }
+        await test_broker._handle_cli_event(resolved)
+
+        assert "tty-2" not in test_broker._pending_ask_user_questions
+        await asyncio.sleep(0)
+        assert "tty-2" not in test_broker._pending_attention
+
+    @pytest.mark.asyncio
+    async def test_result_clears_pending_ask_user_questions(self, test_broker):
+        # A turn reaching `result` is no longer blocked — both the attention gates and
+        # the question replay-set must clear so a later reconnect/heartbeat can't
+        # resurrect a stale question card.
+        await test_broker._handle_cli_event(
+            {
+                "type": "ask_user_question",
+                "event_type": "ask_user_question",
+                "request_id": "tty-3",
+                "questions": [],
+            }
+        )
+        assert "tty-3" in test_broker._pending_ask_user_questions
+
+        await test_broker._handle_cli_event({"type": "result", "result": "done"})
+
+        assert test_broker._pending_ask_user_questions == {}
+
+    @pytest.mark.asyncio
     async def test_handle_cli_event_auto_approves_allowed_permission(self, test_broker):
         test_broker.volundr_api_url = "http://volundr.test:80"
         mock_transport = AsyncMock()

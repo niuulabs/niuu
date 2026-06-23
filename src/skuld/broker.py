@@ -1062,6 +1062,13 @@ class Broker:
         self._trace_peer_tool_spans: dict[str, list[uuid.UUID]] = {}
         self._pending_permission_requests: dict[str, dict[str, Any]] = {}
         self._permission_auto_approval_tasks: dict[str, asyncio.Task[None]] = {}
+        # tmux-reconnect fix: ask_user_question frames are CLI events (not control_request
+        # RPCs), so they were broadcast live but NOT in the late-join replay set — a client
+        # reconnecting while the agent is blocked on a question saw a "dead"/frozen session.
+        # Track outstanding questions here so the reconnect replay re-surfaces the answerable
+        # card. Cleared on answer (browser ask_user_answer), in-terminal resolve
+        # (ask_user.resolved), and turn completion (result).
+        self._pending_ask_user_questions: dict[str, dict[str, Any]] = {}
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
@@ -2934,14 +2941,33 @@ class Broker:
             # The agent is blocked on a human answer. Flip the session to
             # awaiting_input so the platform (and any push fan-out) knows it
             # needs the user — Skuld otherwise stays pinned at active here.
+            ask_request_id = str(data.get("request_id", ""))
+            # Track for reconnect replay: a client that joins WHILE the agent is
+            # blocked must still receive the answerable question (tmux-reconnect fix).
+            if ask_request_id:
+                self._pending_ask_user_questions[ask_request_id] = dict(data)
             asyncio.create_task(
                 self._enter_attention(
-                    str(data.get("request_id", "")),
+                    ask_request_id,
                     "question",
                     prompt=self._attention_prompt_from_questions(data),
                     options=data.get("questions"),
                 )
             )
+
+        if event_type == "ask_user_resolved":
+            # (`event_type` is the frame's `type` field; the TTY bridge emits
+            # type="ask_user_resolved" / event_type="ask_user.resolved".)
+            # The question was answered out-of-band (an in-terminal keystroke via the
+            # tmux TTY bridge, or the turn ended) — clear server-side attention + the
+            # replay entry so the session leaves awaiting_input and a reconnecting
+            # client no longer sees a stale question card. Without this the broker's
+            # _pending_attention stayed set until the next `result`, pinning the
+            # session at awaiting_input.
+            resolved_request_id = str(data.get("request_id", ""))
+            if resolved_request_id:
+                self._pending_ask_user_questions.pop(resolved_request_id, None)
+                asyncio.create_task(self._exit_attention(resolved_request_id))
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
@@ -3074,6 +3100,7 @@ class Broker:
             # any stale pending gates so a later heartbeat can't resurrect
             # awaiting_input.
             self._pending_attention.clear()
+            self._pending_ask_user_questions.clear()
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
                 asyncio.create_task(self._on_result_publish_mesh())
@@ -3397,8 +3424,12 @@ class Broker:
                     request_id=data.get("request_id", ""),
                     answers=data.get("answers", []),
                 )
-                # The human answered — the session is no longer blocked.
-                await self._exit_attention(str(data.get("request_id", "")))
+                # The human answered — the session is no longer blocked. Drop the
+                # replay entry too so a later reconnect doesn't re-surface an
+                # already-answered question.
+                answered_request_id = str(data.get("request_id", ""))
+                self._pending_ask_user_questions.pop(answered_request_id, None)
+                await self._exit_attention(answered_request_id)
 
             # Phase 3: interrupt current turn
             case "interrupt":
@@ -3524,9 +3555,7 @@ class Broker:
                         str(content),
                         source="browser",
                         metadata=(
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
                         ),
                     )
                 except LookupError as exc:
@@ -3538,9 +3567,7 @@ class Broker:
                     message_id = await self.handle_resend_initial_prompt(
                         source="browser",
                         metadata=(
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
                         ),
                     )
                 except (ValueError, RuntimeError) as exc:
@@ -5491,6 +5518,20 @@ class Broker:
                 )
                 for permission_request in list(self._pending_permission_requests.values()):
                     if not await self._safe_browser_send_json(websocket, permission_request):
+                        return
+
+            # Same for ask_user_question: these are CLI events (not control_request
+            # RPCs), so they're not in the permission set above. Re-surface any
+            # outstanding question so a client reconnecting WHILE the agent is blocked
+            # gets the answerable card instead of a frozen/"dead" session — the core
+            # tmux-interactive reconnect bug.
+            if self._pending_ask_user_questions:
+                logger.info(
+                    "Replaying %d pending ask_user_question(s) to new browser",
+                    len(self._pending_ask_user_questions),
+                )
+                for ask_question in list(self._pending_ask_user_questions.values()):
+                    if not await self._safe_browser_send_json(websocket, ask_question):
                         return
 
             # Handle messages from browser
