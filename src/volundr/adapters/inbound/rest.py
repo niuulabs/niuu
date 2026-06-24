@@ -1187,6 +1187,17 @@ def create_router(
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+
+    @router.get("/version", tags=["Forge"])
+    async def forge_version() -> dict:
+        """Identify the running Forge API build (git sha / branch) so an operator
+        can confirm which version is live. Skuld brokers run from the same
+        checkout, so the same sha applies to the broker (which also reports it in
+        its ``system/init`` event)."""
+        from niuu.build_info import build_info
+
+        return {"service": "forge-api", **build_info()}
+
     forge = ForgeService(
         session_service,
         stats_service=stats_service,

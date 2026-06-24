@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from niuu.build_info import build_info
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
@@ -1153,6 +1154,7 @@ class TmuxInteractiveTransport(CLITransport):
                 "subtype": "init",
                 "session_id": self._session_name,
                 "message": {"model": self._model or "interactive"},
+                "build": build_info(),
                 "slash_commands": list(_BUILT_IN_SLASH_COMMANDS),
                 "terminal": {
                     "transport": "tmux_interactive",
