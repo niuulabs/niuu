@@ -199,6 +199,16 @@ class TmuxInteractiveTransport(CLITransport):
         self._pane_poll_interval_s = self._float_env(
             "SKULD__TMUX_PANE_POLL_INTERVAL_SECONDS", pane_poll_interval_s, 1.0
         )
+        # E3 race fix: a structured answer can arrive BEFORE the on-screen menu has
+        # rendered. Bound-poll the live menu for up to this many seconds (in
+        # _pane_poll_interval_s steps, or a short fallback step) before pressing a
+        # key, so the chosen row's digit lands instead of the default first row.
+        self._menu_render_wait_s = self._float_env(
+            "SKULD__TMUX_MENU_RENDER_WAIT_SECONDS", None, 1.5
+        )
+        # Poll cadence while waiting for the menu to render (capped by the pane poll
+        # interval). Config-driven so there is no bare literal in the wait loop.
+        self._menu_poll_step_s = self._float_env("SKULD__TMUX_MENU_POLL_STEP_SECONDS", None, 0.1)
         # BUG-3: hard ceiling on a single steering delivery (lock wait + paste). A prior
         # delivery that wedged the send lock, or a hung tmux subprocess, must surface as a
         # loud error the client can see — never a silent swallow of the user's message.
@@ -860,7 +870,7 @@ class TmuxInteractiveTransport(CLITransport):
             await self._emit_ask_user_resolved(request_id, "deny")
             return
 
-        rows = await self._capture_menu_rows(pane_id=pane_id)
+        rows = await self._capture_menu_rows_wait(pane_id=pane_id)
         digit = self._match_menu_digit(chosen, rows)
         if digit is None:
             # No matching numbered row. The affirmative row is the highlighted default, so Enter
@@ -875,6 +885,28 @@ class TmuxInteractiveTransport(CLITransport):
             if kind == "question":
                 await self._send_key("Enter", pane_id=pane_id)
         await self._emit_ask_user_resolved(request_id, chosen or "answered")
+
+    async def _capture_menu_rows_wait(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
+        """Capture the numbered menu, bound-polling until it renders (E3 race fix).
+
+        A structured answer can arrive before the on-screen menu has drawn. Poll the
+        live pane for up to ``_menu_render_wait_s`` (in short steps) and return as soon
+        as rows appear, so the chosen row's digit lands instead of the default first
+        row. Falls back to whatever is on screen (possibly empty) if it never renders.
+        """
+        deadline = time.monotonic() + max(self._menu_render_wait_s, 0.0)
+        step = (
+            min(self._pane_poll_interval_s, self._menu_poll_step_s)
+            if self._pane_poll_interval_s > 0
+            else self._menu_poll_step_s
+        )
+        while True:
+            rows = await self._capture_menu_rows(pane_id=pane_id)
+            if rows:
+                return rows
+            if time.monotonic() >= deadline:
+                return rows
+            await asyncio.sleep(step)
 
     async def _capture_menu_rows(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
         """Numbered option rows currently on screen, e.g. [(1,'Yes'), (2,'…ask'), (3,'No')]."""
@@ -900,10 +932,17 @@ class TmuxInteractiveTransport(CLITransport):
         low = chosen.strip().lower()
         if not low or not rows:
             return None
-        # 1) direct label match (AskUserQuestion options + any verbatim permission row).
+        # 1a) EXACT label match over ALL rows first — a verbatim choice must win
+        # over any shorter substring row. Without this exact-first pass, choosing
+        # "Allow & don't ask again" would be captured by row "Allow" via the
+        # substring test below and silently downgraded to a one-time allow.
+        for digit, label in rows:
+            if low == label.lower():
+                return digit
+        # 1b) substring match (one label contains the other), in row order.
         for digit, label in rows:
             ll = label.lower()
-            if low == ll or low in ll or ll in low:
+            if low in ll or ll in low:
                 return digit
         # 2) "allow & don't ask again" / "always" → the persistent-allow row.
         if "don't ask" in low or "always" in low:

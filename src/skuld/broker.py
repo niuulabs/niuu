@@ -2946,6 +2946,12 @@ class Broker:
             # blocked must still receive the answerable question (tmux-reconnect fix).
             if ask_request_id:
                 self._pending_ask_user_questions[ask_request_id] = dict(data)
+            # Mark attention SYNCHRONOUSLY (before scheduling the report task) so
+            # the assistant tool_use frame that the tmux bridge emits right after
+            # this question cannot schedule an "active" report that clobbers the
+            # awaiting_input below — the assistant branch checks _pending_attention.
+            if ask_request_id:
+                self._pending_attention[ask_request_id] = "question"
             asyncio.create_task(
                 self._enter_attention(
                     ask_request_id,
@@ -3069,7 +3075,12 @@ class Broker:
                     attributes={"model": self.model},
                 )
             await self._start_assistant_tool_trace_spans(data)
-            asyncio.create_task(self._report_activity_state("active"))
+            # Don't report "active" while a human gate is pending: the tmux bridge
+            # emits the AskUserQuestion tool_use as an assistant frame right after
+            # surfacing the question, and an "active" report here would clobber the
+            # awaiting_input the session must hold while blocked on the human.
+            if not self._pending_attention:
+                asyncio.create_task(self._report_activity_state("active"))
             # Emit room activity for CLI participant so room UI shows "thinking"
             if self._room_bridge is not None and self._mesh_adapter is not None:
                 await self._room_bridge.broadcast_cli_activity(
