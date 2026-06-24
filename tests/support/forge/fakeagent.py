@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""fakeagent — a scriptable stand-in for the interactive ``claude`` CLI.
+
+PURE STANDARD LIBRARY ONLY. This module is launched by
+``TmuxInteractiveTransport`` as the ``claude`` binary, so it must run under any
+Python interpreter with no third-party imports (no aiohttp, no httpx).
+
+It speaks the same TTY + hook protocol the real Claude Code CLI does, but driven
+by a tiny line-oriented directive grammar (see ``run`` / ``handle_line``) so
+tests can make the agent say things, work, ask questions, request permissions,
+render screens, or crash on demand.
+
+Directive grammar (one user line may chain several with ``' ;; '``)::
+
+    say:<text>
+    work:<seconds>
+    ask:<header>|<question>|<opt1>;<opt2>;...
+    perm:<tool>|<detail>
+    tool:<name>
+    screen:<name>
+    crash
+    exit:<n>
+
+A line with no recognized directive is treated as ``say:<line>``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+_SCREENS_DIR = Path(__file__).resolve().parent / "screens"
+
+# --- regex-free menu rendering -------------------------------------------------
+# The transport parses numbered rows with r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$".
+# We render " 1. <opt>" lines that match it exactly.
+_PERMISSION_ROWS = ["Allow", "Allow & don't ask again", "Deny"]
+
+_interrupted = False
+
+
+def _emit(text: str) -> None:
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+# ──────────────────────────── hook plumbing ────────────────────────────
+
+
+def _hook_url_from_settings(settings_path: str | None) -> str | None:
+    env_override = os.environ.get("FORGE_FAKEAGENT_HOOK_URL")
+    if env_override:
+        return env_override
+    if not settings_path:
+        return None
+    try:
+        data = json.loads(Path(settings_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    for entries in hooks.values():
+        if not isinstance(entries, list) or not entries:
+            continue
+        inner = entries[0].get("hooks")
+        if not isinstance(inner, list) or not inner:
+            continue
+        url = inner[0].get("url")
+        if isinstance(url, str):
+            return url
+    return None
+
+
+class _Hooks:
+    """Best-effort hook POSTer. Swallows connection errors so a missing server
+    never crashes the agent."""
+
+    def __init__(self, url: str | None, session_id: str) -> None:
+        self._url = url
+        self._session_id = session_id
+
+    @property
+    def enabled(self) -> bool:
+        return self._url is not None
+
+    def post(self, payload: dict) -> None:
+        if self._url is None:
+            return
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self._url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                response.read()
+        except Exception:  # noqa: BLE001 - hooks are best-effort by design
+            return
+
+    def user_prompt_submit(self, prompt: str) -> None:
+        self.post(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt,
+                "session_id": self._session_id,
+            }
+        )
+
+    def pre_tool_use(self, tool_name: str, tool_input: dict, tool_use_id: str) -> None:
+        self.post(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "tool_use_id": tool_use_id,
+                "session_id": self._session_id,
+            }
+        )
+
+    def post_tool_use(self, tool_name: str, tool_use_id: str, response: str) -> None:
+        self.post(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "tool_response": response,
+                "session_id": self._session_id,
+            }
+        )
+
+    def permission_request(
+        self, tool_name: str, tool_input: dict, suggestions: list | None = None
+    ) -> None:
+        self.post(
+            {
+                "hook_event_name": "PermissionRequest",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "permission_suggestions": suggestions or [],
+                "session_id": self._session_id,
+            }
+        )
+
+    def stop(self, last_assistant_message: str) -> None:
+        self.post(
+            {
+                "hook_event_name": "Stop",
+                "last_assistant_message": last_assistant_message,
+                "session_id": self._session_id,
+            }
+        )
+
+
+# ──────────────────────────── argv parsing ────────────────────────────
+
+
+def _parse_settings_path(argv: list[str]) -> str | None:
+    for index, token in enumerate(argv):
+        if token == "--settings" and index + 1 < len(argv):
+            return argv[index + 1]
+        if token.startswith("--settings="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _session_name() -> str:
+    return os.environ.get("FORGE_FAKEAGENT_SESSION", "fakeagent")
+
+
+# ──────────────────────────── directives ────────────────────────────
+
+
+def _read_keystroke() -> str | None:
+    """Block for the next stdin line (the transport answers a menu by sending a
+    digit + Enter, or Escape). Returns the stripped line, or None at EOF."""
+    line = sys.stdin.readline()
+    if line == "":
+        return None
+    return line.rstrip("\n")
+
+
+def _render_menu(options: list[str]) -> None:
+    for index, label in enumerate(options, start=1):
+        _emit(f" {index}. {label}")
+
+
+def _do_say(text: str, hooks: _Hooks) -> None:
+    _emit(text)
+    _finish_turn(text, hooks)
+
+
+def _do_work(seconds: float, hooks: _Hooks) -> None:
+    global _interrupted
+    _interrupted = False
+    deadline = time.monotonic() + seconds
+    tick = 0
+    while time.monotonic() < deadline:
+        if _interrupted:
+            _emit("interrupted")
+            _finish_turn("interrupted", hooks)
+            return
+        tick += 1
+        _emit(f"...working {tick}")
+        time.sleep(0.2)
+    if _interrupted:
+        _emit("interrupted")
+        _finish_turn("interrupted", hooks)
+        return
+    _emit("done")
+    _finish_turn("done", hooks)
+
+
+def _do_ask(spec: str, hooks: _Hooks) -> None:
+    header, _, rest = spec.partition("|")
+    question, _, opt_blob = rest.partition("|")
+    options = [opt.strip() for opt in opt_blob.split(";") if opt.strip()]
+    if not options:
+        options = ["Yes", "No"]
+    _render_menu(options)
+    if hooks.enabled:
+        tool_input = {
+            "questions": [
+                {
+                    "header": header.strip(),
+                    "question": question.strip(),
+                    "options": [{"label": label} for label in options],
+                    "multiSelect": False,
+                }
+            ]
+        }
+        hooks.pre_tool_use("AskUserQuestion", tool_input, "fakeagent-ask")
+    keystroke = _read_keystroke()
+    chosen = _resolve_choice(keystroke, options)
+    _emit(f"chose: {chosen}")
+    _finish_turn(f"chose: {chosen}", hooks)
+
+
+def _do_perm(spec: str, hooks: _Hooks) -> None:
+    tool_name, _, detail = spec.partition("|")
+    tool_name = tool_name.strip() or "Bash"
+    detail = detail.strip()
+    _render_menu(_PERMISSION_ROWS)
+    if hooks.enabled:
+        tool_input = {"command": detail} if tool_name == "Bash" else {"detail": detail}
+        hooks.permission_request(tool_name, tool_input)
+    keystroke = _read_keystroke()
+    outcome = _resolve_permission(keystroke)
+    _emit(f"permission: {outcome}")
+    _finish_turn(f"permission: {outcome}", hooks)
+
+
+def _do_tool(name: str, hooks: _Hooks) -> None:
+    name = name.strip() or "Tool"
+    tool_use_id = f"fakeagent-{name}"
+    if hooks.enabled:
+        hooks.pre_tool_use(name, {}, tool_use_id)
+        hooks.post_tool_use(name, tool_use_id, "ok")
+    _emit(f"ran {name}")
+    _finish_turn(f"ran {name}", hooks)
+
+
+def _do_screen(name: str, hooks: _Hooks) -> None:
+    name = name.strip()
+    path = _SCREENS_DIR / f"{name}.txt"
+    if path.exists():
+        sys.stdout.write(path.read_text(encoding="utf-8"))
+        if not path.read_text(encoding="utf-8").endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+    else:
+        _emit(f"[missing screen: {name}]")
+    # Stay on screen until a line is read (navigation), then finish.
+    _read_keystroke()
+    _finish_turn("", hooks)
+
+
+def _resolve_choice(keystroke: str | None, options: list[str]) -> str:
+    if keystroke is None:
+        return options[0]
+    stripped = keystroke.strip()
+    if stripped.isdigit():
+        index = int(stripped) - 1
+        if 0 <= index < len(options):
+            return options[index]
+    if stripped.lower() in {"escape", "esc"}:
+        return "cancelled"
+    return options[0]
+
+
+def _resolve_permission(keystroke: str | None) -> str:
+    if keystroke is None:
+        return "allow"
+    stripped = keystroke.strip().lower()
+    if stripped in {"escape", "esc"}:
+        return "deny"
+    if stripped.isdigit():
+        index = int(stripped) - 1
+        if 0 <= index < len(_PERMISSION_ROWS):
+            return _PERMISSION_ROWS[index].lower()
+    return "allow"
+
+
+def _finish_turn(assistant_text: str, hooks: _Hooks) -> None:
+    if hooks.enabled:
+        hooks.stop(assistant_text)
+
+
+def handle_line(line: str, hooks: _Hooks) -> None:
+    """Interpret one user line (possibly several ' ;; '-chained directives)."""
+    for directive in line.split(" ;; "):
+        directive = directive.strip()
+        if directive == "":
+            continue
+        _dispatch(directive, hooks)
+
+
+def _dispatch(directive: str, hooks: _Hooks) -> None:
+    if directive == "crash":
+        sys.stdout.flush()
+        os._exit(137)
+    if directive.startswith("exit:"):
+        sys.stdout.flush()
+        sys.exit(int(directive[len("exit:") :].strip() or "0"))
+    if directive.startswith("say:"):
+        _do_say(directive[len("say:") :], hooks)
+        return
+    if directive.startswith("work:"):
+        _do_work(float(directive[len("work:") :].strip() or "1"), hooks)
+        return
+    if directive.startswith("ask:"):
+        _do_ask(directive[len("ask:") :], hooks)
+        return
+    if directive.startswith("perm:"):
+        _do_perm(directive[len("perm:") :], hooks)
+        return
+    if directive.startswith("tool:"):
+        _do_tool(directive[len("tool:") :], hooks)
+        return
+    if directive.startswith("screen:"):
+        _do_screen(directive[len("screen:") :], hooks)
+        return
+    # Unrecognized -> echo as assistant text.
+    _do_say(directive, hooks)
+
+
+def _install_sigint_handler() -> None:
+    def _handler(_signum, _frame) -> None:
+        global _interrupted
+        _interrupted = True
+
+    signal.signal(signal.SIGINT, _handler)
+
+
+def run(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    settings_path = _parse_settings_path(argv)
+    hook_url = _hook_url_from_settings(settings_path)
+    hooks = _Hooks(hook_url, _session_name())
+
+    _install_sigint_handler()
+
+    _emit("fakeagent ready")
+
+    boot = os.environ.get("FORGE_FAKEAGENT_BOOT")
+    if boot:
+        handle_line(boot, hooks)
+
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            return 0
+        handle_line(line.rstrip("\n"), hooks)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

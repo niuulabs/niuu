@@ -1,0 +1,7 @@
+  Agents
+
+   1. backend-architect
+   2. test-writer
+   3. doc-scribe
+
+  ↑/↓ to navigate · Enter to select · Esc to close
