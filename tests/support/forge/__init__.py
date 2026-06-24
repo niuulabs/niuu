@@ -10,12 +10,15 @@ from __future__ import annotations
 from tests.support.forge.broker_harness import BrokerHarness, FakeWsClient
 from tests.support.forge.fakeclaude_shim import install_fake_claude
 from tests.support.forge.hook_server import HookServer
+from tests.support.forge.multipane import MultiPaneLayout, split_into_panes
 from tests.support.forge.tmux_page import TmuxPage
 
 __all__ = [
     "BrokerHarness",
     "FakeWsClient",
     "HookServer",
+    "MultiPaneLayout",
     "TmuxPage",
     "install_fake_claude",
+    "split_into_panes",
 ]

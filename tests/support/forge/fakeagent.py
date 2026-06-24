@@ -18,6 +18,8 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     perm:<tool>|<detail>[|delay=<s>]
     tool:<name>
     screen:<name>
+    pick:<name>      render a picker screen, read a digit, echo "selected: <label>"
+    pane:<name>      render a pane screen, then echo each input as "steer received: <text>"
     menudelay:<seconds>
     crash
     exit:<n>
@@ -330,19 +332,75 @@ def _do_tool(name: str, hooks: _Hooks) -> None:
     _finish_turn(f"ran {name}", hooks)
 
 
-def _do_screen(name: str, hooks: _Hooks) -> None:
+def _render_screen_file(name: str) -> bool:
+    """Write ``screens/<name>.txt`` verbatim to the pane. Returns False if missing."""
     name = name.strip()
     path = _SCREENS_DIR / f"{name}.txt"
-    if path.exists():
-        sys.stdout.write(path.read_text(encoding="utf-8"))
-        if not path.read_text(encoding="utf-8").endswith("\n"):
-            sys.stdout.write("\n")
-        sys.stdout.flush()
-    else:
+    if not path.exists():
         _emit(f"[missing screen: {name}]")
+        return False
+    body = path.read_text(encoding="utf-8")
+    sys.stdout.write(body)
+    if not body.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+    return True
+
+
+def _screen_menu_rows(name: str) -> list[str]:
+    """Parse the " 1. <label>" rows of a screen fixture, ordered by digit."""
+    path = _SCREENS_DIR / f"{name.strip()}.txt"
+    if not path.exists():
+        return []
+    rows: list[tuple[int, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        # match " 1. label" / " 1) label", first token a single digit.
+        if len(stripped) < 3 or stripped[0] not in "123456789" or stripped[1] not in ".)":
+            continue
+        rows.append((int(stripped[0]), stripped[2:].strip()))
+    rows.sort()
+    return [label for _digit, label in rows]
+
+
+def _do_screen(name: str, hooks: _Hooks) -> None:
+    _render_screen_file(name)
     # Stay on screen until a line is read (navigation), then finish.
     _read_keystroke()
     _finish_turn("", hooks)
+
+
+def _do_pick(name: str, hooks: _Hooks) -> None:
+    """Render a picker screen, read one digit, echo the chosen menu label.
+
+    Models the Claude-Code ``/agents`` flow: render the numbered list, the user
+    presses a digit, the chosen agent label is reflected back on screen.
+    """
+    _render_screen_file(name)
+    options = _screen_menu_rows(name)
+    keystroke = _read_keystroke()
+    chosen = _resolve_choice(keystroke, options) if options else ""
+    _emit(f"selected: {chosen}")
+    _finish_turn(f"selected: {chosen}", hooks)
+
+
+def _do_pane(name: str, hooks: _Hooks) -> None:
+    """Render a pane's screen, then ECHO every subsequent input line as a steer.
+
+    Each team pane runs one of these. A steer typed into THIS pane (and only this
+    pane) lands here and is echoed as ``steer received: <text>``, so a test can
+    read each pane independently to prove input routed to the targeted agent.
+    """
+    _render_screen_file(name)
+    while True:
+        line = _read_keystroke()
+        if line is None:
+            _finish_turn("", hooks)
+            return
+        if line.strip() == "":
+            continue
+        _emit(f"steer received: {line.strip()}")
+        _finish_turn(f"steer received: {line.strip()}", hooks)
 
 
 def _resolve_choice(keystroke: str | None, options: list[str]) -> str:
@@ -419,6 +477,12 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
         return
     if directive.startswith("screen:"):
         _do_screen(directive[len("screen:") :], hooks)
+        return
+    if directive.startswith("pick:"):
+        _do_pick(directive[len("pick:") :], hooks)
+        return
+    if directive.startswith("pane:"):
+        _do_pane(directive[len("pane:") :], hooks)
         return
     # Unrecognized -> echo as assistant text.
     _do_say(directive, hooks)

@@ -350,7 +350,19 @@ done
 
     await transport.start()
     await transport.send_message("ping")
-    await transport.stop()
+    # send_message is non-blocking: wait for the fake CLI to echo and the turn to
+    # close (scraping the pane) before stop() tears the tmux session down — a bare
+    # send→stop races the paste→echo→frame→result pipeline and is flaky per host.
+    try:
+        await _wait_until(
+            lambda: any(
+                event["type"] == "result" and "assistant: ping" in event.get("result", "")
+                for event in events
+            ),
+            timeout=10.0,
+        )
+    finally:
+        await transport.stop()
 
     terminal_frames = [
         "\n".join(event.get("rows", [])) for event in events if event["type"] == "terminal_frame"
