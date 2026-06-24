@@ -12,6 +12,7 @@ from uuid import UUID
 
 import asyncpg
 
+from volundr.adapters.outbound._jsonb import dumps_jsonb
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
 
@@ -74,7 +75,7 @@ class PostgresSessionEventLog(SessionEventLogRepository):
             entry.kind,
             entry.role,
             entry.request_id,
-            json.dumps(entry.payload),
+            dumps_jsonb(entry.payload),
             entry.ts,
         )
 

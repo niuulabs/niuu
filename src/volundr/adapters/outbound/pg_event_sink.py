@@ -11,6 +11,7 @@ from uuid import UUID
 
 import asyncpg
 
+from volundr.adapters.outbound._jsonb import dumps_jsonb
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import EventSink, SessionEventRepository
 
@@ -157,7 +158,7 @@ class PostgresEventSink(EventSink, SessionEventRepository):
             event.session_id,
             event.event_type.value,
             event.timestamp,
-            json.dumps(event.data),
+            dumps_jsonb(event.data),
             event.tokens_in,
             event.tokens_out,
             float(event.cost) if event.cost is not None else None,

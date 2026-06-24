@@ -39,6 +39,9 @@ class TransactionalPool:
     async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:
         return await self._conn.execute(query, *args, timeout=timeout)
 
+    async def executemany(self, query: str, args: Any, timeout: float | None = None) -> None:
+        await self._conn.executemany(query, args, timeout=timeout)
+
     async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:
         return await self._conn.fetch(query, *args, timeout=timeout)
 

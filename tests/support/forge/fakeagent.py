@@ -13,6 +13,7 @@ render screens, or crash on demand.
 Directive grammar (one user line may chain several with ``' ;; '``)::
 
     say:<text>
+    nul:<text>      emit an assistant line whose content embeds a NUL byte
     work:<seconds>
     ask:<header>|<question>|<opt1>;<opt2>;...[|delay=<s>]
     perm:<tool>|<detail>[|delay=<s>]
@@ -25,6 +26,18 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     exit:<n>
 
 A line with no recognized directive is treated as ``say:<line>``.
+
+NUL-byte content (binary-tolerance proof)
+-----------------------------------------
+``nul:<text>`` behaves like ``say:`` but splices a real NUL code point (built at
+runtime as ``chr(0)`` — NEVER a literal NUL in this source file, which would
+corrupt it) into the emitted assistant content. This reproduces the producer
+side of the platform-wide /log data-loss bug: agent output (crash dumps,
+hang-detector listings, raw terminal bytes) regularly contains NUL, and an
+unsanitized JSONB write of such a frame fails the whole batch. With no ``<text>``
+the line is ``nul`` alone, emitting a small fixed NUL-bearing marker. The NUL is
+placed between ``<text>`` and a trailing ``[nul]`` sentinel so the assistant
+content is ``<text>\\x00[nul]``.
 
 Menu-render delay (E3 race)
 ---------------------------
@@ -222,6 +235,19 @@ def _render_menu(options: list[str]) -> None:
 def _do_say(text: str, hooks: _Hooks) -> None:
     _emit(text)
     _finish_turn(text, hooks)
+
+
+def _do_nul(text: str, hooks: _Hooks) -> None:
+    """Emit an assistant line whose content embeds a real NUL code point.
+
+    The NUL is constructed at runtime (``chr(0)``) so this source file never
+    contains a literal NUL. The emitted content is ``<text>\\x00[nul]`` — a
+    trailing sentinel keeps the NUL mid-string (not stripped as trailing
+    whitespace anywhere downstream), proving the binary frame survives the
+    producer → durable-log → persistence path."""
+    payload = f"{text}{chr(0)}[nul]"
+    _emit(payload)
+    _finish_turn(payload, hooks)
 
 
 def _do_work(seconds: float, hooks: _Hooks) -> None:
@@ -462,6 +488,9 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
         sys.exit(int(directive[len("exit:") :].strip() or "0"))
     if directive.startswith("say:"):
         _do_say(directive[len("say:") :], hooks)
+        return
+    if directive == "nul" or directive.startswith("nul:"):
+        _do_nul(directive[len("nul:") :] if directive.startswith("nul:") else "", hooks)
         return
     if directive.startswith("work:"):
         _do_work(float(directive[len("work:") :].strip() or "1"), hooks)

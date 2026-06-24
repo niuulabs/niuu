@@ -50,6 +50,65 @@ class TestAppend:
         pool.executemany.assert_not_called()
 
 
+class TestNulSanitization:
+    """PostgreSQL JSONB cannot store U+0000; the payload must be sanitized so a
+    NUL-bearing frame never wedges the whole executemany batch (the real bug)."""
+
+    @staticmethod
+    async def _serialized_payload(payload: dict) -> str:
+        pool = AsyncMock()
+        log = PostgresSessionEventLog(pool)
+        await log.append([_make_entry(payload=payload)])
+        # args is list[tuple]; payload is index 5 of the first row
+        args = pool.executemany.call_args[0][1]
+        return args[0][5]
+
+    async def test_nul_in_string_value_stripped(self):
+        nul = chr(0)
+        serialized = await self._serialized_payload({"text": f"crash{nul}dump"})
+        assert "\\u0000" not in serialized
+        assert "crashdump" in serialized
+
+    async def test_nul_nested_in_dict_and_list_stripped(self):
+        nul = chr(0)
+        payload = {
+            "outer": {"inner": f"a{nul}b"},
+            "items": [f"x{nul}y", {"deep": f"p{nul}q"}],
+        }
+        serialized = await self._serialized_payload(payload)
+        assert "\\u0000" not in serialized
+        assert "ab" in serialized
+        assert "xy" in serialized
+        assert "pq" in serialized
+
+    async def test_nul_in_dict_key_stripped(self):
+        nul = chr(0)
+        serialized = await self._serialized_payload({f"ke{nul}y": "value"})
+        assert "\\u0000" not in serialized
+        assert '"key"' in serialized
+
+    async def test_multiple_nuls_stripped(self):
+        nul = chr(0)
+        serialized = await self._serialized_payload({"text": f"{nul}a{nul}{nul}b{nul}"})
+        assert "\\u0000" not in serialized
+        assert '"ab"' in serialized
+
+    async def test_valid_unicode_preserved(self):
+        # ensure_ascii defaults True -> non-ASCII becomes \uXXXX escapes, not stripped
+        serialized = await self._serialized_payload({"text": "café — 日本語 😀"})
+        assert "\\u0000" not in serialized
+        import json
+
+        assert json.loads(serialized) == {"text": "café — 日本語 😀"}
+
+    async def test_no_nul_payload_unchanged_byte_for_byte(self):
+        import json
+
+        payload = {"type": "assistant", "content": [{"type": "text", "text": "hi"}]}
+        serialized = await self._serialized_payload(payload)
+        assert serialized == json.dumps(payload)
+
+
 class TestReadAfter:
     async def test_read_after_queries_by_cursor_ordered(self):
         sid = uuid4()

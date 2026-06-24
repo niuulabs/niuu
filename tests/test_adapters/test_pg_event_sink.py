@@ -122,6 +122,74 @@ class TestPostgresEventSinkEmit:
         assert args[5] is None
 
 
+class TestNulSanitization:
+    """PostgreSQL JSONB cannot store U+0000; event.data must be sanitized so a
+    NUL-bearing event never wedges the whole executemany batch (the real bug)."""
+
+    @staticmethod
+    def _serialized_data(data: dict) -> str:
+        # _event_to_args is the single serialization choke-point for both
+        # _insert_one and emit_batch.
+        args = PostgresEventSink._event_to_args(_make_event(data=data))
+        return args[4]  # data is index 4
+
+    def test_nul_in_string_value_stripped(self):
+        nul = chr(0)
+        serialized = self._serialized_data({"content_preview": f"hang{nul}listing"})
+        assert "\\u0000" not in serialized
+        assert "hanglisting" in serialized
+
+    def test_nul_nested_in_dict_and_list_stripped(self):
+        nul = chr(0)
+        data = {
+            "outer": {"inner": f"a{nul}b"},
+            "items": [f"x{nul}y", {"deep": f"p{nul}q"}],
+        }
+        serialized = self._serialized_data(data)
+        assert "\\u0000" not in serialized
+        assert "ab" in serialized
+        assert "xy" in serialized
+        assert "pq" in serialized
+
+    def test_nul_in_dict_key_stripped(self):
+        nul = chr(0)
+        serialized = self._serialized_data({f"ke{nul}y": "value"})
+        assert "\\u0000" not in serialized
+        assert '"key"' in serialized
+
+    def test_multiple_nuls_stripped(self):
+        nul = chr(0)
+        serialized = self._serialized_data({"text": f"{nul}a{nul}{nul}b{nul}"})
+        assert "\\u0000" not in serialized
+        assert '"ab"' in serialized
+
+    def test_valid_unicode_preserved(self):
+        import json
+
+        serialized = self._serialized_data({"text": "café — 日本語 😀"})
+        assert "\\u0000" not in serialized
+        assert json.loads(serialized) == {"text": "café — 日本語 😀"}
+
+    def test_no_nul_data_unchanged_byte_for_byte(self):
+        import json
+
+        data = {"content_preview": "hello", "content_length": 5}
+        serialized = self._serialized_data(data)
+        assert serialized == json.dumps(data)
+
+    async def test_emit_batch_serializes_without_nul_escape(self):
+        nul = chr(0)
+        pool = AsyncMock()
+        sink = PostgresEventSink(pool)
+        events = [_make_event(sequence=i, data={"t": f"v{nul}{i}"}) for i in range(3)]
+
+        await sink.emit_batch(events)
+
+        rows = pool.executemany.call_args[0][1]
+        for row in rows:
+            assert "\\u0000" not in row[4]
+
+
 class TestPostgresEventSinkRead:
     """Tests for SessionEventRepository (read-side)."""
 
