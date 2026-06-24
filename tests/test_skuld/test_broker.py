@@ -3423,10 +3423,11 @@ class TestHandleWebSocket:
 
         send_message now runs in a background task so the WS receive loop
         doesn't stall for the duration of a turn. The error is surfaced via
-        ``_safe_transport_send``: log the exception and broadcast an error
-        event to any still-open channels. Tests check the log; broadcasting
-        is best-effort because by the time the background task runs, the WS
-        the user typed from may already have disconnected.
+        ``_deliver_user_message_and_ack``: log the exception, ack the message
+        as ``failed``, and broadcast an error event to any still-open
+        channels. Tests check the log; broadcasting is best-effort because by
+        the time the background task runs, the WS the user typed from may
+        already have disconnected.
         """
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
@@ -3439,11 +3440,15 @@ class TestHandleWebSocket:
 
         with caplog.at_level("ERROR"):
             await test_broker.handle_websocket(mock_ws)
-            # Let the background send_message task run.
-            await asyncio.sleep(0)
+            # Drain the background delivery task deterministically (a single
+            # sleep(0) is scheduling-dependent and can observe await_count == 0).
+            for _ in range(100):
+                if mock_transport.send_message.await_count >= 1:
+                    break
+                await asyncio.sleep(0)
 
         assert mock_transport.send_message.await_count == 1
-        assert "Transport send_message failed" in caplog.text
+        assert "user message delivery failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_websocket_unexpected_exception(self, test_broker):
