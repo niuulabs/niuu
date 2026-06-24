@@ -210,6 +210,20 @@ class TmuxInteractiveTransport(CLITransport):
             "SKULD__TMUX_MESSAGE_DISPLAY_HOOK_ENABLED",
             False,
         )
+        # Remote Control (default ON): ALSO expose the live CLI on the host's claude.ai
+        # login so the same session can be driven / observed from the Anthropic apps
+        # (claude.ai/code + phone) IN PARALLEL with the Volundr/Lexi API — a stable second
+        # control plane while the native tmux path is hardened. Requires subscription auth:
+        # the API-key path can't register a session to the account (it blocks on the
+        # interactive "use this API key?" chooser), so force it off under
+        # SKULD__CLAUDE_AUTH=api_key. Toggle with SKULD__TMUX_REMOTE_CONTROL=0/1.
+        self._claude_auth_mode = (
+            os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
+        )
+        self._remote_control = (
+            self._bool_env("SKULD__TMUX_REMOTE_CONTROL", True)
+            and self._claude_auth_mode != "api_key"
+        )
 
         self._alive = False
         self._initial_prompt_sent = False
@@ -1026,6 +1040,14 @@ class TmuxInteractiveTransport(CLITransport):
             cmd.extend(["--model", self._model])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
+        if self._remote_control:
+            rc_name = self._remote_control_name()
+            cmd.extend(["--remote-control", rc_name])
+            logger.info(
+                "tmux: Remote Control enabled (name=%s) — session is also drivable from "
+                "claude.ai/code + phone in parallel with the Volundr API",
+                rc_name,
+            )
         if self._hook_events_enabled and self._sdk_port:
             cmd.extend(["--settings", str(self._hook_settings_path)])
         if self._system_prompt:
@@ -1035,6 +1057,12 @@ class TmuxInteractiveTransport(CLITransport):
         if self._agent_teams:
             cmd.extend(["--teammate-mode", "tmux"])
         return cmd
+
+    def _remote_control_name(self) -> str:
+        """Label shown in the claude.ai/code + phone session list. Prefer the friendly
+        Forge session name the broker exports; fall back to the session id."""
+        raw = os.environ.get("SKULD__SESSION__NAME", "").strip() or self._forge_session_id
+        return self._safe_name(raw)[:60]
 
     def _write_hook_settings(self) -> None:
         if not self._hook_events_enabled or not self._sdk_port:

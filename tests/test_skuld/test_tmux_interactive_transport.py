@@ -414,6 +414,34 @@ async def test_claude_stop_hook_emits_semantic_result(tmp_path: Path) -> None:
     assert out_tokens >= 1
 
 
+def test_remote_control_on_by_default_adds_flag(tmp_path: Path, monkeypatch) -> None:
+    # Hybrid sessions: Remote Control is ON by default so a Forge tmux session is also
+    # drivable from claude.ai/code + phone (label = the friendly Forge session name).
+    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
+    monkeypatch.delenv("SKULD__CLAUDE_AUTH", raising=False)
+    monkeypatch.setenv("SKULD__SESSION__NAME", "lexi-presentation")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    argv = transport._interactive_argv()
+    assert "--remote-control" in argv
+    assert argv[argv.index("--remote-control") + 1] == "lexi-presentation"
+
+
+def test_remote_control_disabled_by_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SKULD__TMUX_REMOTE_CONTROL", "0")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    assert "--remote-control" not in transport._interactive_argv()
+
+
+def test_remote_control_force_off_under_api_key_auth(tmp_path: Path, monkeypatch) -> None:
+    # API-key auth can't register a session to the claude.ai account, and would block on
+    # the interactive "use this API key?" chooser — so RC must auto-disable there even if
+    # explicitly requested, to never wedge session startup.
+    monkeypatch.setenv("SKULD__TMUX_REMOTE_CONTROL", "1")
+    monkeypatch.setenv("SKULD__CLAUDE_AUTH", "api_key")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    assert "--remote-control" not in transport._interactive_argv()
+
+
 @pytest.mark.asyncio
 async def test_deliver_user_text_raises_when_send_lock_is_wedged(tmp_path: Path) -> None:
     # BUG-3: after a WS crash/reconnect a wedged prior delivery used to hold the send
