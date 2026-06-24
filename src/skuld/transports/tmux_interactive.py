@@ -112,6 +112,11 @@ _OPTIONAL_HIGH_VOLUME_HOOK_EVENTS = [
 ]
 
 _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
+# A numbered selection row in an interactive Claude menu, e.g. " 1. Allow" or
+# "❯ 2. Allow & don't ask again". The single source of truth for menu parsing —
+# the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
+# parses menus exactly the way the shipped transport does.
+_MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
 
 
 @dataclass
@@ -447,11 +452,18 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_buffer = []
         self._turn_last_clean_text = ""
         self._turn_prompt_text = ""
-        if self._turn_watchdog_task is None or self._turn_watchdog_task.done():
-            self._turn_watchdog_task = asyncio.create_task(
-                self._watch_turn_completion(self._turn_done),
-                name=f"tmux-turn-watch-{self._session_name}",
-            )
+        # The watchdog captures the `_turn_done` Event it was started with. A fresh
+        # turn always gets a freshly-created Event (above), so we MUST bind a live
+        # watchdog to it — otherwise the new turn never closes. Cancel any prior
+        # watchdog: if it already finished (or signalled the previous turn but is
+        # still mid-sleep), reusing it would leave the new Event with no watcher.
+        prior = self._turn_watchdog_task
+        if prior is not None and not prior.done():
+            prior.cancel()
+        self._turn_watchdog_task = asyncio.create_task(
+            self._watch_turn_completion(self._turn_done),
+            name=f"tmux-turn-watch-{self._session_name}",
+        )
 
     async def interrupt(self) -> None:
         await self.send_control("interrupt")
@@ -874,7 +886,7 @@ class TmuxInteractiveTransport(CLITransport):
         out: list[tuple[int, str]] = []
         seen: set[int] = set()
         for line in result.stdout.splitlines():
-            match = re.match(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$", line)
+            match = _MENU_ROW_RE.match(line)
             if match:
                 digit = int(match.group(1))
                 if digit not in seen:
