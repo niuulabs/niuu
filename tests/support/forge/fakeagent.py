@@ -14,14 +14,37 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
 
     say:<text>
     work:<seconds>
-    ask:<header>|<question>|<opt1>;<opt2>;...
-    perm:<tool>|<detail>
+    ask:<header>|<question>|<opt1>;<opt2>;...[|delay=<s>]
+    perm:<tool>|<detail>[|delay=<s>]
     tool:<name>
     screen:<name>
+    menudelay:<seconds>
     crash
     exit:<n>
 
 A line with no recognized directive is treated as ``say:<line>``.
+
+Menu-render delay (E3 race)
+---------------------------
+``ask:`` and ``perm:`` normally render the numbered on-screen menu, then fire the
+structured hook, then block for the resolving keystroke. With a non-zero menu
+delay the order changes to expose a race window for clients that answer the
+*structured* question before the on-screen menu exists:
+
+    1. fire the hook FIRST (PreToolUse AskUserQuestion / PermissionRequest),
+    2. sleep <delay> seconds (NO menu on screen yet),
+    3. THEN render the numbered menu to the pane,
+    4. block for the resolving keystroke.
+
+Two backward-compatible ways to set the delay (default 0 = legacy behavior:
+render menu first, then hook, then block — unchanged for all Phase 0/1 usage):
+
+  * a trailing ``|delay=<s>`` field on a single directive, e.g.
+    ``ask:Pick|Which?|a;b|delay=0.4`` or ``perm:Bash|rm -rf|delay=0.4``;
+  * a ``menudelay:<s>`` prelude directive that sets the delay for every
+    subsequent ``ask:``/``perm:`` in the SAME chained line, e.g.
+    ``menudelay:0.4 ;; ask:Pick|Which?|a;b``. A per-directive ``delay=`` field
+    overrides the prelude for that one directive.
 """
 
 from __future__ import annotations
@@ -220,13 +243,44 @@ def _do_work(seconds: float, hooks: _Hooks) -> None:
     _finish_turn("done", hooks)
 
 
-def _do_ask(spec: str, hooks: _Hooks) -> None:
-    header, _, rest = spec.partition("|")
-    question, _, opt_blob = rest.partition("|")
+def _split_delay_field(parts: list[str], default_delay: float) -> tuple[list[str], float]:
+    """Strip a trailing ``delay=<s>`` field from a ``|``-split spec.
+
+    Returns the remaining parts and the resolved delay (the trailing field wins
+    over ``default_delay``; an absent/blank field falls back to default)."""
+    if parts and parts[-1].strip().lower().startswith("delay="):
+        raw = parts[-1].strip()[len("delay=") :].strip()
+        try:
+            return parts[:-1], float(raw or "0")
+        except ValueError:
+            return parts[:-1], default_delay
+    return parts, default_delay
+
+
+def _render_after_delay(options: list[str], delay: float) -> None:
+    """Hook already fired: optionally wait, THEN render the on-screen menu.
+
+    With delay <= 0 the menu was already rendered by the caller (legacy order),
+    so this is a no-op. With delay > 0 we sleep first to open the race window
+    (structured question exists, menu not yet on screen), then render."""
+    if delay <= 0:
+        return
+    time.sleep(delay)
+    _render_menu(options)
+
+
+def _do_ask(spec: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
+    fields = spec.split("|")
+    fields, delay = _split_delay_field(fields, menu_delay)
+    header = fields[0] if fields else ""
+    question = fields[1] if len(fields) > 1 else ""
+    opt_blob = fields[2] if len(fields) > 2 else ""
     options = [opt.strip() for opt in opt_blob.split(";") if opt.strip()]
     if not options:
         options = ["Yes", "No"]
-    _render_menu(options)
+    # delay == 0 -> legacy order: render menu, then fire hook, then block.
+    if delay <= 0:
+        _render_menu(options)
     if hooks.enabled:
         tool_input = {
             "questions": [
@@ -239,20 +293,27 @@ def _do_ask(spec: str, hooks: _Hooks) -> None:
             ]
         }
         hooks.pre_tool_use("AskUserQuestion", tool_input, "fakeagent-ask")
+    # delay > 0 -> hook fired above; wait, THEN render the menu (race window).
+    _render_after_delay(options, delay)
     keystroke = _read_keystroke()
     chosen = _resolve_choice(keystroke, options)
     _emit(f"chose: {chosen}")
     _finish_turn(f"chose: {chosen}", hooks)
 
 
-def _do_perm(spec: str, hooks: _Hooks) -> None:
-    tool_name, _, detail = spec.partition("|")
-    tool_name = tool_name.strip() or "Bash"
-    detail = detail.strip()
-    _render_menu(_PERMISSION_ROWS)
+def _do_perm(spec: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
+    fields = spec.split("|")
+    fields, delay = _split_delay_field(fields, menu_delay)
+    tool_name = (fields[0] if fields else "").strip() or "Bash"
+    detail = (fields[1] if len(fields) > 1 else "").strip()
+    # delay == 0 -> legacy order: render menu, then fire hook, then block.
+    if delay <= 0:
+        _render_menu(_PERMISSION_ROWS)
     if hooks.enabled:
         tool_input = {"command": detail} if tool_name == "Bash" else {"detail": detail}
         hooks.permission_request(tool_name, tool_input)
+    # delay > 0 -> hook fired above; wait, THEN render the menu (race window).
+    _render_after_delay(_PERMISSION_ROWS, delay)
     keystroke = _read_keystroke()
     outcome = _resolve_permission(keystroke)
     _emit(f"permission: {outcome}")
@@ -316,15 +377,25 @@ def _finish_turn(assistant_text: str, hooks: _Hooks) -> None:
 
 
 def handle_line(line: str, hooks: _Hooks) -> None:
-    """Interpret one user line (possibly several ' ;; '-chained directives)."""
+    """Interpret one user line (possibly several ' ;; '-chained directives).
+
+    A ``menudelay:<s>`` prelude sets the menu-render delay for every subsequent
+    ``ask:``/``perm:`` in the SAME line; it resets to 0 for each new line."""
+    menu_delay = 0.0
     for directive in line.split(" ;; "):
         directive = directive.strip()
         if directive == "":
             continue
-        _dispatch(directive, hooks)
+        if directive.startswith("menudelay:"):
+            try:
+                menu_delay = float(directive[len("menudelay:") :].strip() or "0")
+            except ValueError:
+                menu_delay = 0.0
+            continue
+        _dispatch(directive, hooks, menu_delay)
 
 
-def _dispatch(directive: str, hooks: _Hooks) -> None:
+def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
     if directive == "crash":
         sys.stdout.flush()
         os._exit(137)
@@ -338,10 +409,10 @@ def _dispatch(directive: str, hooks: _Hooks) -> None:
         _do_work(float(directive[len("work:") :].strip() or "1"), hooks)
         return
     if directive.startswith("ask:"):
-        _do_ask(directive[len("ask:") :], hooks)
+        _do_ask(directive[len("ask:") :], hooks, menu_delay)
         return
     if directive.startswith("perm:"):
-        _do_perm(directive[len("perm:") :], hooks)
+        _do_perm(directive[len("perm:") :], hooks, menu_delay)
         return
     if directive.startswith("tool:"):
         _do_tool(directive[len("tool:") :], hooks)

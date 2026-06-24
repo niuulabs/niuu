@@ -127,6 +127,43 @@ class FakeWsClient:
         """Push an inbound frame as if the browser sent it."""
         self._ws.feed(message)
 
+    def permission_response(
+        self,
+        request_id: str,
+        *,
+        behavior: str = "allow",
+        updated_input: dict[str, Any] | None = None,
+        updated_permissions: list[Any] | None = None,
+    ) -> None:
+        """Answer a pending permission request the way a browser would.
+
+        Mirrors the inbound frame ``Broker._dispatch_browser_message`` handles
+        under ``case "permission_response"`` (behavior allow/deny, optional
+        updated_input / updated_permissions)."""
+        message: dict[str, Any] = {
+            "type": "permission_response",
+            "request_id": request_id,
+            "behavior": behavior,
+        }
+        if updated_input is not None:
+            message["updated_input"] = updated_input
+        if updated_permissions is not None:
+            message["updated_permissions"] = updated_permissions
+        self._ws.feed(message)
+
+    def ask_user_answer(self, request_id: str, answers: list[Any]) -> None:
+        """Answer a pending AskUserQuestion the way a browser would.
+
+        Mirrors the inbound frame ``Broker._dispatch_browser_message`` handles
+        under ``case "ask_user_answer"``."""
+        self._ws.feed(
+            {
+                "type": "ask_user_answer",
+                "request_id": request_id,
+                "answers": answers,
+            }
+        )
+
     def frames_of_type(self, frame_type: str) -> list[dict[str, Any]]:
         return [f for f in self._ws.frames if f.get("type") == frame_type]
 
