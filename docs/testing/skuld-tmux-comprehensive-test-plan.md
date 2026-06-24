@@ -1,10 +1,11 @@
 # Skuld / Forge tmux — Comprehensive Test Plan
 
-> Status: proposed. Extends `docs/testing/skuld-claude-interactive.md` (which covers
-> command construction + the basic real-tmux smoke). This document targets the
-> *behavioural* gaps: steering, interrupts, crash + reconnect, `ask_user_question`
-> in tmux, permission modes, and the custom multi-agent tmux surfaces (agent
-> selection, "running agents", workflows, teams).
+> Status: **implemented (Phases 0–4)** — see "Outcomes" at the end. Extends
+> `docs/testing/skuld-claude-interactive.md` (command construction + the basic
+> real-tmux smoke). This document targets the *behavioural* gaps: steering,
+> interrupts, crash + reconnect, `ask_user_question` in tmux, permission modes, and
+> the custom multi-agent tmux surfaces (agent selection, "running agents",
+> workflows, teams).
 
 ## 1. Why this plan exists
 
@@ -368,3 +369,40 @@ should be a single focused PR.
 - Coverage stays ≥ 85% (project gate) and no new pytest warnings.
 - The parity matrix (§6) is green for all three primary modes, with any drift either fixed
   or explicitly `xfail`-documented as a known mode limitation.
+
+## Outcomes (implementation)
+
+All five phases shipped on `lexi/cli-tmux-questions`. The harness lives in
+`tests/support/forge/` (`fakeagent.py`, `tmux_page.py`, `hook_server.py`,
+`broker_harness.py`, `multipane.py`, `fakeclaude_shim.py`, `screens/`); the suites are
+`tests/test_skuld/test_forge_*.py`. Run the tmux tier with
+`SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration tests/test_skuld/test_forge_*.py -rs`.
+
+Final state: forge integration tier **44 passed, 2 xfailed** (E4 multiselect bridge
+limitation; D6 needs Postgres); full `tests/test_skuld` default tier **1454 passed, 0
+failures**.
+
+Real product bugs found and fixed (each guarded by a named scenario):
+
+1. **interrupt→resume watchdog wedge** (`tmux_interactive.py` `_begin_turn`) — a
+   resumed turn after an interrupt never closed because the new `_turn_done` got no
+   watchdog. Guards: C2.
+2. **`awaiting_input` clobber** (`broker.py` `_handle_cli_event`) — an AskUserQuestion
+   gate's tool_use frame scheduled an `active` report that overwrote the question's
+   `awaiting_input`, so a blocked session looked active. Guards: E1b.
+3. **menu-render race** (`tmux_interactive.py` `_answer_tty_prompt`) — an answer
+   arriving before the on-screen menu rendered pressed the default "1"; now bound-polls
+   the live menu (`SKULD__TMUX_MENU_RENDER_WAIT_SECONDS`). Guards: E3.
+4. **`_match_menu_digit` precedence** — "Allow & don't ask again" matched row 1 "Allow"
+   by substring and silently downgraded a persistent allow; now exact-pass first.
+   Guards: F2.
+
+Consistency fixes surfaced along the way: a hermetic `tests/test_skuld/conftest.py`
+(this dev box leaks a live Forge session's `SKULD__*` env into `SkuldSettings`, which
+was breaking ~11 broker tests locally), realigning a stale broker dispatch test broken
+by an earlier commit, and de-flaking `test_real_tmux_smoke_with_fake_claude`.
+
+Open follow-ups (documented xfail/TODO, not regressions): tmux multi-select keystroke
+bridge (E4); a credentialed live tier for plan-mode edits-gating (F3) and the D6
+conversation-endpoint fallback; and re-pointing the G1/G3/G4 surface tests at the real
+`/agents`, `/workflows`, and teams screens as those product surfaces land.
