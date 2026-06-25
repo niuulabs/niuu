@@ -795,3 +795,30 @@ async def test_turn_end_resolves_stale_prompt(tmp_path: Path) -> None:
     resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
     assert any(e["request_id"] == rid and e["decision"] == "turn_ended" for e in resolved)
     await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_waits_for_repl_ready_then_delivers(tmp_path: Path) -> None:
+    # The seed prompt must land only once the REPL prompt has rendered — pasting it
+    # into a still-booting Claude made it parse as a slash command (/You...).
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed prompt here")
+    transport.capture_stdout = "Claude Code v2\n❯ "  # readiness marker present
+    await transport.start()
+    await transport.stop()
+    assert any("seed prompt here" in buf for buf in transport.loaded_buffers), (
+        "the seed prompt must be delivered after the REPL prompt rendered"
+    )
+
+
+@pytest.mark.asyncio
+async def test_initial_prompt_falls_through_if_repl_never_signals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Best-effort: a missing readiness marker must never wedge startup — after the
+    # bounded timeout the seed prompt is delivered anyway.
+    monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "0.2")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed anyway")
+    transport.capture_stdout = "still booting, no prompt yet"  # no readiness marker
+    await transport.start()
+    await transport.stop()
+    assert any("seed anyway" in buf for buf in transport.loaded_buffers)

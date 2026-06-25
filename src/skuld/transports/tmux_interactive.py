@@ -211,6 +211,17 @@ class TmuxInteractiveTransport(CLITransport):
         # Poll cadence while waiting for the menu to render (capped by the pane poll
         # interval). Config-driven so there is no bare literal in the wait loop.
         self._menu_poll_step_s = self._float_env("SKULD__TMUX_MENU_POLL_STEP_SECONDS", None, 0.1)
+        # Initial-prompt fix: the REPL isn't ready to accept input the instant the
+        # CLI is spawned — pasting the seed prompt into a still-booting Claude makes
+        # it land mid-startup (it was being parsed as a slash command). Wait for a
+        # readiness marker in the pane (bounded) before delivering the seed prompt.
+        self._repl_ready_timeout_s = self._float_env(
+            "SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", None, 12.0
+        )
+        marker_env = os.environ.get("SKULD__TMUX_REPL_READY_MARKER", "").strip()
+        self._repl_ready_markers = (
+            (marker_env,) if marker_env else ("? for shortcuts", "for shortcuts", "❯")
+        )
         # BUG-3: hard ceiling on a single steering delivery (lock wait + paste). A prior
         # delivery that wedged the send lock, or a hung tmux subprocess, must surface as a
         # loud error the client can see — never a silent swallow of the user's message.
@@ -322,10 +333,32 @@ class TmuxInteractiveTransport(CLITransport):
         if self._initial_prompt and not self._initial_prompt_sent:
             self._initial_prompt_sent = True
             try:
+                await self._wait_for_repl_ready()
                 await self.send_message(self._initial_prompt)
             except Exception:
                 self._initial_prompt_sent = False
                 raise
+
+    async def _capture_pane_text(self, pane_id: str | None = None) -> str:
+        target = self._target_pane(pane_id)
+        try:
+            result = await self._run_tmux("capture-pane", "-t", target, "-p")
+        except Exception:  # pragma: no cover - capture is best-effort
+            return ""
+        return result.stdout or ""
+
+    def _repl_looks_ready(self, text: str) -> bool:
+        return any(marker and marker in text for marker in self._repl_ready_markers)
+
+    async def _wait_for_repl_ready(self) -> None:
+        """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
+        prompt isn't pasted into a still-booting REPL. Best-effort: returns after the
+        timeout even if no marker appears, so a marker change never wedges startup."""
+        deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
+        while time.monotonic() < deadline:
+            if self._repl_looks_ready(await self._capture_pane_text()):
+                return
+            await asyncio.sleep(self._menu_poll_step_s)
 
     async def _ensure_started(self) -> None:
         async with self._lifecycle_lock:
