@@ -246,9 +246,11 @@ class TmuxInteractiveTransport(CLITransport):
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
-        # Task-tool subagents seen via PreToolUse(Task), keyed by tool_use_id, so
-        # the matching PostToolUse can emit the subagent's "stopped" agent_update.
-        self._hook_task_agents: dict[str, dict[str, Any]] = {}
+        # Agents in flight, keyed by a resolved id (tool_use_id for Task-tool
+        # subagents, subagent_id for SubagentStart, etc.). Lets the matching
+        # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
+        # Task and Subagent* signals for the same agent merge instead of duplicate.
+        self._hook_agents: dict[str, dict[str, Any]] = {}
         self._panes: dict[str, _PaneState] = {}
         self._tail_tasks: dict[str, asyncio.Task[None]] = {}
         self._frame_tasks: dict[str, asyncio.Task[None]] = {}
@@ -640,6 +642,14 @@ class TmuxInteractiveTransport(CLITransport):
             await self._emit_permission_request_from_hook(payload)
             return True
 
+        if event_name == "SubagentStart":
+            await self._surface_subagent_start(payload)
+            return True
+
+        if event_name == "SubagentStop":
+            await self._surface_subagent_stop(payload)
+            return True
+
         if event_name == "Stop":
             await self._finish_hook_turn(
                 content=self._coerce_str(payload.get("last_assistant_message")),
@@ -732,8 +742,8 @@ class TmuxInteractiveTransport(CLITransport):
         if not tool_use_id:
             return
         # Agents surfacing: a finished Task tool means its subagent stopped.
-        if tool_use_id in self._hook_task_agents:
-            await self._finish_agent_from_task(tool_use_id, is_error=is_error)
+        if tool_use_id in self._hook_agents:
+            await self._finish_agent(tool_use_id, is_error=is_error)
         result = payload.get("tool_response")
         if result is None:
             result = payload.get("error", "")
@@ -821,32 +831,85 @@ class TmuxInteractiveTransport(CLITransport):
             }
         )
 
+    @staticmethod
+    def _resolve_agent_id(payload: dict[str, Any]) -> str:
+        """Best-available stable id for an agent across signals. Preferring
+        tool_use_id lets a SubagentStart that carries the Task's tool_use_id merge
+        with the Task entry instead of double-counting the same subagent."""
+        for key in ("tool_use_id", "subagent_id", "agent_id", "id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
+    async def _start_agent(
+        self,
+        agent_id: str,
+        *,
+        kind: str,
+        name: str,
+        description: str = "",
+        model: str = "",
+    ) -> None:
+        """Upsert an in-flight agent and emit a `started` agent_update. Re-emitting
+        for a known id merges new fields (e.g. SubagentStart enriching a Task entry)
+        — the broker registry is keyed by id, so this never duplicates."""
+        if not agent_id:
+            return
+        agent = dict(self._hook_agents.get(agent_id, {}))
+        agent.update({"id": agent_id, "kind": kind, "name": name, "status": "running"})
+        if description:
+            agent["description"] = description
+        if model:
+            agent["model"] = model
+        agent.setdefault("started_at", datetime.now(UTC).isoformat())
+        self._hook_agents[agent_id] = agent
+        await self._emit_agent_update(agent, action="started")
+
+    async def _finish_agent(self, agent_id: str, *, is_error: bool) -> None:
+        agent = self._hook_agents.pop(agent_id, None)
+        if agent is None:
+            return
+        agent = {**agent, "status": "failed" if is_error else "done"}
+        await self._emit_agent_update(agent, action="stopped")
+
     async def _surface_agent_started_from_task(
         self, tool_use_id: str, tool_input: dict[str, Any]
     ) -> None:
-        """Register a Task-tool subagent and emit a `started` agent_update."""
+        """A Task-tool call spawned a subagent."""
         name = (
             self._coerce_str(tool_input.get("subagent_type"))
             or self._coerce_str(tool_input.get("description"))
             or "subagent"
         )
-        agent = {
-            "id": tool_use_id,
-            "kind": "subagent",
-            "name": name,
-            "status": "running",
-            "description": self._coerce_str(tool_input.get("description")),
-            "started_at": datetime.now(UTC).isoformat(),
-        }
-        self._hook_task_agents[tool_use_id] = agent
-        await self._emit_agent_update(agent, action="started")
+        await self._start_agent(
+            tool_use_id,
+            kind="subagent",
+            name=name,
+            description=self._coerce_str(tool_input.get("description")),
+        )
 
-    async def _finish_agent_from_task(self, tool_use_id: str, *, is_error: bool) -> None:
-        agent = self._hook_task_agents.pop(tool_use_id, None)
-        if agent is None:
-            return
-        agent = {**agent, "status": "failed" if is_error else "done"}
-        await self._emit_agent_update(agent, action="stopped")
+    async def _surface_subagent_start(self, payload: dict[str, Any]) -> None:
+        """A SubagentStart hook — Claude's purpose-built subagent-lifecycle signal."""
+        agent_id = self._resolve_agent_id(payload)
+        name = (
+            self._coerce_str(payload.get("subagent_name"))
+            or self._coerce_str(payload.get("subagent_type"))
+            or self._coerce_str(payload.get("name"))
+            or "subagent"
+        )
+        await self._start_agent(
+            agent_id,
+            kind="subagent",
+            name=name,
+            description=self._coerce_str(payload.get("task")),
+            model=self._coerce_str(payload.get("model")),
+        )
+
+    async def _surface_subagent_stop(self, payload: dict[str, Any]) -> None:
+        reason = self._coerce_str(payload.get("reason")).lower()
+        is_error = reason in {"failed", "error", "interrupted"} or bool(payload.get("error"))
+        await self._finish_agent(self._resolve_agent_id(payload), is_error=is_error)
 
     async def _emit_agent_update(self, agent: dict[str, Any], *, action: str) -> None:
         await self._emit(

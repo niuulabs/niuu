@@ -103,11 +103,17 @@ Tests cover: transport emits normalized `plan` / `agent_update`; broker tracks
    model keyed by task id — unnecessary given the full-list semantics, and
    `TodoWrite` task ids aren't reliably stable.
 3. **"Agents" = Task subagents (hooks) ∪ teammate panes (pane events).** These are
-   the two real sources a Claude tmux session exposes. *Alt:* also wire
-   `SubagentStart/Stop` and `TaskCreated/TaskCompleted` (registered but their exact
-   payloads are unobserved) — deferred: the harness is ready to add them once we
-   capture a real payload, and folding them in now risks double-counting the Task
-   path. **Open item flagged for review.**
+   the two real sources a Claude tmux session exposes. **`SubagentStart`/`Stop` are
+   now also wired** — Claude's purpose-built subagent-lifecycle hooks. All agent
+   signals flow through one `_start_agent`/`_finish_agent` core keyed by a resolved
+   id (`_resolve_agent_id` prefers `tool_use_id`), so a `SubagentStart` carrying the
+   Task's `tool_use_id` **merges** with the Task entry instead of double-counting.
+   *Still deferred:* `TaskCreated`/`TaskCompleted` (agent-team task assignments) —
+   their payloads are unobserved and the meaning is ambiguous; the harness can add
+   them once we capture a real one. *Caveat to review:* the exact `SubagentStart`/
+   `Stop` field names (`subagent_name`, `subagent_id`, `task`, `model`, `reason`)
+   are best-effort until validated against a real Claude payload; the parsing is
+   defensive and the dedup keys on `tool_use_id` when present.
 4. **Distinct top-level event types `plan` / `agent_update`** (not buried inside
    `assistant`/`tool_use`). The bare `tool_use` frame is still emitted for
    transcript history; these are additive, so existing consumers are unaffected.

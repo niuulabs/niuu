@@ -140,6 +140,59 @@ async def test_running_agents_replay_on_reconnect() -> None:
         assert replayed["metadata"]["source"] == "reconnect_replay"
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_subagent_start_stop_surfaces_and_tracks() -> None:
+    """The SubagentStart/SubagentStop hooks surface + track like the Task path."""
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+
+        client.send({"type": "message", "content": "subagent:test-runner|run the suite"})
+        started = await client.wait_for_type("agent_update", timeout=8.0)
+        assert started["action"] == "started"
+        assert started["agent"]["kind"] == "subagent"
+        assert started["agent"]["name"] == "test-runner"
+        agent_id = started["agent"]["id"]
+        await _wait_until(lambda: agent_id in h.broker._running_agents, timeout=5.0)  # noqa: SLF001
+
+        client.send({"type": "message", "content": "subagent_done:test-runner"})
+        await _wait_until(lambda: agent_id not in h.broker._running_agents, timeout=8.0)  # noqa: SLF001
+        stopped = [f for f in client.frames_of_type("agent_update") if f["action"] == "stopped"][-1]
+        assert stopped["agent"]["status"] == "done"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_task_and_subagent_signals_dedup_by_id() -> None:
+    """A SubagentStart carrying the Task's tool_use_id merges, not duplicates.
+
+    The Task tool fires PreToolUse with tool_use_id `fakeagent-task-builder`; a
+    SubagentStart pinned to that same id (`id=fakeagent-task-builder`) must enrich
+    the existing agent rather than create a second one.
+    """
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+
+        client.send({"type": "message", "content": "agent:builder|build the thing"})
+        await _wait_until(lambda: len(h.broker._running_agents) == 1, timeout=8.0)  # noqa: SLF001
+
+        client.send(
+            {
+                "type": "message",
+                "content": "subagent:builder|build the thing|id=fakeagent-task-builder",
+            }
+        )
+        # Still exactly one agent (deduped by the shared id), now enriched.
+        await asyncio.sleep(1.0)
+        assert len(h.broker._running_agents) == 1, (
+            f"Task + SubagentStart for the same id must NOT duplicate; "
+            f"got {h.broker._running_agents}"  # noqa: SLF001
+        )
+        assert "fakeagent-task-builder" in h.broker._running_agents  # noqa: SLF001
+
+
 # ──────────────────────────── broker helpers + endpoints (no tmux) ────────────────────────────
 
 

@@ -21,6 +21,8 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     todo:<content>=<status>;<content>=<status>;...   TodoWrite plan (status optional)
     agent:<name>|<description>      start a Task subagent (PreToolUse Task)
     agent_done:<name>               finish that subagent (PostToolUse)
+    subagent:<name>|<task>[|id=<id>]   start a subagent via the SubagentStart hook
+    subagent_done:<name>            finish it via the SubagentStop hook
     screen:<name>
     pick:<name>      render a picker screen, read a digit, echo "selected: <label>"
     pane:<name>      render a pane screen, then echo each input as "steer received: <text>"
@@ -197,6 +199,27 @@ class _Hooks:
             {
                 "hook_event_name": "Stop",
                 "last_assistant_message": last_assistant_message,
+                "session_id": self._session_id,
+            }
+        )
+
+    def subagent_start(self, subagent_name: str, subagent_id: str, task: str = "") -> None:
+        self.post(
+            {
+                "hook_event_name": "SubagentStart",
+                "subagent_name": subagent_name,
+                "subagent_id": subagent_id,
+                "task": task,
+                "session_id": self._session_id,
+            }
+        )
+
+    def subagent_stop(self, subagent_id: str, reason: str = "completed") -> None:
+        self.post(
+            {
+                "hook_event_name": "SubagentStop",
+                "subagent_id": subagent_id,
+                "reason": reason,
                 "session_id": self._session_id,
             }
         )
@@ -422,6 +445,35 @@ def _do_agent_done(name: str, hooks: _Hooks) -> None:
     _finish_turn(f"agent done: {name}", hooks)
 
 
+def _do_subagent(spec: str, hooks: _Hooks) -> None:
+    """Start a subagent via a ``SubagentStart`` hook (Claude's lifecycle signal).
+
+    Grammar: ``subagent:<name>|<task>`` (task optional). An optional trailing
+    ``|id=<id>`` pins the subagent_id so it can correlate with a Task tool_use_id
+    (to exercise the start-signal de-dup).
+    """
+    parts = [p.strip() for p in spec.split("|")]
+    name = parts[0] or "subagent"
+    task = parts[1] if len(parts) > 1 and not parts[1].startswith("id=") else ""
+    pinned = next((p[len("id=") :] for p in parts if p.startswith("id=")), "")
+    subagent_id = pinned or f"fakeagent-sub-{name}"
+    _AGENT_IDS[name] = subagent_id
+    if hooks.enabled:
+        hooks.subagent_start(name, subagent_id, task)
+    _emit(f"subagent started: {name}")
+    _finish_turn(f"subagent started: {name}", hooks)
+
+
+def _do_subagent_done(name: str, hooks: _Hooks) -> None:
+    """Finish a subagent via a ``SubagentStop`` hook."""
+    name = name.strip()
+    subagent_id = _AGENT_IDS.pop(name, f"fakeagent-sub-{name}")
+    if hooks.enabled:
+        hooks.subagent_stop(subagent_id, "completed")
+    _emit(f"subagent done: {name}")
+    _finish_turn(f"subagent done: {name}", hooks)
+
+
 def _render_screen_file(name: str) -> bool:
     """Write ``screens/<name>.txt`` verbatim to the pane. Returns False if missing."""
     name = name.strip()
@@ -576,6 +628,12 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
         return
     if directive.startswith("agent:"):
         _do_agent(directive[len("agent:") :], hooks)
+        return
+    if directive.startswith("subagent_done:"):
+        _do_subagent_done(directive[len("subagent_done:") :], hooks)
+        return
+    if directive.startswith("subagent:"):
+        _do_subagent(directive[len("subagent:") :], hooks)
         return
     if directive.startswith("screen:"):
         _do_screen(directive[len("screen:") :], hooks)
