@@ -1070,6 +1070,14 @@ class Broker:
         # (ask_user.resolved), and turn completion (result).
         self._pending_ask_user_questions: dict[str, dict[str, Any]] = {}
 
+        # Live plan + running-agents surfacing (Claude tmux). The latest `plan`
+        # frame (Claude's TodoWrite task list) and the set of running agents
+        # (Task subagents via agent_update, teammate panes via terminal_pane_*),
+        # tracked here so a reconnecting client gets the current plan + fleet,
+        # and so GET /api/plan / GET /api/agents can answer from live state.
+        self._current_plan: dict[str, Any] | None = None
+        self._running_agents: dict[str, dict[str, Any]] = {}
+
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
 
@@ -2839,6 +2847,40 @@ class Broker:
 
         task.add_done_callback(_cleanup)
 
+    def _track_agent_update(self, data: dict[str, Any]) -> None:
+        """Fold an `agent_update` frame into the live running-agents set."""
+        agent = data.get("agent")
+        if not isinstance(agent, dict):
+            return
+        agent_id = str(agent.get("id") or "")
+        if not agent_id:
+            return
+        if data.get("action") == "stopped":
+            self._running_agents.pop(agent_id, None)
+            return
+        self._running_agents[agent_id] = dict(agent)
+
+    def _track_pane_agent(self, data: dict[str, Any], *, opened: bool) -> None:
+        """Treat a non-primary tmux pane as a teammate agent (agent-teams mode).
+
+        The primary pane (index 0) is the main Claude REPL, not a teammate.
+        """
+        pane_id = str(data.get("pane_id") or "")
+        if not pane_id:
+            return
+        if str(data.get("pane_index", "")) == "0":
+            return
+        if not opened:
+            self._running_agents.pop(pane_id, None)
+            return
+        self._running_agents[pane_id] = {
+            "id": pane_id,
+            "kind": "teammate",
+            "name": str(data.get("window_name") or f"pane {data.get('pane_index')}"),
+            "status": "running",
+            "current_command": str(data.get("current_command") or ""),
+        }
+
     async def _send_permission_control_response(
         self,
         request_id: str,
@@ -2974,6 +3016,18 @@ class Broker:
             if resolved_request_id:
                 self._pending_ask_user_questions.pop(resolved_request_id, None)
                 asyncio.create_task(self._exit_attention(resolved_request_id))
+
+        # Plan + running-agents surfacing: keep the latest plan and the live agent
+        # set so reconnects + GET /api/plan|agents can answer. The frames are still
+        # broadcast normally below for live consumers.
+        if event_type == "plan":
+            self._current_plan = dict(data)
+        elif event_type == "agent_update":
+            self._track_agent_update(data)
+        elif event_type == "terminal_pane_opened":
+            self._track_pane_agent(data, opened=True)
+        elif event_type == "terminal_pane_closed":
+            self._track_pane_agent(data, opened=False)
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
@@ -5624,6 +5678,28 @@ class Broker:
                     if not await self._safe_browser_send_json(websocket, ask_question):
                         return
 
+            # Plan + running agents: a late-joining client should immediately know
+            # the current plan and the running fleet without waiting for the next
+            # change — same guarantee questions/permissions get above.
+            if self._current_plan is not None:
+                if not await self._safe_browser_send_json(websocket, self._current_plan):
+                    return
+            if self._running_agents:
+                logger.info(
+                    "Replaying %d running agent(s) to new browser",
+                    len(self._running_agents),
+                )
+                for agent in list(self._running_agents.values()):
+                    frame = {
+                        "type": "agent_update",
+                        "event_type": "claude.agent",
+                        "action": "started",
+                        "agent": agent,
+                        "metadata": {"source": "reconnect_replay"},
+                    }
+                    if not await self._safe_browser_send_json(websocket, frame):
+                        return
+
             # Handle messages from browser
             while True:
                 data = await websocket.receive_json()
@@ -5982,6 +6058,21 @@ async def get_capabilities() -> dict:
     payload = asdict(broker._transport.capabilities)
     payload["room_prompt_resend"] = broker._room_bridge is not None
     return payload
+
+
+@app.get("/api/plan")
+async def get_plan() -> dict:
+    """Claude's current plan/task list (from its TodoWrite tool), or empty if none."""
+    plan = broker._current_plan
+    if plan is None:
+        return {"tasks": [], "counts": {"total": 0}}
+    return {"tasks": plan.get("tasks", []), "counts": plan.get("counts", {})}
+
+
+@app.get("/api/agents")
+async def get_agents() -> dict:
+    """Agents/sub-processes running in this session: Task subagents + teammate panes."""
+    return {"agents": list(broker._running_agents.values())}
 
 
 @app.get("/api/slash-commands")

@@ -21,6 +21,7 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +246,9 @@ class TmuxInteractiveTransport(CLITransport):
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        # Task-tool subagents seen via PreToolUse(Task), keyed by tool_use_id, so
+        # the matching PostToolUse can emit the subagent's "stopped" agent_update.
+        self._hook_task_agents: dict[str, dict[str, Any]] = {}
         self._panes: dict[str, _PaneState] = {}
         self._tail_tasks: dict[str, asyncio.Task[None]] = {}
         self._frame_tasks: dict[str, asyncio.Task[None]] = {}
@@ -688,6 +692,13 @@ class TmuxInteractiveTransport(CLITransport):
         if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
             await self._surface_tty_ask_user_question(tool_input)
         tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
+        # Plan surfacing: TodoWrite carries Claude's full task list each call.
+        if tool_name == "TodoWrite" and isinstance(tool_input, dict):
+            await self._surface_plan_from_todowrite(tool_input)
+        # Agents surfacing: the Task tool spawns a subagent. Register it by
+        # tool_use_id so the matching PostToolUse can mark it stopped.
+        if tool_name == "Task" and isinstance(tool_input, dict):
+            await self._surface_agent_started_from_task(tool_use_id, tool_input)
         await self._emit(
             {
                 "type": "assistant",
@@ -720,6 +731,9 @@ class TmuxInteractiveTransport(CLITransport):
         tool_use_id = self._coerce_str(payload.get("tool_use_id"))
         if not tool_use_id:
             return
+        # Agents surfacing: a finished Task tool means its subagent stopped.
+        if tool_use_id in self._hook_task_agents:
+            await self._finish_agent_from_task(tool_use_id, is_error=is_error)
         result = payload.get("tool_response")
         if result is None:
             result = payload.get("error", "")
@@ -763,6 +777,87 @@ class TmuxInteractiveTransport(CLITransport):
         # remote client renders its answer card + the session flips to awaiting_input. The keystroke
         # translation on answer happens in `_answer_tty_prompt`.
         await self._surface_tty_permission(payload)
+
+    # ──────────────────────────── Plan + running-agents surfacing ────────────────────────────
+
+    @staticmethod
+    def _normalize_status(status: object) -> str:
+        text = str(status or "").strip().lower()
+        if text in {"pending", "in_progress", "completed"}:
+            return text
+        if text in {"done", "complete", "finished"}:
+            return "completed"
+        if text in {"running", "active", "doing"}:
+            return "in_progress"
+        return text or "pending"
+
+    async def _surface_plan_from_todowrite(self, tool_input: dict[str, Any]) -> None:
+        """Emit Claude's full task list (the TodoWrite plan) as a structured `plan`."""
+        raw = tool_input.get("todos")
+        if not isinstance(raw, list):
+            return
+        tasks: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            content = self._coerce_str(item.get("content"))
+            if not content:
+                continue
+            task = {"content": content, "status": self._normalize_status(item.get("status"))}
+            active_form = self._coerce_str(item.get("activeForm"))
+            if active_form:
+                task["activeForm"] = active_form
+            tasks.append(task)
+        counts = {"total": len(tasks)}
+        for status in ("pending", "in_progress", "completed"):
+            counts[status] = sum(1 for t in tasks if t["status"] == status)
+        await self._emit(
+            {
+                "type": "plan",
+                "event_type": "claude.plan",
+                "tasks": tasks,
+                "counts": counts,
+                "metadata": {"source": "claude_hook"},
+            }
+        )
+
+    async def _surface_agent_started_from_task(
+        self, tool_use_id: str, tool_input: dict[str, Any]
+    ) -> None:
+        """Register a Task-tool subagent and emit a `started` agent_update."""
+        name = (
+            self._coerce_str(tool_input.get("subagent_type"))
+            or self._coerce_str(tool_input.get("description"))
+            or "subagent"
+        )
+        agent = {
+            "id": tool_use_id,
+            "kind": "subagent",
+            "name": name,
+            "status": "running",
+            "description": self._coerce_str(tool_input.get("description")),
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        self._hook_task_agents[tool_use_id] = agent
+        await self._emit_agent_update(agent, action="started")
+
+    async def _finish_agent_from_task(self, tool_use_id: str, *, is_error: bool) -> None:
+        agent = self._hook_task_agents.pop(tool_use_id, None)
+        if agent is None:
+            return
+        agent = {**agent, "status": "failed" if is_error else "done"}
+        await self._emit_agent_update(agent, action="stopped")
+
+    async def _emit_agent_update(self, agent: dict[str, Any], *, action: str) -> None:
+        await self._emit(
+            {
+                "type": "agent_update",
+                "event_type": "claude.agent",
+                "action": action,
+                "agent": agent,
+                "metadata": {"source": "claude_hook"},
+            }
+        )
 
     # ──────────────────────────── CLI-mode questions bridge ────────────────────────────
     #

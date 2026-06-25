@@ -18,6 +18,9 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     ask:<header>|<question>|<opt1>;<opt2>;...[|delay=<s>]
     perm:<tool>|<detail>[|delay=<s>]
     tool:<name>
+    todo:<content>=<status>;<content>=<status>;...   TodoWrite plan (status optional)
+    agent:<name>|<description>      start a Task subagent (PreToolUse Task)
+    agent_done:<name>               finish that subagent (PostToolUse)
     screen:<name>
     pick:<name>      render a picker screen, read a digit, echo "selected: <label>"
     pane:<name>      render a pane screen, then echo each input as "steer received: <text>"
@@ -358,6 +361,67 @@ def _do_tool(name: str, hooks: _Hooks) -> None:
     _finish_turn(f"ran {name}", hooks)
 
 
+def _do_todo(spec: str, hooks: _Hooks) -> None:
+    """Emit Claude's plan via a ``TodoWrite`` PreToolUse hook.
+
+    Grammar: ``todo:<content>=<status>;<content>=<status>;...`` (status optional,
+    defaults to pending), e.g. ``todo:design=completed;build=in_progress;test``.
+    """
+    todos = []
+    for item in spec.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        content, sep, status = item.partition("=")
+        content = content.strip()
+        if not content:
+            continue
+        todos.append(
+            {
+                "content": content,
+                "status": (status.strip() or "pending") if sep else "pending",
+                "activeForm": content,
+            }
+        )
+    if hooks.enabled:
+        hooks.pre_tool_use("TodoWrite", {"todos": todos}, f"fakeagent-todo-{len(todos)}")
+    _emit(f"plan: {len(todos)} task(s)")
+    _finish_turn(f"plan updated ({len(todos)} tasks)", hooks)
+
+
+# name -> tool_use_id for the agent:/agent_done: pair (single-process per session).
+_AGENT_IDS: dict[str, str] = {}
+
+
+def _do_agent(spec: str, hooks: _Hooks) -> None:
+    """Start a Task subagent via a ``PreToolUse(Task)`` hook.
+
+    Grammar: ``agent:<name>|<description>`` (description optional).
+    """
+    name, _, description = spec.partition("|")
+    name = name.strip() or "subagent"
+    tool_use_id = f"fakeagent-task-{name}"
+    _AGENT_IDS[name] = tool_use_id
+    if hooks.enabled:
+        hooks.pre_tool_use(
+            "Task",
+            {"subagent_type": name, "description": description.strip() or name},
+            tool_use_id,
+        )
+    _emit(f"agent started: {name}")
+    _finish_turn(f"agent started: {name}", hooks)
+
+
+def _do_agent_done(name: str, hooks: _Hooks) -> None:
+    """Finish a Task subagent via the matching ``PostToolUse`` hook."""
+    name = name.strip()
+    tool_use_id = _AGENT_IDS.pop(name, f"fakeagent-task-{name}")
+    if hooks.enabled:
+        hooks.post_tool_use("Task", tool_use_id, "done")
+    _emit(f"agent done: {name}")
+    _finish_turn(f"agent done: {name}", hooks)
+
+
 def _render_screen_file(name: str) -> bool:
     """Write ``screens/<name>.txt`` verbatim to the pane. Returns False if missing."""
     name = name.strip()
@@ -503,6 +567,15 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
         return
     if directive.startswith("tool:"):
         _do_tool(directive[len("tool:") :], hooks)
+        return
+    if directive.startswith("todo:"):
+        _do_todo(directive[len("todo:") :], hooks)
+        return
+    if directive.startswith("agent_done:"):
+        _do_agent_done(directive[len("agent_done:") :], hooks)
+        return
+    if directive.startswith("agent:"):
+        _do_agent(directive[len("agent:") :], hooks)
         return
     if directive.startswith("screen:"):
         _do_screen(directive[len("screen:") :], hooks)
