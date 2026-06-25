@@ -349,7 +349,7 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                         "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
                     ),
                     "skipPermissions": True,
-                    "agentTeams": False,
+                    "agentTeams": True,
                 },
             },
         ),

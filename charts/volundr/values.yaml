@@ -980,7 +980,7 @@ sessionDefinitions:
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
-        agentTeams: false
+        agentTeams: true
 
       image:
         # -- Session image repository

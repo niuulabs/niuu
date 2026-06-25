@@ -303,7 +303,10 @@ class SkuldSettings(BaseSettings):
     skip_permissions: bool = Field(default=False)
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
-    agent_teams: bool = Field(default=False)
+    # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
+    # tmux) so a session can spin up a team of agents. Only the tmux transport
+    # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
+    agent_teams: bool = Field(default=True)
     ask_user_question_enabled: bool = Field(
         default=False,
         description=(

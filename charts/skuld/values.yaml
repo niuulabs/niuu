@@ -230,7 +230,7 @@ broker:
   # --full-auto for Codex)
   skipPermissions: false
   # -- Enable Claude Code experimental Agent Teams (Claude only)
-  agentTeams: false
+  agentTeams: true
 
 # Volundr API (for token usage reporting back to the control plane)
 volundr:
