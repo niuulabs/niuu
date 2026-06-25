@@ -21,7 +21,7 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     todo:<content>=<status>;<content>=<status>;...   TodoWrite plan (status optional)
     agent:<name>|<description>      start a Task subagent (PreToolUse Task)
     agent_done:<name>               finish that subagent (PostToolUse)
-    subagent:<name>|<task>[|id=<id>]   start a subagent via the SubagentStart hook
+    subagent:<agent_type>[|id=<id>]    start a subagent via the SubagentStart hook
     subagent_done:<name>            finish it via the SubagentStop hook
     screen:<name>
     pick:<name>      render a picker screen, read a digit, echo "selected: <label>"
@@ -203,22 +203,23 @@ class _Hooks:
             }
         )
 
-    def subagent_start(self, subagent_name: str, subagent_id: str, task: str = "") -> None:
+    def subagent_start(self, agent_type: str, agent_id: str) -> None:
+        # Mirrors the real Claude SubagentStart payload (validated live): the name
+        # is agent_type and the id is agent_id.
         self.post(
             {
                 "hook_event_name": "SubagentStart",
-                "subagent_name": subagent_name,
-                "subagent_id": subagent_id,
-                "task": task,
+                "agent_type": agent_type,
+                "agent_id": agent_id,
                 "session_id": self._session_id,
             }
         )
 
-    def subagent_stop(self, subagent_id: str, reason: str = "completed") -> None:
+    def subagent_stop(self, agent_id: str, reason: str = "completed") -> None:
         self.post(
             {
                 "hook_event_name": "SubagentStop",
-                "subagent_id": subagent_id,
+                "agent_id": agent_id,
                 "reason": reason,
                 "session_id": self._session_id,
             }
@@ -448,18 +449,17 @@ def _do_agent_done(name: str, hooks: _Hooks) -> None:
 def _do_subagent(spec: str, hooks: _Hooks) -> None:
     """Start a subagent via a ``SubagentStart`` hook (Claude's lifecycle signal).
 
-    Grammar: ``subagent:<name>|<task>`` (task optional). An optional trailing
-    ``|id=<id>`` pins the subagent_id so it can correlate with a Task tool_use_id
-    (to exercise the start-signal de-dup).
+    Grammar: ``subagent:<agent_type>[|id=<id>]``. The name becomes the SubagentStart
+    ``agent_type`` (e.g. "general-purpose"). An optional trailing ``|id=<id>`` pins
+    the agent_id so it can correlate with another start signal (de-dup test).
     """
     parts = [p.strip() for p in spec.split("|")]
     name = parts[0] or "subagent"
-    task = parts[1] if len(parts) > 1 and not parts[1].startswith("id=") else ""
     pinned = next((p[len("id=") :] for p in parts if p.startswith("id=")), "")
     subagent_id = pinned or f"fakeagent-sub-{name}"
     _AGENT_IDS[name] = subagent_id
     if hooks.enabled:
-        hooks.subagent_start(name, subagent_id, task)
+        hooks.subagent_start(name, subagent_id)
     _emit(f"subagent started: {name}")
     _finish_turn(f"subagent started: {name}", hooks)
 

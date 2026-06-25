@@ -890,10 +890,16 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
     async def _surface_subagent_start(self, payload: dict[str, Any]) -> None:
-        """A SubagentStart hook — Claude's purpose-built subagent-lifecycle signal."""
+        """A SubagentStart hook — Claude's purpose-built subagent-lifecycle signal.
+
+        Real Claude (validated live) sends {agent_id, agent_type, cwd, session_id,
+        transcript_path}; the id is agent_id and the name is agent_type. Other field
+        spellings are accepted defensively for forward/backward compatibility.
+        """
         agent_id = self._resolve_agent_id(payload)
         name = (
-            self._coerce_str(payload.get("subagent_name"))
+            self._coerce_str(payload.get("agent_type"))
+            or self._coerce_str(payload.get("subagent_name"))
             or self._coerce_str(payload.get("subagent_type"))
             or self._coerce_str(payload.get("name"))
             or "subagent"

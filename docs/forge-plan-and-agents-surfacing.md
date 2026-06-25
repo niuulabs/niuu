@@ -110,10 +110,16 @@ Tests cover: transport emits normalized `plan` / `agent_update`; broker tracks
    Task's `tool_use_id` **merges** with the Task entry instead of double-counting.
    *Still deferred:* `TaskCreated`/`TaskCompleted` (agent-team task assignments) —
    their payloads are unobserved and the meaning is ambiguous; the harness can add
-   them once we capture a real one. *Caveat to review:* the exact `SubagentStart`/
-   `Stop` field names (`subagent_name`, `subagent_id`, `task`, `model`, `reason`)
-   are best-effort until validated against a real Claude payload; the parsing is
-   defensive and the dedup keys on `tool_use_id` when present.
+   them once we capture a real one. *Validated live against real Claude
+   (2026-06-25):* `SubagentStart` = `{agent_id, agent_type, cwd, session_id,
+   transcript_path}` — the id is `agent_id`, the name is `agent_type` (e.g.
+   `general-purpose`); `SubagentStop` carries `agent_id`. The spawn tool is named
+   `Agent` (not `Task`) with input `{description, prompt, subagent_type}`, and its
+   `tool_use_id` does NOT equal the `agent_id` — so subagents are surfaced from
+   `SubagentStart/Stop` only (single source); the `Agent`/`Task` PreToolUse is NOT
+   also surfaced (it would double-count). Parsing stays defensive (other spellings
+   accepted). *Open follow-up:* attach the `Agent` tool's richer `description` to the
+   subagent (blocked by the id mismatch).
 4. **Distinct top-level event types `plan` / `agent_update`** (not buried inside
    `assistant`/`tool_use`). The bare `tool_use` frame is still emitted for
    transcript history; these are additive, so existing consumers are unaffected.
