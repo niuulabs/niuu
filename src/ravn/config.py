@@ -2823,7 +2823,7 @@ class ResidentWorkConfig(BaseModel):
 
     adapter: str = Field(
         default="ravn.adapters.resident_work.mimir.MimirResidentWorkAdapter",
-        description="Fully-qualified ResidentWorkPort adapter class.",
+        description="Fully-qualified ResidentWorkItemBackend adapter class.",
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,

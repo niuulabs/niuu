@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from ravn.domain.operator_contact import OperatorContactResult
 from ravn.domain.physical_device import PhysicalActionResult, PhysicalCapability
 from ravn.domain.resident_continuation import (
     ResidentBudgetSnapshot,
@@ -18,13 +17,6 @@ from ravn.domain.resident_expert import (
     ResidentDomainModel,
     ResidentWorkstream,
     WorkstreamExecutionResult,
-)
-from ravn.domain.resident_portfolio import (
-    ResidentDelegationRecord,
-    ResidentDelegationReview,
-    ResidentExecutionResult,
-    ResidentObjective,
-    ResidentPortfolio,
 )
 from ravn.domain.resident_review import ResidentArtifactReview
 from ravn.domain.wakeful_resident import (
@@ -117,40 +109,3 @@ class ResidentStatePort(Protocol):
     async def write_reasoning(self, reasoning: Any) -> str: ...
 
     async def list_refs(self, prefix: str = "") -> list[str]: ...
-
-
-class ResidentWorkPort(Protocol):
-    """Durable resident work boundary used by resident runtimes."""
-
-    async def read_portfolio(self, mandate: str) -> ResidentPortfolio | None: ...
-
-    async def write_portfolio(self, portfolio: ResidentPortfolio) -> str: ...
-
-    async def list_objectives(self, mandate: str) -> list[ResidentObjective]: ...
-
-    async def write_objective(self, objective: ResidentObjective) -> str: ...
-
-    async def append_decision(self, mandate: str, entry: str) -> str: ...
-
-    async def list_refs(self, prefix: str) -> list[str]: ...
-
-    async def write_capability_discovery(self, discovery_id: str, content: str) -> str: ...
-
-    async def list_delegations(self, mandate: str) -> list[ResidentDelegationRecord]: ...
-
-    async def write_delegation(self, delegation: ResidentDelegationRecord) -> str: ...
-
-    async def write_delegation_result(
-        self,
-        delegation_id: str,
-        result: ResidentExecutionResult,
-        content: str,
-    ) -> str: ...
-
-    async def write_delegation_review(
-        self,
-        review: ResidentDelegationReview,
-        content: str,
-    ) -> str: ...
-
-    async def write_operator_contact(self, result: OperatorContactResult) -> str: ...
