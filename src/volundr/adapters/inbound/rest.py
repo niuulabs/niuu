@@ -533,6 +533,13 @@ class ActivityReport(BaseModel):
     """Request model for reporting session activity state."""
 
     state: str = Field(description="Activity state (active/idle/tool_executing/awaiting_input)")
+    state_since: datetime | None = Field(
+        default=None,
+        description=(
+            "ISO8601 UTC timestamp of when the session entered this state. "
+            "Optional for backward-compat with older brokers that omit it."
+        ),
+    )
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
 
     @field_validator("metadata", mode="before")
@@ -634,7 +641,18 @@ class SessionResponse(BaseModel):
     )
     activity_state: str | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing/awaiting_input)",
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+        ),
+    )
+    activity_state_since: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 UTC timestamp of when the session entered its current "
+            "activity_state (null if never reported). Lets clients render an "
+            "accurate elapsed time for the current state."
+        ),
     )
     activity_metadata: dict = Field(
         default_factory=dict,
@@ -719,6 +737,9 @@ class SessionResponse(BaseModel):
             owner_id=session.owner_id,
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
+            activity_state_since=(
+                session.activity_state_since.isoformat() if session.activity_state_since else None
+            ),
             activity_metadata=session.activity_metadata,
             needs_attention=session.needs_attention,
             workload_type=session.workload_type,
@@ -1788,7 +1809,9 @@ def create_router(
             _sanitize_log(data.metadata),
         )
         try:
-            updated = await forge.update_activity(session_id, activity_state, data.metadata)
+            updated = await forge.update_activity(
+                session_id, activity_state, data.metadata, state_since=data.state_since
+            )
             logger.info(
                 "Activity updated: session=%s state=%s broadcaster=%s",
                 _sanitize_log(session_id),

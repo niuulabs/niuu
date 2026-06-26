@@ -349,8 +349,14 @@ class SessionService:
         session_id: UUID,
         state: SessionActivityState,
         metadata: dict,
+        state_since: datetime | None = None,
     ) -> Session:
         """Update a session's activity state and broadcast an SSE event.
+
+        ``state_since`` is the broker-stamped UTC timestamp of when the session
+        entered ``state`` (None for older brokers that don't report it). It is
+        persisted and re-broadcast so clients can render an accurate elapsed
+        time without re-deriving it from event arrival.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -371,6 +377,10 @@ class SessionService:
         previous_request_id = (session.activity_metadata or {}).get("request_id")
 
         session.activity_state = state
+        # The broker stamps state_since only on a real change; fall back to "now"
+        # when an older broker omits it so the field is never null for a live
+        # session that just transitioned.
+        session.activity_state_since = state_since or datetime.now(UTC)
         session.activity_metadata = metadata
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
@@ -393,6 +403,11 @@ class SessionService:
                     data={
                         "session_id": str(session_id),
                         "state": state.value,
+                        "activity_state_since": (
+                            updated.activity_state_since.isoformat()
+                            if updated.activity_state_since
+                            else None
+                        ),
                         "metadata": metadata,
                         "owner_id": session.owner_id or "",
                     },

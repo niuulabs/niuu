@@ -407,3 +407,59 @@ class TestActivityStatePersistence:
 
         assert result.activity_state is None
         assert result.activity_metadata == {}
+        assert result.activity_state_since is None
+
+    async def test_create_persists_activity_state_since(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        from datetime import UTC, datetime
+
+        since = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
+        awaiting_session.activity_state_since = since
+        await repository.create(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "activity_state_since" in sql
+        # $28 = activity_state_since (appended after activity_metadata at $27)
+        assert call_args[28] == since
+
+    async def test_update_persists_activity_state_since(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        from datetime import UTC, datetime
+
+        since = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
+        awaiting_session.activity_state_since = since
+        await repository.update(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        sql = call_args[0]
+        assert "activity_state_since = $27" in sql
+        assert call_args[27] == since
+
+    async def test_row_round_trips_activity_state_since(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        from datetime import UTC, datetime
+
+        since = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
+        sample_row["activity_state_since"] = since
+
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state_since == since
+
+    async def test_row_normalizes_naive_state_since_to_utc(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        from datetime import datetime
+
+        # asyncpg can return a naive datetime; it must be coerced to UTC like the
+        # other timestamp columns so the wire ISO carries a tz offset.
+        sample_row["activity_state_since"] = datetime(2026, 6, 26, 12, 0, 0)
+
+        result = repository._row_to_session(sample_row)
+
+        assert result.activity_state_since is not None
+        assert result.activity_state_since.tzinfo is not None

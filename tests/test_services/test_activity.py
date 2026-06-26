@@ -303,6 +303,78 @@ class TestUpdateActivity:
         assert needs == []
 
     @pytest.mark.asyncio
+    async def test_update_activity_persists_state_since(self, service):
+        """A broker-stamped state_since is persisted on the session and round-trips."""
+        from datetime import UTC, datetime
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        since = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
+
+        updated = await service.update_activity(
+            session.id,
+            SessionActivityState.ACTIVE,
+            {"turn_count": 1},
+            state_since=since,
+        )
+
+        assert updated.activity_state_since == since
+        reloaded = await service.get_session(session.id)
+        assert reloaded.activity_state_since == since
+
+    @pytest.mark.asyncio
+    async def test_update_activity_defaults_state_since_when_omitted(self, service):
+        """An older broker that omits state_since still gets a non-null timestamp."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        updated = await service.update_activity(session.id, SessionActivityState.IDLE, {})
+
+        assert updated.activity_state_since is not None
+
+    @pytest.mark.asyncio
+    async def test_activity_event_carries_state_since(self, service, broadcaster):
+        """The SESSION_ACTIVITY SSE payload includes activity_state_since (ISO8601)."""
+        from datetime import UTC, datetime
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        broadcaster._events.clear()
+        since = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
+
+        await service.update_activity(
+            session.id, SessionActivityState.ACTIVE, {"turn_count": 1}, state_since=since
+        )
+
+        activity = [e for e in broadcaster._events if e.type == EventType.SESSION_ACTIVITY]
+        assert len(activity) == 1
+        assert activity[0].data["activity_state_since"] == since.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_provisioning_and_stopped_states_round_trip(self, service):
+        """The new provisioning / stopped states are accepted and persisted."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        prov = await service.update_activity(session.id, SessionActivityState.PROVISIONING, {})
+        assert prov.activity_state == SessionActivityState.PROVISIONING
+
+        stopped = await service.update_activity(session.id, SessionActivityState.STOPPED, {})
+        assert stopped.activity_state == SessionActivityState.STOPPED
+
+    @pytest.mark.asyncio
     async def test_update_activity_not_found(self, service):
         """update_activity should raise SessionNotFoundError for missing session."""
         from uuid import uuid4
@@ -434,16 +506,20 @@ class TestSessionActivityState:
     """Tests for the SessionActivityState enum."""
 
     def test_values(self) -> None:
+        assert SessionActivityState.PROVISIONING == "provisioning"
         assert SessionActivityState.ACTIVE == "active"
         assert SessionActivityState.IDLE == "idle"
         assert SessionActivityState.TOOL_EXECUTING == "tool_executing"
         assert SessionActivityState.AWAITING_INPUT == "awaiting_input"
+        assert SessionActivityState.STOPPED == "stopped"
 
     def test_from_string(self) -> None:
+        assert SessionActivityState("provisioning") == SessionActivityState.PROVISIONING
         assert SessionActivityState("active") == SessionActivityState.ACTIVE
         assert SessionActivityState("idle") == SessionActivityState.IDLE
         assert SessionActivityState("tool_executing") == SessionActivityState.TOOL_EXECUTING
         assert SessionActivityState("awaiting_input") == SessionActivityState.AWAITING_INPUT
+        assert SessionActivityState("stopped") == SessionActivityState.STOPPED
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):

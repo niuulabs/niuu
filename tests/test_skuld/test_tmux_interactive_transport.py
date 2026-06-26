@@ -262,6 +262,31 @@ async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_refresh_panes_emits_transport_stopped_on_session_gone(tmp_path: Path) -> None:
+    # When list-panes fails (tmux session vanished) the transport dies. It must emit
+    # a one-shot transport_stopped so the broker can report the 'stopped' activity
+    # state — and only ONCE across repeated watcher polls (the True->False edge).
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    transport._alive = True  # noqa: SLF001 - simulate a live session
+
+    async def _list_panes_fails(*args: str, check: bool = True, env=None) -> _TmuxResult:
+        if args and args[0] == "list-panes":
+            return _TmuxResult(1)  # tmux session gone
+        return _TmuxResult(0)
+
+    transport._run_tmux = _list_panes_fails  # type: ignore[assignment]
+
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001 - second poll, already dead
+
+    stopped = [event for event in events if event["type"] == "transport_stopped"]
+    assert len(stopped) == 1, "transport_stopped must fire exactly once on the death edge"
+    assert stopped[0]["reason"] == "tmux_session_gone"
+    assert transport.is_alive is False
+
+
+@pytest.mark.asyncio
 async def test_refresh_panes_emits_new_agent_team_pane(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)

@@ -131,10 +131,14 @@ class SessionActivityState(StrEnum):
     This is the "what is the agent doing right now" axis, distinct from the
     lifecycle ``status`` (which only tracks whether the container is up):
 
+    - ``provisioning`` — the session is booting; the CLI REPL is not ready yet.
+      The first real frame (system/init) flips it to ``idle``.
     - ``active`` / ``tool_executing`` — the agent is progressing (thinking,
       streaming, or running a tool). Both mean "busy".
     - ``idle`` — the turn finished; the session is waiting for the user's next
       message but is NOT blocked on anything.
+    - ``stopped`` — the transport died (e.g. its tmux session vanished); the
+      session is no longer running and the last live state is final.
     - ``awaiting_input`` — the session is BLOCKED on a human: an
       ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
       the "needs attention" state — the agent cannot make progress until the
@@ -143,10 +147,12 @@ class SessionActivityState(StrEnum):
       ``options``, and ``request_id``.
     """
 
+    PROVISIONING = "provisioning"
     ACTIVE = "active"
     IDLE = "idle"
     TOOL_EXECUTING = "tool_executing"
     AWAITING_INPUT = "awaiting_input"
+    STOPPED = "stopped"
 
     @property
     def is_busy(self) -> bool:
@@ -480,7 +486,18 @@ class Session(BaseModel):
     )
     activity_state: SessionActivityState | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing)",
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+        ),
+    )
+    activity_state_since: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp (UTC) when the session ENTERED its current activity_state. "
+            "Stamped only on a real state change (not on re-asserting the same "
+            "state), so clients can render an accurate 'active for Ns' elapsed."
+        ),
     )
     activity_metadata: dict = Field(
         default_factory=dict,

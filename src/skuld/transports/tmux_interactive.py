@@ -1522,7 +1522,16 @@ class TmuxInteractiveTransport(CLITransport):
             check=False,
         )
         if result.returncode != 0:
+            # The tmux session is gone (panes can't be listed) — the CLI is dead.
+            # Emit a one-shot transport_stopped so the broker can report the
+            # ``stopped`` activity_state (clients otherwise see the last live
+            # state frozen forever). Guard on the True→False edge so the polling
+            # watcher fires it exactly once.
+            was_alive = self._alive
             self._alive = False
+            if was_alive and emit_events:
+                with suppress(Exception):
+                    await self._emit({"type": "transport_stopped", "reason": "tmux_session_gone"})
             return
 
         seen: set[str] = set()

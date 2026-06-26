@@ -414,3 +414,204 @@ class TestAttentionAndHeartbeat:
             await asyncio.gather(task, return_exceptions=True)
 
         mock_report.assert_not_called()
+
+
+class TestActivityStateSinceTimestamp:
+    """Server-authoritative state machine: the _set_activity_state setter stamps
+    _activity_state_since only on a real change, and state_since rides the wire."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "test-session-since"},
+            transport="subprocess",
+            host="0.0.0.0",
+            port=8081,
+        )
+        settings.session.workspace_dir = str(tmp_path)
+        b = Broker(settings=settings)
+        b.volundr_api_url = "http://volundr:8000"
+        return b
+
+    def test_initial_since_is_stamped(self, test_broker):
+        """_activity_state_since is initialized alongside _activity_state."""
+        assert isinstance(test_broker._activity_state_since, float)
+        assert test_broker._activity_state_since > 0
+
+    def test_set_activity_state_stamps_since_on_change(self, test_broker):
+        """A real state change advances _activity_state_since."""
+        before = test_broker._activity_state_since
+        test_broker._activity_state_since = before - 100  # backdate so a change is visible
+        test_broker._set_activity_state("active")
+        assert test_broker._activity_state == "active"
+        assert test_broker._activity_state_since > before - 100
+
+    def test_set_activity_state_does_not_reset_since_on_reassert(self, test_broker):
+        """Re-asserting the SAME state must NOT reset _since (elapsed stays accurate)."""
+        test_broker._set_activity_state("tool_executing")
+        stamped = test_broker._activity_state_since
+        # Re-assert the identical state — the timestamp must be untouched.
+        test_broker._set_activity_state("tool_executing")
+        assert test_broker._activity_state_since == stamped
+
+    @pytest.mark.asyncio
+    async def test_report_always_includes_state_and_state_since(self, test_broker):
+        """Every report carries BOTH state and state_since (never omitted, incl. idle)."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+
+        await test_broker._report_activity_state("idle")
+        # idle == initial state, so force a transition first to make the report land.
+        await test_broker._report_activity_state("active")
+
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["state"] == "active"
+        assert "state_since" in payload
+        # ISO8601 UTC string matching the surrounding datetime wire convention.
+        assert payload["state_since"].endswith("+00:00")
+
+    @pytest.mark.asyncio
+    async def test_idle_transition_includes_state_since(self, test_broker):
+        """An idle transition (not just busy states) carries state_since too."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+
+        await test_broker._report_activity_state("active")
+        mock_client.post.reset_mock()
+        await test_broker._report_activity_state("idle")
+
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["state"] == "idle"
+        assert "state_since" in payload
+
+
+class TestProvisioningAndStoppedStates:
+    """provisioning is left for idle once the REPL is ready; transport death -> stopped."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "test-session-prov"},
+            transport="subprocess",
+            host="0.0.0.0",
+            port=8081,
+        )
+        settings.session.workspace_dir = str(tmp_path)
+        b = Broker(settings=settings)
+        b.volundr_api_url = "http://volundr:8000"
+        return b
+
+    @pytest.mark.asyncio
+    async def test_system_init_transitions_provisioning_to_idle(self, test_broker):
+        """A system/init frame (REPL ready) flips provisioning -> idle."""
+        test_broker._set_activity_state("provisioning")
+        test_broker._channels = MagicMock()
+        test_broker._channels.count = 0
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._transport = MagicMock()
+        test_broker._transport.capabilities.slash_commands = False
+
+        with patch.object(
+            test_broker, "_report_activity_state", new_callable=AsyncMock
+        ) as mock_report:
+            await test_broker._handle_cli_event({"type": "system", "subtype": "init"})
+            await asyncio.sleep(0)
+
+        idle_calls = [c for c in mock_report.call_args_list if c[0][0] == "idle"]
+        assert len(idle_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_system_init_does_not_clobber_active(self, test_broker):
+        """A re-init while ACTIVE (reconnect) must NOT downgrade to idle."""
+        test_broker._set_activity_state("active")
+        test_broker._channels = MagicMock()
+        test_broker._channels.count = 0
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._transport = MagicMock()
+        test_broker._transport.capabilities.slash_commands = False
+
+        with patch.object(
+            test_broker, "_report_activity_state", new_callable=AsyncMock
+        ) as mock_report:
+            await test_broker._handle_cli_event({"type": "system", "subtype": "init"})
+            await asyncio.sleep(0)
+
+        idle_calls = [c for c in mock_report.call_args_list if c[0][0] == "idle"]
+        assert idle_calls == []
+
+    @pytest.mark.asyncio
+    async def test_transport_stopped_event_reports_stopped(self, test_broker):
+        """A transport_stopped event reports the terminal 'stopped' activity state."""
+        with patch.object(
+            test_broker, "_report_activity_state", new_callable=AsyncMock
+        ) as mock_report:
+            await test_broker._handle_cli_event(
+                {"type": "transport_stopped", "reason": "tmux_session_gone"}
+            )
+
+        stopped_calls = [c for c in mock_report.call_args_list if c[0][0] == "stopped"]
+        assert len(stopped_calls) == 1
+        assert stopped_calls[0][1]["extra_metadata"]["reason"] == "tmux_session_gone"
+
+
+class TestTurnStartActive:
+    """active is reported immediately on turn START (terminal_prompt_submitted),
+    not only when the first assistant token arrives."""
+
+    @pytest.fixture
+    def test_broker(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "test-session-turnstart"},
+            transport="subprocess",
+            host="0.0.0.0",
+            port=8081,
+        )
+        settings.session.workspace_dir = str(tmp_path)
+        b = Broker(settings=settings)
+        b.volundr_api_url = "http://volundr:8000"
+        return b
+
+    @pytest.mark.asyncio
+    async def test_turn_start_reports_active(self, test_broker):
+        test_broker._channels = MagicMock()
+        test_broker._channels.count = 0
+        test_broker._channels.broadcast = AsyncMock()
+
+        with patch.object(
+            test_broker, "_report_activity_state", new_callable=AsyncMock
+        ) as mock_report:
+            await test_broker._handle_cli_event(
+                {"type": "terminal_prompt_submitted", "msg_id": "m1"}
+            )
+            await asyncio.sleep(0)
+
+        active_calls = [c for c in mock_report.call_args_list if c[0][0] == "active"]
+        assert len(active_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_turn_start_does_not_report_active_while_awaiting(self, test_broker):
+        """The answer that unblocks a gate also arrives as a prompt-submit — it must
+        NOT clobber awaiting_input before _exit_attention runs."""
+        test_broker._channels = MagicMock()
+        test_broker._channels.count = 0
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._pending_attention = {"askq-1": "question"}
+
+        with patch.object(
+            test_broker, "_report_activity_state", new_callable=AsyncMock
+        ) as mock_report:
+            await test_broker._handle_cli_event(
+                {"type": "terminal_prompt_submitted", "msg_id": "m1"}
+            )
+            await asyncio.sleep(0)
+
+        active_calls = [c for c in mock_report.call_args_list if c[0][0] == "active"]
+        assert active_calls == []
