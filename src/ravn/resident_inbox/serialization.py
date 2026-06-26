@@ -74,10 +74,6 @@ def signal_from_directed_message(
     )
 
 
-def signal_from_event_like_record(record: dict[str, Any]) -> ResidentInboxSignal:
-    return _signal_from_record(record, default_kind="environment_signal")
-
-
 def _signal_record_from_event(event: Any) -> dict[str, Any]:
     # JSON-normalize so datetimes / non-serializable payload values become strings
     # before the record is persisted; the canonical extractor lives in resident_opportunity.
@@ -113,7 +109,7 @@ def parse_inbox_signal(content: str) -> ResidentInboxSignal | None:
     if start < 0 or end <= start:
         legacy = parse_environment_signal_record(content)
         if legacy is not None:
-            return signal_from_event_like_record(legacy)
+            return _signal_from_record(legacy, default_kind="environment_signal")
         return None
     raw = content[start + len(_INBOX_SIGNAL_JSON_START) : end].strip()
     try:

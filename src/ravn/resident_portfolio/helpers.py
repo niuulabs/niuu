@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -1773,11 +1774,17 @@ async def _gather_portfolio_links(
     backend: ResidentWorkItemBackend,
 ) -> dict[str, tuple[str, ...]]:
     """The standard wake/workstream/artifact/consolidation link bundle for a portfolio."""
+    wake, workstream, artifact, consolidation = await asyncio.gather(
+        backend.list_refs(_WAKE_CYCLE_PREFIX),
+        backend.list_refs(_WORKSTREAM_PREFIX),
+        backend.list_refs(_ARTIFACT_PREFIX),
+        backend.list_refs(_CONSOLIDATION_PREFIX),
+    )
     return {
-        "wake_record_links": tuple(await backend.list_refs(_WAKE_CYCLE_PREFIX)),
-        "workstream_links": tuple(await backend.list_refs(_WORKSTREAM_PREFIX)),
-        "artifact_links": tuple(await backend.list_refs(_ARTIFACT_PREFIX)),
-        "consolidation_links": tuple(await backend.list_refs(_CONSOLIDATION_PREFIX)),
+        "wake_record_links": tuple(wake),
+        "workstream_links": tuple(workstream),
+        "artifact_links": tuple(artifact),
+        "consolidation_links": tuple(consolidation),
     }
 
 
@@ -1787,13 +1794,19 @@ async def _review_objective_against_wake(
     wake_run: WakefulResidentRun,
 ) -> ResidentObjective:
     """Recompute an objective's status and links from a completed wake run (no persistence)."""
-    wake_links = tuple(await backend.list_refs(_WAKE_CYCLE_PREFIX))
+    wake, artifacts, workstream, consolidation = await asyncio.gather(
+        backend.list_refs(_WAKE_CYCLE_PREFIX),
+        backend.list_refs(_ARTIFACT_PREFIX),
+        backend.list_refs(_WORKSTREAM_PREFIX),
+        backend.list_refs(_CONSOLIDATION_PREFIX),
+    )
+    wake_links = tuple(wake)
     artifact_links = _merge_text(
-        tuple(await backend.list_refs(_ARTIFACT_PREFIX)),
+        tuple(artifacts),
         tuple(ref for cycle in wake_run.cycles for ref in cycle.artifact_refs),
     )
-    workstream_links = tuple(await backend.list_refs(_WORKSTREAM_PREFIX))
-    consolidation_links = tuple(await backend.list_refs(_CONSOLIDATION_PREFIX))
+    workstream_links = tuple(workstream)
+    consolidation_links = tuple(consolidation)
     proof_progress = _proof_progress_from_wake(wake_run)
     status = (
         ResidentObjectiveStatus.COMPLETED.value
