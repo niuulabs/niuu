@@ -24,7 +24,7 @@ from ravn.resident_portfolio import (
     build_worker_brief,
     select_delegation_candidates,
 )
-from scripts.prove_resident_delegation import (
+from tests.test_ravn.delegation_fixtures import (
     _cancelled_real_delegation_records,
     _observed_real_results,
     _real_delegation_records,
@@ -741,7 +741,10 @@ async def test_repeated_failed_delegation_creates_review_instead_of_retry_loop(
 
 
 def test_resident_delegation_contains_no_domain_specific_playbook_terms() -> None:
-    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/ravn/resident_portfolio").glob("*.py"))
+    ).casefold()
 
     for forbidden in (
         "kanuck",
