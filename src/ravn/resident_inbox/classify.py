@@ -32,6 +32,79 @@ def classify_inbox_signal(signal: ResidentInboxSignal) -> tuple[str, float, str]
     return classify_text(signal.summary, payload=signal.payload)
 
 
+# Ordered keyword rules: the first whose pattern matches the haystack wins.
+# Precedence is encoded by position, so adding a classification is a table edit.
+_CLASSIFICATION_RULES: tuple[tuple[str, ResidentInboxClassification, float, str], ...] = (
+    (
+        r"\b(not approved|do not approve|don't approve|denied|deny|no)\b",
+        ResidentInboxClassification.DENIAL,
+        0.9,
+        "operator text denies approval",
+    ),
+    (
+        r"\b(approved|yes|go ahead|proceed|allowed)\b",
+        ResidentInboxClassification.APPROVAL,
+        0.84,
+        "operator text grants approval",
+    ),
+    (
+        r"\b(policy|rule|always ask|never|must not|requires approval)\b",
+        ResidentInboxClassification.POLICY,
+        0.82,
+        "message states a policy boundary",
+    ),
+    (
+        r"\b(prefer|preference|i like|i hate|avoid)\b",
+        ResidentInboxClassification.PREFERENCE,
+        0.78,
+        "message states a preference",
+    ),
+    (
+        r"\b(correction|actually|instead|wrong|fix that)\b",
+        ResidentInboxClassification.CORRECTION,
+        0.72,
+        "message corrects prior state",
+    ),
+    (
+        r"\b(look into|please|can you|could you|todo|task|need you to|"
+        r"do some research|research|investigate|find out|explore)\b",
+        ResidentInboxClassification.TASK_REQUEST,
+        0.75,
+        "message asks for work",
+    ),
+    (
+        r"\b(idea|maybe|what if|could add|opportunity)\b",
+        ResidentInboxClassification.IDEA,
+        0.68,
+        "message suggests an idea",
+    ),
+    (
+        r"\b(print failed|failed print|support|slicer|printer|filament|resin)\b",
+        ResidentInboxClassification.PHYSICAL_OBSERVATION,
+        0.8,
+        "message describes physical-world or print state",
+    ),
+    (
+        r"\b(risk|unsafe|danger|customer data|private)\b",
+        ResidentInboxClassification.RISK,
+        0.76,
+        "message identifies a risk",
+    ),
+    (
+        r"\b(status|done|completed|blocked|waiting)\b",
+        ResidentInboxClassification.STATUS_UPDATE,
+        0.64,
+        "message reports status",
+    ),
+    (
+        r"(/[^\s]+|\b[a-z0-9_.-]+\.(md|json|yaml|yml|stl|3mf|py|ts|tsx)\b)",
+        ResidentInboxClassification.FILE_REFERENCE,
+        0.72,
+        "message references a file",
+    ),
+)
+
+
 def classify_text(text: str, *, payload: dict[str, Any] | None = None) -> tuple[str, float, str]:
     payload = payload or {}
     haystack = " ".join(
@@ -59,38 +132,9 @@ def classify_text(text: str, *, payload: dict[str, Any] | None = None) -> tuple[
             0.78,
             "environment signal is source evidence for resident attention",
         )
-    if re.search(r"\b(not approved|do not approve|don't approve|denied|deny|no)\b", haystack):
-        return ResidentInboxClassification.DENIAL.value, 0.9, "operator text denies approval"
-    if re.search(r"\b(approved|yes|go ahead|proceed|allowed)\b", haystack):
-        return ResidentInboxClassification.APPROVAL.value, 0.84, "operator text grants approval"
-    if re.search(r"\b(policy|rule|always ask|never|must not|requires approval)\b", haystack):
-        return ResidentInboxClassification.POLICY.value, 0.82, "message states a policy boundary"
-    if re.search(r"\b(prefer|preference|i like|i hate|avoid)\b", haystack):
-        return ResidentInboxClassification.PREFERENCE.value, 0.78, "message states a preference"
-    if re.search(r"\b(correction|actually|instead|wrong|fix that)\b", haystack):
-        return ResidentInboxClassification.CORRECTION.value, 0.72, "message corrects prior state"
-    if re.search(
-        r"\b(look into|please|can you|could you|todo|task|need you to|"
-        r"do some research|research|investigate|find out|explore)\b",
-        haystack,
-    ):
-        return ResidentInboxClassification.TASK_REQUEST.value, 0.75, "message asks for work"
-    if re.search(r"\b(idea|maybe|what if|could add|opportunity)\b", haystack):
-        return ResidentInboxClassification.IDEA.value, 0.68, "message suggests an idea"
-    if re.search(
-        r"\b(print failed|failed print|support|slicer|printer|filament|resin)\b", haystack
-    ):
-        return (
-            ResidentInboxClassification.PHYSICAL_OBSERVATION.value,
-            0.8,
-            "message describes physical-world or print state",
-        )
-    if re.search(r"\b(risk|unsafe|danger|customer data|private)\b", haystack):
-        return ResidentInboxClassification.RISK.value, 0.76, "message identifies a risk"
-    if re.search(r"\b(status|done|completed|blocked|waiting)\b", haystack):
-        return ResidentInboxClassification.STATUS_UPDATE.value, 0.64, "message reports status"
-    if re.search(r"(/[^\s]+|\b[a-z0-9_.-]+\.(md|json|yaml|yml|stl|3mf|py|ts|tsx)\b)", haystack):
-        return ResidentInboxClassification.FILE_REFERENCE.value, 0.72, "message references a file"
+    for pattern, classification, confidence, reason in _CLASSIFICATION_RULES:
+        if re.search(pattern, haystack):
+            return classification.value, confidence, reason
     return ResidentInboxClassification.FACT.value, 0.55, "message is useful resident context"
 
 
