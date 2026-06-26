@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.domain.resident_expert import (
     ResidentDomainExpertMemoryPort,
     ResidentDomainModel,
@@ -29,7 +30,6 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
     ResidentWorkItemBackend,
 )
-from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import _compact_line, _slug
 from ravn.resident_portfolio import (

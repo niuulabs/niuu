@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.domain.models import TokenUsage, ToolCall, TurnResult
 from ravn.domain.operator_contact import (
     BroadcastThenCallbackOperatorContact,
@@ -31,7 +32,6 @@ from ravn.resident_continuation import (
     ResidentRunBudget,
 )
 from ravn.resident_operator_contact import ResidentOperatorContactCoordinator
-from ravn.adapters.resident_state.mimir import MimirResidentState
 
 MANDATE = (
     "Kanuck Valley Models is my small 3D printing company. "

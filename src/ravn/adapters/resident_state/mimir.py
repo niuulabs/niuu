@@ -24,13 +24,13 @@ from ravn.domain.resident_state import ResidentStatePort
 from ravn.domain.wakeful_resident import WakefulPortfolioStewardRecord, WakefulResidentCycleRecord
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
+    _OPERATOR_ANSWER_PATH,
+    _OPERATOR_NEEDED_PATH,
     LocalResidentMemory,
     _compact_line,
     _first_heading_or_line,
     _operator_answer_is_consumed,
     _operator_marker_is_pending,
-    _OPERATOR_ANSWER_PATH,
-    _OPERATOR_NEEDED_PATH,
     _parse_policy_observation,
     _render_answered_operator_needed,
     _render_budget_snapshot,
@@ -44,8 +44,8 @@ from ravn.resident_continuation import (
     _timestamp_slug,
 )
 from ravn.resident_expert import (
-    LocalResidentDomainExpertMemory,
     _DOMAIN_MODEL_PATH,
+    LocalResidentDomainExpertMemory,
     _parse_domain_model_page,
     _parse_workstream_page,
     _render_consolidation,
@@ -53,33 +53,39 @@ from ravn.resident_expert import (
     _render_workstream,
 )
 from ravn.resident_physical import (
-    LocalResidentPhysicalMemory,
     _AUDIT_PREFIX as _PHYSICAL_AUDIT_PREFIX,
+)
+from ravn.resident_physical import (
     _CAPABILITY_PREFIX,
     _PHYSICAL_PREFIX,
     _REASONING_PREFIX,
     _RESULT_PREFIX,
+    LocalResidentPhysicalMemory,
     _render_capability,
     _render_reasoning,
     _render_result,
+)
+from ravn.resident_physical import (
     _stamp as _physical_stamp,
 )
 from ravn.resident_review import (
-    LocalResidentReviewMemory,
-    _parse_review,
     _REVIEW_AUDIT_PREFIX,
     _REVIEW_PREFIX,
+    LocalResidentReviewMemory,
+    _parse_review,
     _render_review,
+)
+from ravn.resident_review import (
     _stamp as _review_stamp,
 )
 from ravn.wakeful_resident import (
+    _WAKE_PREFIX,
     LocalWakefulPortfolioStewardMemory,
     LocalWakefulResidentMemory,
     _parse_portfolio_steward_record,
     _parse_wake_record,
     _render_portfolio_steward_record,
     _render_wake_record,
-    _WAKE_PREFIX,
 )
 
 

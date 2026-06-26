@@ -39,8 +39,8 @@ from ravn.domain.resident_expert import (
     WorkstreamExecutionPort,
     WorkstreamExecutionResult,
 )
-from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.channel import ChannelPort
+from ravn.ports.executor import ExecutionAgentPort
 from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     NullResidentMemory,

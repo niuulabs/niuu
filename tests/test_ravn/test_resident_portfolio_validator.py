@@ -375,7 +375,10 @@ async def test_report_explains_eligible_work_not_selected(tmp_path: Path) -> Non
 
 
 def test_resident_portfolio_validator_contains_no_domain_specific_playbook_terms() -> None:
-    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/ravn/resident_portfolio").glob("*.py"))
+    ).casefold()
 
     for forbidden in (
         "kanuck",

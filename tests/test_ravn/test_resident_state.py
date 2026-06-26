@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.domain.models import TokenUsage
-from ravn.domain.resident_continuation import ResidentPolicyObservation, ResidentTurnRecord
 from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
+from ravn.domain.models import TokenUsage
+from ravn.domain.resident_continuation import ResidentPolicyObservation, ResidentTurnRecord
 
 
 class RecordingGBrainResidentState(GBrainResidentStateAdapter):

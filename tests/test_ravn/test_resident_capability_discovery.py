@@ -379,7 +379,10 @@ async def test_no_gap_returns_sleep_like_report(tmp_path: Path) -> None:
 
 
 def test_resident_capability_discovery_contains_no_domain_specific_playbook_terms() -> None:
-    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/ravn/resident_portfolio").glob("*.py"))
+    ).casefold()
 
     for forbidden in (
         "kanuck",

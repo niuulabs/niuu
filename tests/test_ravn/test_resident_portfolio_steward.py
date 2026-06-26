@@ -434,7 +434,10 @@ async def test_wake_operator_decision_creates_operator_follow_up(tmp_path: Path)
 
 
 def test_resident_portfolio_steward_contains_no_domain_specific_playbook_terms() -> None:
-    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/ravn/resident_portfolio").glob("*.py"))
+    ).casefold()
 
     for forbidden in (
         "kanuck",

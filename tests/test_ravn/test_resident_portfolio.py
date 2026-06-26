@@ -408,7 +408,10 @@ async def test_budget_limits_stop_advancement_without_losing_state(tmp_path: Pat
 
 
 def test_resident_portfolio_contains_no_domain_specific_playbook_terms() -> None:
-    source = Path("src/ravn/resident_portfolio.py").read_text(encoding="utf-8").casefold()
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/ravn/resident_portfolio").glob("*.py"))
+    ).casefold()
 
     for forbidden in (
         "kanuck",
