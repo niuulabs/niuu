@@ -133,19 +133,10 @@ class ResidentAutonomyTrigger(TriggerPort):
             pending_marker = await self._pending_operator_marker_input()
             if pending_marker is not None:
                 contact_ref = await self._contact_pending_operator_input(pending_marker)
-                await self._backend.append_decision(
-                    self._mandate,
-                    (
-                        f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
-                        f"slept: pending operator input for {pending_marker['ref']}: "
-                        f"{pending_marker['question']}"
-                        f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
-                    ),
-                )
-                logger.info(
-                    "ResidentAutonomyTrigger: sleeping while continuation operator input "
-                    "is pending (ref=%s)",
-                    pending_marker["ref"],
+                await self._record_operator_sleep(
+                    pending_marker,
+                    contact_ref,
+                    log_label="continuation operator input",
                 )
                 return None
 
@@ -179,19 +170,10 @@ class ResidentAutonomyTrigger(TriggerPort):
             if pending is not None:
                 contact_ref = await self._contact_pending_operator_input(pending)
                 if not await self._has_resident_work():
-                    await self._backend.append_decision(
-                        self._mandate,
-                        (
-                            f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
-                            f"slept: pending operator input for {pending['ref']}: "
-                            f"{pending['question']}"
-                            f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
-                        ),
-                    )
-                    logger.info(
-                        "ResidentAutonomyTrigger: sleeping while operator input is pending "
-                        "(ref=%s)",
-                        pending["ref"],
+                    await self._record_operator_sleep(
+                        pending,
+                        contact_ref,
+                        log_label="operator input",
                     )
                     return None
                 await self._backend.append_decision(
@@ -254,6 +236,24 @@ class ResidentAutonomyTrigger(TriggerPort):
             len(run.operator_contacts),
         )
         return run
+
+    async def _record_operator_sleep(
+        self, pending: dict[str, str], contact_ref: str, *, log_label: str
+    ) -> None:
+        await self._backend.append_decision(
+            self._mandate,
+            (
+                f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
+                f"slept: pending operator input for {pending['ref']}: "
+                f"{pending['question']}"
+                f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
+            ),
+        )
+        logger.info(
+            "ResidentAutonomyTrigger: sleeping while %s is pending (ref=%s)",
+            log_label,
+            pending["ref"],
+        )
 
     async def _contact_pending_operator_input(self, pending: dict[str, str]) -> str:
         if self._ask_operator is None:
@@ -366,11 +366,6 @@ class ResidentAutonomyTrigger(TriggerPort):
                     pending_objective.pending_question or pending_objective.title
                 ),
             }
-        if self._operator_memory is None or not hasattr(
-            self._operator_memory,
-            "read_operator_needed",
-        ):
-            return None
         return await self._pending_operator_marker_input()
 
     async def _pending_operator_marker_input(self) -> dict[str, str] | None:
