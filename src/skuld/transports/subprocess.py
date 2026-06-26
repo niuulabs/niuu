@@ -102,7 +102,9 @@ class SubprocessTransport(CLITransport):
             await _stop_process(self._process)
             self._process = None
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         async with self._lock:
             self._last_result = None
             await self._send_message_with_retries(content)

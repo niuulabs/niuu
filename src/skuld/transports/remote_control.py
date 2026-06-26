@@ -199,7 +199,9 @@ class RemoteControlTransport(CLITransport):
         with suppress(Exception):
             await self._emit({"type": "remote_control", "subtype": "paired", "url": url})
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         # The native app owns the conversation; re-surface the pairing link.
         if self._url:
             with suppress(Exception):
@@ -351,7 +353,9 @@ class CodexRemoteControlTransport(CLITransport):
     async def start(self) -> None:
         await self._notice()
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         await self._notice()
 
     async def stop(self) -> None:

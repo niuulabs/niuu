@@ -3063,10 +3063,25 @@ class Broker:
             self._track_pane_agent(data, opened=True)
         elif event_type == "terminal_pane_closed":
             self._track_pane_agent(data, opened=False)
-        elif event_type == "terminal_prompt_submitted":
-            # Claude consumed a (correlated) user prompt — flip that steering message
-            # from "pending" to "active" and tell live clients via user_active.
+        elif event_type in ("terminal_prompt_submitted", "user_consumed"):
+            # The agent consumed a (correlated) user prompt — flip that steering message from
+            # "pending" to "active" and tell live clients via user_active. tmux emits
+            # terminal_prompt_submitted (UserPromptSubmit hook); Codex emits user_consumed
+            # (turn/started). Both carry the msg_id; _activate_user_turn no-ops if it's absent.
             await self._activate_user_turn(data)
+        elif event_type in ("result", "error") or (
+            event_type == "assistant" and self._assistant_has_content(data)
+        ):
+            # Transport-agnostic FLOOR so no steer is ever stranded "pending" on a transport we
+            # don't precisely wire (grok/sdk/subprocess/opencode) or a Codex edge the FIFO missed:
+            # a NON-NATIVE transport that produced assistant content, finished a turn, or terminally
+            # errored has either consumed any still-pending steer or can no longer flip it — either
+            # way "pending forever" is the wrong state. tmux (native) is EXCLUDED — it owns the
+            # precise UserPromptSubmit signal AND streams assistant content for the IN-PROGRESS turn
+            # while a mid-turn steer is still queued, so this floor would otherwise flip it early.
+            caps = getattr(self._transport, "capabilities", None)
+            if getattr(caps, "steering_mode", "none") != "native":
+                await self._activate_pending_user_turns_backstop()
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
@@ -3831,11 +3846,12 @@ class Broker:
     async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
-        Used by the fire-and-forget path in ``_dispatch_browser_message`` —
-        without this wrapper, a transport error would only show up as an
-        ``asyncio.create_task`` exception. Any error here is logged AND
-        broadcast to all currently connected channels so the user sees
-        something in the chat UI rather than a silent stall.
+        NOTE: currently UNUSED by the live inbound steering path — that goes through
+        ``_deliver_user_message_and_ack`` (which threads msg_id/request_id for the pending→active
+        flip). Retained for reflex tests / future call sites; if it is ever re-wired into the
+        steering path it must forward ``msg_id``/``request_id`` to keep the correlation intact.
+        Any error here is logged AND broadcast to all channels so the user sees something rather
+        than a silent stall.
         """
         try:
             outbound = await self._apply_retrieval_reflex(message)
@@ -3886,10 +3902,11 @@ class Broker:
                     "redirect", content=content, msg_id=msg_id, request_id=request_id
                 )
             else:
-                # interrupt_resume transports (SDK/codex idle) have no UserPromptSubmit
-                # hook to correlate against, so they take the plain send_message contract.
+                # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
+                # transport that CAN correlate a consumption signal (Codex turn/started) flips the
+                # bubble; transports that can't simply ignore the kwargs.
                 outbound = await self._apply_retrieval_reflex(content)
-                await self._transport.send_message(outbound)
+                await self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
         except Exception as exc:
             logger.exception(
                 "user message delivery failed (request_id=%s)", _sanitize_log(request_id)
@@ -3954,15 +3971,23 @@ class Broker:
         if not isinstance(msg_id, str) or not msg_id:
             return
         request_id = data.get("request_id")
-        changed = False
+        if self._mark_user_turn_active(msg_id):
+            self._save_conversation_history()
+        await self._broadcast_user_active(msg_id, request_id)
+
+    def _mark_user_turn_active(self, msg_id: str) -> bool:
+        """Flip the in-memory user turn ``msg_id`` to steering_state=active. Returns True if it
+        changed (so the caller can persist once). Does NOT persist or broadcast."""
         for turn in self._conversation_turns:
             if turn.id == msg_id and turn.role == "user":
                 if turn.metadata.get("steering_state") != "active":
                     turn.metadata["steering_state"] = "active"
-                    changed = True
-                break
-        if changed:
-            self._save_conversation_history()
+                    return True
+                return False
+        return False
+
+    async def _broadcast_user_active(self, msg_id: str, request_id: object = None) -> None:
+        """Tell live clients a steering message went active so they flip that specific bubble."""
         event: dict[str, Any] = {"type": "user_active", "id": msg_id}
         if isinstance(request_id, str) and request_id:
             event["request_id"] = request_id
@@ -3970,6 +3995,32 @@ class Broker:
             await self._channels.broadcast(event)
         except Exception:
             logger.debug("Failed to broadcast user_active", exc_info=True)
+
+    @staticmethod
+    def _assistant_has_content(data: dict) -> bool:
+        """True only when an assistant frame carries non-empty content. Codex's empty turn/started
+        assistant frame (content: []) must NOT trip the backstop — the precise user_consumed handles
+        that turn — so an empty frame is treated as no content."""
+        message = data.get("message")
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        return isinstance(content, list) and len(content) > 0
+
+    async def _activate_pending_user_turns_backstop(self) -> None:
+        """Flip EVERY still-pending user turn to active (the non-native floor). Persists once and
+        broadcasts one user_active per flipped turn. Idempotent: turns already active are skipped,
+        so an overlap with a precise signal sends no redundant work."""
+        flipped: list[str] = []
+        for turn in self._conversation_turns:
+            if turn.role == "user" and turn.metadata.get("steering_state") == "pending":
+                turn.metadata["steering_state"] = "active"
+                flipped.append(turn.id)
+        if not flipped:
+            return
+        self._save_conversation_history()
+        for msg_id in flipped:
+            await self._broadcast_user_active(msg_id)
 
     async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
         """Ingest a Claude Code hook payload into the normal event pipeline.

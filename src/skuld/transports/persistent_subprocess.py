@@ -212,7 +212,9 @@ class PersistentSubprocessTransport(CLITransport):
                 fut.cancel()
         self._pending_control.clear()
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Write a user message and block until the turn's ``result`` arrives.
 
         Calls serialize on a per-instance lock so concurrent ``send_message``

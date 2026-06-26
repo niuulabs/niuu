@@ -385,7 +385,9 @@ class SDKTransport(CLITransport):
             logger.debug("Error stopping Claude SDK client", exc_info=True)
         self._client = None
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Send a user turn and emit SDK responses as stream-json dicts."""
         async with self._send_lock:
             if not self.is_alive:

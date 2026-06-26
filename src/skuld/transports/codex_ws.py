@@ -80,7 +80,7 @@ _CODEX_APP_SERVER_SLASH_COMMANDS = [
         "source": "codex-app-server",
         "method": "thread/fork",
         "capability": "thread.fork",
-    }
+    },
 ]
 _CODEX_APP_SERVER_SLASH_BY_NAME = {
     str(command["name"]): command for command in _CODEX_APP_SERVER_SLASH_COMMANDS
@@ -212,6 +212,15 @@ class CodexWebSocketTransport(CLITransport):
         self._alive = False
         self._block_index: int = 0
         self._pending_redirects: list[str] = []
+        # Steering correlation, mirroring the tmux transport. (msg_id, request_id) is recorded when
+        # we fire a turn/start for a user message and popped on the matching turn/started to emit
+        # a `user_consumed` event (which the broker turns into the pending→active flip). One
+        # turn/start ⇒ one turn/started ⇒ one pop, so a single FIFO stays aligned.
+        self._pending_prompt_correlations: list[tuple[str | None, str | None]] = []
+        # Parallel to _pending_redirects. INVARIANT: every append/drain of _pending_redirects
+        # mirrors _redirect_correlations in the SAME branch, so when queued mid-turn redirects are
+        # coalesced into one replacement turn we still flip the right N bubbles.
+        self._redirect_correlations: list[tuple[str | None, str | None]] = []
         self._redirect_interrupt_requested = False
         self._buffered_item_output: dict[str, list[str]] = {}
         self._active_user_prompt: str | None = None
@@ -649,6 +658,13 @@ class CodexWebSocketTransport(CLITransport):
                     },
                 }
             )
+            # Codex just took a user prompt into its flow — the consumption signal. Pop the steer
+            # that requested this turn and tell the broker (which flips it pending→active and
+            # broadcasts user_active). A non-compaction turn/started always pairs with one
+            # send_message → one correlation push, so a single pop stays aligned.
+            if self._pending_prompt_correlations:
+                msg_id, request_id = self._pending_prompt_correlations.pop(0)
+                await self._emit_user_consumed(msg_id, request_id)
             return
 
         if method == "turn/completed":
@@ -676,11 +692,21 @@ class CodexWebSocketTransport(CLITransport):
                 "modelUsage": usage,
             }
             await self._emit(self._last_result)
-            next_prompt = self._consume_pending_redirects()
+            next_prompt, redirect_correlations = self._consume_pending_redirects()
             if next_prompt is not None:
                 logger.info("Codex redirect: starting replacement turn after interrupt")
+                # The replacement turn carries the FIRST drained correlation, so its turn/started
+                # emits user_consumed for it. The rest were coalesced into the SAME replacement turn
+                # (all consumed at once), so flip them now. N queued steers ⇒ N flips.
+                first_msg_id, first_request_id = (
+                    redirect_correlations[0] if redirect_correlations else (None, None)
+                )
+                for extra_msg_id, extra_request_id in redirect_correlations[1:]:
+                    await self._emit_user_consumed(extra_msg_id, extra_request_id)
                 asyncio.create_task(
-                    self.send_message(next_prompt),
+                    self.send_message(
+                        next_prompt, msg_id=first_msg_id, request_id=first_request_id
+                    ),
                     name=f"codex-redirect-{self._thread_id or 'thread'}",
                 )
             return
@@ -1306,11 +1332,7 @@ class CodexWebSocketTransport(CLITransport):
             message = error.get("message", message)
 
         text = str(message or "").lower()
-        return (
-            "context window" in text
-            or "ran out of room" in text
-            or "out of context" in text
-        )
+        return "context window" in text or "ran out of room" in text or "out of context" in text
 
     @classmethod
     def _turn_has_context_window_error(cls, turn: object) -> bool:
@@ -1340,8 +1362,7 @@ class CodexWebSocketTransport(CLITransport):
 
         items = turn.get("items")
         if isinstance(items, list) and any(
-            isinstance(item, dict) and item.get("type") == "contextCompaction"
-            for item in items
+            isinstance(item, dict) and item.get("type") == "contextCompaction" for item in items
         ):
             return True
 
@@ -1434,9 +1455,13 @@ class CodexWebSocketTransport(CLITransport):
     # CLITransport interface
     # ------------------------------------------------------------------
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         if self._fallback_transport is not None:
-            await self._fallback_transport.send_message(content)
+            await self._fallback_transport.send_message(
+                content, msg_id=msg_id, request_id=request_id
+            )
             return
 
         if not self._thread_id:
@@ -1446,13 +1471,27 @@ class CodexWebSocketTransport(CLITransport):
         self._last_usage = None
         self._block_index = 0
         self._active_user_prompt = content
+        # Correlate this turn/start back to the originating steer; popped on the matching
+        # turn/started to emit user_consumed. A retry/seed resend carries no ids → (None, None),
+        # which the `if msg_id` guard on turn/started drops (no flip). Appended BEFORE the RPC so
+        # the correlation is ready when turn/started arrives (it can race the RPC response).
+        self._pending_prompt_correlations.append((msg_id, request_id))
         params: dict = {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": content, "textElements": []}],
         }
 
         logger.info("Sending turn/start to Codex (thread=%s)", self._thread_id)
-        await self._send_rpc("turn/start", params)
+        try:
+            await self._send_rpc("turn/start", params)
+        except Exception:
+            # turn/start failed → no turn/started will arrive for it. Drop the orphan correlation so
+            # a LATER turn can't pop this stale entry and mis-attribute the flip (off-by-one).
+            try:
+                self._pending_prompt_correlations.remove((msg_id, request_id))
+            except ValueError:
+                pass
+            raise
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
         if self._fallback_transport is not None:
@@ -1538,15 +1577,24 @@ class CodexWebSocketTransport(CLITransport):
             content = _normalize_text_content(kwargs.get("content"))
             if not content:
                 return
+            raw_msg_id = kwargs.get("msg_id")
+            msg_id = raw_msg_id if isinstance(raw_msg_id, str) and raw_msg_id else None
+            raw_request_id = kwargs.get("request_id")
+            request_id = (
+                raw_request_id if isinstance(raw_request_id, str) and raw_request_id else None
+            )
 
             if not (self._thread_id and self._current_turn_id):
                 logger.info(
                     "Codex redirect without active turn; sending replacement prompt immediately"
                 )
-                await self.send_message(content)
+                await self.send_message(content, msg_id=msg_id, request_id=request_id)
                 return
 
+            # INVARIANT: append to BOTH queues in lockstep so the drained correlations line up
+            # with the coalesced replacement prompt (see _consume_pending_redirects).
             self._pending_redirects.append(content)
+            self._redirect_correlations.append((msg_id, request_id))
             if self._redirect_interrupt_requested:
                 logger.info("Codex redirect queued while interrupt already pending")
                 return
@@ -1720,14 +1768,36 @@ class CodexWebSocketTransport(CLITransport):
             slash_commands=True,
         )
 
-    def _consume_pending_redirects(self) -> str | None:
-        """Drain queued redirect messages into the next replacement prompt."""
+    async def _emit_user_consumed(self, msg_id: str | None, request_id: str | None) -> None:
+        """Tell the broker a steered user message was consumed (its turn/started), so it flips that
+        message pending→active and broadcasts user_active. No-ops without a msg_id (seed/retry
+        resends carry no correlation)."""
+        if not msg_id:
+            return
+        event: dict = {
+            "type": "user_consumed",
+            "event_type": "codex.turn.started",
+            "msg_id": msg_id,
+        }
+        if request_id:
+            event["request_id"] = request_id
+        await self._emit(event)
+
+    def _consume_pending_redirects(
+        self,
+    ) -> tuple[str | None, list[tuple[str | None, str | None]]]:
+        """Drain queued redirect messages into the next replacement prompt, returning that prompt
+        plus the drained steering correlations (FIFO-aligned with _pending_redirects) so the caller
+        can flip every coalesced steer pending→active."""
         self._redirect_interrupt_requested = False
         if not self._pending_redirects:
-            return None
+            return None, []
+
+        correlations = list(self._redirect_correlations)
+        self._redirect_correlations.clear()
 
         if len(self._pending_redirects) == 1:
-            return self._pending_redirects.pop(0)
+            return self._pending_redirects.pop(0), correlations
 
         pending = list(self._pending_redirects)
         self._pending_redirects.clear()
@@ -1736,7 +1806,7 @@ class CodexWebSocketTransport(CLITransport):
             "Ignore the interrupted approach and follow all of these updates in order:",
         ]
         lines.extend(f"- {item}" for item in pending)
-        return "\n".join(lines)
+        return "\n".join(lines), correlations
 
     # ------------------------------------------------------------------
     # Session resume

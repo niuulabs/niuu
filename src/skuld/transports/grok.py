@@ -388,7 +388,9 @@ class GrokACPTransport(CLITransport):
         self._session_id = result.get("sessionId") or result.get("session_id")
         logger.info("Grok ACP new session established: %s", self._session_id)
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Send a user turn and drain any steers queued while it ran.
 
         ACP turns are sequential, so a mid-turn steer (see ``send_control``)

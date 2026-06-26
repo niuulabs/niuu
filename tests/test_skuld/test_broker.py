@@ -452,6 +452,135 @@ class TestBroker:
             for call in mock_channel.send_event.await_args_list
         ), "an uncorrelated prompt-submit must not broadcast user_active"
 
+    @staticmethod
+    def _pending_user_turn(test_broker, msg_id):
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        test_broker._append_turn(
+            ConversationTurn(
+                id=msg_id, role="user", content="hi", metadata={"steering_state": "pending"}
+            )
+        )
+        return mock_channel
+
+    @pytest.mark.asyncio
+    async def test_user_consumed_event_flips_pending(self, test_broker):
+        """The broker routes a Codex `user_consumed` event to the SAME flip as tmux's
+        terminal_prompt_submitted — activate + broadcast user_active."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-1")
+
+        await test_broker._handle_cli_event(
+            {"type": "user_consumed", "msg_id": "m-1", "request_id": "r-1"}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-1")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-1"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_flips_pending_on_result_for_non_native(self, test_broker):
+        """A non-native transport that finishes a turn has consumed any still-pending steer."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-2")
+
+        await test_broker._handle_cli_event({"type": "result", "stop_reason": "end_turn"})
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-2")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-2"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_excluded_for_native_transport(self, test_broker):
+        """LOAD-BEARING: tmux (native) is NEVER flipped by the backstop — it owns the precise
+        UserPromptSubmit signal and streams assistant content for the in-progress turn while a
+        mid-turn steer is still queued, so the backstop would otherwise flip it early."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="native")
+        mock_channel = self._pending_user_turn(test_broker, "m-3")
+
+        await test_broker._handle_cli_event({"type": "result", "stop_reason": "end_turn"})
+        await test_broker._handle_cli_event(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-3")
+        assert turn.metadata["steering_state"] == "pending"  # NOT flipped by the backstop
+        assert not any(
+            c.args[0].get("type") == "user_active" for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_empty_assistant_frame_does_not_flip(self, test_broker):
+        """Codex's empty turn/started assistant frame (content: []) must NOT trip the backstop;
+        a frame with real content does."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        self._pending_user_turn(test_broker, "m-4")
+
+        await test_broker._handle_cli_event({"type": "assistant", "message": {"content": []}})
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-4")
+        assert turn.metadata["steering_state"] == "pending"
+
+        await test_broker._handle_cli_event(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+        )
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-4")
+        assert turn.metadata["steering_state"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_backstop_flips_pending_on_error_for_non_native(self, test_broker):
+        """A terminal error on a non-native transport must not strand the steer pending forever."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-err")
+
+        await test_broker._handle_cli_event({"type": "error", "error": "boom"})
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-err")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-err"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    def test_assistant_has_content(self):
+        assert Broker._assistant_has_content({"message": {"content": [{"type": "text"}]}}) is True
+        assert Broker._assistant_has_content({"message": {"content": []}}) is False
+        assert Broker._assistant_has_content({"message": {}}) is False
+        assert Broker._assistant_has_content({}) is False
+
+    @pytest.mark.asyncio
+    async def test_backstop_does_not_double_flip_already_active(self, test_broker):
+        """An already-active turn is left untouched (no redundant persist/broadcast churn)."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        test_broker._append_turn(
+            ConversationTurn(
+                id="m-5", role="user", content="hi", metadata={"steering_state": "active"}
+            )
+        )
+
+        await test_broker._activate_pending_user_turns_backstop()
+
+        assert not any(
+            c.args[0].get("type") == "user_active" for c in mock_channel.send_event.await_args_list
+        )
+
     @pytest.mark.asyncio
     async def test_handle_cli_event_forwards_to_channels(self, test_broker):
         mock_ch1 = AsyncMock()
@@ -1539,6 +1668,30 @@ class TestDispatchBrowserMessage:
         return b
 
     @pytest.mark.asyncio
+    async def test_send_message_msg_id_matches_pending_turn(self, test_broker):
+        """The msg_id threaded into send_message MUST equal the minted turn / user_confirmed id —
+        the whole flip depends on the consumption signal matching THAT id (the steer won't flip if
+        send_message's id ever diverges from the turn's id)."""
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+
+        await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-1"})
+        await _settle_delivery()
+
+        confirmed = [
+            call.args[0]
+            for call in test_broker._channels.broadcast.await_args_list
+            if call.args[0].get("type") == "user_confirmed"
+        ]
+        assert confirmed, "a user_confirmed broadcast must be emitted"
+        msg_id = confirmed[0]["id"]
+        assert any(t.id == msg_id and t.role == "user" for t in test_broker._conversation_turns), (
+            "a pending user turn with that id must exist"
+        )
+        _, kwargs = test_broker._transport.send_message.await_args
+        assert kwargs.get("msg_id") == msg_id, "send_message must carry the SAME id"
+
+    @pytest.mark.asyncio
     async def test_dispatch_user_message(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
         test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
@@ -1547,7 +1700,9 @@ class TestDispatchBrowserMessage:
         # Delivery runs in a fire-and-forget task so the WS loop isn't pinned on a turn
         # that may take minutes; await it before asserting (BUG-3).
         await _settle_delivery()
-        test_broker._transport.send_message.assert_called_once_with("hello")
+        test_broker._transport.send_message.assert_called_once_with(
+            "hello", msg_id=ANY, request_id="req-1"
+        )
         test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
@@ -1595,7 +1750,9 @@ class TestDispatchBrowserMessage:
             "Please review this screenshot\n\n"
             "[User attached 1 image attachment. This transport forwards text only.]"
         )
-        test_broker._transport.send_message.assert_called_once_with(expected)
+        test_broker._transport.send_message.assert_called_once_with(
+            expected, msg_id=ANY, request_id=None
+        )
         test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
@@ -1628,7 +1785,9 @@ class TestDispatchBrowserMessage:
         await _settle_delivery()
 
         expected = "[User attached 1 image attachment. This transport forwards text only.]"
-        test_broker._transport.send_message.assert_called_once_with(expected)
+        test_broker._transport.send_message.assert_called_once_with(
+            expected, msg_id=ANY, request_id=None
+        )
         test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
@@ -3333,7 +3492,7 @@ class TestHandleWebSocket:
         # Welcome message + no error
         calls = mock_ws.send_json.call_args_list
         assert any("Connected to session" in str(c) for c in calls)
-        mock_transport.send_message.assert_called_once_with("hello")
+        mock_transport.send_message.assert_called_once_with("hello", msg_id=ANY, request_id=None)
 
     @pytest.mark.asyncio
     async def test_handle_websocket_sends_capabilities(self, test_broker):
