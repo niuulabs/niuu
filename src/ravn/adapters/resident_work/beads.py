@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
+from ravn.adapters.process_runner import run_command
 from ravn.domain.resident_portfolio import ResidentObjective
 from ravn.resident_portfolio import LocalResidentWorkItemBackend
 
@@ -36,7 +36,7 @@ class BeadsResidentWorkAdapter(LocalResidentWorkItemBackend):
     async def append_decision(self, mandate: str, entry: str) -> str:
         ref = await super().append_decision(mandate, entry)
         if self._projection_enabled:
-            await _run_bd(
+            await run_command(
                 [self._command, "remember", entry],
                 timeout_seconds=self._timeout_seconds,
                 cwd=self._project_dir,
@@ -56,41 +56,10 @@ class BeadsResidentWorkAdapter(LocalResidentWorkItemBackend):
             )
             if item
         )
-        await _run_bd(
+        await run_command(
             [self._command, "create", title, "--stdin", "--json"],
             timeout_seconds=self._timeout_seconds,
             cwd=self._project_dir,
             input_text=body,
             check=False,
         )
-
-
-async def _run_bd(
-    argv: list[str],
-    *,
-    timeout_seconds: float,
-    cwd: Path | None,
-    input_text: str = "",
-    check: bool = True,
-) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=str(cwd) if cwd else None,
-        stdin=asyncio.subprocess.PIPE if input_text else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(input_text.encode("utf-8") if input_text else None),
-            timeout=timeout_seconds,
-        )
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"command timed out: {argv[0]}") from None
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
-    if check and proc.returncode != 0:
-        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(argv)}\n{stderr}")
-    return stdout

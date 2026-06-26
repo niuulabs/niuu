@@ -8,7 +8,6 @@ real GBrain MCP/HTTP server when configured, or the CLI otherwise.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import tempfile
@@ -17,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from ravn.adapters.process_runner import run_command
 from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.domain.resident_continuation import ResidentMemoryEntry, ResidentTurnRecord
 from ravn.resident_continuation import _compact_line, _render_turn_record
@@ -123,7 +123,7 @@ class GBrainResidentStateAdapter(LocalResidentState):
             fh.write(f"# {title}\n\n{content}")
             tmp_path = Path(fh.name)
         try:
-            await _run_command(
+            await run_command(
                 [self._command, "capture", "--file", str(tmp_path)],
                 timeout_seconds=self._timeout_seconds,
             )
@@ -143,7 +143,7 @@ class GBrainResidentStateAdapter(LocalResidentState):
             )
             text = _mcp_text_result(result)
             return _entries_from_gbrain_search(text, limit=limit)
-        result = await _run_command(
+        result = await run_command(
             [self._command, "search", _compact_line(query), "--limit", str(limit)],
             timeout_seconds=self._timeout_seconds,
             check=False,
@@ -198,45 +198,6 @@ class GBrainResidentStateAdapter(LocalResidentState):
         if result.get("isError"):
             raise RuntimeError(f"GBrain MCP tool {name} failed: {_mcp_text_result(result)}")
         return result
-
-
-class CommandResult:
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-async def _run_command(
-    argv: list[str],
-    *,
-    timeout_seconds: float,
-    check: bool = True,
-) -> CommandResult:
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=timeout_seconds,
-        )
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"command timed out: {argv[0]}") from None
-    result = CommandResult(
-        proc.returncode,
-        stdout_b.decode("utf-8", errors="replace"),
-        stderr_b.decode("utf-8", errors="replace"),
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({result.returncode}): {' '.join(argv)}\n{result.stderr}"
-        )
-    return result
 
 
 def _entries_from_gbrain_search(raw: str, *, limit: int) -> list[ResidentMemoryEntry]:
