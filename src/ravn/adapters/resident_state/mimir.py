@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ravn.adapters.resident_pages import collect_pages
-from ravn.domain.physical_device import PhysicalActionResult, PhysicalCapability
 from ravn.domain.resident_continuation import (
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
@@ -14,15 +13,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyObservation,
     ResidentTurnRecord,
 )
-from ravn.domain.resident_expert import (
-    ExpertArtifact,
-    ResidentDomainModel,
-    ResidentWorkstream,
-    WorkstreamExecutionResult,
-)
-from ravn.domain.resident_review import ResidentArtifactReview
 from ravn.domain.resident_state import ResidentStatePort
-from ravn.domain.wakeful_resident import WakefulPortfolioStewardRecord, WakefulResidentCycleRecord
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     _OPERATOR_ANSWER_PATH,
@@ -43,50 +34,6 @@ from ravn.resident_continuation import (
     _render_turn_record,
     _slug,
     _timestamp_slug,
-)
-from ravn.resident_expert import (
-    _DOMAIN_MODEL_PATH,
-    LocalResidentDomainExpertMemory,
-    _parse_domain_model_page,
-    _parse_workstream_page,
-    _render_consolidation,
-    _render_domain_model,
-    _render_workstream,
-)
-from ravn.resident_physical import (
-    _AUDIT_PREFIX as _PHYSICAL_AUDIT_PREFIX,
-)
-from ravn.resident_physical import (
-    _CAPABILITY_PREFIX,
-    _PHYSICAL_PREFIX,
-    _REASONING_PREFIX,
-    _RESULT_PREFIX,
-    LocalResidentPhysicalMemory,
-    _render_capability,
-    _render_reasoning,
-    _render_result,
-)
-from ravn.resident_physical import (
-    _stamp as _physical_stamp,
-)
-from ravn.resident_review import (
-    _REVIEW_AUDIT_PREFIX,
-    _REVIEW_PREFIX,
-    LocalResidentReviewMemory,
-    _parse_review,
-    _render_review,
-)
-from ravn.resident_review import (
-    _stamp as _review_stamp,
-)
-from ravn.wakeful_resident import (
-    _WAKE_PREFIX,
-    LocalWakefulPortfolioStewardMemory,
-    LocalWakefulResidentMemory,
-    _parse_portfolio_steward_record,
-    _parse_wake_record,
-    _render_portfolio_steward_record,
-    _render_wake_record,
 )
 
 
@@ -175,14 +122,20 @@ class MimirResidentState(ResidentStatePort):
             return None
         if not _operator_marker_is_pending(content):
             return None
-        return ResidentMemoryEntry(path=path, summary=_first_heading_or_line(content), content=content)
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
 
     async def write_operator_answer(self, answer: str) -> str:
         now = datetime.now(UTC)
         answer_path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
         await self._mimir.upsert_page(answer_path, _render_operator_answer(answer, answered_at=now))
         history_path = f"{self._prefix}/operator-answers/{_timestamp_slug(now)}.md"
-        await self._mimir.upsert_page(history_path, _render_operator_answer(answer, answered_at=now))
+        await self._mimir.upsert_page(
+            history_path, _render_operator_answer(answer, answered_at=now)
+        )
         marker_path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
         try:
             prior = await self._mimir.read_page(marker_path)
@@ -202,7 +155,11 @@ class MimirResidentState(ResidentStatePort):
             return None
         if _operator_answer_is_consumed(content):
             return None
-        return ResidentMemoryEntry(path=path, summary=_first_heading_or_line(content), content=content)
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
         path = answer.path or f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
@@ -216,146 +173,12 @@ class MimirResidentState(ResidentStatePort):
         )
         return path
 
-    async def read_domain_model(self, mandate: str) -> ResidentDomainModel | None:
-        try:
-            content = await self._mimir.read_page(_DOMAIN_MODEL_PATH)
-        except FileNotFoundError:
-            return None
-        return _parse_domain_model_page(content, mandate=mandate)
-
-    async def write_domain_model(self, model: ResidentDomainModel) -> str:
-        await self._mimir.upsert_page(_DOMAIN_MODEL_PATH, _render_domain_model(model))
-        return _DOMAIN_MODEL_PATH
-
-    async def list_workstreams(self, domain_model_ref: str) -> list[ResidentWorkstream]:
-        return await collect_pages(
-            self._mimir, "resident/domain-expert/workstreams", _parse_workstream_page
-        )
-
-    async def write_workstream(self, workstream: ResidentWorkstream) -> str:
-        path = f"resident/domain-expert/workstreams/{workstream.id}.md"
-        await self._mimir.upsert_page(path, _render_workstream(workstream))
-        return path
-
-    async def write_artifact(self, artifact: ExpertArtifact, content: str) -> str:
-        path = f"resident/domain-expert/artifacts/{_slug(artifact.title)}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_consolidation(
-        self,
-        model: ResidentDomainModel,
-        result: WorkstreamExecutionResult,
-    ) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = f"resident/domain-expert/consolidations/{stamp}-{result.workstream_id}.md"
-        await self._mimir.upsert_page(path, _render_consolidation(model, result))
-        return path
-
-    async def list_wake_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulResidentCycleRecord]:
-        return await collect_pages(
-            self._mimir,
-            f"{_WAKE_PREFIX}/cycles",
-            lambda content: _parse_wake_record(content, mandate=mandate),
-            reverse=True,
-            limit=limit,
-        )
-
-    async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str:
-        stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
-        path = f"{_WAKE_PREFIX}/cycles/{stamp}-{record.cycle_number}.md"
-        await self._mimir.upsert_page(path, _render_wake_record(record))
-        return path
-
-    async def list_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulPortfolioStewardRecord]:
-        return await collect_pages(
-            self._mimir,
-            f"{_WAKE_PREFIX}/portfolio-steward",
-            lambda content: _parse_portfolio_steward_record(content, mandate=mandate),
-            reverse=True,
-            limit=limit,
-        )
-
-    async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
-        stamp = _timestamp_slug(record.created_at)
-        path = f"{_WAKE_PREFIX}/portfolio-steward/{stamp}-{record.wake_number}.md"
-        await self._mimir.upsert_page(path, _render_portfolio_steward_record(record))
-        return path
-
-    async def list_reviews(self, review_key: str = "") -> list[ResidentArtifactReview]:
-        pages = await self._mimir.list_pages(prefix=_REVIEW_PREFIX)
-        reviews: list[ResidentArtifactReview] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            path = str(getattr(meta, "path", "") or "")
-            if "/audits/" in path:
-                continue
-            try:
-                content = await self._mimir.read_page(path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_review(content)
-            if parsed is None:
-                continue
-            if review_key and parsed.review_key != review_key:
-                continue
-            reviews.append(parsed)
-        return reviews
-
-    async def write_review(self, review: ResidentArtifactReview) -> str:
-        path = f"{_REVIEW_PREFIX}/{review.id}.md"
-        await self._mimir.upsert_page(path, _render_review(review))
-        return path
-
-    async def write_review_audit(self, content: str) -> str:
-        path = f"{_REVIEW_AUDIT_PREFIX}/{_review_stamp(datetime.now(UTC))}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_capability(self, capability: PhysicalCapability) -> str:
-        path = f"{_CAPABILITY_PREFIX}/{_slug(capability.id)}.md"
-        await self._mimir.upsert_page(path, _render_capability(capability))
-        return path
-
-    async def write_result(self, result: PhysicalActionResult) -> str:
-        stamp = result.created_at.strftime("%Y%m%dT%H%M%SZ")
-        path = f"{_RESULT_PREFIX}/{stamp}-{_slug(result.capability_id)}-{_slug(result.kind)}.md"
-        await self._mimir.upsert_page(path, _render_result(result))
-        return path
-
-    async def write_physical_audit(self, content: str) -> str:
-        path = f"{_PHYSICAL_AUDIT_PREFIX}/{_physical_stamp(datetime.now(UTC))}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_reasoning(self, reasoning) -> str:
-        path = f"{_REASONING_PREFIX}/{_physical_stamp(reasoning.created_at)}.md"
-        await self._mimir.upsert_page(path, _render_reasoning(reasoning))
-        return path
-
-    async def list_refs(self, prefix: str = _PHYSICAL_PREFIX) -> list[str]:
-        pages = await self._mimir.list_pages(prefix=prefix)
+    async def list_refs(self, prefix: str = "") -> list[str]:
+        pages = await self._mimir.list_pages(prefix=prefix or self._prefix)
         return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
 
 
-class LocalResidentState(
-    LocalResidentMemory,
-    LocalResidentDomainExpertMemory,
-    LocalWakefulResidentMemory,
-    LocalWakefulPortfolioStewardMemory,
-    LocalResidentReviewMemory,
-    LocalResidentPhysicalMemory,
-    ResidentStatePort,
-):
+class LocalResidentState(LocalResidentMemory, ResidentStatePort):
     """Filesystem-backed resident state adapter for local development/tests."""
 
     def __init__(
@@ -365,3 +188,13 @@ class LocalResidentState(
         continuation_prefix: str = "resident/continuation",
     ) -> None:
         LocalResidentMemory.__init__(self, root, prefix=continuation_prefix)
+
+    async def list_refs(self, prefix: str = "") -> list[str]:
+        base = self._root / (Path(prefix) if prefix else self._prefix)
+        if not base.exists():
+            return []
+        return sorted(
+            str(path.relative_to(self._root))
+            for path in base.rglob("*.md")
+            if path.is_file()
+        )

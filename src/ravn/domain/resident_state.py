@@ -1,10 +1,9 @@
-"""Canonical resident state/work boundaries."""
+"""Canonical resident state boundary."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
-from ravn.domain.physical_device import PhysicalActionResult, PhysicalCapability
 from ravn.domain.resident_continuation import (
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
@@ -12,21 +11,10 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyObservation,
     ResidentTurnRecord,
 )
-from ravn.domain.resident_expert import (
-    ExpertArtifact,
-    ResidentDomainModel,
-    ResidentWorkstream,
-    WorkstreamExecutionResult,
-)
-from ravn.domain.resident_review import ResidentArtifactReview
-from ravn.domain.wakeful_resident import (
-    WakefulPortfolioStewardRecord,
-    WakefulResidentCycleRecord,
-)
 
 
 class ResidentStatePort(Protocol):
-    """Durable resident state boundary used by resident runtimes.
+    """Durable resident state boundary used by resident memory consumers.
 
     This is intentionally storage-neutral; concrete stores belong behind
     adapters, never in the port name or contract.
@@ -59,53 +47,5 @@ class ResidentStatePort(Protocol):
     async def read_operator_answer(self) -> ResidentMemoryEntry | None: ...
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str: ...
-
-    async def read_domain_model(self, mandate: str) -> ResidentDomainModel | None: ...
-
-    async def write_domain_model(self, model: ResidentDomainModel) -> str: ...
-
-    async def list_workstreams(self, domain_model_ref: str) -> list[ResidentWorkstream]: ...
-
-    async def write_workstream(self, workstream: ResidentWorkstream) -> str: ...
-
-    async def write_artifact(self, artifact: ExpertArtifact, content: str) -> str: ...
-
-    async def write_consolidation(
-        self,
-        model: ResidentDomainModel,
-        result: WorkstreamExecutionResult,
-    ) -> str: ...
-
-    async def list_wake_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulResidentCycleRecord]: ...
-
-    async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str: ...
-
-    async def list_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulPortfolioStewardRecord]: ...
-
-    async def write_record(self, record: WakefulPortfolioStewardRecord) -> str: ...
-
-    async def list_reviews(self, review_key: str = "") -> list[ResidentArtifactReview]: ...
-
-    async def write_review(self, review: ResidentArtifactReview) -> str: ...
-
-    async def write_review_audit(self, content: str) -> str: ...
-
-    async def write_capability(self, capability: PhysicalCapability) -> str: ...
-
-    async def write_result(self, result: PhysicalActionResult) -> str: ...
-
-    async def write_physical_audit(self, content: str) -> str: ...
-
-    async def write_reasoning(self, reasoning: Any) -> str: ...
 
     async def list_refs(self, prefix: str = "") -> list[str]: ...

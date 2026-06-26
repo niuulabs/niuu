@@ -1,4 +1,4 @@
-"""Resident inbox intake, triage, and portfolio conversion."""
+"""Resident inbox intake: classify and store directed messages and events."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from .models import (
     ResidentInboxStatus,
     ResidentInboxTriage,
 )
-from .runtime import ResidentInboxRuntime
 from .serialization import (
     parse_inbox_signal,
     render_inbox_signal,
@@ -28,7 +27,6 @@ __all__ = [
     "ResidentInboxClassification",
     "ResidentInboxConfig",
     "ResidentInboxRun",
-    "ResidentInboxRuntime",
     "ResidentInboxSignal",
     "ResidentInboxStatus",
     "ResidentInboxTriage",

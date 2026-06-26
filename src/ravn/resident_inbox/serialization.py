@@ -6,11 +6,8 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from ravn.resident_continuation import _compact_line, _slug
-from ravn.resident_opportunity import (
-    _environment_signal_record,
-    parse_environment_signal_record,
-)
+from ravn.resident_text import compact_line as _compact_line
+from ravn.resident_text import slug as _slug
 from ravn.resident_text import timestamp_slug
 
 from .classify import classify_text
@@ -78,9 +75,78 @@ def signal_from_directed_message(
 
 def _signal_record_from_event(event: Any) -> dict[str, Any]:
     # JSON-normalize so datetimes / non-serializable payload values become strings
-    # before the record is persisted; the canonical extractor lives in resident_opportunity.
+    # before the record is persisted.
     record = _environment_signal_record(event)
     return json.loads(json.dumps(record, default=str))
+
+
+def _environment_signal_record(event: Any) -> dict[str, Any]:
+    """Extract the inbox-relevant fields from a Sleipnir-style event object."""
+    payload = dict(getattr(event, "payload", {}) or {})
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    event_type = str(getattr(event, "event_type", "") or payload.get("event_type") or "")
+    severity = str(payload.get("severity") or data.get("severity") or "info")
+    event_id = str(
+        getattr(event, "event_id", "")
+        or payload.get("event_id")
+        or data.get("provider_event_id")
+        or data.get("dedupe_key")
+        or getattr(event, "correlation_id", "")
+        or event_type
+    )
+    return {
+        "id": event_id,
+        "source": str(data.get("source_id") or payload.get("signal_source") or "environment"),
+        "kind": event_type or str(payload.get("signal_kind") or "environment_signal"),
+        "summary": _environment_signal_summary(event, payload, data, severity),
+        "evidence_ref": str(data.get("raw_payload_ref") or ""),
+        "severity": severity,
+        "observed_at": _event_timestamp(event, data),
+        "payload": payload,
+    }
+
+
+def _event_timestamp(event: Any, data: dict[str, Any]) -> str:
+    raw = data.get("observed_at") or getattr(event, "timestamp", None)
+    if hasattr(raw, "isoformat"):
+        return raw.isoformat()
+    text = str(raw or "").strip()
+    if text:
+        return text
+    return datetime.now(UTC).isoformat()
+
+
+def _environment_signal_summary(
+    event: Any,
+    payload: dict[str, Any],
+    data: dict[str, Any],
+    severity: str,
+) -> str:
+    message = str(
+        data.get("message")
+        or data.get("reason")
+        or data.get("title")
+        or payload.get("summary")
+        or ""
+    ).strip()
+    explicit = str(getattr(event, "summary", "") or "").strip()
+    if explicit:
+        if message and message not in explicit:
+            return _compact_line(f"{explicit}: {message}", limit=220)
+        return explicit
+    object_ref = data.get("object_ref")
+    if not isinstance(object_ref, dict):
+        object_ref = {}
+    object_label = " ".join(
+        str(object_ref.get(key) or "").strip()
+        for key in ("kind", "namespace", "name")
+        if str(object_ref.get(key) or "").strip()
+    )
+    signal_kind = str(payload.get("signal_kind") or payload.get("kind") or "").strip()
+    parts = [part for part in (signal_kind, object_label, severity, message) if part]
+    return _compact_line(" - ".join(parts) or "Environment signal observed.", limit=220)
 
 
 def render_inbox_signal(signal: ResidentInboxSignal) -> str:
@@ -109,9 +175,6 @@ def parse_inbox_signal(content: str) -> ResidentInboxSignal | None:
     start = content.find(_INBOX_SIGNAL_JSON_START)
     end = content.find(_INBOX_SIGNAL_JSON_END)
     if start < 0 or end <= start:
-        legacy = parse_environment_signal_record(content)
-        if legacy is not None:
-            return _signal_from_record(legacy, default_kind="environment_signal")
         return None
     raw = content[start + len(_INBOX_SIGNAL_JSON_START) : end].strip()
     try:

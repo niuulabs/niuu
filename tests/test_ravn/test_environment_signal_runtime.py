@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
-from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
@@ -25,11 +24,6 @@ from ravn.ports.capability import (
     WorkflowLaunchResult,
 )
 from ravn.resident_inbox import MimirResidentInbox
-from ravn.resident_opportunity import (
-    LocalResidentOpportunityBackend,
-    ResidentOpportunityConfig,
-    ResidentOpportunityRuntime,
-)
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -229,11 +223,10 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
-async def test_daemon_environment_signals_become_resident_opportunity_evidence(
+async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     tmp_path,
 ) -> None:
     settings = _settings()
-    settings.resident_autonomy.enabled = True
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     runtime = _build_environment_signal_runtime(
@@ -246,48 +239,16 @@ async def test_daemon_environment_signals_become_resident_opportunity_evidence(
     assert runtime is not None
     count = await runtime.collect_once()
     source = MimirResidentInbox(mimir)
-    signals = await source.collect(
-        mandate="A resident Ravn manages the host environment.",
-        domain_model=None,
-        objectives=(),
-        limit=5,
-    )
+    rows = await source.list_signals(status="", limit=5)
     pages = await mimir.list_pages(prefix="resident/inbox/signals")
-    opportunity_runtime = ResidentOpportunityRuntime(
-        backend=LocalResidentWorkItemBackend(tmp_path / "portfolio"),
-        opportunity_backend=LocalResidentOpportunityBackend(tmp_path / "opportunities"),
-        sources=(source,),
-        config=ResidentOpportunityConfig(
-            max_signals=5,
-            max_candidates=4,
-            max_selected=1,
-            min_total_score=10,
-            score_max=10,
-            score_mid=4,
-        ),
-    )
-    report = await opportunity_runtime.run(
-        "A resident Ravn manages the host environment and should keep it reliable."
-    )
-    remaining = await source.collect(
-        mandate="A resident Ravn manages the host environment.",
-        domain_model=None,
-        objectives=tuple(report.created_objectives),
-        limit=5,
-    )
 
     assert count == 1
     assert len(pages) == 1
-    assert len(signals) == 1
-    assert signals[0].source == "host-events"
-    assert signals[0].kind == "signal.host.event"
-    assert "Disk usage crossed 95%" in signals[0].summary
-    assert signals[0].evidence_ref.startswith("resident/inbox/signals/")
-    assert "environment health" in signals[0].outcomes
-    assert report.created_objectives
-    assert report.created_objectives[0].source_evidence
-    assert "resident/inbox/signals/" in report.created_objectives[0].source_evidence[0]
-    assert remaining == ()
+    assert len(rows) == 1
+    _path, signal = rows[0]
+    assert signal.source == "host-events"
+    assert signal.kind == "signal.host.event"
+    assert "Disk usage crossed 95%" in signal.summary
 
 
 @pytest.mark.asyncio
@@ -295,7 +256,6 @@ async def test_daemon_environment_signal_recording_notifies_wakefulness(
     tmp_path,
 ) -> None:
     settings = _settings()
-    settings.resident_autonomy.enabled = True
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     wakefulness = WakefulnessProbe()

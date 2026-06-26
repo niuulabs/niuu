@@ -23,12 +23,7 @@ from ravn.config import (
     PermissionConfig,
     PermissionRuleConfig,
     PhysicalDeviceConfig,
-    ResidentAutonomyTriggerConfig,
-    ResidentCapabilityDiscoveryConfig,
-    ResidentDelegationExecutionConfig,
     ResidentEvolutionConfig,
-    ResidentOpportunityGenerationConfig,
-    ResidentReviewConfig,
     Settings,
     SignalSourceConfig,
     ThreadConfig,
@@ -162,104 +157,6 @@ class TestToolsConfig:
         assert len(c.custom) == 1
 
 
-class TestResidentCapabilityDiscoveryConfig:
-    def test_defaults_use_existing_local_backend(self) -> None:
-        c = ResidentCapabilityDiscoveryConfig()
-
-        assert c.enabled is False
-        assert c.adapter == "ravn.adapters.resident_work.local.LocalCapabilityDiscoveryBackend"
-        assert c.kwargs == {}
-        assert c.secret_kwargs_env == {}
-        assert c.include_builtin_catalog is False
-        assert c.max_options > 0
-        assert c.max_follow_up_objectives > 0
-
-    def test_dynamic_adapter_config_accepts_kwargs(self) -> None:
-        c = ResidentCapabilityDiscoveryConfig(
-            enabled=True,
-            adapter="pkg.RealCapabilityDiscovery",
-            kwargs={"num_results": 3},
-            include_builtin_catalog=True,
-        )
-
-        assert c.enabled is True
-        assert c.adapter == "pkg.RealCapabilityDiscovery"
-        assert c.kwargs["num_results"] == 3
-        assert c.include_builtin_catalog is True
-
-
-class TestResidentDelegationExecutionConfig:
-    def test_defaults_use_configured_workflow_adapter(self) -> None:
-        c = ResidentDelegationExecutionConfig()
-
-        assert (
-            c.adapter
-            == "ravn.adapters.resident_execution.workflow."
-            "ConfiguredWorkflowResidentExecutionAdapter"
-        )
-        assert c.kwargs == {}
-        assert c.secret_kwargs_env == {}
-        assert c.max_delegations == 1
-        assert c.max_observations > 0
-        assert c.max_retry_follow_up_depth == 1
-        assert c.abandon_after_seconds == 0.0
-        assert c.reconcile_duplicate_delegations is True
-
-    def test_dynamic_adapter_config_accepts_kwargs_and_bounds(self) -> None:
-        c = ResidentDelegationExecutionConfig(
-            adapter="pkg.RealResidentExecutor",
-            kwargs={"workflow_id": "wf-resident"},
-            secret_kwargs_env={"token": "VOLUNDR_TOKEN"},
-            max_delegations=3,
-            max_retry_follow_up_depth=2,
-            approved_risk_objective_ids=("approved-objective",),
-            abandon_after_seconds=3600.0,
-            reconcile_duplicate_delegations=False,
-        )
-
-        assert c.adapter == "pkg.RealResidentExecutor"
-        assert c.kwargs["workflow_id"] == "wf-resident"
-        assert c.secret_kwargs_env["token"] == "VOLUNDR_TOKEN"
-        assert c.max_delegations == 3
-        assert c.max_retry_follow_up_depth == 2
-        assert c.approved_risk_objective_ids == ("approved-objective",)
-        assert c.abandon_after_seconds == 3600.0
-        assert c.reconcile_duplicate_delegations is False
-
-
-class TestResidentAutonomyTriggerConfig:
-    def test_defaults_are_disabled_until_mandate_is_configured(self) -> None:
-        c = ResidentAutonomyTriggerConfig()
-
-        assert c.enabled is False
-        assert c.mandate == ""
-        assert c.bootstrap_portfolio is True
-        assert c.operator_contact == "pending"
-        assert c.max_cycles_per_wake == 2
-        assert c.poll_interval_seconds > 0
-
-    def test_yaml_driven_daemon_autonomy_bounds(self) -> None:
-        c = ResidentAutonomyTriggerConfig(
-            enabled=True,
-            mandate="Kanuck Valley Models is my small 3D printing company.",
-            operator_contact="skuld",
-            persona="domain-drive",
-            max_cycles_per_wake=4,
-            max_objectives_selected=2,
-            max_wake_cycles=3,
-            poll_interval_seconds=30.0,
-        )
-
-        assert c.enabled is True
-        assert c.mandate.startswith("Kanuck Valley Models")
-        assert c.operator_contact == "skuld"
-        assert c.persona == "domain-drive"
-        assert c.max_cycles_per_wake == 4
-        assert c.max_objectives_selected == 2
-        assert c.max_wake_cycles == 3
-        assert c.poll_interval_seconds == 30.0
-
-
 class TestPhysicalDeviceConfig:
     def test_dynamic_adapter_config_accepts_kwargs_and_thresholds(self) -> None:
         c = PhysicalDeviceConfig(
@@ -275,30 +172,6 @@ class TestPhysicalDeviceConfig:
         assert c.secret_kwargs_env["token"] == "PRINTER_TOKEN"
         assert c.command_timeout_seconds == 12.5
         assert c.max_output_bytes == 4096
-
-
-class TestResidentOpportunityGenerationConfig:
-    def test_environment_signal_bridge_is_configurable(self) -> None:
-        c = ResidentOpportunityGenerationConfig(include_environment_signals=False)
-
-        assert c.include_environment_signals is False
-
-
-class TestResidentReviewConfig:
-    def test_dynamic_verification_adapter_config_accepts_kwargs_and_bounds(self) -> None:
-        c = ResidentReviewConfig(
-            verification_adapter="pkg.RealVerifier",
-            verification_kwargs={"timeout_seconds": 7},
-            verification_secret_kwargs_env={"token": "VERIFY_TOKEN"},
-            max_follow_up_objectives=2,
-            duplicate_review_enabled=True,
-        )
-
-        assert c.verification_adapter == "pkg.RealVerifier"
-        assert c.verification_kwargs["timeout_seconds"] == 7
-        assert c.verification_secret_kwargs_env["token"] == "VERIFY_TOKEN"
-        assert c.max_follow_up_objectives == 2
-        assert c.duplicate_review_enabled is True
 
 
 class TestMemoryConfig:

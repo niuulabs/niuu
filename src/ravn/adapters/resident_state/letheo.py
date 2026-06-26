@@ -48,17 +48,6 @@ class LetheoResidentStateAdapter(LocalResidentState):
         self._perceive(f"{ref}\n\n{_render_turn_record(record)}")
         return ref
 
-    async def write_artifact(self, artifact, content: str) -> str:
-        ref = await super().write_artifact(artifact, content)
-        self._perceive(f"{ref}\n\n{content}")
-        return ref
-
-    async def write_consolidation(self, model, result) -> str:
-        ref = await super().write_consolidation(model, result)
-        path = self._root / ref
-        self._perceive(path.read_text(encoding="utf-8"))
-        return ref
-
     def _perceive(self, text: str) -> None:
         if hasattr(self._session, "perceive"):
             self._session.perceive(self._subject, act=text)

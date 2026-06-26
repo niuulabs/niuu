@@ -36,15 +36,10 @@ async def test_local_resident_state_is_single_memory_boundary(tmp_path):
             usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
     )
-    review_ref = await state.write_review_audit("review audit")
-    physical_ref = await state.write_physical_audit("physical audit")
 
     assert turn_ref.startswith("resident/continuation/turns/")
-    assert review_ref.startswith("resident/reviews/audits/")
-    assert physical_ref.startswith("resident/physical/audits/")
     assert (tmp_path / turn_ref).exists()
-    assert (tmp_path / review_ref).read_text(encoding="utf-8") == "review audit"
-    assert (tmp_path / physical_ref).read_text(encoding="utf-8") == "physical audit"
+    assert turn_ref in await state.list_refs()
 
 
 @pytest.mark.asyncio
@@ -64,14 +59,10 @@ async def test_mimir_resident_state_is_single_memory_boundary(tmp_path):
             usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
     )
-    review_ref = await state.write_review_audit("review audit")
-    physical_ref = await state.write_physical_audit("physical audit")
 
     assert turn_ref.startswith("resident/continuation/turns/")
-    assert review_ref.startswith("resident/reviews/audits/")
-    assert physical_ref.startswith("resident/physical/audits/")
-    assert await mimir.read_page(review_ref) == "review audit"
-    assert await mimir.read_page(physical_ref) == "physical audit"
+    assert "resident state recorded" in await mimir.read_page(turn_ref)
+    assert turn_ref in await state.list_refs()
 
 
 @pytest.mark.asyncio
