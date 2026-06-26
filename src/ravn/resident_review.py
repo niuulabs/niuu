@@ -30,6 +30,9 @@ from ravn.domain.resident_review import (
     ResidentVerificationEvidence,
 )
 from ravn.ports.resident_review import ResidentVerificationPort
+from ravn.resident_text import merge_unique as _merge_text
+from ravn.resident_text import slug as _slug_text
+from ravn.resident_text import timestamp_slug as _stamp
 
 _REVIEW_PREFIX = "resident/reviews"
 _REVIEW_AUDIT_PREFIX = "resident/reviews/audits"
@@ -705,10 +708,6 @@ def _render_list(items: tuple[str, ...]) -> str:
     return "\n".join(f"- {item}" for item in items if item) or "- none"
 
 
-def _merge_text(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*left, *right)))
-
-
 def _merge_artifacts(
     left: tuple[ExpertArtifact, ...],
     right: tuple[ExpertArtifact, ...],
@@ -743,11 +742,4 @@ def _format_template(value: str, variables: dict[str, str]) -> str:
 
 
 def _slug(value: str) -> str:
-    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value))
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return slug.strip("-")[:96] or "item"
-
-
-def _stamp(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S%fZ")
+    return _slug_text(value, max_length=96, fallback="item")

@@ -42,6 +42,18 @@ from ravn.domain.wakeful_resident import (
 )
 from ravn.resident_continuation import ResidentRunBudget, _compact_line
 from ravn.resident_portfolio import ResidentPortfolioValidator
+from ravn.resident_text import (
+    metadata as _metadata,
+)
+from ravn.resident_text import (
+    render_list as _render_list,
+)
+from ravn.resident_text import (
+    section as _section,
+)
+from ravn.resident_text import (
+    section_items as _section_items,
+)
 
 _DOMAIN_MODEL_REF = "resident/domain-expert/domain-model.md"
 _WAKE_PREFIX = "resident/wakeful"
@@ -1008,56 +1020,6 @@ def _decision_value(value: str | None) -> WakefulResidentDecisionKind:
         return WakefulResidentDecisionKind.STOP
 
 
-def _metadata(content: str) -> dict[str, str]:
-    data: dict[str, str] = {}
-    for line in content.splitlines():
-        if not line.startswith("- ") or ":" not in line:
-            continue
-        key, value = line[2:].split(":", 1)
-        data[key.strip()] = value.strip()
-    return data
-
-
-def _section(content: str, name: str) -> str:
-    lines = _section_lines(content, name)
-    return "\n".join(line for line in lines if not line.startswith("- ")).strip()
-
-
-def _section_items(content: str, name: str) -> list[str]:
-    items: list[str] = []
-    for line in _section_lines(content, name):
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            value = stripped[2:].strip()
-            if value and value != "none":
-                items.append(value)
-    return items
-
-
-def _section_lines(content: str, name: str) -> list[str]:
-    wanted = f"## {name}".casefold()
-    lines = content.splitlines()
-    start = -1
-    for idx, line in enumerate(lines):
-        if line.strip().casefold() == wanted:
-            start = idx + 1
-            break
-    if start < 0:
-        return []
-    collected: list[str] = []
-    for line in lines[start:]:
-        if line.startswith("## "):
-            break
-        if line.strip():
-            collected.append(line)
-    return collected
-
-
-def _render_list(items: Any) -> str:
-    values = [str(item).strip() for item in items if str(item).strip()]
-    if not values:
-        return "- none"
-    return "\n".join(f"- {item}" for item in values)
 
 
 def _int_value(value: str | None) -> int:

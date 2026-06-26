@@ -33,6 +33,9 @@ from ravn.domain.resident_expert import (
 )
 from ravn.ports.physical_device import PhysicalDevicePort
 from ravn.resident_continuation import ConfigurableResidentPolicy
+from ravn.resident_text import merge_unique as _merge_text
+from ravn.resident_text import slug as _slug_text
+from ravn.resident_text import timestamp_slug as _stamp
 
 _PHYSICAL_PREFIX = "resident/physical"
 _CAPABILITY_PREFIX = f"{_PHYSICAL_PREFIX}/capabilities"
@@ -718,10 +721,6 @@ def _one_line(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def _merge_text(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*left, *right)))
-
-
 def _merge_artifacts(
     left: tuple[ExpertArtifact, ...],
     right: tuple[ExpertArtifact, ...],
@@ -738,11 +737,4 @@ def _merge_artifacts(
 
 
 def _slug(value: str) -> str:
-    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value))
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return slug.strip("-")[:96] or "item"
-
-
-def _stamp(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S%fZ")
+    return _slug_text(value, max_length=96, fallback="item")

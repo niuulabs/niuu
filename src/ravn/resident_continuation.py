@@ -47,6 +47,15 @@ from ravn.resident_operator_contact import (
     ResidentOperatorContactConfig,
     ResidentOperatorContactCoordinator,
 )
+from ravn.resident_text import (
+    compact_line as _compact_line,
+)
+from ravn.resident_text import (
+    slug as _slug,
+)
+from ravn.resident_text import (
+    timestamp_slug as _timestamp_slug,
+)
 
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
@@ -1157,13 +1166,6 @@ def _operator_answer_body_lines(content: str) -> list[str]:
     return lines
 
 
-def _compact_line(text: str, *, limit: int = 240) -> str:
-    compact = " ".join(str(text or "").split())
-    if len(compact) > limit:
-        compact = compact[: limit - 1].rstrip() + "…"
-    return compact
-
-
 def _policy_decision_record(
     record: ResidentTurnRecord,
     decision: ResidentContinuationDecision,
@@ -1215,10 +1217,3 @@ def _first_heading_or_line(content: str) -> str:
     return ""
 
 
-def _slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
-    return slug[:80]
-
-
-def _timestamp_slug(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S%fZ")

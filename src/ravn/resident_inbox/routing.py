@@ -11,6 +11,7 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
 )
 from ravn.resident_continuation import _compact_line, _slug
+from ravn.resident_text import append_unique as _append_unique
 
 from .classify import _keywords
 from .models import (
@@ -183,11 +184,6 @@ def _priority_for_signal(signal: ResidentInboxSignal) -> int:
     return min(base, 25)
 
 
-def _append_unique(items: tuple[str, ...], item: str) -> tuple[str, ...]:
-    value = item.strip()
-    if not value or value in items:
-        return items
-    return (*items, value)
 
 
 def _inbox_outcomes(signal: ResidentInboxSignal) -> tuple[str, ...]:

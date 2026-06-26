@@ -27,6 +27,7 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
     ResidentWorkItemBackend,
 )
+from ravn.resident_text import append_unique as _append_unique
 
 _APPROVAL_MARKER_PREFIX = "operator approved risk boundary:"
 _DENIAL_MARKER_PREFIX = "operator denied risk boundary:"
@@ -558,13 +559,6 @@ async def _rewrite_portfolio_with_objective(
         decision_history=_append_unique(portfolio.decision_history, decision_entry),
     )
     return await backend.write_portfolio(portfolio)
-
-
-def _append_unique(items: tuple[str, ...], item: str) -> tuple[str, ...]:
-    item = item.strip()
-    if not item or item in items:
-        return items
-    return (*items, item)
 
 
 def _approval_label(approved: bool | None) -> str:

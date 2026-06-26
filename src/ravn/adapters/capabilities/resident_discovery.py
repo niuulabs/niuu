@@ -16,6 +16,7 @@ from ravn.domain.resident_portfolio import (
     ResidentCapabilityOption,
 )
 from ravn.ports.web_search import SearchResult, WebSearchPort
+from ravn.resident_text import compact_line, slug
 
 _DEFAULT_SEARCH_PROVIDER = "ravn.adapters.tools.web_search.DuckDuckGoLiteSearchProvider"
 _DEFAULT_NUM_RESULTS = 5
@@ -325,11 +326,8 @@ def _tokens(value: str) -> set[str]:
 
 
 def _slug(value: str) -> str:
-    return "-".join(re.findall(r"[a-z0-9]+", str(value).casefold()))[:90]
+    return slug(value, max_length=90)
 
 
 def _compact_line(value: str, *, limit: int) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)].rstrip() + "..."
+    return compact_line(value, limit=limit, marker="...")
