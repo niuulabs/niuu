@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from mimir.adapters.markdown import MarkdownMimirAdapter
-
 import pytest
 
+from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.domain.resident_portfolio import ResidentObjectiveStatus
 from ravn.resident_inbox import (
     MimirResidentInbox,

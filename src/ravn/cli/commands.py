@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import inspect
 import json
@@ -3694,13 +3695,15 @@ def _wire_mimir_triggers(
                 ResidentDomainExpertConfig,
                 ResidentDomainExpertLoop,
             )
-            from ravn.resident_operator_contact import ingest_resident_operator_reply
             from ravn.resident_inbox import (
                 MimirResidentInbox,
-                ResidentInboxConfig as RuntimeResidentInboxConfig,
                 ResidentInboxRuntime,
                 ResidentInboxStatus,
             )
+            from ravn.resident_inbox import (
+                ResidentInboxConfig as RuntimeResidentInboxConfig,
+            )
+            from ravn.resident_operator_contact import ingest_resident_operator_reply
             from ravn.resident_opportunity import (
                 MimirEnvironmentSignalOpportunitySource,
                 ResidentOpportunityConfig,
@@ -3867,8 +3870,8 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="resident_inbox",
                         run=inbox_runtime.run,
-                        inspect=lambda active_mandate: _resident_inbox_attention(
-                            active_mandate,
+                        inspect=functools.partial(
+                            _resident_inbox_attention,
                             inbox=resident_inbox,
                         ),
                     )
@@ -4067,8 +4070,8 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="opportunity_generation",
                         run=opportunity_runtime.run,
-                        inspect=lambda active_mandate: _opportunity_attention(
-                            active_mandate,
+                        inspect=functools.partial(
+                            _opportunity_attention,
                             backend=backend,
                             environment_source=environment_opportunity_source,
                             has_configured_sources=configured_opportunity_sources > 0,
@@ -4109,8 +4112,8 @@ def _wire_mimir_triggers(
                     ResidentWakeExtension(
                         name="capability_discovery",
                         run=capability_runtime.run,
-                        inspect=lambda active_mandate: _capability_discovery_attention(
-                            active_mandate,
+                        inspect=functools.partial(
+                            _capability_discovery_attention,
                             backend=backend,
                         ),
                     )
@@ -4153,8 +4156,8 @@ def _wire_mimir_triggers(
                             runtime=review_runtime,
                             target_source=review_target_source,
                         ),
-                        inspect=lambda active_mandate: _review_attention(
-                            active_mandate,
+                        inspect=functools.partial(
+                            _review_attention,
                             target_source=review_target_source,
                         ),
                     )
@@ -4195,8 +4198,8 @@ def _wire_mimir_triggers(
                             active_mandate,
                             tuple(physical_runtimes),
                         ),
-                        inspect=lambda active_mandate: _physical_attention(
-                            active_mandate,
+                        inspect=functools.partial(
+                            _physical_attention,
                             continuation_memory=continuation_memory,
                         ),
                     )

@@ -23,12 +23,12 @@ from ravn.ports.capability import (
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
 )
+from ravn.resident_inbox import MimirResidentInbox
 from ravn.resident_opportunity import (
     LocalResidentOpportunityBackend,
     ResidentOpportunityConfig,
     ResidentOpportunityRuntime,
 )
-from ravn.resident_inbox import MimirResidentInbox
 from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
