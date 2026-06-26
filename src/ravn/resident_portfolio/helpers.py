@@ -691,15 +691,21 @@ def review_delegation_result(
     )
 
 
+_OPERATOR_QUESTION_PREFIX = "Can you help resolve this delegated-work question: "
+
+
 def _operator_questions_for_result(result: ResidentExecutionResult) -> tuple[str, ...]:
     questions: list[str] = []
     for question in (*result.operator_questions, *result.open_questions):
+        # _operator_facing_question filters on the RAW question (it rejects internal
+        # jargon like "delegated-work"); the operator-facing prefix is added after so
+        # the framing itself is not re-filtered.
         operator_question = _operator_facing_question(question)
         if operator_question and operator_question not in questions:
             questions.append(operator_question)
         if len(questions) >= 3:
             break
-    return tuple(questions)
+    return tuple(f"{_OPERATOR_QUESTION_PREFIX}{question}" for question in questions)
 
 
 def _operator_facing_question(question: str) -> str:
@@ -719,8 +725,9 @@ def _operator_facing_question(question: str) -> str:
     )
     if any(term in lowered for term in internal_terms):
         return ""
-    if not _needs_human_answer(text):
-        return ""
+    # Questions a delegated worker explicitly raised are surfaced to the operator
+    # as-is (minus internal jargon); the _needs_human_answer heuristic is for other
+    # call sites and would wrongly drop plain factual questions here.
     if text.endswith("?"):
         return text
     return f"{text}?"
