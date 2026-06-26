@@ -262,6 +262,12 @@ class TmuxInteractiveTransport(CLITransport):
         # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
         # Task and Subagent* signals for the same agent merge instead of duplicate.
         self._hook_agents: dict[str, dict[str, Any]] = {}
+        # Ordered stack of in-flight Task-subagent ids (the Task tool_use_id). A Task tool
+        # BLOCKS its parent, so every NON-Task tool hook between a Task PreToolUse and that
+        # Task's PostToolUse belongs to the subagent on top. Push in
+        # _surface_agent_started_from_task, pop in _emit_tool_result_from_hook. Single-subagent
+        # is exact (LIFO top); parallel Task calls are a KNOWN GAP (flat hooks can't disambiguate).
+        self._active_subagent_stack: list[str] = []
         self._panes: dict[str, _PaneState] = {}
         self._tail_tasks: dict[str, asyncio.Task[None]] = {}
         self._frame_tasks: dict[str, asyncio.Task[None]] = {}
@@ -735,6 +741,16 @@ class TmuxInteractiveTransport(CLITransport):
         if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
             await self._surface_tty_ask_user_question(tool_input)
         tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
+        # Parent attribution: a NON-Task tool firing while a Task subagent is in flight belongs
+        # to that subagent (stack top). The Task tool's OWN tool_use is a main-agent action ->
+        # parent stays None. Computed BEFORE the Task push below so a Task never self-references.
+        parent_id = (
+            self._coerce_str(payload.get("parent_tool_use_id"))
+            or self._coerce_str(payload.get("parentToolUseId"))
+            or None
+        )
+        if parent_id is None and tool_name != "Task" and self._active_subagent_stack:
+            parent_id = self._active_subagent_stack[-1]
         # Plan surfacing: TodoWrite carries Claude's full task list each call.
         if tool_name == "TodoWrite" and isinstance(tool_input, dict):
             await self._surface_plan_from_todowrite(tool_input)
@@ -742,19 +758,23 @@ class TmuxInteractiveTransport(CLITransport):
         # tool_use_id so the matching PostToolUse can mark it stopped.
         if tool_name == "Task" and isinstance(tool_input, dict):
             await self._surface_agent_started_from_task(tool_use_id, tool_input)
+        tool_use_block: dict[str, Any] = {
+            "type": "tool_use",
+            "id": tool_use_id,
+            "name": tool_name,
+            "input": tool_input if isinstance(tool_input, dict) else {},
+        }
+        # Subagent attribution — added ONLY when a Task subagent is in flight, so a main-agent
+        # tool frame stays byte-identical to before (absent keys decode as nil on iOS).
+        if parent_id is not None:
+            tool_use_block["parent_tool_use_id"] = parent_id
+            tool_use_block["agent_id"] = parent_id
         await self._emit(
             {
                 "type": "assistant",
                 "message": {
                     "model": self._model or "interactive",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": tool_name,
-                            "input": tool_input if isinstance(tool_input, dict) else {},
-                        }
-                    ],
+                    "content": [tool_use_block],
                 },
                 "metadata": {
                     "source": "claude_hook",
@@ -774,25 +794,43 @@ class TmuxInteractiveTransport(CLITransport):
         tool_use_id = self._coerce_str(payload.get("tool_use_id"))
         if not tool_use_id:
             return
-        # Agents surfacing: a finished Task tool means its subagent stopped.
-        if tool_use_id in self._hook_agents:
+        # Parent attribution: compute BEFORE popping so the Task's OWN result carries parent=None
+        # (a main-agent action) while a child result nests under the stack top.
+        is_task_result = tool_use_id in self._hook_agents
+        parent_id = (
+            self._coerce_str(payload.get("parent_tool_use_id"))
+            or self._coerce_str(payload.get("parentToolUseId"))
+            or None
+        )
+        if parent_id is None and not is_task_result and self._active_subagent_stack:
+            parent_id = self._active_subagent_stack[-1]
+        # Agents surfacing: a finished Task tool means its subagent stopped — pop it off the
+        # active-subagent stack so subsequent main-agent tools de-attribute. list.remove (not
+        # pop()) tolerates an out-of-LIFO-order Task completion.
+        if is_task_result:
             await self._finish_agent(tool_use_id, is_error=is_error)
+            try:
+                self._active_subagent_stack.remove(tool_use_id)
+            except ValueError:
+                pass
         result = payload.get("tool_response")
         if result is None:
             result = payload.get("error", "")
+        tool_result_block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": self._stringify_hook_value(result),
+            "is_error": is_error,
+        }
+        # Subagent attribution — added ONLY when this result belongs to a Task subagent, so a
+        # main-agent result frame stays byte-identical to before.
+        if parent_id is not None:
+            tool_result_block["parent_tool_use_id"] = parent_id
+            tool_result_block["agent_id"] = parent_id
         await self._emit(
             {
                 "type": "user",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": self._stringify_hook_value(result),
-                            "is_error": is_error,
-                        }
-                    ]
-                },
+                "message": {"content": [tool_result_block]},
                 "metadata": {
                     "source": "claude_hook",
                     "hook_event_name": ("PostToolUseFailure" if is_error else "PostToolUse"),
@@ -921,6 +959,10 @@ class TmuxInteractiveTransport(CLITransport):
             name=name,
             description=self._coerce_str(tool_input.get("description")),
         )
+        # Push the Task tool_use_id so subsequent NON-Task hooks (which fire while this Task
+        # blocks its parent) attribute to this subagent. Popped in _emit_tool_result_from_hook.
+        if tool_use_id and tool_use_id not in self._active_subagent_stack:
+            self._active_subagent_stack.append(tool_use_id)
 
     async def _surface_subagent_start(self, payload: dict[str, Any]) -> None:
         """A SubagentStart hook — Claude's purpose-built subagent-lifecycle signal.

@@ -1170,6 +1170,41 @@ class Broker:
             }
         )
 
+    def _serialize_in_progress_turn(self) -> dict | None:
+        """Reconstruct the in-flight assistant turn as a turn-shaped dict (or None when idle).
+
+        Reads the SAME volatile pending state the flush reads and emits ONE row shaped like
+        asdict(ConversationTurn) plus a trailing in_progress flag, appended to the `turns`
+        array on BOTH reconnect replay and REST GET. Stable sentinel id so clients dedup
+        across polls. visibility:'public' included so the row is shape-identical to asdict()
+        on the replay path (web normalizers that read visibility don't choke). Mutation-safe:
+        snapshots parts via list() and appends the reasoning tail only to the local copy, so
+        repeated polls never disturb the eventual real flush; once the turn flushes this
+        predicate goes False and it is served once as a real completed turn instead.
+        """
+        if not (
+            self._pending_assistant_content
+            or self._pending_assistant_parts
+            or self._pending_reasoning_text
+        ):
+            return None
+        parts: list[dict] = list(self._pending_assistant_parts)
+        if self._pending_reasoning_text:
+            parts = [
+                *parts,
+                {"type": "reasoning", "text": self._pending_reasoning_text[-500:]},
+            ]
+        return {
+            "id": "in-progress",
+            "role": "assistant",
+            "content": self._pending_assistant_content,
+            "parts": parts,
+            "created_at": datetime.now(UTC).isoformat(),
+            "metadata": {"status": "in_progress"},
+            "visibility": "public",
+            "in_progress": True,
+        }
+
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
         """Save any accumulated assistant content as a conversation turn."""
         content = self._pending_assistant_content
@@ -3199,14 +3234,20 @@ class Broker:
                             {"type": "reasoning", "text": str(block["thinking"])[-500:]}
                         )
                     elif btype == "tool_use" and block.get("id"):
-                        self._pending_assistant_parts.append(
-                            {
-                                "type": "tool_use",
-                                "id": block.get("id"),
-                                "name": block.get("name"),
-                                "input": block.get("input") or {},
-                            }
-                        )
+                        part = {
+                            "type": "tool_use",
+                            "id": block.get("id"),
+                            "name": block.get("name"),
+                            "input": block.get("input") or {},
+                        }
+                        # Carry subagent attribution so it survives into BOTH the served
+                        # in-progress turn AND the persisted completed turn (flush reads this
+                        # same list) — zero visual jump on live->settled.
+                        if block.get("parent_tool_use_id") is not None:
+                            part["parent_tool_use_id"] = block.get("parent_tool_use_id")
+                        if block.get("agent_id") is not None:
+                            part["agent_id"] = block.get("agent_id")
+                        self._pending_assistant_parts.append(part)
                 text_content = "\n".join(text_parts)
                 if text_content:
                     self._pending_assistant_content = (
@@ -5630,16 +5671,22 @@ class Broker:
 
             # Replay conversation history so late-joining browsers see
             # earlier messages (including the initial prompt)
-            if self._conversation_turns:
+            # Whole-truth unification: replay completed turns PLUS the in-flight turn so a
+            # reconnect mid-run reconstructs the FULL truth (not just new frames from now on).
+            in_progress_turn = self._serialize_in_progress_turn()
+            if self._conversation_turns or in_progress_turn is not None:
+                replay_turns = [asdict(t) for t in self._conversation_turns]
+                if in_progress_turn is not None:
+                    replay_turns.append(in_progress_turn)
                 logger.info(
-                    "Replaying %d conversation turns to new browser",
-                    len(self._conversation_turns),
+                    "Replaying %d conversation turn(s) to new browser",
+                    len(replay_turns),
                 )
                 if not await self._safe_browser_send_json(
                     websocket,
                     {
                         "type": "conversation_history",
-                        "turns": [asdict(t) for t in self._conversation_turns],
+                        "turns": replay_turns,
                     },
                 ):
                     return
@@ -6032,8 +6079,14 @@ async def get_conversation_history() -> dict:
         # Always include visibility so clients can rely on it being present
         return d
 
+    turns = [_serialize_turn(t) for t in broker._conversation_turns]
+    # Whole-truth unification: append the in-flight turn so a first connect / other device sees
+    # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
+    in_progress_turn = broker._serialize_in_progress_turn()
+    if in_progress_turn is not None:
+        turns.append(in_progress_turn)
     return {
-        "turns": [_serialize_turn(t) for t in broker._conversation_turns],
+        "turns": turns,
         "is_active": is_active,
         "last_activity": last_activity,
     }

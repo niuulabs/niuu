@@ -538,6 +538,83 @@ async def test_claude_tool_hooks_emit_sdk_shaped_tool_events(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_subagent_tool_hooks_carry_parent_attribution(tmp_path: Path) -> None:
+    """Subagent inner tool hooks carry parent_tool_use_id/agent_id; main-agent tools do not.
+
+    Whole-truth unification: this is what lets iOS nest a subagent's work under the agent. A
+    Task BLOCKS its parent, so every NON-Task hook between the Task PreToolUse and its
+    PostToolUse belongs to that subagent (the active-subagent stack top). Main-agent frames
+    stay byte-identical (no keys).
+    """
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    # 1) Task tool spawns a subagent (registers it + pushes the active-subagent stack).
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-1",
+            "tool_input": {"description": "Review the diff", "subagent_type": "code-reviewer"},
+        }
+    )
+    # 2) The subagent runs its own tool — must nest under task-1.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_use_id": "child-1",
+            "tool_input": {"pattern": "foo"},
+        }
+    )
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": "child-1",
+            "tool_response": {"stdout": "match", "stderr": "", "interrupted": False},
+        }
+    )
+    # 3) The Task finishes (pops the stack).
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_use_id": "task-1",
+            "tool_response": {"stdout": "done", "stderr": "", "interrupted": False},
+        }
+    )
+    # 4) A main-agent tool AFTER the subagent finished — no attribution.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "main-2",
+            "tool_input": {"command": "ls"},
+        }
+    )
+
+    by_id = {
+        e["message"]["content"][0]["id"]: e["message"]["content"][0]
+        for e in events
+        if e["type"] == "assistant" and e["message"]["content"][0].get("type") == "tool_use"
+    }
+    # The Task's OWN tool_use is a main-agent action -> no parent.
+    assert "parent_tool_use_id" not in by_id["task-1"]
+    # The subagent's inner tool nests under the Task id.
+    assert by_id["child-1"]["parent_tool_use_id"] == "task-1"
+    assert by_id["child-1"]["agent_id"] == "task-1"
+    # A main-agent tool after the subagent finished carries NO attribution (byte-identical frame).
+    assert "parent_tool_use_id" not in by_id["main-2"]
+    assert "agent_id" not in by_id["main-2"]
+    # The child's tool_result also nests under the Task id.
+    child_result = next(
+        e["message"]["content"][0]
+        for e in events
+        if e["type"] == "user" and e["message"]["content"][0].get("tool_use_id") == "child-1"
+    )
+    assert child_result["parent_tool_use_id"] == "task-1"
+
+
+@pytest.mark.asyncio
 async def test_hook_enabled_turn_completes_on_stop_not_terminal_idle(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
     events = await _collect_events(transport)
