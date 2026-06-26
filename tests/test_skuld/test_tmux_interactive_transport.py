@@ -899,3 +899,67 @@ async def test_initial_prompt_falls_through_if_repl_never_signals(
     await transport.start()
     await transport.stop()
     assert any("seed anyway" in buf for buf in transport.loaded_buffers)
+
+
+# ───────────────────────── steering pending→active correlation ─────────────
+
+
+@pytest.mark.asyncio
+async def test_user_prompt_submit_correlates_steering_msg_id(tmp_path: Path) -> None:
+    """A delivered steer's UserPromptSubmit echoes back its broker msg_id/request_id.
+
+    The broker pastes the steer into the pane carrying the ids it minted; when Claude
+    actually CONSUMES that prompt it fires UserPromptSubmit echoing the text. We match
+    it back to the delivered message so the client can flip THAT bubble pending→active.
+    """
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    # The native steering path: send_control("redirect", ...) carries the ids.
+    await transport.send_control(
+        "redirect", content="refactor the parser", msg_id="m-1", request_id="r-1"
+    )
+    assert len(transport._pending_prompt_correlations) == 1  # noqa: SLF001
+
+    # Claude consumes the prompt -> UserPromptSubmit hook echoes the exact text.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "refactor the parser",
+            "session_id": "claude-abc",
+        }
+    )
+    await transport.stop()
+
+    submitted = [e for e in events if e["type"] == "terminal_prompt_submitted"]
+    assert submitted, "UserPromptSubmit must emit terminal_prompt_submitted"
+    assert submitted[-1]["msg_id"] == "m-1"
+    assert submitted[-1]["request_id"] == "r-1"
+    # The correlation was consumed, so a duplicate/echo hook can't re-fire it.
+    assert not transport._pending_prompt_correlations  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_user_prompt_submit_without_match_is_uncorrelated(tmp_path: Path) -> None:
+    """A prompt we never delivered (typed straight into the pane) carries no msg_id,
+    and must NOT consume an unrelated pending correlation."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.send_control("redirect", content="message A", msg_id="m-A", request_id="r-A")
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "something else entirely",
+            "session_id": "claude-abc",
+        }
+    )
+    await transport.stop()
+
+    submitted = [e for e in events if e["type"] == "terminal_prompt_submitted"]
+    assert submitted, "every UserPromptSubmit still emits terminal_prompt_submitted"
+    assert "msg_id" not in submitted[-1], "an unmatched prompt must not be attributed"
+    # The real message A correlation is preserved for ITS own hook.
+    assert len(transport._pending_prompt_correlations) == 1  # noqa: SLF001

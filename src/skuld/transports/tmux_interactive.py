@@ -19,6 +19,7 @@ import shlex
 import shutil
 import time
 import uuid
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,24 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 logger = logging.getLogger("skuld.transport")
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
+
+# Appended to Claude's system prompt for interactive (steerable) tmux sessions. The user can steer
+# this session at any time, so we ask Claude to keep its plan + in-progress work VISIBLE via
+# TodoWrite — that list is what surfaces in the client's live Plan/Agents dock and makes steering
+# legible (the user sees what's running and what's queued).
+# Toggle: SKULD__TMUX_STEERING_INSTRUCTIONS.
+_STEERING_TASK_INSTRUCTION = """\
+You are running as a long-lived, STEERABLE coding session: the user can send you new messages at \
+any time while you work, and they are inserted into your flow as you reach the next opportunity. \
+To keep that steering legible, keep your plan and in-progress work VISIBLE at all times:
+
+- Use the TodoWrite tool to maintain a live task list for any multi-step work. Add tasks as you \
+discover them, keep exactly one in_progress while you work it, and complete it before moving on. \
+This list is the user's window into what you are doing and what is queued — keep it current.
+- Decompose work into tasks that can run either serially or as parallel subagents (the Task tool). \
+Prefer subagents for independent, parallelizable work; keep dependent steps serial.
+- When a steering message arrives mid-task, fold it into the task list (a new task or an \
+adjustment) rather than silently dropping your current plan."""
 
 _BUILT_IN_SLASH_COMMANDS = [
     {"name": "/agents", "description": "Manage agent teams and subagents"},
@@ -253,10 +272,26 @@ class TmuxInteractiveTransport(CLITransport):
             and self._claude_auth_mode != "api_key"
         )
 
+        # Append the steering/task-tracking guidance to Claude's system prompt (on by default) so a
+        # steerable session keeps a live TodoWrite plan the client can surface + steer against.
+        self._steering_instructions_enabled = self._bool_env(
+            "SKULD__TMUX_STEERING_INSTRUCTIONS", True
+        )
+
         self._alive = False
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        # Correlation FIFO of (msg_id, request_id, normalized_text) for each user
+        # message pasted into the pane but not yet seen consumed by Claude. A steered
+        # message lands in the CLI's own input queue and is inserted "at the right
+        # moment"; the UserPromptSubmit hook is the genuine "Claude took this prompt
+        # into its flow" signal. We pop the matching entry there and stamp its msg_id
+        # onto terminal_prompt_submitted so the client can flip THAT specific steering
+        # bubble from "pending" to "active". Bounded so an unmatched entry can't leak.
+        self._pending_prompt_correlations: deque[tuple[str | None, str | None, str]] = deque(
+            maxlen=32
+        )
         # Agents in flight, keyed by a resolved id (tool_use_id for Task-tool
         # subagents, subagent_id for SubagentStart, etc.). Lets the matching
         # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
@@ -416,7 +451,9 @@ class TmuxInteractiveTransport(CLITransport):
                 self._turn_done.set()
             await self._run_tmux("kill-session", "-t", self._session_name, check=False)
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Deliver a user message by typing it into the live interactive CLI.
 
         This is real steering: we never stop/restart the turn. The CLI queues
@@ -425,10 +462,15 @@ class TmuxInteractiveTransport(CLITransport):
         for the turn to finish — the response streams back asynchronously via
         the pane tail / Claude hooks, and completion is detected by the
         watchdog or the Stop hook.
-        """
-        await self._deliver_user_text(content)
 
-    async def _deliver_user_text(self, content: str) -> None:
+        ``msg_id``/``request_id`` (when supplied by the broker) are recorded so the
+        matching UserPromptSubmit hook can flip that message from pending to active.
+        """
+        await self._deliver_user_text(content, msg_id=msg_id, request_id=request_id)
+
+    async def _deliver_user_text(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Paste content into the pane and ensure a turn is being tracked.
 
         The send lock is held only for the paste (to keep concurrent messages
@@ -492,7 +534,33 @@ class TmuxInteractiveTransport(CLITransport):
             ) from exc
         finally:
             self._send_lock.release()
+        # Record the correlation only on a successful paste — the message is now in
+        # the CLI's input queue. The matching UserPromptSubmit hook pops this to stamp
+        # the originating msg_id onto the "Claude consumed it" signal.
+        self._pending_prompt_correlations.append(
+            (msg_id, request_id, self._normalize_prompt(content))
+        )
         logger.info("tmux deliver: pasted %d chars into pane OK", len(content))
+
+    @staticmethod
+    def _normalize_prompt(text: str) -> str:
+        """Collapse whitespace so a delivered message matches the prompt Claude echoes
+        back via UserPromptSubmit (the REPL may reflow/trim it)."""
+        return " ".join(text.split())
+
+    def _match_prompt_correlation(self, prompt: str) -> tuple[str | None, str | None]:
+        """Pop the delivered-message correlation whose text matches this submitted
+        prompt and return its (msg_id, request_id). Returns (None, None) without
+        consuming anything when there's no match (a prompt we didn't originate, e.g.
+        a slash command typed directly in the pane), so ids are never mis-attributed."""
+        target = self._normalize_prompt(prompt)
+        if not target:
+            return None, None
+        for i, (msg_id, request_id, norm) in enumerate(self._pending_prompt_correlations):
+            if norm == target:
+                del self._pending_prompt_correlations[i]
+                return msg_id, request_id
+        return None, None
 
     def _begin_turn(self) -> None:
         """Start tracking a new turn so its output streams and completion fires.
@@ -595,7 +663,11 @@ class TmuxInteractiveTransport(CLITransport):
             if content:
                 # Same native delivery as a regular message: type it into the
                 # live CLI and ensure the turn is tracked so the reply streams.
-                await self._deliver_user_text(content)
+                await self._deliver_user_text(
+                    content,
+                    msg_id=self._coerce_str(kwargs.get("msg_id")) or None,
+                    request_id=self._coerce_str(kwargs.get("request_id")) or None,
+                )
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
         """Discover slash commands from Claude Code's live `/` autocomplete menu."""
@@ -653,16 +725,23 @@ class TmuxInteractiveTransport(CLITransport):
         if event_name == "UserPromptSubmit":
             self._mark_semantic_turn_started()
             prompt = payload.get("prompt")
-            await self._emit(
-                {
-                    "type": "terminal_prompt_submitted",
-                    "event_type": "claude.prompt.submitted",
-                    "prompt": prompt if isinstance(prompt, str) else "",
-                    "claude_session_id": payload.get("session_id"),
-                    "transcript_path": payload.get("transcript_path"),
-                    "metadata": {"source": "claude_hook"},
-                }
-            )
+            prompt_str = prompt if isinstance(prompt, str) else ""
+            # Claude just took a user prompt into its flow. Correlate it back to the
+            # message we pasted so the client can flip THAT steering bubble to active.
+            msg_id, request_id = self._match_prompt_correlation(prompt_str)
+            event: dict[str, Any] = {
+                "type": "terminal_prompt_submitted",
+                "event_type": "claude.prompt.submitted",
+                "prompt": prompt_str,
+                "claude_session_id": payload.get("session_id"),
+                "transcript_path": payload.get("transcript_path"),
+                "metadata": {"source": "claude_hook"},
+            }
+            if msg_id:
+                event["msg_id"] = msg_id
+            if request_id:
+                event["request_id"] = request_id
+            await self._emit(event)
             return True
 
         if event_name == "PreToolUse":
@@ -1341,13 +1420,24 @@ class TmuxInteractiveTransport(CLITransport):
             )
         if self._hook_events_enabled and self._sdk_port:
             cmd.extend(["--settings", str(self._hook_settings_path)])
-        if self._system_prompt:
-            cmd.extend(["--append-system-prompt", self._system_prompt])
+        appended_system_prompt = self._composed_system_prompt()
+        if appended_system_prompt:
+            cmd.extend(["--append-system-prompt", appended_system_prompt])
         if self._mcp_config:
             cmd.extend(["--mcp-config", self._mcp_config])
         if self._agent_teams:
             cmd.extend(["--teammate-mode", "tmux"])
         return cmd
+
+    def _composed_system_prompt(self) -> str:
+        """The text appended via --append-system-prompt: the steering/task-tracking guidance (when
+        enabled) followed by any session-supplied system prompt. Either part may be empty."""
+        parts: list[str] = []
+        if self._steering_instructions_enabled:
+            parts.append(_STEERING_TASK_INSTRUCTION)
+        if self._system_prompt:
+            parts.append(self._system_prompt)
+        return "\n\n".join(parts)
 
     def _remote_control_name(self) -> str:
         """Label shown in the claude.ai/code + phone session list. Prefer the friendly

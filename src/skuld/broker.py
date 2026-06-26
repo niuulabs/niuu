@@ -3063,6 +3063,10 @@ class Broker:
             self._track_pane_agent(data, opened=True)
         elif event_type == "terminal_pane_closed":
             self._track_pane_agent(data, opened=False)
+        elif event_type == "terminal_prompt_submitted":
+            # Claude consumed a (correlated) user prompt — flip that steering message
+            # from "pending" to "active" and tell live clients via user_active.
+            await self._activate_user_turn(data)
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
@@ -3717,6 +3721,12 @@ class Broker:
                         id=msg_id,
                         role="user",
                         content=content_str,
+                        # The message has been accepted but not yet consumed by the
+                        # agent. It rides as "pending" (the client renders it greyed /
+                        # italic) until the correlated UserPromptSubmit flips it to
+                        # "active". Survives reconnect + REST since metadata is
+                        # serialized with the turn.
+                        metadata={"steering_state": "pending"},
                     )
                 )
                 # Mirror the human turn into the durable event log so log-only
@@ -3744,6 +3754,7 @@ class Broker:
                         "id": msg_id,
                         "content": content_str,
                         "request_id": request_id,
+                        "steering_state": "pending",
                     }
                 )
 
@@ -3869,8 +3880,14 @@ class Broker:
             )
         try:
             if use_redirect:
-                await self._transport.send_control("redirect", content=content)
+                # Carry the ids so a native transport (tmux) can correlate the
+                # eventual UserPromptSubmit back to this message and flip it active.
+                await self._transport.send_control(
+                    "redirect", content=content, msg_id=msg_id, request_id=request_id
+                )
             else:
+                # interrupt_resume transports (SDK/codex idle) have no UserPromptSubmit
+                # hook to correlate against, so they take the plain send_message contract.
                 outbound = await self._apply_retrieval_reflex(content)
                 await self._transport.send_message(outbound)
         except Exception as exc:
@@ -3920,6 +3937,39 @@ class Broker:
             await self._channels.broadcast(event)
         except Exception:
             logger.debug("Failed to broadcast delivery ack", exc_info=True)
+
+    async def _activate_user_turn(self, data: dict) -> None:
+        """Flip a steering message from "pending" to "active" once the agent has
+        actually consumed it.
+
+        ``user_delivered`` only means the text was typed into the pane; the message
+        then sits in the CLI's own input queue until it is inserted into the flow.
+        The (correlated) ``terminal_prompt_submitted`` — driven by Claude's
+        UserPromptSubmit hook — is the genuine "now in the conversation" signal. We
+        persist ``steering_state=active`` on the turn (so reconnect + REST reflect it)
+        and broadcast a ``user_active`` event keyed by ``id`` so a live client can flip
+        that specific bubble immediately, without waiting for the next REST poll.
+        """
+        msg_id = data.get("msg_id")
+        if not isinstance(msg_id, str) or not msg_id:
+            return
+        request_id = data.get("request_id")
+        changed = False
+        for turn in self._conversation_turns:
+            if turn.id == msg_id and turn.role == "user":
+                if turn.metadata.get("steering_state") != "active":
+                    turn.metadata["steering_state"] = "active"
+                    changed = True
+                break
+        if changed:
+            self._save_conversation_history()
+        event: dict[str, Any] = {"type": "user_active", "id": msg_id}
+        if isinstance(request_id, str) and request_id:
+            event["request_id"] = request_id
+        try:
+            await self._channels.broadcast(event)
+        except Exception:
+            logger.debug("Failed to broadcast user_active", exc_info=True)
 
     async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
         """Ingest a Claude Code hook payload into the normal event pipeline.

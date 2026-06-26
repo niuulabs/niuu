@@ -16,6 +16,7 @@ from fastapi import WebSocketDisconnect
 from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
+    ConversationTurn,
     _log_buffer,
     _SendMessageRequest,
     _TokenRedactFilter,
@@ -403,6 +404,53 @@ class TestBroker:
 
         await test_broker.shutdown()
         mock_channel.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_activate_user_turn_flips_pending_and_broadcasts(self, test_broker):
+        """A correlated terminal_prompt_submitted flips the steer pending->active and
+        broadcasts user_active so a live client can flip that specific bubble."""
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        # A pending steering turn, as the inbound dispatch path appends it.
+        test_broker._append_turn(
+            ConversationTurn(
+                id="m-1",
+                role="user",
+                content="refactor the parser",
+                metadata={"steering_state": "pending"},
+            )
+        )
+
+        # Claude consumed it: the transport's correlated terminal_prompt_submitted.
+        await test_broker._activate_user_turn(
+            {"type": "terminal_prompt_submitted", "msg_id": "m-1", "request_id": "r-1"}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-1")
+        assert turn.metadata["steering_state"] == "active", "the turn must flip to active"
+        assert any(
+            call.args[0].get("type") == "user_active"
+            and call.args[0].get("id") == "m-1"
+            and call.args[0].get("request_id") == "r-1"
+            for call in mock_channel.send_event.await_args_list
+        ), "a user_active event keyed by the msg id must be broadcast"
+
+    @pytest.mark.asyncio
+    async def test_activate_user_turn_ignores_uncorrelated_submit(self, test_broker):
+        """An uncorrelated prompt-submit (no msg_id) emits no user_active."""
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+
+        await test_broker._activate_user_turn({"type": "terminal_prompt_submitted"})
+
+        assert not any(
+            call.args[0].get("type") == "user_active"
+            for call in mock_channel.send_event.await_args_list
+        ), "an uncorrelated prompt-submit must not broadcast user_active"
 
     @pytest.mark.asyncio
     async def test_handle_cli_event_forwards_to_channels(self, test_broker):
@@ -1506,6 +1554,7 @@ class TestDispatchBrowserMessage:
                 "id": ANY,
                 "content": "hello",
                 "request_id": "req-1",
+                "steering_state": "pending",
             }
         )
         # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
@@ -1553,6 +1602,7 @@ class TestDispatchBrowserMessage:
                 "id": ANY,
                 "content": expected,
                 "request_id": None,
+                "steering_state": "pending",
             }
         )
 
@@ -1585,6 +1635,7 @@ class TestDispatchBrowserMessage:
                 "id": ANY,
                 "content": expected,
                 "request_id": None,
+                "steering_state": "pending",
             }
         )
 
@@ -1647,6 +1698,8 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="Prefer option B",
+            msg_id=ANY,
+            request_id=None,
         )
 
     @pytest.mark.asyncio
@@ -1660,6 +1713,8 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="change direction",
+            msg_id=ANY,
+            request_id=None,
         )
         test_broker._transport.send_message.assert_not_called()
 
@@ -1680,6 +1735,8 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="do the thing",
+            msg_id=ANY,
+            request_id=None,
         )
 
     @pytest.mark.asyncio
@@ -1712,6 +1769,8 @@ class TestDispatchBrowserMessage:
                 "Switch to the new screenshot\n\n"
                 "[User attached 1 image attachment. This transport forwards text only.]"
             ),
+            msg_id=ANY,
+            request_id=None,
         )
         test_broker._transport.send_message.assert_not_called()
 
