@@ -74,7 +74,6 @@ from ravn.ports.capability import (
     WorkflowRunReference,
     WorkflowRunStatus,
 )
-from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line, _slug
 from ravn.resident_operator_contact import approved_risk_objective_ids_from_objectives
 
@@ -263,105 +262,6 @@ class LocalResidentWorkItemBackend(ResidentWorkItemBackend):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return str(rel)
-
-
-class MimirResidentWorkItemBackend(ResidentWorkItemBackend):
-    """Mimir-backed resident work item backend."""
-
-    # TODO: Add a Ting-backed ResidentWorkItemBackend adapter once Ting can use
-    # Mimir as a lightweight ticket backend.
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def read_portfolio(self, mandate: str) -> ResidentPortfolio | None:
-        try:
-            content = await self._mimir.read_page(_PORTFOLIO_PATH)
-        except FileNotFoundError:
-            return None
-        portfolio = _parse_portfolio(content, mandate=mandate)
-        objectives = tuple(await self.list_objectives(mandate))
-        return portfolio.with_objectives(objectives) if objectives else portfolio
-
-    async def write_portfolio(self, portfolio: ResidentPortfolio) -> str:
-        await self._mimir.upsert_page(_PORTFOLIO_PATH, _render_portfolio(portfolio))
-        return _PORTFOLIO_PATH
-
-    async def list_objectives(self, mandate: str) -> list[ResidentObjective]:
-        pages = await self._mimir.list_pages(prefix=_OBJECTIVE_PREFIX)
-        objectives: list[ResidentObjective] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_objective(content)
-            if parsed is not None:
-                objectives.append(parsed)
-        return objectives
-
-    async def write_objective(self, objective: ResidentObjective) -> str:
-        path = f"{_OBJECTIVE_PREFIX}/{objective.id}.md"
-        await self._mimir.upsert_page(path, _render_objective(objective))
-        return path
-
-    async def append_decision(self, mandate: str, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        path = f"{_DECISION_PREFIX}/{stamp}.md"
-        await self._mimir.upsert_page(path, f"# Resident Portfolio Decision\n\n{entry}\n")
-        return path
-
-    async def list_refs(self, prefix: str) -> list[str]:
-        pages = await self._mimir.list_pages(prefix=prefix)
-        return sorted(getattr(page, "path", "") for page in pages if getattr(page, "path", ""))
-
-    async def write_capability_discovery(self, discovery_id: str, content: str) -> str:
-        path = f"{_CAPABILITY_DISCOVERY_PREFIX}/{_slug(discovery_id)}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def list_delegations(self, mandate: str) -> list[ResidentDelegationRecord]:
-        pages = await self._mimir.list_pages(prefix=_DELEGATION_PREFIX)
-        delegations: list[ResidentDelegationRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_delegation(content)
-            if parsed is not None:
-                delegations.append(parsed)
-        return delegations
-
-    async def write_delegation(self, delegation: ResidentDelegationRecord) -> str:
-        path = f"{_DELEGATION_PREFIX}/{delegation.id}.md"
-        await self._mimir.upsert_page(path, _render_delegation(delegation))
-        return path
-
-    async def write_delegation_result(
-        self,
-        delegation_id: str,
-        result: ResidentExecutionResult,
-        content: str,
-    ) -> str:
-        filename = f"{_slug(delegation_id)}-{_slug(result.session_id)}.md"
-        path = f"{_DELEGATION_RESULT_PREFIX}/{filename}"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_delegation_review(
-        self,
-        review: ResidentDelegationReview,
-        content: str,
-    ) -> str:
-        path = f"{_DELEGATION_REVIEW_PREFIX}/{review.id}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_operator_contact(self, result: OperatorContactResult) -> str:
-        path = f"{_OPERATOR_CONTACT_PREFIX}/{result.request.id}.md"
-        await self._mimir.upsert_page(path, _render_operator_contact(result))
-        return path
 
 
 class ResidentLongHorizonWorkManager:
@@ -1583,6 +1483,10 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
         } and not artifacts:
             return None
         output_refs = tuple(item.path for item in artifacts if item.path)
+        artifact_excerpts = await self._read_workflow_artifact_excerpts(
+            reference,
+            tuple(artifacts),
+        )
         findings = tuple(
             _compact_line(
                 f"{event.event_type}: {json.dumps(event.data, sort_keys=True)}",
@@ -1605,17 +1509,30 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             if item.summary or item.title or item.path
         ]
         summary = "; ".join(summary_parts) or _workflow_status_summary(status)
+        assimilated = _assimilate_workflow_artifact_excerpts(artifact_excerpts)
         return ResidentExecutionResult(
             session_id=status.session_id or session_id,
             status=result_status,
             summary=summary,
             output_refs=output_refs,
-            findings=findings,
-            follow_up_suggestions=(
-                (f"Review workflow output for session {status.session_id or session_id}",)
-                if output_refs or findings
-                else ()
+            artifact_excerpts=artifact_excerpts,
+            findings=_merge_text(findings, assimilated["findings"]),
+            follow_up_suggestions=_merge_text(
+                assimilated["follow_up_suggestions"],
+                (
+                    (f"Assimilate workflow output for session {status.session_id or session_id}",)
+                    if (output_refs or findings) and not artifact_excerpts
+                    else ()
+                ),
             ),
+            known_facts=assimilated["known_facts"],
+            hypotheses=assimilated["hypotheses"],
+            open_questions=assimilated["open_questions"],
+            operator_questions=assimilated["operator_questions"],
+            risk_notes=assimilated["risk_notes"],
+            recommended_next_action=assimilated["recommended_next_action"][0]
+            if assimilated["recommended_next_action"]
+            else "",
             blocked_reason=(
                 summary
                 if result_status
@@ -1675,8 +1592,154 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             or WorkflowRunReference(session_id=session_id)
         )
 
+    async def _read_workflow_artifact_excerpts(
+        self,
+        reference: WorkflowRunReference,
+        artifacts: tuple[Any, ...],
+    ) -> tuple[str, ...]:
+        excerpts: list[str] = []
+        remaining = 18000
+        for artifact in sorted(artifacts, key=_artifact_assimilation_sort_key):
+            path = getattr(artifact, "path", "")
+            if not path or remaining <= 0:
+                continue
+            try:
+                content = await self._workflows.read_workflow_artifact(reference, path=path)
+            except Exception:
+                continue
+            text = str(getattr(content, "content", "") or "").strip()
+            if not text:
+                continue
+            excerpt = text[: min(remaining, 9000)]
+            excerpts.append(f"# Artifact: {path}\n\n{excerpt}")
+            remaining -= len(excerpt)
+            if len(excerpts) >= 6:
+                break
+        return tuple(excerpts)
+
 
 _WORKFLOW_REFERENCE_PREFIX = "workflow-ref:"
+
+
+def _artifact_assimilation_sort_key(artifact: Any) -> tuple[int, str]:
+    path = str(getattr(artifact, "path", "") or "")
+    name = Path(path).name.casefold()
+    priority = 50
+    if name in {"final.md", "summary.md", "critique.md"}:
+        priority = 0
+    elif name in {"manifest.md", "sources.md", "followups.md"}:
+        priority = 5
+    elif getattr(artifact, "canonical", False):
+        priority = 10
+    elif name.endswith(".md"):
+        priority = 20
+    return (priority, path)
+
+
+def _assimilate_workflow_artifact_excerpts(
+    excerpts: tuple[str, ...],
+) -> dict[str, tuple[str, ...]]:
+    return {
+        "findings": _artifact_section_items(excerpts, ("Findings",)),
+        "known_facts": _artifact_section_items(excerpts, ("Known Facts",)),
+        "hypotheses": _artifact_section_items(excerpts, ("Hypotheses",)),
+        "open_questions": _artifact_section_items(
+            excerpts,
+            ("Open Questions", "Real Open Questions"),
+        ),
+        "operator_questions": _artifact_section_items(excerpts, ("Operator Questions",)),
+        "risk_notes": _artifact_section_items(excerpts, ("Risk Notes", "Risks", "Caveats")),
+        "recommended_next_action": _artifact_section_text_items(
+            excerpts,
+            ("Recommended Next Action", "Next Action"),
+        ),
+        "follow_up_suggestions": _artifact_section_items(
+            excerpts,
+            (
+                "Follow-Up Suggestions",
+                "Follow Up Suggestions",
+                "Suggested Follow-Up Work",
+                "Suggested Follow Up Work",
+            ),
+        ),
+    }
+
+
+def _artifact_section_items(
+    excerpts: tuple[str, ...],
+    section_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for excerpt in excerpts:
+        for name in section_names:
+            for item in _markdown_section_list_items(excerpt, name):
+                key = item.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(item)
+    return tuple(items)
+
+
+def _artifact_section_text_items(
+    excerpts: tuple[str, ...],
+    section_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for excerpt in excerpts:
+        for name in section_names:
+            text = " ".join(_markdown_section_lines(excerpt, name)).strip()
+            text = _compact_line(text, limit=320)
+            if not text or text.casefold() == "none":
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(text)
+    return tuple(items)
+
+
+def _markdown_section_list_items(content: str, name: str) -> tuple[str, ...]:
+    items: list[str] = []
+    for line in _markdown_section_lines(content, name):
+        item = _markdown_list_item_value(line)
+        if item:
+            items.append(item)
+    return tuple(items)
+
+
+def _markdown_list_item_value(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("- ") or stripped.startswith("* "):
+        value = stripped[2:].strip()
+    else:
+        head, separator, tail = stripped.partition(". ")
+        value = tail.strip() if separator and head.isdigit() else ""
+    if not value or value.casefold() == "none":
+        return ""
+    return _compact_line(value, limit=320)
+
+
+def _markdown_section_lines(content: str, name: str) -> tuple[str, ...]:
+    wanted = f"## {name}".casefold()
+    lines = content.splitlines()
+    start = -1
+    for idx, line in enumerate(lines):
+        if line.strip().casefold() == wanted:
+            start = idx + 1
+            break
+    if start < 0:
+        return ()
+    collected: list[str] = []
+    for line in lines[start:]:
+        if line.strip().startswith("## "):
+            break
+        if line.strip():
+            collected.append(line)
+    return tuple(collected)
 
 
 def _workflow_reference_key(reference: WorkflowRunReference) -> str:
@@ -1974,6 +2037,12 @@ class ResidentDelegationRuntime:
             )
             review = review_delegation_result(source, record, result)
             reviews.append(review)
+            operator_questions.extend(
+                question
+                for question in review.operator_questions
+                if question and question not in pending_operator_questions
+            )
+            pending_operator_questions.update(review.operator_questions)
             review_ref = await self._backend.write_delegation_review(
                 review,
                 render_delegation_review(review),
@@ -2361,7 +2430,7 @@ class ResidentAutonomyLoopRuntime:
             return ()
         contacts: list[OperatorContactResult] = []
         for question in delegation.operator_questions:
-            objective = _gated_objective_for_question(delegation, question)
+            objective = _objective_for_delegation_question(delegation, question)
             request = _operator_contact_request(mandate, question, objective)
             try:
                 result = await self._ask_operator.ask(request)
@@ -2637,6 +2706,11 @@ def select_delegation_candidates(
             ResidentDelegationStatus.RUNNING.value,
         }
     }
+    completed_sources = {
+        item.source_objective_id
+        for item in delegations
+        if item.result_refs or item.status == ResidentDelegationStatus.COMPLETED.value
+    }
     completed_ids = {
         objective.id
         for objective in objectives
@@ -2648,6 +2722,8 @@ def select_delegation_candidates(
     prioritized = prioritize_objectives(objectives, mandate=mandate)
     for objective in prioritized:
         if objective.id in active_sources:
+            continue
+        if objective.id in completed_sources:
             continue
         if not _is_delegation_ready(objective, completed_ids):
             continue
@@ -2784,6 +2860,12 @@ def render_delegation_result(
         f"## Summary\n\n{result.summary}\n\n"
         f"## Output Refs\n\n{_render_list(result.output_refs)}\n\n"
         f"## Findings\n\n{_render_list(result.findings)}\n\n"
+        f"## Known Facts\n\n{_render_list(result.known_facts)}\n\n"
+        f"## Hypotheses\n\n{_render_list(result.hypotheses)}\n\n"
+        f"## Open Questions\n\n{_render_list(result.open_questions)}\n\n"
+        f"## Operator Questions\n\n{_render_list(result.operator_questions)}\n\n"
+        f"## Risk Notes\n\n{_render_list(result.risk_notes)}\n\n"
+        f"## Recommended Next Action\n\n{result.recommended_next_action or 'none'}\n\n"
         f"## Follow-Up Suggestions\n\n{_render_list(result.follow_up_suggestions)}\n\n"
         f"## Blocked Reason\n\n{result.blocked_reason or 'none'}\n\n"
         f"## Worker Brief\n\n{render_worker_brief(delegation.brief)}"
@@ -2802,7 +2884,8 @@ def render_delegation_review(review: ResidentDelegationReview) -> str:
         f"## Reason\n\n{review.reason}\n\n"
         f"## Proof Criteria Checked\n\n{_render_list(review.proof_criteria_checked)}\n\n"
         f"## Missing Evidence\n\n{_render_list(review.missing_evidence)}\n\n"
-        f"## Follow-Up Suggestions\n\n{_render_list(review.follow_up_suggestions)}\n"
+        f"## Follow-Up Suggestions\n\n{_render_list(review.follow_up_suggestions)}\n\n"
+        f"## Operator Questions\n\n{_render_list(review.operator_questions)}\n"
     )
 
 
@@ -2813,9 +2896,16 @@ def review_delegation_result(
 ) -> ResidentDelegationReview:
     proof = source.proof_criteria if source is not None else delegation.brief.proof_criteria
     missing: list[str] = []
+    operator_questions = _operator_questions_for_result(result)
     if result.blocked_reason:
         decision = ResidentDelegationReviewDecision.BLOCKED.value
         reason = f"Delegated result reported a blocker: {result.blocked_reason}"
+    elif operator_questions:
+        decision = ResidentDelegationReviewDecision.ASK_OPERATOR.value
+        reason = (
+            "Delegated result surfaced unresolved questions that should be answered "
+            "before more autonomous work."
+        )
     elif result.status in {
         ResidentDelegationStatus.LAUNCHED.value,
         ResidentDelegationStatus.RUNNING.value,
@@ -2852,7 +2942,54 @@ def review_delegation_result(
         proof_criteria_checked=proof,
         missing_evidence=tuple(missing),
         follow_up_suggestions=result.follow_up_suggestions,
+        operator_questions=operator_questions,
     )
+
+
+def _operator_questions_for_result(result: ResidentExecutionResult) -> tuple[str, ...]:
+    questions: list[str] = []
+    for question in (*result.operator_questions, *result.open_questions):
+        operator_question = _operator_facing_question(question)
+        if operator_question and operator_question not in questions:
+            questions.append(operator_question)
+        if len(questions) >= 3:
+            break
+    return tuple(questions)
+
+
+def _operator_questions_from_open_questions(open_questions: tuple[str, ...]) -> tuple[str, ...]:
+    questions: list[str] = []
+    for question in open_questions:
+        operator_question = _operator_facing_question(question)
+        if operator_question and operator_question not in questions:
+            questions.append(operator_question)
+        if len(questions) >= 3:
+            break
+    return tuple(questions)
+
+
+def _operator_facing_question(question: str) -> str:
+    text = _compact_line(question, limit=240)
+    if not text:
+        return ""
+    lowered = text.casefold()
+    internal_terms = (
+        "missing inbox signal",
+        "inbox signal",
+        "delegated-work",
+        "delegation",
+        "worker brief",
+        "source objective",
+        "artifact ref",
+        "result session",
+    )
+    if any(term in lowered for term in internal_terms):
+        return ""
+    if not _needs_human_answer(text):
+        return ""
+    if text.endswith("?"):
+        return text
+    return f"{text}?"
 
 
 def build_worker_brief(mandate: str, objective: ResidentObjective) -> ResidentWorkerBrief:
@@ -3202,6 +3339,19 @@ def _gated_objective_for_question(
     return None
 
 
+def _objective_for_delegation_question(
+    report: ResidentDelegationReport,
+    question: str,
+) -> ResidentObjective | None:
+    gated = _gated_objective_for_question(report, question)
+    if gated is not None:
+        return gated
+    for objective in report.updated_objectives + report.created_follow_up_objectives:
+        if objective.pending_question == question:
+            return objective
+    return None
+
+
 def _operator_contact_request(
     mandate: str,
     question: str,
@@ -3210,21 +3360,32 @@ def _operator_contact_request(
     objective_id = objective.id if objective is not None else ""
     contact_id = _slug(f"operator-contact-{objective_id or question}") or "operator-contact"
     risks = objective.risk_boundaries if objective is not None else ()
+    approval_required = bool(risks)
+    reason = (
+        "Resident delegated execution would cross a risk boundary and needs "
+        "operator judgment before continuing."
+        if approval_required
+        else "Resident needs operator context before it can choose the next useful action."
+    )
+    impact = (
+        "A positive answer allows this specific objective to be delegated; "
+        "no answer keeps the resident waiting."
+        if approval_required
+        else "Your answer will be recorded as context and used to steer the resident's next wake."
+    )
     return OperatorContactRequest(
         id=contact_id,
         question=question,
-        reason=(
-            "Resident delegated execution would cross a risk boundary and needs "
-            "operator judgment before continuing."
-        ),
-        impact=(
-            "A positive answer allows this specific objective to be delegated; "
-            "no answer keeps the resident waiting."
-        ),
+        reason=reason,
+        impact=impact,
         source_objective_id=objective_id,
         risk_boundaries=risks,
         kind=OperatorContactKind.HELP_NEEDED,
-        purpose=OperatorContactPurpose.APPROVAL,
+        purpose=(
+            OperatorContactPurpose.APPROVAL
+            if approval_required
+            else OperatorContactPurpose.CLARIFICATION
+        ),
     )
 
 
@@ -3290,9 +3451,13 @@ def _absorb_delegation_result(
         (f"delegation result {result.session_id}: {result.status}: {result.summary}",),
         (f"delegation review {review.id}: {review.decision}: {review.reason}",),
         result.findings,
+        result.known_facts,
+        result.hypotheses,
+        result.open_questions,
     )
     return objective.with_updates(
         status=status,
+        pending_question=review.operator_questions[0] if review.operator_questions else "",
         proof_progress=progress,
         artifact_links=_merge_text(objective.artifact_links, (result_ref,), result.output_refs),
         consolidation_links=_merge_text(objective.consolidation_links, consolidation_refs),
@@ -3314,7 +3479,7 @@ def _domain_model_with_delegation_learning(
         f"delegation {record.id} reviewed as {review.decision}: {result.summary or review.reason}",
         limit=240,
     )
-    facts = (
+    facts = result.known_facts or (
         result.findings
         if review.decision == ResidentDelegationReviewDecision.COMPLETE.value
         else ()
@@ -3322,6 +3487,9 @@ def _domain_model_with_delegation_learning(
     gaps = _delegation_capability_gaps(result, review)
     failure_notes = _delegation_failure_notes(record, result, review)
     open_threads = _merge_text(
+        result.open_questions,
+        result.operator_questions,
+        result.hypotheses,
         result.follow_up_suggestions,
         tuple(f"follow-up objective {item.id}: {item.title}" for item in follow_ups),
     )
@@ -3515,6 +3683,27 @@ def _follow_ups_from_delegation_result(
         return ()
     follow_ups: list[ResidentObjective] = []
     dependencies = _delegation_follow_up_dependencies(source, review)
+    if review.decision == ResidentDelegationReviewDecision.ASK_OPERATOR.value:
+        for question in result.operator_questions:
+            if len(follow_ups) >= limit:
+                break
+            text = _compact_line(question, limit=220)
+            follow_ups.append(
+                _objective_from_text(
+                    mandate,
+                    title=f"Ask operator: {text}",
+                    source=f"{result.session_id}: {text}",
+                    kind=ResidentObjectiveKind.OPERATOR_QUESTION,
+                    reasoning=(
+                        "Delegated execution produced useful evidence but surfaced "
+                        "an uncertainty that appears answerable by the operator."
+                    ),
+                    proof="Operator answer is recorded and used to update resident memory/work.",
+                    status=ResidentObjectiveStatus.NEEDS_OPERATOR,
+                    dependencies=dependencies,
+                    pending_question=text,
+                )
+            )
     for suggestion in result.follow_up_suggestions:
         if len(follow_ups) >= limit:
             break
@@ -3562,17 +3751,43 @@ def _follow_ups_from_delegation_result(
         )
     if result.blocked_reason and len(follow_ups) < limit:
         follow_ups.append(
-            _objective_from_text(
+            _delegated_blocker_follow_up(
                 mandate,
-                title=f"Resolve delegated blocker: {result.blocked_reason}",
-                source=result.blocked_reason,
-                kind=ResidentObjectiveKind.REVIEW,
-                reasoning="Delegated execution reported a blocker that needs resident review.",
-                proof="Blocker has a decision, workaround, or replacement objective.",
+                result.blocked_reason,
                 dependencies=dependencies,
             )
         )
     return tuple(follow_ups)
+
+
+def _delegated_blocker_follow_up(
+    mandate: str,
+    blocked_reason: str,
+    *,
+    dependencies: tuple[str, ...],
+) -> ResidentObjective:
+    text = _compact_line(blocked_reason, limit=220)
+    if _needs_human_answer(text):
+        return _objective_from_text(
+            mandate,
+            title=f"Ask operator: {text}",
+            source=text,
+            kind=ResidentObjectiveKind.OPERATOR_QUESTION,
+            reasoning="Delegated execution reported a blocker that needs operator input.",
+            proof="Operator answer is recorded and converted into policy or follow-up work.",
+            status=ResidentObjectiveStatus.NEEDS_OPERATOR,
+            dependencies=dependencies,
+            pending_question=text,
+        )
+    return _objective_from_text(
+        mandate,
+        title=f"Resolve delegated blocker: {text}",
+        source=text,
+        kind=ResidentObjectiveKind.REVIEW,
+        reasoning="Delegated execution reported a blocker that needs resident review.",
+        proof="Blocker has a decision, workaround, or replacement objective.",
+        dependencies=dependencies,
+    )
 
 
 def _delegation_follow_up_dependencies(
@@ -3792,7 +4007,25 @@ def _kind_for_text(text: str) -> ResidentObjectiveKind:
 
 def _needs_human_answer(text: str) -> bool:
     lowered = text.casefold()
-    return _has_any(lowered, ("operator", "human", "approval", "provide", "which ", "what "))
+    return _has_any(
+        lowered,
+        (
+            "operator",
+            "human",
+            "approval",
+            "approve",
+            "may i",
+            "should i",
+            "do you want",
+            "would you like",
+            "provide",
+            "choose",
+            "which ",
+            "preference",
+            "priority",
+            "matters most",
+        ),
+    )
 
 
 def _capabilities_for_kind(kind: ResidentObjectiveKind) -> tuple[str, ...]:

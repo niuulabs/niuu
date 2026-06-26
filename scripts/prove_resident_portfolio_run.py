@@ -15,6 +15,7 @@ from ravn.cli.commands import (
     _configure_logging,
     _resolve_persona,
 )
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
 from ravn.domain.resident_expert import ResidentDomainModel
@@ -27,23 +28,21 @@ from ravn.domain.wakeful_resident import (
     WakefulResidentCycleRecord,
     WakefulResidentDecisionKind,
 )
-from ravn.resident_continuation import LocalResidentMemory, MimirResidentMemory
+from ravn.resident_continuation import LocalResidentMemory
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
-    MimirResidentDomainExpertMemory,
     ResidentDomainExpertConfig,
     ResidentDomainExpertLoop,
 )
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    MimirResidentWorkItemBackend,
     ResidentLongHorizonWorkManager,
     ResidentPortfolioConfig,
     ResidentPortfolioValidator,
 )
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
-    MimirWakefulResidentMemory,
     WakefulResidentConfig,
     WakefulResidentRuntime,
 )
@@ -209,10 +208,10 @@ async def _main() -> None:
 
     mimir = _build_mimir(settings)
     if mimir is not None:
-        continuation_memory: Any = MimirResidentMemory(mimir)
-        expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
-        wake_memory: Any = MimirWakefulResidentMemory(mimir)
-        work_backend: Any = MimirResidentWorkItemBackend(mimir)
+        continuation_memory: Any = MimirResidentState(mimir)
+        expert_memory: Any = MimirResidentState(mimir)
+        wake_memory: Any = MimirResidentState(mimir)
+        work_backend: Any = MimirResidentWorkAdapter(mimir)
         memory_label = "mimir"
     else:
         root = Path.cwd() / ".ravn"

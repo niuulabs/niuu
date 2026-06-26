@@ -40,7 +40,6 @@ from ravn.domain.wakeful_resident import (
     WakefulResidentMemoryPort,
     WakefulResidentRun,
 )
-from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line
 from ravn.resident_portfolio import ResidentPortfolioValidator
 
@@ -103,39 +102,6 @@ class LocalWakefulResidentMemory(WakefulResidentMemoryPort):
         return str(rel)
 
 
-class MimirWakefulResidentMemory(WakefulResidentMemoryPort):
-    """Mimir-backed wake cycle memory."""
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def list_wake_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulResidentCycleRecord]:
-        pages = await self._mimir.list_pages(prefix=f"{_WAKE_PREFIX}/cycles")
-        records: list[WakefulResidentCycleRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", ""), reverse=True):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_wake_record(content, mandate=mandate)
-            if parsed is not None:
-                records.append(parsed)
-            if len(records) >= limit:
-                break
-        return records
-
-    async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str:
-        stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
-        path = f"{_WAKE_PREFIX}/cycles/{stamp}-{record.cycle_number}.md"
-        await self._mimir.upsert_page(path, _render_wake_record(record))
-        return path
-
-
 class LocalWakefulPortfolioStewardMemory(WakefulPortfolioStewardMemoryPort):
     """Filesystem-backed wakeful portfolio stewardship memory."""
 
@@ -171,39 +137,6 @@ class LocalWakefulPortfolioStewardMemory(WakefulPortfolioStewardMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_render_portfolio_steward_record(record), encoding="utf-8")
         return str(rel)
-
-
-class MimirWakefulPortfolioStewardMemory(WakefulPortfolioStewardMemoryPort):
-    """Mimir-backed wakeful portfolio stewardship memory."""
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def list_records(
-        self,
-        mandate: str,
-        *,
-        limit: int = 5,
-    ) -> list[WakefulPortfolioStewardRecord]:
-        pages = await self._mimir.list_pages(prefix=f"{_WAKE_PREFIX}/portfolio-steward")
-        records: list[WakefulPortfolioStewardRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", ""), reverse=True):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_portfolio_steward_record(content, mandate=mandate)
-            if parsed is not None:
-                records.append(parsed)
-            if len(records) >= limit:
-                break
-        return records
-
-    async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
-        stamp = record.created_at.strftime("%Y%m%dT%H%M%S%fZ")
-        path = f"{_WAKE_PREFIX}/portfolio-steward/{stamp}-{record.wake_number}.md"
-        await self._mimir.upsert_page(path, _render_portfolio_steward_record(record))
-        return path
 
 
 class WakefulResidentRuntime:

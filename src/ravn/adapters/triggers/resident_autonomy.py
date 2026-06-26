@@ -10,7 +10,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ravn.domain.models import AgentTask
-from ravn.domain.operator_contact import OperatorContactPort
+from ravn.domain.operator_contact import (
+    OperatorContactKind,
+    OperatorContactPort,
+    OperatorContactPurpose,
+    OperatorContactRequest,
+    OperatorContactResult,
+    OperatorContactStatus,
+)
 from ravn.domain.resident_portfolio import (
     ResidentDelegationStatus,
     ResidentObjectiveStatus,
@@ -18,7 +25,11 @@ from ravn.domain.resident_portfolio import (
 )
 from ravn.domain.wakeful_resident import WakefulResidentMemoryPort
 from ravn.ports.trigger import TriggerPort
-from ravn.resident_portfolio import ResidentAutonomyLoopConfig, ResidentAutonomyLoopRuntime
+from ravn.resident_portfolio import (
+    _OPERATOR_CONTACT_PREFIX,
+    ResidentAutonomyLoopConfig,
+    ResidentAutonomyLoopRuntime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +94,7 @@ class ResidentAutonomyTrigger(TriggerPort):
         self._poll_interval_seconds = max(0.0, poll_interval_seconds)
         self._initial_delay_seconds = max(0.0, initial_delay_seconds)
         self._skip_when_operator_pending = skip_when_operator_pending
+        self._emitted_operator_contact_ids: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -118,20 +130,22 @@ class ResidentAutonomyTrigger(TriggerPort):
             raise ValueError("resident autonomy mandate must not be empty")
 
         if self._skip_when_operator_pending:
-            pending = await self._pending_operator_input()
-            if pending is not None:
+            pending_marker = await self._pending_operator_marker_input()
+            if pending_marker is not None:
+                contact_ref = await self._contact_pending_operator_input(pending_marker)
                 await self._backend.append_decision(
                     self._mandate,
                     (
                         f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
-                        f"slept: pending operator input for {pending['ref']}: "
-                        f"{pending['question']}"
+                        f"slept: pending operator input for {pending_marker['ref']}: "
+                        f"{pending_marker['question']}"
+                        f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
                     ),
                 )
                 logger.info(
-                    "ResidentAutonomyTrigger: sleeping while operator input is pending "
-                    "(ref=%s)",
-                    pending["ref"],
+                    "ResidentAutonomyTrigger: sleeping while continuation operator input "
+                    "is pending (ref=%s)",
+                    pending_marker["ref"],
                 )
                 return None
 
@@ -159,6 +173,41 @@ class ResidentAutonomyTrigger(TriggerPort):
                     extension.name,
                 )
                 return result
+
+        if self._skip_when_operator_pending:
+            pending = await self._pending_operator_input()
+            if pending is not None:
+                contact_ref = await self._contact_pending_operator_input(pending)
+                if not await self._has_resident_work():
+                    await self._backend.append_decision(
+                        self._mandate,
+                        (
+                            f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
+                            f"slept: pending operator input for {pending['ref']}: "
+                            f"{pending['question']}"
+                            f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
+                        ),
+                    )
+                    logger.info(
+                        "ResidentAutonomyTrigger: sleeping while operator input is pending "
+                        "(ref=%s)",
+                        pending["ref"],
+                    )
+                    return None
+                await self._backend.append_decision(
+                    self._mandate,
+                    (
+                        f"{datetime.now(UTC).isoformat()} [resident_autonomy_trigger] "
+                        f"contacted pending operator input for {pending['ref']} and "
+                        "continued with other resident work"
+                        f"{'; contact_ref=' + contact_ref if contact_ref else ''}"
+                    ),
+                )
+                logger.info(
+                    "ResidentAutonomyTrigger: operator input is pending for %s; "
+                    "continuing with other resident work",
+                    pending["ref"],
+                )
 
         if self._portfolio_manager is not None:
             portfolio_run = await self._portfolio_manager.run(self._mandate)
@@ -205,6 +254,49 @@ class ResidentAutonomyTrigger(TriggerPort):
             len(run.operator_contacts),
         )
         return run
+
+    async def _contact_pending_operator_input(self, pending: dict[str, str]) -> str:
+        if self._ask_operator is None:
+            return ""
+        objective = await self._pending_operator_objective()
+        request = _pending_operator_request(pending, objective)
+        if request.id in self._emitted_operator_contact_ids:
+            return ""
+        if await self._operator_contact_already_emitted(request.id):
+            self._emitted_operator_contact_ids.add(request.id)
+            return ""
+        try:
+            result = await self._ask_operator.ask(request)
+        except Exception as exc:
+            logger.warning(
+                "ResidentAutonomyTrigger: failed to emit pending operator contact",
+                exc_info=True,
+            )
+            result = OperatorContactResult(
+                request=request,
+                status=OperatorContactStatus.FAILED.value,
+                answer=str(exc),
+                approved=False,
+                responded_at=datetime.now(UTC),
+            )
+        self._emitted_operator_contact_ids.add(request.id)
+        return await self._backend.write_operator_contact(result)
+
+    async def _operator_contact_already_emitted(self, contact_id: str) -> bool:
+        if not contact_id:
+            return False
+        if not hasattr(self._backend, "list_refs"):
+            return False
+        try:
+            refs = await self._backend.list_refs(_OPERATOR_CONTACT_PREFIX)
+        except Exception:
+            logger.warning(
+                "ResidentAutonomyTrigger: failed to inspect existing operator contacts",
+                exc_info=True,
+            )
+            return False
+        expected = f"{_OPERATOR_CONTACT_PREFIX}/{contact_id}.md"
+        return expected in set(refs)
 
     async def _select_wake_extension(self) -> ResidentWakeExtension | None:
         if not self._wake_extensions:
@@ -279,6 +371,14 @@ class ResidentAutonomyTrigger(TriggerPort):
             "read_operator_needed",
         ):
             return None
+        return await self._pending_operator_marker_input()
+
+    async def _pending_operator_marker_input(self) -> dict[str, str] | None:
+        if self._operator_memory is None or not hasattr(
+            self._operator_memory,
+            "read_operator_needed",
+        ):
+            return None
         pending_marker = await self._operator_memory.read_operator_needed()
         if pending_marker is None:
             return None
@@ -312,9 +412,69 @@ def _operator_marker_question(content: str) -> str:
     return "operator input needed"
 
 
+def _pending_objective_operator_request(
+    objective: Any,
+    question: str,
+) -> OperatorContactRequest:
+    objective_id = str(getattr(objective, "id", "") or "").strip()
+    risks = tuple(str(item) for item in getattr(objective, "risk_boundaries", ()) or ())
+    return OperatorContactRequest(
+        id=f"operator-contact-{objective_id}" if objective_id else "operator-contact",
+        question=question,
+        reason="Resident objective needs operator judgment before the daemon continues.",
+        impact=(
+            "A positive answer allows this specific objective to continue; "
+            "no answer keeps the resident waiting."
+        ),
+        kind=OperatorContactKind.HELP_NEEDED,
+        purpose=OperatorContactPurpose.APPROVAL if risks else OperatorContactPurpose.CLARIFICATION,
+        source_objective_id=objective_id,
+        risk_boundaries=risks,
+    )
+
+
+def _pending_operator_request(
+    pending: dict[str, str],
+    objective: Any | None,
+) -> OperatorContactRequest:
+    question = str(pending.get("question") or "").strip() or "operator input needed"
+    if objective is not None:
+        return _pending_objective_operator_request(objective, question)
+    ref = str(pending.get("ref") or "resident operator-needed").strip()
+    contact_id = _contact_id_from_pending_ref(ref)
+    return OperatorContactRequest(
+        id=contact_id,
+        question=question,
+        reason="Resident continuation is waiting for operator input before the daemon continues.",
+        impact=(
+            "A reply is persisted into resident memory and lets the resident resume the "
+            "blocked work; no reply keeps the resident sleeping."
+        ),
+        kind=OperatorContactKind.HELP_NEEDED,
+        purpose=OperatorContactPurpose.CLARIFICATION,
+        source_objective_id="",
+        risk_boundaries=(),
+        help_needed_outcome={
+            "operator_needed_ref": ref,
+            "pending_question": question,
+        },
+    )
+
+
+def _contact_id_from_pending_ref(ref: str) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "-"
+        for ch in str(ref or "resident-operator-needed").strip().casefold()
+    ).strip("-")
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    return f"operator-contact-{safe or 'resident-operator-needed'}"
+
+
 def _objective_needs_autonomy_loop(objective: Any) -> bool:
     return str(getattr(objective, "status", "")) not in {
         ResidentObjectiveStatus.COMPLETED.value,
+        ResidentObjectiveStatus.BLOCKED.value,
         ResidentObjectiveStatus.CANCELLED.value,
         ResidentObjectiveStatus.SUPERSEDED.value,
         ResidentObjectiveStatus.NEEDS_OPERATOR.value,
@@ -326,5 +486,7 @@ def _delegation_needs_autonomy_loop(delegation: Any) -> bool:
         ResidentDelegationStatus.COMPLETED.value,
         ResidentDelegationStatus.CANCELLED.value,
         ResidentDelegationStatus.FAILED.value,
+        ResidentDelegationStatus.BLOCKED.value,
+        ResidentDelegationStatus.NEEDS_OPERATOR.value,
         ResidentDelegationStatus.UNAVAILABLE.value,
     }

@@ -186,16 +186,22 @@ def _operator_help_needed_event(
     session_id: str = "",
 ):
     contact_id = request.id or request.tool_input.get("id") or "operator-contact"
+    if request.purpose == OperatorContactPurpose.APPROVAL:
+        reason = "operator_approval_required"
+        recommendation = "Reply with whether this specific action is approved."
+    else:
+        reason = f"operator_{request.purpose.value}_needed"
+        recommendation = "Reply with the requested context or guidance."
     return build_help_needed_event(
         source=source,
         persona=persona,
-        reason="operator_approval_required",
+        reason=reason,
         summary=request.question,
         attempted=[
             "identified work that needs operator judgment",
             "paused execution until operator guidance is available",
         ],
-        recommendation="Reply with whether this specific action is approved.",
+        recommendation=recommendation,
         correlation_id=contact_id,
         session_id=session_id,
         task_id=contact_id,

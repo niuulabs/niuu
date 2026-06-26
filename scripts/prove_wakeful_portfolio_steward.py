@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ravn.cli.commands import _build_mimir, _configure_logging
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import Settings
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
@@ -25,15 +26,14 @@ from ravn.domain.wakeful_resident import (
     WakefulResidentDecisionKind,
     WakefulResidentRun,
 )
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    MimirResidentWorkItemBackend,
     ResidentPortfolioStewardConfig,
     ResidentPortfolioStewardRuntime,
 )
 from ravn.wakeful_resident import (
     LocalWakefulPortfolioStewardMemory,
-    MimirWakefulPortfolioStewardMemory,
     WakefulPortfolioStewardConfig,
     WakefulPortfolioStewardRuntime,
     render_wakeful_portfolio_steward_report,
@@ -164,8 +164,8 @@ async def _main() -> None:
     _configure_logging(settings)
     mimir = _build_mimir(settings)
     if mimir is not None:
-        backend: Any = MimirResidentWorkItemBackend(mimir)
-        memory: Any = MimirWakefulPortfolioStewardMemory(mimir)
+        backend: Any = MimirResidentWorkAdapter(mimir)
+        memory: Any = MimirResidentState(mimir)
         memory_label = "mimir"
     else:
         local_root = Path.cwd() / ".ravn"

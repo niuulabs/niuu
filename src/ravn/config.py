@@ -2709,6 +2709,42 @@ class ResidentOpportunityGenerationConfig(BaseModel):
     )
 
 
+class ResidentInboxConfig(BaseModel):
+    """Resident inbox intake and triage configuration."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Persist and triage resident inbox signals when resident autonomy is enabled.",
+    )
+    environment_signals_enabled: bool = Field(
+        default=True,
+        description="Record configured Environment signals into resident/inbox/signals.",
+    )
+    directed_messages_enabled: bool = Field(
+        default=True,
+        description=(
+            "Record generic Skuld directed messages as resident inbox signals without "
+            "consuming normal steering or task enqueue behavior."
+        ),
+    )
+    max_signals_per_wake: int = Field(
+        default=5,
+        description="Maximum new resident inbox signals triaged in one wake pass.",
+    )
+    create_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to create resident objectives for actionable signals.",
+    )
+    attach_to_existing_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to attach signals to matching resident objectives.",
+    )
+    min_attach_score: int = Field(
+        default=2,
+        description="Minimum keyword overlap required before attaching to an existing objective.",
+    )
+
+
 class ResidentDelegationExecutionConfig(BaseModel):
     """Resident delegation adapter and orchestration bounds."""
 
@@ -2762,6 +2798,40 @@ class ResidentDelegationExecutionConfig(BaseModel):
             "Cancel duplicate launched/running delegated sessions for the same source "
             "objective, keeping one canonical worker session."
         ),
+    )
+
+
+class ResidentStateConfig(BaseModel):
+    """Resident memory/state adapter selection."""
+
+    adapter: str = Field(
+        default="ravn.adapters.resident_state.mimir.MimirResidentState",
+        description="Fully-qualified ResidentStatePort adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the resident state adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+
+
+class ResidentWorkConfig(BaseModel):
+    """Resident long-horizon work adapter selection."""
+
+    adapter: str = Field(
+        default="ravn.adapters.resident_work.mimir.MimirResidentWorkAdapter",
+        description="Fully-qualified ResidentWorkPort adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the resident work adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
     )
 
 
@@ -3521,9 +3591,12 @@ class Settings(BaseSettings):
     resident_delegation_execution: ResidentDelegationExecutionConfig = Field(
         default_factory=ResidentDelegationExecutionConfig
     )
+    resident_state: ResidentStateConfig = Field(default_factory=ResidentStateConfig)
+    resident_work: ResidentWorkConfig = Field(default_factory=ResidentWorkConfig)
     resident_autonomy: ResidentAutonomyTriggerConfig = Field(
         default_factory=ResidentAutonomyTriggerConfig
     )
+    resident_inbox: ResidentInboxConfig = Field(default_factory=ResidentInboxConfig)
     resident_review: ResidentReviewConfig = Field(default_factory=ResidentReviewConfig)
     resident_opportunity_generation: ResidentOpportunityGenerationConfig = Field(
         default_factory=ResidentOpportunityGenerationConfig

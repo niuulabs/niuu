@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -151,13 +152,17 @@ async def ingest_resident_operator_reply(
     context = _operator_reply_context(metadata)
     contact_id = str(context.get("operator_contact_id") or "").strip()
     source_objective_id = str(context.get("source_objective_id") or "").strip()
-    if not contact_id and not source_objective_id:
-        return ResidentOperatorReplyIngestionReport(
-            handled=False,
-            reason="directed message does not target a resident operator contact",
-        )
-
     objectives = tuple(await backend.list_objectives(mandate))
+    if not contact_id and not source_objective_id:
+        inferred = _single_pending_operator_objective(objectives)
+        if inferred is None or _operator_reply_approval(content) is None:
+            return ResidentOperatorReplyIngestionReport(
+                handled=False,
+                reason="directed message does not target a resident operator contact",
+            )
+        source_objective_id = inferred.id
+        contact_id = f"operator-contact-{inferred.id}"
+
     objective = _objective_for_operator_reply(objectives, source_objective_id, contact_id)
     risk_boundaries = _string_tuple(context.get("risk_boundaries"))
     request = OperatorContactRequest(
@@ -221,6 +226,20 @@ async def ingest_resident_operator_reply(
         policy_observations=policy_observations,
         reason="operator reply persisted",
     )
+
+
+def _single_pending_operator_objective(
+    objectives: tuple[ResidentObjective, ...],
+) -> ResidentObjective | None:
+    pending = tuple(
+        objective
+        for objective in objectives
+        if objective.pending_question
+        or objective.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value
+    )
+    if len(pending) != 1:
+        return None
+    return pending[0]
 
 
 def approved_risk_objective_ids_from_objectives(
@@ -402,14 +421,53 @@ def _objective_for_operator_reply(
 
 
 def _operator_reply_approval(answer: str) -> bool | None:
-    normalized = f" {answer.casefold().strip()} "
-    approval_tokens = (" approve", " approved", " yes", " proceed", " allow", " go ahead")
-    if any(token in normalized for token in approval_tokens):
-        return True
-    denial_tokens = (" deny", " denied", " no", " reject", " stop", " do not")
-    if any(token in normalized for token in denial_tokens):
+    normalized = _approval_text(answer)
+    denial_patterns = (
+        r"\bnot\s+approved?\b",
+        r"\bdo\s+not\s+approved?\b",
+        r"\bdon'?t\s+approved?\b",
+        r"\bno\b",
+        r"\bdeny\b",
+        r"\bdenied\b",
+        r"\breject(?:ed)?\b",
+        r"\bstop\b",
+        r"\bdecline(?:d)?\b",
+        r"\bdisallow(?:ed)?\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in denial_patterns):
         return False
+    approval_patterns = (
+        r"\byes\b",
+        r"\bapproved?\b",
+        r"\bproceed\b",
+        r"\ballow(?:ed)?\b",
+        r"\bgo\s+ahead\b",
+        r"\bok(?:ay)?\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in approval_patterns):
+        return True
     return None
+
+
+def _approval_text(answer: str) -> str:
+    text = str(answer or "").casefold()
+    text = re.sub(r"[^\w'\s]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _without_operator_marker_for_contact(
+    proof_progress: tuple[str, ...],
+    marker_prefix: str,
+    contact_id: str,
+) -> tuple[str, ...]:
+    contact = str(contact_id or "").strip()
+    if not contact:
+        return proof_progress
+    return tuple(
+        item
+        for item in proof_progress
+        if not (item.startswith(marker_prefix) and contact in item)
+    )
 
 
 def _objective_with_operator_reply(
@@ -424,7 +482,14 @@ def _objective_with_operator_reply(
         return objective.with_updates(
             status=ResidentObjectiveStatus.CANDIDATE.value,
             pending_question="",
-            proof_progress=_append_unique(objective.proof_progress, marker),
+            proof_progress=_append_unique(
+                _without_operator_marker_for_contact(
+                    objective.proof_progress,
+                    _DENIAL_MARKER_PREFIX,
+                    result.request.id,
+                ),
+                marker,
+            ),
             last_reviewed_at=datetime.now(UTC),
         )
     if result.approved is False:
@@ -435,7 +500,32 @@ def _objective_with_operator_reply(
         return objective.with_updates(
             status=ResidentObjectiveStatus.BLOCKED.value,
             pending_question="",
-            proof_progress=_append_unique(objective.proof_progress, marker),
+            proof_progress=_append_unique(
+                _without_operator_marker_for_contact(
+                    objective.proof_progress,
+                    _APPROVAL_MARKER_PREFIX,
+                    result.request.id,
+                ),
+                marker,
+            ),
+            last_reviewed_at=datetime.now(UTC),
+        )
+    if result.request.purpose != OperatorContactPurpose.APPROVAL:
+        answer = _compact_operator_reply(result.answer)
+        evidence = (
+            f"operator {result.request.purpose.value} answer "
+            f"for {result.request.id}: {answer}"
+            if answer
+            else f"operator {result.request.purpose.value} answer for {result.request.id}"
+        )
+        return objective.with_updates(
+            status=ResidentObjectiveStatus.CANDIDATE.value,
+            pending_question="",
+            proof_progress=_append_unique(
+                objective.proof_progress,
+                f"operator {result.request.purpose.value} recorded: {result.request.id}",
+            ),
+            source_evidence=_append_unique(objective.source_evidence, evidence),
             last_reviewed_at=datetime.now(UTC),
         )
     return objective.with_updates(
@@ -483,3 +573,10 @@ def _approval_label(approved: bool | None) -> str:
     if approved is False:
         return "false"
     return "unknown"
+
+
+def _compact_operator_reply(answer: str, *, limit: int = 500) -> str:
+    text = re.sub(r"\s+", " ", str(answer or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"

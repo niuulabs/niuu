@@ -31,7 +31,6 @@ from ravn.domain.resident_expert import (
     ResidentDomainModel,
     WorkstreamExecutionResult,
 )
-from ravn.ports.mimir import MimirPort
 from ravn.ports.physical_device import PhysicalDevicePort
 from ravn.resident_continuation import ConfigurableResidentPolicy
 
@@ -93,7 +92,7 @@ class ResidentPhysicalMemoryPort(Protocol):
     async def write_result(self, result: PhysicalActionResult) -> str:
         """Persist telemetry, dry-run result, or policy block."""
 
-    async def write_audit(self, content: str) -> str:
+    async def write_physical_audit(self, content: str) -> str:
         """Persist an audit record."""
 
     async def write_reasoning(self, reasoning: ResidentPhysicalReasoning) -> str:
@@ -119,7 +118,7 @@ class LocalResidentPhysicalMemory(ResidentPhysicalMemoryPort):
         rel = Path(_RESULT_PREFIX) / filename
         return self._write(rel, _render_result(result))
 
-    async def write_audit(self, content: str) -> str:
+    async def write_physical_audit(self, content: str) -> str:
         rel = Path(_AUDIT_PREFIX) / f"{_stamp(datetime.now(UTC))}.md"
         return self._write(rel, content)
 
@@ -138,38 +137,6 @@ class LocalResidentPhysicalMemory(ResidentPhysicalMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return str(rel)
-
-
-class MimirResidentPhysicalMemory(ResidentPhysicalMemoryPort):
-    """Mimir-backed resident physical memory."""
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def write_capability(self, capability: PhysicalCapability) -> str:
-        path = f"{_CAPABILITY_PREFIX}/{_slug(capability.id)}.md"
-        await self._mimir.upsert_page(path, _render_capability(capability))
-        return path
-
-    async def write_result(self, result: PhysicalActionResult) -> str:
-        stamp = result.created_at.strftime("%Y%m%dT%H%M%SZ")
-        path = f"{_RESULT_PREFIX}/{stamp}-{_slug(result.capability_id)}-{_slug(result.kind)}.md"
-        await self._mimir.upsert_page(path, _render_result(result))
-        return path
-
-    async def write_audit(self, content: str) -> str:
-        path = f"{_AUDIT_PREFIX}/{_stamp(datetime.now(UTC))}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_reasoning(self, reasoning: ResidentPhysicalReasoning) -> str:
-        path = f"{_REASONING_PREFIX}/{_stamp(reasoning.created_at)}.md"
-        await self._mimir.upsert_page(path, _render_reasoning(reasoning))
-        return path
-
-    async def list_refs(self, prefix: str = _PHYSICAL_PREFIX) -> list[str]:
-        pages = await self._mimir.list_pages(prefix=prefix)
-        return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
 
 
 class ResidentPhysicalRuntime:
@@ -205,7 +172,7 @@ class ResidentPhysicalRuntime:
         )
         refs.append(await self._memory.write_reasoning(reasoning))
         refs.append(
-            await self._memory.write_audit(
+            await self._memory.write_physical_audit(
                 _render_audit(
                     title="Physical Capability Discovery",
                     body=f"Discovered {len(capabilities)} configured capability adapter(s).",
@@ -236,7 +203,7 @@ class ResidentPhysicalRuntime:
         reasoning = _reason_from_results(mandate, (result,), tuple(refs))
         refs.append(await self._memory.write_reasoning(reasoning))
         refs.append(
-            await self._memory.write_audit(
+            await self._memory.write_physical_audit(
                 _render_audit(
                     title="Physical Read-Only Telemetry",
                     body=result.summary,
@@ -273,7 +240,7 @@ class ResidentPhysicalRuntime:
         reasoning = _reason_from_results(mandate, (result,), tuple(refs))
         refs.append(await self._memory.write_reasoning(reasoning))
         refs.append(
-            await self._memory.write_audit(
+            await self._memory.write_physical_audit(
                 _render_audit(title="Physical Dry Run", body=result.summary, refs=tuple(refs))
             )
         )
@@ -365,7 +332,7 @@ class ResidentPhysicalRuntime:
             reasoning = _reason_from_results(mandate, (result,), tuple(refs))
             refs.append(await self._memory.write_reasoning(reasoning))
             refs.append(
-                await self._memory.write_audit(
+                await self._memory.write_physical_audit(
                     _render_audit(
                         title="Physical Operation Blocked",
                         body=decision.reason,
@@ -394,7 +361,7 @@ class ResidentPhysicalRuntime:
         reasoning = _reason_from_results(mandate, (result,), tuple(refs))
         refs.append(await self._memory.write_reasoning(reasoning))
         refs.append(
-            await self._memory.write_audit(
+            await self._memory.write_physical_audit(
                 _render_audit(
                     title="Physical Operation Executed",
                     body=result.summary,

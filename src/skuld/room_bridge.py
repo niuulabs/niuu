@@ -1338,6 +1338,10 @@ class RoomBridge:
             )
             return False
 
+    def pending_help_peer_ids(self) -> tuple[str, ...]:
+        """Return Ravn peer ids with pending help context for directed replies."""
+        return tuple(self._pending_help_context.keys())
+
     # ------------------------------------------------------------------
     # Room state
     # ------------------------------------------------------------------

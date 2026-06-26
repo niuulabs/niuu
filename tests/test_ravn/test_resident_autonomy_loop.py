@@ -35,6 +35,7 @@ from ravn.domain.resident_portfolio import (
 )
 from ravn.ports.capability import (
     WorkflowArtifact,
+    WorkflowArtifactContent,
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
     WorkflowRunEvent,
@@ -128,7 +129,15 @@ class RecordingWorkflowPort:
         *,
         path: str,
     ) -> Any:
-        raise NotImplementedError
+        artifact = WorkflowArtifact(
+            path=path,
+            title="Workflow output",
+            summary="Worker produced durable output.",
+        )
+        return WorkflowArtifactContent(
+            artifact=artifact,
+            content="# Workflow output\n\nThe worker produced concrete evidence.",
+        )
 
     async def cancel_workflow(
         self,
@@ -142,6 +151,35 @@ class RecordingWorkflowPort:
             session_id=reference.session_id or "workflow-session-1",
             workflow_id=reference.workflow_id or "generic-worker",
             raw={"status": "stopped", "name": "Generic Worker"},
+        )
+
+
+class QuestionArtifactWorkflowPort(RecordingWorkflowPort):
+    async def read_workflow_artifact(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        path: str,
+    ) -> Any:
+        artifact = WorkflowArtifact(
+            path=path,
+            title="Workflow output",
+            summary="Worker produced durable output.",
+        )
+        return WorkflowArtifactContent(
+            artifact=artifact,
+            content=(
+                "# Workflow output\n\n"
+                "## Findings\n\n"
+                "1. The worker found useful evidence.\n\n"
+                + ("Context line for long research artifacts.\n" * 160)
+                +
+                "## Open Questions\n\n"
+                "1. What is the current operating status?\n"
+                "2. Which outcome matters most now?\n\n"
+                "## Follow-Up Suggestions\n\n"
+                "- Build a lightweight internal audit from the answers.\n"
+            ),
         )
 
 
@@ -382,6 +420,50 @@ async def test_workflow_adapter_launches_real_capability_port() -> None:
     assert workflows.launches[0].definition == "skuldCodex"
     assert result is not None
     assert result.output_refs == ("workflow/output.md",)
+    assert result.artifact_excerpts
+    assert "concrete evidence" in result.artifact_excerpts[0]
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_assimilates_artifact_questions_for_review() -> None:
+    workflows = QuestionArtifactWorkflowPort()
+    adapter = WorkflowResidentExecutionAdapter(
+        workflows=workflows,
+        model="gpt-5.5",
+        definition="skuldCodex",
+    )
+    objective = _objective("workflow-objective", "Run workflow objective")
+
+    session = await adapter.launch(build_worker_brief(MANDATE, objective))
+    result = await adapter.read_result(session.session_id)
+    delegation = ResidentDelegationRecord(
+        id="delegation-workflow",
+        source_objective_id=objective.id,
+        backend_session_id=session.session_id,
+        backend_name=session.backend_name,
+        brief=build_worker_brief(MANDATE, objective),
+        status=session.status,
+        reason="test artifact question assimilation",
+    )
+
+    assert result is not None
+    assert result.findings == (
+        "workflow.completed: {\"session_id\": \"workflow-session-1\"}",
+        "The worker found useful evidence.",
+    )
+    assert result.open_questions == (
+        "What is the current operating status?",
+        "Which outcome matters most now?",
+    )
+    assert result.follow_up_suggestions == (
+        "Build a lightweight internal audit from the answers.",
+    )
+    review = review_delegation_result(objective, delegation, result)
+    assert review.decision == ResidentDelegationReviewDecision.ASK_OPERATOR.value
+    assert review.operator_questions == (
+        "Can you help resolve this delegated-work question: What is the current operating status?",
+        "Can you help resolve this delegated-work question: Which outcome matters most now?",
+    )
 
 
 @pytest.mark.asyncio
@@ -830,11 +912,116 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_pending_operator(
 ) -> None:
     backend = LocalResidentWorkItemBackend(tmp_path)
     wake_memory = LocalWakefulResidentMemory(tmp_path)
+    ask_operator = PendingAskOperator()
     pending = _objective("daemon-pending", "Daemon pending objective").with_updates(
         status=ResidentObjectiveStatus.NEEDS_OPERATOR.value,
         pending_question="May I operate the physical printer?",
+        risk_boundaries=("physical_operation",),
     )
     await _write_portfolio(backend, pending)
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        ask_operator=ask_operator,
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    contact_pages = sorted((tmp_path / "resident" / "operator-contacts").glob("*.md"))
+
+    assert run is None
+    assert len(ask_operator.requests) == 1
+    assert ask_operator.requests[0].source_objective_id == "daemon-pending"
+    assert ask_operator.requests[0].risk_boundaries == ("physical_operation",)
+    assert wake_records == []
+    assert contact_pages
+    assert "status: pending" in contact_pages[0].read_text(encoding="utf-8")
+    assert decisions
+    decision_text = decisions[-1].read_text(encoding="utf-8")
+    assert "slept: pending operator input" in decision_text
+    assert "contact_ref=resident/operator-contacts/operator-contact-daemon-pending.md" in (
+        decision_text
+    )
+
+    await trigger.run_once()
+
+    assert len(ask_operator.requests) == 1
+
+    restarted_trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        ask_operator=ask_operator,
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+    await restarted_trigger.run_once()
+
+    assert len(ask_operator.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_continues_with_runnable_work_when_operator_pending(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    ask_operator = PendingAskOperator()
+    pending = _objective("daemon-pending", "Daemon pending objective").with_updates(
+        status=ResidentObjectiveStatus.NEEDS_OPERATOR.value,
+        pending_question="May I operate the physical printer?",
+        risk_boundaries=("physical_operation",),
+    )
+    runnable = _objective("daemon-runnable", "Daemon runnable objective")
+    await _write_portfolio(backend, pending, runnable)
+
+    trigger = ResidentAutonomyTrigger(
+        mandate=MANDATE,
+        backend=backend,
+        executor=LocalSubprocessResidentExecutor(),
+        ask_operator=ask_operator,
+        wake_memory=wake_memory,
+        loop_config=ResidentAutonomyLoopConfig(max_cycles=1, max_delegations_per_cycle=1),
+        skip_when_operator_pending=True,
+    )
+
+    run = await trigger.run_once()
+    wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
+    decisions = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    ]
+
+    assert run is not None
+    assert len(run.cycles) == 1
+    assert len(ask_operator.requests) == 1
+    assert ask_operator.requests[0].source_objective_id == "daemon-pending"
+    assert len(wake_records) == 1
+    assert any(
+        "contacted pending operator input for daemon-pending and continued" in item
+        for item in decisions
+    )
+    assert any("cycles=1" in item for item in decisions)
+
+
+@pytest.mark.asyncio
+async def test_daemon_resident_autonomy_trigger_sleeps_for_only_blocked_work(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    wake_memory = LocalWakefulResidentMemory(tmp_path)
+    blocked = _objective("daemon-blocked", "Daemon blocked objective").with_updates(
+        status=ResidentObjectiveStatus.BLOCKED.value,
+        proof_progress=("blocked until the operator changes the boundary",),
+    )
+    await _write_portfolio(backend, blocked)
 
     trigger = ResidentAutonomyTrigger(
         mandate=MANDATE,
@@ -847,12 +1034,14 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_pending_operator(
 
     run = await trigger.run_once()
     wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
-    decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    decisions = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    ]
 
     assert run is None
     assert wake_records == []
-    assert decisions
-    assert "slept: pending operator input" in decisions[-1].read_text(encoding="utf-8")
+    assert any("slept: no resident work" in item for item in decisions)
 
 
 @pytest.mark.asyncio
@@ -862,6 +1051,7 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_continuation_operator
     backend = LocalResidentWorkItemBackend(tmp_path)
     wake_memory = LocalWakefulResidentMemory(tmp_path)
     operator_memory = LocalResidentMemory(tmp_path)
+    ask_operator = PendingAskOperator()
     ran_extension = False
     await operator_memory.write_operator_needed(
         question="Should I continue with the physical device check?",
@@ -889,6 +1079,7 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_continuation_operator
         mandate=MANDATE,
         backend=backend,
         executor=LocalSubprocessResidentExecutor(),
+        ask_operator=ask_operator,
         wake_memory=wake_memory,
         operator_memory=operator_memory,
         wake_extensions=(
@@ -901,10 +1092,16 @@ async def test_daemon_resident_autonomy_trigger_sleeps_for_continuation_operator
     run = await trigger.run_once()
     wake_records = await wake_memory.list_wake_records(MANDATE, limit=5)
     decisions = sorted((tmp_path / "resident" / "portfolio" / "decisions").glob("*.md"))
+    contact_pages = sorted((tmp_path / "resident" / "operator-contacts").glob("*.md"))
 
     assert run is None
     assert ran_extension is False
+    assert len(ask_operator.requests) == 1
+    assert ask_operator.requests[0].question == "Should I continue with the physical device check?"
+    assert ask_operator.requests[0].source_objective_id == ""
     assert wake_records == []
+    assert contact_pages
+    assert "status: pending" in contact_pages[0].read_text(encoding="utf-8")
     assert decisions
     decision_text = decisions[-1].read_text(encoding="utf-8")
     assert "resident/continuation/operator-needed/latest.md" in decision_text
@@ -1042,6 +1239,56 @@ async def test_directed_operator_reply_persists_approval_for_future_wake(
 
     assert run.cycles[0].delegation_report.created_delegations
     assert run.cycles[0].delegation_report.created_delegations[0].source_objective_id == "risky"
+
+
+@pytest.mark.asyncio
+async def test_directed_operator_reply_denial_blocks_risky_objective(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    pending = _objective(
+        "facebook",
+        "Investigate Facebook as a resident opportunity",
+        risk_boundaries=("spending", "physical_operation"),
+    ).with_updates(
+        status=ResidentObjectiveStatus.NEEDS_OPERATOR.value,
+        pending_question=(
+            "May I run a safe experiment around facebook that could touch "
+            "spending, physical_operation?"
+        ),
+        proof_progress=(
+            "operator approved risk boundary: operator-contact-facebook at stale-time",
+        ),
+    )
+    await _write_portfolio(backend, pending)
+
+    report = await ingest_resident_operator_reply(
+        backend=backend,
+        mandate=MANDATE,
+        content="Not approved. Investigate kanuck valley models online instead",
+        metadata={
+            "help_summary": pending.pending_question,
+            "help_context": {
+                "operator_contact_id": "operator-contact-facebook",
+                "operator_contact_purpose": "approval",
+                "source_objective_id": "facebook",
+                "risk_boundaries": ["spending", "physical_operation"],
+                "impact": "Allows this objective to continue.",
+            },
+        },
+    )
+
+    assert report.handled is True
+    assert report.approved is False
+    objectives = await backend.list_objectives(MANDATE)
+    updated = next(item for item in objectives if item.id == "facebook")
+    assert updated.status == ResidentObjectiveStatus.BLOCKED.value
+    assert updated.pending_question == ""
+    assert any("operator denied risk boundary" in item for item in updated.proof_progress)
+    assert not any(
+        "operator approved risk boundary: operator-contact-facebook" in item
+        for item in updated.proof_progress
+    )
 
 
 @pytest.mark.asyncio

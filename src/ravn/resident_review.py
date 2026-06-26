@@ -29,7 +29,6 @@ from ravn.domain.resident_review import (
     ResidentVerificationCheck,
     ResidentVerificationEvidence,
 )
-from ravn.ports.mimir import MimirPort
 from ravn.ports.resident_review import ResidentVerificationPort
 
 _REVIEW_PREFIX = "resident/reviews"
@@ -71,7 +70,7 @@ class ResidentReviewMemoryPort(Protocol):
     async def write_review(self, review: ResidentArtifactReview) -> str:
         """Persist one artifact review."""
 
-    async def write_audit(self, content: str) -> str:
+    async def write_review_audit(self, content: str) -> str:
         """Persist one review audit record."""
 
 
@@ -99,7 +98,7 @@ class LocalResidentReviewMemory(ResidentReviewMemoryPort):
         rel = Path(_REVIEW_PREFIX) / f"{review.id}.md"
         return self._write(rel, _render_review(review))
 
-    async def write_audit(self, content: str) -> str:
+    async def write_review_audit(self, content: str) -> str:
         rel = Path(_REVIEW_AUDIT_PREFIX) / f"{_stamp(datetime.now(UTC))}.md"
         return self._write(rel, content)
 
@@ -108,42 +107,6 @@ class LocalResidentReviewMemory(ResidentReviewMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return str(rel)
-
-
-class MimirResidentReviewMemory(ResidentReviewMemoryPort):
-    """Mimir-backed review memory."""
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def list_reviews(self, review_key: str = "") -> list[ResidentArtifactReview]:
-        pages = await self._mimir.list_pages(prefix=_REVIEW_PREFIX)
-        reviews: list[ResidentArtifactReview] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            path = str(getattr(meta, "path", "") or "")
-            if "/audits/" in path:
-                continue
-            try:
-                content = await self._mimir.read_page(path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_review(content)
-            if parsed is None:
-                continue
-            if review_key and parsed.review_key != review_key:
-                continue
-            reviews.append(parsed)
-        return reviews
-
-    async def write_review(self, review: ResidentArtifactReview) -> str:
-        path = f"{_REVIEW_PREFIX}/{review.id}.md"
-        await self._mimir.upsert_page(path, _render_review(review))
-        return path
-
-    async def write_audit(self, content: str) -> str:
-        path = f"{_REVIEW_AUDIT_PREFIX}/{_stamp(datetime.now(UTC))}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
 
 
 class PortfolioArtifactReviewTargetSource(ResidentReviewTargetSourcePort):
@@ -214,7 +177,7 @@ class ResidentReviewRuntime:
                 duplicate_of=duplicate.id,
             )
             review_ref = await self._memory.write_review(review)
-            audit_ref = await self._memory.write_audit(
+            audit_ref = await self._memory.write_review_audit(
                 _render_audit(
                     "Duplicate Resident Review Skipped",
                     f"Skipped duplicate review for key `{review_key}`.",
@@ -266,7 +229,7 @@ class ResidentReviewRuntime:
             ),
         )
         refs.append(decision_ref)
-        audit_ref = await self._memory.write_audit(
+        audit_ref = await self._memory.write_review_audit(
             _render_audit(
                 "Resident Artifact Review",
                 f"{target.title}: {decision}. {reason}",

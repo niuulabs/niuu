@@ -370,8 +370,15 @@ class ResidentExecutionResult:
     status: str
     summary: str
     output_refs: tuple[str, ...] = ()
+    artifact_excerpts: tuple[str, ...] = ()
     findings: tuple[str, ...] = ()
     follow_up_suggestions: tuple[str, ...] = ()
+    known_facts: tuple[str, ...] = ()
+    hypotheses: tuple[str, ...] = ()
+    open_questions: tuple[str, ...] = ()
+    operator_questions: tuple[str, ...] = ()
+    risk_notes: tuple[str, ...] = ()
+    recommended_next_action: str = ""
     blocked_reason: str = ""
     usage: ResidentBudgetSnapshot = field(default_factory=ResidentBudgetSnapshot)
 
@@ -421,6 +428,7 @@ class ResidentDelegationReview:
     proof_criteria_checked: tuple[str, ...] = ()
     missing_evidence: tuple[str, ...] = ()
     follow_up_suggestions: tuple[str, ...] = ()
+    operator_questions: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -20,9 +20,9 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
     ResidentPortfolio,
 )
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    MimirResidentWorkItemBackend,
     ResidentCapabilityDiscoveryConfig,
     ResidentCapabilityDiscoveryRuntime,
     detect_capability_gaps,
@@ -248,7 +248,7 @@ async def _main() -> None:
     _configure_logging(settings)
     mimir = _build_mimir(settings)
     if mimir is not None:
-        backend: Any = MimirResidentWorkItemBackend(mimir)
+        backend: Any = MimirResidentWorkAdapter(mimir)
         memory_label = "mimir"
     else:
         local_root = Path.cwd() / ".ravn"

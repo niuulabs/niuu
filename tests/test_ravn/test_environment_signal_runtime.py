@@ -25,10 +25,10 @@ from ravn.ports.capability import (
 )
 from ravn.resident_opportunity import (
     LocalResidentOpportunityBackend,
-    MimirEnvironmentSignalOpportunitySource,
     ResidentOpportunityConfig,
     ResidentOpportunityRuntime,
 )
+from ravn.resident_inbox import MimirResidentInbox
 from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
@@ -245,14 +245,14 @@ async def test_daemon_environment_signals_become_resident_opportunity_evidence(
 
     assert runtime is not None
     count = await runtime.collect_once()
-    source = MimirEnvironmentSignalOpportunitySource(mimir)
+    source = MimirResidentInbox(mimir)
     signals = await source.collect(
         mandate="A resident Ravn manages the host environment.",
         domain_model=None,
         objectives=(),
         limit=5,
     )
-    pages = await mimir.list_pages(prefix="resident/environment-signals")
+    pages = await mimir.list_pages(prefix="resident/inbox/signals")
     opportunity_runtime = ResidentOpportunityRuntime(
         backend=LocalResidentWorkItemBackend(tmp_path / "portfolio"),
         opportunity_backend=LocalResidentOpportunityBackend(tmp_path / "opportunities"),
@@ -282,11 +282,11 @@ async def test_daemon_environment_signals_become_resident_opportunity_evidence(
     assert signals[0].source == "host-events"
     assert signals[0].kind == "signal.host.event"
     assert "Disk usage crossed 95%" in signals[0].summary
-    assert signals[0].evidence_ref.startswith("resident/environment-signals/")
+    assert signals[0].evidence_ref.startswith("resident/inbox/signals/")
     assert "environment health" in signals[0].outcomes
     assert report.created_objectives
     assert report.created_objectives[0].source_evidence
-    assert "resident/environment-signals/" in report.created_objectives[0].source_evidence[0]
+    assert "resident/inbox/signals/" in report.created_objectives[0].source_evidence[0]
     assert remaining == ()
 
 

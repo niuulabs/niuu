@@ -17,9 +17,9 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
     ResidentPortfolio,
 )
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    MimirResidentWorkItemBackend,
     ResidentPortfolioValidator,
     render_validation_report,
 )
@@ -172,7 +172,7 @@ async def _main() -> None:
     _configure_logging(settings)
     mimir = _build_mimir(settings)
     if mimir is not None:
-        backend: Any = MimirResidentWorkItemBackend(mimir)
+        backend: Any = MimirResidentWorkAdapter(mimir)
         local_root = None
         memory_label = "mimir"
     else:

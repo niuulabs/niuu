@@ -179,6 +179,8 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
                 forge_session = await self._get_forge_session(reference.session_id)
                 artifacts = _local_session_artifacts(forge_session)
                 if not artifacts:
+                    artifacts = _local_forge_workspace_artifacts(reference.session_id)
+                if not artifacts:
                     artifacts = await self._session_conversation_artifacts(reference.session_id)
             return artifacts
         slug = str(campaign.get("slug") or reference.slug)
@@ -225,6 +227,13 @@ class TingWorkflowCapabilityAdapter(WorkflowCapabilityPort):
                 try:
                     return _read_local_session_artifact(forge_session, path=path)
                 except RuntimeError:
+                    try:
+                        return _read_local_forge_workspace_artifact(
+                            reference.session_id,
+                            path=path,
+                        )
+                    except RuntimeError:
+                        pass
                     if _is_session_conversation_artifact(reference, path):
                         return await self._read_session_conversation_artifact(
                             reference.session_id,
@@ -643,6 +652,17 @@ def _local_session_artifacts(session: dict[str, Any] | None) -> list[WorkflowArt
     root = _session_workspace_root(session)
     if root is None:
         return []
+    return _workspace_markdown_artifacts(root)
+
+
+def _local_forge_workspace_artifacts(session_id: str) -> list[WorkflowArtifact]:
+    root = _local_forge_workspace_root(session_id)
+    if root is None:
+        return []
+    return _workspace_markdown_artifacts(root)
+
+
+def _workspace_markdown_artifacts(root: Path) -> list[WorkflowArtifact]:
     files: list[WorkflowArtifact] = []
     for candidate in sorted((root / "research" / "campaigns").glob("*/*.md")):
         if not candidate.is_file():
@@ -675,6 +695,35 @@ def _read_local_session_artifact(
         raise RuntimeError("Workflow artifact not found")
     artifact = next(
         (item for item in _local_session_artifacts(session) if item.path == path),
+        WorkflowArtifact(
+            path=path,
+            title=Path(path).stem.replace("-", " ").replace("_", " ").title(),
+            kind=Path(path).stem,
+            summary=f"Local workflow artifact {path}",
+            publish_state="local",
+            raw={"path": path, "source": "forge-workspace"},
+        ),
+    )
+    return WorkflowArtifactContent(
+        artifact=artifact,
+        content=target.read_text(encoding="utf-8"),
+        raw={"path": path, "source": "forge-workspace"},
+    )
+
+
+def _read_local_forge_workspace_artifact(
+    session_id: str,
+    *,
+    path: str,
+) -> WorkflowArtifactContent:
+    root = _local_forge_workspace_root(session_id)
+    if root is None:
+        raise RuntimeError("Workflow run has no readable local Forge workspace")
+    target = (root / path).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        raise RuntimeError("Workflow artifact not found")
+    artifact = next(
+        (item for item in _local_forge_workspace_artifacts(session_id) if item.path == path),
         WorkflowArtifact(
             path=path,
             title=Path(path).stem.replace("-", " ").replace("_", " ").title(),
@@ -725,6 +774,13 @@ def _session_workspace_root(session: dict[str, Any] | None) -> Path | None:
     if parsed.scheme != "file":
         return None
     root = Path(unquote(parsed.path)).expanduser().resolve()
+    return root if root.exists() and root.is_dir() else None
+
+
+def _local_forge_workspace_root(session_id: str) -> Path | None:
+    if not session_id:
+        return None
+    root = (Path.home() / ".niuu" / "workspaces" / session_id).expanduser().resolve()
     return root if root.exists() and root.is_dir() else None
 
 

@@ -29,10 +29,10 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
     ResidentWorkItemBackend,
 )
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import _compact_line, _slug
 from ravn.resident_portfolio import (
-    MimirResidentWorkItemBackend,
     _merge_text,
     _render_list,
     merge_objectives,
@@ -421,7 +421,7 @@ def build_mimir_opportunity_runtime(
     """Build a resident opportunity runtime backed by the existing Mimir store."""
 
     return ResidentOpportunityRuntime(
-        backend=MimirResidentWorkItemBackend(mimir),
+        backend=MimirResidentWorkAdapter(mimir),
         opportunity_backend=MimirResidentOpportunityBackend(mimir),
         sources=sources,
         expert_memory=expert_memory,

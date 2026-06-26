@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import pytest
+
+from ravn.domain.models import TokenUsage
+from ravn.domain.resident_continuation import ResidentPolicyObservation, ResidentTurnRecord
+from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
+from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
+
+
+class RecordingGBrainResidentState(GBrainResidentStateAdapter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mcp_calls: list[tuple[str, dict]] = []
+        self.ingests: list[tuple[str, str]] = []
+
+    async def _call_mcp_tool(self, name: str, arguments: dict):
+        self.mcp_calls.append((name, arguments))
+        return {"content": [{"type": "text", "text": "[]"}]}
+
+    async def _ingest_gbrain(self, slug: str, content: str) -> None:
+        self.ingests.append((slug, content))
+
+
+@pytest.mark.asyncio
+async def test_local_resident_state_is_single_memory_boundary(tmp_path):
+    state = LocalResidentState(tmp_path)
+
+    turn_ref = await state.write_turn(
+        ResidentTurnRecord(
+            turn_index=1,
+            prompt="inspect resident state",
+            response="resident state recorded",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    review_ref = await state.write_review_audit("review audit")
+    physical_ref = await state.write_physical_audit("physical audit")
+
+    assert turn_ref.startswith("resident/continuation/turns/")
+    assert review_ref.startswith("resident/reviews/audits/")
+    assert physical_ref.startswith("resident/physical/audits/")
+    assert (tmp_path / turn_ref).exists()
+    assert (tmp_path / review_ref).read_text(encoding="utf-8") == "review audit"
+    assert (tmp_path / physical_ref).read_text(encoding="utf-8") == "physical audit"
+
+
+@pytest.mark.asyncio
+async def test_mimir_resident_state_is_single_memory_boundary(tmp_path):
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    state = MimirResidentState(mimir)
+
+    turn_ref = await state.write_turn(
+        ResidentTurnRecord(
+            turn_index=1,
+            prompt="inspect resident state",
+            response="resident state recorded",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    review_ref = await state.write_review_audit("review audit")
+    physical_ref = await state.write_physical_audit("physical audit")
+
+    assert turn_ref.startswith("resident/continuation/turns/")
+    assert review_ref.startswith("resident/reviews/audits/")
+    assert physical_ref.startswith("resident/physical/audits/")
+    assert await mimir.read_page(review_ref) == "review audit"
+    assert await mimir.read_page(physical_ref) == "physical audit"
+
+
+@pytest.mark.asyncio
+async def test_gbrain_resident_state_prefers_synchronous_put_page_with_mcp(tmp_path):
+    state = RecordingGBrainResidentState(
+        tmp_path,
+        mcp_url="http://127.0.0.1:3131/mcp",
+        ingest_url="http://127.0.0.1:3131/ingest",
+        api_token="token",
+    )
+
+    await state.write_turn(
+        ResidentTurnRecord(
+            turn_index=1,
+            prompt="inspect resident state",
+            response="resident state recorded",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+
+    assert [name for name, _arguments in state.mcp_calls] == ["put_page"]
+    assert state.ingests == []
+    name, arguments = state.mcp_calls[0]
+    assert name == "put_page"
+    assert arguments["slug"].startswith("resident/continuation/turns/")
+    projected_name = arguments["slug"].rsplit("/", 1)[-1]
+    assert projected_name.startswith("t")
+    assert "T" not in projected_name
+    assert "Z" not in projected_name
+    assert "Ravn resident memory" in arguments["content"]
+
+
+@pytest.mark.asyncio
+async def test_gbrain_resident_state_can_use_explicit_ingest_mode(tmp_path):
+    state = RecordingGBrainResidentState(
+        tmp_path,
+        mcp_url="http://127.0.0.1:3131/mcp",
+        ingest_url="http://127.0.0.1:3131/ingest",
+        api_token="token",
+        write_mode="ingest",
+    )
+
+    await state.write_turn(
+        ResidentTurnRecord(
+            turn_index=1,
+            prompt="inspect resident state",
+            response="resident state recorded",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+
+    assert state.mcp_calls == []
+    assert len(state.ingests) == 1
+    assert state.ingests[0][0].startswith("resident/continuation/turns/")
+
+
+@pytest.mark.asyncio
+async def test_gbrain_resident_state_projects_operator_feedback(tmp_path):
+    state = RecordingGBrainResidentState(
+        tmp_path,
+        mcp_url="http://127.0.0.1:3131/mcp",
+        api_token="token",
+    )
+
+    answer_ref = await state.write_operator_answer(
+        "Not approved. Investigate Kanuck Valley Models online instead."
+    )
+    policy_ref = await state.write_policy_observation(
+        ResidentPolicyObservation(
+            subject="operator-contact:approval",
+            observation="Not approved. Investigate Kanuck Valley Models online instead.",
+            source="operator_answer",
+            status="candidate",
+        )
+    )
+
+    slugs = [arguments["slug"] for _name, arguments in state.mcp_calls]
+    assert answer_ref == "resident/continuation/operator-answers/latest.md"
+    assert policy_ref == "resident/continuation/policy/operator-contact-approval.md"
+    assert "resident/continuation/operator-answers/latest" in slugs
+    assert "resident/continuation/policy/operator-contact-approval" in slugs

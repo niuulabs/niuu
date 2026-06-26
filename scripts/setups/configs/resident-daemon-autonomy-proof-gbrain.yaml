@@ -1,31 +1,31 @@
-# ─── resident-daemon-autonomy-proof ──────────────────────────────────────────
+# ─── resident-daemon-autonomy-proof-gbrain ───────────────────────────────────
 #
-# Real daemon proof for resident autonomy.
-#
-# This config intentionally runs through the production daemon path:
+# Real daemon proof for resident inbox intake using GBrain as the resident state
+# adapter and Mimir as resident work storage. This runs through the production
+# daemon path:
 #
 #   ravn daemon
 #     -> DriveLoop
 #     -> ResidentAutonomyTrigger
-#     -> ResidentLongHorizonWorkManager
-#     -> ResidentAutonomyLoopRuntime
-#     -> resident_delegation_execution workflow adapter
-#     -> Ting workflow launch
-#     -> Volundr/Forge/Codex worker session
+#     -> EnvironmentSignalRuntime with mesh enabled
+#     -> MimirResidentInbox under resident/inbox/...
+#     -> ResidentInboxRuntime wake extension
+#     -> resident portfolio objective creation
 #
-# There is no seeded task list and no proof-script resident loop here. The only
-# resident input is the mandate below.
+# There is no proof-script resident loop here. The proof input is a configured
+# inbox signal source plus the mandate below; delegation and opportunity
+# generation are disabled so the run stays focused on inbox intake and triage.
 #
 # Expected local preflight:
 #   ./start-dev
 #   NIUU_CONFIG=scripts/setups/configs/resident-skuld-broker-autonomy-proof.yaml \
 #     uv run python -m skuld
 #
-# If start-dev prints different bind addresses, update workflow_source_kwargs.base_url
-# and skuld.broker_url below before running the daemon proof.
-#
 # Proof command:
-#   uv run ravn daemon --config scripts/setups/configs/resident-daemon-autonomy-proof.yaml
+#   RAVN_GBRAIN_API_TOKEN=<token> \
+#   CODEX_HOME=/Users/jozefvaneenbergen/.codex \
+#   UV_CACHE_DIR=/private/tmp/uv-cache \
+#     uv run ravn daemon --config scripts/setups/configs/resident-daemon-autonomy-proof-gbrain.yaml
 # ─────────────────────────────────────────────────────────────────────────────
 
 memory:
@@ -33,13 +33,31 @@ memory:
 
 mimir:
   enabled: true
-  path: /private/tmp/resident-daemon-autonomy-proof-codex-final/mimir
+  path: /private/tmp/resident-daemon-autonomy-proof-clean-20260622-2005/mimir
   search:
     backend: fts
   source_trigger:
     enabled: false
   staleness_trigger:
     enabled: false
+
+resident_state:
+  adapter: ravn.adapters.resident_state.gbrain.GBrainResidentStateAdapter
+  kwargs:
+    root: /private/tmp/resident-daemon-autonomy-proof-clean-20260622-2005/state
+    command: /private/tmp/bun/bin/gbrain
+    mcp_url: http://127.0.0.1:3131/mcp
+    ingest_url: http://127.0.0.1:3131/ingest
+    write_mode: put_page
+    capture_enabled: true
+    search_enabled: true
+    timeout_seconds: 60
+  secret_kwargs_env:
+    api_token: RAVN_GBRAIN_API_TOKEN
+
+resident_work:
+  adapter: ravn.adapters.resident_work.mimir.MimirResidentWorkAdapter
+  kwargs: {}
 
 resident_autonomy:
   enabled: true
@@ -48,26 +66,35 @@ resident_autonomy:
     You are its resident Ravn.
     Help it become easier to run, more creative, and more successful.
     Ask before spending money or operating physical machines.
-  bootstrap_portfolio: true
+  bootstrap_portfolio: false
   persona: resident-codex
   operator_contact: skuld
   poll_interval_seconds: 60
   initial_delay_seconds: 5
-  max_cycles_per_wake: 2
+  max_cycles_per_wake: 1
   max_wall_clock_seconds: 1800
   sleep_between_cycles_seconds: 20
   max_objectives_selected: 2
   max_active_objectives: 3
-  max_wake_cycles: 2
+  max_wake_cycles: 30
   orientation_turns: 1
   max_workstream_turns: 1
+
+resident_inbox:
+  enabled: true
+  environment_signals_enabled: true
+  directed_messages_enabled: true
+  max_signals_per_wake: 5
+  create_objectives: true
+  attach_to_existing_objectives: true
+  min_attach_score: 1
 
 resident_delegation_execution:
   adapter: ravn.adapters.resident_execution.workflow.ConfiguredWorkflowResidentExecutionAdapter
   kwargs:
     workflow_source_adapter: ravn.adapters.capabilities.ting_workflows.TingWorkflowCapabilityAdapter
     workflow_source_kwargs:
-      base_url: "http://127.0.0.1:8080"
+      base_url: "http://192.168.1.106:8080"
       allow_anonymous: true
       timeout_seconds: 30.0
     workflow_id: "1bfc01b1-4d01-5d20-86e1-2956dff11464"
@@ -80,7 +107,7 @@ resident_delegation_execution:
   abandon_after_seconds: 0
 
 resident_opportunity_generation:
-  enabled: true
+  enabled: false
   sources:
     - adapter: ravn.adapters.opportunity.web_search.WebSearchOpportunitySource
       enabled: true
@@ -95,7 +122,7 @@ resident_opportunity_generation:
   max_selected: 2
 
 resident_capability_discovery:
-  enabled: true
+  enabled: false
   adapter: ravn.adapters.capabilities.resident_discovery.CatalogWebCapabilityDiscoveryBackend
   include_builtin_catalog: true
   kwargs:
@@ -106,10 +133,19 @@ resident_capability_discovery:
 budget:
   daily_cap_usd: 5.0
 
+environment:
+  id: kanuck-valley-models-local
+  name: Kanuck Valley Models Local Proof
+  type: host
+  resident_name: Kanuck Valley Resident Ravn
+  signal_poll_interval_seconds: 2
+  signal_task_severities: []
+  signal_sources: []
+
 initiative:
   enabled: true
   max_concurrent_tasks: 1
-  queue_journal_path: /private/tmp/resident-daemon-autonomy-proof-codex-final/queue.json
+  queue_journal_path: /private/tmp/resident-daemon-autonomy-proof-clean-20260622-2005/queue.json
 
 thread:
   enabled: false
@@ -123,6 +159,9 @@ recap:
 dream_cycle:
   enabled: false
 
+odin_court:
+  enabled: false
+
 gateway:
   enabled: false
 
@@ -130,7 +169,12 @@ sleipnir:
   enabled: false
 
 mesh:
-  enabled: false
+  enabled: true
+  own_peer_id: resident-inbox-proof-ravn
+  adapter: nng
+  nng:
+    pub_sub_address: "ipc:///private/tmp/resident-inbox-proof-ravn-clean-20260622-2005-pub.ipc"
+    req_rep_address: "ipc:///private/tmp/resident-inbox-proof-ravn-clean-20260622-2005-rep.ipc"
 
 skuld:
   enabled: true

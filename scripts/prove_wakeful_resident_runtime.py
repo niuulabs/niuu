@@ -15,19 +15,18 @@ from ravn.cli.commands import (
     _configure_logging,
     _resolve_persona,
 )
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import ResidentTurnRecord
-from ravn.resident_continuation import LocalResidentMemory, MimirResidentMemory
+from ravn.resident_continuation import LocalResidentMemory
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
-    MimirResidentDomainExpertMemory,
     ResidentDomainExpertConfig,
     ResidentDomainExpertLoop,
 )
 from ravn.wakeful_resident import (
     LocalWakefulResidentMemory,
-    MimirWakefulResidentMemory,
     WakefulResidentConfig,
     WakefulResidentRuntime,
 )
@@ -110,9 +109,9 @@ async def _main() -> None:
 
     mimir = _build_mimir(settings)
     if mimir is not None:
-        continuation_memory: Any = MimirResidentMemory(mimir)
-        expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
-        wake_memory: Any = MimirWakefulResidentMemory(mimir)
+        continuation_memory: Any = MimirResidentState(mimir)
+        expert_memory: Any = MimirResidentState(mimir)
+        wake_memory: Any = MimirResidentState(mimir)
         memory_label = "mimir"
         local_memory_root = None
     else:

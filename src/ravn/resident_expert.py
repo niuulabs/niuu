@@ -41,7 +41,6 @@ from ravn.domain.resident_expert import (
 )
 from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.channel import ChannelPort
-from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     NullResidentMemory,
@@ -116,57 +115,6 @@ class LocalResidentDomainExpertMemory(ResidentDomainExpertMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return str(rel)
-
-
-class MimirResidentDomainExpertMemory(ResidentDomainExpertMemoryPort):
-    """Mimir-backed domain-expert memory."""
-
-    def __init__(self, mimir: MimirPort) -> None:
-        self._mimir = mimir
-
-    async def read_domain_model(self, mandate: str) -> ResidentDomainModel | None:
-        try:
-            content = await self._mimir.read_page(_DOMAIN_MODEL_PATH)
-        except FileNotFoundError:
-            return None
-        return _parse_domain_model_page(content, mandate=mandate)
-
-    async def write_domain_model(self, model: ResidentDomainModel) -> str:
-        await self._mimir.upsert_page(_DOMAIN_MODEL_PATH, _render_domain_model(model))
-        return _DOMAIN_MODEL_PATH
-
-    async def list_workstreams(self, domain_model_ref: str) -> list[ResidentWorkstream]:
-        pages = await self._mimir.list_pages(prefix="resident/domain-expert/workstreams")
-        workstreams: list[ResidentWorkstream] = []
-        for meta in pages:
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_workstream_page(content)
-            if parsed is not None:
-                workstreams.append(parsed)
-        return workstreams
-
-    async def write_workstream(self, workstream: ResidentWorkstream) -> str:
-        path = f"resident/domain-expert/workstreams/{workstream.id}.md"
-        await self._mimir.upsert_page(path, _render_workstream(workstream))
-        return path
-
-    async def write_artifact(self, artifact: ExpertArtifact, content: str) -> str:
-        path = f"resident/domain-expert/artifacts/{_slug(artifact.title)}.md"
-        await self._mimir.upsert_page(path, content)
-        return path
-
-    async def write_consolidation(
-        self,
-        model: ResidentDomainModel,
-        result: WorkstreamExecutionResult,
-    ) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = f"resident/domain-expert/consolidations/{stamp}-{result.workstream_id}.md"
-        await self._mimir.upsert_page(path, _render_consolidation(model, result))
-        return path
 
 
 class LocalAgentWorkstreamExecutor(WorkstreamExecutionPort):

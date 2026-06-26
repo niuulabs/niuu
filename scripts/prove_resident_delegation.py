@@ -11,6 +11,7 @@ from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.cli.commands import _build_mimir, _configure_logging
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import Settings
 from ravn.domain.resident_portfolio import (
     ResidentDelegationRecord,
@@ -21,10 +22,10 @@ from ravn.domain.resident_portfolio import (
     ResidentObjectiveStatus,
     ResidentPortfolio,
 )
-from ravn.resident_expert import LocalResidentDomainExpertMemory, MimirResidentDomainExpertMemory
+from ravn.resident_expert import LocalResidentDomainExpertMemory
+from ravn.adapters.resident_work.mimir import MimirResidentWorkAdapter
 from ravn.resident_portfolio import (
     LocalResidentWorkItemBackend,
-    MimirResidentWorkItemBackend,
     ResidentDelegationConfig,
     ResidentDelegationRuntime,
     render_delegation_result,
@@ -252,8 +253,8 @@ async def _main() -> None:
         return
     mimir = _build_mimir(settings)
     if mimir is not None:
-        backend: Any = MimirResidentWorkItemBackend(mimir)
-        expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
+        backend: Any = MimirResidentWorkAdapter(mimir)
+        expert_memory: Any = MimirResidentState(mimir)
         memory_label = "mimir"
     else:
         local_root = Path.cwd() / ".ravn"

@@ -166,6 +166,21 @@ class TelegramConfig(BaseModel):
     enabled: bool = Field(default=False)
     bot_token: str = Field(default="")
     chat_id: str = Field(default="")
+    credential_name: str = Field(
+        default="",
+        description=(
+            "Optional credential-store entry containing bot_token and chat_id. "
+            "Direct bot_token/chat_id values win when set."
+        ),
+    )
+    credential_owner_type: str = Field(default="user")
+    credential_owner_id: str = Field(default="dev-user")
+    credential_store_adapter: str = Field(
+        default="volundr.adapters.outbound.file_credential_store.FileCredentialStore"
+    )
+    credential_store_kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"base_dir": "~/.niuu/credentials"}
+    )
     notify_only: bool = Field(default=False)
     topic_mode: str = Field(default="topic_per_session")
     message_thread_id: int | None = Field(default=None)

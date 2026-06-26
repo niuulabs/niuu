@@ -15,6 +15,7 @@ from ravn.cli.commands import (
     _configure_logging,
     _resolve_persona,
 )
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.resident_continuation import (
     ResidentActionCandidate,
@@ -27,12 +28,10 @@ from ravn.domain.resident_expert import ResidentDomainModel
 from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     LocalResidentMemory,
-    MimirResidentMemory,
     ResidentPolicyBoundary,
 )
 from ravn.resident_expert import (
     LocalResidentDomainExpertMemory,
-    MimirResidentDomainExpertMemory,
     ResidentDomainExpertConfig,
     ResidentDomainExpertLoop,
 )
@@ -179,8 +178,8 @@ async def _main() -> None:
 
     mimir = _build_mimir(settings)
     if mimir is not None:
-        continuation_memory: Any = MimirResidentMemory(mimir)
-        expert_memory: Any = MimirResidentDomainExpertMemory(mimir)
+        continuation_memory: Any = MimirResidentState(mimir)
+        expert_memory: Any = MimirResidentState(mimir)
         memory_label = "mimir"
         local_memory_root = None
     else:

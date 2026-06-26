@@ -26,12 +26,12 @@ from ravn.domain.resident_continuation import (
 from ravn.resident_continuation import (
     ConfigurableResidentPolicy,
     LocalResidentMemory,
-    MimirResidentMemory,
     ResidentContinuationKernel,
     ResidentPolicyBoundary,
     ResidentRunBudget,
 )
 from ravn.resident_operator_contact import ResidentOperatorContactCoordinator
+from ravn.adapters.resident_state.mimir import MimirResidentState
 
 MANDATE = (
     "Kanuck Valley Models is my small 3D printing company. "
@@ -947,7 +947,7 @@ class FakeMimir:
 @pytest.mark.asyncio
 async def test_mimir_memory_writes_and_reads_existing_mimir_pages() -> None:
     mimir = FakeMimir()
-    memory = MimirResidentMemory(mimir)  # type: ignore[arg-type]
+    memory = MimirResidentState(mimir)  # type: ignore[arg-type]
     record = ResidentTurnRecord(
         turn_index=1,
         prompt="mandate",

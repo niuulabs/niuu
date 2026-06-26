@@ -13,6 +13,7 @@ import sys
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,23 @@ def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[
         if value:
             merged[kwarg_name] = value
     return merged
+
+
+def _instantiate_resident_adapter(
+    adapter: str,
+    kwargs: dict[str, Any],
+    secret_kwargs_env: dict[str, str],
+    *,
+    mimir: Any,
+) -> Any:
+    """Instantiate a resident adapter, injecting Mimir only when requested."""
+
+    cls = _import_class(adapter)
+    merged = _inject_secrets(dict(kwargs), secret_kwargs_env)
+    signature = inspect.signature(cls)
+    if "mimir" in signature.parameters and "mimir" not in merged:
+        merged["mimir"] = mimir
+    return cls(**merged)
 
 
 def _resolve_workspace(settings: Settings) -> Path:
@@ -2865,7 +2883,7 @@ async def _run_daemon(
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
-    resident_learning_owns_publisher = False
+    environment_signal_publisher_started = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
@@ -2945,15 +2963,19 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
+    if environment_signal_publisher is not None and hasattr(
+        environment_signal_publisher,
+        "start",
+    ):
+        await environment_signal_publisher.start()
+        environment_signal_publisher_started = True
+
     resident_learning_runtime = _build_resident_learning_runtime(
         settings,
         publisher=environment_signal_publisher,
         workspace=_resolve_workspace(settings),
     )
     if resident_learning_runtime is not None:
-        if hasattr(environment_signal_publisher, "start"):
-            await environment_signal_publisher.start()
-            resident_learning_owns_publisher = True
         await resident_learning_runtime.start()
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
@@ -3023,7 +3045,7 @@ async def _run_daemon(
         mimir=daemon_mimir,
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
-        owns_publisher=not resident_learning_owns_publisher,
+        owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:
         await environment_signal_runtime.start()
@@ -3127,7 +3149,7 @@ async def _run_daemon(
             await huddle_archiver.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
-        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
         return
 
@@ -3155,7 +3177,7 @@ async def _run_daemon(
             await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
-        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
@@ -3211,13 +3233,13 @@ def _build_environment_signal_runtime(
     if (
         mimir is not None
         and settings.resident_autonomy.enabled
+        and settings.resident_inbox.enabled
+        and settings.resident_inbox.environment_signals_enabled
         and settings.resident_opportunity_generation.include_environment_signals
     ):
-        from ravn.resident_opportunity import (  # noqa: PLC0415
-            MimirEnvironmentSignalOpportunitySource,
-        )
+        from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
 
-        resident_signal_recorder = MimirEnvironmentSignalOpportunitySource(mimir)
+        resident_signal_recorder = MimirResidentInbox(mimir)
 
     async def _process_resident_signal(event: Any) -> Any:
         result: dict[str, Any] = {}
@@ -3668,25 +3690,27 @@ def _wire_mimir_triggers(
                 ChannelOperatorContact,
                 PendingOperatorContact,
             )
-            from ravn.resident_continuation import MimirResidentMemory
             from ravn.resident_expert import (
-                MimirResidentDomainExpertMemory,
                 ResidentDomainExpertConfig,
                 ResidentDomainExpertLoop,
             )
             from ravn.resident_operator_contact import ingest_resident_operator_reply
+            from ravn.resident_inbox import (
+                MimirResidentInbox,
+                ResidentInboxConfig as RuntimeResidentInboxConfig,
+                ResidentInboxRuntime,
+                ResidentInboxStatus,
+            )
             from ravn.resident_opportunity import (
                 MimirEnvironmentSignalOpportunitySource,
                 ResidentOpportunityConfig,
                 build_mimir_opportunity_runtime,
             )
             from ravn.resident_physical import (
-                MimirResidentPhysicalMemory,
                 ResidentPhysicalRuntime,
                 run_resident_physical_wake_pass,
             )
             from ravn.resident_portfolio import (
-                MimirResidentWorkItemBackend,
                 ResidentAutonomyLoopConfig,
                 ResidentCapabilityDiscoveryRuntime,
                 ResidentLongHorizonWorkManager,
@@ -3696,13 +3720,11 @@ def _wire_mimir_triggers(
                 ResidentCapabilityDiscoveryConfig as RuntimeCapabilityDiscoveryConfig,
             )
             from ravn.resident_review import (
-                MimirResidentReviewMemory,
                 ResidentReviewRuntime,
                 ResidentReviewRuntimeConfig,
                 run_resident_review_wake_pass,
             )
             from ravn.wakeful_resident import (
-                MimirWakefulResidentMemory,
                 WakefulResidentConfig,
                 WakefulResidentRuntime,
             )
@@ -3735,11 +3757,29 @@ def _wire_mimir_triggers(
             executor = executor_cls(
                 **_inject_secrets(dict(exec_cfg.kwargs), exec_cfg.secret_kwargs_env)
             )
-            backend = MimirResidentWorkItemBackend(mimir)
-            wake_memory = MimirWakefulResidentMemory(mimir)
-            expert_memory = MimirResidentDomainExpertMemory(mimir)
-            continuation_memory = MimirResidentMemory(mimir)
+            state_cfg = settings.resident_state
+            resident_state = _instantiate_resident_adapter(
+                state_cfg.adapter,
+                state_cfg.kwargs,
+                state_cfg.secret_kwargs_env,
+                mimir=mimir,
+            )
+            work_cfg = settings.resident_work
+            backend = _instantiate_resident_adapter(
+                work_cfg.adapter,
+                work_cfg.kwargs,
+                work_cfg.secret_kwargs_env,
+                mimir=mimir,
+            )
+            wake_memory = resident_state
+            expert_memory = resident_state
+            continuation_memory = resident_state
             wake_extensions: list[ResidentWakeExtension] = []
+            resident_inbox = (
+                MimirResidentInbox(mimir)
+                if mimir is not None and settings.resident_inbox.enabled
+                else None
+            )
 
             async def _resident_operator_reply_interceptor(
                 content: str,
@@ -3761,31 +3801,98 @@ def _wire_mimir_triggers(
                         report.contact_ref,
                         len(report.policy_observations),
                     )
-                return report.handled
+                    return True
+                if (
+                    resident_inbox is not None
+                    and settings.resident_inbox.directed_messages_enabled
+                ):
+                    ref = await resident_inbox.write_directed_message(
+                        content=content,
+                        metadata=metadata,
+                    )
+                    logger.info("resident_inbox: recorded directed message signal %s", ref)
+                    await backend.append_decision(
+                        mandate,
+                        (
+                            f"{datetime.now(UTC).isoformat()} [resident_inbox] "
+                            f"recorded directed message ref={ref}"
+                        ),
+                    )
+                    return True
+                return False
 
             drive_loop.register_directed_message_interceptor(
                 _resident_operator_reply_interceptor
             )
 
+            async def _resident_inbox_attention(
+                _active_mandate: str,
+                *,
+                inbox: MimirResidentInbox,
+            ) -> ResidentWakeAttention:
+                pending = await inbox.list_signals(
+                    status=ResidentInboxStatus.NEW.value,
+                    limit=1,
+                )
+                return ResidentWakeAttention(
+                    name="resident_inbox",
+                    should_run=bool(pending),
+                    priority=75,
+                    reason=(
+                        f"{len(pending)} new resident inbox signal(s) need triage"
+                        if pending
+                        else "no new resident inbox signals need triage"
+                    ),
+                    observations=tuple(path for path, _signal in pending),
+                )
+
+            if resident_inbox is not None:
+                inbox_runtime = ResidentInboxRuntime(
+                    inbox=resident_inbox,
+                    work=backend,
+                    memory=resident_state,
+                    config=RuntimeResidentInboxConfig(
+                        max_signals_per_wake=max(
+                            1,
+                            settings.resident_inbox.max_signals_per_wake,
+                        ),
+                        create_objectives=settings.resident_inbox.create_objectives,
+                        attach_to_existing_objectives=(
+                            settings.resident_inbox.attach_to_existing_objectives
+                        ),
+                        min_attach_score=max(1, settings.resident_inbox.min_attach_score),
+                    ),
+                )
+                wake_extensions.append(
+                    ResidentWakeExtension(
+                        name="resident_inbox",
+                        run=inbox_runtime.run,
+                        inspect=lambda active_mandate: _resident_inbox_attention(
+                            active_mandate,
+                            inbox=resident_inbox,
+                        ),
+                    )
+                )
+
             async def _capability_discovery_attention(
                 active_mandate: str,
                 *,
-                backend: MimirResidentWorkItemBackend,
+                backend: Any,
             ) -> ResidentWakeAttention:
                 objectives = await backend.list_objectives(active_mandate)
                 needing_capabilities = [
                     objective
                     for objective in objectives
-                    if objective.required_capabilities
+                    if getattr(objective, "required_capabilities", ())
                     or objective.status == "blocked"
                     or any(
                         "capability" in item.lower()
                         or "tool" in item.lower()
                         or "adapter" in item.lower()
                         for item in (
-                            *objective.blockers,
-                            *objective.questions,
-                            *objective.proof_progress,
+                            *getattr(objective, "blockers", ()),
+                            *getattr(objective, "questions", ()),
+                            *getattr(objective, "proof_progress", ()),
                         )
                     )
                 ]
@@ -3805,8 +3912,8 @@ def _wire_mimir_triggers(
             async def _opportunity_attention(
                 active_mandate: str,
                 *,
-                backend: MimirResidentWorkItemBackend,
-                environment_source: MimirEnvironmentSignalOpportunitySource | None,
+                backend: Any,
+                environment_source: Any | None,
                 has_configured_sources: bool,
             ) -> ResidentWakeAttention:
                 objectives = tuple(await backend.list_objectives(active_mandate))
@@ -3882,7 +3989,7 @@ def _wire_mimir_triggers(
             async def _physical_attention(
                 active_mandate: str,
                 *,
-                continuation_memory: MimirResidentMemory,
+                continuation_memory: Any,
             ) -> ResidentWakeAttention:
                 del active_mandate
                 pending = await continuation_memory.read_operator_needed()
@@ -3926,8 +4033,10 @@ def _wire_mimir_triggers(
                     opportunity_cfg.include_environment_signals
                     and any(source.enabled for source in settings.environment.signal_sources)
                 ):
-                    environment_opportunity_source = MimirEnvironmentSignalOpportunitySource(
-                        mimir
+                    environment_opportunity_source = (
+                        resident_inbox
+                        if resident_inbox is not None
+                        else MimirEnvironmentSignalOpportunitySource(mimir)
                     )
                     opportunity_sources.append(environment_opportunity_source)
                 opportunity_runtime = build_mimir_opportunity_runtime(
@@ -4025,7 +4134,7 @@ def _wire_mimir_triggers(
                 )
                 review_runtime = ResidentReviewRuntime(
                     backend=backend,
-                    memory=MimirResidentReviewMemory(mimir),
+                    memory=resident_state,
                     verifier=verifier,
                     expert_memory=expert_memory,
                     config=ResidentReviewRuntimeConfig(
@@ -4073,7 +4182,7 @@ def _wire_mimir_triggers(
                 physical_runtimes.append(
                     ResidentPhysicalRuntime(
                         device=device_cls(**device_kwargs),
-                        memory=MimirResidentPhysicalMemory(mimir),
+                        memory=resident_state,
                         continuation_memory=continuation_memory,
                         expert_memory=expert_memory,
                     )

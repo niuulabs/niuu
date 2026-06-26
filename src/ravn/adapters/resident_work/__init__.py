@@ -1,0 +1,2 @@
+"""Resident work adapters."""
+

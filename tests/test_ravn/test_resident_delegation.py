@@ -631,6 +631,41 @@ async def test_blocked_delegation_consolidates_failure_without_fact_pollution(
 
 
 @pytest.mark.asyncio
+async def test_operator_blocked_delegation_creates_needs_operator_objective(
+    tmp_path: Path,
+) -> None:
+    backend = LocalResidentWorkItemBackend(tmp_path)
+    await _write_portfolio(backend, _objective("one", "First delegated objective"))
+    executor = ResultExecutor(
+        ResidentExecutionResult(
+            session_id="session-source-needed",
+            status=ResidentDelegationStatus.BLOCKED.value,
+            summary="source-backed work cannot continue yet",
+            blocked_reason=(
+                "Provide a public/sanitized product source or explicit approval "
+                "before continuing the source-backed snapshot."
+            ),
+        )
+    )
+
+    report = await ResidentDelegationRuntime(
+        backend=backend,
+        executor=executor,
+    ).run(MANDATE)
+    objectives = {item.id: item for item in await backend.list_objectives(MANDATE)}
+    follow_up = next(
+        item
+        for item in objectives.values()
+        if item.status == ResidentObjectiveStatus.NEEDS_OPERATOR.value
+    )
+
+    assert report.created_follow_up_objectives
+    assert follow_up.kind == ResidentObjectiveKind.OPERATOR_QUESTION.value
+    assert "Provide a public/sanitized product source" in follow_up.pending_question
+    assert follow_up.dependencies == ()
+
+
+@pytest.mark.asyncio
 async def test_incomplete_delegation_creates_actionable_evidence_work(
     tmp_path: Path,
 ) -> None:

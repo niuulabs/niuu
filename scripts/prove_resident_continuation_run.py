@@ -15,11 +15,11 @@ from ravn.cli.commands import (
     _configure_logging,
     _resolve_persona,
 )
+from ravn.adapters.resident_state.mimir import MimirResidentState
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.resident_continuation import ContinuationDecisionKind
 from ravn.resident_continuation import (
     LocalResidentMemory,
-    MimirResidentMemory,
     ResidentBudgetLimits,
     ResidentContinuationKernel,
     ResidentRunBudget,
@@ -78,7 +78,7 @@ async def _main() -> None:
 
     mimir = _build_mimir(settings)
     if mimir is not None:
-        memory: Any = MimirResidentMemory(mimir)
+        memory: Any = MimirResidentState(mimir)
         memory_label = "mimir"
     else:
         memory = LocalResidentMemory(Path.cwd() / ".ravn")

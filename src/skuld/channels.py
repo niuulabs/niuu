@@ -638,6 +638,18 @@ def telegram_parse_mode(event: dict) -> str | None:
     return None
 
 
+def _telegram_should_send_event(event: dict) -> bool:
+    """Return whether an event belongs on the human Telegram operator channel."""
+    event_type = event.get("type", "")
+    return event_type in {
+        "room_message",
+        "room_notification",
+        "room_outcome",
+        "room_mesh_message",
+        "error",
+    }
+
+
 class TelegramChannel(MessageChannel):
     """Message channel that sends CLI events to a Telegram chat.
 
@@ -730,6 +742,9 @@ class TelegramChannel(MessageChannel):
     async def send_event(self, event: dict) -> None:
         """Format and send a CLI event to the Telegram chat."""
         if self._closed or not self._started:
+            return
+
+        if not _telegram_should_send_event(event):
             return
 
         text = format_telegram_event(event)
@@ -1025,7 +1040,11 @@ class TelegramChannel(MessageChannel):
             return
         if self._on_message:
             message = update.message
-            payload: dict[str, Any] = {"type": "message", "content": text}
+            payload: dict[str, Any] = {
+                "type": "message",
+                "content": text,
+                "source": "telegram",
+            }
             message_id = getattr(message, "message_id", None)
             if isinstance(message_id, int):
                 payload["message_id"] = message_id

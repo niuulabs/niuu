@@ -1,0 +1,2 @@
+"""Resident state adapters."""
+
