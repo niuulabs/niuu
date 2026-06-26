@@ -22,7 +22,6 @@ from ravn.config import (
     MemoryConfig,
     PermissionConfig,
     PermissionRuleConfig,
-    PhysicalDeviceConfig,
     ResidentEvolutionConfig,
     Settings,
     SignalSourceConfig,
@@ -155,23 +154,6 @@ class TestToolsConfig:
         assert "bash" in c.enabled
         assert "write" in c.disabled
         assert len(c.custom) == 1
-
-
-class TestPhysicalDeviceConfig:
-    def test_dynamic_adapter_config_accepts_kwargs_and_thresholds(self) -> None:
-        c = PhysicalDeviceConfig(
-            adapter="pkg.RealPhysicalDeviceAdapter",
-            kwargs={"capabilities": [{"id": "printer"}]},
-            secret_kwargs_env={"token": "PRINTER_TOKEN"},
-            command_timeout_seconds=12.5,
-            max_output_bytes=4096,
-        )
-
-        assert c.adapter == "pkg.RealPhysicalDeviceAdapter"
-        assert c.kwargs["capabilities"][0]["id"] == "printer"
-        assert c.secret_kwargs_env["token"] == "PRINTER_TOKEN"
-        assert c.command_timeout_seconds == 12.5
-        assert c.max_output_bytes == 4096
 
 
 class TestMemoryConfig:
