@@ -919,12 +919,18 @@ def _render_operator_answer(answer: str, *, answered_at: datetime) -> str:
 def _render_consumed_operator_answer(content: str, *, consumed_at: datetime) -> str:
     if content.strip():
         rendered = re.sub(r"^- status: .*$", "- status: consumed", content, flags=re.MULTILINE)
-        if rendered == content and "- status:" not in rendered:
-            rendered = rendered.replace(
-                "# Operator Answer\n",
-                "# Operator Answer\n\n- status: consumed\n",
-                1,
-            )
+        if "- status: consumed" not in rendered:
+            # No status line to replace; inject one (after the canonical header if
+            # present) so the answer is reliably recognized as consumed and not
+            # re-applied on every poll.
+            if "# Operator Answer\n" in rendered:
+                rendered = rendered.replace(
+                    "# Operator Answer\n",
+                    "# Operator Answer\n\n- status: consumed\n",
+                    1,
+                )
+            else:
+                rendered = "- status: consumed\n" + rendered
     else:
         rendered = "# Operator Answer\n\n- status: consumed\n"
     return rendered.rstrip() + "\n" + f"- consumed_at: {consumed_at.isoformat()}\n"
@@ -938,12 +944,15 @@ def _render_answered_operator_needed(
 ) -> str:
     if prior.strip():
         content = re.sub(r"^- status: .*$", "- status: answered", prior, flags=re.MULTILINE)
-        if content == prior and "- status:" not in content:
-            content = content.replace(
-                "# Operator Input Needed\n",
-                "# Operator Input Needed\n\n- status: answered\n",
-                1,
-            )
+        if "- status: answered" not in content:
+            if "# Operator Input Needed\n" in content:
+                content = content.replace(
+                    "# Operator Input Needed\n",
+                    "# Operator Input Needed\n\n- status: answered\n",
+                    1,
+                )
+            else:
+                content = "- status: answered\n" + content
     else:
         content = "# Operator Input Needed\n\n- status: answered\n"
     return (

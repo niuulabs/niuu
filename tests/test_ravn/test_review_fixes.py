@@ -144,3 +144,34 @@ def test_parse_objective_restores_timestamps() -> None:
     assert parsed.created_at == created
     assert parsed.last_advanced_at == advanced
     assert parsed.last_reviewed_at is None
+
+
+# --- robustness / silent-wrong fixes ------------------------------------------
+
+
+def test_inbox_parse_datetime_tolerates_malformed_dates() -> None:
+    from ravn.resident_inbox.serialization import _parse_datetime
+
+    # a malformed/legacy date must not raise (would crash the whole wake pass)
+    assert _parse_datetime("2026/06/26") is not None
+    assert _parse_datetime("not-a-date") is not None
+
+
+def test_subprocess_payload_tolerates_non_object_json() -> None:
+    from ravn.resident_portfolio.helpers import _subprocess_payload
+
+    summary, findings, follow_ups = _subprocess_payload(b'["done"]', b"")
+    assert summary  # no AttributeError on list/str JSON
+    assert findings == ()
+    assert follow_ups == ()
+
+
+def test_consumed_marker_always_records_status() -> None:
+    from ravn.resident_continuation import (
+        _operator_answer_is_consumed,
+        _render_consumed_operator_answer,
+    )
+
+    # non-canonical answer content (no status line, no canonical header)
+    rendered = _render_consumed_operator_answer("custom note", consumed_at=datetime.now(UTC))
+    assert _operator_answer_is_consumed(rendered)

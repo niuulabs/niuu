@@ -985,6 +985,10 @@ def _subprocess_payload(
             data = json.loads(raw)
         except json.JSONDecodeError:
             data = {"summary": raw}
+        if not isinstance(data, dict):
+            # A worker that prints a JSON array/number/string must not crash the
+            # executor on data.get(...); treat the raw output as the summary.
+            data = {"summary": raw}
     else:
         data = {"summary": err or "local worker produced no output"}
     summary = _compact_line(str(data.get("summary") or err or raw), limit=240)

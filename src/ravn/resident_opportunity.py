@@ -815,7 +815,9 @@ def _score_opportunity(
         config.score_max,
         config.score_mid + len(outcomes) * config.outcome_score_step,
     )
-    total = expected_value + novelty + feasibility + operator_alignment - risk - cost
+    # feasibility already encodes the cost penalty (score_max - cost); subtracting
+    # cost again here double-counted it and made the score non-monotonic.
+    total = expected_value + novelty + feasibility + operator_alignment - risk
     return ResidentOpportunityScore(
         expected_value=expected_value,
         risk=risk,

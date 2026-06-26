@@ -197,7 +197,12 @@ def _parse_datetime(value: Any) -> datetime:
     text = str(value or "").strip()
     if not text:
         return datetime.now(UTC)
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        # A malformed/legacy date on one persisted page must not crash the whole
+        # wake pass (list_signals/collect iterates every page).
+        return datetime.now(UTC)
 
 
 def _parse_optional_datetime(value: Any) -> datetime | None:

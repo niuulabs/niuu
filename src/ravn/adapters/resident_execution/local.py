@@ -258,26 +258,28 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
             for word in _slug(item).split("-")
             if len(word) > 3
         }
-        scored = sorted(
-            workflows,
-            key=lambda item: len(
+
+        def _overlap(item: Any) -> int:
+            return len(
                 capability_words
                 & set(
                     _slug(
                         " ".join(
-                            (
-                                item.workflow_id,
-                                item.name,
-                                item.description,
-                                " ".join(item.tags),
-                            )
+                            (item.workflow_id, item.name, item.description, " ".join(item.tags))
                         )
                     ).split("-")
                 )
-            ),
-            reverse=True,
-        )
-        return scored[0].workflow_id
+            )
+
+        best = max(workflows, key=_overlap)
+        if len(workflows) > 1 and _overlap(best) == 0:
+            # Several workflows and none share any capability words with the brief —
+            # picking the first sorted one would delegate to an arbitrary, unrelated
+            # workflow. Fail loudly rather than guess.
+            raise RuntimeError(
+                "No workflow matches the resident brief; refusing to pick one arbitrarily"
+            )
+        return best.workflow_id
 
     def _reference(self, session_id: str) -> WorkflowRunReference:
         return (
@@ -315,8 +317,14 @@ class WorkflowResidentExecutionAdapter(ResidentExecutionPort):
 class LocalSubprocessResidentExecutor(ResidentExecutionPort):
     """Resident execution adapter that runs a local worker process."""
 
-    def __init__(self, command: tuple[str, ...] | None = None) -> None:
+    def __init__(
+        self,
+        command: tuple[str, ...] | None = None,
+        *,
+        timeout_seconds: float = 300.0,
+    ) -> None:
         self._command = command or (sys.executable, "-c", _LOCAL_WORKER_SCRIPT)
+        self._timeout_seconds = float(timeout_seconds)
         self._sessions: dict[str, ResidentExecutionSession] = {}
         self._results: dict[str, ResidentExecutionResult] = {}
 
@@ -328,7 +336,17 @@ class LocalSubprocessResidentExecutor(ResidentExecutionPort):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(render_worker_brief(brief).encode("utf-8"))
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(render_worker_brief(brief).encode("utf-8")),
+                timeout=self._timeout_seconds,
+            )
+        except TimeoutError:
+            # A hung worker must not stall the resident daemon's wake loop.
+            proc.kill()
+            await proc.wait()
+            stdout = b""
+            stderr = f"local worker timed out after {self._timeout_seconds:g}s".encode()
         status = (
             ResidentDelegationStatus.COMPLETED.value
             if proc.returncode == 0
