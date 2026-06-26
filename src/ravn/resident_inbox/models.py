@@ -15,6 +15,10 @@ _INBOX_SIGNAL_JSON_END = "</resident-inbox-signal-json>"
 _INBOX_TRIAGE_JSON_START = "<resident-inbox-triage-json>"
 _INBOX_TRIAGE_JSON_END = "</resident-inbox-triage-json>"
 
+# Signal kind marking a directed operator message (the only kind allowed to
+# resolve a pending operator objective).
+_OPERATOR_DIRECTED_MESSAGE_KIND = "operator.directed_message"
+
 
 class ResidentInboxClassification(StrEnum):
     FACT = "fact"

@@ -36,7 +36,9 @@ def classify_inbox_signal(signal: ResidentInboxSignal) -> tuple[str, float, str]
 # Precedence is encoded by position, so adding a classification is a table edit.
 _CLASSIFICATION_RULES: tuple[tuple[str, ResidentInboxClassification, float, str], ...] = (
     (
-        r"\b(not approved|do not approve|don't approve|denied|deny|no)\b",
+        # bare "no" denies, but not approving phrases ("no problem", "no objections")
+        r"\b(?:not approved|do not approve|don't approve|denied|deny)\b"
+        r"|\bno\b(?!\s+(?:problem|worries|worry|objection|objections|issue|issues|biggie))",
         ResidentInboxClassification.DENIAL,
         0.9,
         "operator text denies approval",

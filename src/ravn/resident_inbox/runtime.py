@@ -8,6 +8,7 @@ from typing import Any
 from ravn.domain.resident_continuation import ResidentPolicyObservation
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
+    ResidentObjectiveStatus,
     ResidentPortfolio,
     ResidentWorkItemBackend,
 )
@@ -114,9 +115,13 @@ class ResidentInboxRuntime:
                 item if item.id != objective.id else objective for item in objectives
             )
             _, portfolio = await self._persist_portfolio(portfolio, updated_objectives)
-            decision = ResidentInboxStatus.ATTACHED.value
+            decision = (
+                ResidentInboxStatus.BLOCKED.value
+                if objective.status == ResidentObjectiveStatus.BLOCKED.value
+                else ResidentInboxStatus.ATTACHED.value
+            )
             classified = classified.with_updates(
-                status=ResidentInboxStatus.ATTACHED.value,
+                status=decision,
                 target_objective_id=objective.id,
                 evidence_refs=(signal_ref,),
             )

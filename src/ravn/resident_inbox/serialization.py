@@ -19,6 +19,7 @@ from .models import (
     _INBOX_SIGNAL_JSON_START,
     _INBOX_TRIAGE_JSON_END,
     _INBOX_TRIAGE_JSON_START,
+    _OPERATOR_DIRECTED_MESSAGE_KIND,
     ResidentInboxClassification,
     ResidentInboxSignal,
     ResidentInboxStatus,
@@ -64,7 +65,7 @@ def signal_from_directed_message(
     return ResidentInboxSignal(
         id=f"operator-message-{_slug(message_id) or 'message'}",
         source=source,
-        kind="operator.directed_message",
+        kind=_OPERATOR_DIRECTED_MESSAGE_KIND,
         summary=text,
         payload={"content": content, "metadata": meta},
         raw_ref=str(meta.get("raw_ref") or ""),

@@ -15,6 +15,7 @@ from ravn.resident_text import append_unique as _append_unique
 
 from .classify import _keywords
 from .models import (
+    _OPERATOR_DIRECTED_MESSAGE_KIND,
     ResidentInboxClassification,
     ResidentInboxConfig,
     ResidentInboxSignal,
@@ -80,6 +81,10 @@ def _operator_resolution_for_signal(
     signal: ResidentInboxSignal,
     objectives: tuple[ResidentObjective, ...],
 ) -> ResidentObjective | None:
+    # Only an operator-directed message may resolve a pending objective. Environment
+    # signals that incidentally contain "yes"/"no" must never clear an operator gate.
+    if signal.kind != _OPERATOR_DIRECTED_MESSAGE_KIND:
+        return None
     approval = _approval_for_signal(signal)
     if approval is None:
         return None

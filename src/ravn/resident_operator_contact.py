@@ -427,7 +427,8 @@ def _operator_reply_approval(answer: str) -> bool | None:
         r"\bnot\s+approved?\b",
         r"\bdo\s+not\s+approved?\b",
         r"\bdon'?t\s+approved?\b",
-        r"\bno\b",
+        # bare "no", but not the common approving phrases "no problem/objection/worries"
+        r"\bno\b(?!\s+(?:problem|worries|worry|objection|objections|issue|issues|biggie))",
         r"\bdeny\b",
         r"\bdenied\b",
         r"\breject(?:ed)?\b",
