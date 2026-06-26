@@ -2617,19 +2617,38 @@ class ResidentInboxConfig(BaseModel):
 
 
 class ResidentStateConfig(BaseModel):
-    """Resident memory/state adapter selection."""
+    """Resident memory/state adapter selection.
+
+    ``adapter`` is the preferred store (GBrain by default); ``fallback_adapter``
+    is used only when the preferred adapter reports it is not available (e.g.
+    GBrain's CLI/endpoint is absent). Selection is done by
+    ``ravn.adapters.resident_state.select_resident_state`` — no caller branches
+    on adapter type.
+    """
 
     adapter: str = Field(
-        default="ravn.adapters.resident_state.mimir.MimirResidentState",
-        description="Fully-qualified ResidentStatePort adapter class.",
+        default="ravn.adapters.resident_state.gbrain.GBrainResidentStateAdapter",
+        description="Fully-qualified preferred ResidentStatePort adapter class.",
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
-        description="Constructor kwargs passed to the resident state adapter.",
+        description="Constructor kwargs passed to the preferred resident state adapter.",
     )
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+    fallback_adapter: str = Field(
+        default="ravn.adapters.resident_state.mimir.LocalResidentState",
+        description="Adapter used when the preferred adapter is unavailable.",
+    )
+    fallback_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the fallback resident state adapter.",
+    )
+    fallback_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps fallback adapter kwarg names to env var names for secret injection.",
     )
 
 

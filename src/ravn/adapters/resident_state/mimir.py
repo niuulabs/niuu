@@ -49,6 +49,9 @@ class MimirResidentState(ResidentStatePort):
         self._mimir = mimir
         self._prefix = continuation_prefix.strip("/").strip() or "resident/continuation"
 
+    async def available(self) -> bool:
+        return True
+
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         query = _compact_line(mandate) or "resident continuation"
         pages = await self._mimir.search(query)
@@ -188,6 +191,9 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         continuation_prefix: str = "resident/continuation",
     ) -> None:
         LocalResidentMemory.__init__(self, root, prefix=continuation_prefix)
+
+    async def available(self) -> bool:
+        return True
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         base = self._root / (Path(prefix) if prefix else self._prefix)

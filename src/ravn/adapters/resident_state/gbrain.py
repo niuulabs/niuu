@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,12 @@ class GBrainResidentStateAdapter(LocalResidentState):
         self._capture_enabled = capture_enabled
         self._search_enabled = search_enabled
         self._timeout_seconds = float(timeout_seconds)
+
+    async def available(self) -> bool:
+        # Available when a remote brain is configured (MCP/HTTP + token) or the
+        # gbrain CLI is on PATH; otherwise a selector should fall back.
+        has_remote = bool(self._api_token and (self._mcp_url or self._ingest_url))
+        return has_remote or shutil.which(self._command) is not None
 
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         local = await super().recall(mandate, limit=limit)

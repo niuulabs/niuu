@@ -148,3 +148,23 @@ async def test_gbrain_resident_state_projects_operator_feedback(tmp_path):
     assert policy_ref == "resident/continuation/policy/operator-contact-approval.md"
     assert "resident/continuation/operator-answers/latest" in slugs
     assert "resident/continuation/policy/operator-contact-approval" in slugs
+
+
+@pytest.mark.asyncio
+async def test_gbrain_availability_gates_selection(tmp_path) -> None:
+    from ravn.adapters.resident_state import select_resident_state
+
+    fallback = LocalResidentState(tmp_path / "fallback")
+
+    # No remote configured and a command that is not on PATH -> unavailable.
+    absent = GBrainResidentStateAdapter(tmp_path / "g1", command="gbrain-not-installed-xyz")
+    assert await absent.available() is False
+    assert await select_resident_state(absent, fallback) is fallback
+
+    # A configured remote brain -> available and preferred.
+    present = GBrainResidentStateAdapter(
+        tmp_path / "g2", mcp_url="https://brain.example", api_token="tok"
+    )
+    assert await present.available() is True
+    assert await select_resident_state(present, fallback) is present
+    assert await fallback.available() is True

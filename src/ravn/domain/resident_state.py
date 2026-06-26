@@ -20,6 +20,14 @@ class ResidentStatePort(Protocol):
     adapters, never in the port name or contract.
     """
 
+    async def available(self) -> bool:
+        """Whether this adapter's backing store is usable in the current environment.
+
+        Lets a selector prefer an adapter (e.g. GBrain) and fall back to another
+        when its backend is absent, without the caller branching on adapter type.
+        """
+        ...
+
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]: ...
 
     async def write_turn(self, record: ResidentTurnRecord) -> str: ...
