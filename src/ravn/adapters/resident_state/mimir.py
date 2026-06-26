@@ -228,17 +228,9 @@ class MimirResidentState(ResidentStatePort):
         return _DOMAIN_MODEL_PATH
 
     async def list_workstreams(self, domain_model_ref: str) -> list[ResidentWorkstream]:
-        pages = await self._mimir.list_pages(prefix="resident/domain-expert/workstreams")
-        workstreams: list[ResidentWorkstream] = []
-        for meta in pages:
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_workstream_page(content)
-            if parsed is not None:
-                workstreams.append(parsed)
-        return workstreams
+        return await collect_pages(
+            self._mimir, "resident/domain-expert/workstreams", _parse_workstream_page
+        )
 
     async def write_workstream(self, workstream: ResidentWorkstream) -> str:
         path = f"resident/domain-expert/workstreams/{workstream.id}.md"
@@ -295,7 +287,7 @@ class MimirResidentState(ResidentStatePort):
         )
 
     async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
-        stamp = record.created_at.strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = _timestamp_slug(record.created_at)
         path = f"{_WAKE_PREFIX}/portfolio-steward/{stamp}-{record.wake_number}.md"
         await self._mimir.upsert_page(path, _render_portfolio_steward_record(record))
         return path

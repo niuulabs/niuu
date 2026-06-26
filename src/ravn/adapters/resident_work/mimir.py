@@ -33,6 +33,7 @@ from ravn.resident_portfolio import (
     _render_operator_contact,
     _render_portfolio,
 )
+from ravn.resident_text import timestamp_slug
 
 
 class MimirResidentWorkAdapter(ResidentWorkItemBackend):
@@ -63,7 +64,7 @@ class MimirResidentWorkAdapter(ResidentWorkItemBackend):
         return path
 
     async def append_decision(self, mandate: str, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(datetime.now(UTC))
         path = f"{_DECISION_PREFIX}/{stamp}.md"
         await self._mimir.upsert_page(path, f"# Resident Portfolio Decision\n\n{entry}\n")
         return path

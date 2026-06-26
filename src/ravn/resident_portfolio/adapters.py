@@ -33,6 +33,7 @@ from ravn.ports.capability import (
     WorkflowRunReference,
 )
 from ravn.resident_continuation import _compact_line, _slug
+from ravn.resident_text import timestamp_slug
 
 from .constants import (
     _CAPABILITY_DISCOVERY_PREFIX,
@@ -103,7 +104,7 @@ class LocalResidentWorkItemBackend(ResidentWorkItemBackend):
         return self._write(rel, _render_objective(objective))
 
     async def append_decision(self, mandate: str, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(datetime.now(UTC))
         rel = Path(_DECISION_PREFIX) / f"{stamp}.md"
         return self._write(rel, f"# Resident Portfolio Decision\n\n{entry}\n")
 

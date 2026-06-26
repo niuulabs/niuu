@@ -11,6 +11,7 @@ from ravn.resident_opportunity import (
     _environment_signal_record,
     parse_environment_signal_record,
 )
+from ravn.resident_text import timestamp_slug
 
 from .classify import classify_text
 from .models import (
@@ -58,7 +59,7 @@ def signal_from_directed_message(
     message_id = (
         str(meta.get("telegram_message_id") or "").strip()
         or str(meta.get("message_id") or "").strip()
-        or datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        or timestamp_slug(datetime.now(UTC))
     )
     return ResidentInboxSignal(
         id=f"operator-message-{_slug(message_id) or 'message'}",

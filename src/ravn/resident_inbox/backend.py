@@ -10,6 +10,7 @@ from ravn.domain.resident_opportunity import ResidentOpportunitySignal
 from ravn.domain.resident_portfolio import ResidentObjective
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import _slug
+from ravn.resident_text import timestamp_slug
 
 from .classify import _keywords
 from .models import (
@@ -149,14 +150,14 @@ class MimirResidentInbox(ResidentInboxBackend):
         return tuple(signals)
 
     async def write_triage(self, triage: ResidentInboxTriage) -> str:
-        stamp = triage.created_at.strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(triage.created_at)
         slug = _slug(triage.signal_id) or "signal"
         path = f"{self._triage_prefix}/{stamp}-{slug}.md"
         await self._mimir.upsert_page(path, render_inbox_triage(triage))
         return path
 
     async def append_decision(self, entry: str) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(datetime.now(UTC))
         path = f"{self._decision_prefix}/{stamp}.md"
         await self._mimir.upsert_page(path, f"# Resident Inbox Decision\n\n{entry}\n")
         return path

@@ -54,6 +54,9 @@ from ravn.resident_text import (
 from ravn.resident_text import (
     section_items as _section_items,
 )
+from ravn.resident_text import (
+    timestamp_slug,
+)
 
 _DOMAIN_MODEL_REF = "resident/domain-expert/domain-model.md"
 _WAKE_PREFIX = "resident/wakeful"
@@ -143,7 +146,7 @@ class LocalWakefulPortfolioStewardMemory(WakefulPortfolioStewardMemoryPort):
         return records
 
     async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
-        stamp = record.created_at.strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(record.created_at)
         rel = Path(_WAKE_PREFIX) / "portfolio-steward" / f"{stamp}-{record.wake_number}.md"
         path = self._root / rel
         path.parent.mkdir(parents=True, exist_ok=True)

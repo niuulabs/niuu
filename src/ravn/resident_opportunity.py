@@ -37,6 +37,7 @@ from ravn.resident_portfolio import (
     _render_list,
     merge_objectives,
 )
+from ravn.resident_text import timestamp_slug
 
 _OPPORTUNITY_PREFIX = "resident/opportunities"
 _OPPORTUNITY_REPORT_PREFIX = "resident/opportunity-reports"
@@ -299,7 +300,7 @@ class LocalResidentOpportunityBackend(ResidentOpportunityBackend):
         return self._write(rel, render_opportunity(opportunity))
 
     async def write_opportunity_report(self, report: ResidentOpportunityReport) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(datetime.now(UTC))
         rel = Path(_OPPORTUNITY_REPORT_PREFIX) / f"{stamp}.md"
         return self._write(rel, render_opportunity_report(report))
 
@@ -335,7 +336,7 @@ class MimirResidentOpportunityBackend(ResidentOpportunityBackend):
         return path
 
     async def write_opportunity_report(self, report: ResidentOpportunityReport) -> str:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = timestamp_slug(datetime.now(UTC))
         path = f"{_OPPORTUNITY_REPORT_PREFIX}/{stamp}.md"
         await self._mimir.upsert_page(path, render_opportunity_report(report))
         return path
