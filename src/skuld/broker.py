@@ -3133,7 +3133,11 @@ class Broker:
             transport = self._transport
             if transport is not None and transport.capabilities.slash_commands:
                 try:
-                    commands = await transport.discover_slash_commands(refresh=True)
+                    # Do NOT force a re-scrape at init: refresh=False returns the cached
+                    # catalog when one exists (reconnect / re-init) and only probes the
+                    # terminal on a truly fresh session — and even then the probe now
+                    # waits for the REPL prompt before typing, so it can't corrupt boot.
+                    commands = await transport.discover_slash_commands(refresh=False)
                 except Exception:
                     logger.debug("slash-command discovery failed at init", exc_info=True)
             if slash_commands or skills or commands:

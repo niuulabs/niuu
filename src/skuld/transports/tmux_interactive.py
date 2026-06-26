@@ -1831,6 +1831,11 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
     async def _discover_slash_commands_from_terminal(self) -> list[dict]:
+        # Never type the discovery probe (Escape / C-u / "/" / many Down keys) into a
+        # still-booting Claude REPL — that corrupts the fresh session (garbled startup,
+        # swallowed initial messages). Wait (bounded, best-effort) for the input prompt
+        # to render first, exactly like the seed-prompt delivery does.
+        await self._wait_for_repl_ready()
         target = self._target_pane(None)
         captures: list[str] = []
         try:
