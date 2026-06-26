@@ -136,6 +136,17 @@ def _non_empty_str(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
+def _telegram_directed_metadata(data: dict) -> dict[str, str]:
+    """Build the directed-room-message metadata for an inbound Telegram payload."""
+    return {
+        "source": "telegram",
+        "telegram_message_id": str(data.get("message_id") or ""),
+        "telegram_chat_id": str(data.get("chat_id") or ""),
+        "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
+        "telegram_date": str(data.get("date") or ""),
+    }
+
+
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
     """Return a short human-readable description for a browser content block."""
     block_type = str(block.get("type") or "").strip()
@@ -3587,62 +3598,51 @@ class Broker:
         """Route a Telegram reply to the single Ravn peer waiting on help_needed."""
         if self._room_bridge is None:
             return False
-        if str(data.get("source") or "").strip().lower() != "telegram":
-            return False
-        pending = self._room_bridge.pending_help_peer_ids()
-        if len(pending) != 1:
-            return False
-        metadata = {
-            "source": "telegram",
-            "telegram_message_id": str(data.get("message_id") or ""),
-            "telegram_chat_id": str(data.get("chat_id") or ""),
-            "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
-            "telegram_date": str(data.get("date") or ""),
-        }
-        try:
-            await self.handle_directed_room_message(
-                pending[0],
-                content,
-                source="telegram",
-                metadata=metadata,
-            )
-        except LookupError:
-            return False
-        logger.info(
-            "_dispatch_browser_message: routed Telegram reply to pending help peer_id=%s",
-            _sanitize_log(pending[0]),
+        return await self._route_telegram_to_single_peer(
+            data,
+            content,
+            candidates=self._room_bridge.pending_help_peer_ids(),
+            log_message=(
+                "_dispatch_browser_message: routed Telegram reply to pending help peer_id=%s"
+            ),
         )
-        return True
 
     async def _try_route_single_room_peer_message(self, data: dict, content: str) -> bool:
         """Route Telegram text to the sole connected Ravn room participant."""
         if self._room_bridge is None:
             return False
+        return await self._route_telegram_to_single_peer(
+            data,
+            content,
+            candidates=tuple(self._room_bridge.participants.keys()),
+            log_message=(
+                "_dispatch_browser_message: routed Telegram message to sole room peer_id=%s"
+            ),
+        )
+
+    async def _route_telegram_to_single_peer(
+        self,
+        data: dict,
+        content: str,
+        *,
+        candidates: tuple[str, ...],
+        log_message: str,
+    ) -> bool:
+        """Deliver a Telegram payload to a peer when exactly one candidate exists."""
         if str(data.get("source") or "").strip().lower() != "telegram":
             return False
-        participants = tuple(self._room_bridge.participants.keys())
-        if len(participants) != 1:
+        if len(candidates) != 1:
             return False
-        metadata = {
-            "source": "telegram",
-            "telegram_message_id": str(data.get("message_id") or ""),
-            "telegram_chat_id": str(data.get("chat_id") or ""),
-            "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
-            "telegram_date": str(data.get("date") or ""),
-        }
         try:
             await self.handle_directed_room_message(
-                participants[0],
+                candidates[0],
                 content,
                 source="telegram",
-                metadata=metadata,
+                metadata=_telegram_directed_metadata(data),
             )
         except LookupError:
             return False
-        logger.info(
-            "_dispatch_browser_message: routed Telegram message to sole room peer_id=%s",
-            _sanitize_log(participants[0]),
-        )
+        logger.info(log_message, _sanitize_log(candidates[0]))
         return True
 
     async def _safe_transport_control(
