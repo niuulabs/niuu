@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.physical_device import PhysicalActionResult, PhysicalCapability
 from ravn.domain.resident_continuation import (
     ResidentBudgetSnapshot,
@@ -136,19 +137,9 @@ class MimirResidentState(ResidentStatePort):
         return path
 
     async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
-        observations: list[ResidentPolicyObservation] = []
-        pages = await self._mimir.list_pages(prefix=f"{self._prefix}/policy")
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            path = str(getattr(meta, "path", "") or "")
-            if not path:
-                continue
-            try:
-                parsed = _parse_policy_observation(await self._mimir.read_page(path))
-            except FileNotFoundError:
-                continue
-            if parsed is not None:
-                observations.append(parsed)
-        return observations
+        return await collect_pages(
+            self._mimir, f"{self._prefix}/policy", _parse_policy_observation
+        )
 
     async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
         stamp = decision.created_at.strftime("%Y%m%dT%H%M%SZ")
@@ -275,19 +266,13 @@ class MimirResidentState(ResidentStatePort):
         *,
         limit: int = 5,
     ) -> list[WakefulResidentCycleRecord]:
-        pages = await self._mimir.list_pages(prefix=f"{_WAKE_PREFIX}/cycles")
-        records: list[WakefulResidentCycleRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", ""), reverse=True):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_wake_record(content, mandate=mandate)
-            if parsed is not None:
-                records.append(parsed)
-            if len(records) >= limit:
-                break
-        return records
+        return await collect_pages(
+            self._mimir,
+            f"{_WAKE_PREFIX}/cycles",
+            lambda content: _parse_wake_record(content, mandate=mandate),
+            reverse=True,
+            limit=limit,
+        )
 
     async def write_wake_record(self, record: WakefulResidentCycleRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
@@ -301,19 +286,13 @@ class MimirResidentState(ResidentStatePort):
         *,
         limit: int = 5,
     ) -> list[WakefulPortfolioStewardRecord]:
-        pages = await self._mimir.list_pages(prefix=f"{_WAKE_PREFIX}/portfolio-steward")
-        records: list[WakefulPortfolioStewardRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", ""), reverse=True):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_portfolio_steward_record(content, mandate=mandate)
-            if parsed is not None:
-                records.append(parsed)
-            if len(records) >= limit:
-                break
-        return records
+        return await collect_pages(
+            self._mimir,
+            f"{_WAKE_PREFIX}/portfolio-steward",
+            lambda content: _parse_portfolio_steward_record(content, mandate=mandate),
+            reverse=True,
+            limit=limit,
+        )
 
     async def write_record(self, record: WakefulPortfolioStewardRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%S%fZ")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.operator_contact import OperatorContactResult
 from ravn.domain.resident_portfolio import (
     ResidentDelegationRecord,
@@ -54,17 +55,7 @@ class MimirResidentWorkAdapter(ResidentWorkItemBackend):
         return _PORTFOLIO_PATH
 
     async def list_objectives(self, mandate: str) -> list[ResidentObjective]:
-        pages = await self._mimir.list_pages(prefix=_OBJECTIVE_PREFIX)
-        objectives: list[ResidentObjective] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_objective(content)
-            if parsed is not None:
-                objectives.append(parsed)
-        return objectives
+        return await collect_pages(self._mimir, _OBJECTIVE_PREFIX, _parse_objective)
 
     async def write_objective(self, objective: ResidentObjective) -> str:
         path = f"{_OBJECTIVE_PREFIX}/{objective.id}.md"
@@ -87,17 +78,7 @@ class MimirResidentWorkAdapter(ResidentWorkItemBackend):
         return path
 
     async def list_delegations(self, mandate: str) -> list[ResidentDelegationRecord]:
-        pages = await self._mimir.list_pages(prefix=_DELEGATION_PREFIX)
-        delegations: list[ResidentDelegationRecord] = []
-        for meta in sorted(pages, key=lambda page: getattr(page, "path", "")):
-            try:
-                content = await self._mimir.read_page(meta.path)
-            except FileNotFoundError:
-                continue
-            parsed = _parse_delegation(content)
-            if parsed is not None:
-                delegations.append(parsed)
-        return delegations
+        return await collect_pages(self._mimir, _DELEGATION_PREFIX, _parse_delegation)
 
     async def write_delegation(self, delegation: ResidentDelegationRecord) -> str:
         path = f"{_DELEGATION_PREFIX}/{delegation.id}.md"
