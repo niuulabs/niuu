@@ -2592,7 +2592,7 @@ class ResidentCapabilityDiscoveryConfig(BaseModel):
         ),
     )
     adapter: str = Field(
-        default="ravn.resident_portfolio.LocalCapabilityDiscoveryBackend",
+        default="ravn.adapters.resident_work.local.LocalCapabilityDiscoveryBackend",
         description=(
             "Fully-qualified CapabilityDiscoveryPort adapter class used by "
             "resident capability discovery."

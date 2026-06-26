@@ -4,6 +4,7 @@ import hashlib
 import sys
 from pathlib import Path
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.adapters.review.command import CommandResidentVerificationAdapter
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
@@ -17,7 +18,6 @@ from ravn.domain.resident_review import (
     ResidentVerificationCheck,
 )
 from ravn.resident_expert import LocalResidentDomainExpertMemory
-from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from ravn.resident_review import (
     LocalResidentReviewMemory,
     PortfolioArtifactReviewTargetSource,

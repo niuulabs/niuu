@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.resident_portfolio import ResidentObjectiveStatus
 from ravn.resident_inbox import (
     MimirResidentInbox,
@@ -17,7 +18,6 @@ from ravn.resident_opportunity import (
     ResidentOpportunityConfig,
     ResidentOpportunityRuntime,
 )
-from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from tests.test_ravn.test_resident_state import RecordingGBrainResidentState
 
 MANDATE = (

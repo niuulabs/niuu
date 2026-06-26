@@ -9,7 +9,6 @@ from typing import Any
 
 from ravn.domain.operator_contact import (
     OperatorContactKind,
-    OperatorContactPort,
     OperatorContactPurpose,
     OperatorContactRequest,
     OperatorContactResult,
@@ -27,6 +26,7 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
     ResidentWorkItemBackend,
 )
+from ravn.ports.operator_contact import OperatorContactPort
 from ravn.resident_text import append_unique as _append_unique
 
 _APPROVAL_MARKER_PREFIX = "operator approved risk boundary:"

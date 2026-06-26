@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ravn.adapters.process_runner import run_command
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.resident_portfolio import ResidentObjective
-from ravn.resident_portfolio import LocalResidentWorkItemBackend
 
 
 class BeadsResidentWorkAdapter(LocalResidentWorkItemBackend):

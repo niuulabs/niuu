@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-from .adapters import (
-    LocalCapabilityDiscoveryBackend,
-    LocalResidentWorkItemBackend,
-    LocalSimulatedResidentExecutor,
-    LocalSubprocessResidentExecutor,
-    WorkflowResidentExecutionAdapter,
-)
 from .config import (
     ResidentAutonomyLoopConfig,
     ResidentCapabilityDiscoveryConfig,
@@ -77,11 +70,6 @@ __all__ = [
     "_render_objective",
     "_render_operator_contact",
     "_render_portfolio",
-    "LocalCapabilityDiscoveryBackend",
-    "LocalResidentWorkItemBackend",
-    "LocalSimulatedResidentExecutor",
-    "LocalSubprocessResidentExecutor",
-    "WorkflowResidentExecutionAdapter",
     "ResidentAutonomyLoopConfig",
     "ResidentAutonomyLoopRuntime",
     "ResidentCapabilityDiscoveryConfig",

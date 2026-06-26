@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
@@ -29,7 +30,6 @@ from ravn.resident_opportunity import (
     ResidentOpportunityConfig,
     ResidentOpportunityRuntime,
 )
-from ravn.resident_portfolio import LocalResidentWorkItemBackend
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 

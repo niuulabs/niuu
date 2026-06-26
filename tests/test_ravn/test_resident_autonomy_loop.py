@@ -5,6 +5,16 @@ from typing import Any
 
 import pytest
 
+from ravn.adapters.operator_contact import (
+    answer_operator_contact,
+    emit_help_needed_operator_contact,
+)
+from ravn.adapters.resident_execution.local import (
+    LocalSimulatedResidentExecutor,
+    LocalSubprocessResidentExecutor,
+    WorkflowResidentExecutionAdapter,
+)
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.adapters.triggers.resident_autonomy import (
     ResidentAutonomyTrigger,
     ResidentWakeAttention,
@@ -18,8 +28,6 @@ from ravn.domain.operator_contact import (
     OperatorContactRequest,
     OperatorContactResult,
     OperatorContactStatus,
-    answer_operator_contact,
-    emit_help_needed_operator_contact,
 )
 from ravn.domain.resident_continuation import ResidentTurnRecord
 from ravn.domain.resident_portfolio import (
@@ -45,14 +53,10 @@ from ravn.ports.capability import (
 from ravn.resident_continuation import LocalResidentMemory
 from ravn.resident_operator_contact import ingest_resident_operator_reply
 from ravn.resident_portfolio import (
-    LocalResidentWorkItemBackend,
-    LocalSimulatedResidentExecutor,
-    LocalSubprocessResidentExecutor,
     ResidentAutonomyLoopConfig,
     ResidentAutonomyLoopRuntime,
     ResidentDelegationConfig,
     ResidentDelegationRuntime,
-    WorkflowResidentExecutionAdapter,
     build_worker_brief,
     review_delegation_result,
 )

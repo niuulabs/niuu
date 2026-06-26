@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ravn.domain.operator_contact import (
-    OperatorContactPort,
     OperatorContactResult,
     OperatorContactStatus,
 )
@@ -49,6 +48,7 @@ from ravn.domain.wakeful_resident import (
     WakefulResidentMemoryPort,
     WakefulResidentRun,
 )
+from ravn.ports.operator_contact import OperatorContactPort
 from ravn.resident_continuation import ResidentRunBudget, _compact_line
 from ravn.resident_operator_contact import approved_risk_objective_ids_from_objectives
 

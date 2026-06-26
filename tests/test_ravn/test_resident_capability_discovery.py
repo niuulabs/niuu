@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from ravn.adapters.capabilities.resident_discovery import CatalogWebCapabilityDiscoveryBackend
+from ravn.adapters.resident_work.local import (
+    LocalCapabilityDiscoveryBackend,
+    LocalResidentWorkItemBackend,
+)
 from ravn.domain.capability_catalog import Capability, CapabilityKind
 from ravn.domain.resident_portfolio import (
     ResidentCapabilityDiscoveryResult,
@@ -18,8 +22,6 @@ from ravn.domain.resident_portfolio import (
 from ravn.ports.web_search import SearchResult
 from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import (
-    LocalCapabilityDiscoveryBackend,
-    LocalResidentWorkItemBackend,
     ResidentCapabilityDiscoveryRuntime,
     detect_capability_gaps,
     render_capability_discovery_result,

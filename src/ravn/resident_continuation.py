@@ -10,17 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
-from ravn.domain.models import TokenUsage, TurnResult
-from ravn.domain.operator_contact import (
+from ravn.adapters.operator_contact import (
     BroadcastThenCallbackOperatorContact,
     CallbackOperatorContact,
     ChannelOperatorContact,
+    PendingOperatorContact,
+)
+from ravn.domain.models import TokenUsage, TurnResult
+from ravn.domain.operator_contact import (
     OperatorContactKind,
-    OperatorContactPort,
     OperatorContactPurpose,
     OperatorContactRequest,
     OperatorContactStatus,
-    PendingOperatorContact,
 )
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
@@ -43,6 +44,7 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.ports.channel import ChannelPort
 from ravn.ports.executor import ExecutionAgentPort
+from ravn.ports.operator_contact import OperatorContactPort
 from ravn.resident_operator_contact import (
     ResidentOperatorContactConfig,
     ResidentOperatorContactCoordinator,

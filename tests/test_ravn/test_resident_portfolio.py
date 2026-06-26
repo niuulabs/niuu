@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
 from ravn.domain.resident_expert import (
@@ -23,7 +24,6 @@ from ravn.domain.wakeful_resident import (
 )
 from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import (
-    LocalResidentWorkItemBackend,
     ResidentLongHorizonWorkManager,
     ResidentPortfolioConfig,
     ResidentPortfolioEvidence,

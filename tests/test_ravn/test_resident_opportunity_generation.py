@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.resident_opportunity import ResidentOpportunitySignal
 from ravn.domain.resident_portfolio import ResidentObjectiveStatus
 from ravn.resident_expert import LocalResidentDomainExpertMemory
@@ -12,7 +13,6 @@ from ravn.resident_opportunity import (
     ResidentOpportunityConfig,
     ResidentOpportunityRuntime,
 )
-from ravn.resident_portfolio import LocalResidentWorkItemBackend
 
 
 class StaticOpportunitySource:

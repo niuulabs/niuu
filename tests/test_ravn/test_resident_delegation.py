@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.resident_portfolio import (
     ResidentDelegationRecord,
     ResidentDelegationStatus,
@@ -18,7 +19,6 @@ from ravn.domain.resident_portfolio import (
 )
 from ravn.resident_expert import LocalResidentDomainExpertMemory
 from ravn.resident_portfolio import (
-    LocalResidentWorkItemBackend,
     ResidentDelegationConfig,
     ResidentDelegationRuntime,
     build_worker_brief,

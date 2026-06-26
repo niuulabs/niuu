@@ -12,7 +12,6 @@ from typing import Any
 from ravn.domain.models import AgentTask
 from ravn.domain.operator_contact import (
     OperatorContactKind,
-    OperatorContactPort,
     OperatorContactPurpose,
     OperatorContactRequest,
     OperatorContactResult,
@@ -24,6 +23,7 @@ from ravn.domain.resident_portfolio import (
     ResidentWorkItemBackend,
 )
 from ravn.domain.wakeful_resident import WakefulResidentMemoryPort
+from ravn.ports.operator_contact import OperatorContactPort
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_portfolio import (
     _OPERATOR_CONTACT_PREFIX,

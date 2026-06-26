@@ -167,7 +167,7 @@ class TestResidentCapabilityDiscoveryConfig:
         c = ResidentCapabilityDiscoveryConfig()
 
         assert c.enabled is False
-        assert c.adapter == "ravn.resident_portfolio.LocalCapabilityDiscoveryBackend"
+        assert c.adapter == "ravn.adapters.resident_work.local.LocalCapabilityDiscoveryBackend"
         assert c.kwargs == {}
         assert c.secret_kwargs_env == {}
         assert c.include_builtin_catalog is False

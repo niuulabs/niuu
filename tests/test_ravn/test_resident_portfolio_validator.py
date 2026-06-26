@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
     ResidentObjectiveKind,
@@ -11,7 +12,6 @@ from ravn.domain.resident_portfolio import (
     ResidentPortfolio,
 )
 from ravn.resident_portfolio import (
-    LocalResidentWorkItemBackend,
     ResidentPortfolioValidator,
     prioritize_objectives,
     render_validation_report,

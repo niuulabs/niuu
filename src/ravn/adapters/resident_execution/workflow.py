@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
+from ravn.adapters.resident_execution.local import WorkflowResidentExecutionAdapter
 from ravn.domain.resident_portfolio import (
     ResidentExecutionPort,
     ResidentExecutionResult,
@@ -12,7 +13,6 @@ from ravn.domain.resident_portfolio import (
     ResidentWorkerBrief,
 )
 from ravn.ports.capability import WorkflowCapabilityPort
-from ravn.resident_portfolio import WorkflowResidentExecutionAdapter
 
 
 class ConfiguredWorkflowResidentExecutionAdapter(ResidentExecutionPort):

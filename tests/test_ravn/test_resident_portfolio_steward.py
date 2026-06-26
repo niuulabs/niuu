@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ravn.adapters.resident_work.local import LocalResidentWorkItemBackend
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import ResidentBudgetSnapshot
 from ravn.domain.resident_portfolio import (
@@ -19,7 +20,6 @@ from ravn.domain.wakeful_resident import (
     WakefulResidentRun,
 )
 from ravn.resident_portfolio import (
-    LocalResidentWorkItemBackend,
     ResidentPortfolioStewardConfig,
     ResidentPortfolioStewardRuntime,
     prioritize_objectives,

@@ -3682,14 +3682,14 @@ def _wire_mimir_triggers(
             logger.warning("resident_autonomy: enabled but mandate is empty; skipping")
         else:
             from ravn.adapters.channels.silent import SilentChannel
+            from ravn.adapters.operator_contact import (
+                ChannelOperatorContact,
+                PendingOperatorContact,
+            )
             from ravn.adapters.triggers.resident_autonomy import (
                 ResidentAutonomyTrigger,
                 ResidentWakeAttention,
                 ResidentWakeExtension,
-            )
-            from ravn.domain.operator_contact import (
-                ChannelOperatorContact,
-                PendingOperatorContact,
             )
             from ravn.resident_expert import (
                 ResidentDomainExpertConfig,

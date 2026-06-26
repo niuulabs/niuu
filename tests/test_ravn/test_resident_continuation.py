@@ -5,12 +5,14 @@ from typing import Any
 
 import pytest
 
-from ravn.adapters.resident_state.mimir import MimirResidentState
-from ravn.domain.models import TokenUsage, ToolCall, TurnResult
-from ravn.domain.operator_contact import (
+from ravn.adapters.operator_contact import (
     BroadcastThenCallbackOperatorContact,
     CallbackOperatorContact,
     ChannelOperatorContact,
+)
+from ravn.adapters.resident_state.mimir import MimirResidentState
+from ravn.domain.models import TokenUsage, ToolCall, TurnResult
+from ravn.domain.operator_contact import (
     OperatorContactRequest,
     OperatorContactResult,
     OperatorContactStatus,
