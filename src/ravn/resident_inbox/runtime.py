@@ -200,6 +200,7 @@ class ResidentInboxRuntime:
                     f"{datetime.now(UTC).isoformat()} "
                     "[resident_inbox] converted inbox signal into resident work",
                 ),
+                keep_last=True,
             ),
         )
         ref = await self._work.write_portfolio(updated)

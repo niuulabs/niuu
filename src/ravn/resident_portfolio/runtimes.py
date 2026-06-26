@@ -198,7 +198,8 @@ class ResidentLongHorizonWorkManager:
                 decision_history=_merge_text(
                     portfolio.decision_history,
                     bootstrap_entries + (reason,),
-                    limit=20,
+                    limit=_DECISION_HISTORY_LIMIT,
+                    keep_last=True,
                 ),
             )
             portfolio_ref = await self._persist_portfolio(portfolio)
@@ -264,6 +265,7 @@ class ResidentLongHorizonWorkManager:
                 portfolio.decision_history,
                 bootstrap_entries + (decision_entry,),
                 limit=_DECISION_HISTORY_LIMIT,
+                keep_last=True,
             ),
             domain_model_ref=_DOMAIN_MODEL_REF
             if evidence.domain_model is not None
@@ -918,7 +920,10 @@ class ResidentPortfolioStewardRuntime:
         portfolio = portfolio.with_objectives(
             merged,
             decision_history=_merge_text(
-                portfolio.decision_history, (decision_entry,), limit=_DECISION_HISTORY_LIMIT
+                portfolio.decision_history,
+                (decision_entry,),
+                limit=_DECISION_HISTORY_LIMIT,
+                keep_last=True,
             ),
             **(await _gather_portfolio_links(self._backend)),
         )
@@ -1055,7 +1060,10 @@ class ResidentCapabilityDiscoveryRuntime:
         portfolio = portfolio.with_objectives(
             merged,
             decision_history=_merge_text(
-                portfolio.decision_history, (decision_entry,), limit=_DECISION_HISTORY_LIMIT
+                portfolio.decision_history,
+                (decision_entry,),
+                limit=_DECISION_HISTORY_LIMIT,
+                keep_last=True,
             ),
             artifact_links=_merge_text(
                 portfolio.artifact_links,
@@ -1458,7 +1466,10 @@ class ResidentDelegationRuntime:
         portfolio = portfolio.with_objectives(
             merged,
             decision_history=_merge_text(
-                portfolio.decision_history, (decision_entry,), limit=_DECISION_HISTORY_LIMIT
+                portfolio.decision_history,
+                (decision_entry,),
+                limit=_DECISION_HISTORY_LIMIT,
+                keep_last=True,
             ),
             workstream_links=_merge_text(
                 portfolio.workstream_links,

@@ -373,7 +373,9 @@ def select_objectives(
         1 for objective in objectives if objective.status == ResidentObjectiveStatus.ACTIVE.value
     )
     remaining_active = max(0, max_active - active_count)
-    limit = min(max_selected, remaining_active or max_selected)
+    limit = min(max_selected, remaining_active)
+    if limit <= 0:
+        return ()
     selected: list[ResidentObjective] = []
     completed_ids = {
         objective.id
@@ -1813,16 +1815,17 @@ async def _review_objective_against_wake(
         backend.list_refs(_CONSOLIDATION_PREFIX),
     )
     wake_links = tuple(wake)
-    artifact_links = _merge_text(
-        tuple(artifacts),
-        tuple(ref for cycle in wake_run.cycles for ref in cycle.artifact_refs),
-    )
+    # Artifacts THIS wake produced — proof completion must depend on these, not on
+    # unrelated artifacts already present in the backend (which would let one
+    # objective's evidence complete every other objective).
+    wake_artifacts = tuple(ref for cycle in wake_run.cycles for ref in cycle.artifact_refs)
+    artifact_links = _merge_text(tuple(artifacts), wake_artifacts)
     workstream_links = tuple(workstream)
     consolidation_links = tuple(consolidation)
     proof_progress = _proof_progress_from_wake(wake_run)
     status = (
         ResidentObjectiveStatus.COMPLETED.value
-        if _proof_satisfied(proof_progress, artifact_links, consolidation_links)
+        if _proof_satisfied(proof_progress, wake_artifacts, ())
         else ResidentObjectiveStatus.PAUSED.value
     )
     return objective.with_updates(
@@ -2019,6 +2022,10 @@ def _parse_objective(content: str) -> ResidentObjective | None:
         consolidation_links=tuple(_section_items(content, "Consolidation Links")),
         supersedes=tuple(_section_items(content, "Supersedes")),
         superseded_by=metadata.get("superseded_by") or "",
+        created_at=_datetime_value(metadata.get("created_at")),
+        updated_at=_datetime_value(metadata.get("updated_at")),
+        last_advanced_at=_optional_datetime_value(metadata.get("last_advanced_at")),
+        last_reviewed_at=_optional_datetime_value(metadata.get("last_reviewed_at")),
     )
 
 
@@ -2656,16 +2663,22 @@ def _section_tail(content: str, name: str) -> str:
     return ""
 
 
-def _merge_text(*groups: tuple[str, ...], limit: int = 40) -> tuple[str, ...]:
+def _merge_text(
+    *groups: tuple[str, ...],
+    limit: int = 40,
+    keep_last: bool = False,
+) -> tuple[str, ...]:
     merged: list[str] = []
     for group in groups:
         for item in group:
             value = str(item).strip()
             if value and value not in merged:
                 merged.append(value)
-            if len(merged) >= limit:
-                return tuple(merged)
-    return tuple(merged)
+    # keep_last keeps the NEWEST `limit` items (for append-style logs such as
+    # decision_history); the default keeps the first `limit`.
+    if keep_last:
+        return tuple(merged[-limit:])
+    return tuple(merged[:limit])
 
 
 def _status_rank(status: str) -> int:
@@ -2732,3 +2745,13 @@ def _datetime_value(value: str | None) -> datetime:
         return datetime.fromisoformat(str(value or ""))
     except ValueError:
         return datetime.now(UTC)
+
+
+def _optional_datetime_value(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None

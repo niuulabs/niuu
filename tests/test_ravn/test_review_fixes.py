@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from ravn.domain.resident_portfolio import (
     ResidentObjective,
     ResidentObjectiveStatus,
@@ -14,6 +16,12 @@ from ravn.resident_inbox.models import (
 )
 from ravn.resident_inbox.routing import _operator_resolution_for_signal
 from ravn.resident_operator_contact import _operator_reply_approval
+from ravn.resident_portfolio.helpers import (
+    _merge_text,
+    _parse_objective,
+    _render_objective,
+    select_objectives,
+)
 
 
 def _objective(**overrides) -> ResidentObjective:
@@ -95,3 +103,44 @@ def test_operator_resolution_applies_to_operator_messages() -> None:
     blocked = _operator_resolution_for_signal(denial_signal, (pending,))
     assert blocked is not None
     assert blocked.status == ResidentObjectiveStatus.BLOCKED.value
+
+
+# --- portfolio state correctness ----------------------------------------------
+
+
+def test_merge_text_keep_last_keeps_newest() -> None:
+    existing = tuple(f"entry-{i}" for i in range(40))
+    merged = _merge_text(existing, ("entry-new",), limit=40, keep_last=True)
+    assert merged[-1] == "entry-new"
+    assert len(merged) == 40
+    assert "entry-0" not in merged  # oldest dropped, newest retained
+    # default (keep-first) is unchanged for other callers
+    first = _merge_text(existing, ("entry-new",), limit=40)
+    assert "entry-new" not in first
+
+
+def test_select_objectives_respects_active_capacity() -> None:
+    active = [
+        _objective(id=f"a{i}", status=ResidentObjectiveStatus.ACTIVE.value) for i in range(3)
+    ]
+    candidate = _objective(id="cand", status=ResidentObjectiveStatus.CANDIDATE.value)
+    # 3 active, max_active=3 -> no capacity, must select nothing
+    assert select_objectives((*active, candidate), max_selected=2, max_active=3) == ()
+    # one slot free -> selects at most that one slot (not max_selected)
+    selected = select_objectives((*active[:2], candidate), max_selected=2, max_active=3)
+    assert len(selected) == 1
+
+
+def test_parse_objective_restores_timestamps() -> None:
+    created = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    advanced = datetime(2026, 1, 3, 4, 5, 6, tzinfo=UTC)
+    objective = _objective(
+        created_at=created,
+        updated_at=created,
+        last_advanced_at=advanced,
+    )
+    parsed = _parse_objective(_render_objective(objective))
+    assert parsed is not None
+    assert parsed.created_at == created
+    assert parsed.last_advanced_at == advanced
+    assert parsed.last_reviewed_at is None
