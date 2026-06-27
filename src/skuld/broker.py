@@ -40,6 +40,16 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.transcript_reducer import (
+    TurnAccumulator,
+    apply_assistant_blocks,
+    apply_text_delta,
+    apply_thinking_delta,
+    apply_tool_result_blocks,
+    assistant_turn_id,
+    build_assistant_turn,
+    result_metadata,
+)
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
@@ -1032,6 +1042,10 @@ class Broker:
         self._pending_assistant_parts: list[dict] = []
         self._pending_block_type: str = ""
         self._pending_reasoning_text: str = ""
+        # Durable-log seq of the LAST frame folded into the open assistant turn. Drives the
+        # SHARED reducer's deterministic turn-id (uuid5(session:seq:role)) so the live turn id
+        # equals the id a later log rebuild assigns to the same logical turn (SRD INV-4).
+        self._pending_assistant_last_seq: int = 0
         self._pending_explicit_human_messages: list[tuple[str, str]] = []
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
@@ -1211,27 +1225,33 @@ class Broker:
             "in_progress": True,
         }
 
+    def _pending_accumulator(self) -> TurnAccumulator:
+        """A SHARED-reducer accumulator view over the broker's volatile pending fields.
+
+        Routes the live (incremental) fold through the SAME state object the batch rebuild
+        uses, so a flush builds the turn via the one shared builder — identical id policy,
+        reasoning ordering, and metadata schema as a later log rebuild (SRD INV-4).
+        """
+        return TurnAccumulator(
+            content=self._pending_assistant_content,
+            parts=self._pending_assistant_parts,
+            reasoning=self._pending_reasoning_text,
+            last_seq=self._pending_assistant_last_seq,
+        )
+
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
-        """Save any accumulated assistant content as a conversation turn."""
-        content = self._pending_assistant_content
-        # Save when there's text OR captured parts (tool_use/tool_result/reasoning)
-        # — a tool-only assistant turn (no prose) must still persist its tool cards.
-        if not content and not self._pending_assistant_parts:
+        """Save any accumulated assistant content as a conversation turn via the shared reducer."""
+        acc = self._pending_accumulator()
+        turn = build_assistant_turn(self.session_id, acc, metadata=metadata)
+        if turn is None:
             return
-
-        # Flush remaining reasoning
-        if self._pending_reasoning_text:
-            summary = self._pending_reasoning_text[-500:]
-            self._pending_assistant_parts.append({"type": "reasoning", "text": summary})
-
-        parts = self._pending_assistant_parts if self._pending_assistant_parts else []
         self._append_turn(
             ConversationTurn(
-                id=str(uuid.uuid4()),
+                id=turn["id"],
                 role="assistant",
-                content=content,
-                parts=parts,
-                metadata=metadata or {},
+                content=turn["content"],
+                parts=turn["parts"],
+                metadata=turn["metadata"],
             )
         )
         self._pending_assistant_content = ""
@@ -3165,9 +3185,15 @@ class Broker:
                         self._pending_explicit_human_messages.pop(0)
                         user_content = ""
                 if user_content:
+                    # Match the SHARED reducer's user-turn id policy: the frame's carried
+                    # uuid when present (so live == rebuild), else the deterministic seq id.
+                    carried_uid = str(data.get("uuid") or "").strip()
+                    user_turn_id = carried_uid or assistant_turn_id(
+                        self.session_id, self._event_log_seq, "user"
+                    )
                     self._append_turn(
                         ConversationTurn(
-                            id=str(uuid.uuid4()),
+                            id=user_turn_id,
                             role="user",
                             content=user_content,
                         )
@@ -3239,23 +3265,12 @@ class Broker:
         elif tool_result_only_user_event:
             await self._finish_assistant_tool_trace_spans_from_user_event(data)
             # Persist tool_result blocks onto the open assistant turn so the saved
-            # conversation carries tool OUTPUT (not just the call) for read-back.
+            # conversation carries tool OUTPUT (not just the call) for read-back — via the
+            # SHARED reducer transition (the same enrichment a later log rebuild applies).
             tr_msg = data.get("message", {})
             tr_blocks = tr_msg.get("content", []) if isinstance(tr_msg, dict) else []
-            for tr_block in tr_blocks or []:
-                if (
-                    isinstance(tr_block, dict)
-                    and tr_block.get("type") == "tool_result"
-                    and tr_block.get("tool_use_id")
-                ):
-                    self._pending_assistant_parts.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tr_block.get("tool_use_id"),
-                            "content": tr_block.get("content"),
-                            "is_error": bool(tr_block.get("is_error")),
-                        }
-                    )
+            apply_tool_result_blocks(self._pending_accumulator(), tr_blocks)
+            self._pending_assistant_last_seq = self._event_log_seq
         elif event_type == "result":
             # A turn that reaches result is no longer blocked on the user; drop
             # any stale pending gates so a later heartbeat can't resurrect
@@ -3272,63 +3287,32 @@ class Broker:
         # We also handle the HTTP streaming format (content_block_delta, result)
         # for backward compatibility.
         if event_type == "assistant":
-            # Extract content and ACCUMULATE parts across the messages of one turn
-            # (a tool_use message, then the final text), so the SAVED conversation
-            # turn carries tool calls + reasoning — not just text — and reloads with
-            # its tool cards. Parts are reset on flush, not per message.
+            # ACCUMULATE this assistant frame's blocks (text / thinking / tool_use) across the
+            # messages of one turn via the SHARED reducer transition — the SAME fold a later log
+            # rebuild applies — so the saved turn carries tool calls + reasoning and reloads
+            # byte-identically. Parts are reset on flush, not per message. The accumulator shares
+            # the parts list object, so block appends land directly on the pending state; only
+            # ``content`` (a str) is written back.
             message = data.get("message", {})
             content_blocks = message.get("content", [])
-            if isinstance(content_blocks, list) and content_blocks:
-                text_parts = []
-                for block in content_blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    btype = block.get("type")
-                    if btype == "text" and block.get("text"):
-                        text_parts.append(block["text"])
-                        self._pending_assistant_parts.append(
-                            {"type": "text", "text": block["text"]}
-                        )
-                    elif btype == "thinking" and block.get("thinking"):
-                        # Keep last 500 chars per reasoning block as a summary.
-                        self._pending_assistant_parts.append(
-                            {"type": "reasoning", "text": str(block["thinking"])[-500:]}
-                        )
-                    elif btype == "tool_use" and block.get("id"):
-                        part = {
-                            "type": "tool_use",
-                            "id": block.get("id"),
-                            "name": block.get("name"),
-                            "input": block.get("input") or {},
-                        }
-                        # Carry subagent attribution so it survives into BOTH the served
-                        # in-progress turn AND the persisted completed turn (flush reads this
-                        # same list) — zero visual jump on live->settled.
-                        if block.get("parent_tool_use_id") is not None:
-                            part["parent_tool_use_id"] = block.get("parent_tool_use_id")
-                        if block.get("agent_id") is not None:
-                            part["agent_id"] = block.get("agent_id")
-                        self._pending_assistant_parts.append(part)
-                text_content = "\n".join(text_parts)
-                if text_content:
-                    self._pending_assistant_content = (
-                        f"{self._pending_assistant_content}\n{text_content}"
-                        if self._pending_assistant_content
-                        else text_content
-                    )
+            acc = self._pending_accumulator()
+            apply_assistant_blocks(acc, content_blocks)
+            self._pending_assistant_content = acc.content
+            self._pending_assistant_last_seq = self._event_log_seq
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
             delta = data.get("delta", {})
             delta_type = delta.get("type", "")
+            # SHARED reducer delta transitions (same fold a later log rebuild applies).
+            acc = self._pending_accumulator()
             if delta_type == "thinking_delta":
-                thinking = delta.get("thinking", "")
-                if thinking:
-                    self._pending_reasoning_text += thinking
+                apply_thinking_delta(acc, delta.get("thinking", ""))
+                self._pending_reasoning_text = acc.reasoning
             else:
-                text = delta.get("text", "")
-                if text:
-                    self._pending_assistant_content += text
+                apply_text_delta(acc, delta.get("text", ""))
+                self._pending_assistant_content = acc.content
+            self._pending_assistant_last_seq = self._event_log_seq
 
         # Accumulate artifacts from assistant tool_use events
         if event_type == "assistant":
@@ -3365,9 +3349,11 @@ class Broker:
                 self._flush_pending_assistant_turn(
                     metadata={"status": "error", "messageType": "error"}
                 )
+            # Deterministic id (uuid5(session:error_frame_seq:assistant)) so the live error
+            # turn id matches the id a log rebuild assigns to the same error frame (INV-4).
             self._append_turn(
                 ConversationTurn(
-                    id=str(uuid.uuid4()),
+                    id=assistant_turn_id(self.session_id, self._event_log_seq),
                     role="assistant",
                     content=visible_error,
                     parts=[{"type": "text", "text": visible_error}],
@@ -3399,14 +3385,12 @@ class Broker:
                         if isinstance(block, dict) and block.get("type") == "text":
                             self._pending_assistant_content = block.get("text", "")
                             break
-            # Build metadata from result event
-            model_usage_for_turn = data.get("modelUsage", {})
-            result_cost = None
-            result_model = None
-            for model_id, usage in model_usage_for_turn.items():
-                result_model = model_id
-                if usage.get("costUSD") is not None:
-                    result_cost = (result_cost or 0) + usage["costUSD"]
+            # Build metadata from the result frame via the SHARED reducer so the live turn's
+            # {usage,cost,model,stop_reason} schema is byte-identical to a later log rebuild.
+            turn_metadata = result_metadata(data)
+            # The result frame closes the turn — stamp its seq so the deterministic turn id
+            # (uuid5(session:seq:role)) matches the id a log rebuild assigns to this turn.
+            self._pending_assistant_last_seq = self._event_log_seq
 
             # Capture content before flush clears it
             content = self._pending_assistant_content or data.get("result", "")
@@ -3415,13 +3399,7 @@ class Broker:
                 self._pending_assistant_parts = []
                 self._pending_reasoning_text = ""
             else:
-                self._flush_pending_assistant_turn(
-                    metadata={
-                        "usage": model_usage_for_turn,
-                        "cost": result_cost,
-                        "model": result_model,
-                    }
-                )
+                self._flush_pending_assistant_turn(metadata=turn_metadata)
 
             # Emit CLI turn as room_message so it shows participant color
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
