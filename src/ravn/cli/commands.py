@@ -4958,6 +4958,30 @@ def momentum_eval_cmd(
     asyncio.run(_run_momentum_eval(settings, path))
 
 
+@momentum_app.command("dogfood")
+def momentum_dogfood_cmd(
+    ref_or_path: str = typer.Argument(..., help="Markdown file path or resident inbox signal ref."),
+    reflect_outcome: str = typer.Option(
+        "",
+        "--reflect-outcome",
+        help="Optional disposition outcome to also run reflection.",
+    ),
+    note: str = typer.Option("", "--note", help="Disposition note for reflection mode."),
+    inbox: bool = typer.Option(False, "--inbox", help="Load ref as a resident inbox signal."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Run the opt-in local-LLM Momentum dogfood proof."""
+    if os.environ.get("RAVN_LLM_EVAL") != "1":
+        typer.echo("Skipped: set RAVN_LLM_EVAL=1 to run the Momentum dogfood eval.")
+        return
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_dogfood(settings, ref_or_path, reflect_outcome, note, inbox))
+
+
 @momentum_app.command("inbox")
 def momentum_inbox_cmd(
     signal_ref_or_id: str = typer.Argument(..., help="Resident inbox signal ref or id."),
@@ -5067,6 +5091,106 @@ async def _run_momentum_eval(settings: Settings, path: str) -> None:
     typer.echo("eval:        ok")
 
 
+async def _run_momentum_dogfood(
+    settings: Settings,
+    ref_or_path: str,
+    reflect_outcome: str,
+    note: str,
+    inbox: bool,
+) -> None:
+    from ravn.adapters.resident_signal import MarkdownResidentSignalSource
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
+    from ravn.momentum.eval import (
+        MomentumDogfoodReport,
+        dogfood_failures,
+        render_dogfood_report,
+    )
+
+    if reflect_outcome and reflect_outcome not in _MOMENTUM_DISPOSITION_OUTCOMES:
+        allowed = ", ".join(_MOMENTUM_DISPOSITION_OUTCOMES)
+        typer.echo(f"Invalid outcome: {reflect_outcome}. Allowed values: {allowed}", err=True)
+        raise typer.Exit(2)
+
+    source = (
+        _build_resident_inbox_signal_source(settings)
+        if inbox
+        else MarkdownResidentSignalSource()
+    )
+    try:
+        signal = await source.load_signal(ref_or_path)
+    except FileNotFoundError:
+        typer.echo(f"Resident signal not found: {ref_or_path}", err=True)
+        raise typer.Exit(1) from None
+    except IsADirectoryError:
+        typer.echo(f"Not a file: {ref_or_path}", err=True)
+        raise typer.Exit(1) from None
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    reflection_worker = MomentumReflectionWorker(llm, model=model) if reflect_outcome else None
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model=model),
+        reflection_worker=reflection_worker,
+        state=state,
+    )
+    result = await pipeline.extract_signal(signal)
+    reflection = None
+    if reflect_outcome:
+        reflection = await pipeline.reflect_judgment(
+            result.judgment_ref,
+            outcome=reflect_outcome,
+            note=note or f"Dogfood disposition: {reflect_outcome}",
+        )
+
+    failures, judgment_valid, packet_consistent, reflection_produced = dogfood_failures(
+        result.extraction,
+        reflection_requested=bool(reflect_outcome),
+        reflection_ref=reflection.reflection_ref if reflection else None,
+    )
+    mode = "extraction+reflection" if reflect_outcome else "extraction-only"
+    report = MomentumDogfoodReport(
+        source_ref=ref_or_path,
+        mode=mode,
+        model=model,
+        extraction_procedure=result.extraction.run.procedure_name,
+        reflection_procedure=reflection.reflection.procedure_name if reflection else "",
+        run_ref=result.run_ref,
+        judgment_ref=result.judgment_ref,
+        packet_ref=result.packet_ref,
+        disposition_ref=reflection.disposition_ref if reflection else None,
+        reflection_ref=reflection.reflection_ref if reflection else None,
+        provenance_verified=result.provenance_fully_verified,
+        judgment_payload_valid=judgment_valid,
+        packet_judgment_consistent=packet_consistent,
+        reflection_requested=bool(reflect_outcome),
+        reflection_produced=reflection_produced,
+        command_hint=_dogfood_command_hint(ref_or_path, reflect_outcome, note, inbox),
+        config_hint=_dogfood_config_hint(settings),
+        failures=failures,
+    )
+    report_ref = await state.write_artifact(
+        f"resident/momentum/runs/{result.extraction.run.run_id}/dogfood/report.md",
+        render_dogfood_report(report),
+    )
+    typer.echo(f"mode:          {mode}")
+    typer.echo(f"run_ref:       {result.run_ref}")
+    typer.echo(f"judgment_ref:  {result.judgment_ref}")
+    typer.echo(f"packet_ref:    {result.packet_ref or '-'}")
+    typer.echo(f"report_ref:    {report_ref}")
+    if reflection is not None:
+        typer.echo(f"disposition_ref:{reflection.disposition_ref}")
+        typer.echo(f"reflection_ref: {reflection.reflection_ref}")
+    typer.echo(f"provenance:    {_provenance_label(result.provenance_fully_verified)}")
+    typer.echo(f"judgment_valid:{str(judgment_valid).lower()}")
+    if failures:
+        for failure in failures:
+            typer.echo(f"eval_error:    {failure}", err=True)
+        raise typer.Exit(1)
+    typer.echo("eval:          ok")
+
+
 async def _run_momentum_source(settings: Settings, source: Any, ref_or_id: str) -> Any:
     from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
 
@@ -5098,6 +5222,38 @@ def _build_resident_inbox_signal_source(settings: Settings) -> Any:
 
 def _provenance_label(verified: bool) -> str:
     return "verified" if verified else "unverified"
+
+
+def _dogfood_command_hint(ref_or_path: str, outcome: str, note: str, inbox: bool) -> str:
+    parts = ["ravn", "momentum", "dogfood", ref_or_path]
+    if inbox:
+        parts.append("--inbox")
+    if outcome:
+        parts.extend(["--reflect-outcome", outcome])
+    if note:
+        parts.extend(["--note", note])
+    return " ".join(parts)
+
+
+def _dogfood_config_hint(settings: Settings) -> str:
+    provider = settings.llm.provider
+    kwargs = {
+        key: _redacted(value, key)
+        for key, value in sorted(provider.kwargs.items())
+    }
+    secret_keys = ", ".join(sorted(provider.secret_kwargs_env)) or "-"
+    return (
+        f"llm.provider.adapter: {provider.adapter}\n"
+        f"llm.provider.kwargs: {json.dumps(kwargs, sort_keys=True)}\n"
+        f"llm.provider.secret_kwargs_env keys: {secret_keys}"
+    )
+
+
+def _redacted(value: Any, key: str) -> Any:
+    lowered = key.lower()
+    if any(marker in lowered for marker in ("key", "token", "secret", "password")):
+        return "<redacted>"
+    return value
 
 
 async def _build_resident_state(settings: Settings, workspace: Path) -> Any:

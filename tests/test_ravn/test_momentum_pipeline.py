@@ -843,6 +843,103 @@ def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Pat
     assert "accepted, dismissed, wrong, deferred, acted" in result.output
 
 
+def test_momentum_dogfood_skips_without_opt_in(tmp_path: Path):
+    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
+
+    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
+
+    assert result.exit_code == 0
+    assert "Skipped: set RAVN_LLM_EVAL=1" in result.output
+
+
+def test_momentum_dogfood_extraction_only_persists_report(monkeypatch, tmp_path: Path):
+    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
+    state = LocalResidentState(tmp_path / "state")
+
+    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_dogfood_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
+
+    assert result.exit_code == 0, result.output
+    assert "mode:          extraction-only" in result.output
+    assert "report_ref:    resident/momentum/runs/" in result.output
+    refs = asyncio.run(state.list_refs("resident/momentum"))
+    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
+    report = asyncio.run(state.read_artifact(report_ref)).content
+    assert "- mode: extraction-only" in report
+    assert "- judgment_payload_valid: true" in report
+    assert "- packet_judgment_consistent: true" in report
+    assert "- reflection_requested: false" in report
+
+
+def test_momentum_dogfood_with_reflection_persists_report(monkeypatch, tmp_path: Path):
+    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_dogfood_payload(), _reflection_payload("accepted")])
+
+    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: llm)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        [
+            "momentum",
+            "dogfood",
+            str(fixture),
+            "--reflect-outcome",
+            "accepted",
+            "--note",
+            "Accepted in dogfood.",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "mode:          extraction+reflection" in result.output
+    assert "reflection_ref: resident/continuation/momentum/runs/" in result.output
+    refs = asyncio.run(state.list_refs("resident/momentum"))
+    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
+    report = asyncio.run(state.read_artifact(report_ref)).content
+    assert "- mode: extraction+reflection" in report
+    assert "- reflection_requested: true" in report
+    assert "- reflection_produced: true" in report
+    assert "- reflection_ref: resident/continuation/momentum/runs/" in report
+
+
+def test_momentum_dogfood_validation_failures_exit_nonzero(monkeypatch, tmp_path: Path):
+    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
+    state = LocalResidentState(tmp_path / "state")
+    payload = _dogfood_payload()
+    payload["artifacts"][0]["source"] = {"excerpt": "not in the noisy fixture"}
+
+    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(payload))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
+
+    assert result.exit_code == 1
+    assert "eval_error:    not all provenance was verified against the source" in result.output
+    refs = asyncio.run(state.list_refs("resident/momentum"))
+    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
+    report = asyncio.run(state.read_artifact(report_ref)).content
+    assert "not all provenance was verified against the source" in report
+
+
 def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -943,6 +1040,20 @@ def _reflection_payload(
         "candidate_reflexes": ["Candidate: ask for disposition after action."],
         "candidate_capability_gaps": ["Candidate: no automatic outcome feed."],
     }
+
+
+def _dogfood_payload() -> dict:
+    payload = _payload()
+    source = {"excerpt": "configured LLM port"}
+    for artifact in payload["artifacts"]:
+        artifact["source"] = source
+    payload["resident_patch"]["source"] = source
+    payload["judgment"]["source"] = {"excerpt": "fake LLM tests prove the plumbing"}
+    payload["packet"]["source"] = {"excerpt": "Manual dogfood proof"}
+    payload["judgment"]["signal_refs"] = [
+        "tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md"
+    ]
+    return payload
 
 
 def _vision_payload() -> dict:
