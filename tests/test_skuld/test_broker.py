@@ -3632,6 +3632,35 @@ class TestHandleWebSocket:
         assert caps_idx > system_idx
 
     @pytest.mark.asyncio
+    async def test_reconnect_conversation_history_carries_head_seq_cursor(self, test_broker):
+        """SRD FR-6: the reconnect conversation_history frame carries the durable-log
+        HEAD seq so a client loads state then resumes the live tail from head+1."""
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+        # One completed turn + a non-trivial durable-log head.
+        test_broker._conversation_turns = [
+            ConversationTurn(id="u-1", role="user", content="do it"),
+            ConversationTurn(id="a-1", role="assistant", content="done"),
+        ]
+        test_broker._event_log_seq = 42
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await test_broker.handle_websocket(mock_ws)
+
+        calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        history = [c for c in calls if c.get("type") == "conversation_history"]
+        assert len(history) == 1
+        frame = history[0]
+        # The cursor is present and equals the broker's durable-log head.
+        assert frame["head_seq"] == 42
+        # Turns are unchanged (cursor is ADDITIVE, not a turn rewrite).
+        assert [t["id"] for t in frame["turns"]] == ["u-1", "a-1"]
+
+    @pytest.mark.asyncio
     async def test_handle_websocket_replays_pending_permission_requests(self, test_broker):
         mock_transport = AsyncMock()
         mock_transport.is_alive = True

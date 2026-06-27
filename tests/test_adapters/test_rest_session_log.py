@@ -116,3 +116,121 @@ class TestReplay:
         resp = client.get(f"/api/v1/forge/sessions/{uuid4()}/log")
         assert resp.status_code == 200
         assert resp.json() == []
+
+
+# Rows mirroring the streaming shape: assistant/user content lists carrying
+# tool_use / tool_result blocks plus standalone content_block_* deltas.
+_INTERNAL_ROWS = [
+    {
+        "seq": 1,
+        "kind": "user",
+        "payload": {"type": "user", "message": {"role": "user", "content": "go"}},
+    },
+    {
+        "seq": 2,
+        "kind": "assistant",
+        "payload": {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "reading"},
+                    {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"p": "a.ts"}},
+                ],
+            },
+        },
+    },
+    {
+        "seq": 3,
+        "kind": "user",
+        "role": "user",
+        "payload": {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "body"}],
+            },
+        },
+    },
+    {
+        "seq": 4,
+        "kind": "content_block_start",
+        "payload": {"type": "content_block_start", "content_block": {"type": "tool_use"}},
+    },
+    {
+        "seq": 5,
+        "kind": "content_block_delta",
+        "payload": {"type": "content_block_delta", "delta": {"partial_json": "{}"}},
+    },
+    {
+        "seq": 6,
+        "kind": "content_block_stop",
+        "payload": {"type": "content_block_stop"},
+    },
+    {"seq": 7, "kind": "result", "payload": {"type": "result", "ok": True}},
+]
+
+
+def _seed_internal(client, sid: str) -> None:
+    client.post(
+        f"/api/v1/forge/sessions/{sid}/log",
+        json={"entries": _INTERNAL_ROWS},
+    )
+
+
+def _gate_via_filter(rows: list[dict]) -> list[dict]:
+    """Reference gate: the SAME shared predicate the streaming paths use."""
+    from skuld.channels import filter_internal_blocks
+
+    kept: list[dict] = []
+    open_block: str | None = None
+    for r in rows:
+        filtered, open_block = filter_internal_blocks(r["payload"], open_block_type=open_block)
+        if filtered is None:
+            continue
+        kept.append(r)
+    return kept
+
+
+class TestColdReadVisibility:
+    def test_hides_internal_by_default(self):
+        # SRD FR-7 / INV-10: cold-read defaults to internal HIDDEN, applying the
+        # SAME filter_internal_blocks the live/replay paths use.
+        client, _ = _client()
+        sid = str(uuid4())
+        _seed_internal(client, sid)
+
+        body = client.get(f"/api/v1/forge/sessions/{sid}/log").json()
+
+        kinds = [e["kind"] for e in body]
+        # seq3 (tool_result-only), seq4/5/6 (internal content_block span) dropped.
+        assert kinds == ["user", "assistant", "result"]
+        # The assistant frame keeps text but the tool_use block is stripped.
+        assistant = next(e for e in body if e["kind"] == "assistant")
+        block_types = [b["type"] for b in assistant["payload"]["message"]["content"]]
+        assert block_types == ["text"]
+
+    def test_unhides_with_show_internal_true(self):
+        client, _ = _client()
+        sid = str(uuid4())
+        _seed_internal(client, sid)
+
+        body = client.get(
+            f"/api/v1/forge/sessions/{sid}/log", params={"show_internal": "true"}
+        ).json()
+
+        # All 7 frames verbatim, tool_use/tool_result intact.
+        assert [e["seq"] for e in body] == [1, 2, 3, 4, 5, 6, 7]
+        assistant = next(e for e in body if e["kind"] == "assistant")
+        block_types = [b["type"] for b in assistant["payload"]["message"]["content"]]
+        assert "tool_use" in block_types
+
+    def test_dropped_set_equals_shared_filter(self):
+        # INV-10: the cold-read dropped set == the shared predicate's dropped set.
+        client, _ = _client()
+        sid = str(uuid4())
+        _seed_internal(client, sid)
+
+        gated = client.get(f"/api/v1/forge/sessions/{sid}/log").json()
+        expected_seqs = [r["seq"] for r in _gate_via_filter(_INTERNAL_ROWS)]
+        assert [e["seq"] for e in gated] == expected_seqs

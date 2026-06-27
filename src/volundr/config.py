@@ -674,7 +674,16 @@ class ReplayConfig(BaseModel):
     fixtures_enabled: bool = Field(default=False)
     default_speed: float = Field(default=1.0, gt=0)
     max_gap_seconds: float = Field(default=2.0, ge=0)
-    default_show_internal: bool = Field(default=True)
+    # Unified read-path visibility default (SRD FR-7 / INV-10): internal
+    # tool_use/tool_result blocks are HIDDEN by default across ALL three read
+    # paths — live broadcast (``WebSocketChannel(show_internal=False)``), replay,
+    # and cold-read (``GET .../log``). One default, one toggle wire-message
+    # (``set_internal_visibility``), one ``filter_internal_blocks`` predicate, so
+    # the dropped set is identical everywhere. This was historically ``True`` for
+    # replay only, which diverged from the live default; it is now aligned to the
+    # live default. Flip to ``True`` only if a deployment wants internals shown by
+    # default on EVERY path (the toggle still works regardless).
+    default_show_internal: bool = Field(default=False)
     page_size: int = Field(default=500, ge=1, le=5000)
     fixtures_dir: str | None = Field(default=None)
 

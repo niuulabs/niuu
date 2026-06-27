@@ -1133,6 +1133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_event_log,
                 session_service=session_service,
                 prefix="/api/v1/forge",
+                default_show_internal=settings.replay.default_show_internal,
             )
             app.include_router(session_log_router)
 

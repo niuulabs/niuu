@@ -30,8 +30,10 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.channels import filter_internal_blocks
+from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
+from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.replay.fixtures import resolve_fixture
 from volundr.replay.pacing import PacingConfig, drive_replay, encode_frame
 from volundr.replay.source import (
@@ -41,6 +43,37 @@ from volundr.replay.source import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _collect_prefix(src, *, upto_seq: int) -> list[SessionLogEntry]:
+    """Collect the recorded frames with ``0 < seq <= upto_seq`` from a source.
+
+    Used to reconstruct the conversation that happened BEFORE a mid-cursor
+    attach (``after>0``). Reads from ``after_seq=0`` and stops as soon as the
+    stream passes the cursor (sources yield in ascending ``seq``).
+    """
+    prefix: list[SessionLogEntry] = []
+    async for entry in src.entries(after_seq=0):
+        if entry.seq > upto_seq:
+            break
+        prefix.append(entry)
+    return prefix
+
+
+def _mid_cursor_history_frame(prefix: list[SessionLogEntry]) -> dict:
+    """Build the ``conversation_history`` frame for a mid-cursor attach.
+
+    Reuses the SHARED reducer via :func:`rebuild_turns` (which folds the prefix
+    through ``niuu.domain.transcript_reducer.reduce_frames`` — the one fold the
+    live broker and the crash-rebuild also use), so the reconstructed turns are
+    identical to what a live reconnect or a full ``after=0`` replay would yield.
+    The frame shape matches the live reconnect frame exactly:
+    ``{"type": "conversation_history", "turns": [...]}`` (a SYNTHETIC frame, not a
+    raw log envelope — documented as the one shape that differs from the verbatim
+    seq/kind/role/request_id/payload/ts frames the tail streams).
+    """
+    rebuilt = rebuild_turns(prefix)
+    return {"type": "conversation_history", "turns": rebuilt.turns}
 
 
 class _VisibilityGate:
@@ -256,10 +289,18 @@ async def _run(
                 ),
             }
             await ws.send_text(json.dumps(caps))
-            # after>0 mid-session attach: conversation_history reconstruction is
-            # deferred — v1 replays the post-cursor tail only (same contract as
-            # the REST GET .../log?after= cold read). For after==0 we send NO
-            # conversation_history (the streamed frames are the full history).
+            # after>0 mid-session attach (SRD FR-6 / INV-6): FIRST reconstruct the
+            # conversation that already happened (turns folded from the durable
+            # log 1..after via the SHARED reducer) and emit it as a single
+            # conversation_history frame — the SAME shape the live broker sends on
+            # reconnect — so the client loads full state, THEN streams the tail
+            # (seq>after) below. reconstructed history ∪ tail == replay from
+            # after=0. For after==0 we send NO conversation_history (the streamed
+            # frames ARE the full history).
+            if after > 0:
+                prefix = await _collect_prefix(src, upto_seq=after)
+                if prefix:
+                    await ws.send_text(json.dumps(_mid_cursor_history_frame(prefix)))
 
         async def _emit(entry) -> bool:
             payload = gate.gate(entry.payload)

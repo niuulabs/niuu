@@ -6023,6 +6023,11 @@ class Broker:
                     {
                         "type": "conversation_history",
                         "turns": replay_turns,
+                        # SRD FR-6: the durable-log head seq at reconnect time. The
+                        # client loads this state, then resumes the live tail from
+                        # head_seq+1 with no gap and no duplicate (the broker keeps
+                        # appending to the SAME monotonic seq it broadcasts from).
+                        "head_seq": self._event_log_seq,
                     },
                 ):
                     return

@@ -266,11 +266,67 @@ def test_set_internal_visibility_toggle_unhides_subsequent_tool_frames():
 
 
 # --------------------------------------------------------------------------- #
+# Visibility parity across read paths (INV-10)
+# --------------------------------------------------------------------------- #
+
+
+def test_unified_visibility_default_is_hidden():
+    # SRD FR-7 / INV-10: the unified default hides internals on EVERY read path.
+    from volundr.adapters.inbound.rest_session_log import DEFAULT_SHOW_INTERNAL
+
+    assert ReplayConfig().default_show_internal is False
+    assert DEFAULT_SHOW_INTERNAL is False
+
+
+def test_visibility_dropped_set_parity_replay_coldread_live():
+    # INV-10: with internals hidden, the dropped frame set is identical across
+    # replay, cold-read, and the shared live predicate — and all three use the
+    # SAME toggle wire-message name ("set_internal_visibility").
+    from skuld.channels import WebSocketChannel, filter_internal_blocks
+    from volundr.adapters.inbound.rest_session_log import create_session_log_router
+
+    sid = uuid4()
+    # Replay (hidden default) — collect the visible seqs.
+    app, repo = _app(default_show_internal=False)
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(f"/api/v1/forge/sessions/{sid}/replay?speed=1000") as ws:
+            replay_frames = _drain(ws)
+    replay_body = [f for f in replay_frames if f.get("type") not in ("system", "capabilities")]
+    replay_kept = [_block_types(f) or [f["type"]] for f in replay_body]
+
+    # Cold-read (hidden default) over the same data — share the repo.
+    log_app = FastAPI()
+    log_app.include_router(create_session_log_router(repo, session_service=None))
+    with TestClient(log_app) as log_client:
+        cold = log_client.get(f"/api/v1/forge/sessions/{sid}/log").json()
+    cold_kept = [_block_types(e["payload"]) or [e["payload"].get("type")] for e in cold]
+
+    # Shared live predicate directly.
+    live_kept: list[list[str]] = []
+    open_block: str | None = None
+    for r in _MIXED_ROWS:
+        filtered, open_block = filter_internal_blocks(r["payload"], open_block_type=open_block)
+        if filtered is None:
+            continue
+        live_kept.append(_block_types(filtered) or [filtered.get("type")])
+
+    assert replay_kept == cold_kept == live_kept
+    # Same default position across live + replay.
+    assert WebSocketChannel(object()).show_internal is False
+    assert ReplayConfig().default_show_internal is False
+
+
+# --------------------------------------------------------------------------- #
 # Cursor / empty
 # --------------------------------------------------------------------------- #
 
 
-def test_after_cursor_replays_tail_only():
+def test_after_cursor_emits_conversation_history_then_tail():
+    # SRD FR-6 / INV-6: a mid-cursor attach FIRST reconstructs the conversation
+    # that already happened (turns 1..after via the shared reducer) as a single
+    # conversation_history frame, THEN paces the tail (seq>after). This is the
+    # SAME conversation_history frame the live broker sends on reconnect.
     sid = uuid4()
     app, repo = _app()
     with TestClient(app) as client:
@@ -281,8 +337,44 @@ def test_after_cursor_replays_tail_only():
             frames = _drain(ws)
 
     body = [f for f in frames if f.get("type") not in ("system", "capabilities")]
-    # Only seq 4 (assistant) and seq 5 (result) remain after cursor=3.
-    assert [f["type"] for f in body] == ["assistant", "result"]
+    # conversation_history reconstructs turns 1..3, then the tail (seq 4,5) streams.
+    assert [f["type"] for f in body] == ["conversation_history", "assistant", "result"]
+    history = body[0]
+    assert isinstance(history["turns"], list)
+    # The reconstructed prefix carries the user prompt from seq 1.
+    assert any(
+        t.get("role") == "user" and "do the thing" in t.get("content", "") for t in history["turns"]
+    )
+
+
+def test_mid_cursor_history_union_tail_equals_full_replay():
+    # INV-6: reconstructed history at after=N ∪ tail == replay from after=0.
+    # We assert the reduced turn-set is identical whether reconstructed in one
+    # shot (after=0, all frames are history) or split history+tail at after=N.
+    from volundr.domain.services.transcript_rebuild import rebuild_turns
+
+    sid = uuid4()
+    app, repo = _app()
+    after = 3
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        with client.websocket_connect(
+            f"/api/v1/forge/sessions/{sid}/replay?speed=1000&after={after}"
+        ) as ws:
+            mid = _drain(ws)
+        all_entries = client.portal.call(repo.read_after, sid, 0, 5000)
+
+    history = next(f for f in mid if f.get("type") == "conversation_history")["turns"]
+    tail_entries = [e for e in all_entries if e.seq > after]
+    # Fold history (prefix) ∪ tail through the SAME reducer == full replay from 0.
+    union_turns = rebuild_turns(
+        sorted([e for e in all_entries if e.seq <= after] + tail_entries, key=lambda e: e.seq)
+    ).turns
+    full = rebuild_turns(all_entries).turns
+    assert union_turns == full
+    # And the history alone == reduce over the prefix.
+    prefix_turns = rebuild_turns([e for e in all_entries if e.seq <= after]).turns
+    assert history == prefix_turns
 
 
 def test_empty_session_sends_preamble_then_closes():

@@ -310,6 +310,60 @@ async def test_d5_reconnect_does_not_resurface_settled_question() -> None:
         assert not replayed, f"settled question was wrongly re-surfaced on reconnect: {replayed}"
 
 
+# --------------------------------------------------------------------------- D7
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_d7_reconnect_conversation_history_carries_head_seq_cursor() -> None:
+    """D7 (SRD FR-6 / INV-6 live side): a reconnecting client gets a
+    conversation_history frame carrying the durable-log HEAD seq, and can stream
+    the live tail from head+1 with no gap and no duplicate.
+
+    We run a turn, reconnect a fresh client, capture the head_seq on its
+    conversation_history frame, then assert the durable log's frames AFTER that
+    head are exactly the tail (seq strictly > head, contiguous from head+1) —
+    i.e. the client resuming from head+1 sees every later frame once, none twice.
+    """
+    _require_tmux()
+
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        first = await h.connect()
+        first.send({"type": "message", "content": "hi"})
+        await first.wait_for(
+            lambda frames: any(f.get("type") == "result" for f in frames),
+            timeout=8.0,
+        )
+        await h.drop(first)
+
+        # A fresh client reconnects: its conversation_history frame carries the
+        # head seq the broker has logged so far.
+        second = await h.connect()
+        history = await second.wait_for_type("conversation_history", timeout=8.0)
+        assert "head_seq" in history, f"reconnect frame missing head_seq cursor: {history}"
+        head_seq = history["head_seq"]
+        assert isinstance(head_seq, int) and head_seq >= 1
+        # The cursor equals the broker's durable-log head at reconnect time.
+        assert head_seq == h.broker._event_log_seq
+
+        # Drive a SECOND turn so the log grows past the captured head.
+        second.send({"type": "message", "content": "again"})
+        await second.wait_for(
+            lambda frames: sum(f.get("type") == "result" for f in frames) >= 1,
+            timeout=8.0,
+        )
+
+    # The tail (frames strictly after the captured head) is contiguous from
+    # head+1 — a client resuming at head+1 sees each later frame exactly once,
+    # no gap, no duplicate (INV-6 live side).
+    log = h.event_log
+    tail_seqs = sorted(e["seq"] for e in log if e["seq"] > head_seq)
+    assert tail_seqs, "expected the durable log to grow past the reconnect head"
+    assert tail_seqs == list(range(head_seq + 1, head_seq + 1 + len(tail_seqs)))
+    # And nothing at/below the head is re-emitted into the tail (no dup).
+    assert min(tail_seqs) == head_seq + 1
+
+
 # --------------------------------------------------------------------------- D4
 
 
