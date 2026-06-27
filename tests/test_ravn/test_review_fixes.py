@@ -36,3 +36,34 @@ def test_consumed_marker_always_records_status() -> None:
     # non-canonical answer content (no status line, no canonical header)
     rendered = _render_consumed_operator_answer("custom note", consumed_at=datetime.now(UTC))
     assert _operator_answer_is_consumed(rendered)
+
+
+def test_classify_text_covers_every_rule_and_helpers() -> None:
+    from ravn.resident_inbox.classify import _contains_url, _keywords
+
+    cls = ResidentInboxClassification
+    cases = {
+        "this request is denied": cls.DENIAL,
+        "approved, proceed": cls.APPROVAL,
+        "policy: never deploy on friday": cls.POLICY,
+        "i prefer matte filament": cls.PREFERENCE,
+        "actually that is wrong, fix that": cls.CORRECTION,
+        "can you investigate pricing": cls.TASK_REQUEST,
+        "maybe we could add a bundle": cls.IDEA,
+        "the printer filament ran out": cls.PHYSICAL_OBSERVATION,
+        "this is a security risk": cls.RISK,
+        "status: blocked waiting": cls.STATUS_UPDATE,
+        "see notes.md for details": cls.FILE_REFERENCE,
+        "the weather is calm today": cls.FACT,
+    }
+    for text, expected in cases.items():
+        assert classify_text(text)[0] == expected.value, text
+
+    # environment-signal payloads are treated as source evidence
+    assert (
+        classify_text("queue", payload={"kind": "signal.host"})[0]
+        == cls.SOURCE_EVIDENCE.value
+    )
+    assert _contains_url("visit https://example.com")
+    keywords = _keywords("resident pricing strategy")
+    assert "pricing" in keywords and "resident" not in keywords

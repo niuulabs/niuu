@@ -347,7 +347,10 @@ class TestRunDaemonReflectionWiring:
 
         assert drive_loop_cls.call_args.kwargs["sleipnir_publisher"] is mock_publisher
         assert build_runtime.call_args.kwargs["publisher"] is mock_publisher
-        assert build_runtime.call_args.kwargs["owns_publisher"] is True
+        # The daemon itself starts (and stops) the shared publisher, so the runtime
+        # must NOT also own its lifecycle — otherwise EnvironmentSignalRuntime.start()
+        # would double-start the publisher.
+        assert build_runtime.call_args.kwargs["owns_publisher"] is False
         mock_runtime.start.assert_awaited_once()
         mock_runtime.stop.assert_awaited_once()
 
