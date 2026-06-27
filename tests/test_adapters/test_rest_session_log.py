@@ -1,5 +1,6 @@
 """Tests for the durable session event log REST endpoints."""
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -234,3 +235,70 @@ class TestColdReadVisibility:
         gated = client.get(f"/api/v1/forge/sessions/{sid}/log").json()
         expected_seqs = [r["seq"] for r in _gate_via_filter(_INTERNAL_ROWS)]
         assert [e["seq"] for e in gated] == expected_seqs
+
+
+def _entry(sid, seq: int, **overrides) -> SessionLogEntry:
+    defaults = {
+        "session_id": sid,
+        "seq": seq,
+        "kind": "assistant",
+        "payload": {"n": seq},
+        "ts": datetime.now(UTC),
+        "role": "assistant",
+        "request_id": "req-1",
+    }
+    defaults.update(overrides)
+    return SessionLogEntry(**defaults)
+
+
+class TestDetectConflictsDefaultImpl:
+    """INV-3c: the concrete port default (inherited by every in-memory fake with
+    ZERO edits) surfaces a distinct-payload re-append while leaving an identical
+    re-append a silent no-op. Built on read_after — no extra fake methods."""
+
+    async def test_inherited_without_any_fake_edits(self):
+        # InMemoryLog never defines detect_conflicts — it must come from the port.
+        assert "detect_conflicts" not in InMemoryLog.__dict__
+        assert callable(InMemoryLog().detect_conflicts)
+
+    async def test_empty_entries_returns_empty(self):
+        assert await InMemoryLog().detect_conflicts([]) == []
+
+    async def test_identical_reappend_is_no_conflict(self):
+        repo = InMemoryLog()
+        sid = uuid4()
+        stored = _entry(sid, 5)
+        await repo.append([stored])
+
+        assert await repo.detect_conflicts([_entry(sid, 5)]) == []
+
+    async def test_distinct_payload_same_seq_detected(self):
+        repo = InMemoryLog()
+        sid = uuid4()
+        await repo.append([_entry(sid, 5, payload={"n": 5})])
+
+        conflicts = await repo.detect_conflicts([_entry(sid, 5, payload={"n": 999})])
+
+        assert conflicts == [5]
+
+    async def test_brand_new_seq_is_not_a_conflict(self):
+        repo = InMemoryLog()
+        sid = uuid4()
+        await repo.append([_entry(sid, 1)])
+
+        assert await repo.detect_conflicts([_entry(sid, 2)]) == []
+
+    async def test_per_session_grouping(self):
+        repo = InMemoryLog()
+        sid_a, sid_b = uuid4(), uuid4()
+        await repo.append([_entry(sid_a, 1, payload={"n": 1})])
+        await repo.append([_entry(sid_b, 1, payload={"n": 1})])
+
+        conflicts = await repo.detect_conflicts(
+            [
+                _entry(sid_a, 1, payload={"n": 1}),  # identical -> no conflict
+                _entry(sid_b, 1, payload={"n": 2}),  # distinct -> conflict
+            ]
+        )
+
+        assert conflicts == [1]

@@ -31,6 +31,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
+from niuu.domain.transcript_reducer import NON_BROADCAST_KINDS
 from skuld.channels import filter_internal_blocks
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
@@ -242,7 +243,13 @@ def create_session_log_router(
         same internal-visibility filter as the live and replay read paths."""
         await _check_access(request, session_id, "read")
         entries = await log_repository.read_after(session_id, after_seq=after, limit=limit)
-        gated = _gate_entries(entries, show_internal=show_internal)
+        # Drop synthetic reducer-seed rows (e.g. conversation.turn) from the RAW
+        # wire stream ALWAYS — independent of show_internal. They are never
+        # broadcast live, so surfacing them here would break literal frame-for-frame
+        # live==replay==cold equality (SRD INV-5). They remain in the durable log
+        # (read_after) and still authoritatively drive the reduce/rebuild path.
+        streamable = [e for e in entries if e.kind not in NON_BROADCAST_KINDS]
+        gated = _gate_entries(streamable, show_internal=show_internal)
         return [SessionLogEntryResponse.from_entry(e) for e in gated]
 
     return router

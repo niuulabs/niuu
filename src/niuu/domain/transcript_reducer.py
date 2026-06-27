@@ -56,6 +56,18 @@ _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
 # Per-reasoning-block summary cap (kept identical to the historical live + rebuild behaviour).
 _REASONING_TAIL = 500
 
+# Synthetic / non-wire kinds: rows written to the durable log purely as derived
+# reducer SEEDS, never broadcast to a live channel (SRD FR-3 / FR-10). The broker
+# appends ``conversation.turn`` rows via ``Broker._append_turn`` so a fold (live OR
+# crash-rebuild) can consume them as authoritative ``sdk_turns`` without
+# re-deriving turns from raw frames — but the live broadcast NEVER emits them. The
+# RAW-streaming read paths (cold-read GET /log, replay-as-live tail) therefore MUST
+# exclude these so literal frame-for-frame equality holds (live == replay == cold).
+# This is NOT a visibility concern (independent of ``show_internal``); it is the set
+# of kinds that simply do not belong on the wire. The reduce/rebuild path STILL
+# reads them as authoritative seeds — only the verbatim wire stream drops them.
+NON_BROADCAST_KINDS: frozenset[str] = frozenset({"conversation.turn"})
+
 
 @runtime_checkable
 class Frame(Protocol):
@@ -407,7 +419,7 @@ def reduce_frames(
 
     for r in rows:
         k = r.kind
-        if k == "conversation.turn" or k in _IGNORED_KINDS:
+        if k in NON_BROADCAST_KINDS or k in _IGNORED_KINDS:
             continue
         if r.request_id and r.request_id in folded_request_ids:
             continue

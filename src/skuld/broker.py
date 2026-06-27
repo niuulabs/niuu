@@ -4976,14 +4976,42 @@ class Broker:
             return
         client = await self._get_http_client()
         path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        head = 0
         try:
             response = await client.get(path)
             if response.status_code < 300:
-                self._event_log_seq = int(response.json().get("latest_seq", 0))
+                head = int(response.json().get("latest_seq", 0))
         except Exception:
             logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        await self._resume_seq_from_head(head)
         self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
         logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _resume_seq_from_head(self, head: int) -> None:
+        """Seed the seq counter from the backend head WITHOUT losing window frames.
+
+        The head fetch in ``_init_event_log`` is an ``await``, so the event loop is
+        free to run other tasks meanwhile — the *capture window*. Agent output can
+        be enqueued during it, taking provisional seqs ``1..W``. Naively assigning
+        ``_event_log_seq = head`` would leave those buffered frames carrying seqs
+        that overlap the backend's already-stored ``1..head``; the PK is
+        ``(session_id, seq)`` with ``ON CONFLICT DO NOTHING``, so they would be
+        silently swallowed on flush (INV-8c collision).
+
+        Re-base the whole run above the head: shift every already-buffered frame by
+        ``head`` so the window frames (provisional seqs ``1..W``) become
+        ``head+1 .. head+W`` (preserving their relative order), and continue the
+        counter from ``head+W``. If nothing was captured during the window this
+        collapses to the plain ``_event_log_seq = head`` resume.
+        """
+        async with self._event_log_lock:
+            if head <= 0:
+                # Fresh start (no prior durable state) — provisional seqs are
+                # already correct; nothing to re-base.
+                return
+            for entry in self._event_log_buffer:
+                entry["seq"] += head
+            self._event_log_seq += head
 
     async def _stop_event_log(self) -> None:
         """Drain remaining frames and stop the worker on shutdown."""

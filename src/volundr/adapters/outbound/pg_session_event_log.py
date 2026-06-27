@@ -14,7 +14,7 @@ import asyncpg
 
 from volundr.adapters.outbound._jsonb import dumps_jsonb, force_scrub_json, scrub_text
 from volundr.domain.models import SessionLogEntry
-from volundr.domain.ports import SessionEventLogRepository
+from volundr.domain.ports import SessionEventLogRepository, _log_entries_conflict
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,40 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         if value is None:
             return 0
         return int(value)
+
+    async def detect_conflicts(self, entries: list[SessionLogEntry]) -> list[int]:
+        """Surface seqs whose STORED row differs from the candidate (INV-3c).
+
+        Cold path only — never called from ``append``/``_flush``. One bounded,
+        parameterized SELECT per session over exactly the candidate seqs (no N+1,
+        no scan). ``append`` (ON CONFLICT DO NOTHING) is untouched, so the
+        at-least-once retry stays an idempotent same-payload no-op.
+        """
+        if not entries:
+            return []
+
+        by_session: dict[UUID, dict[int, SessionLogEntry]] = {}
+        for entry in entries:
+            by_session.setdefault(entry.session_id, {})[entry.seq] = entry
+
+        conflicts: list[int] = []
+        for session_id, candidates in by_session.items():
+            rows = await self._pool.fetch(
+                """SELECT session_id, seq, kind, role, request_id, payload, ts
+                   FROM session_event_log
+                   WHERE session_id = $1 AND seq = ANY($2::bigint[])""",
+                session_id,
+                list(candidates),
+            )
+            for row in rows:
+                stored = self._row_to_entry(row)
+                candidate = candidates.get(stored.seq)
+                if candidate is None:
+                    continue
+                if _log_entries_conflict(candidate, stored):
+                    conflicts.append(stored.seq)
+        conflicts.sort()
+        return conflicts
 
     # -- Internal helpers -----------------------------------------------------
 

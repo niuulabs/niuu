@@ -28,6 +28,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from niuu.domain.transcript_reducer import NON_BROADCAST_KINDS
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.channels import filter_internal_blocks
 from volundr.domain.models import SessionLogEntry
@@ -303,6 +304,14 @@ async def _run(
                     await ws.send_text(json.dumps(_mid_cursor_history_frame(prefix)))
 
         async def _emit(entry) -> bool:
+            # Synthetic reducer-seed rows (e.g. conversation.turn) are NEVER on the
+            # wire — the live broadcast never emits them. Drop them from the RAW
+            # streamed TAIL ALWAYS (independent of show_internal) so literal
+            # frame-for-frame live==replay==cold equality holds (SRD INV-5). The
+            # mid-cursor conversation_history (built above via the SHARED reducer
+            # over the full prefix) STILL consumes them as authoritative seeds.
+            if entry.kind in NON_BROADCAST_KINDS:
+                return False
             payload = gate.gate(entry.payload)
             if payload is None:
                 return False

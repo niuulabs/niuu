@@ -606,6 +606,56 @@ class SessionEventLogRepository(ABC):
     async def latest_seq(self, session_id: UUID) -> int:
         """Return the highest seq stored for a session, or 0 if none."""
 
+    async def detect_conflicts(self, entries: list[SessionLogEntry]) -> list[int]:
+        """Return the seqs that ALREADY have a stored row with a DISTINCT payload.
+
+        ``append`` is idempotent on ``(session_id, seq)`` (ON CONFLICT DO NOTHING),
+        so re-appending the SAME frame is a silent no-op (INV-3 idempotency). That
+        same swallow, however, would also hide a genuine bug: a *different* payload
+        re-using a seq another frame already owns. This method is the off-hot-path,
+        queryable detection signal for that case (INV-3c): it reads back the stored
+        rows for the candidate seqs and returns the seqs whose stored frame DIFFERS
+        from the candidate (by ``payload``/``kind``/``role``/``request_id``).
+
+        This is a CONCRETE default built on :meth:`read_after` so in-memory fakes
+        inherit it for free. It is never called from ``append``; callers opt in on a
+        cold/validation path. Returns an empty list when ``entries`` is empty.
+        """
+        if not entries:
+            return []
+
+        by_session: dict[UUID, dict[int, SessionLogEntry]] = {}
+        for entry in entries:
+            by_session.setdefault(entry.session_id, {})[entry.seq] = entry
+
+        conflicts: list[int] = []
+        for session_id, candidates in by_session.items():
+            min_seq = min(candidates) - 1
+            max_seq = max(candidates)
+            stored = await self.read_after(
+                session_id,
+                after_seq=min_seq,
+                limit=max_seq - min_seq,
+            )
+            for row in stored:
+                candidate = candidates.get(row.seq)
+                if candidate is None:
+                    continue
+                if _log_entries_conflict(candidate, row):
+                    conflicts.append(row.seq)
+        conflicts.sort()
+        return conflicts
+
+
+def _log_entries_conflict(candidate: SessionLogEntry, stored: SessionLogEntry) -> bool:
+    """True when two entries share a seq but carry materially different content."""
+    return (
+        candidate.payload != stored.payload
+        or candidate.kind != stored.kind
+        or candidate.role != stored.role
+        or candidate.request_id != stored.request_id
+    )
+
 
 class SessionSpanRepository(ABC):
     """Read/write port for persisted session trace spans."""
