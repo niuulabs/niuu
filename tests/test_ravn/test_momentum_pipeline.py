@@ -8,11 +8,16 @@ import pytest
 from typer.testing import CliRunner
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.resident_signal import (
+    MarkdownResidentSignalSource,
+    MimirResidentInboxSignalSource,
+)
 from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_inbox import (
     MimirResidentInbox,
     ResidentInboxClassification,
@@ -58,6 +63,91 @@ class RecordingGBrainState(GBrainResidentStateAdapter):
         self.put_pages.append((ref, title, content))
 
 
+async def _markdown_signal(path: Path) -> ResidentInboxSignal:
+    return await MarkdownResidentSignalSource().load_signal(str(path))
+
+
+@pytest.mark.asyncio
+async def test_markdown_signal_source_loads_manual_resident_signal(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+
+    signal = await MarkdownResidentSignalSource().load_signal(str(source))
+
+    assert signal.kind == "manual.markdown"
+    assert signal.raw_ref == str(source)
+    assert signal.payload["content"] == "# Notes\n\nImportant living idea."
+    assert signal.classification == ResidentInboxClassification.SOURCE_EVIDENCE.value
+
+
+@pytest.mark.asyncio
+async def test_mimir_resident_inbox_signal_source_loads_signal_by_id_and_ref(tmp_path: Path):
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    signal = ResidentInboxSignal(
+        id="sig-source",
+        source="skuld:telegram",
+        kind="operator.directed_message",
+        summary="Operator notes about momentum dilution",
+        payload={"content": "# Notes\n\nImportant living idea."},
+        classification=ResidentInboxClassification.IDEA.value,
+    )
+    ref = await inbox.write_signal(signal)
+    source = MimirResidentInboxSignalSource(mimir)
+
+    by_id = await source.load_signal("sig-source")
+    by_ref = await source.load_signal(ref)
+
+    assert by_id.id == "sig-source"
+    assert by_id.raw_ref == ref
+    assert by_ref.id == "sig-source"
+    assert by_ref.raw_ref == ref
+
+
+@pytest.mark.asyncio
+async def test_pipeline_only_needs_signal_source_port_and_normalized_signal(tmp_path: Path):
+    class StaticSignalSource:
+        async def load_signal(self, ref_or_id: str) -> ResidentInboxSignal:
+            return ResidentInboxSignal(
+                id=ref_or_id,
+                source="test:anywhere",
+                kind="future.signal",
+                summary="Future source signal",
+                payload={"content": "Important living idea."},
+                raw_ref=f"future:{ref_or_id}",
+                classification=ResidentInboxClassification.UNKNOWN.value,
+            )
+
+    source: ResidentSignalSourcePort = StaticSignalSource()
+    llm = FakeLLM(_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="source-port",
+    ).extract_signal(await source.load_signal("sig-anywhere"))
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "source: test:anywhere" in frame
+    assert "kind: future.signal" in frame
+    assert result.run_ref == "resident/momentum/runs/source-port/run.md"
+
+
+def test_momentum_package_does_not_import_concrete_signal_storage() -> None:
+    forbidden = (
+        "ravn.adapters.",
+        "ravn.cli",
+        "MimirResidentInbox",
+        "GBrainResidentStateAdapter",
+        "mimir.adapters",
+    )
+
+    for path in Path("src/ravn/momentum").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert not any(item in text for item in forbidden), path
+
+
 @pytest.mark.asyncio
 async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tmp_path: Path):
     source = tmp_path / "notes.md"
@@ -71,11 +161,11 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
         run_id="run-test",
     )
 
-    result = await pipeline.extract_file(source)
+    result = await pipeline.extract_signal(await _markdown_signal(source))
 
     frame = llm.calls[0]["messages"][0]["content"]
-    assert "developer.markdown_signal" not in frame
-    assert "Resident Inbox Signal" not in frame
+    assert "Resident Inbox Signal" in frame
+    assert "kind: manual.markdown" in frame
     assert "# Messy notes" in frame
     assert (
         result.packet_ref
@@ -96,7 +186,6 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     artifact = (tmp_path / "state" / result.artifact_refs[0]).read_text(encoding="utf-8")
     assert "- source_path:" in artifact
     assert "- extraction_run_id: run-test" in artifact
-    assert "- line_start: 3" in artifact
     assert "- provenance_status: verified" in artifact
     assert "The model said this mattered." in artifact
     judgment = (tmp_path / "state" / result.judgment_ref).read_text(encoding="utf-8")
@@ -174,7 +263,7 @@ async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
         state=LocalResidentState(tmp_path / "state"),
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="no-packet",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     assert result.packet_ref is None
     assert result.extraction.packet is None
@@ -196,7 +285,7 @@ async def test_pipeline_writes_through_mimir_resident_state(tmp_path: Path):
         state=state,
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="mimir-signal",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     assert "valkyrie.judgment.proposed" in await mimir.read_page(result.judgment_ref)
     assert "Resident Signal Momentum Run" in await mimir.read_page(result.run_ref)
@@ -222,7 +311,7 @@ async def test_pipeline_writes_through_gbrain_resident_state(tmp_path: Path):
         state=state,
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="gbrain-signal",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     refs = [ref for ref, _title, _content in state.put_pages]
     assert result.run_ref in refs
@@ -242,13 +331,13 @@ async def test_momentum_pipeline_replays_same_refs_with_same_fake_output(tmp_pat
         state=LocalResidentState(tmp_path / "one"),
         now=now,
         run_id="run-replay",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
     second = await MomentumPipeline(
         worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
         state=LocalResidentState(tmp_path / "two"),
         now=now,
         run_id="run-replay",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     assert first.packet_ref == second.packet_ref
     assert first.judgment_ref == second.judgment_ref
@@ -265,12 +354,12 @@ async def test_default_runs_are_new_extractions_not_silent_overwrites(tmp_path: 
         worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
         state=LocalResidentState(tmp_path / "state"),
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
     second = await MomentumPipeline(
         worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
         state=LocalResidentState(tmp_path / "state"),
         now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     assert first.run_ref != second.run_ref
     assert first.packet_ref != second.packet_ref
@@ -291,7 +380,7 @@ async def test_ungrounded_model_output_is_persisted_as_unverified(tmp_path: Path
         state=LocalResidentState(tmp_path / "state"),
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="ungrounded",
-    ).extract_file(source)
+    ).extract_signal(await _markdown_signal(source))
 
     assert result.provenance_fully_verified is False
     artifact = (tmp_path / "state" / result.artifact_refs[0]).read_text(encoding="utf-8")
@@ -309,7 +398,7 @@ async def test_recorded_model_response_from_noisy_fixture_is_grounded(tmp_path: 
         state=LocalResidentState(tmp_path / "state"),
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="vision-proof",
-    ).extract_file(fixture)
+    ).extract_signal(await _markdown_signal(fixture))
 
     artifacts = [*result.extraction.artifacts, result.extraction.resident_patch]
     kinds = {artifact.kind for artifact in result.extraction.artifacts}

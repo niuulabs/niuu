@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.momentum.models import (
@@ -54,20 +53,13 @@ class MomentumPipeline:
         self._now = now
         self._run_id = run_id
 
-    async def extract_file(self, path: Path | str) -> MomentumPipelineResult:
-        source = Path(path)
-        return await self.extract_text(
-            source.read_text(encoding="utf-8"),
-            source_path=str(source),
-        )
-
     async def extract_signal(self, signal: ResidentInboxSignal) -> MomentumPipelineResult:
-        return await self.extract_text(
-            render_inbox_signal(signal),
+        return await self._extract_text(
+            _source_text(signal),
             source_path=signal.raw_ref or signal.id,
         )
 
-    async def extract_text(
+    async def _extract_text(
         self,
         markdown: str,
         *,
@@ -298,3 +290,10 @@ def _judgment_ref(judgment: MomentumJudgment) -> str:
 
 def _run_ref(run: MomentumExtractionRun) -> str:
     return f"resident/momentum/runs/{run.run_id}/run.md"
+
+
+def _source_text(signal: ResidentInboxSignal) -> str:
+    content = signal.payload.get("content")
+    if isinstance(content, str) and content.strip():
+        return f"{render_inbox_signal(signal)}\n## Payload Content\n\n{content}"
+    return render_inbox_signal(signal)

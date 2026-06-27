@@ -4971,13 +4971,15 @@ def momentum_inbox_cmd(
 
 
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
-    result = await _run_momentum_pipeline(settings, path)
+    from ravn.adapters.resident_signal import MarkdownResidentSignalSource
+
+    result = await _run_momentum_source(settings, MarkdownResidentSignalSource(), path)
     _print_momentum_result(result)
 
 
 async def _run_momentum_inbox(settings: Settings, signal_ref_or_id: str) -> None:
-    signal = await _load_resident_inbox_signal(settings, signal_ref_or_id)
-    result = await _run_momentum_signal(settings, signal)
+    source = _build_resident_inbox_signal_source(settings)
+    result = await _run_momentum_source(settings, source, signal_ref_or_id)
     _print_momentum_result(result)
 
 
@@ -4993,9 +4995,10 @@ def _print_momentum_result(result: Any) -> None:
 
 
 async def _run_momentum_eval(settings: Settings, path: str) -> None:
+    from ravn.adapters.resident_signal import MarkdownResidentSignalSource
     from ravn.momentum.eval import evaluate_extraction
 
-    result = await _run_momentum_pipeline(settings, path)
+    result = await _run_momentum_source(settings, MarkdownResidentSignalSource(), path)
     errors = evaluate_extraction(result.extraction)
     typer.echo(f"run_id:      {result.extraction.run.run_id}")
     typer.echo(f"run_ref:     {result.run_ref}")
@@ -5010,26 +5013,17 @@ async def _run_momentum_eval(settings: Settings, path: str) -> None:
     typer.echo("eval:        ok")
 
 
-async def _run_momentum_pipeline(settings: Settings, path: str) -> Any:
+async def _run_momentum_source(settings: Settings, source: Any, ref_or_id: str) -> Any:
     from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
 
-    source = Path(path).expanduser()
-    if not source.exists():
-        typer.echo(f"File not found: {source}", err=True)
-        raise typer.Exit(1)
-    if not source.is_file():
-        typer.echo(f"Not a file: {source}", err=True)
-        raise typer.Exit(1)
-
-    workspace = _resolve_workspace(settings)
-    state = await _build_resident_state(settings, workspace)
-    llm = _build_llm(settings)
-    worker = MomentumExtractionWorker(llm, model=settings.effective_model())
-    return await MomentumPipeline(worker=worker, state=state).extract_file(source)
-
-
-async def _run_momentum_signal(settings: Settings, signal: Any) -> Any:
-    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+    try:
+        signal = await source.load_signal(ref_or_id)
+    except FileNotFoundError:
+        typer.echo(f"Resident signal not found: {ref_or_id}", err=True)
+        raise typer.Exit(1) from None
+    except IsADirectoryError:
+        typer.echo(f"Not a file: {ref_or_id}", err=True)
+        raise typer.Exit(1) from None
 
     workspace = _resolve_workspace(settings)
     state = await _build_resident_state(settings, workspace)
@@ -5038,30 +5032,14 @@ async def _run_momentum_signal(settings: Settings, signal: Any) -> Any:
     return await MomentumPipeline(worker=worker, state=state).extract_signal(signal)
 
 
-async def _load_resident_inbox_signal(settings: Settings, signal_ref_or_id: str) -> Any:
-    from ravn.resident_inbox import MimirResidentInbox, parse_inbox_signal
+def _build_resident_inbox_signal_source(settings: Settings) -> Any:
+    from ravn.adapters.resident_signal import MimirResidentInboxSignalSource
 
     mimir = _build_mimir(settings)
     if mimir is None:
         typer.echo("Mímir is required to read resident inbox signals.", err=True)
         raise typer.Exit(1)
-    text = signal_ref_or_id.strip()
-    if "/" in text or text.endswith(".md"):
-        try:
-            signal = parse_inbox_signal(await mimir.read_page(text))
-        except FileNotFoundError:
-            signal = None
-        if signal is None:
-            typer.echo(f"Resident inbox signal not found: {text}", err=True)
-            raise typer.Exit(1)
-        return signal
-
-    inbox = MimirResidentInbox(mimir)
-    for _ref, signal in await inbox.list_signals(status="", limit=250):
-        if signal.id == text:
-            return signal
-    typer.echo(f"Resident inbox signal not found: {text}", err=True)
-    raise typer.Exit(1)
+    return MimirResidentInboxSignalSource(mimir)
 
 
 def _provenance_label(verified: bool) -> str:
