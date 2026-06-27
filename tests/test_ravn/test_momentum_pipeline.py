@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
 )
-from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
 from ravn.momentum.render import judgment_event_payload
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_inbox import (
@@ -31,11 +32,12 @@ from ravn.resident_inbox import (
 
 
 class FakeLLM:
-    def __init__(self, payload: dict) -> None:
-        self.payload = payload
+    def __init__(self, payload: dict | list[dict]) -> None:
+        self.payloads = payload if isinstance(payload, list) else [payload]
         self.calls: list[dict] = []
 
     async def generate(self, messages, *, tools, system, model, max_tokens, thinking=None):
+        payload = self.payloads[min(len(self.calls), len(self.payloads) - 1)]
         self.calls.append(
             {
                 "messages": messages,
@@ -46,7 +48,7 @@ class FakeLLM:
             }
         )
         return LLMResponse(
-            content=json.dumps(self.payload),
+            content=json.dumps(payload),
             tool_calls=[],
             stop_reason=StopReason.END_TURN,
             usage=TokenUsage(input_tokens=10, output_tokens=20),
@@ -409,6 +411,221 @@ async def test_pipeline_writes_through_gbrain_resident_state(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["accepted", "dismissed", "wrong"])
+async def test_judgment_disposition_produces_persisted_reflection(
+    tmp_path: Path,
+    outcome: str,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload(outcome)])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id=f"reflect-{outcome}",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+    original_judgment = await state.read_artifact(extraction.judgment_ref)
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome=outcome,
+        note=f"Operator marked it {outcome}.",
+    )
+
+    assert (await state.read_artifact(extraction.judgment_ref)).content == original_judgment.content
+    assert result.disposition.outcome == outcome
+    assert result.reflection.outcome == outcome
+    disposition = await state.read_artifact(result.disposition_ref)
+    reflection = await state.read_artifact(result.reflection_ref)
+    assert f"- outcome: {outcome}" in disposition.content
+    assert f"Lesson for {outcome}" in reflection.content
+    assert "Original Judgment Useful" in reflection.content
+
+
+@pytest.mark.asyncio
+async def test_repeated_reflections_same_second_get_distinct_refs(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="same-second",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    first = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="First acceptance.",
+    )
+    second = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="Second acceptance.",
+    )
+
+    assert first.disposition_ref != second.disposition_ref
+    assert first.reflection_ref != second.reflection_ref
+    assert "First acceptance." in (await state.read_artifact(first.disposition_ref)).content
+    assert "Second acceptance." in (await state.read_artifact(second.disposition_ref)).content
+
+
+@pytest.mark.asyncio
+async def test_wrong_disposition_persists_model_authored_correction(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    correction = "Correction from reflection model only."
+    llm = FakeLLM([_payload(), _reflection_payload("wrong", correction=correction)])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="wrong-correction",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.run_ref,
+        outcome="wrong",
+        note="The judgment misread the operator intent.",
+    )
+
+    reflection = await state.read_artifact(result.reflection_ref)
+    assert correction in reflection.content
+    assert correction not in llm.calls[1]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_reflection_proceeds_when_related_run_context_is_missing(tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+    run_ref = await state.write_artifact(
+        "resident/momentum/runs/missing-context/run.md",
+        "# Resident Signal Momentum Run missing-context\n\n"
+        "- run_id: missing-context\n\n"
+        "## Summary\n\n"
+        "No rendered judgment_ref or artifact refs yet.\n",
+    )
+    llm = FakeLLM(_reflection_payload("deferred"))
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    ).reflect_judgment(
+        run_ref,
+        outcome="deferred",
+        note="Need more evidence.",
+    )
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert result.reflection_ref
+    assert "## Judgment artifact\n\n(unavailable)" in prompt
+    assert "## Related artifacts\n\n(none)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_ignores_missing_optional_related_artifacts(tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+    run_ref = await state.write_artifact(
+        "resident/momentum/runs/missing-related/run.md",
+        "# Resident Signal Momentum Run missing-related\n\n"
+        "- run_id: missing-related\n"
+        "- judgment_ref: resident/momentum/runs/missing-related/judgment/missing.md\n\n"
+        "## Artifact Refs\n\n"
+        "- resident/momentum/runs/missing-related/artifacts/missing.md\n",
+    )
+    llm = FakeLLM(_reflection_payload("acted"))
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    ).reflect_judgment(
+        run_ref,
+        outcome="acted",
+        note="Action completed.",
+    )
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert result.reflection_ref
+    assert "## Judgment artifact\n\n(unavailable)" in prompt
+    assert "## Related artifacts\n\n(none)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflex_and_capability_gap_outputs_remain_candidates(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="candidate-only",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    reflection = await state.read_artifact(result.reflection_ref)
+    refs = await state.list_refs("resident/continuation/momentum")
+    assert "- candidate_reflex_status: candidate_only" in reflection.content
+    assert "- candidate_capability_gap_status: candidate_only" in reflection.content
+    assert "Candidate Reflexes" in reflection.content
+    assert "Candidate Capability Gaps" in reflection.content
+    assert all("/reflex" not in ref and "/capabilit" not in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_future_momentum_extraction_recalls_reflected_learning(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    first_llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+    first_pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(first_llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(first_llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="learned-once",
+    )
+    extraction = await first_pipeline.extract_signal(await _markdown_signal(source))
+    await first_pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+    next_llm = FakeLLM(_payload())
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(next_llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+        run_id="recall-reflection",
+    ).extract_signal(await _markdown_signal(source))
+
+    assert "Lesson for accepted" in next_llm.calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_momentum_pipeline_replays_same_refs_with_same_fake_output(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("same input", encoding="utf-8")
@@ -561,6 +778,71 @@ def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert "packet_ref:  resident/momentum/runs/" in result.output
 
 
+def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        result = await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            state=state,
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="cli-reflect",
+        ).extract_signal(await _markdown_signal(source))
+        return result.judgment_ref
+
+    target_ref = asyncio.run(_seed())
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_reflection_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        [
+            "momentum",
+            "reflect",
+            target_ref,
+            "--outcome",
+            "accepted",
+            "--note",
+            "Operator accepted it.",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "disposition_ref: resident/continuation/momentum/runs/cli-reflect/" in result.output
+    assert "reflection_ref:  resident/continuation/momentum/runs/cli-reflect/" in result.output
+
+
+def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Path):
+    async def _state(_settings, _workspace):
+        return LocalResidentState(tmp_path / "state")
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_reflection_payload()))
+
+    result = CliRunner().invoke(
+        commands.app,
+        [
+            "momentum",
+            "reflect",
+            "resident/momentum/runs/demo/run.md",
+            "--outcome",
+            "maybe",
+            "--note",
+            "Operator was unclear.",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid outcome: maybe" in result.output
+    assert "accepted, dismissed, wrong, deferred, acted" in result.output
+
+
 def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -644,6 +926,22 @@ def _payload() -> dict:
             "reflection_prompts": ["What changed in resident understanding?"],
             "source": {"excerpt": "Important living idea."},
         },
+    }
+
+
+def _reflection_payload(
+    outcome: str = "accepted",
+    *,
+    correction: str = "Remember to compare the judgment with the outcome.",
+) -> dict:
+    return {
+        "changed_understanding": f"The {outcome} outcome updates resident memory.",
+        "lesson_learned": f"Lesson for {outcome}",
+        "original_judgment_useful": outcome != "wrong",
+        "remember_next_time": [f"Check disposition outcomes like {outcome}."],
+        "resident_corrections": [correction] if outcome == "wrong" else [],
+        "candidate_reflexes": ["Candidate: ask for disposition after action."],
+        "candidate_capability_gaps": ["Candidate: no automatic outcome feed."],
     }
 
 

@@ -13,7 +13,9 @@ from ravn.momentum.models import (
     MomentumArtifact,
     MomentumExtractionRun,
     MomentumJudgment,
+    MomentumJudgmentDisposition,
     MomentumPacket,
+    MomentumReflection,
     ResidentUnderstandingPatch,
 )
 
@@ -139,6 +141,50 @@ def render_judgment(judgment: MomentumJudgment) -> str:
         f"```json\n{json.dumps(payload, indent=2, sort_keys=True)}\n```\n\n"
         "## Source Context\n\n"
         f"{judgment.provenance.source_excerpt}\n"
+    )
+
+
+def render_disposition(disposition: MomentumJudgmentDisposition) -> str:
+    return (
+        "# Momentum Judgment Disposition\n\n"
+        f"- disposition_id: {disposition.disposition_id}\n"
+        f"- target_ref: {disposition.target_ref}\n"
+        f"- outcome: {disposition.outcome}\n"
+        f"- actor: {disposition.actor}\n"
+        f"- source: {disposition.source}\n"
+        f"- created_at: {disposition.created_at.isoformat()}\n\n"
+        "## Note\n\n"
+        f"{disposition.note}\n"
+    )
+
+
+def render_reflection(reflection: MomentumReflection) -> str:
+    return (
+        "# Momentum Judgment Reflection\n\n"
+        f"- reflection_id: {reflection.reflection_id}\n"
+        f"- target_ref: {reflection.target_ref}\n"
+        f"- disposition_ref: {reflection.disposition_ref}\n"
+        f"- outcome: {reflection.outcome}\n"
+        f"- actor: {reflection.actor}\n"
+        f"- procedure: {reflection.procedure_name}\n"
+        f"- model: {reflection.model_name}\n"
+        f"- reflected_at: {reflection.reflected_at.isoformat()}\n"
+        "- candidate_reflex_status: candidate_only\n"
+        "- candidate_capability_gap_status: candidate_only\n\n"
+        "## Changed Understanding\n\n"
+        f"{reflection.changed_understanding}\n\n"
+        "## Lesson Learned\n\n"
+        f"{reflection.lesson_learned}\n\n"
+        "## Original Judgment Useful\n\n"
+        f"{str(reflection.original_judgment_useful).lower()}\n\n"
+        "## Remember Next Time\n\n"
+        f"{_bullets_text(reflection.remember_next_time)}\n\n"
+        "## Resident Corrections\n\n"
+        f"{_bullets_text(reflection.resident_corrections)}\n\n"
+        "## Candidate Reflexes\n\n"
+        f"{_bullets_text(reflection.candidate_reflexes)}\n\n"
+        "## Candidate Capability Gaps\n\n"
+        f"{_bullets_text(reflection.candidate_capability_gaps)}\n"
     )
 
 

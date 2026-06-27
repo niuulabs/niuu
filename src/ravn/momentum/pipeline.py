@@ -5,22 +5,34 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import uuid4
 
+from ravn.domain.resident_continuation import ResidentMemoryEntry
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.momentum.models import (
+    DispositionOutcome,
     MomentumArtifact,
     MomentumArtifactDraft,
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
     MomentumJudgment,
+    MomentumJudgmentDisposition,
     MomentumPacket,
+    MomentumReflection,
     Provenance,
     ResidentUnderstandingPatch,
 )
-from ravn.momentum.render import render_artifact, render_judgment, render_packet, render_run
+from ravn.momentum.render import (
+    render_artifact,
+    render_disposition,
+    render_judgment,
+    render_packet,
+    render_reflection,
+    render_run,
+)
 from ravn.momentum.source import SourceDocument
-from ravn.momentum.worker import MomentumExtractionWorker
+from ravn.momentum.worker import MomentumExtractionWorker, MomentumReflectionWorker
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
@@ -39,16 +51,26 @@ class MomentumPipelineResult:
         return self.extraction.run.provenance_fully_verified
 
 
+@dataclass(frozen=True)
+class MomentumReflectionResult:
+    disposition: MomentumJudgmentDisposition
+    reflection: MomentumReflection
+    disposition_ref: str
+    reflection_ref: str
+
+
 class MomentumPipeline:
     def __init__(
         self,
         *,
         worker: MomentumExtractionWorker,
+        reflection_worker: MomentumReflectionWorker | None = None,
         state: ResidentStatePort,
         now: datetime | None = None,
         run_id: str | None = None,
     ) -> None:
         self._worker = worker
+        self._reflection_worker = reflection_worker
         self._state = state
         self._now = now
         self._run_id = run_id
@@ -119,6 +141,151 @@ class MomentumPipeline:
             judgment_ref=judgment_ref,
             packet_ref=packet_ref,
         )
+
+    async def reflect_judgment(
+        self,
+        target_ref: str,
+        *,
+        outcome: DispositionOutcome,
+        note: str,
+        actor: str = "operator",
+    ) -> MomentumReflectionResult:
+        if self._reflection_worker is None:
+            raise ValueError("Momentum reflection worker is required")
+
+        created_at = self._now or datetime.now(UTC)
+        target = await self._state.read_artifact(target_ref)
+        context = await _load_reflection_context(self._state, target)
+        base_ref = _reflection_base_ref(target.path or target_ref)
+        reflection_suffix = f"{_timestamp_id(created_at)}-{outcome}-{uuid4().hex[:6]}"
+        disposition = MomentumJudgmentDisposition(
+            disposition_id=f"disposition-{reflection_suffix}",
+            target_ref=target.path or target_ref,
+            outcome=outcome,
+            actor=actor,
+            note=note,
+            created_at=created_at,
+        )
+        disposition_ref = await self._state.write_artifact(
+            f"{base_ref}/dispositions/{disposition.disposition_id}.md",
+            render_disposition(disposition),
+        )
+        memory = await self._state.recall(
+            "Niuu Momentum Engine judgment dispositions and reflections",
+            limit=5,
+        )
+        draft = await self._reflection_worker.reflect(
+            target_ref=disposition.target_ref,
+            target_content=target.content,
+            run_content=context.run_content,
+            judgment_content=context.judgment_content,
+            artifact_contents=context.artifact_contents,
+            disposition=disposition,
+            memory_frame="\n\n".join(entry.content for entry in memory),
+        )
+        reflection = MomentumReflection(
+            **draft.model_dump(),
+            reflection_id=f"reflection-{reflection_suffix}",
+            target_ref=disposition.target_ref,
+            disposition_ref=disposition_ref,
+            outcome=outcome,
+            actor=actor,
+            procedure_name=self._reflection_worker.procedure_name,
+            model_name=self._reflection_worker.model,
+            reflected_at=created_at,
+        )
+        reflection_ref = await self._state.write_artifact(
+            f"{base_ref}/reflections/{reflection.reflection_id}.md",
+            render_reflection(reflection),
+        )
+        return MomentumReflectionResult(
+            disposition=disposition,
+            reflection=reflection,
+            disposition_ref=disposition_ref,
+            reflection_ref=reflection_ref,
+        )
+
+
+@dataclass(frozen=True)
+class _ReflectionContext:
+    run_content: str
+    judgment_content: str
+    artifact_contents: list[str]
+
+
+async def _load_reflection_context(
+    state: ResidentStatePort,
+    target: ResidentMemoryEntry,
+) -> _ReflectionContext:
+    # v0 parser over the rendered run artifact; replace with structured run metadata later.
+    target_ref = target.path
+    run_content = target.content if target_ref.endswith("/run.md") else ""
+    judgment_content = target.content if "/judgment/" in target_ref else ""
+    artifact_refs: list[str] = []
+
+    if target_ref.endswith("/run.md"):
+        artifact_refs = _parse_artifact_refs(target.content)
+        judgment_ref = _parse_field(target.content, "judgment_ref")
+        judgment_content = await _read_optional_content(state, judgment_ref)
+    elif "/judgment/" in target_ref:
+        run_ref = f"{target_ref.split('/judgment/', 1)[0]}/run.md"
+        run_content = await _read_optional_content(state, run_ref)
+        artifact_refs = _parse_artifact_refs(run_content)
+
+    artifact_contents = [
+        content
+        for content in [
+            await _read_optional_content(state, ref)
+            for ref in artifact_refs
+        ]
+        if content
+    ]
+    return _ReflectionContext(
+        run_content=run_content,
+        judgment_content=judgment_content,
+        artifact_contents=artifact_contents,
+    )
+
+
+async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
+    if not ref or ref == "-":
+        return ""
+    try:
+        return (await state.read_artifact(ref)).content
+    except FileNotFoundError:
+        return ""
+
+
+def _parse_field(content: str, field: str) -> str:
+    prefix = f"- {field}:"
+    for line in content.splitlines():
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    return ""
+
+
+def _parse_artifact_refs(content: str) -> list[str]:
+    if "## Artifact Refs" not in content:
+        return []
+    _, tail = content.split("## Artifact Refs", 1)
+    refs: list[str] = []
+    for line in tail.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            refs.append(stripped.removeprefix("- ").strip())
+    return refs
+
+
+def _reflection_base_ref(target_ref: str) -> str:
+    if "/runs/" in target_ref:
+        run_id = target_ref.split("/runs/", 1)[1].split("/", 1)[0]
+        return f"resident/continuation/momentum/runs/{run_id}"
+    slug = _slug(target_ref) or "momentum-judgment"
+    return f"resident/continuation/momentum/{slug}"
+
+
+def _timestamp_id(created_at: datetime) -> str:
+    return created_at.strftime("%Y%m%dT%H%M%SZ")
 
 
 def _materialize(

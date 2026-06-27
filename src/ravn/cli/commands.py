@@ -4924,6 +4924,8 @@ momentum_app = typer.Typer(
 )
 app.add_typer(momentum_app, name="momentum")
 
+_MOMENTUM_DISPOSITION_OUTCOMES = ("accepted", "dismissed", "wrong", "deferred", "acted")
+
 
 @momentum_app.command("extract")
 def momentum_extract_cmd(
@@ -4970,6 +4972,27 @@ def momentum_inbox_cmd(
     asyncio.run(_run_momentum_inbox(settings, signal_ref_or_id))
 
 
+@momentum_app.command("reflect")
+def momentum_reflect_cmd(
+    target_ref: str = typer.Argument(..., help="Momentum run or judgment artifact ref."),
+    outcome: str = typer.Option(
+        ...,
+        "--outcome",
+        help="Disposition: accepted, dismissed, wrong, deferred, or acted.",
+    ),
+    note: str = typer.Option(..., "--note", help="What happened to this judgment."),
+    actor: str = typer.Option("operator", "--actor", help="Disposition actor."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Record a judgment disposition and model-authored reflection."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_reflect(settings, target_ref, outcome, note, actor))
+
+
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
     from ravn.adapters.resident_signal import MarkdownResidentSignalSource
 
@@ -4981,6 +5004,37 @@ async def _run_momentum_inbox(settings: Settings, signal_ref_or_id: str) -> None
     source = _build_resident_inbox_signal_source(settings)
     result = await _run_momentum_source(settings, source, signal_ref_or_id)
     _print_momentum_result(result)
+
+
+async def _run_momentum_reflect(
+    settings: Settings,
+    target_ref: str,
+    outcome: str,
+    note: str,
+    actor: str,
+) -> None:
+    from ravn.momentum import (
+        MomentumExtractionWorker,
+        MomentumPipeline,
+        MomentumReflectionWorker,
+    )
+
+    if outcome not in _MOMENTUM_DISPOSITION_OUTCOMES:
+        allowed = ", ".join(_MOMENTUM_DISPOSITION_OUTCOMES)
+        typer.echo(f"Invalid outcome: {outcome}. Allowed values: {allowed}", err=True)
+        raise typer.Exit(2)
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model=model),
+        reflection_worker=MomentumReflectionWorker(llm, model=model),
+        state=state,
+    ).reflect_judgment(target_ref, outcome=outcome, note=note, actor=actor)
+    typer.echo(f"disposition_ref: {result.disposition_ref}")
+    typer.echo(f"reflection_ref:  {result.reflection_ref}")
 
 
 def _print_momentum_result(result: Any) -> None:

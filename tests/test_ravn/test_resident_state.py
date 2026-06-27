@@ -43,6 +43,21 @@ async def test_local_resident_state_is_single_memory_boundary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_local_resident_state_reads_artifacts(tmp_path):
+    state = LocalResidentState(tmp_path)
+
+    ref = await state.write_artifact("resident/momentum/demo.md", "# Demo\n\ncontent")
+    artifact = await state.read_artifact(ref)
+
+    assert artifact.path == ref
+    assert artifact.summary == "Demo"
+    assert artifact.content == "# Demo\n\ncontent"
+
+    with pytest.raises(ValueError):
+        await state.read_artifact("../outside.md")
+
+
+@pytest.mark.asyncio
 async def test_mimir_resident_state_is_single_memory_boundary(tmp_path):
     from mimir.adapters.markdown import MarkdownMimirAdapter
 
@@ -63,6 +78,21 @@ async def test_mimir_resident_state_is_single_memory_boundary(tmp_path):
     assert turn_ref.startswith("resident/continuation/turns/")
     assert "resident state recorded" in await mimir.read_page(turn_ref)
     assert turn_ref in await state.list_refs()
+
+
+@pytest.mark.asyncio
+async def test_mimir_resident_state_reads_artifacts(tmp_path):
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    state = MimirResidentState(mimir)
+
+    ref = await state.write_artifact("resident/momentum/demo.md", "# Demo\n\ncontent")
+    artifact = await state.read_artifact(ref)
+
+    assert artifact.path == ref
+    assert artifact.summary == "Demo"
+    assert artifact.content == "# Demo\n\ncontent"
 
 
 @pytest.mark.asyncio
@@ -95,6 +125,22 @@ async def test_gbrain_resident_state_prefers_synchronous_put_page_with_mcp(tmp_p
     assert "T" not in projected_name
     assert "Z" not in projected_name
     assert "Ravn resident memory" in arguments["content"]
+
+
+@pytest.mark.asyncio
+async def test_gbrain_resident_state_inherits_artifact_reads(tmp_path):
+    state = RecordingGBrainResidentState(
+        tmp_path,
+        mcp_url="http://127.0.0.1:3131/mcp",
+        api_token="token",
+        capture_enabled=False,
+    )
+
+    ref = await state.write_artifact("resident/momentum/demo.md", "# Demo\n\ncontent")
+    artifact = await state.read_artifact(ref)
+
+    assert artifact.path == ref
+    assert artifact.content == "# Demo\n\ncontent"
 
 
 @pytest.mark.asyncio
