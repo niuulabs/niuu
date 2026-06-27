@@ -38,9 +38,20 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         self.session_exists = False
         self.capture_stdout = ""
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
+        # SAFETY: redirect the socket dir + runtime root into the per-test workspace so the
+        # periodic sweep loop started by start() can NEVER touch the real /tmp/skuld-tmux-* dir
+        # or a live session's runtime dir on this box.
+        self._socket_dir = Path(workspace_dir) / "fake-sockets"
+        self._socket_path = self._socket_dir / f"{self._session_name}.sock"
 
     def _tmux_binary_exists(self) -> bool:
         return True
+
+    async def _run_socket_sweep_loop(self) -> None:
+        # SAFETY: the periodic sweep is exercised directly via sweep_stale_sockets() in its own
+        # unit test against a TEMP dir; the auto-started loop is a no-op in tests so start() never
+        # sweeps anything real.
+        return None
 
     async def _run_tmux(
         self,
@@ -96,7 +107,6 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
     events = await _collect_events(transport)
 
     await transport.start()
-    await transport.stop()
 
     names = _command_names(transport)
     assert "new-session" in names
@@ -108,11 +118,15 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
     assert argv[:2] == ("claude", "--model")
     assert argv[2] == "claude-sonnet-4-6"
     assert "--settings" in argv
+    # Read the hook settings while the session is live — stop() removes the per-session runtime
+    # dir (Epic I cleanup), so this read must happen before teardown.
     settings_path = Path(argv[argv.index("--settings") + 1])
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "Stop" in settings["hooks"]
     assert "PreToolUse" in settings["hooks"]
     assert "MessageDisplay" not in settings["hooks"]
+
+    await transport.stop()
 
     event_types = [event["type"] for event in events]
     assert "terminal_pane_opened" in event_types
@@ -988,3 +1002,193 @@ async def test_user_prompt_submit_without_match_is_uncorrelated(tmp_path: Path) 
     assert "msg_id" not in submitted[-1], "an unmatched prompt must not be attributed"
     # The real message A correlation is preserved for ITS own hook.
     assert len(transport._pending_prompt_correlations) == 1  # noqa: SLF001
+
+
+# ──────────────────── Epic I: complete teardown + resume-aware restart ────────────────────
+#
+# stop() must (1) gracefully SIGTERM the claude pane process BEFORE the hard kill-session (so the
+# remote-control session deregisters from claude.ai and stops showing as "connected" on the phone),
+# (2) unlink the socket file, (3) remove the per-session runtime dir. A restart is a FRESH tmux
+# launching `claude --resume <id>`. A startup/periodic sweep reaps stale (dead-server) sockets.
+
+
+@pytest.mark.asyncio
+async def test_stop_sigterms_pane_pid_before_kill_session(tmp_path: Path, monkeypatch) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+
+    # Pane pid discovery returns a stable fake pid; os.kill / liveness are fully mocked so NO real
+    # process is signalled (a live tmux session exists on this box).
+    monkeypatch.setattr(transport, "_discover_pane_pid", lambda: _async_return(4242))
+    order: list[str] = []
+    monkeypatch.setattr(
+        transport, "_process_alive", lambda pid: False
+    )  # process is gone immediately after SIGTERM
+
+    sent_signals: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        sent_signals.append((pid, sig))
+        order.append(f"kill:{sig}")
+
+    monkeypatch.setattr("skuld.transports.tmux_interactive.os.kill", _fake_kill)
+
+    real_run_tmux = transport._run_tmux
+
+    async def _tracking_run_tmux(*args: str, **kwargs: Any) -> _TmuxResult:
+        if args and args[0] == "kill-session":
+            order.append("kill-session")
+        return await real_run_tmux(*args, **kwargs)
+
+    monkeypatch.setattr(transport, "_run_tmux", _tracking_run_tmux)
+
+    await transport.stop()
+
+    import signal as _signal
+
+    assert sent_signals == [(4242, _signal.SIGTERM)]
+    # SIGTERM is sent BEFORE kill-session.
+    assert order.index(f"kill:{_signal.SIGTERM}") < order.index("kill-session")
+
+
+@pytest.mark.asyncio
+async def test_stop_falls_through_to_kill_when_pid_lookup_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+
+    monkeypatch.setattr(transport, "_discover_pane_pid", lambda: _async_return(None))
+    killed: list[str] = []
+    monkeypatch.setattr(
+        "skuld.transports.tmux_interactive.os.kill",
+        lambda pid, sig: killed.append("os.kill"),
+    )
+
+    await transport.stop()
+
+    # No pid -> no SIGTERM, but kill-session still ran.
+    assert killed == []
+    assert "kill-session" in _command_names(transport)
+
+
+@pytest.mark.asyncio
+async def test_stop_unlinks_socket_and_removes_runtime_dir(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+
+    socket_path = transport._socket_path  # under the per-test workspace (Fake-redirected)
+    runtime_dir = transport._runtime_dir
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.write_text("", encoding="utf-8")
+    assert socket_path.exists()
+    assert runtime_dir.is_dir()
+
+    await transport.stop()
+
+    assert not socket_path.exists()
+    assert not runtime_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_dir_cleanup_is_guarded_to_expected_path(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    # A runtime_dir that is NOT the expected .skuld/tmux-interactive/<name> path is left alone.
+    rogue = tmp_path / "important"
+    rogue.mkdir()
+    transport._runtime_dir = rogue
+    transport._cleanup_runtime_dir()
+    assert rogue.exists()
+
+
+def test_resume_id_makes_interactive_argv_add_resume_flag(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), resume_session_id="claude-cli-123")
+    argv = transport._interactive_argv()
+    assert "--resume" in argv
+    assert argv[argv.index("--resume") + 1] == "claude-cli-123"
+
+
+@pytest.mark.asyncio
+async def test_resume_restart_creates_fresh_session_with_current_port(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # A restart = a FRESH tmux launching `claude --resume <id>` that re-writes the CURRENT broker
+    # port into the hook settings (no stale-port baking from resurrecting an old tmux).
+    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path), sdk_port=8099, resume_session_id="claude-cli-xyz"
+    )
+    await _collect_events(transport)
+    await transport.start()
+
+    new_session = next(args for args, _ in transport.commands if args[0] == "new-session")
+    argv = new_session[new_session.index("--") + 1 :]
+    assert "--resume" in argv
+    assert argv[argv.index("--resume") + 1] == "claude-cli-xyz"
+    # The fresh launch wrote the CURRENT port into the hook settings.
+    settings_path = Path(argv[argv.index("--settings") + 1])
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    url = settings["hooks"]["Stop"][0]["hooks"][0]["url"]
+    assert "8099" in url
+
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_sweep_removes_only_dead_server_sockets(tmp_path: Path, monkeypatch) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    socket_dir = tmp_path / "sockets"  # TEMP dir — never the real /tmp/skuld-tmux-*
+    socket_dir.mkdir()
+    live_sock = socket_dir / "skuld-live.sock"
+    dead_sock = socket_dir / "skuld-dead.sock"
+    live_sock.write_text("", encoding="utf-8")
+    dead_sock.write_text("", encoding="utf-8")
+
+    async def _fake_liveness(self, socket_path: Path) -> bool:
+        return socket_path.name == "skuld-live.sock"
+
+    monkeypatch.setattr(TmuxInteractiveTransport, "_socket_server_is_live", _fake_liveness)
+
+    removed = await transport.sweep_stale_sockets(socket_dir)
+
+    assert live_sock.exists(), "a live-server socket must survive the sweep"
+    assert not dead_sock.exists(), "a dead-server socket must be unlinked"
+    assert dead_sock in removed
+    assert live_sock not in removed
+
+
+@pytest.mark.asyncio
+async def test_sweep_removes_orphaned_runtime_dirs_without_live_socket(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    socket_dir = tmp_path / "sockets"
+    runtime_root = tmp_path / "runtime"
+    socket_dir.mkdir()
+    runtime_root.mkdir()
+    (socket_dir / "skuld-live.sock").write_text("", encoding="utf-8")
+    live_dir = runtime_root / "skuld-live"
+    orphan_dir = runtime_root / "skuld-orphan"
+    live_dir.mkdir()
+    orphan_dir.mkdir()
+
+    async def _fake_liveness(self, socket_path: Path) -> bool:
+        return socket_path.name == "skuld-live.sock"
+
+    monkeypatch.setattr(TmuxInteractiveTransport, "_socket_server_is_live", _fake_liveness)
+
+    await transport.sweep_stale_sockets(socket_dir, runtime_root=runtime_root)
+
+    assert live_dir.exists(), "a dir with a live socket must survive"
+    assert not orphan_dir.exists(), "a dir with no live socket must be removed"
+
+
+def _async_return(value: Any):
+    async def _coro(*args: Any, **kwargs: Any) -> Any:
+        return value
+
+    return _coro()

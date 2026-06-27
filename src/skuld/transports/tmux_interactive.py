@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import time
 import uuid
 from collections import deque
@@ -179,6 +180,7 @@ class TmuxInteractiveTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         sdk_port: int | None = None,
+        resume_session_id: str = "",
         turn_idle_timeout_s: float | None = None,
         turn_no_output_timeout_s: float | None = None,
         turn_max_seconds: float | None = None,
@@ -196,6 +198,11 @@ class TmuxInteractiveTransport(CLITransport):
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._sdk_port = sdk_port
+        # Resume-aware restart: a restart is a FRESH tmux launching ``claude --resume <id>``
+        # (start() never resurrects the old tmux), so the fresh launch re-writes the CURRENT
+        # broker port into the hook settings — avoiding the stale-port fragility of reviving an
+        # old tmux. Empty -> a brand-new conversation. Wired from SkuldSessionConfig by the broker.
+        self._resume_session_id = (resume_session_id or "").strip() or None
 
         self._session_name = self._safe_name(f"skuld-{self._forge_session_id}")[:80]
         base_socket_dir = Path(
@@ -248,6 +255,27 @@ class TmuxInteractiveTransport(CLITransport):
         self._frame_interval_s = self._float_env(
             "SKULD__TMUX_FRAME_INTERVAL_SECONDS", frame_interval_s, 0.12
         )
+        # Graceful teardown (Epic I): on stop() we SIGTERM the live ``claude`` pane process and
+        # wait up to this long for it to exit BEFORE the hard ``kill-session`` fallback. The
+        # graceful exit lets claude deregister its --remote-control session from claude.ai so a
+        # stopped session stops showing as "connected" on the phone (kill-session SIGHUPs it
+        # abruptly and it never deregisters).
+        self._graceful_term_timeout_s = self._float_env(
+            "SKULD__TMUX_GRACEFUL_TERM_TIMEOUT_SECONDS", None, 5.0
+        )
+        # Poll cadence while waiting for the SIGTERM'd pane process to exit.
+        self._graceful_term_poll_s = self._float_env(
+            "SKULD__TMUX_GRACEFUL_TERM_POLL_SECONDS", None, 0.1
+        )
+        # Stale-socket sweep (Epic I): orphaned ``{socket_dir}/*.sock`` files (and per-session
+        # dirs) whose tmux server is no longer live accumulate forever. Sweep at startup and at
+        # this interval. The interval gates a periodic re-sweep loop.
+        self._socket_sweep_interval_s = self._float_env(
+            "SKULD__TMUX_SOCKET_SWEEP_INTERVAL_SECONDS", None, 3600.0
+        )
+        self._socket_dir = base_socket_dir
+        self._runtime_root = Path(self.workspace_dir) / ".skuld" / "tmux-interactive"
+        self._sweep_task: asyncio.Task[None] | None = None
         self._emit_raw_terminal_output = self._bool_env("SKULD__TMUX_EMIT_RAW_OUTPUT", False)
         self._hook_events_enabled = self._bool_env(
             "SKULD__TMUX_HOOK_EVENTS_ENABLED",
@@ -419,6 +447,11 @@ class TmuxInteractiveTransport(CLITransport):
                     self._watch_panes(),
                     name=f"tmux-pane-watch-{self._session_name}",
                 )
+            if self._sweep_task is None or self._sweep_task.done():
+                self._sweep_task = asyncio.create_task(
+                    self._run_socket_sweep_loop(),
+                    name=f"tmux-socket-sweep-{self._session_name}",
+                )
             await self._emit_system_init()
 
     async def stop(self) -> None:
@@ -449,7 +482,159 @@ class TmuxInteractiveTransport(CLITransport):
             self._panes.clear()
             if self._turn_done is not None:
                 self._turn_done.set()
+            if self._sweep_task is not None:
+                self._sweep_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await self._sweep_task
+                self._sweep_task = None
+            # Graceful term BEFORE the hard kill so claude can deregister its remote-control
+            # session from claude.ai (otherwise a stopped session lingers as "connected" on the
+            # phone). Best-effort: any failure falls straight through to kill-session.
+            await self._graceful_terminate_pane()
             await self._run_tmux("kill-session", "-t", self._session_name, check=False)
+            # On-disk cleanup AFTER the session is gone: unlink the socket file and remove the
+            # per-session runtime dir so neither leaks (731 stale sockets / ~10 leaked dirs in the
+            # field). Both are best-effort and tightly guarded to the expected paths.
+            self._cleanup_socket()
+            self._cleanup_runtime_dir()
+
+    async def _graceful_terminate_pane(self) -> None:
+        """SIGTERM the live ``claude`` pane process and wait (bounded) for it to exit.
+
+        Only meaningful when remote-control was enabled (that is the session that must
+        deregister from claude.ai); when it wasn't, the abrupt kill-session is already clean, so
+        we skip the extra step. Fully defensive: if the pid can't be discovered or signalling
+        fails, we return and let the caller fall through to kill-session.
+        """
+        if not self._remote_control:
+            return
+        pid = await self._discover_pane_pid()
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        deadline = time.monotonic() + max(self._graceful_term_timeout_s, 0.0)
+        while time.monotonic() < deadline:
+            if not self._process_alive(pid):
+                return
+            await asyncio.sleep(max(self._graceful_term_poll_s, 0.0))
+
+    async def _discover_pane_pid(self) -> int | None:
+        """The pid of the ``claude`` process running in the session's pane, or None."""
+        try:
+            result = await self._run_tmux(
+                "list-panes", "-t", self._session_name, "-F", "#{pane_pid}", check=False
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            candidate = line.strip()
+            if candidate.isdigit():
+                return int(candidate)
+        return None
+
+    @staticmethod
+    def _process_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _cleanup_socket(self) -> None:
+        with suppress(OSError):
+            self._socket_path.unlink(missing_ok=True)
+
+    def _cleanup_runtime_dir(self) -> None:
+        """Remove the per-session runtime dir, guarded so we never rmtree something broader than
+        the expected ``<workspace>/.skuld/tmux-interactive/<session_name>`` path."""
+        runtime_dir = self._runtime_dir
+        expected = self._runtime_root / self._session_name
+        if runtime_dir != expected:
+            return
+        if runtime_dir.parent.name != "tmux-interactive":
+            return
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+    async def _run_socket_sweep_loop(self) -> None:
+        """Sweep orphaned sockets at startup, then re-sweep every interval.
+
+        Always runs against THIS transport's own socket dir / runtime root (never a broader
+        path), so a long-lived broker reaps the slow drip of stale sockets a crashed/killed
+        session leaves behind. Best-effort: a sweep failure never tears the session down.
+        """
+        try:
+            while True:
+                with suppress(Exception):
+                    await self.sweep_stale_sockets(
+                        self._socket_dir, runtime_root=self._runtime_root
+                    )
+                interval = max(self._socket_sweep_interval_s, 0.0)
+                if interval <= 0:
+                    return
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("Tmux socket sweep loop failed", exc_info=True)
+
+    async def sweep_stale_sockets(
+        self, socket_dir: Path, *, runtime_root: Path | None = None
+    ) -> list[Path]:
+        """Remove orphaned ``{socket_dir}/*.sock`` files whose tmux server is NOT live.
+
+        A socket is LIVE iff ``tmux -S <sock> has-session`` (run via _run_tmux against that
+        socket) succeeds; if it fails/errors the server is dead and the socket is unlinked.
+        Optionally removes per-session runtime dirs under ``runtime_root`` that have no live
+        socket. Pure with respect to its arguments: tests pass a TEMP dir so the real
+        ``/tmp/skuld-tmux-*`` is never touched.
+
+        Returns the list of paths removed (for assertions/observability).
+        """
+        removed: list[Path] = []
+        socket_dir = Path(socket_dir)
+        if not socket_dir.is_dir():
+            return removed
+        live_stems: set[str] = set()
+        for sock in sorted(socket_dir.glob("*.sock")):
+            if await self._socket_server_is_live(sock):
+                live_stems.add(sock.stem)
+                continue
+            with suppress(OSError):
+                sock.unlink(missing_ok=True)
+                removed.append(sock)
+        if runtime_root is None or not Path(runtime_root).is_dir():
+            return removed
+        for session_dir in sorted(Path(runtime_root).iterdir()):
+            if not session_dir.is_dir():
+                continue
+            if session_dir.name in live_stems:
+                continue
+            shutil.rmtree(session_dir, ignore_errors=True)
+            removed.append(session_dir)
+        return removed
+
+    async def _socket_server_is_live(self, socket_path: Path) -> bool:
+        """True iff a tmux server is answering on ``socket_path`` (``has-session`` succeeds)."""
+        cmd = [self._tmux_bin(), "-S", str(socket_path), "has-session"]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            returncode = await process.wait()
+        except Exception:
+            return False
+        return returncode == 0
 
     async def send_message(
         self, content: str, *, msg_id: str | None = None, request_id: str | None = None
@@ -1408,6 +1593,11 @@ class TmuxInteractiveTransport(CLITransport):
         cmd = ["claude"]
         if self._model:
             cmd.extend(["--model", self._model])
+        if self._resume_session_id:
+            # Resume-aware restart: a fresh tmux launching ``claude --resume <id>`` replays the
+            # prior conversation while re-writing the CURRENT broker port into the hook settings
+            # (start() never resurrects an old tmux, so there is no stale-port baking).
+            cmd.extend(["--resume", self._resume_session_id])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
         if self._remote_control:
