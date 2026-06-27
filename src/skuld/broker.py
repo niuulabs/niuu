@@ -1266,7 +1266,7 @@ class Broker:
             started_at=datetime.now(UTC),
             ended_at=datetime.now(UTC),
         )
-        await self._channels.broadcast(
+        await self._emit_broker_frame(
             {
                 "type": "user_confirmed",
                 "id": turn_id,
@@ -1659,7 +1659,7 @@ class Broker:
             # log so log-only replay opens with the operator's first message.
             self._enqueue_human_turn_event(prompt, turn_id)
             try:
-                await self._channels.broadcast(
+                await self._emit_broker_frame(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
                 )
             except Exception:
@@ -2948,7 +2948,7 @@ class Broker:
             cancel_auto_approval=not auto_approved,
         )
         await self._exit_attention(request_id)
-        await self._channels.broadcast(
+        await self._emit_broker_frame(
             {
                 "type": "permission_resolved",
                 "request_id": request_id,
@@ -2975,7 +2975,7 @@ class Broker:
             return
 
         delay_seconds = self._decision_delay_seconds(decision)
-        await self._channels.broadcast(
+        await self._emit_broker_frame(
             {
                 "type": "permission_auto_approval_scheduled",
                 "request_id": request_id,
@@ -2992,7 +2992,7 @@ class Broker:
         # additions win over a stale countdown.
         latest_decision = await self._evaluate_permission_auto_approval(latest_request)
         if not latest_decision or latest_decision.get("can_auto_approve") is not True:
-            await self._channels.broadcast(
+            await self._emit_broker_frame(
                 {
                     "type": "permission_auto_approval_cancelled",
                     "request_id": request_id,
@@ -3198,7 +3198,7 @@ class Broker:
                 except Exception:
                     logger.debug("slash-command discovery failed at init", exc_info=True)
             if slash_commands or skills or commands:
-                await self._channels.broadcast(
+                await self._emit_broker_frame(
                     {
                         "type": "available_commands",
                         "slash_commands": slash_commands,
@@ -3563,7 +3563,7 @@ class Broker:
             error_msg = f"{msg_type} not supported by this transport"
             logger.warning("_dispatch_browser_message: %s", _sanitize_log(error_msg))
             if sender_ws:
-                await sender_ws.send_json({"type": "error", "content": error_msg})
+                await self._send_broker_frame_to(sender_ws, {"type": "error", "content": error_msg})
             return
 
         match msg_type:
@@ -3695,12 +3695,13 @@ class Broker:
                     refresh=bool(data.get("refresh", True))
                 )
                 if sender_ws is not None:
-                    await sender_ws.send_json(
+                    await self._send_broker_frame_to(
+                        sender_ws,
                         {
                             "type": "slash_commands",
                             "commands": commands,
                             "count": len(commands),
-                        }
+                        },
                     )
 
             # Room: forward a directed message to a specific Ravn participant
@@ -3708,8 +3709,9 @@ class Broker:
                 if self._room_bridge is None:
                     logger.warning("directed_message received but room mode is disabled")
                     if sender_ws:
-                        await sender_ws.send_json(
-                            {"type": "error", "content": "Room mode is not enabled"}
+                        await self._send_broker_frame_to(
+                            sender_ws,
+                            {"type": "error", "content": "Room mode is not enabled"},
                         )
                     return
                 target = data.get("targetPeerId", "")
@@ -3727,7 +3729,9 @@ class Broker:
                     )
                 except LookupError as exc:
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
 
             case "resend_initial_prompt":
                 try:
@@ -3739,11 +3743,14 @@ class Broker:
                     )
                 except (ValueError, RuntimeError) as exc:
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
                     return
                 if sender_ws:
-                    await sender_ws.send_json(
-                        {"type": "room_prompt_resent", "message_id": message_id}
+                    await self._send_broker_frame_to(
+                        sender_ws,
+                        {"type": "room_prompt_resent", "message_id": message_id},
                     )
 
             # Default: treat as user message (backward compat with {"content": "..."})
@@ -3759,7 +3766,9 @@ class Broker:
                     )
                     logger.info("_dispatch_browser_message: %s", error_msg)
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": error_msg})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": error_msg}
+                        )
                     return
 
                 # Record user turn in conversation history
@@ -3801,7 +3810,7 @@ class Broker:
                 # Echo back to all browsers so the message is confirmed
                 # immediately (rendering as a user turn) — the actual transport
                 # delivery happens asynchronously below.
-                await self._channels.broadcast(
+                await self._emit_broker_frame(
                     {
                         "type": "user_confirmed",
                         "id": msg_id,
@@ -3848,7 +3857,7 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_control failed in background task")
             try:
-                await self._channels.broadcast({"type": "error", "content": str(exc)})
+                await self._emit_broker_frame({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport control error", exc_info=True)
 
@@ -3897,7 +3906,7 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:
-                await self._channels.broadcast({"type": "error", "content": str(exc)})
+                await self._emit_broker_frame({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
@@ -3951,7 +3960,7 @@ class Broker:
             )
             await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(exc))
             try:
-                await self._channels.broadcast({"type": "error", "content": str(exc)})
+                await self._emit_broker_frame({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast delivery error", exc_info=True)
             return
@@ -3989,7 +3998,7 @@ class Broker:
         if pending_questions:
             event["pending_questions"] = pending_questions
         try:
-            await self._channels.broadcast(event)
+            await self._emit_broker_frame(event)
         except Exception:
             logger.debug("Failed to broadcast delivery ack", exc_info=True)
 
@@ -4030,7 +4039,7 @@ class Broker:
         if isinstance(request_id, str) and request_id:
             event["request_id"] = request_id
         try:
-            await self._channels.broadcast(event)
+            await self._emit_broker_frame(event)
         except Exception:
             logger.debug("Failed to broadcast user_active", exc_info=True)
 
@@ -4205,7 +4214,7 @@ class Broker:
         thread_id = _non_empty_str(metadata_payload.get("thread_id"))
         if thread_id:
             event["threadId"] = thread_id
-        await self._channels.broadcast(event)
+        await self._emit_broker_frame(event)
         if self._room_bridge is not None and participant is not None:
             for room_id in participant.room_ids:
                 await self._room_bridge.record_huddle_message(
@@ -4702,12 +4711,78 @@ class Broker:
         # Dropping the oldest is the least-bad option vs OOM-killing the broker,
         # and is logged loudly so the loss is visible.
         overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
-        if overflow > 0:
-            del self._event_log_buffer[:overflow]
-            logger.warning(
-                "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
-                overflow,
-            )
+        if overflow <= 0:
+            return
+        dropped = self._event_log_buffer[:overflow]
+        first_dropped_seq = dropped[0]["seq"]
+        last_dropped_seq = dropped[-1]["seq"]
+        del self._event_log_buffer[:overflow]
+        logger.warning(
+            "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
+            overflow,
+        )
+        # INV-2 durability floor: never leave a SILENT hole. Replace the dropped
+        # frames with a single queryable sentinel so any reader can DETECT the
+        # gap (and its size/range) instead of inferring "not yet flushed". The
+        # sentinel rides at the front so it survives the very next flush.
+        self._event_log_buffer.insert(
+            0,
+            {
+                "seq": first_dropped_seq,
+                "kind": "log_gap",
+                "payload": {
+                    "type": "log_gap",
+                    "dropped": overflow,
+                    "first_seq": first_dropped_seq,
+                    "last_seq": last_dropped_seq,
+                    "reason": "buffer_overflow",
+                },
+                "request_id": None,
+                "ts": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def _emit_broker_frame(self, frame: dict) -> None:
+        """Single choke point for BROKER-ORIGINATED frames (FR-1 / INV-1).
+
+        Transport frames already funnel through ``_handle_cli_event`` (log first,
+        then broadcast). Broker-synthesized frames — errors, permission_*,
+        available_commands, the intermediary user_* events, etc. — must obey the
+        SAME superset invariant: every frame that reaches a live client is in the
+        durable log FIRST. Enqueue, then broadcast. The broadcast itself preserves
+        existing behavior (best-effort; failures are swallowed by the caller's
+        contract here so a dead socket never tears down broker logic).
+
+        Do NOT route ``_handle_cli_event`` transport frames through this — they are
+        already logged there and would be double-counted.
+        """
+        self._enqueue_event_log(frame)
+        await self._channels.broadcast(frame)
+
+    async def _send_broker_frame_to(self, sender_ws: Any, frame: dict) -> None:
+        """Log a broker-originated frame, then send it to ONE channel (FR-1).
+
+        Per-channel sends (e.g. an error echoed only to the sender) are still
+        live frames a client sees, so they too must be persisted to the durable
+        log first. Preserves the raw ``send_json`` semantics of the call site
+        (exceptions propagate exactly as before).
+        """
+        self._enqueue_event_log(frame)
+        await sender_ws.send_json(frame)
+
+    async def _safe_send_broker_frame_to(self, websocket: WebSocket, frame: dict) -> bool:
+        """Log a broker-originated frame, then safe-send it to ONE browser (FR-1).
+
+        The first-connect path uses ``_safe_browser_send_json`` so a client that
+        disconnected mid-handshake is handled gracefully (returns ``False`` to let
+        the caller bail out) instead of raising. Frames sent this way — the
+        ``system`` welcome and the ``capabilities`` catalog — are first-class
+        broker-originated frames a live client sees (not re-sends of logged state),
+        so they too must hit the durable log FIRST (INV-1). Enqueue, then safe-send;
+        the bool gate semantics of ``_safe_browser_send_json`` are preserved.
+        """
+        self._enqueue_event_log(frame)
+        return await self._safe_browser_send_json(websocket, frame)
 
     def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
         """Persist a HUMAN message to the durable event log as a user frame.
@@ -5789,10 +5864,9 @@ class Broker:
         try:
             if not self._transport:
                 logger.error("handle_websocket: transport not initialized")
-                await self._safe_browser_send_json(
-                    websocket,
-                    {"type": "error", "content": "Transport not initialized"},
-                )
+                _transport_err = {"type": "error", "content": "Transport not initialized"}
+                self._enqueue_event_log(_transport_err)
+                await self._safe_browser_send_json(websocket, _transport_err)
                 return
 
             # Lazy-start transport on first browser connection
@@ -5813,13 +5887,12 @@ class Broker:
                             e,
                             exc_info=True,
                         )
-                        await self._safe_browser_send_json(
-                            websocket,
-                            {
-                                "type": "error",
-                                "content": f"Transport start failed: {e}",
-                            },
-                        )
+                        _start_err = {
+                            "type": "error",
+                            "content": f"Transport start failed: {e}",
+                        }
+                        self._enqueue_event_log(_start_err)
+                        await self._safe_browser_send_json(websocket, _start_err)
                         return
             else:
                 logger.debug("handle_websocket: transport already alive")
@@ -5827,8 +5900,8 @@ class Broker:
             # Report session start to timeline (once, on first connection)
             asyncio.create_task(self._report_session_start())
 
-            # Send welcome message
-            if not await self._safe_browser_send_json(
+            # Send welcome message (broker-originated first-connect frame: log first)
+            if not await self._safe_send_broker_frame_to(
                 websocket,
                 {"type": "system", "content": f"Connected to session {self.session_id}"},
             ):
@@ -5836,11 +5909,11 @@ class Broker:
             logger.debug("handle_websocket: welcome message sent")
 
             # Send transport capabilities so the frontend knows which
-            # controls to render.
+            # controls to render. Broker-originated first-connect frame: log first.
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
                 caps["room_prompt_resend"] = self._room_bridge is not None
-                if not await self._safe_browser_send_json(websocket, caps):
+                if not await self._safe_send_broker_frame_to(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
 
@@ -5933,7 +6006,9 @@ class Broker:
                     await self._dispatch_browser_message(data, sender_ws=websocket)
                 except Exception as e:
                     logger.exception("Error processing browser message: %s", _sanitize_log(data))
-                    await websocket.send_json({"type": "error", "content": str(e)})
+                    _dispatch_err = {"type": "error", "content": str(e)}
+                    self._enqueue_event_log(_dispatch_err)
+                    await websocket.send_json(_dispatch_err)
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
@@ -5943,7 +6018,9 @@ class Broker:
                 return
             logger.exception("WebSocket error")
             try:
-                await websocket.send_json({"type": "error", "content": str(e)})
+                _ws_err = {"type": "error", "content": str(e)}
+                self._enqueue_event_log(_ws_err)
+                await websocket.send_json(_ws_err)
             except Exception:
                 logger.debug("Failed to send error response to WebSocket", exc_info=True)
         finally:
