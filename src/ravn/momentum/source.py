@@ -28,6 +28,14 @@ class SourceDocument:
 
     def verify(self, span: SourceSpan) -> SourceVerification:
         excerpt = span.excerpt.strip()
+        if not excerpt:
+            return SourceVerification(
+                status="unverified",
+                reason="excerpt is blank",
+                excerpt=excerpt,
+                line_start=span.line_start,
+                line_end=span.line_end,
+            )
         if span.line_start is not None or span.line_end is not None:
             cited = self.resolve(span.line_start, span.line_end)
             if cited is None:

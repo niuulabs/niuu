@@ -40,3 +40,12 @@ def test_source_document_marks_ungrounded_excerpt_unverified() -> None:
 
     assert result.status == "unverified"
     assert "not found" in result.reason
+
+
+def test_source_document_marks_blank_excerpt_unverified() -> None:
+    doc = SourceDocument("alpha\nbeta")
+
+    result = doc.verify(SourceSpan(excerpt=" ", line_start=1, line_end=1))
+
+    assert result.status == "unverified"
+    assert "blank" in result.reason
