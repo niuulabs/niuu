@@ -232,6 +232,50 @@ class ActivityHeartbeatConfig(BaseModel):
     )
 
 
+class DeliveryConfig(BaseModel):
+    """Durable inbound-message delivery (SRD FR-5 / INV-7).
+
+    An inbound user message is accepted by the broker as ``pending`` and only
+    becomes authoritatively ``active`` once the transport consumes it. A transient
+    transport failure (a wedged input channel, a transport still warming up) is
+    retried with bounded backoff; on terminal failure the user turn flips to a
+    VISIBLE ``failed`` state (never left silently ``pending``). These knobs keep
+    every count/delay out of the business logic (no magic numbers).
+    """
+
+    max_attempts: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Total number of transport-delivery attempts for one inbound message "
+            "(the first try plus retries). 1 disables retry."
+        ),
+    )
+    attempt_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Per-attempt timeout for a single transport send/redirect. A wedged "
+            "send-lock that never returns is bounded by this and retried."
+        ),
+    )
+    initial_backoff_seconds: float = Field(
+        default=0.5,
+        ge=0,
+        description="Delay before the first retry after a transient failure.",
+    )
+    backoff_multiplier: float = Field(
+        default=2.0,
+        ge=1,
+        description="Multiplier applied to the backoff delay after each failed attempt.",
+    )
+    max_backoff_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        description="Upper bound on a single inter-attempt backoff delay.",
+    )
+
+
 class ArchiveStoreConfig(BaseModel):
     """Dynamic archive store adapter configuration."""
 
@@ -317,6 +361,7 @@ class SkuldSettings(BaseSettings):
         ),
     )
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

@@ -109,6 +109,52 @@ def assistant_turn_id(session_id: str, seq: int, role: str = "assistant") -> str
     return str(uuid.uuid5(_TURN_NAMESPACE, f"{session_id}:{seq}:{role}"))
 
 
+# --------------------------------------------------------------------------- steering state
+#
+# Delivery lifecycle of a HUMAN turn: the broker accepts a message ("pending"), the agent
+# consumes it ("active"), or delivery terminally fails ("failed"). The live broker stamps this
+# onto the in-memory user turn's ``metadata.steering_state``; the SAME transition must be
+# reconstructable from the durable log (SRD INV-4 fold parity + INV-7 delivery integrity), or a
+# rebuilt turn would silently lose the delivery state a live viewer saw.
+#
+# Every transition is already a logged broker frame keyed by the user-turn id:
+#   * ``user_confirmed``        carries an explicit ``steering_state`` (the accept = "pending");
+#   * ``user_active``           == the agent consumed it ("active");
+#   * ``user_delivery_failed``  == terminal failure ("failed").
+# (``user_delivered`` means "typed into the pane", NOT yet consumed — it deliberately does NOT
+# change steering_state, matching the live path, where the active flip rides ``user_active``.)
+#
+# This is the ONE policy: both the live broker (stamping its in-memory turn as it logs these
+# frames) and the rebuild (below) call ``steering_state_from_frame`` so they cannot diverge.
+
+# Frame kinds that carry a user-turn delivery-state transition, keyed by the user-turn id.
+_STEERING_FRAME_KINDS = frozenset({"user_confirmed", "user_active", "user_delivery_failed"})
+
+
+def steering_state_from_frame(kind: str, payload: dict) -> str | None:
+    """The steering_state a delivery-ACK frame implies for its user turn, or None.
+
+    Single source of truth for the pending/active/failed transition so the live fold and the
+    log rebuild stamp byte-identical metadata. ``user_confirmed`` honours the explicit
+    ``steering_state`` it carries (defaulting to "pending"); ``user_active`` is "active";
+    ``user_delivery_failed`` is "failed". Any other frame yields None (no transition)."""
+    if kind == "user_confirmed":
+        state = payload.get("steering_state")
+        if isinstance(state, str) and state:
+            return state
+        return "pending"
+    if kind == "user_active":
+        return "active"
+    if kind == "user_delivery_failed":
+        return "failed"
+    return None
+
+
+def steering_target_id(kind: str, payload: dict) -> str:
+    """The user-turn id a steering-ACK frame targets (its ``id``/``uuid``)."""
+    return str(payload.get("id") or payload.get("uuid") or "").strip()
+
+
 # --------------------------------------------------------------------------- transitions
 #
 # Each function is a PURE state transition: it mutates ``acc`` for one frame's worth of input.
@@ -344,6 +390,9 @@ def reduce_frames(
     turns: list[dict[str, Any]] = list(sdk_turns or [])
 
     acc = TurnAccumulator()
+    # turn_id -> (seq, steering_state): the delivery-state transitions seen in the log, applied
+    # onto the matching user turns at the end (last-writer-wins by seq, == the live path).
+    steering: dict[str, tuple[int, str]] = {}
 
     def flush(status: str | None = None, md: dict | None = None) -> None:
         scrape_text = None
@@ -365,6 +414,13 @@ def reduce_frames(
         p = r.payload if isinstance(r.payload, dict) else {}
         seq = int(r.seq)
         ts = _ts_of(r)
+
+        if k in _STEERING_FRAME_KINDS:
+            _record_steering(steering, k, p, seq)
+            # user_confirmed also seeds/dedups the user turn (handled below); user_active /
+            # user_delivery_failed carry no content, so they are pure state transitions.
+            if k != "user_confirmed":
+                continue
 
         if k in ("user", "user_confirmed"):
             _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, k, p, flush)
@@ -408,11 +464,46 @@ def reduce_frames(
     if not acc.is_empty() or acc.pending_tmux_rows is not None:
         flush(status="interrupted")
 
+    _apply_steering_states(turns, steering)
+
     partial = any(t.get("metadata", {}).get("status") in ("interrupted", "error") for t in turns)
     return ReduceResult(turns=turns, partial=partial)
 
 
 # --------------------------------------------------------------------------- internal helpers
+
+
+def _record_steering(
+    steering: dict[str, tuple[int, str]], kind: str, payload: dict, seq: int
+) -> None:
+    """Stash the delivery-state transition a steering-ACK frame implies, keyed by its target
+    user-turn id, keeping the LAST writer by seq (== the live path's mutate-in-place order)."""
+    state = steering_state_from_frame(kind, payload)
+    if state is None:
+        return
+    tid = steering_target_id(kind, payload)
+    if not tid:
+        return
+    prior = steering.get(tid)
+    if prior is not None and prior[0] >= seq:
+        return
+    steering[tid] = (seq, state)
+
+
+def _apply_steering_states(
+    turns: list[dict[str, Any]], steering: dict[str, tuple[int, str]]
+) -> None:
+    """Stamp the reconstructed ``steering_state`` onto each user turn whose id saw a delivery
+    transition — byte-identical to what the live broker mutates onto its in-memory turn."""
+    if not steering:
+        return
+    for turn in turns:
+        if turn.get("role") != "user":
+            continue
+        resolved = steering.get(str(turn.get("id") or ""))
+        if resolved is None:
+            continue
+        turn.setdefault("metadata", {})["steering_state"] = resolved[1]
 
 
 def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, flush) -> None:

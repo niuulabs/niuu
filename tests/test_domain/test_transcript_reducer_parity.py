@@ -130,6 +130,96 @@ async def _drive(b: Broker, frames: list[dict]) -> None:
         await b._handle_cli_event(frame)
 
 
+# --------------------------------------------------------------------------- delivery parity
+
+
+def _delivery_broker(tmp_path) -> Broker:
+    """A broker wired for the REAL delivery path: a user message goes through
+    ``_dispatch_browser_message`` -> bounded-retry delivery -> ACK, and EVERY steering frame
+    (user / user_confirmed / user_active / user_delivery_failed) lands in the durable buffer."""
+    settings = SkuldSettings(
+        session={"id": SID, "workspace_dir": str(tmp_path)},
+        transport="sdk",
+        volundr_api_url="http://volundr.test",
+        delivery={"max_attempts": 2, "initial_backoff_seconds": 0.0, "max_backoff_seconds": 0.0},
+    )
+    b = Broker(settings=settings)
+    b._transport = AsyncMock()
+    b._transport.is_alive = True
+    b._transport.capabilities = TransportCapabilities()
+    b._transport.is_turn_active = False
+    b._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+    b._report_activity_state = AsyncMock()
+    b._report_usage = AsyncMock()
+    b._report_timeline_event = AsyncMock()
+    b._complete_trace_span = AsyncMock()
+    # The shared event-log buffer IS the durable record we rebuild from — leave it live.
+    b._save_conversation_history = MagicMock()
+    return b
+
+
+async def _settle_delivery() -> None:
+    """Await the fire-and-forget ``transport-deliver-*`` task dispatch schedules."""
+    import asyncio
+
+    tasks = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _user_turn(turns: list[dict]) -> dict:
+    return next(t for t in turns if t["role"] == "user")
+
+
+@pytest.mark.asyncio
+async def test_parity_delivery_state_active(tmp_path):
+    """INV-4 + INV-7: a user message driven to delivered+active stamps steering_state on the
+    LIVE turn; rebuilding from the durable log must reconstruct the SAME steering_state — the
+    delivery state is not a live-only, on-disk fact (it is folded from the logged ACK frames)."""
+    b = _delivery_broker(tmp_path)
+
+    await b._dispatch_browser_message({"content": "steer the agent", "request_id": "rq-1"})
+    await _settle_delivery()
+    # The agent consumed the steer (the correlated UserPromptSubmit / turn-started signal),
+    # which the broker logs as user_active and stamps the live turn active.
+    live_user = next(t for t in b._conversation_turns if t.role == "user")
+    await b._activate_user_turn({"msg_id": live_user.id, "request_id": "rq-1"})
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    assert _user_turn(live)["metadata"].get("steering_state") == "active"
+    # The rebuilt user turn carries the SAME steering_state, reconstructed purely from the log.
+    assert _user_turn(rebuilt)["metadata"].get("steering_state") == "active"
+    assert _user_turn(live)["metadata"].get("steering_state") == _user_turn(rebuilt)[
+        "metadata"
+    ].get("steering_state")
+    assert _user_turn(live)["id"] == _user_turn(rebuilt)["id"]
+
+
+@pytest.mark.asyncio
+async def test_parity_delivery_state_failed(tmp_path):
+    """INV-4 + INV-7: a user message whose delivery terminally fails flips the LIVE turn to a
+    visible ``failed`` state; the rebuild reconstructs ``failed`` from the logged
+    user_delivery_failed frame — never silently losing it to a bare ``pending``."""
+    b = _delivery_broker(tmp_path)
+    b._transport.send_message = AsyncMock(side_effect=RuntimeError("wedged forever"))
+
+    await b._dispatch_browser_message({"content": "this will fail", "request_id": "rq-2"})
+    await _settle_delivery()
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    assert _user_turn(live)["metadata"].get("steering_state") == "failed"
+    assert _user_turn(rebuilt)["metadata"].get("steering_state") == "failed"
+    assert _user_turn(live)["id"] == _user_turn(rebuilt)["id"]
+
+
 @pytest.mark.asyncio
 async def test_parity_full_turn_text_reasoning_tools_user_and_result(tmp_path):
     """Assistant text + reasoning + tool_use/tool_result + a user turn + a result with usage."""

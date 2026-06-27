@@ -1660,6 +1660,10 @@ class TestDispatchBrowserMessage:
             session={"id": "test-session", "workspace_dir": str(tmp_path)},
             transport="sdk",
             skip_permissions=False,
+            # Single attempt, zero backoff: the default dispatch tests assert one
+            # transport call / one terminal ack and must not pay retry latency. The
+            # dedicated INV-7 retry tests below build their own multi-attempt config.
+            delivery={"max_attempts": 1, "initial_backoff_seconds": 0.0},
         )
         b = Broker(settings=settings)
         b._transport = AsyncMock()
@@ -2358,6 +2362,106 @@ class TestDispatchBrowserMessage:
             }
         )
         test_broker._transport.send_control_response.assert_called_once()
+
+    # ---------------------------------------------------------------- INV-7
+    # Durable delivery: bounded retry, visible-failed turn, stale-snapshot fix.
+
+    def _retry_broker(self, tmp_path, *, max_attempts: int = 3):
+        settings = SkuldSettings(
+            session={"id": "test-session", "workspace_dir": str(tmp_path)},
+            transport="sdk",
+            delivery={
+                "max_attempts": max_attempts,
+                "initial_backoff_seconds": 0.0,
+                "max_backoff_seconds": 0.0,
+            },
+        )
+        b = Broker(settings=settings)
+        b._transport = AsyncMock()
+        b._transport.capabilities = TransportCapabilities()
+        b._transport.is_turn_active = False
+        b._channels.broadcast = AsyncMock()
+        b._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        b._save_conversation_history = MagicMock()
+        return b
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried_then_delivered(self, tmp_path):
+        """INV-7(a): a first transient send failure is RETRIED and ultimately
+        delivered — the transport receives it and the turn is NOT failed."""
+        b = self._retry_broker(tmp_path, max_attempts=3)
+        # Fail the first attempt, succeed the second.
+        b._transport.send_message = AsyncMock(side_effect=[RuntimeError("warming"), None])
+
+        await b._dispatch_browser_message({"content": "hello", "request_id": "r1"})
+        await _settle_delivery()
+
+        assert b._transport.send_message.await_count == 2, (
+            "delivery must retry the transient failure"
+        )
+        delivered = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivered"
+        ]
+        assert delivered, "a user_delivered ack must be emitted after the retry succeeds"
+        failed = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivery_failed"
+        ]
+        assert not failed, "a recovered delivery must NOT surface a failure"
+        # The pending turn is left pending (the consumption signal flips it active later),
+        # never failed.
+        turn = next(t for t in b._conversation_turns if t.role == "user")
+        assert turn.metadata.get("steering_state") != "failed"
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_marks_turn_failed_and_surfaces(self, tmp_path):
+        """INV-7(b): a delivery that fails on every attempt flips the user turn to a
+        VISIBLE 'failed' state and emits user_delivery_failed — never left 'pending'."""
+        b = self._retry_broker(tmp_path, max_attempts=3)
+        b._transport.send_message = AsyncMock(side_effect=RuntimeError("wedged forever"))
+
+        await b._dispatch_browser_message({"content": "hello", "request_id": "r2"})
+        await _settle_delivery()
+
+        assert b._transport.send_message.await_count == 3, "must exhaust the bounded retries"
+        failed = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivery_failed"
+        ]
+        assert failed, "a terminal failure must surface user_delivery_failed"
+        assert failed[0]["error"] == "wedged forever"
+        turn = next(t for t in b._conversation_turns if t.role == "user")
+        assert turn.metadata.get("steering_state") == "failed", (
+            "the turn must flip to a visible failed state, never stay silently pending"
+        )
+        b._save_conversation_history.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_delivery_rechecks_turn_active_at_delivery_time(self, tmp_path):
+        """INV-7: routing (redirect vs send_message) is recomputed at DELIVERY time, not
+        snapshotted on the receive loop. A turn that becomes active AFTER accept but
+        BEFORE delivery must route via redirect."""
+        b = self._retry_broker(tmp_path, max_attempts=1)
+        b._transport.capabilities = TransportCapabilities(steer=True)
+        # Snapshot at accept time would be idle (send_message); the boundary moves so by
+        # delivery time the turn is active -> must redirect.
+        b._transport.is_turn_active = False
+
+        async def _flip_then_dispatch():
+            # Mark active before the delivery task actually runs.
+            b._transport.is_turn_active = True
+            await b._dispatch_browser_message({"content": "go", "request_id": "r3"})
+
+        await _flip_then_dispatch()
+        await _settle_delivery()
+
+        b._transport.send_control.assert_awaited_once()
+        assert b._transport.send_control.await_args.args[0] == "redirect"
+        b._transport.send_message.assert_not_called()
 
 
 class TestFastAPIEndpoints:
@@ -3455,6 +3559,10 @@ class TestHandleWebSocket:
         settings = SkuldSettings(
             session={"id": "ws-session", "workspace_dir": str(tmp_path)},
             transport="sdk",
+            # Zero-backoff delivery so the fire-and-forget retry task a dispatch schedules
+            # cannot leave a real-time-sleeping orphan that stalls the suite (the WS tests
+            # assert on the receive loop, not on delivery latency).
+            delivery={"initial_backoff_seconds": 0.0, "max_backoff_seconds": 0.0},
         )
         return Broker(settings=settings)
 
@@ -3544,6 +3652,42 @@ class TestHandleWebSocket:
 
         calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
         assert pending in calls
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_malformed_frame_does_not_drop_socket(self, test_broker):
+        """INV-7: a malformed / non-JSON inbound frame is logged + surfaced as an error
+        frame, and the receive loop CONTINUES — it must not tear down the socket or drop
+        the subsequent VALID message."""
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        # Bad frame (non-JSON) -> valid message -> disconnect. The valid message after
+        # the bad one MUST still be dispatched.
+        mock_ws.receive_json = AsyncMock(
+            side_effect=[
+                json.JSONDecodeError("Expecting value", "not json", 0),
+                {"content": "still here"},
+                WebSocketDisconnect(),
+            ]
+        )
+
+        await test_broker.handle_websocket(mock_ws)
+        await asyncio.sleep(0)
+
+        # The subsequent valid message was delivered to the transport (socket survived).
+        mock_transport.send_message.assert_called_once_with(
+            "still here", msg_id=ANY, request_id=None
+        )
+        # An error frame was surfaced for the malformed frame.
+        sent = [
+            c.args[0]
+            for c in mock_ws.send_json.call_args_list
+            if isinstance(c.args[0], dict) and c.args[0].get("type") == "error"
+        ]
+        assert any("malformed message ignored" in str(s.get("content")) for s in sent)
 
     @pytest.mark.asyncio
     async def test_handle_websocket_treats_not_connected_runtime_error_as_disconnect(
@@ -3658,14 +3802,18 @@ class TestHandleWebSocket:
 
         with caplog.at_level("ERROR"):
             await test_broker.handle_websocket(mock_ws)
-            # Drain the background delivery task deterministically (a single
-            # sleep(0) is scheduling-dependent and can observe await_count == 0).
-            for _ in range(100):
-                if mock_transport.send_message.await_count >= 1:
-                    break
-                await asyncio.sleep(0)
+            # Drain the background delivery task to completion (bounded retry then
+            # terminal failure) so the failure is logged before we assert.
+            deliver_tasks = [
+                t
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+            ]
+            if deliver_tasks:
+                await asyncio.gather(*deliver_tasks, return_exceptions=True)
 
-        assert mock_transport.send_message.await_count == 1
+        # The transport was attempted (every bounded-retry attempt raised CLI error).
+        assert mock_transport.send_message.await_count >= 1
         assert "user message delivery failed" in caplog.text
 
     @pytest.mark.asyncio

@@ -642,14 +642,20 @@ class TestSessionMessages:
                 json={"content": "hello from rest"},
             )
 
-        assert response.status_code == 200
+        # INV-7: no delivery ACK arrives within the grace (recv times out), so the
+        # broker has ACCEPTED the message but not yet confirmed it reached the agent.
+        # The contract reports 202 "pending" (NOT a 200 "sent") — its retry drives it.
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["delivery"] == "pending"
         assert fake_connect.calls == [
             ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
         ]
         # BUG-3: the outbound user frame now carries a request_id correlating with the
-        # broker's delivery ACK. The endpoint echoes the same request_id in its 200 body,
+        # broker's delivery ACK. The endpoint echoes the same request_id in its body,
         # so assert the frame is exactly {type, content, request_id} with that exact id.
-        req_id = response.json()["request_id"]
+        req_id = body["request_id"]
         assert len(fake_connect.ws.sent) == 1
         assert json.loads(fake_connect.ws.sent[0]) == {
             "type": "user",
@@ -751,6 +757,136 @@ class TestSessionMessages:
 
         assert response.status_code == 409
         assert "not delivered" in str(response.json()).lower()
+
+    @staticmethod
+    def _ack_connect(ack_frame: dict | None):
+        """Build a fake websockets.connect whose socket replays one broker ACK frame.
+
+        Used by the INV-7 delivery-contract tests: the broker emits a correlated
+        user_delivered / user_delivery_failed frame; the REST bridge must map it to the
+        right status. The ack_frame's request_id is filled in from the sent user frame so
+        it correlates exactly the way the live broker would.
+        """
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self._delivered = False
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+            async def recv(self) -> str:
+                if ack_frame is None or self._delivered:
+                    raise TimeoutError
+                self._delivered = True
+                req_id = json.loads(self.sent[0])["request_id"]
+                return json.dumps({**ack_frame, "request_id": req_id})
+
+        class _FakeConnect:
+            def __init__(self) -> None:
+                self.ws = _FakeWebSocket()
+
+            def __call__(self, url: str, **kwargs: object):
+                ws = self.ws
+
+                class _Ctx:
+                    async def __aenter__(self) -> _FakeWebSocket:
+                        return ws
+
+                    async def __aexit__(self, exc_type, exc, tb) -> bool:
+                        return False
+
+                return _Ctx()
+
+        return _FakeConnect()
+
+    def _post_message(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        fake_connect,
+        content: str = "hello",
+    ):
+        session = Session(
+            id=uuid4(),
+            name="ack-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/ack-session/session",
+        )
+        asyncio.run(repository.create(session))
+        with (
+            patch("websockets.asyncio.client.connect", new=fake_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            return client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": content},
+            )
+
+    def test_send_message_delivered_ack_returns_200_delivered(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: a correlated user_delivered ACK is the ONLY success contract — 200
+        status=delivered, delivery=delivered."""
+        fake_connect = self._ack_connect(
+            {"type": "user_delivered", "status": "delivered", "id": "m1"}
+        )
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "delivered"
+        assert body["delivery"] == "delivered"
+
+    def test_send_message_failed_ack_does_not_report_success(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: a terminal user_delivery_failed ACK surfaces as a 502 error — the REST
+        bridge MUST NOT return a plain success for an undelivered message."""
+        fake_connect = self._ack_connect(
+            {"type": "user_delivery_failed", "status": "failed", "id": "m1", "error": "wedged"}
+        )
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 502
+        assert "sent" not in str(response.json()).lower()
+        assert "wedged" in str(response.json()).lower()
+
+    def test_send_message_no_ack_reports_pending_not_sent(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: no ACK within the grace -> 202 pending (the broker's retry drives it),
+        never a 200 'sent' for an undelivered message."""
+        fake_connect = self._ack_connect(None)
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["delivery"] == "pending"
+        assert "sent" not in str(body).lower()
+        # INV-7 (unconfirmed != delivered): an unACKed message is NEVER reported delivered.
+        assert body["status"] != "delivered"
+        assert body["delivery"] != "delivered"
 
 
 class TestSessionLogAggregationProxy:

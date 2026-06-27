@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from volundr.adapters.inbound.auth import extract_principal, require_role
@@ -76,6 +76,12 @@ from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+# How long send_session_message holds the WS open waiting for the broker's
+# correlated delivery ACK before reporting the message as "pending" (the broker's
+# bounded retry then drives it to delivered/failed). Named so it is not a magic
+# number; the broker — not this grace — owns the delivery durability guarantee, so
+# a short grace is correct: a no-ACK is reported as pending/accepted, never "sent".
+SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
 
 def _public_session_endpoint(endpoint: str | None) -> str | None:
@@ -2375,8 +2381,16 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         body: dict = ...,
-    ) -> dict:
-        """Send a user message to a running session via its WebSocket."""
+    ) -> Response:
+        """Send a user message to a running session via its WebSocket.
+
+        INV-7 delivery contract: the response distinguishes delivered from
+        not-delivered. 200 ``status=delivered`` means the transport accepted the
+        message; 202 ``status=pending`` means the broker accepted it and its bounded
+        retry is still driving delivery (NOT a confirmed send); a terminal transport
+        rejection raises 502; an unreachable pod raises 409. ``unconfirmed`` is never
+        returned as success.
+        """
         import ssl
 
         from websockets.asyncio.client import connect
@@ -2423,12 +2437,14 @@ def create_router(
             ssl_ctx.verify_mode = ssl.CERT_NONE
             connect_kwargs["ssl"] = ssl_ctx
 
-        # BUG-3: correlate this message with the broker's delivery ACK so a 200 means the
-        # message actually reached the agent — not merely the broker socket. The broker
-        # emits user_delivered / user_delivery_failed tagged with this request_id once the
-        # transport accepts (or rejects) the message. Brokers that predate the ACK simply
-        # never send one, so we fall through to the legacy "sent" (delivery=unconfirmed)
-        # response after a bounded grace — no regression for in-flight old sessions.
+        # INV-7: correlate this message with the broker's delivery ACK so the response
+        # distinguishes DELIVERED from NOT-delivered — a 200 means the transport actually
+        # accepted the message, not merely the broker socket. The broker emits
+        # user_delivered / user_delivery_failed tagged with this request_id once the
+        # transport accepts (or, after bounded retry, terminally rejects) the message.
+        # If no ACK arrives within the grace, the broker has ACCEPTED the message and its
+        # retry loop is still driving delivery: we report 202 "pending" (NOT "sent"), so
+        # the caller never reads an undelivered message as success.
         req_id = str(uuid4())
         delivery: dict[str, Any] | None = None
         try:
@@ -2459,7 +2475,9 @@ def create_router(
                             return frame
 
                 with contextlib.suppress(Exception):
-                    delivery = await asyncio.wait_for(_await_ack(), timeout=3.0)
+                    delivery = await asyncio.wait_for(
+                        _await_ack(), timeout=SEND_MESSAGE_ACK_GRACE_SECONDS
+                    )
         except Exception as e:
             # The endpoint looked live (chat_endpoint set) but the broker socket
             # is unreachable — the pod is gone. Reconcile the row so its stale
@@ -2477,6 +2495,8 @@ def create_router(
                 detail=detail,
             )
 
+        # Terminal failure: the broker exhausted its bounded retry and the transport
+        # rejected the message. Surface as an error — never a 200 "sent" (INV-7).
         if isinstance(delivery, dict) and delivery.get("type") == "user_delivery_failed":
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -2485,15 +2505,32 @@ def create_router(
                     f"{delivery.get('error') or 'delivery failed'}"
                 ),
             )
-        delivery_status = (
-            str(delivery.get("status")) if isinstance(delivery, dict) else "unconfirmed"
+
+        # No ACK within the grace: the broker ACCEPTED the message and its retry loop
+        # is still driving delivery. This is NOT a confirmed send — report 202 pending
+        # so the caller can tell it is in flight, not delivered (INV-7).
+        if not isinstance(delivery, dict):
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "status": "pending",
+                    "session_id": str(session_id),
+                    "request_id": req_id,
+                    "delivery": "pending",
+                },
+            )
+
+        # Transport accepted the message (delivered, or delivered-but-blocked on an open
+        # question). 200 + delivery="delivered" is the only success contract.
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "delivered",
+                "session_id": str(session_id),
+                "request_id": req_id,
+                "delivery": str(delivery.get("status") or "delivered"),
+            },
         )
-        return {
-            "status": "sent",
-            "session_id": str(session_id),
-            "request_id": req_id,
-            "delivery": delivery_status,
-        }
 
     @router.get(
         "/sessions/{session_id}/conversation",

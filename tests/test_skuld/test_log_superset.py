@@ -44,6 +44,18 @@ def _logged_payload_ids(b: Broker) -> set[int]:
     return {id(e["payload"]) for e in b._event_log_buffer}
 
 
+async def _settle_delivery() -> None:
+    """Await the fire-and-forget ``transport-deliver-*`` task dispatch schedules so the
+    delivery ACK it emits is observable (the bounded-retry path rides several loop hops)."""
+    tasks = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class TestSupersetInvariant:
     """INV-1: ∀ frame f broadcast ⇒ f ∈ log, appended BEFORE broadcast."""
 
@@ -112,9 +124,9 @@ class TestSupersetInvariant:
         b._transport = transport
 
         await b._dispatch_browser_message({"content": "hello agent"}, sender_ws=AsyncMock())
-        # let the fire-and-forget delivery task run + ack
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # Await the fire-and-forget delivery task deterministically (its bounded-retry
+        # send + ack rides several event-loop hops; a fixed sleep count is fragile).
+        await _settle_delivery()
 
         logged_kinds = [e["kind"] for e in b._event_log_buffer]
         # the human turn, the user_confirmed echo, and the delivery ack are all durable

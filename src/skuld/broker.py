@@ -8,6 +8,7 @@ Supports two transport modes (selected via config):
 import asyncio
 import base64
 import collections
+import contextlib
 import inspect
 import json
 import logging
@@ -49,6 +50,8 @@ from niuu.domain.transcript_reducer import (
     assistant_turn_id,
     build_assistant_turn,
     result_metadata,
+    steering_state_from_frame,
+    steering_target_id,
 )
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
@@ -3102,6 +3105,12 @@ class Broker:
         # broadcast normally below for live consumers.
         if event_type == "plan":
             self._current_plan = dict(data)
+        elif event_type == "user_confirmed":
+            # A transport-originated user_confirmed (the browser path stamps its own turn
+            # directly and broadcasts via _emit_broker_frame, not here). Derive the turn's
+            # steering_state from the SAME shared policy the log rebuild uses, so the live
+            # in-memory turn == the rebuilt turn (INV-4). No-op if the turn isn't ours yet.
+            self._stamp_steering_state_from_frame(data)
         elif event_type == "agent_update":
             self._track_agent_update(data)
         elif event_type == "terminal_pane_opened":
@@ -3798,27 +3807,19 @@ class Broker:
                     }
                 )
 
-                caps = self._transport.capabilities
-                steer_capable = getattr(caps, "steer", False) is True
-                # "native" transports (e.g. tmux interactive) let the live CLI
-                # insert queued input itself, so EVERY message — mid-turn or idle
-                # — is delivered by steering, never by a disruptive stop/restart.
-                # "interrupt_resume" transports (the SDK) only steer while a turn
-                # is genuinely in flight; an idle message starts a fresh turn.
-                native_steering = getattr(caps, "steering_mode", "none") == "native"
-                turn_active = getattr(self._transport, "is_turn_active", False) is True
-                use_redirect = steer_capable and (native_steering or turn_active)
                 # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
                 # run for minutes (the transport serialises its own deliveries, so order
-                # holds). BUG-3: the delivery is wrapped so its OUTCOME is confirmed —
-                # the HTTP /messages bridge waits on the emitted ack — instead of being
-                # silently swallowed on a wedged input channel while the API says "sent".
+                # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
+                # and observable — bounded retry on a transient failure, a VISIBLE failed
+                # turn on terminal failure — instead of being silently swallowed on a
+                # wedged input channel while the API says "sent". The redirect-vs-send
+                # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
+                # boundary that moves between accept and delivery routes correctly.
                 asyncio.create_task(
                     self._deliver_user_message_and_ack(
                         content_str,
                         request_id=request_id,
                         msg_id=msg_id,
-                        use_redirect=use_redirect,
                     ),
                     name=f"transport-deliver-{msg_id}",
                 )
@@ -3888,23 +3889,76 @@ class Broker:
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
+    def _resolve_delivery_routing(self) -> bool:
+        """Decide redirect-vs-send for an inbound message AT DELIVERY TIME (INV-7).
+
+        Routing used to be snapshotted on the receive loop, but delivery runs later
+        in a separate task: the turn boundary can move (an idle session becomes busy,
+        or a turn ends) between accept and delivery, so a stale snapshot would steer
+        into a dead turn or start a spurious one. Recompute against the live transport
+        state instead. ``native`` transports always redirect (the CLI inserts queued
+        input itself); ``interrupt_resume`` transports only redirect while a turn is
+        genuinely in flight.
+        """
+        if not self._transport:
+            return False
+        caps = self._transport.capabilities
+        steer_capable = getattr(caps, "steer", False) is True
+        if not steer_capable:
+            return False
+        native_steering = getattr(caps, "steering_mode", "none") == "native"
+        turn_active = getattr(self._transport, "is_turn_active", False) is True
+        return native_steering or turn_active
+
+    async def _attempt_transport_delivery(
+        self, content: str, *, msg_id: str, request_id: str | None
+    ) -> None:
+        """One delivery attempt. Re-resolves routing so a moved turn boundary routes
+        correctly, then sends with a per-attempt timeout so a wedged input channel is
+        bounded (and therefore retryable) instead of hanging the delivery forever."""
+        timeout = self._settings.delivery.attempt_timeout_seconds
+        if self._resolve_delivery_routing():
+            # Carry the ids so a native transport (tmux) can correlate the eventual
+            # UserPromptSubmit back to this message and flip it active.
+            await asyncio.wait_for(
+                self._transport.send_control(
+                    "redirect", content=content, msg_id=msg_id, request_id=request_id
+                ),
+                timeout=timeout,
+            )
+            return
+        # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
+        # transport that CAN correlate a consumption signal (Codex turn/started) flips
+        # the bubble; transports that can't simply ignore the kwargs.
+        outbound = await self._apply_retrieval_reflex(content)
+        await asyncio.wait_for(
+            self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id),
+            timeout=timeout,
+        )
+
     async def _deliver_user_message_and_ack(
         self,
         content: str,
         *,
         request_id: str | None,
         msg_id: str,
-        use_redirect: bool,
     ) -> None:
-        """Deliver a user message to the transport and emit a delivery ACK (BUG-3).
+        """Deliver a user message to the transport with BOUNDED RETRY and a durable,
+        observable outcome (SRD FR-5 / INV-7).
 
         The inbound steering path used to fire-and-forget the transport call and never
         confirm it reached the agent: after a WS crash/reconnect a wedged tmux input
         channel silently swallowed the message while Volundr still returned HTTP 200
-        "sent". This wraps delivery so every outcome emits a structured
-        ``user_delivered`` / ``user_delivery_failed`` event (correlated by
-        ``request_id``) that the HTTP ``/messages`` bridge waits on — turning a
-        false-positive 200 into a real confirmation, or a surfaced failure.
+        "sent", AND the user turn was left ``pending`` forever. This now:
+
+        * recomputes redirect-vs-send routing at delivery time (no stale snapshot);
+        * retries a transient send failure (wedged ``_send_lock``, transport warming)
+          up to ``delivery.max_attempts`` with exponential backoff;
+        * on success emits ``user_delivered`` (the pending->active flip is driven later
+          by the correlated consumption signal);
+        * on TERMINAL failure flips the user turn to a VISIBLE ``failed`` state
+          (persisted + broadcast) and emits ``user_delivery_failed`` — never leaving the
+          turn silently ``pending``.
 
         A message that arrives while the agent is blocked on an AskUserQuestion is still
         delivered, but flagged ``blocked_on_question`` so the client can tell the user to
@@ -3919,35 +3973,75 @@ class Broker:
                 pending_q,
                 _sanitize_log(request_id),
             )
-        try:
-            if use_redirect:
-                # Carry the ids so a native transport (tmux) can correlate the
-                # eventual UserPromptSubmit back to this message and flip it active.
-                await self._transport.send_control(
-                    "redirect", content=content, msg_id=msg_id, request_id=request_id
-                )
-            else:
-                # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
-                # transport that CAN correlate a consumption signal (Codex turn/started) flips the
-                # bubble; transports that can't simply ignore the kwargs.
-                outbound = await self._apply_retrieval_reflex(content)
-                await self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
-        except Exception as exc:
-            logger.exception(
-                "user message delivery failed (request_id=%s)", _sanitize_log(request_id)
-            )
-            await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(exc))
+
+        cfg = self._settings.delivery
+        backoff = cfg.initial_backoff_seconds
+        last_error: Exception | None = None
+        for attempt in range(1, cfg.max_attempts + 1):
             try:
-                await self._emit_broker_frame({"type": "error", "content": str(exc)})
-            except Exception:
-                logger.debug("Failed to broadcast delivery error", exc_info=True)
+                await self._attempt_transport_delivery(
+                    content, msg_id=msg_id, request_id=request_id
+                )
+                last_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 - any send failure is retryable/terminal
+                last_error = exc
+                logger.warning(
+                    "user message delivery attempt %d/%d failed (request_id=%s): %s",
+                    attempt,
+                    cfg.max_attempts,
+                    _sanitize_log(request_id),
+                    _sanitize_log(str(exc)),
+                )
+                if attempt >= cfg.max_attempts:
+                    break
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * cfg.backoff_multiplier, cfg.max_backoff_seconds)
+
+        if last_error is not None:
+            await self._fail_user_delivery(msg_id, request_id, last_error)
             return
+
         await self._emit_delivery_ack(
             request_id,
             msg_id,
             "blocked_on_question" if pending_q else "delivered",
             pending_questions=pending_q,
         )
+
+    async def _fail_user_delivery(
+        self, msg_id: str, request_id: str | None, error: Exception
+    ) -> None:
+        """Terminal delivery failure: flip the turn to a VISIBLE ``failed`` state and
+        surface it. The turn is NEVER left silently ``pending`` (INV-7)."""
+        logger.exception(
+            "user message delivery failed after retries (request_id=%s)",
+            _sanitize_log(request_id),
+            exc_info=error,
+        )
+        if self._mark_user_turn_failed(msg_id):
+            self._save_conversation_history()
+        await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(error))
+        try:
+            await self._emit_broker_frame({"type": "error", "content": str(error)})
+        except Exception:
+            logger.debug("Failed to broadcast delivery error", exc_info=True)
+
+    def _mark_user_turn_failed(self, msg_id: str) -> bool:
+        """Flip the in-memory user turn ``msg_id`` to steering_state=failed. Returns True
+        if it changed (so the caller can persist once). Does NOT persist or broadcast.
+
+        A turn already ``active`` (the agent consumed it before the retry loop gave up —
+        a benign race) is left active; only a still-undelivered turn flips to failed."""
+        for turn in self._conversation_turns:
+            if turn.id == msg_id and turn.role == "user":
+                if turn.metadata.get("steering_state") == "active":
+                    return False
+                if turn.metadata.get("steering_state") == "failed":
+                    return False
+                turn.metadata["steering_state"] = "failed"
+                return True
+        return False
 
     async def _emit_delivery_ack(
         self,
@@ -3999,6 +4093,22 @@ class Broker:
         if self._mark_user_turn_active(msg_id):
             self._save_conversation_history()
         await self._broadcast_user_active(msg_id, request_id)
+
+    def _stamp_steering_state_from_frame(self, data: dict) -> None:
+        """Stamp a user turn's steering_state from a logged steering-ACK frame, using the SAME
+        shared policy the log rebuild applies (INV-4). Idempotent and silent if the frame is not
+        a steering transition or no matching user turn exists yet."""
+        state = steering_state_from_frame(str(data.get("type", "")), data)
+        if state is None:
+            return
+        target = steering_target_id(str(data.get("type", "")), data)
+        if not target:
+            return
+        for turn in self._conversation_turns:
+            if turn.id == target and turn.role == "user":
+                if turn.metadata.get("steering_state") != state:
+                    turn.metadata["steering_state"] = state
+                return
 
     def _mark_user_turn_active(self, msg_id: str) -> bool:
         """Flip the in-memory user turn ``msg_id`` to steering_state=active. Returns True if it
@@ -5975,7 +6085,35 @@ class Broker:
 
             # Handle messages from browser
             while True:
-                data = await websocket.receive_json()
+                # INV-7: a malformed / non-JSON inbound frame must NOT tear down the
+                # socket or drop every subsequent valid message. receive_json() is
+                # INSIDE the per-message try so a bad frame is logged + surfaced as an
+                # error frame and the loop CONTINUES. A genuine disconnect still raises
+                # WebSocketDisconnect (and the expected-disconnect classifier below),
+                # which we re-raise to exit the loop cleanly.
+                try:
+                    data = await websocket.receive_json()
+                except (ValueError, UnicodeDecodeError, TypeError) as e:
+                    # A genuinely MALFORMED inbound payload (non-JSON / wrong type):
+                    # log + surface an error frame and CONTINUE so one bad frame never
+                    # tears down the socket or drops the subsequent valid messages
+                    # (INV-7, second clause). ``json.JSONDecodeError`` is a ``ValueError``.
+                    # NOTE: this is deliberately NARROW — a transport-level failure
+                    # (WebSocketDisconnect, a connection RuntimeError, any other Exception)
+                    # is NOT a malformed frame and must propagate to tear the loop down,
+                    # so a permanently-failing receive can never spin forever.
+                    logger.warning(
+                        "handle_websocket: malformed inbound frame ignored: %s",
+                        _sanitize_log(str(e)),
+                    )
+                    _bad_frame_err = {
+                        "type": "error",
+                        "content": f"malformed message ignored: {e}",
+                    }
+                    self._enqueue_event_log(_bad_frame_err)
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json(_bad_frame_err)
+                    continue
                 logger.debug(
                     "handle_websocket: browser msg: %s",
                     _sanitize_log(json.dumps(data)[:500]),
@@ -5986,7 +6124,8 @@ class Broker:
                     logger.exception("Error processing browser message: %s", _sanitize_log(data))
                     _dispatch_err = {"type": "error", "content": str(e)}
                     self._enqueue_event_log(_dispatch_err)
-                    await websocket.send_json(_dispatch_err)
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json(_dispatch_err)
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
