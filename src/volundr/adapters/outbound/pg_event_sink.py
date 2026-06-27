@@ -11,11 +11,16 @@ from uuid import UUID
 
 import asyncpg
 
-from volundr.adapters.outbound._jsonb import dumps_jsonb
+from volundr.adapters.outbound._jsonb import dumps_jsonb, force_scrub_json, scrub_text
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import EventSink, SessionEventRepository
 
 logger = logging.getLogger(__name__)
+
+_INSERT_SQL = """INSERT INTO session_events
+       (id, session_id, event_type, timestamp, data, tokens_in,
+        tokens_out, cost, duration_ms, model, sequence)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"""
 
 
 class PostgresEventSink(EventSink, SessionEventRepository):
@@ -41,13 +46,12 @@ class PostgresEventSink(EventSink, SessionEventRepository):
         if not events:
             return
         args = [self._event_to_args(e) for e in events]
-        await self._pool.executemany(
-            """INSERT INTO session_events
-               (id, session_id, event_type, timestamp, data, tokens_in,
-                tokens_out, cost, duration_ms, model, sequence)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
-            args,
-        )
+        try:
+            await self._pool.executemany(_INSERT_SQL, args)
+        except asyncpg.exceptions.UntranslatableCharacterError:
+            # Defensive: never let one bad frame 500 + drop the whole batch.
+            logger.warning("session_events insert hit untranslatable char; retrying scrubbed")
+            await self._pool.executemany(_INSERT_SQL, [self._force_scrub_args(a) for a in args])
 
     async def flush(self) -> None:
         if not self._buffer:
@@ -143,28 +147,60 @@ class PostgresEventSink(EventSink, SessionEventRepository):
     # -- Internal helpers -----------------------------------------------------
 
     async def _insert_one(self, event: SessionEvent) -> None:
-        await self._pool.execute(
-            """INSERT INTO session_events
-               (id, session_id, event_type, timestamp, data, tokens_in,
-                tokens_out, cost, duration_ms, model, sequence)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
-            *self._event_to_args(event),
-        )
+        args = self._event_to_args(event)
+        try:
+            await self._pool.execute(_INSERT_SQL, *args)
+        except asyncpg.exceptions.UntranslatableCharacterError:
+            logger.warning("session_events insert hit untranslatable char; retrying scrubbed")
+            await self._pool.execute(_INSERT_SQL, *self._force_scrub_args(args))
 
     @staticmethod
     def _event_to_args(event: SessionEvent) -> tuple:
+        # event_type/model are plain text columns — scrub them too, like the
+        # JSONB `data` payload, so a NUL there can't 500 the insert.
         return (
             event.id,
             event.session_id,
-            event.event_type.value,
+            scrub_text(event.event_type.value),
             event.timestamp,
             dumps_jsonb(event.data),
             event.tokens_in,
             event.tokens_out,
             float(event.cost) if event.cost is not None else None,
             event.duration_ms,
-            event.model,
+            scrub_text(event.model),
             event.sequence,
+        )
+
+    @staticmethod
+    def _force_scrub_args(args: tuple) -> tuple:
+        """Belt-and-suspenders rebuild for the retry path: data ($5) is an already-
+        serialized JSON string, force-scrubbed; event_type/model re-scrubbed."""
+        (
+            event_id,
+            session_id,
+            event_type,
+            timestamp,
+            data,
+            tokens_in,
+            tokens_out,
+            cost,
+            duration_ms,
+            model,
+            sequence,
+        ) = args
+        return (
+            event_id,
+            session_id,
+            scrub_text(event_type),
+            timestamp,
+            force_scrub_json(data),
+            tokens_in,
+            tokens_out,
+            cost,
+            duration_ms,
+            scrub_text(model),
+            sequence,
         )
 
     @staticmethod

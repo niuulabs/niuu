@@ -12,11 +12,16 @@ from uuid import UUID
 
 import asyncpg
 
-from volundr.adapters.outbound._jsonb import dumps_jsonb
+from volundr.adapters.outbound._jsonb import dumps_jsonb, force_scrub_json, scrub_text
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
 
 logger = logging.getLogger(__name__)
+
+_INSERT_SQL = """INSERT INTO session_event_log
+       (session_id, seq, kind, role, request_id, payload, ts)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (session_id, seq) DO NOTHING"""
 
 
 class PostgresSessionEventLog(SessionEventLogRepository):
@@ -29,13 +34,16 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         if not entries:
             return 0
         args = [self._entry_to_args(e) for e in entries]
-        await self._pool.executemany(
-            """INSERT INTO session_event_log
-               (session_id, seq, kind, role, request_id, payload, ts)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (session_id, seq) DO NOTHING""",
-            args,
-        )
+        try:
+            await self._pool.executemany(_INSERT_SQL, args)
+        except asyncpg.exceptions.UntranslatableCharacterError:
+            # Defensive: a frame still carried a character Postgres can't store
+            # past the primary scrub. Force-scrub the serialized payloads and retry
+            # once so one bad frame never drops the whole batch (ON CONFLICT keeps
+            # this idempotent if some rows already landed).
+            logger.warning("session_event_log insert hit untranslatable char; retrying scrubbed")
+            scrubbed = [self._force_scrub_args(a) for a in args]
+            await self._pool.executemany(_INSERT_SQL, scrubbed)
         return len(entries)
 
     async def read_after(
@@ -69,14 +77,32 @@ class PostgresSessionEventLog(SessionEventLogRepository):
 
     @staticmethod
     def _entry_to_args(entry: SessionLogEntry) -> tuple:
+        # Scrub the text columns too — kind/role/request_id are plain text and a
+        # NUL there 500s the insert just like the JSONB payload does.
         return (
             entry.session_id,
             entry.seq,
-            entry.kind,
-            entry.role,
-            entry.request_id,
+            scrub_text(entry.kind),
+            scrub_text(entry.role),
+            scrub_text(entry.request_id),
             dumps_jsonb(entry.payload),
             entry.ts,
+        )
+
+    @staticmethod
+    def _force_scrub_args(args: tuple) -> tuple:
+        """Belt-and-suspenders rebuild of one row's args for the retry path: the
+        payload ($6) is an already-serialized JSON string, force-scrubbed of any
+        residual escaped NUL/surrogate; the text columns re-scrubbed."""
+        session_id, seq, kind, role, request_id, payload, ts = args
+        return (
+            session_id,
+            seq,
+            scrub_text(kind),
+            scrub_text(role),
+            scrub_text(request_id),
+            force_scrub_json(payload),
+            ts,
         )
 
     @staticmethod

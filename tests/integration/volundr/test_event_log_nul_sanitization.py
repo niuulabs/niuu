@@ -24,10 +24,13 @@ from decimal import Decimal
 from uuid import uuid4
 
 import asyncpg
+import httpx
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 
 from tests.integration.pool_wrapper import TransactionalPool
+from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.domain.models import (
@@ -42,6 +45,8 @@ pytestmark = [
 ]
 
 _NUL = chr(0)
+_SUR = chr(0xD800)  # a lone UTF-16 surrogate — also untranslatable
+_R = "�"  # U+FFFD, what NUL/surrogates are replaced with
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -71,22 +76,24 @@ async def txn_pool() -> TransactionalPool:
 
 
 async def test_session_event_log_persists_nul_bearing_payload(txn_pool):
-    """append() of a NUL-bearing payload persists and round-trips, NUL stripped."""
+    """append() of a NUL/surrogate-bearing payload + text columns persists and
+    round-trips with the offending chars replaced by U+FFFD; valid content kept."""
     log = PostgresSessionEventLog(txn_pool)
     session_id = uuid4()
     payload = {
         "type": "assistant",
         "text": f"crash{_NUL}dump",
-        "nested": {f"ke{_NUL}y": [f"x{_NUL}y", "café 日本語"]},
+        "surr": f"p{_SUR}q",
+        "nested": {f"ke{_NUL}y": [f"x{_NUL}y", "café 日本語 😀"]},
     }
     entry = SessionLogEntry(
         session_id=session_id,
         seq=1,
-        kind="assistant",
+        kind=f"assi{_NUL}stant",
         payload=payload,
         ts=datetime.now(UTC),
-        role="assistant",
-        request_id="forge-web-1",
+        role=f"u{_SUR}ser",
+        request_id=f"forge{_NUL}web{_NUL}1",
     )
 
     submitted = await log.append([entry])
@@ -94,31 +101,34 @@ async def test_session_event_log_persists_nul_bearing_payload(txn_pool):
 
     rows = await log.read_after(session_id, after_seq=0, limit=10)
     assert len(rows) == 1
-    stored = rows[0].payload
-    # NUL stripped everywhere, valid content (incl. unicode) preserved.
-    assert stored["text"] == "crashdump"
-    assert stored["nested"] == {"key": ["xy", "café 日本語"]}
+    row = rows[0]
+    # Payload: NUL/surrogate replaced everywhere, valid content (incl. astral) kept.
+    assert row.payload["text"] == f"crash{_R}dump"
+    assert row.payload["surr"] == f"p{_R}q"
+    assert row.payload["nested"] == {f"ke{_R}y": [f"x{_R}y", "café 日本語 😀"]}
+    # Text columns scrubbed too.
+    assert row.kind == f"assi{_R}stant"
+    assert row.role == f"u{_R}ser"
+    assert row.request_id == f"forge{_R}web{_R}1"
 
 
 async def test_event_sink_persists_nul_bearing_data(txn_pool):
     """emit_batch() of a NUL-bearing event persists and round-trips, NUL stripped."""
-    # session_events has a FK to sessions(id); insert a minimal session row.
+    # session_events has a FK to sessions(id); insert a minimal session row
+    # (id/name/model are the only NOT-NULL-without-default columns).
     session_id = uuid4()
     await txn_pool.execute(
-        """INSERT INTO sessions (id, name, model, repo, branch, status)
-           VALUES ($1, $2, $3, $4, $5, $6)""",
+        "INSERT INTO sessions (id, name, model) VALUES ($1, $2, $3)",
         session_id,
         "nul-test",
         "claude-sonnet-4-20250514",
-        "repo",
-        "main",
-        "running",
     )
 
     sink = PostgresEventSink(txn_pool)
     data = {
         "content_preview": f"hang{_NUL}listing",
-        "items": [f"a{_NUL}b", {f"de{_NUL}ep": "café 日本語"}],
+        "surr": f"p{_SUR}q",
+        "items": [f"a{_NUL}b", {f"de{_NUL}ep": "café 日本語 😀"}],
     }
     event = SessionEvent(
         id=uuid4(),
@@ -130,7 +140,7 @@ async def test_event_sink_persists_nul_bearing_data(txn_pool):
         tokens_in=10,
         tokens_out=20,
         cost=Decimal("0.001"),
-        model="claude-sonnet-4-20250514",
+        model=f"opus{_NUL}4",
     )
 
     await sink.emit_batch([event])
@@ -138,5 +148,43 @@ async def test_event_sink_persists_nul_bearing_data(txn_pool):
     events = await sink.get_events(session_id)
     assert len(events) == 1
     stored = events[0].data
-    assert stored["content_preview"] == "hanglisting"
-    assert stored["items"] == ["ab", {"deep": "café 日本語"}]
+    assert stored["content_preview"] == f"hang{_R}listing"
+    assert stored["surr"] == f"p{_R}q"
+    assert stored["items"] == [f"a{_R}b", {f"de{_R}ep": "café 日本語 😀"}]
+    assert events[0].model == f"opus{_R}4"
+
+
+async def test_post_log_with_nul_returns_201_not_500(txn_pool):
+    """REST regression: POST /sessions/{id}/log with NUL-bearing content returns
+    201 (was 500: asyncpg UntranslatableCharacterError black-holed the stream)."""
+    app = FastAPI()
+    app.include_router(
+        create_session_log_router(PostgresSessionEventLog(txn_pool), session_service=None)
+    )
+    session_id = str(uuid4())
+    body = {
+        "entries": [
+            {
+                "seq": 1,
+                "kind": "assistant",
+                "role": "assistant",
+                "request_id": "forge-web-1",
+                # _NUL is chr(0); httpx serializes it as a JSON escape on the wire,
+                # the server parses it back into a NUL in the payload dict.
+                "payload": {"type": "assistant", "text": f"crash{_NUL}dump"},
+            }
+        ]
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/v1/forge/sessions/{session_id}/log", json=body)
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["submitted"] == 1
+
+        # And it round-trips with the NUL replaced.
+        got = await client.get(f"/api/v1/forge/sessions/{session_id}/log?after=0")
+        assert got.status_code == 200
+        entries = got.json()
+        if isinstance(entries, dict):  # tolerate either {entries:[...]} or [...]
+            entries = entries["entries"]
+        assert entries[0]["payload"]["text"] == f"crash{_R}dump"

@@ -1,8 +1,11 @@
 """Tests for the PostgresSessionEventLog adapter."""
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
+
+import asyncpg
 
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.domain.models import SessionLogEntry
@@ -51,62 +54,80 @@ class TestAppend:
 
 
 class TestNulSanitization:
-    """PostgreSQL JSONB cannot store U+0000; the payload must be sanitized so a
-    NUL-bearing frame never wedges the whole executemany batch (the real bug)."""
+    """PostgreSQL text/JSONB cannot store U+0000 or lone surrogates; the payload
+    AND the text columns must be sanitized (U+FFFD) so a poisoned frame never
+    wedges the whole executemany batch (the real bug)."""
+
+    NUL = chr(0)
+    SUR = chr(0xD800)
+    R = "�"
 
     @staticmethod
-    async def _serialized_payload(payload: dict) -> str:
+    async def _row_args(**entry_overrides) -> tuple:
         pool = AsyncMock()
         log = PostgresSessionEventLog(pool)
-        await log.append([_make_entry(payload=payload)])
-        # args is list[tuple]; payload is index 5 of the first row
-        args = pool.executemany.call_args[0][1]
-        return args[0][5]
+        await log.append([_make_entry(**entry_overrides)])
+        return pool.executemany.call_args[0][1][0]  # first row's arg tuple
 
-    async def test_nul_in_string_value_stripped(self):
-        nul = chr(0)
-        serialized = await self._serialized_payload({"text": f"crash{nul}dump"})
-        assert "\\u0000" not in serialized
-        assert "crashdump" in serialized
+    async def _payload(self, payload: dict) -> dict:
+        args = await self._row_args(payload=payload)
+        return json.loads(args[5])
 
-    async def test_nul_nested_in_dict_and_list_stripped(self):
-        nul = chr(0)
-        payload = {
-            "outer": {"inner": f"a{nul}b"},
-            "items": [f"x{nul}y", {"deep": f"p{nul}q"}],
-        }
-        serialized = await self._serialized_payload(payload)
-        assert "\\u0000" not in serialized
-        assert "ab" in serialized
-        assert "xy" in serialized
-        assert "pq" in serialized
+    async def test_nul_in_string_value_replaced(self):
+        decoded = await self._payload({"text": f"crash{self.NUL}dump"})
+        assert decoded == {"text": f"crash{self.R}dump"}
 
-    async def test_nul_in_dict_key_stripped(self):
-        nul = chr(0)
-        serialized = await self._serialized_payload({f"ke{nul}y": "value"})
-        assert "\\u0000" not in serialized
-        assert '"key"' in serialized
+    async def test_nul_nested_in_dict_and_list_replaced(self):
+        decoded = await self._payload(
+            {
+                "outer": {"inner": f"a{self.NUL}b"},
+                "items": [f"x{self.NUL}y", {"deep": f"p{self.NUL}q"}],
+            }
+        )
+        assert decoded["outer"]["inner"] == f"a{self.R}b"
+        assert decoded["items"] == [f"x{self.R}y", {"deep": f"p{self.R}q"}]
 
-    async def test_multiple_nuls_stripped(self):
-        nul = chr(0)
-        serialized = await self._serialized_payload({"text": f"{nul}a{nul}{nul}b{nul}"})
-        assert "\\u0000" not in serialized
-        assert '"ab"' in serialized
+    async def test_nul_in_dict_key_replaced(self):
+        decoded = await self._payload({f"ke{self.NUL}y": "value"})
+        assert decoded == {f"ke{self.R}y": "value"}
+
+    async def test_lone_surrogate_replaced(self):
+        decoded = await self._payload({"text": f"p{self.SUR}q"})
+        assert decoded == {"text": f"p{self.R}q"}
+
+    async def test_text_columns_kind_role_request_id_sanitized(self):
+        # The plain text columns ($3/$4/$5) also 500 on a NUL — scrub them too.
+        args = await self._row_args(
+            kind=f"assi{self.NUL}stant",
+            role=f"u{self.SUR}ser",
+            request_id=f"req{self.NUL}id",
+        )
+        assert args[2] == f"assi{self.R}stant"  # kind
+        assert args[3] == f"u{self.R}ser"  # role
+        assert args[4] == f"req{self.R}id"  # request_id
 
     async def test_valid_unicode_preserved(self):
-        # ensure_ascii defaults True -> non-ASCII becomes \uXXXX escapes, not stripped
-        serialized = await self._serialized_payload({"text": "café — 日本語 😀"})
-        assert "\\u0000" not in serialized
-        import json
-
-        assert json.loads(serialized) == {"text": "café — 日本語 😀"}
+        decoded = await self._payload({"text": "café — 日本語 😀"})
+        assert decoded == {"text": "café — 日本語 😀"}
 
     async def test_no_nul_payload_unchanged_byte_for_byte(self):
-        import json
-
         payload = {"type": "assistant", "content": [{"type": "text", "text": "hi"}]}
-        serialized = await self._serialized_payload(payload)
-        assert serialized == json.dumps(payload)
+        args = await self._row_args(payload=payload)
+        assert args[5] == json.dumps(payload)
+
+    async def test_append_retries_scrubbed_when_insert_still_raises(self):
+        # Defensive layer: a still-thrown UntranslatableCharacterError must NOT
+        # 500 + drop the batch — append retries with a force-scrubbed payload.
+        pool = AsyncMock()
+        pool.executemany = AsyncMock(
+            side_effect=[asyncpg.exceptions.UntranslatableCharacterError("boom"), None]
+        )
+        log = PostgresSessionEventLog(pool)
+
+        submitted = await log.append([_make_entry(payload={"text": "ok"})])
+
+        assert submitted == 1
+        assert pool.executemany.await_count == 2  # initial + scrubbed retry
 
 
 class TestReadAfter:
