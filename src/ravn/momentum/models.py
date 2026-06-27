@@ -16,6 +16,7 @@ ArtifactKind = Literal[
 ProvenanceStatus = Literal["verified", "unverified"]
 AttentionTier = Literal["silent", "ambient", "present", "urgent"]
 NextAction = Literal["write_momentum_packet", "update_understanding_only", "ask_human"]
+DispositionOutcome = Literal["accepted", "dismissed", "wrong", "deferred", "acted"]
 
 
 class SourceSpan(BaseModel):
@@ -163,3 +164,41 @@ class MomentumExtraction(BaseModel):
     resident_patch: ResidentUnderstandingPatch
     judgment: MomentumJudgment
     packet: MomentumPacket | None = None
+
+
+class MomentumJudgmentDisposition(BaseModel):
+    disposition_id: str
+    target_ref: str = Field(min_length=1)
+    outcome: DispositionOutcome
+    actor: str = Field(min_length=1)
+    note: str = Field(min_length=1)
+    created_at: datetime
+    source: Literal["manual"] = "manual"
+
+
+class MomentumReflectionDraft(BaseModel):
+    changed_understanding: str = Field(min_length=1)
+    lesson_learned: str = Field(min_length=1)
+    original_judgment_useful: bool
+    remember_next_time: list[str] = Field(default_factory=list)
+    resident_corrections: list[str] = Field(default_factory=list)
+    candidate_reflexes: list[str] = Field(default_factory=list)
+    candidate_capability_gaps: list[str] = Field(default_factory=list)
+
+    @field_validator("remember_next_time")
+    @classmethod
+    def _must_remember_something(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("reflection must include something to remember")
+        return value
+
+
+class MomentumReflection(MomentumReflectionDraft):
+    reflection_id: str
+    target_ref: str
+    disposition_ref: str
+    outcome: DispositionOutcome
+    actor: str
+    procedure_name: str
+    model_name: str
+    reflected_at: datetime
