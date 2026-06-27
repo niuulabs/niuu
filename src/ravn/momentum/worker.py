@@ -35,6 +35,8 @@ Return only JSON matching this shape:
   },
   "judgment": {
     "title": "...",
+    "environment_id": "resident:niuu",
+    "valkyrie_id": "ravn-momentum",
     "changed_understanding": "...",
     "tension_that_matters": "...",
     "why_attention_now": "...",
@@ -42,8 +44,11 @@ Return only JSON matching this shape:
     "recommended_action": "...",
     "attention_tier": "watch|ambient|present|urgent",
     "authority_boundary": "human_review_required",
+    "operational_state": "proposing",
     "confidence": 0.82,
+    "signal_refs": ["resident inbox signal id, source path, or evidence ref"],
     "evidence_artifact_titles": ["..."],
+    "target_surfaces": ["resident/momentum"],
     "source": {"excerpt": "..."}
   },
   "packet": null or {

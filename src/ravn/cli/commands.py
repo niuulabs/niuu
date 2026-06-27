@@ -4956,9 +4956,32 @@ def momentum_eval_cmd(
     asyncio.run(_run_momentum_eval(settings, path))
 
 
+@momentum_app.command("inbox")
+def momentum_inbox_cmd(
+    signal_ref_or_id: str = typer.Argument(..., help="Resident inbox signal ref or id."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Run Momentum extraction from a resident inbox signal."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_inbox(settings, signal_ref_or_id))
+
+
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
     result = await _run_momentum_pipeline(settings, path)
+    _print_momentum_result(result)
 
+
+async def _run_momentum_inbox(settings: Settings, signal_ref_or_id: str) -> None:
+    signal = await _load_resident_inbox_signal(settings, signal_ref_or_id)
+    result = await _run_momentum_signal(settings, signal)
+    _print_momentum_result(result)
+
+
+def _print_momentum_result(result: Any) -> None:
     typer.echo(f"run_id:      {result.extraction.run.run_id}")
     typer.echo(f"run_ref:     {result.run_ref}")
     typer.echo(f"artifacts:   {len(result.artifact_refs)}")
@@ -5003,6 +5026,42 @@ async def _run_momentum_pipeline(settings: Settings, path: str) -> Any:
     llm = _build_llm(settings)
     worker = MomentumExtractionWorker(llm, model=settings.effective_model())
     return await MomentumPipeline(worker=worker, state=state).extract_file(source)
+
+
+async def _run_momentum_signal(settings: Settings, signal: Any) -> Any:
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    worker = MomentumExtractionWorker(llm, model=settings.effective_model())
+    return await MomentumPipeline(worker=worker, state=state).extract_signal(signal)
+
+
+async def _load_resident_inbox_signal(settings: Settings, signal_ref_or_id: str) -> Any:
+    from ravn.resident_inbox import MimirResidentInbox, parse_inbox_signal
+
+    mimir = _build_mimir(settings)
+    if mimir is None:
+        typer.echo("Mímir is required to read resident inbox signals.", err=True)
+        raise typer.Exit(1)
+    text = signal_ref_or_id.strip()
+    if "/" in text or text.endswith(".md"):
+        try:
+            signal = parse_inbox_signal(await mimir.read_page(text))
+        except FileNotFoundError:
+            signal = None
+        if signal is None:
+            typer.echo(f"Resident inbox signal not found: {text}", err=True)
+            raise typer.Exit(1)
+        return signal
+
+    inbox = MimirResidentInbox(mimir)
+    for _ref, signal in await inbox.list_signals(status="", limit=250):
+        if signal.id == text:
+            return signal
+    typer.echo(f"Resident inbox signal not found: {text}", err=True)
+    raise typer.Exit(1)
 
 
 def _provenance_label(verified: bool) -> str:

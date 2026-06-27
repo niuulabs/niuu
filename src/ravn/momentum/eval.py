@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ravn.momentum.models import MomentumExtraction
+from ravn.momentum.render import judgment_event_payload
 
 
 def evaluate_extraction(extraction: MomentumExtraction) -> list[str]:
@@ -23,6 +24,24 @@ def evaluate_extraction(extraction: MomentumExtraction) -> list[str]:
     if extraction.judgment.recommended_next_action == "write_momentum_packet":
         if extraction.packet is None:
             errors.append("judgment recommends a packet but packet is missing")
+    payload = judgment_event_payload(extraction.judgment)
+    for field in (
+        "event_type",
+        "environment_id",
+        "valkyrie_id",
+        "signal_refs",
+        "tier",
+        "confidence",
+        "operational_state",
+        "rationale",
+        "evidence",
+        "recommended_action",
+        "action_authority",
+        "target_surfaces",
+        "correlation_ids",
+    ):
+        if field not in payload:
+            errors.append(f"judgment payload missing {field}")
     if extraction.packet is not None:
         if not extraction.packet.implementation_slice.strip():
             errors.append("packet is missing an implementation slice")

@@ -106,6 +106,8 @@ class MomentumPacket(MomentumPacketDraft):
 
 class MomentumJudgmentDraft(BaseModel):
     title: str = Field(min_length=1)
+    environment_id: str = Field(default="resident:niuu", min_length=1)
+    valkyrie_id: str = Field(default="ravn-momentum", min_length=1)
     changed_understanding: str = Field(min_length=1)
     tension_that_matters: str = Field(min_length=1)
     why_attention_now: str = Field(min_length=1)
@@ -113,15 +115,18 @@ class MomentumJudgmentDraft(BaseModel):
     recommended_action: str = Field(min_length=1)
     attention_tier: AttentionTier = "ambient"
     authority_boundary: str = Field(default="human_review_required", min_length=1)
+    operational_state: str = Field(default="proposing", min_length=1)
     confidence: float = Field(ge=0, le=1)
+    signal_refs: list[str] = Field(default_factory=list)
     evidence_artifact_titles: list[str] = Field(default_factory=list)
+    target_surfaces: list[str] = Field(default_factory=lambda: ["resident/momentum"])
     source: SourceSpan
 
-    @field_validator("evidence_artifact_titles")
+    @field_validator("evidence_artifact_titles", "signal_refs", "target_surfaces")
     @classmethod
-    def _must_have_evidence(cls, value: list[str]) -> list[str]:
+    def _must_have_items(cls, value: list[str]) -> list[str]:
         if not value:
-            raise ValueError("judgment evidence_artifact_titles must not be empty")
+            raise ValueError("judgment lists must not be empty")
         return value
 
 

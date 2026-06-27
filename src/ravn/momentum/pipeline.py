@@ -23,6 +23,8 @@ from ravn.momentum.render import render_artifact, render_judgment, render_packet
 from ravn.momentum.source import SourceDocument
 from ravn.momentum.worker import MomentumExtractionWorker
 from ravn.resident_continuation import _slug
+from ravn.resident_inbox.models import ResidentInboxSignal
+from ravn.resident_inbox.serialization import render_inbox_signal
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,12 @@ class MomentumPipeline:
         return await self.extract_text(
             source.read_text(encoding="utf-8"),
             source_path=str(source),
+        )
+
+    async def extract_signal(self, signal: ResidentInboxSignal) -> MomentumPipelineResult:
+        return await self.extract_text(
+            render_inbox_signal(signal),
+            source_path=signal.raw_ref or signal.id,
         )
 
     async def extract_text(

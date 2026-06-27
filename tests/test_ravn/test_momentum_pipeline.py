@@ -7,10 +7,17 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ravn.adapters.resident_state.mimir import LocalResidentState
+from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
+from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
 from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+from ravn.resident_inbox import (
+    MimirResidentInbox,
+    ResidentInboxClassification,
+    ResidentInboxSignal,
+)
 
 
 class FakeLLM:
@@ -39,13 +46,26 @@ class FakeLLM:
         raise NotImplementedError
 
 
+class RecordingGBrainState(GBrainResidentStateAdapter):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.put_pages: list[tuple[str, str, str]] = []
+
+    async def recall(self, mandate: str, *, limit: int = 5) -> list:
+        return []
+
+    async def _put_page_gbrain(self, ref, title, content) -> None:
+        self.put_pages.append((ref, title, content))
+
+
 @pytest.mark.asyncio
 async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
     state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(_payload())
     pipeline = MomentumPipeline(
-        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
         state=state,
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="run-test",
@@ -53,6 +73,10 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
 
     result = await pipeline.extract_file(source)
 
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "developer.markdown_signal" not in frame
+    assert "Resident Inbox Signal" not in frame
+    assert "# Messy notes" in frame
     assert (
         result.packet_ref
         == "resident/momentum/runs/run-test/packet/packet-build-momentum-pipeline.md"
@@ -82,6 +106,62 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
 
 
 @pytest.mark.asyncio
+async def test_pipeline_processes_conversation_resident_inbox_signal(tmp_path: Path):
+    llm = FakeLLM(_payload())
+    signal = ResidentInboxSignal(
+        id="sig-conversation",
+        source="skuld:telegram",
+        kind="operator.directed_message",
+        summary="Operator notes about momentum dilution",
+        payload={"content": "# Notes\n\nImportant living idea."},
+        classification=ResidentInboxClassification.IDEA.value,
+        status="new",
+        evidence_refs=("telegram:42",),
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="conversation-signal",
+    ).extract_signal(signal)
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "- id: sig-conversation" in frame
+    assert "classification: idea" in frame
+    assert "telegram:42" in frame
+    assert result.judgment_ref
+
+
+@pytest.mark.asyncio
+async def test_pipeline_processes_non_conversation_resident_inbox_signal(tmp_path: Path):
+    llm = FakeLLM(_payload())
+    signal = ResidentInboxSignal(
+        id="sig-printer-risk",
+        source="octoprint",
+        kind="environment.signal",
+        summary="Printer enclosure temperature is rising",
+        payload={"severity": "warning", "content": "Important living idea."},
+        classification=ResidentInboxClassification.PHYSICAL_OBSERVATION.value,
+        status="new",
+        evidence_refs=("sensor:enclosure-temp",),
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="physical-signal",
+    ).extract_signal(signal)
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "kind: environment.signal" in frame
+    assert "classification: physical_observation" in frame
+    assert "sensor:enclosure-temp" in frame
+    assert result.extraction.judgment.event_type == "valkyrie.judgment.proposed"
+
+
+@pytest.mark.asyncio
 async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -102,6 +182,53 @@ async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
     run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
     assert "- judgment_ref: resident/momentum/runs/no-packet/judgment/" in run
     assert "- packet_ref: -" in run
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_through_mimir_resident_state(tmp_path: Path):
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    state = MimirResidentState(mimir)
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="mimir-signal",
+    ).extract_file(source)
+
+    assert "valkyrie.judgment.proposed" in await mimir.read_page(result.judgment_ref)
+    assert "Resident Signal Momentum Run" in await mimir.read_page(result.run_ref)
+    assert result.packet_ref is not None
+    assert "## Implementation Slice" in await mimir.read_page(result.packet_ref)
+    assert result.artifact_refs
+    assert "## Why It Matters" in await mimir.read_page(result.artifact_refs[0])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_through_gbrain_resident_state(tmp_path: Path):
+    state = RecordingGBrainState(
+        tmp_path / "gbrain",
+        write_mode="put_page",
+        mcp_url="https://brain.example/mcp",
+        api_token="tok",
+    )
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="gbrain-signal",
+    ).extract_file(source)
+
+    refs = [ref for ref, _title, _content in state.put_pages]
+    assert result.run_ref in refs
+    assert result.judgment_ref in refs
+    assert result.packet_ref in refs
+    assert set(result.artifact_refs).issubset(refs)
 
 
 @pytest.mark.asyncio
@@ -226,6 +353,37 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert "provenance:  verified" in result.output
 
 
+def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    signal = ResidentInboxSignal(
+        id="sig-cli",
+        source="skuld:telegram",
+        kind="operator.directed_message",
+        summary="Operator notes about momentum dilution",
+        payload={"content": "# Notes\n\nImportant living idea."},
+        classification=ResidentInboxClassification.IDEA.value,
+        evidence_refs=("telegram:99",),
+    )
+
+    import anyio
+
+    anyio.run(inbox.write_signal, signal)
+    monkeypatch.setattr(commands, "_build_mimir", lambda _settings: mimir)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+
+    async def _state(_settings, _workspace):
+        return LocalResidentState(tmp_path / "state")
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "inbox", "sig-cli"])
+
+    assert result.exit_code == 0, result.output
+    assert "judgment_ref:resident/momentum/runs/" in result.output
+    assert "packet_ref:  resident/momentum/runs/" in result.output
+
+
 def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -270,10 +428,12 @@ def _payload() -> dict:
             "beliefs": ["Momentum Packets preserve why work matters."],
             "constraints": ["Use selected resident state, not a fixed backend."],
             "corrections": ["Do not build fake autonomy."],
-            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
+            "source": {"excerpt": "Important living idea."},
         },
         "judgment": {
             "title": "Attend to momentum dilution",
+            "environment_id": "resident:niuu",
+            "valkyrie_id": "ravn-momentum",
             "changed_understanding": (
                 "The signal shows resident understanding needs to preserve why work matters."
             ),
@@ -285,12 +445,15 @@ def _payload() -> dict:
             "recommended_action": "Write one bounded Momentum Packet for the safe slice.",
             "attention_tier": "ambient",
             "authority_boundary": "human_review_required",
+            "operational_state": "proposing",
             "confidence": 0.82,
+            "signal_refs": ["resident-signal:test"],
             "evidence_artifact_titles": [
                 "Niuu as a Momentum Engine",
                 "Autonomy proposal needs reset",
             ],
-            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
+            "target_surfaces": ["resident/momentum"],
+            "source": {"excerpt": "Important living idea."},
         },
         "packet": {
             "title": "Build Momentum pipeline",
@@ -302,7 +465,7 @@ def _payload() -> dict:
             "out_of_scope": ["No scheduler", "No UI", "No Mimir hardwire"],
             "success_proof": "A fake model can replay the same artifacts and packet refs.",
             "reflection_prompts": ["What changed in resident understanding?"],
-            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
+            "source": {"excerpt": "Important living idea."},
         },
     }
 
@@ -409,11 +572,14 @@ def _vision_payload() -> dict:
         ),
         "attention_tier": "ambient",
         "authority_boundary": "human_review_required",
+        "operational_state": "proposing",
         "confidence": 0.84,
+        "signal_refs": ["tests/test_ravn/fixtures/niuu_vision_noisy_transcript.md"],
         "evidence_artifact_titles": [
             "Protect insight from context dilution",
             "Autonomy proposal needs reset",
         ],
+        "target_surfaces": ["resident/momentum"],
         "source": {
             "excerpt": 'nearly flattened it into "build an agent workflow."',
         },
@@ -429,8 +595,8 @@ def _artifact(
     title: str,
     excerpt: str | None = None,
     *,
-    line_start: int | None = 3,
-    line_end: int | None = 3,
+    line_start: int | None = None,
+    line_end: int | None = None,
 ) -> dict:
     return {
         "kind": kind,

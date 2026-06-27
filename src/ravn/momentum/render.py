@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from ravn.momentum.models import (
     MomentumArtifact,
     MomentumExtractionRun,
@@ -98,10 +100,13 @@ def render_packet(packet: MomentumPacket) -> str:
 
 
 def render_judgment(judgment: MomentumJudgment) -> str:
+    payload = judgment_event_payload(judgment)
     return (
         f"# {judgment.title}\n\n"
         f"- event_type: {judgment.event_type}\n"
         f"- judgment_id: {judgment.judgment_id}\n"
+        f"- environment_id: {judgment.environment_id}\n"
+        f"- valkyrie_id: {judgment.valkyrie_id}\n"
         f"- signal_kind: {judgment.provenance.signal_kind}\n"
         f"- extraction_run_id: {judgment.provenance.extraction_run_id}\n"
         f"- procedure: {judgment.provenance.procedure_name}\n"
@@ -125,9 +130,34 @@ def render_judgment(judgment: MomentumJudgment) -> str:
         f"{judgment.recommended_action}\n\n"
         "## Evidence Artifacts\n\n"
         f"{_bullets_text(judgment.evidence_artifact_titles)}\n\n"
+        "## Valkyrie Judgment Payload\n\n"
+        f"```json\n{json.dumps(payload, indent=2, sort_keys=True)}\n```\n\n"
         "## Source Context\n\n"
         f"{judgment.provenance.source_excerpt}\n"
     )
+
+
+def judgment_event_payload(judgment: MomentumJudgment) -> dict[str, object]:
+    return {
+        "event_type": judgment.event_type,
+        "environment_id": judgment.environment_id,
+        "valkyrie_id": judgment.valkyrie_id,
+        "signal_refs": list(judgment.signal_refs),
+        "tier": judgment.attention_tier,
+        "confidence": judgment.confidence,
+        "operational_state": judgment.operational_state,
+        "rationale": judgment.why_attention_now,
+        "evidence": [
+            {"kind": "momentum_artifact", "title": title}
+            for title in judgment.evidence_artifact_titles
+        ],
+        "recommended_action": judgment.recommended_action,
+        "action_authority": judgment.authority_boundary,
+        "target_surfaces": list(judgment.target_surfaces),
+        "expires_at": "",
+        "dissent_refs": [],
+        "correlation_ids": {"root": judgment.provenance.extraction_run_id},
+    }
 
 
 def render_run(run: MomentumExtractionRun) -> str:
