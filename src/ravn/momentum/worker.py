@@ -33,7 +33,20 @@ Return only JSON matching this shape:
     "corrections": ["..."],
     "source": {"excerpt": "..."}
   },
-  "packet": {
+  "judgment": {
+    "title": "...",
+    "changed_understanding": "...",
+    "tension_that_matters": "...",
+    "why_attention_now": "...",
+    "recommended_next_action": "write_momentum_packet|update_understanding_only|ask_human",
+    "recommended_action": "...",
+    "attention_tier": "watch|ambient|present|urgent",
+    "authority_boundary": "human_review_required",
+    "confidence": 0.82,
+    "evidence_artifact_titles": ["..."],
+    "source": {"excerpt": "..."}
+  },
+  "packet": null or {
     "title": "...",
     "implementation_slice": "...",
     "why_it_matters": "...",
@@ -49,8 +62,11 @@ Return only JSON matching this shape:
 
 Semantic judgment belongs to you. Preserve durable insights, rejected directions,
 unresolved tensions, resident-understanding updates, and one bounded Momentum
-Packet. Do not turn the packet into a generic ticket. Cite exact source excerpts
-from the markdown; line ranges are useful only when they point at the cited text.
+Packet when the judgment recommends one. The judgment answers what changed in
+understanding, which tension now matters most, why it deserves attention, and
+what should happen next. Do not turn the packet into a generic ticket. Cite exact
+source excerpts from the markdown; line ranges are useful only when they point
+at the cited text.
 """
 
 
@@ -90,7 +106,7 @@ def _input_frame(markdown: str, *, memory_frame: str) -> str:
     return (
         "## Existing resident memory frame\n\n"
         f"{memory_frame or '(none)'}\n\n"
-        "## Source markdown\n\n"
+        "## Resident signal markdown\n\n"
         f"{markdown}"
     )
 

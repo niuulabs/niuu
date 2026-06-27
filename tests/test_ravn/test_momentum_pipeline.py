@@ -61,8 +61,11 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     assert result.provenance_fully_verified is True
     refs = await state.list_refs("resident/momentum")
     assert result.run_ref in refs
+    assert result.judgment_ref in refs
     assert result.packet_ref in refs
     packet = (tmp_path / "state" / result.packet_ref).read_text(encoding="utf-8")
+    run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
+    assert "- signal_kind: resident_signal" in run
     assert "## Why It Matters" in packet
     assert "## Out Of Scope" in packet
     assert "Mimir" in packet
@@ -72,6 +75,33 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     assert "- line_start: 3" in artifact
     assert "- provenance_status: verified" in artifact
     assert "The model said this mattered." in artifact
+    judgment = (tmp_path / "state" / result.judgment_ref).read_text(encoding="utf-8")
+    assert "- event_type: valkyrie.judgment.proposed" in judgment
+    assert "## Tension That Matters" in judgment
+    assert "Signal compression is diluting resident understanding." in judgment
+
+
+@pytest.mark.asyncio
+async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["judgment"]["recommended_next_action"] = "update_understanding_only"
+    payload["packet"] = None
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="no-packet",
+    ).extract_file(source)
+
+    assert result.packet_ref is None
+    assert result.extraction.packet is None
+    assert result.extraction.judgment.recommended_next_action == "update_understanding_only"
+    run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
+    assert "- judgment_ref: resident/momentum/runs/no-packet/judgment/" in run
+    assert "- packet_ref: -" in run
 
 
 @pytest.mark.asyncio
@@ -94,6 +124,7 @@ async def test_momentum_pipeline_replays_same_refs_with_same_fake_output(tmp_pat
     ).extract_file(source)
 
     assert first.packet_ref == second.packet_ref
+    assert first.judgment_ref == second.judgment_ref
     assert first.artifact_refs == second.artifact_refs
     assert first.extraction.model_dump(mode="json") == second.extraction.model_dump(mode="json")
 
@@ -116,6 +147,7 @@ async def test_default_runs_are_new_extractions_not_silent_overwrites(tmp_path: 
 
     assert first.run_ref != second.run_ref
     assert first.packet_ref != second.packet_ref
+    assert first.judgment_ref != second.judgment_ref
     assert first.extraction.run.run_id.startswith("momentum-20260627T120000Z-")
     assert second.extraction.run.run_id.startswith("momentum-20260627T120100Z-")
 
@@ -139,6 +171,7 @@ async def test_ungrounded_model_output_is_persisted_as_unverified(tmp_path: Path
     run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
     assert "- provenance_status: unverified" in artifact
     assert "- provenance_fully_verified: false" in run
+    assert result.judgment_ref.endswith("/judgment/judgment-attend-to-momentum-dilution.md")
 
 
 @pytest.mark.asyncio
@@ -163,6 +196,9 @@ async def test_recorded_model_response_from_noisy_fixture_is_grounded(tmp_path: 
     assert result.extraction.packet.out_of_scope
     assert result.extraction.packet.reuse_guidance
     assert result.extraction.packet.reflection_prompts
+    assert result.extraction.judgment.changed_understanding
+    assert result.extraction.judgment.tension_that_matters
+    assert result.extraction.judgment.recommended_next_action == "write_momentum_packet"
     assert result.provenance_fully_verified is True
 
 
@@ -182,6 +218,7 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "run_id:" in result.output
     assert "artifacts:   4" in result.output
+    assert "judgment_ref:resident/momentum/runs/" in result.output
     assert (
         "packet_ref:  resident/momentum/runs/"
         in result.output
@@ -216,6 +253,7 @@ def test_momentum_eval_runs_when_opted_in(monkeypatch, tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "eval:        ok" in result.output
     assert "provenance:  verified" in result.output
+    assert "judgment_ref:resident/momentum/runs/" in result.output
 
 
 def _payload() -> dict:
@@ -232,6 +270,26 @@ def _payload() -> dict:
             "beliefs": ["Momentum Packets preserve why work matters."],
             "constraints": ["Use selected resident state, not a fixed backend."],
             "corrections": ["Do not build fake autonomy."],
+            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
+        },
+        "judgment": {
+            "title": "Attend to momentum dilution",
+            "changed_understanding": (
+                "The signal shows resident understanding needs to preserve why work matters."
+            ),
+            "tension_that_matters": "Signal compression is diluting resident understanding.",
+            "why_attention_now": (
+                "The resident has enough grounded evidence to protect the idea before execution."
+            ),
+            "recommended_next_action": "write_momentum_packet",
+            "recommended_action": "Write one bounded Momentum Packet for the safe slice.",
+            "attention_tier": "ambient",
+            "authority_boundary": "human_review_required",
+            "confidence": 0.82,
+            "evidence_artifact_titles": [
+                "Niuu as a Momentum Engine",
+                "Autonomy proposal needs reset",
+            ],
             "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
         },
         "packet": {
@@ -330,6 +388,35 @@ def _vision_payload() -> dict:
     )
     payload["resident_patch"]["source"] = {
         "excerpt": "The first target is Niuu itself.",
+    }
+    payload["judgment"] = {
+        "title": "Attend to context dilution tension",
+        "changed_understanding": (
+            "The signal shows Niuu should treat noisy resident input as a source "
+            "of understanding, not just a document to summarize."
+        ),
+        "tension_that_matters": (
+            "Live vision is being flattened into generic agent workflow work."
+        ),
+        "why_attention_now": (
+            "The source explicitly says the first target is Niuu itself and the "
+            "failure is flattening a thought into agent workflow."
+        ),
+        "recommended_next_action": "write_momentum_packet",
+        "recommended_action": (
+            "Persist the judgment and write one bounded Momentum Packet for the "
+            "first safe implementation slice."
+        ),
+        "attention_tier": "ambient",
+        "authority_boundary": "human_review_required",
+        "confidence": 0.84,
+        "evidence_artifact_titles": [
+            "Protect insight from context dilution",
+            "Autonomy proposal needs reset",
+        ],
+        "source": {
+            "excerpt": 'nearly flattened it into "build an agent workflow."',
+        },
     }
     payload["packet"]["source"] = {
         "excerpt": "No scheduler, no daemon, no UI, no workflow runtime, no fake autonomy.",

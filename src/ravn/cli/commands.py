@@ -4927,10 +4927,10 @@ app.add_typer(momentum_app, name="momentum")
 
 @momentum_app.command("extract")
 def momentum_extract_cmd(
-    path: str = typer.Argument(..., help="Markdown transcript or notes file."),
+    path: str = typer.Argument(..., help="Markdown resident signal file."),
     config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
 ) -> None:
-    """Extract resident understanding and one Momentum Packet from markdown."""
+    """Extract resident understanding, judgment, and maybe one packet from a signal."""
     if config:
         os.environ["RAVN_CONFIG"] = config
 
@@ -4962,8 +4962,10 @@ async def _run_momentum_extract(settings: Settings, path: str) -> None:
     typer.echo(f"run_id:      {result.extraction.run.run_id}")
     typer.echo(f"run_ref:     {result.run_ref}")
     typer.echo(f"artifacts:   {len(result.artifact_refs)}")
-    typer.echo(f"packet_ref:  {result.packet_ref}")
-    typer.echo(f"packet:      {result.extraction.packet.title}")
+    typer.echo(f"judgment_ref:{result.judgment_ref}")
+    typer.echo(f"packet_ref:  {result.packet_ref or '-'}")
+    if result.extraction.packet is not None:
+        typer.echo(f"packet:      {result.extraction.packet.title}")
     typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
 
 
@@ -4974,7 +4976,8 @@ async def _run_momentum_eval(settings: Settings, path: str) -> None:
     errors = evaluate_extraction(result.extraction)
     typer.echo(f"run_id:      {result.extraction.run.run_id}")
     typer.echo(f"run_ref:     {result.run_ref}")
-    typer.echo(f"packet_ref:  {result.packet_ref}")
+    typer.echo(f"judgment_ref:{result.judgment_ref}")
+    typer.echo(f"packet_ref:  {result.packet_ref or '-'}")
     typer.echo(f"artifacts:   {len(result.artifact_refs)}")
     typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
     if errors:

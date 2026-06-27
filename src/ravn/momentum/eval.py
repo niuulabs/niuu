@@ -14,12 +14,22 @@ def evaluate_extraction(extraction: MomentumExtraction) -> list[str]:
             errors.append(f"missing {kind}")
     if not extraction.resident_patch.reason.strip():
         errors.append("resident patch is missing a reason")
-    if not extraction.packet.implementation_slice.strip():
-        errors.append("packet is missing an implementation slice")
-    if not extraction.packet.out_of_scope:
-        errors.append("packet is missing out-of-scope boundaries")
-    if not extraction.packet.reflection_prompts:
-        errors.append("packet is missing reflection prompts")
+    if not extraction.judgment.changed_understanding.strip():
+        errors.append("judgment is missing changed understanding")
+    if not extraction.judgment.tension_that_matters.strip():
+        errors.append("judgment is missing attention tension")
+    if not extraction.judgment.why_attention_now.strip():
+        errors.append("judgment is missing attention rationale")
+    if extraction.judgment.recommended_next_action == "write_momentum_packet":
+        if extraction.packet is None:
+            errors.append("judgment recommends a packet but packet is missing")
+    if extraction.packet is not None:
+        if not extraction.packet.implementation_slice.strip():
+            errors.append("packet is missing an implementation slice")
+        if not extraction.packet.out_of_scope:
+            errors.append("packet is missing out-of-scope boundaries")
+        if not extraction.packet.reflection_prompts:
+            errors.append("packet is missing reflection prompts")
     for artifact in [*artifacts, extraction.resident_patch]:
         if not artifact.reason.strip():
             errors.append(f"{artifact.artifact_id} is missing a reason")

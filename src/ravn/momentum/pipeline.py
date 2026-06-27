@@ -14,11 +14,12 @@ from ravn.momentum.models import (
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
+    MomentumJudgment,
     MomentumPacket,
     Provenance,
     ResidentUnderstandingPatch,
 )
-from ravn.momentum.render import render_artifact, render_packet, render_run
+from ravn.momentum.render import render_artifact, render_judgment, render_packet, render_run
 from ravn.momentum.source import SourceDocument
 from ravn.momentum.worker import MomentumExtractionWorker
 from ravn.resident_continuation import _slug
@@ -29,7 +30,8 @@ class MomentumPipelineResult:
     extraction: MomentumExtraction
     run_ref: str
     artifact_refs: list[str]
-    packet_ref: str
+    judgment_ref: str
+    packet_ref: str | None
 
     @property
     def provenance_fully_verified(self) -> bool:
@@ -89,12 +91,24 @@ class MomentumPipeline:
             await self._state.write_artifact(_artifact_ref(artifact), render_artifact(artifact))
             for artifact in [*extraction.artifacts, extraction.resident_patch]
         ]
-        packet_ref = await self._state.write_artifact(
-            _packet_ref(extraction.packet),
-            render_packet(extraction.packet),
+        judgment_ref = await self._state.write_artifact(
+            _judgment_ref(extraction.judgment),
+            render_judgment(extraction.judgment),
+        )
+        packet_ref = (
+            await self._state.write_artifact(
+                _packet_ref(extraction.packet),
+                render_packet(extraction.packet),
+            )
+            if extraction.packet is not None
+            else None
         )
         run = extraction.run.model_copy(
-            update={"artifact_refs": artifact_refs, "packet_ref": packet_ref}
+            update={
+                "artifact_refs": artifact_refs,
+                "judgment_ref": judgment_ref,
+                "packet_ref": packet_ref,
+            }
         )
         run_ref = await self._state.write_artifact(_run_ref(run), render_run(run))
         extraction = extraction.model_copy(update={"run": run})
@@ -102,6 +116,7 @@ class MomentumPipeline:
             extraction=extraction,
             run_ref=run_ref,
             artifact_refs=artifact_refs,
+            judgment_ref=judgment_ref,
             packet_ref=packet_ref,
         )
 
@@ -146,8 +161,8 @@ def _materialize(
         artifact_id=f"resident-understanding-{run_id}",
         provenance=patch_provenance,
     )
-    packet_provenance = _provenance(
-        draft.packet.source,
+    judgment_provenance = _provenance(
+        draft.judgment.source,
         source_doc=source_doc,
         run_id=run_id,
         source_path=source_path,
@@ -156,14 +171,31 @@ def _materialize(
         model_name=model_name,
         created_at=created_at,
     )
-    packet = MomentumPacket(
-        **draft.packet.model_dump(),
-        packet_id=f"packet-{_slug(draft.packet.title) or run_id}",
-        provenance=packet_provenance,
+    judgment = MomentumJudgment(
+        **draft.judgment.model_dump(),
+        judgment_id=f"judgment-{_slug(draft.judgment.title) or run_id}",
+        provenance=judgment_provenance,
     )
+    packet = None
+    if draft.packet is not None:
+        packet_provenance = _provenance(
+            draft.packet.source,
+            source_doc=source_doc,
+            run_id=run_id,
+            source_path=source_path,
+            source_sha256=source_sha256,
+            procedure_name=procedure_name,
+            model_name=model_name,
+            created_at=created_at,
+        )
+        packet = MomentumPacket(
+            **draft.packet.model_dump(),
+            packet_id=f"packet-{_slug(draft.packet.title) or run_id}",
+            provenance=packet_provenance,
+        )
     provenance_fully_verified = all(
         item.provenance.verification_status == "verified"
-        for item in [*artifacts, patch, packet]
+        for item in [*artifacts, patch, judgment, *([packet] if packet is not None else [])]
     )
     run = MomentumExtractionRun(
         run_id=run_id,
@@ -174,9 +206,16 @@ def _materialize(
         created_at=created_at,
         provenance_fully_verified=provenance_fully_verified,
         artifact_refs=[],
-        packet_ref="",
+        judgment_ref="",
+        packet_ref=None,
     )
-    return MomentumExtraction(run=run, artifacts=artifacts, resident_patch=patch, packet=packet)
+    return MomentumExtraction(
+        run=run,
+        artifacts=artifacts,
+        resident_patch=patch,
+        judgment=judgment,
+        packet=packet,
+    )
 
 
 def _artifact(
@@ -242,6 +281,11 @@ def _artifact_ref(artifact: MomentumArtifact | ResidentUnderstandingPatch) -> st
 def _packet_ref(packet: MomentumPacket) -> str:
     run_id = packet.provenance.extraction_run_id
     return f"resident/momentum/runs/{run_id}/packet/{packet.packet_id}.md"
+
+
+def _judgment_ref(judgment: MomentumJudgment) -> str:
+    run_id = judgment.provenance.extraction_run_id
+    return f"resident/momentum/runs/{run_id}/judgment/{judgment.judgment_id}.md"
 
 
 def _run_ref(run: MomentumExtractionRun) -> str:

@@ -14,6 +14,8 @@ ArtifactKind = Literal[
     "resident_understanding_patch",
 ]
 ProvenanceStatus = Literal["verified", "unverified"]
+AttentionTier = Literal["watch", "ambient", "present", "urgent"]
+NextAction = Literal["write_momentum_packet", "update_understanding_only", "ask_human"]
 
 
 class SourceSpan(BaseModel):
@@ -25,6 +27,7 @@ class SourceSpan(BaseModel):
 
 
 class Provenance(BaseModel):
+    signal_kind: Literal["resident_signal"] = "resident_signal"
     source_path: str
     source_sha256: str
     source_excerpt: str
@@ -101,14 +104,43 @@ class MomentumPacket(MomentumPacketDraft):
     provenance: Provenance
 
 
+class MomentumJudgmentDraft(BaseModel):
+    title: str = Field(min_length=1)
+    changed_understanding: str = Field(min_length=1)
+    tension_that_matters: str = Field(min_length=1)
+    why_attention_now: str = Field(min_length=1)
+    recommended_next_action: NextAction
+    recommended_action: str = Field(min_length=1)
+    attention_tier: AttentionTier = "ambient"
+    authority_boundary: str = Field(default="human_review_required", min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    evidence_artifact_titles: list[str] = Field(default_factory=list)
+    source: SourceSpan
+
+    @field_validator("evidence_artifact_titles")
+    @classmethod
+    def _must_have_evidence(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("judgment evidence_artifact_titles must not be empty")
+        return value
+
+
+class MomentumJudgment(MomentumJudgmentDraft):
+    judgment_id: str
+    event_type: Literal["valkyrie.judgment.proposed"] = "valkyrie.judgment.proposed"
+    provenance: Provenance
+
+
 class MomentumExtractionDraft(BaseModel):
     artifacts: list[MomentumArtifactDraft]
     resident_patch: ResidentUnderstandingPatchDraft
-    packet: MomentumPacketDraft
+    judgment: MomentumJudgmentDraft
+    packet: MomentumPacketDraft | None = None
 
 
 class MomentumExtractionRun(BaseModel):
     run_id: str
+    signal_kind: Literal["resident_signal"] = "resident_signal"
     source_path: str
     source_sha256: str
     procedure_name: str
@@ -116,11 +148,13 @@ class MomentumExtractionRun(BaseModel):
     created_at: datetime
     provenance_fully_verified: bool
     artifact_refs: list[str]
-    packet_ref: str
+    judgment_ref: str
+    packet_ref: str | None = None
 
 
 class MomentumExtraction(BaseModel):
     run: MomentumExtractionRun
     artifacts: list[MomentumArtifact]
     resident_patch: ResidentUnderstandingPatch
-    packet: MomentumPacket
+    judgment: MomentumJudgment
+    packet: MomentumPacket | None = None

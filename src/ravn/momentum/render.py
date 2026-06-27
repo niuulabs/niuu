@@ -5,6 +5,7 @@ from __future__ import annotations
 from ravn.momentum.models import (
     MomentumArtifact,
     MomentumExtractionRun,
+    MomentumJudgment,
     MomentumPacket,
     ResidentUnderstandingPatch,
 )
@@ -16,6 +17,7 @@ def render_artifact(artifact: MomentumArtifact | ResidentUnderstandingPatch) -> 
         "",
         f"- kind: {artifact.kind}",
         f"- artifact_id: {artifact.artifact_id}",
+        f"- signal_kind: {artifact.provenance.signal_kind}",
         f"- extraction_run_id: {artifact.provenance.extraction_run_id}",
         f"- procedure: {artifact.provenance.procedure_name}",
         f"- model: {artifact.provenance.model_name}",
@@ -63,6 +65,7 @@ def render_packet(packet: MomentumPacket) -> str:
     return (
         f"# {packet.title}\n\n"
         f"- packet_id: {packet.packet_id}\n"
+        f"- signal_kind: {packet.provenance.signal_kind}\n"
         f"- extraction_run_id: {packet.provenance.extraction_run_id}\n"
         f"- procedure: {packet.provenance.procedure_name}\n"
         f"- model: {packet.provenance.model_name}\n"
@@ -94,16 +97,51 @@ def render_packet(packet: MomentumPacket) -> str:
     )
 
 
+def render_judgment(judgment: MomentumJudgment) -> str:
+    return (
+        f"# {judgment.title}\n\n"
+        f"- event_type: {judgment.event_type}\n"
+        f"- judgment_id: {judgment.judgment_id}\n"
+        f"- signal_kind: {judgment.provenance.signal_kind}\n"
+        f"- extraction_run_id: {judgment.provenance.extraction_run_id}\n"
+        f"- procedure: {judgment.provenance.procedure_name}\n"
+        f"- model: {judgment.provenance.model_name}\n"
+        f"- source_path: {judgment.provenance.source_path}\n"
+        f"- source_sha256: {judgment.provenance.source_sha256}\n"
+        f"- extracted_at: {judgment.provenance.extracted_at.isoformat()}\n"
+        f"- attention_tier: {judgment.attention_tier}\n"
+        f"- confidence: {judgment.confidence}\n"
+        f"- authority_boundary: {judgment.authority_boundary}\n"
+        f"- recommended_next_action: {judgment.recommended_next_action}\n"
+        f"- provenance_status: {judgment.provenance.verification_status}\n"
+        f"- provenance_reason: {judgment.provenance.verification_reason}\n\n"
+        "## Changed Understanding\n\n"
+        f"{judgment.changed_understanding}\n\n"
+        "## Tension That Matters\n\n"
+        f"{judgment.tension_that_matters}\n\n"
+        "## Why Attention Now\n\n"
+        f"{judgment.why_attention_now}\n\n"
+        "## Recommended Action\n\n"
+        f"{judgment.recommended_action}\n\n"
+        "## Evidence Artifacts\n\n"
+        f"{_bullets_text(judgment.evidence_artifact_titles)}\n\n"
+        "## Source Context\n\n"
+        f"{judgment.provenance.source_excerpt}\n"
+    )
+
+
 def render_run(run: MomentumExtractionRun) -> str:
     return (
-        f"# Momentum Extraction Run {run.run_id}\n\n"
+        f"# Resident Signal Momentum Run {run.run_id}\n\n"
+        f"- signal_kind: {run.signal_kind}\n"
         f"- source_path: {run.source_path}\n"
         f"- source_sha256: {run.source_sha256}\n"
         f"- procedure: {run.procedure_name}\n"
         f"- model: {run.model_name}\n"
         f"- created_at: {run.created_at.isoformat()}\n"
         f"- provenance_fully_verified: {str(run.provenance_fully_verified).lower()}\n"
-        f"- packet_ref: {run.packet_ref}\n\n"
+        f"- judgment_ref: {run.judgment_ref}\n"
+        f"- packet_ref: {run.packet_ref or '-'}\n\n"
         "## Artifact Refs\n\n"
         f"{_bullets_text(run.artifact_refs)}\n"
     )
