@@ -1,6 +1,7 @@
 """Tests for the REST adapter."""
 
 import asyncio
+import json
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -645,7 +646,16 @@ class TestSessionMessages:
         assert fake_connect.calls == [
             ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
         ]
-        assert fake_connect.ws.sent == ['{"type": "user", "content": "hello from rest"}']
+        # BUG-3: the outbound user frame now carries a request_id correlating with the
+        # broker's delivery ACK. The endpoint echoes the same request_id in its 200 body,
+        # so assert the frame is exactly {type, content, request_id} with that exact id.
+        req_id = response.json()["request_id"]
+        assert len(fake_connect.ws.sent) == 1
+        assert json.loads(fake_connect.ws.sent[0]) == {
+            "type": "user",
+            "content": "hello from rest",
+            "request_id": req_id,
+        }
 
 
 class TestSessionLogAggregationProxy:

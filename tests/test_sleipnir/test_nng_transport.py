@@ -23,7 +23,6 @@ import pytest
 
 from sleipnir.adapters.nng_transport import (
     DEFAULT_IPC_ADDRESS,
-    DEFAULT_TCP_ADDRESS,
     NngPublisher,
     NngSubscriber,
     NngTransport,
@@ -66,8 +65,24 @@ def ipc_address(tmp_path):
 
 @pytest.fixture
 def tcp_address():
-    """A local TCP address for testing TCP transport."""
-    return DEFAULT_TCP_ADDRESS
+    """A local TCP address on a free ephemeral port for testing TCP transport.
+
+    We must NOT reuse the documented production default ``DEFAULT_TCP_ADDRESS``
+    (``tcp://localhost:9500``): that fixed port collides with any process already
+    listening on it — a live platform node on a dev box, or a parallel pytest-xdist
+    worker — making ``socket.listen()`` raise ``pynng.AddressInUse`` and the test
+    fail before any assertion runs. Bind to port 0 to let the OS hand us a free
+    port, then reuse that exact port for both publisher and subscriber.
+    """
+    import socket as _socket
+
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    finally:
+        s.close()
+    return f"tcp://localhost:{port}"
 
 
 # ---------------------------------------------------------------------------
