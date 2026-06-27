@@ -447,6 +447,38 @@ async def test_judgment_disposition_produces_persisted_reflection(
 
 
 @pytest.mark.asyncio
+async def test_repeated_reflections_same_second_get_distinct_refs(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="same-second",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    first = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="First acceptance.",
+    )
+    second = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="Second acceptance.",
+    )
+
+    assert first.disposition_ref != second.disposition_ref
+    assert first.reflection_ref != second.reflection_ref
+    assert "First acceptance." in (await state.read_artifact(first.disposition_ref)).content
+    assert "Second acceptance." in (await state.read_artifact(second.disposition_ref)).content
+
+
+@pytest.mark.asyncio
 async def test_wrong_disposition_persists_model_authored_correction(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -471,6 +503,65 @@ async def test_wrong_disposition_persists_model_authored_correction(tmp_path: Pa
     reflection = await state.read_artifact(result.reflection_ref)
     assert correction in reflection.content
     assert correction not in llm.calls[1]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_reflection_proceeds_when_related_run_context_is_missing(tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+    run_ref = await state.write_artifact(
+        "resident/momentum/runs/missing-context/run.md",
+        "# Resident Signal Momentum Run missing-context\n\n"
+        "- run_id: missing-context\n\n"
+        "## Summary\n\n"
+        "No rendered judgment_ref or artifact refs yet.\n",
+    )
+    llm = FakeLLM(_reflection_payload("deferred"))
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    ).reflect_judgment(
+        run_ref,
+        outcome="deferred",
+        note="Need more evidence.",
+    )
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert result.reflection_ref
+    assert "## Judgment artifact\n\n(unavailable)" in prompt
+    assert "## Related artifacts\n\n(none)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_ignores_missing_optional_related_artifacts(tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+    run_ref = await state.write_artifact(
+        "resident/momentum/runs/missing-related/run.md",
+        "# Resident Signal Momentum Run missing-related\n\n"
+        "- run_id: missing-related\n"
+        "- judgment_ref: resident/momentum/runs/missing-related/judgment/missing.md\n\n"
+        "## Artifact Refs\n\n"
+        "- resident/momentum/runs/missing-related/artifacts/missing.md\n",
+    )
+    llm = FakeLLM(_reflection_payload("acted"))
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    ).reflect_judgment(
+        run_ref,
+        outcome="acted",
+        note="Action completed.",
+    )
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert result.reflection_ref
+    assert "## Judgment artifact\n\n(unavailable)" in prompt
+    assert "## Related artifacts\n\n(none)" in prompt
 
 
 @pytest.mark.asyncio
@@ -725,6 +816,31 @@ def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tm
     assert result.exit_code == 0, result.output
     assert "disposition_ref: resident/continuation/momentum/runs/cli-reflect/" in result.output
     assert "reflection_ref:  resident/continuation/momentum/runs/cli-reflect/" in result.output
+
+
+def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Path):
+    async def _state(_settings, _workspace):
+        return LocalResidentState(tmp_path / "state")
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_reflection_payload()))
+
+    result = CliRunner().invoke(
+        commands.app,
+        [
+            "momentum",
+            "reflect",
+            "resident/momentum/runs/demo/run.md",
+            "--outcome",
+            "maybe",
+            "--note",
+            "Operator was unclear.",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid outcome: maybe" in result.output
+    assert "accepted, dismissed, wrong, deferred, acted" in result.output
 
 
 def test_momentum_eval_skips_without_opt_in(tmp_path: Path):

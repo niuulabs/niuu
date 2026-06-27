@@ -128,6 +128,22 @@ async def test_gbrain_resident_state_prefers_synchronous_put_page_with_mcp(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_gbrain_resident_state_inherits_artifact_reads(tmp_path):
+    state = RecordingGBrainResidentState(
+        tmp_path,
+        mcp_url="http://127.0.0.1:3131/mcp",
+        api_token="token",
+        capture_enabled=False,
+    )
+
+    ref = await state.write_artifact("resident/momentum/demo.md", "# Demo\n\ncontent")
+    artifact = await state.read_artifact(ref)
+
+    assert artifact.path == ref
+    assert artifact.content == "# Demo\n\ncontent"
+
+
+@pytest.mark.asyncio
 async def test_gbrain_resident_state_can_use_explicit_ingest_mode(tmp_path):
     state = RecordingGBrainResidentState(
         tmp_path,

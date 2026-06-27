@@ -4924,6 +4924,8 @@ momentum_app = typer.Typer(
 )
 app.add_typer(momentum_app, name="momentum")
 
+_MOMENTUM_DISPOSITION_OUTCOMES = ("accepted", "dismissed", "wrong", "deferred", "acted")
+
 
 @momentum_app.command("extract")
 def momentum_extract_cmd(
@@ -5016,6 +5018,11 @@ async def _run_momentum_reflect(
         MomentumPipeline,
         MomentumReflectionWorker,
     )
+
+    if outcome not in _MOMENTUM_DISPOSITION_OUTCOMES:
+        allowed = ", ".join(_MOMENTUM_DISPOSITION_OUTCOMES)
+        typer.echo(f"Invalid outcome: {outcome}. Allowed values: {allowed}", err=True)
+        raise typer.Exit(2)
 
     workspace = _resolve_workspace(settings)
     state = await _build_resident_state(settings, workspace)

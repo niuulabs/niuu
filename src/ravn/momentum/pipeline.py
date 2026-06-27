@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from ravn.domain.resident_continuation import ResidentMemoryEntry
 from ravn.domain.resident_state import ResidentStatePort
@@ -156,8 +157,9 @@ class MomentumPipeline:
         target = await self._state.read_artifact(target_ref)
         context = await _load_reflection_context(self._state, target)
         base_ref = _reflection_base_ref(target.path or target_ref)
+        reflection_suffix = f"{_timestamp_id(created_at)}-{outcome}-{uuid4().hex[:6]}"
         disposition = MomentumJudgmentDisposition(
-            disposition_id=f"disposition-{_timestamp_id(created_at)}-{outcome}",
+            disposition_id=f"disposition-{reflection_suffix}",
             target_ref=target.path or target_ref,
             outcome=outcome,
             actor=actor,
@@ -183,7 +185,7 @@ class MomentumPipeline:
         )
         reflection = MomentumReflection(
             **draft.model_dump(),
-            reflection_id=f"reflection-{_timestamp_id(created_at)}-{outcome}",
+            reflection_id=f"reflection-{reflection_suffix}",
             target_ref=disposition.target_ref,
             disposition_ref=disposition_ref,
             outcome=outcome,
@@ -215,6 +217,7 @@ async def _load_reflection_context(
     state: ResidentStatePort,
     target: ResidentMemoryEntry,
 ) -> _ReflectionContext:
+    # v0 parser over the rendered run artifact; replace with structured run metadata later.
     target_ref = target.path
     run_content = target.content if target_ref.endswith("/run.md") else ""
     judgment_content = target.content if "/judgment/" in target_ref else ""
