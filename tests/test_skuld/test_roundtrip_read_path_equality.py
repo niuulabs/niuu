@@ -555,9 +555,283 @@ class TestRoundTripEqualityINV5:
 
 
 # ---------------------------------------------------------------------------
+# INV-5 (M-5) — per-connect handshake frames (system welcome + capabilities) are
+# addressed to ONE socket, NOT the canonical shared stream. The durable log
+# accumulates one pair PER historical connect; the RAW read paths must surface
+# NONE of them (a connecting client gets its OWN fresh handshake), so a cold-read
+# of a multi-connect session must not show duplicate "Connected to session" /
+# capabilities pairs, and must equal a SINGLE live connect's visible handshake set
+# (which is empty for both — the read paths drop ALL of them).
+# ---------------------------------------------------------------------------
+
+
+class _CapsTransport:
+    """Minimal transport exposing the capabilities the handshake serializes."""
+
+    def __init__(self) -> None:
+        from niuu.ports.cli.transport import TransportCapabilities
+
+        self.capabilities = TransportCapabilities()
+
+
+async def _simulate_browser_handshake(broker: Broker) -> _RecordingWebSocket:
+    """Replay the broker's REAL per-connect handshake send for ONE browser connect.
+
+    Sends the SAME two broker-originated first-connect frames ``handle_websocket``
+    sends — the ``system`` "Connected to session …" welcome (stamped with the
+    per-connect marker) and the ``capabilities`` catalog — through the SAME
+    persist-before-send choke point (``_safe_send_broker_frame_to``), so each
+    connect appends one welcome + one capabilities pair to the durable buffer
+    exactly as a live connect would.
+    """
+    from dataclasses import asdict
+
+    from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
+
+    ws = _RecordingWebSocket()
+    await broker._safe_send_broker_frame_to(
+        ws,
+        {
+            "type": "system",
+            "content": f"Connected to session {broker.session_id}",
+            PER_CONNECT_MARKER: True,
+        },
+    )
+    caps = {"type": "capabilities", **asdict(broker._transport.capabilities)}
+    await broker._safe_send_broker_frame_to(ws, caps)
+    return ws
+
+
+def _handshake_frames(payloads: list[dict]) -> list[dict]:
+    """The per-connect handshake frames in a payload stream (welcome + caps)."""
+    from niuu.domain.transcript_reducer import is_per_connect_ephemeral
+
+    return [p for p in payloads if is_per_connect_ephemeral(p.get("type", ""), p)]
+
+
+class TestPerConnectHandshakeExclusionINV5:
+    async def _broker(self, session_id: UUID, tmp_path) -> Broker:
+        broker = Broker(
+            settings=SkuldSettings(
+                volundr_api_url="http://harness.invalid",
+                event_log_enabled=True,
+                session={"id": str(session_id), "workspace_dir": str(tmp_path)},
+            )
+        )
+
+        async def _get_client() -> _FakeHttpClient:
+            return _FakeHttpClient()
+
+        broker._get_http_client = _get_client  # type: ignore[assignment]
+        broker._transport = _CapsTransport()  # type: ignore[assignment]
+        return broker
+
+    async def _log_after(self, broker: Broker, session_id: UUID) -> InMemoryLog:
+        repo = InMemoryLog()
+        await repo.append(_buffer_to_log_entries(broker, session_id))
+        return repo
+
+    async def test_multi_connect_cold_read_has_no_duplicate_handshake_pairs(
+        self, session_id, tmp_path
+    ):
+        broker = await self._broker(session_id, tmp_path)
+
+        # TWO browser connects: the durable log accumulates TWO welcome+caps pairs.
+        ws1 = await _simulate_browser_handshake(broker)
+        ws2 = await _simulate_browser_handshake(broker)
+        # Each LIVE socket saw exactly ONE pair — its own.
+        assert _handshake_frames(ws1.frames) == ws1.frames
+        assert len(ws1.frames) == 2
+        assert len(ws2.frames) == 2
+
+        repo = await self._log_after(broker, session_id)
+
+        # The raw durable log is a superset — it carries BOTH historical pairs.
+        from niuu.domain.transcript_reducer import is_per_connect_ephemeral
+
+        raw = await repo.read_after(session_id, after_seq=0, limit=10_000)
+        raw_handshakes = [e for e in raw if is_per_connect_ephemeral(e.kind, e.payload)]
+        assert len(raw_handshakes) == 4  # two welcome + two capabilities
+
+        # The cold-read surfaces NEITHER historical pair — a connecting client gets
+        # its own fresh handshake, so no duplicates (and in fact none at all).
+        cold = [row["payload"] for row in _cold_read(repo, session_id)]
+        assert _handshake_frames(cold) == []
+        welcomes = [p for p in cold if "Connected to session" in str(p.get("content", ""))]
+        assert welcomes == []
+        assert [p for p in cold if p.get("type") == "capabilities"] == []
+
+    async def test_cold_read_equals_single_live_connect_visible_set(self, session_id, tmp_path):
+        broker = await self._broker(session_id, tmp_path)
+        await _simulate_browser_handshake(broker)
+        await _simulate_browser_handshake(broker)
+        repo = await self._log_after(broker, session_id)
+
+        # A SINGLE live connect's VISIBLE handshake set on the read paths is empty
+        # (the connecting client gets its own fresh pair out-of-band, not from the
+        # replayed log). The multi-connect cold-read must equal that: empty.
+        cold = [row["payload"] for row in _cold_read(repo, session_id)]
+        replay = _replay_after_zero(repo, session_id)
+        assert _handshake_frames(cold) == []
+        assert _handshake_frames(replay) == []
+        # And cold-read == replay frame-for-frame (both drop every handshake).
+        assert cold == replay
+
+
+# ---------------------------------------------------------------------------
 # INV-10 — visibility parity: show_internal=true unhides identically, and the
 # raw (ungated) stream is the SAME on every read path.
 # ---------------------------------------------------------------------------
+
+
+class TestConfiguredVisibilityDefaultParityINV10:
+    """M-7: the live channel default, the replay default, and the cold-read default
+    all read from ONE configured source — flip the configured default and ALL THREE
+    move together (no hardcoded literal on the live path)."""
+
+    async def _live_channel_default(self, session_id, tmp_path, *, flag: bool) -> bool:
+        """Drive the REAL broker handshake with the configured flag and report the
+        resulting live ``WebSocketChannel.show_internal`` (the live path's default)."""
+        from starlette.websockets import WebSocketDisconnect as _WSDisconnect
+
+        from niuu.ports.cli.transport import TransportCapabilities
+
+        broker = Broker(
+            settings=SkuldSettings(
+                volundr_api_url="http://harness.invalid",
+                event_log_enabled=True,
+                default_show_internal=flag,
+                session={"id": str(session_id), "workspace_dir": str(tmp_path)},
+            )
+        )
+
+        async def _get_client() -> _FakeHttpClient:
+            return _FakeHttpClient()
+
+        broker._get_http_client = _get_client  # type: ignore[assignment]
+
+        class _T:
+            is_alive = True
+            capabilities = TransportCapabilities()
+
+            async def start(self) -> None:  # pragma: no cover - is_alive short-circuits
+                return None
+
+        broker._transport = _T()  # type: ignore[assignment]
+
+        class _StubWS:
+            async def accept(self) -> None:
+                return None
+
+            async def send_json(self, _payload: dict) -> None:
+                return None
+
+            async def send_text(self, _text: str) -> None:
+                return None
+
+            async def receive_json(self) -> dict:
+                # Exit the receive loop right after the handshake.
+                raise _WSDisconnect()
+
+            async def close(self, code: int = 1000) -> None:
+                return None
+
+        broker._update_jwt_from_websocket = lambda _ws: None  # type: ignore[assignment]
+
+        # The handshake registers the live channel and the disconnect tears it down
+        # in `finally`, so capture it AT add-time (its show_internal is fixed at
+        # construction from the configured default — the M-7 surface under test).
+        added: list = []
+        real_add = broker._channels.add
+
+        def _spy_add(channel) -> None:
+            if channel.channel_type == "browser":
+                added.append(channel)
+            real_add(channel)
+
+        broker._channels.add = _spy_add  # type: ignore[assignment]
+        await broker.handle_websocket(_StubWS())
+
+        assert added, "the broker registered no live browser channel"
+        return added[0].show_internal
+
+    @pytest.mark.parametrize("flag", [False, True])
+    async def test_all_three_defaults_move_with_the_config(self, session_id, tmp_path, flag):
+        # (1) LIVE channel default — read from SkuldSettings.default_show_internal.
+        live_default = await self._live_channel_default(session_id, tmp_path, flag=flag)
+        assert live_default is flag
+
+        # Seed a log with an internal tool_use block.
+        from datetime import UTC, datetime
+
+        repo = InMemoryLog()
+        await repo.append(
+            [
+                SessionLogEntry(
+                    session_id=session_id,
+                    seq=1,
+                    kind="assistant",
+                    payload={
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "hi"},
+                                {"type": "tool_use", "id": "t1", "name": "R", "input": {}},
+                            ],
+                        },
+                    },
+                    ts=datetime.now(UTC),
+                )
+            ]
+        )
+
+        # (2) COLD-READ default — create_session_log_router(default_show_internal=flag).
+        app = FastAPI()
+        app.include_router(
+            create_session_log_router(repo, session_service=None, default_show_internal=flag)
+        )
+        cold = TestClient(app).get(f"/api/v1/forge/sessions/{session_id}/log").json()
+        cold_block_types = [
+            b.get("type")
+            for row in cold
+            if row["kind"] == "assistant"
+            for b in row["payload"]["message"]["content"]
+        ]
+
+        # (3) REPLAY default — ReplayConfig(default_show_internal=flag).
+        cfg = ReplayConfig(
+            enabled=True, fixtures_enabled=False, max_gap_seconds=0.0, default_show_internal=flag
+        )
+        rapp = FastAPI()
+        rapp.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
+        with TestClient(rapp).websocket_connect(
+            f"/api/v1/forge/sessions/{session_id}/replay?preamble=false"
+        ) as ws:
+            replay: list[dict] = []
+            try:
+                while True:
+                    replay.append(ws.receive_json())
+            except WebSocketDisconnect:
+                pass
+        replay_block_types = [
+            b.get("type")
+            for f in replay
+            if f.get("type") == "assistant"
+            for b in f["message"]["content"]
+        ]
+
+        # All three move together: when the configured default is True the internal
+        # tool_use block is SHOWN on cold-read and replay (and the live channel
+        # passes internals through); when False it is HIDDEN on both read paths (and
+        # the live channel filters it). The live default boolean equals the flag, and
+        # the two read paths' visible block sets agree.
+        assert cold_block_types == replay_block_types
+        if flag:
+            assert "tool_use" in cold_block_types
+        else:
+            assert "tool_use" not in cold_block_types
+            assert cold_block_types == ["text"]
 
 
 class TestVisibilityParityINV10:

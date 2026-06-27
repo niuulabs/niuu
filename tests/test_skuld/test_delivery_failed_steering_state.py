@@ -277,6 +277,99 @@ class TestTerminalDeliveryFailureSteeringState:
             )
 
 
+class TestBackstopExcludesInFlightDelivery:
+    """M-1 (SRD §3.4): the non-native pending->active backstop must NEVER flip a steer whose
+    delivery is still in flight (mid-retry). Such a turn has not reached the agent, so marking it
+    "active" would be a false "consumed"; when its delivery terminally fails it must end "failed".
+    """
+
+    @pytest.mark.asyncio
+    async def test_inflight_turn_not_flipped_active_by_backstop_ends_failed(self, tmp_path):
+        """Interleave: dispatch a steer, and WHILE its delivery is still failing/retrying inject a
+        transport ``error`` frame that fires the non-native backstop. The undelivered turn must NOT
+        be flipped to "active" by that backstop, and once delivery terminally fails it must end
+        steering_state == "failed" — never "active". The durable rebuild must agree.
+
+        Before the M-1 fix the backstop flipped the still-undelivered turn to "active", and the
+        later terminal failure saw state=="active" and returned False (leaving it "active") — a
+        durable transcript that claims a message the agent never received was consumed."""
+        b = _broker(tmp_path)
+
+        # The transport (non-native: default capabilities => steering_mode="none") fails every
+        # send attempt. On the FIRST attempt — while the deliver task is still mid-retry and the
+        # turn is therefore in _delivering_msg_ids — it injects an out-of-band transport `error`
+        # frame, which drives _handle_cli_event into the pending->active backstop. The backstop
+        # must EXCLUDE this in-flight turn.
+        injected = {"count": 0}
+
+        async def _failing_send(*_args, **_kwargs):
+            injected["count"] += 1
+            if injected["count"] == 1:
+                # Out-of-band terminal-ish transport frame for some OTHER activity; in the buggy
+                # code this trips the backstop and falsely "consumes" the pending steer.
+                await b._handle_cli_event({"type": "error", "content": "unrelated transport blip"})
+            raise RuntimeError("input channel wedged")
+
+        b._transport.send_message = AsyncMock(side_effect=_failing_send)
+
+        await b._dispatch_browser_message({"content": "steer mid-flight", "request_id": "rq-mf"})
+        await _settle_delivery()
+
+        # Every attempt ran (bounded retry exhausted) and the backstop fired at least once.
+        assert b._transport.send_message.await_count == _MAX_ATTEMPTS
+
+        # The live in-memory turn ended FAILED — the backstop never falsely flipped it active.
+        live_turn = next(t for t in b._conversation_turns if t.role == "user")
+        assert live_turn.metadata.get("steering_state") == "failed", (
+            "an in-flight, never-delivered steer must end 'failed', never 'active' (M-1)"
+        )
+
+        # No user_active was broadcast for this turn, and no success delivery ack was emitted.
+        payloads = _buffer_payloads(b)
+        confirmed = [p for p in payloads if p.get("type") == "user_confirmed"]
+        assert len(confirmed) == 1
+        turn_id = confirmed[0]["id"]
+        assert not any(
+            p.get("type") == "user_active" and p.get("id") == turn_id for p in payloads
+        ), "the backstop must not broadcast user_active for a never-delivered steer"
+        assert not any(p.get("type") == "user_delivered" for p in payloads)
+
+        # Independent reconstruction and the SHARED reducer both agree: pending -> failed.
+        transitions = _reconstruct_steering(payloads)
+        assert transitions.get(turn_id) == ["pending", "failed"], (
+            f"logged lifecycle must be pending->failed, got {transitions.get(turn_id)!r}"
+        )
+        result = reduce_frames(_frames_from_buffer(b))
+        rebuilt = next(t for t in result.turns if t["role"] == "user")
+        assert rebuilt["id"] == turn_id
+        assert rebuilt["metadata"]["steering_state"] == "failed", (
+            "INV-7: the durable rebuild must show 'failed', proving live == durable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_still_flips_delivered_pending_turn(self, tmp_path):
+        """Guard against over-correction: a turn whose delivery has ALREADY succeeded (so it is no
+        longer in _delivering_msg_ids) and sits pending awaiting the consumption signal must still
+        be flipped to "active" by the non-native backstop. The exclusion is in-flight-only."""
+        b = _broker(tmp_path)
+        b._transport.send_message = AsyncMock(return_value=None)
+
+        await b._dispatch_browser_message({"content": "lands cleanly", "request_id": "rq-ok"})
+        await _settle_delivery()
+
+        live_turn = next(t for t in b._conversation_turns if t.role == "user")
+        # Delivered, but not yet consumed: still pending and no longer in flight.
+        assert live_turn.metadata.get("steering_state") == "pending"
+        assert live_turn.id not in b._delivering_msg_ids
+
+        # A non-native transport frame now fires the backstop — it SHOULD flip this delivered turn.
+        await b._handle_cli_event({"type": "error", "content": "turn errored out"})
+
+        assert live_turn.metadata.get("steering_state") == "active", (
+            "a delivered-but-unconsumed pending turn must still be flipped by the backstop"
+        )
+
+
 class TestMalformedInboundDoesNotTearDown:
     """INV-7 malformed-inbound at the DISPATCH tier (distinct from the handle_websocket-level
     coverage in test_broker.py): a malformed frame fed straight to _dispatch_browser_message

@@ -66,30 +66,43 @@ class SkuldPortRegistry:
         # Optional async hook invoked when the WS proxy cannot reach a live pod,
         # so the persisted Session row self-heals (status corrected, endpoint
         # cleared) instead of leaving a stale RUNNING tombstone. Set by the host
-        # composition root via set_reconcile_hook().
-        self._reconcile_hook: Callable[[str], Awaitable[None]] | None = None
+        # composition root via set_reconcile_hook(). The hook is pod-authoritative
+        # and reports back whether the session is CONFIRMED dead (True) or still
+        # genuinely RUNNING (False) — a transient broker-leg blip on a live pod
+        # must NOT drop the port (M-8).
+        self._reconcile_hook: Callable[[str], Awaitable[bool]] | None = None
 
-    def set_reconcile_hook(self, hook: Callable[[str], Awaitable[None]]) -> None:
-        """Inject the session-row reconcile callback used on a dead-pod proxy."""
+    def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
+        """Inject the session-row reconcile callback used on a dead-pod proxy.
+
+        The hook returns ``True`` when the pod-authoritative reconcile CONFIRMS the
+        session is dead (STOPPED/FAILED) and ``False`` when it is still RUNNING.
+        """
         self._reconcile_hook = hook
 
-    async def reconcile_dead(self, session_id: str) -> None:
+    async def reconcile_dead(self, session_id: str) -> bool:
         """Reconcile a session whose pod the proxy could not reach (best effort).
 
         Pod-status authoritative on the Volundr side: if the pod is in fact still
         alive the row is left untouched. Failures must never block the proxy's
         close path, so they are swallowed.
+
+        Returns ``True`` only when the reconcile CONFIRMS the session is dead
+        (STOPPED/FAILED). On a still-RUNNING pod (transient blip), a missing hook,
+        or a hook error it returns ``False`` so the caller RETAINS the live port
+        rather than dropping a port it could not confirm dead (M-8).
         """
         if self._reconcile_hook is None:
-            return
+            return False
         try:
-            await self._reconcile_hook(session_id)
+            return await self._reconcile_hook(session_id)
         except Exception:
             logger.warning(
                 "Reconcile hook failed for dead-pod session %s",
                 _sanitize_log(session_id),
                 exc_info=True,
             )
+            return False
 
     def register(self, session_id: str, port: int) -> None:
         self._ports[session_id] = port
@@ -751,13 +764,17 @@ def build_root_app(
             except Exception:
                 logger.debug("Skuld WS proxy ended for session %s", _sanitize_log(session_id))
             finally:
-                # If we never established the broker leg, the registered port is a
-                # dead tombstone: reconcile the row so the stale RUNNING status
-                # self-heals, drop the dead port, and close deterministically
-                # (4410) instead of leaving the browser to retry a corpse.
+                # If we never established the broker leg, ask the pod-authoritative
+                # reconcile whether the pod is actually gone. Only when it CONFIRMS
+                # the session is dead (STOPPED/FAILED) do we drop the registered
+                # port — otherwise a transient broker-leg blip on a still-RUNNING
+                # pod would orphan a live session at port-is-None forever (M-8). The
+                # browser is always closed with 4410 so it can branch/retry; on a
+                # transient blip the retained port lets the very next connect succeed.
                 if not connected:
-                    skuld_reg.unregister(session_id)
-                    await skuld_reg.reconcile_dead(session_id)
+                    confirmed_dead = await skuld_reg.reconcile_dead(session_id)
+                    if confirmed_dead:
+                        skuld_reg.unregister(session_id)
                     with suppress(Exception):
                         await websocket.close(code=4410, reason="Session is no longer running")
                     return

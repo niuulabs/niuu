@@ -5105,6 +5105,108 @@ class TestBrokerRoomBridge:
         assert b._conversation_turns[-1].participant_id == "skuld-room"
 
     @pytest.mark.asyncio
+    async def test_suppressed_room_echo_is_not_logged_so_read_paths_equal_live(self, tmp_path):
+        # M-6 / INV-5: in room mode the raw user/assistant/content_block_delta/result
+        # transport echoes are SUPPRESSED from the live broadcast while an explicit
+        # human response is pending (their content is surfaced as a room_message
+        # instead). A frame that is never broadcast must never be LOGGED either, or it
+        # resurfaces on cold-read/replay as a duplicate the live viewer never saw.
+        # This drives a real Broker with a real recording live channel and asserts
+        # the cold-read AND replay of the session == the live visible stream — no
+        # duplicated assistant/result content. Sibling of
+        # test_explicit_human_room_response_is_room_only (which asserts the live
+        # suppression); this one closes the loop to the durable read paths.
+        # Read-path helpers + fakes are reused by IMPORT from the roundtrip suite
+        # (one in-memory durable-log fake, one cold-read, one replay-as-live).
+        from skuld.channels import WebSocketChannel
+        from tests.test_adapters.test_rest_session_log import InMemoryLog
+        from tests.test_skuld.test_roundtrip_read_path_equality import (
+            _buffer_to_log_entries,
+            _cold_read,
+            _drain_background_tasks,
+            _FakeHttpClient,
+            _RecordingWebSocket,
+            _replay_after_zero,
+        )
+
+        session_id = uuid.uuid4()
+        b = Broker(
+            settings=SkuldSettings(
+                volundr_api_url="http://harness.invalid",
+                event_log_enabled=True,
+                session={"id": str(session_id), "workspace_dir": str(tmp_path)},
+                room={"enabled": True},
+            )
+        )
+
+        async def _get_client() -> _FakeHttpClient:
+            return _FakeHttpClient()
+
+        b._get_http_client = _get_client  # type: ignore[assignment]
+        transport = AsyncMock()
+        transport.is_alive = True
+        # Non-native steering: keeps the result/assistant backstop a pure no-op here.
+        transport.capabilities = TransportCapabilities(steering_mode="live")
+        b._transport = transport
+        b._mesh_adapter = MagicMock()
+        b._mesh_adapter.peer_id = "skuld-room"
+        assert b._room_bridge is not None
+        await b._room_bridge.register_mesh_peer(
+            "skuld-room", "Skuld", display_name="Skuld", participant_type="skuld"
+        )
+
+        # The REAL live broadcast gate records exactly what a connected browser sees.
+        live_ws = _RecordingWebSocket()
+        b._channels.add(WebSocketChannel(live_ws, show_internal=True))
+
+        # An explicit human room message arms suppression for the agent's reply.
+        await b.handle_human_room_message("Who is in this flock?", source="telegram")
+
+        # The agent replies: assistant text + a result. BOTH are suppressed echoes.
+        await b._handle_cli_event(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "coder, reviewer, verifier."}]},
+            }
+        )
+        await b._handle_cli_event(
+            {"type": "result", "result": "coder, reviewer, verifier.", "modelUsage": {}}
+        )
+        await _drain_background_tasks()
+
+        # The suppressed raw echoes never reached the live channel. The agent's
+        # words are surfaced ONLY as a room_message (a separate room surface), never
+        # as a raw assistant/result frame.
+        live_types = [f.get("type") for f in live_ws.frames]
+        assert "assistant" not in live_types
+        assert "result" not in live_types
+        assert "room_message" in live_types  # content WAS surfaced — just room-only
+
+        # Drain the durable buffer to the shared log and read it back two ways.
+        repo = InMemoryLog()
+        await repo.append(_buffer_to_log_entries(b, session_id))
+        cold = [row["payload"] for row in _cold_read(repo, session_id)]
+        replay = _replay_after_zero(repo, session_id)
+
+        # The durable log carries NO suppressed echo, so the read paths show none of
+        # the duplicated assistant/result content the live viewer never saw.
+        cold_types = [p.get("type") for p in cold]
+        assert "assistant" not in cold_types
+        assert "result" not in cold_types
+        # The two read paths agree frame-for-frame (one shared log, one gate).
+        assert cold == replay
+
+        # And the read-path stream equals the live stream restricted to the SESSION
+        # log surface (room_message/room_activity are a separate room surface that
+        # the session_event_log never carried, so they are excluded from BOTH sides
+        # of this equality — what remains is the suppressed-echo content, which is
+        # absent from both: no duplication leaked onto the read paths).
+        def _session_surface(frames: list[dict]) -> list[dict]:
+            return [f for f in frames if not str(f.get("type", "")).startswith("room_")]
+
+        assert _session_surface(live_ws.frames) == cold
+
+    @pytest.mark.asyncio
     async def test_get_room_participants_returns_snapshot(self, room_settings):
         b = Broker(settings=room_settings)
         assert b._room_bridge is not None

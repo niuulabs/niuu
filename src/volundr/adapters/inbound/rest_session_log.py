@@ -31,7 +31,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
-from niuu.domain.transcript_reducer import NON_BROADCAST_KINDS
+from niuu.domain.transcript_reducer import is_read_path_excluded
 from skuld.channels import filter_internal_blocks
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository
@@ -43,6 +43,15 @@ MAX_LOG_BATCH = 1000
 DEFAULT_REPLAY_LIMIT = 1000
 MAX_REPLAY_LIMIT = 5000
 MAX_KIND_LENGTH = 64
+
+# INV-3c conflict sentinel. ``append`` is ON CONFLICT DO NOTHING, so a frame that
+# re-uses a stored seq with a DISTINCT payload is silently swallowed. The ingest
+# path detects that case (off the hot insert) and surfaces it LOUDLY: a warning,
+# a ``conflicts`` response field, AND a queryable ``log_conflict`` sentinel frame
+# appended at the tail — mirroring the ``log_gap`` overflow sentinel so any reader
+# replaying the log can DETECT the collision instead of inferring nothing happened.
+LOG_CONFLICT_KIND = "log_conflict"
+LOG_CONFLICT_REASON = "distinct_payload_same_seq"
 
 # Unified read-path visibility default (SRD FR-7 / INV-10): internal blocks are
 # HIDDEN by default on every read path. Kept in lock-step with the live
@@ -76,6 +85,38 @@ def _gate_entries(entries: list[SessionLogEntry], *, show_internal: bool) -> lis
     return gated
 
 
+async def _append_conflict_sentinel(
+    log_repository: SessionEventLogRepository,
+    *,
+    session_id: UUID,
+    conflicting_seqs: list[int],
+    ts: datetime,
+) -> None:
+    """Append a queryable ``log_conflict`` sentinel at the tail (INV-3c).
+
+    Mirrors the ``log_gap`` overflow sentinel: a detectable marker frame (NOT
+    content — the shared reducer ignores ``log_conflict``) so a reader replaying
+    the durable log can SEE that a distinct payload collided with an already-owned
+    seq, instead of the collision vanishing into ON CONFLICT DO NOTHING. The
+    sentinel rides at ``latest_seq + 1`` — its own fresh seq, so it never collides.
+    """
+    head = await log_repository.latest_seq(session_id)
+    sentinel = SessionLogEntry(
+        session_id=session_id,
+        seq=head + 1,
+        kind=LOG_CONFLICT_KIND,
+        payload={
+            "type": LOG_CONFLICT_KIND,
+            "reason": LOG_CONFLICT_REASON,
+            "conflicting_seqs": conflicting_seqs,
+        },
+        ts=ts,
+        role=None,
+        request_id=None,
+    )
+    await log_repository.append([sentinel])
+
+
 class LogEntryIngest(BaseModel):
     """A single full-fidelity frame submitted by the producer."""
 
@@ -103,6 +144,15 @@ class LogAppendResponse(BaseModel):
 
     submitted: int = Field(description="Number of entries submitted")
     latest_seq: int = Field(description="Highest seq now stored for the session")
+    conflicts: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Seqs whose stored frame DIFFERS from the submitted payload (INV-3c). "
+            "Non-empty means a distinct payload re-used an already-owned seq and was "
+            "swallowed by ON CONFLICT DO NOTHING; a queryable 'log_conflict' sentinel "
+            "frame is also appended at the tail so a replaying reader can detect it."
+        ),
+    )
 
 
 class LogHeadResponse(BaseModel):
@@ -194,8 +244,24 @@ def create_session_log_router(
             for item in data.entries
         ]
         submitted = await log_repository.append(entries)
+        # INV-3c: the hot insert (ON CONFLICT DO NOTHING) silently swallows a
+        # DISTINCT payload re-using an already-stored seq. Run the off-hot-path
+        # detection AFTER append (so a brand-new seq this batch just wrote is NOT
+        # flagged — its stored row now equals the candidate) and surface any real
+        # collision LOUDLY instead of letting it vanish.
+        conflicts = await log_repository.detect_conflicts(entries)
+        if conflicts:
+            logger.warning(
+                "session_event_log conflict: distinct payload re-used stored seq(s) "
+                "%s for session %s — original frame retained (ON CONFLICT DO NOTHING)",
+                conflicts,
+                session_id,
+            )
+            await _append_conflict_sentinel(
+                log_repository, session_id=session_id, conflicting_seqs=conflicts, ts=now
+            )
         latest = await log_repository.latest_seq(session_id)
-        return LogAppendResponse(submitted=submitted, latest_seq=latest)
+        return LogAppendResponse(submitted=submitted, latest_seq=latest, conflicts=conflicts)
 
     @router.get(
         "/sessions/{session_id}/log/head",
@@ -243,12 +309,15 @@ def create_session_log_router(
         same internal-visibility filter as the live and replay read paths."""
         await _check_access(request, session_id, "read")
         entries = await log_repository.read_after(session_id, after_seq=after, limit=limit)
-        # Drop synthetic reducer-seed rows (e.g. conversation.turn) from the RAW
-        # wire stream ALWAYS — independent of show_internal. They are never
-        # broadcast live, so surfacing them here would break literal frame-for-frame
-        # live==replay==cold equality (SRD INV-5). They remain in the durable log
-        # (read_after) and still authoritatively drive the reduce/rebuild path.
-        streamable = [e for e in entries if e.kind not in NON_BROADCAST_KINDS]
+        # Drop frames that were never on the canonical shared wire from the RAW
+        # wire stream ALWAYS — independent of show_internal — so literal
+        # frame-for-frame live==replay==cold equality holds (SRD INV-5). The shared
+        # predicate covers BOTH synthetic reducer-seed rows (conversation.turn,
+        # never broadcast) AND per-connect handshakes (system welcome + capabilities,
+        # broadcast to ONE socket only — a connecting client gets its own fresh pair).
+        # They remain in the durable log (read_after) and still authoritatively drive
+        # the reduce/rebuild path.
+        streamable = [e for e in entries if not is_read_path_excluded(e.kind, e.payload)]
         gated = _gate_entries(streamable, show_internal=show_internal)
         return [SessionLogEntryResponse.from_entry(e) for e in gated]
 

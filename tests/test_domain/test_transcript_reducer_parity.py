@@ -271,6 +271,81 @@ async def test_parity_full_turn_text_reasoning_tools_user_and_result(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parity_tool_use_only_turn_closed_by_nonempty_result(tmp_path):
+    """B-2 / INV-4 / FR-3: a turn that streamed NO assistant text — only a tool_use block —
+    closed by a result carrying text. The live viewer saw the result text as the turn content;
+    the rebuild MUST reproduce that exact content. (Pre-fix the live path injected "DONE" but the
+    shared reducer dropped it, because the turn's non-empty parts made it not ``is_empty``.)
+    """
+    b = _broker(tmp_path)
+    frames = [
+        {"type": "user", "uuid": "U-3", "message": {"role": "user", "content": "run it"}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t9", "name": "Bash", "input": {"cmd": "make"}},
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "t9", "content": "ok"}]},
+        },
+        # result closes the turn with text but the turn streamed no assistant prose
+        {
+            "type": "result",
+            "result": "DONE",
+            "stop_reason": "end_turn",
+            "modelUsage": {"claude-x": {"inputTokens": 3, "outputTokens": 1, "costUSD": 0.001}},
+        },
+    ]
+    await _drive(b, frames)
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    assert [t["role"] for t in live] == ["user", "assistant"]
+    # the live content is the result text...
+    assert live[1]["content"] == "DONE"
+    # ...and the rebuild reproduces it EXACTLY (the single source of truth, no fork)
+    assert rebuilt[1]["content"] == "DONE"
+    assert live == rebuilt
+
+
+@pytest.mark.asyncio
+async def test_parity_tool_use_only_turn_result_content_block_text(tmp_path):
+    """B-2: same shape, but the result text lives in a ``content`` text block (no top-level
+    ``result`` string). Both paths must fold that block's text into the turn content."""
+    b = _broker(tmp_path)
+    frames = [
+        {"type": "user", "uuid": "U-4", "message": {"role": "user", "content": "go"}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t5", "name": "Bash", "input": {}},
+                ]
+            },
+        },
+        {
+            "type": "result",
+            "result": "",
+            "content": [{"type": "text", "text": "all green"}],
+            "modelUsage": {},
+        },
+    ]
+    await _drive(b, frames)
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    assert live[-1]["content"] == "all green"
+    assert rebuilt[-1]["content"] == "all green"
+    assert live == rebuilt
+
+
+@pytest.mark.asyncio
 async def test_parity_user_confirmed_and_user_dedup_single_turn(tmp_path):
     """Epic-A carry-over: ONE human message logged as BOTH `user` and `user_confirmed`
     (same id/content) folds to a SINGLE user turn on both paths — never a doubled turn.

@@ -68,6 +68,69 @@ _REASONING_TAIL = 500
 # reads them as authoritative seeds — only the verbatim wire stream drops them.
 NON_BROADCAST_KINDS: frozenset[str] = frozenset({"conversation.turn"})
 
+# Per-connect handshake/preamble frames: addressed to ONE freshly-connecting
+# socket, NOT the canonical shared stream (SRD FR-7 / INV-5). On every browser
+# connect the broker emits a ``system`` "Connected to session …" welcome and a
+# ``capabilities`` catalog to THAT socket only (via ``_safe_send_broker_frame_to``).
+# A LIVE client sees exactly ONE such pair — its own. But the durable log
+# accumulates one pair PER historical connect (each logged with fresh seqs, INV-1
+# superset preserved), so a cold-read or replay-as-live tail would re-stream every
+# historical handshake and a reconnected session's read paths would surface
+# system+capabilities frames a live viewer never saw — breaking INV-5.
+#
+# These frames ARE broadcast (to one socket), so they are NOT in
+# ``NON_BROADCAST_KINDS`` (whose docstring pins it to "never broadcast live").
+# Instead the RAW read paths (cold-read GET /log, replay-as-live tail) drop them
+# the same mechanism as ``conversation.turn``: a connecting client always gets its
+# OWN fresh handshake/preamble, so surfacing historical ones is pure duplication.
+#
+# ``capabilities`` is unconditionally a per-connect frame (its only producer is the
+# first-connect handshake). The ``system`` welcome shares its kind with genuine CLI
+# ``system`` frames (e.g. ``system``/``init``), so it CANNOT be excluded by kind
+# alone — the broker stamps it with the ``PER_CONNECT_MARKER`` payload key, which
+# :func:`is_per_connect_ephemeral` keys on. Genuine CLI ``system`` frames carry no
+# such marker and pass through untouched.
+PER_CONNECT_EPHEMERAL_KINDS: frozenset[str] = frozenset({"capabilities"})
+
+# Inert payload marker the broker stamps onto a per-connect handshake frame whose
+# kind is NOT uniquely ephemeral (the ``system`` welcome). The read paths key on it
+# via :func:`is_per_connect_ephemeral`. It is inert on the wire — a live client that
+# receives its own fresh handshake ignores the extra key.
+PER_CONNECT_MARKER: str = "_per_connect_handshake"
+
+
+def is_per_connect_ephemeral(kind: str, payload: dict | None) -> bool:
+    """True if a durable-log frame is a per-connect handshake/preamble (SRD INV-5).
+
+    Per-connect handshakes are addressed to ONE freshly-connecting socket, never the
+    canonical shared stream, so the RAW read paths must not surface HISTORICAL ones
+    (a connecting client always gets its own fresh pair). ``capabilities`` is always
+    such a frame; a ``system`` welcome is identified by the ``PER_CONNECT_MARKER``
+    payload key the broker stamps (so genuine CLI ``system`` frames are unaffected).
+    """
+    if kind in PER_CONNECT_EPHEMERAL_KINDS:
+        return True
+    return isinstance(payload, dict) and bool(payload.get(PER_CONNECT_MARKER))
+
+
+def is_read_path_excluded(kind: str, payload: dict | None) -> bool:
+    """True if a durable-log frame must be dropped from the RAW read-path streams.
+
+    The ONE place that decides what the cold-read (GET /log) and replay-as-live tail
+    exclude so literal frame-for-frame live==replay==cold equality holds (SRD INV-5),
+    independent of ``show_internal`` (a separate visibility concern). Two rationales,
+    both "this frame was never on the canonical shared wire":
+
+      * ``NON_BROADCAST_KINDS`` — synthetic reducer SEEDS (``conversation.turn``)
+        never broadcast to ANY channel; the reduce/rebuild path still reads them.
+      * per-connect handshakes (:func:`is_per_connect_ephemeral`) — broadcast to ONE
+        socket only; a connecting client gets its own fresh handshake.
+
+    The frames remain in the durable log (INV-1 superset); only the verbatim wire
+    projection drops them.
+    """
+    return kind in NON_BROADCAST_KINDS or is_per_connect_ephemeral(kind, payload)
+
 
 @runtime_checkable
 class Frame(Protocol):
@@ -246,6 +309,28 @@ def apply_tmux_rows(acc: TurnAccumulator, rows: list[str]) -> None:
     acc.pending_tmux_rows = rows
 
 
+def apply_result_content(acc: TurnAccumulator, payload: dict) -> None:
+    """Inject a ``result`` frame's text into the OPEN turn when no assistant text streamed yet.
+
+    The ONE policy shared by the live broker's result-close and the batch rebuild's result
+    branch (SRD INV-4 / FR-3 "one reducer"). A turn that only emitted tool_use blocks (so
+    ``acc.content`` is still empty) but is closed by a result carrying text — either the
+    top-level ``result`` string or a ``content`` text block — must surface that text as its
+    content on BOTH paths. The guard is "no streamed assistant text" (empty ``content``), NOT
+    ``is_empty()``: a tool_use-only turn has non-empty ``parts`` yet empty ``content``, and the
+    live viewer saw the result text, so a rebuild must too.
+    """
+    if acc.content:
+        return
+    text = str(payload.get("result", "") or "")
+    if not text:
+        for block in payload.get("content", []) or []:
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                text = block["text"]
+                break
+    acc.content = text
+
+
 # --------------------------------------------------------------------------- turn builders
 
 
@@ -365,6 +450,7 @@ _IGNORED_KINDS = frozenset(
         "tool_use",  # surfaced inside assistant frames; standalone tool_use is telemetry
         "tool_result",
         "log_gap",  # Epic-A overflow sentinel: a detectable hole marker, NOT content.
+        "log_conflict",  # INV-3c sentinel: a distinct-payload seq collision marker, NOT content.
     }
 )
 
@@ -461,8 +547,7 @@ def reduce_frames(
             continue
 
         if k == "result":
-            if acc.is_empty():
-                acc.content = str(p.get("result", "") or "")
+            apply_result_content(acc, p)
             acc.touch(ts, seq)
             flush(md=result_metadata(p))
             continue

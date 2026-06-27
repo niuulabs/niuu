@@ -145,6 +145,9 @@ def test_tool_result_only_user_enriches_assistant_no_user_turn():
     assert [t["role"] for t in res.turns] == ["assistant"]
     part_types = [p["type"] for p in res.turns[0]["parts"]]
     assert "tool_use" in part_types and "tool_result" in part_types
+    # The turn streamed NO assistant text (tool_use only), so the result frame's text is
+    # injected as the turn content — matching what a live viewer saw (B-2 / INV-4 / FR-3).
+    assert res.turns[0]["content"] == "done"
 
 
 def test_error_frame_flushes_then_error_turn():

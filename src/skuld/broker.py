@@ -42,8 +42,10 @@ from pydantic import BaseModel, Field
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.transcript_reducer import (
+    PER_CONNECT_MARKER,
     TurnAccumulator,
     apply_assistant_blocks,
+    apply_result_content,
     apply_text_delta,
     apply_thinking_delta,
     apply_tool_result_blocks,
@@ -1092,6 +1094,15 @@ class Broker:
         # card. Cleared on answer (browser ask_user_answer), in-terminal resolve
         # (ask_user.resolved), and turn completion (result).
         self._pending_ask_user_questions: dict[str, dict[str, Any]] = {}
+
+        # Msg ids whose transport delivery task is still in flight (mid-retry, not yet
+        # acked). A turn here is "pending" because it has NOT plausibly reached the
+        # agent yet, so the non-native pending->active backstop MUST exclude it: a
+        # transport frame for some OTHER turn must never flip a still-undelivered steer
+        # to "active" (a false "consumed"). On terminal delivery failure that turn ends
+        # "failed", never "active" (SRD §3.4 / INV-7). Populated when the deliver task
+        # starts, cleared in its finally.
+        self._delivering_msg_ids: set[str] = set()
 
         # Live plan + running-agents surfacing (Claude tmux). The latest `plan`
         # frame (Claude's TodoWrite task list) and the set of running agents
@@ -3035,9 +3046,27 @@ class Broker:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
 
-        # Durably capture EVERY frame first — before any channel/broadcast logic —
-        # so agent output is never lost when no client is attached.
-        self._enqueue_event_log(data)
+        # Room-mode suppression decision, computed BEFORE the enqueue (INV-5): while
+        # an explicit human room response is pending, the raw user/assistant/
+        # content_block_delta/result transport echoes are dropped from the LIVE
+        # broadcast (the same content is surfaced as a room_message via
+        # _emit_broker_frame / broadcast_cli_message). A frame that is never
+        # broadcast must never be logged either, or it would resurface on
+        # cold-read/replay as a duplicate the live viewer never saw. So skip the
+        # durable enqueue for exactly those suppressed echoes. Normal (non-room)
+        # logging is unchanged: outside a pending explicit response the count is 0,
+        # so suppress is False and every frame is logged as before.
+        suppress_channel_broadcast = (
+            event_type in {"user", "assistant", "content_block_delta", "result"}
+            and self._pending_explicit_human_response_count > 0
+        )
+
+        # Durably capture EVERY broadcast frame first — before any channel/broadcast
+        # logic — so agent output is never lost when no client is attached. The lone
+        # exception is a room-suppressed echo (above): not broadcast ⇒ not logged,
+        # keeping the durable log == the live stream (INV-5).
+        if not suppress_channel_broadcast:
+            self._enqueue_event_log(data)
 
         if event_type == "remote_control":
             # A remote-control transport reporting its pairing URL. Surface it as
@@ -3147,10 +3176,8 @@ class Broker:
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
         )
-        suppress_channel_broadcast = (
-            event_type in {"user", "assistant", "content_block_delta", "result"}
-            and self._pending_explicit_human_response_count > 0
-        )
+        # suppress_channel_broadcast was computed at the top (it also gates the
+        # durable enqueue so a never-broadcast room echo is never logged — INV-5).
         num_channels = self._channels.count
         logger.debug(
             "_handle_cli_event: forwarding to %d channel(s) suppress=%s",
@@ -3385,15 +3412,12 @@ class Broker:
             asyncio.create_task(self._report_usage(data))
             explicit_room_reply = self._pending_explicit_human_response_count > 0
 
-            # Flush pending assistant turn (HTTP streaming format sends result)
-            if not self._pending_assistant_content:
-                # Try to extract from result event itself
-                self._pending_assistant_content = data.get("result", "")
-                if not self._pending_assistant_content:
-                    for block in data.get("content", []):
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            self._pending_assistant_content = block.get("text", "")
-                            break
+            # Inject the result frame's text into the OPEN turn via the SHARED reducer policy —
+            # the SAME fold a later log rebuild applies — so a tool_use-only turn closed by a
+            # result with text surfaces that text identically on live and rebuild (INV-4/FR-3).
+            acc = self._pending_accumulator()
+            apply_result_content(acc, data)
+            self._pending_assistant_content = acc.content
             # Build metadata from the result frame via the SHARED reducer so the live turn's
             # {usage,cost,model,stop_reason} schema is byte-identical to a later log rebuild.
             turn_metadata = result_metadata(data)
@@ -3977,30 +4001,39 @@ class Broker:
         cfg = self._settings.delivery
         backoff = cfg.initial_backoff_seconds
         last_error: Exception | None = None
-        for attempt in range(1, cfg.max_attempts + 1):
-            try:
-                await self._attempt_transport_delivery(
-                    content, msg_id=msg_id, request_id=request_id
-                )
-                last_error = None
-                break
-            except Exception as exc:  # noqa: BLE001 - any send failure is retryable/terminal
-                last_error = exc
-                logger.warning(
-                    "user message delivery attempt %d/%d failed (request_id=%s): %s",
-                    attempt,
-                    cfg.max_attempts,
-                    _sanitize_log(request_id),
-                    _sanitize_log(str(exc)),
-                )
-                if attempt >= cfg.max_attempts:
+        # Mark the turn as in-flight so the non-native pending->active backstop EXCLUDES
+        # it: while we are still retrying, the agent could not have consumed this steer,
+        # so an unrelated transport frame must not flip it to "active". Cleared only once
+        # the outcome is decided (delivered ack emitted, or the turn marked failed) so the
+        # failure path stamps "failed" before the turn becomes backstop-eligible again.
+        self._delivering_msg_ids.add(msg_id)
+        try:
+            for attempt in range(1, cfg.max_attempts + 1):
+                try:
+                    await self._attempt_transport_delivery(
+                        content, msg_id=msg_id, request_id=request_id
+                    )
+                    last_error = None
                     break
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * cfg.backoff_multiplier, cfg.max_backoff_seconds)
+                except Exception as exc:  # noqa: BLE001 - any send failure is retryable/terminal
+                    last_error = exc
+                    logger.warning(
+                        "user message delivery attempt %d/%d failed (request_id=%s): %s",
+                        attempt,
+                        cfg.max_attempts,
+                        _sanitize_log(request_id),
+                        _sanitize_log(str(exc)),
+                    )
+                    if attempt >= cfg.max_attempts:
+                        break
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * cfg.backoff_multiplier, cfg.max_backoff_seconds)
 
-        if last_error is not None:
-            await self._fail_user_delivery(msg_id, request_id, last_error)
-            return
+            if last_error is not None:
+                await self._fail_user_delivery(msg_id, request_id, last_error)
+                return
+        finally:
+            self._delivering_msg_ids.discard(msg_id)
 
         await self._emit_delivery_ack(
             request_id,
@@ -4143,14 +4176,23 @@ class Broker:
         return isinstance(content, list) and len(content) > 0
 
     async def _activate_pending_user_turns_backstop(self) -> None:
-        """Flip EVERY still-pending user turn to active (the non-native floor). Persists once and
-        broadcasts one user_active per flipped turn. Idempotent: turns already active are skipped,
-        so an overlap with a precise signal sends no redundant work."""
+        """Flip every still-pending user turn the transport could plausibly have consumed to
+        active (the non-native floor). Persists once and broadcasts one user_active per flipped
+        turn. Idempotent: turns already active are skipped, so an overlap with a precise signal
+        sends no redundant work.
+
+        EXCLUDES turns whose delivery task is still in flight (``_delivering_msg_ids``): a steer
+        mid-retry has NOT reached the agent, so flipping it here would report a never-delivered
+        message as "active" (a false "consumed", SRD §3.4). Such a turn ends "failed" when its
+        delivery terminally fails — never "active"."""
         flipped: list[str] = []
         for turn in self._conversation_turns:
-            if turn.role == "user" and turn.metadata.get("steering_state") == "pending":
-                turn.metadata["steering_state"] = "active"
-                flipped.append(turn.id)
+            if turn.role != "user" or turn.metadata.get("steering_state") != "pending":
+                continue
+            if turn.id in self._delivering_msg_ids:
+                continue
+            turn.metadata["steering_state"] = "active"
+            flipped.append(turn.id)
         if not flipped:
             return
         self._save_conversation_history()
@@ -4802,12 +4844,28 @@ class Broker:
         if overflow <= 0:
             return
         dropped = self._event_log_buffer[:overflow]
-        first_dropped_seq = dropped[0]["seq"]
-        last_dropped_seq = dropped[-1]["seq"]
+        # True hole size: a prior overflow's sentinel may itself be among the frames
+        # dropped this round. Counting it as a single frame would UNDER-report under
+        # sustained overflow (the hole it stood for vanishes). Fold its accumulated
+        # ``dropped`` count back in, and carry the earliest covered seq forward, so the
+        # surviving sentinel always reports the TRUE size/range of the cumulative gap.
+        true_dropped = 0
+        first_dropped_seq = dropped[0].get("first_seq", dropped[0]["seq"])
+        last_dropped_seq = dropped[-1].get("last_seq", dropped[-1]["seq"])
+        for entry in dropped:
+            payload = entry.get("payload")
+            if isinstance(payload, dict) and payload.get("type") == "log_gap":
+                true_dropped += int(payload.get("dropped", 0))
+                first_dropped_seq = min(first_dropped_seq, payload.get("first_seq", entry["seq"]))
+                last_dropped_seq = max(last_dropped_seq, payload.get("last_seq", entry["seq"]))
+                continue
+            true_dropped += 1
+            first_dropped_seq = min(first_dropped_seq, entry["seq"])
+            last_dropped_seq = max(last_dropped_seq, entry["seq"])
         del self._event_log_buffer[:overflow]
         logger.warning(
             "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
-            overflow,
+            true_dropped,
         )
         # INV-2 durability floor: never leave a SILENT hole. Replace the dropped
         # frames with a single queryable sentinel so any reader can DETECT the
@@ -4820,7 +4878,7 @@ class Broker:
                 "kind": "log_gap",
                 "payload": {
                     "type": "log_gap",
-                    "dropped": overflow,
+                    "dropped": true_dropped,
                     "first_seq": first_dropped_seq,
                     "last_seq": last_dropped_seq,
                     "reason": "buffer_overflow",
@@ -5972,7 +6030,11 @@ class Broker:
         self._update_jwt_from_websocket(websocket)
 
         await websocket.accept()
-        channel = WebSocketChannel(websocket)
+        # Internal-visibility default comes from the ONE configured source (SRD
+        # FR-7 / INV-10) — NOT the hardcoded WebSocketChannel default — so the live
+        # channel, the replay tail, and the cold-read all read the same default and
+        # move together when it is flipped.
+        channel = WebSocketChannel(websocket, show_internal=self._settings.default_show_internal)
         self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
@@ -6016,10 +6078,19 @@ class Broker:
             # Report session start to timeline (once, on first connection)
             asyncio.create_task(self._report_session_start())
 
-            # Send welcome message (broker-originated first-connect frame: log first)
+            # Send welcome message (broker-originated first-connect frame: log first).
+            # PER-CONNECT handshake: addressed to THIS socket only, not the canonical
+            # shared stream. Mark it so the RAW read paths drop HISTORICAL welcomes
+            # (a connecting client always gets its own) — the system kind is shared
+            # with genuine CLI system frames, so it can't be excluded by kind alone
+            # (SRD INV-5). The marker is inert on the wire.
             if not await self._safe_send_broker_frame_to(
                 websocket,
-                {"type": "system", "content": f"Connected to session {self.session_id}"},
+                {
+                    "type": "system",
+                    "content": f"Connected to session {self.session_id}",
+                    PER_CONNECT_MARKER: True,
+                },
             ):
                 return
             logger.debug("handle_websocket: welcome message sent")

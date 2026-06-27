@@ -386,6 +386,13 @@ class SkuldSettings(BaseSettings):
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
     event_log_max_buffer: int = Field(default=50_000)
+    # Unified internal-visibility default for a freshly-connected live channel
+    # (SRD FR-7 / INV-10). The read paths thread the SAME configured default
+    # (``ReplayConfig.default_show_internal`` in volundr); a live ``WebSocketChannel``
+    # must read its default from ONE configured source too, not a hardcoded literal,
+    # so all three paths (live channel, replay tail, cold-read) move together.
+    # Default ``False`` (internal tool_use/tool_result HIDDEN), matching ReplayConfig.
+    default_show_internal: bool = Field(default=False)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)

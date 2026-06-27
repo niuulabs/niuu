@@ -89,6 +89,7 @@ from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.catalog import build_catalog
+from volundr.domain.models import SessionStatus
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
     ChronicleService,
@@ -836,11 +837,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # dead-session connect self-heals the stale RUNNING status (INV-9).
             if skuld_reg is not None and hasattr(skuld_reg, "set_reconcile_hook"):
 
-                async def _on_proxy_dead(session_id: str) -> None:
+                async def _on_proxy_dead(session_id: str) -> bool:
+                    # Pod-authoritative: report whether the reconcile CONFIRMS the
+                    # session is dead so the registry only drops the port for a
+                    # genuinely-gone pod, never on a transient broker-leg blip while
+                    # the pod is still RUNNING (M-8). A still-active row => retain.
                     try:
-                        await session_service.mark_session_dead(UUID(session_id))
+                        reconciled = await session_service.mark_session_dead(UUID(session_id))
                     except ValueError:
                         logger.warning("WS proxy reconcile for non-UUID session id %s", session_id)
+                        return False
+                    if reconciled is None:
+                        return True
+                    return reconciled.status in (SessionStatus.STOPPED, SessionStatus.FAILED)
 
                 skuld_reg.set_reconcile_hook(_on_proxy_dead)
 

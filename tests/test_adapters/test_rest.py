@@ -888,6 +888,62 @@ class TestSessionMessages:
         assert body["status"] != "delivered"
         assert body["delivery"] != "delivered"
 
+    # SRD §11.4 — "message not received" before/after regression. The historical bug was
+    # that POST /messages reported success ("sent"/200/delivered) for a message the agent
+    # never received. This pins the inverse contract as a guard: the ONLY way to read a
+    # delivered/200 response is a real correlated ``user_delivered`` ACK. Every non-delivery
+    # outcome — no ACK within the grace, OR a terminal ``user_delivery_failed`` — MUST report
+    # a status in {pending, failed}, NEVER 200 and NEVER delivery=="delivered"/"sent".
+    @pytest.mark.parametrize(
+        ("ack_frame", "expected_status_code", "expected_status"),
+        [
+            # No ACK arrives within the grace window: still in flight, reported pending.
+            (None, 202, "pending"),
+            # Terminal transport rejection after bounded retry: reported as a failure (502).
+            (
+                {"type": "user_delivery_failed", "status": "failed", "id": "m1", "error": "wedged"},
+                502,
+                "failed",
+            ),
+        ],
+        ids=["no_ack_within_grace", "failed_ack"],
+    )
+    def test_non_delivered_message_never_reported_as_success(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        ack_frame: dict | None,
+        expected_status_code: int,
+        expected_status: str,
+    ) -> None:
+        """SRD §11.4: a non-delivered message MUST NOT be reported as a successful send.
+
+        Parametrized over the two "message not received" shapes — (no ack within grace) and
+        (failed ack). For both, the response must be in {pending, failed}, must NOT be 200, and
+        must NEVER carry delivery=="delivered" or the word "sent". The success contract (200 /
+        delivery=="delivered") is reserved exclusively for a real ``user_delivered`` ACK, which
+        these cases do not produce."""
+        fake_connect = self._ack_connect(ack_frame)
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == expected_status_code
+        assert response.status_code != 200, (
+            "§11.4: a non-delivered message must never return a 200 success"
+        )
+        body = response.json()
+        body_text = str(body).lower()
+        assert "sent" not in body_text, "§11.4: must never claim the message was 'sent'"
+
+        if expected_status == "pending":
+            assert body["status"] == "pending"
+            assert body["status"] in {"pending", "failed"}
+            assert body.get("delivery") != "delivered"
+            return
+
+        # Failure path: 502 error body must signal failure, never a delivered/sent success.
+        assert "delivered" not in body_text or "not" in body_text
+        assert "wedged" in body_text
+
 
 class TestSessionLogAggregationProxy:
     """Tests for aggregated session log proxy endpoints."""

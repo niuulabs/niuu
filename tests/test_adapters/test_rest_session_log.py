@@ -1,7 +1,7 @@
 """Tests for the durable session event log REST endpoints."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -55,7 +55,7 @@ class TestAppend:
 
         assert resp.status_code == 201
         body = resp.json()
-        assert body == {"submitted": 2, "latest_seq": 2}
+        assert body == {"submitted": 2, "latest_seq": 2, "conflicts": []}
 
     def test_append_is_idempotent_on_seq(self):
         client, _ = _client()
@@ -75,6 +75,84 @@ class TestAppend:
         resp = client.post(f"/api/v1/forge/sessions/{sid}/log", json={"entries": []})
 
         assert resp.status_code == 422
+
+
+class TestAppendConflictDetection:
+    """INV-3c / B-1: the ingest endpoint must SURFACE a distinct-payload seq
+    collision (warning + response field + queryable sentinel), not silently
+    swallow it via ON CONFLICT DO NOTHING."""
+
+    def test_identical_reappend_reports_no_conflict(self):
+        client, _ = _client()
+        sid = str(uuid4())
+        payload = {"entries": [_frame(1)]}
+
+        client.post(f"/api/v1/forge/sessions/{sid}/log", json=payload)
+        resp = client.post(f"/api/v1/forge/sessions/{sid}/log", json=payload)
+
+        assert resp.status_code == 201
+        assert resp.json()["conflicts"] == []
+
+    def test_distinct_payload_same_seq_surfaced_in_response(self):
+        client, repo = _client()
+        sid = str(uuid4())
+
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 1}}]},
+        )
+        # Same seq, DISTINCT payload — append swallows it (DO NOTHING) but the
+        # endpoint must report the collision.
+        resp = client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 999}}]},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["conflicts"] == [1]
+        # The original frame is retained verbatim (ON CONFLICT DO NOTHING).
+        assert repo._rows[(UUID(sid), 1)].payload == {"n": 1}
+
+    def test_conflict_appends_queryable_sentinel(self):
+        client, _ = _client()
+        sid = str(uuid4())
+
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 1}}]},
+        )
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 999}}]},
+        )
+
+        # A reader replaying with internals shown sees the sentinel marker frame.
+        body = client.get(
+            f"/api/v1/forge/sessions/{sid}/log", params={"show_internal": "true"}
+        ).json()
+        sentinels = [e for e in body if e["kind"] == "log_conflict"]
+        assert len(sentinels) == 1
+        sentinel = sentinels[0]
+        assert sentinel["payload"]["reason"] == "distinct_payload_same_seq"
+        assert sentinel["payload"]["conflicting_seqs"] == [1]
+        # It rides at its OWN fresh tail seq, never re-using the collided seq.
+        assert sentinel["seq"] == 2
+
+    def test_conflict_logs_warning(self, caplog):
+        import logging
+
+        client, _ = _client()
+        sid = str(uuid4())
+        client.post(
+            f"/api/v1/forge/sessions/{sid}/log",
+            json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 1}}]},
+        )
+        with caplog.at_level(logging.WARNING):
+            client.post(
+                f"/api/v1/forge/sessions/{sid}/log",
+                json={"entries": [{"seq": 1, "kind": "assistant", "payload": {"n": 2}}]},
+            )
+        assert any("conflict" in r.message for r in caplog.records)
 
 
 class TestReplay:
