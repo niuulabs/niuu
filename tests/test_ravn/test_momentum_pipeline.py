@@ -16,7 +16,12 @@ from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
 from ravn.domain.models import LLMResponse, StopReason, TokenUsage
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_JUDGMENT_PROPOSED,
+    validate_valkyrie_outcome,
+)
 from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+from ravn.momentum.render import judgment_event_payload
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_inbox import (
     MimirResidentInbox,
@@ -251,6 +256,57 @@ async def test_pipeline_processes_non_conversation_resident_inbox_signal(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_judgment_payload_validates_against_valkyrie_contract(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["judgment"]["attention_tier"] = "silent"
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="canonical-judgment",
+    ).extract_signal(await _markdown_signal(source))
+
+    judgment_payload = judgment_event_payload(result.extraction.judgment)
+    assert judgment_payload["tier"] == "silent"
+    assert validate_valkyrie_outcome(VALKYRIE_JUDGMENT_PROPOSED, judgment_payload) == []
+
+
+@pytest.mark.asyncio
+async def test_judgment_rejects_old_watch_attention_tier(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["judgment"]["attention_tier"] = "watch"
+
+    with pytest.raises(ValueError, match="attention_tier"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+            state=LocalResidentState(tmp_path / "state"),
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="bad-tier",
+        ).extract_signal(await _markdown_signal(source))
+
+
+@pytest.mark.asyncio
+async def test_judgment_rejects_missing_evidence_artifact_title(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["judgment"]["evidence_artifact_titles"] = ["Missing artifact"]
+
+    with pytest.raises(ValueError, match="Missing artifact"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+            state=LocalResidentState(tmp_path / "state"),
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="bad-evidence",
+        ).extract_signal(await _markdown_signal(source))
+
+
+@pytest.mark.asyncio
 async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
@@ -271,6 +327,38 @@ async def test_judgment_can_update_understanding_without_packet(tmp_path: Path):
     run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
     assert "- judgment_ref: resident/momentum/runs/no-packet/judgment/" in run
     assert "- packet_ref: -" in run
+
+
+@pytest.mark.asyncio
+async def test_packet_required_when_judgment_recommends_packet(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["packet"] = None
+
+    with pytest.raises(ValueError, match="requires a Momentum Packet"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+            state=LocalResidentState(tmp_path / "state"),
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="missing-packet",
+        ).extract_signal(await _markdown_signal(source))
+
+
+@pytest.mark.asyncio
+async def test_packet_rejected_when_judgment_does_not_recommend_packet(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["judgment"]["recommended_next_action"] = "ask_human"
+
+    with pytest.raises(ValueError, match="does not require a Momentum Packet"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+            state=LocalResidentState(tmp_path / "state"),
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="extra-packet",
+        ).extract_signal(await _markdown_signal(source))
 
 
 @pytest.mark.asyncio

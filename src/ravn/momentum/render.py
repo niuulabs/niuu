@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import json
 
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_JUDGMENT_PROPOSED,
+    normalize_valkyrie_outcome,
+    validate_valkyrie_outcome,
+)
 from ravn.momentum.models import (
     MomentumArtifact,
     MomentumExtractionRun,
@@ -138,26 +143,40 @@ def render_judgment(judgment: MomentumJudgment) -> str:
 
 
 def judgment_event_payload(judgment: MomentumJudgment) -> dict[str, object]:
-    return {
-        "event_type": judgment.event_type,
-        "environment_id": judgment.environment_id,
-        "valkyrie_id": judgment.valkyrie_id,
-        "signal_refs": list(judgment.signal_refs),
-        "tier": judgment.attention_tier,
-        "confidence": judgment.confidence,
-        "operational_state": judgment.operational_state,
-        "rationale": judgment.why_attention_now,
-        "evidence": [
-            {"kind": "momentum_artifact", "title": title}
-            for title in judgment.evidence_artifact_titles
-        ],
-        "recommended_action": judgment.recommended_action,
-        "action_authority": judgment.authority_boundary,
-        "target_surfaces": list(judgment.target_surfaces),
-        "expires_at": "",
-        "dissent_refs": [],
-        "correlation_ids": {"root": judgment.provenance.extraction_run_id},
-    }
+    payload = normalize_valkyrie_outcome(
+        VALKYRIE_JUDGMENT_PROPOSED,
+        {
+            "event_type": judgment.event_type,
+            "environment_id": judgment.environment_id,
+            "valkyrie_id": judgment.valkyrie_id,
+            "signal_refs": list(judgment.signal_refs),
+            "tier": judgment.attention_tier,
+            "confidence": judgment.confidence,
+            "operational_state": judgment.operational_state,
+            "rationale": judgment.why_attention_now,
+            "evidence": [
+                {
+                    "kind": "momentum_artifact",
+                    "title": title,
+                    "run_id": judgment.provenance.extraction_run_id,
+                }
+                for title in judgment.evidence_artifact_titles
+            ],
+            "recommended_action": judgment.recommended_action,
+            "action_authority": judgment.authority_boundary,
+            "target_surfaces": list(judgment.target_surfaces),
+            "expires_at": "",
+            "dissent_refs": [],
+            "correlation_ids": {
+                "root": judgment.provenance.extraction_run_id,
+                "source": judgment.provenance.source_path,
+            },
+        },
+    )
+    errors = validate_valkyrie_outcome(VALKYRIE_JUDGMENT_PROPOSED, payload)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return payload
 
 
 def render_run(run: MomentumExtractionRun) -> str:

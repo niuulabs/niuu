@@ -14,7 +14,7 @@ ArtifactKind = Literal[
     "resident_understanding_patch",
 ]
 ProvenanceStatus = Literal["verified", "unverified"]
-AttentionTier = Literal["watch", "ambient", "present", "urgent"]
+AttentionTier = Literal["silent", "ambient", "present", "urgent"]
 NextAction = Literal["write_momentum_packet", "update_understanding_only", "ask_human"]
 
 

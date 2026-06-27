@@ -132,6 +132,7 @@ def _materialize(
     model_name: str,
     created_at: datetime,
 ) -> MomentumExtraction:
+    _validate_draft(draft)
     artifacts = [
         _artifact(
             item,
@@ -216,6 +217,25 @@ def _materialize(
         judgment=judgment,
         packet=packet,
     )
+
+
+def _validate_draft(draft: MomentumExtractionDraft) -> None:
+    evidence_titles = {artifact.title for artifact in draft.artifacts} | {
+        draft.resident_patch.title
+    }
+    missing = [
+        title
+        for title in draft.judgment.evidence_artifact_titles
+        if title not in evidence_titles
+    ]
+    if missing:
+        raise ValueError(f"judgment evidence titles not found: {', '.join(missing)}")
+
+    next_action = draft.judgment.recommended_next_action
+    if next_action == "write_momentum_packet" and draft.packet is None:
+        raise ValueError("judgment requires a Momentum Packet")
+    if next_action != "write_momentum_packet" and draft.packet is not None:
+        raise ValueError("judgment does not require a Momentum Packet")
 
 
 def _artifact(

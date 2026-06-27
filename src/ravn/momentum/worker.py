@@ -42,7 +42,7 @@ Return only JSON matching this shape:
     "why_attention_now": "...",
     "recommended_next_action": "write_momentum_packet|update_understanding_only|ask_human",
     "recommended_action": "...",
-    "attention_tier": "watch|ambient|present|urgent",
+    "attention_tier": "silent|ambient|present|urgent",
     "authority_boundary": "human_review_required",
     "operational_state": "proposing",
     "confidence": 0.82,
