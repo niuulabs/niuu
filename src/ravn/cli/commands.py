@@ -4914,6 +4914,89 @@ def evolve_main() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Momentum Packet CLI
+# ---------------------------------------------------------------------------
+
+momentum_app = typer.Typer(
+    name="momentum",
+    help="Momentum Packet proof utilities.",
+    add_completion=False,
+)
+app.add_typer(momentum_app, name="momentum")
+
+
+@momentum_app.command("extract")
+def momentum_extract_cmd(
+    path: str = typer.Argument(..., help="Markdown transcript or notes file."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Extract resident understanding and one Momentum Packet from markdown."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_extract(settings, path))
+
+
+async def _run_momentum_extract(settings: Settings, path: str) -> None:
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+
+    source = Path(path).expanduser()
+    if not source.exists():
+        typer.echo(f"File not found: {source}", err=True)
+        raise typer.Exit(1)
+    if not source.is_file():
+        typer.echo(f"Not a file: {source}", err=True)
+        raise typer.Exit(1)
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    worker = MomentumExtractionWorker(llm, model=settings.effective_model())
+    result = await MomentumPipeline(worker=worker, state=state).extract_file(source)
+
+    typer.echo(f"run_ref:     {result.run_ref}")
+    typer.echo(f"artifacts:   {len(result.artifact_refs)}")
+    typer.echo(f"packet_ref:  {result.packet_ref}")
+    typer.echo(f"packet:      {result.extraction.packet.title}")
+
+
+async def _build_resident_state(settings: Settings, workspace: Path) -> Any:
+    from ravn.adapters.resident_state import select_resident_state
+
+    cfg = settings.resident_state
+    root = _resident_ravn_state_dir(workspace) / "resident-state"
+    preferred = _build_resident_state_adapter(
+        cfg.adapter,
+        cfg.kwargs,
+        cfg.secret_kwargs_env,
+        default_root=root / "preferred",
+    )
+    fallback = _build_resident_state_adapter(
+        cfg.fallback_adapter,
+        cfg.fallback_kwargs,
+        cfg.fallback_secret_kwargs_env,
+        default_root=root / "fallback",
+    )
+    return await select_resident_state(preferred, fallback)
+
+
+def _build_resident_state_adapter(
+    adapter: str,
+    kwargs: dict[str, Any],
+    secret_kwargs_env: dict[str, str],
+    *,
+    default_root: Path,
+) -> Any:
+    cls = _import_class(adapter)
+    merged = _inject_secrets(dict(kwargs), secret_kwargs_env)
+    if _constructor_accepts_kwarg(cls, "root"):
+        merged.setdefault("root", default_root)
+    return cls(**merged)
+
+
+# ---------------------------------------------------------------------------
 # Mímir CLI
 # ---------------------------------------------------------------------------
 

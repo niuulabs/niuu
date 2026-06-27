@@ -78,6 +78,12 @@ class GBrainResidentStateAdapter(LocalResidentState):
             await self._capture_gbrain(ref, _render_turn_record(record))
         return ref
 
+    async def write_artifact(self, ref: str, content: str) -> str:
+        stored_ref = await super().write_artifact(ref, content)
+        if self._capture_enabled:
+            await self._capture_gbrain(stored_ref, content)
+        return stored_ref
+
     async def write_policy_observation(self, observation) -> str:
         ref = await super().write_policy_observation(observation)
         if self._capture_enabled:

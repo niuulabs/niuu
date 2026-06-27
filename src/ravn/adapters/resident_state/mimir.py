@@ -66,6 +66,13 @@ class MimirResidentState(ResidentStatePort):
                 break
         return entries
 
+    async def write_artifact(self, ref: str, content: str) -> str:
+        path = ref.strip("/").strip()
+        if not path:
+            raise ValueError("resident artifact ref is required")
+        await self._mimir.upsert_page(path, content)
+        return path
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         path = f"{self._prefix}/turns/{stamp}-{record.turn_index}.md"
@@ -194,6 +201,12 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
 
     async def available(self) -> bool:
         return True
+
+    async def write_artifact(self, ref: str, content: str) -> str:
+        path = ref.strip("/").strip()
+        if not path:
+            raise ValueError("resident artifact ref is required")
+        return self._write(Path(path), content)
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         base = self._root / (Path(prefix) if prefix else self._prefix)
