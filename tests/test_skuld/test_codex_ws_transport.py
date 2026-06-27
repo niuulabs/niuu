@@ -769,7 +769,9 @@ class TestEventNormalization:
         )
         await asyncio.sleep(0)
 
-        t.send_message.assert_awaited_once_with("continue the investigation")
+        t.send_message.assert_awaited_once_with(
+            "continue the investigation", record_correlation=False
+        )
         assert t._context_compaction_active is False
         assert t._pending_context_retry_prompt is None
         assert not _events_of_type(emit, "result")
@@ -2979,3 +2981,24 @@ class TestSteeringCorrelation:
         await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
         consumed = _events_of_type(emit, "user_consumed")
         assert consumed and consumed[-1]["msg_id"] == "m-y"
+
+    @pytest.mark.asyncio
+    async def test_compaction_retry_leaves_no_orphan_correlation(self, tmp_path):
+        """The context-compaction RETRY re-sends the same message and must NOT push a (None, None)
+        orphan: its turn/started reuses the ORIGINAL steer's still-queued correlation (flipping the
+        right bubble) and leaves the FIFO empty — no +1 slip for later steers."""
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock()
+        # The original steer is still in flight (its turn/started hasn't fired — the context-window
+        # error hit first).
+        t._pending_prompt_correlations = [("m-1", "r-1")]
+
+        await t.send_message("retry of m-1", record_correlation=False)
+        assert t._pending_prompt_correlations == [("m-1", "r-1")]  # no orphan added
+
+        emit = _collect_emits(t)
+        await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
+        consumed = _events_of_type(emit, "user_consumed")
+        assert consumed and consumed[-1]["msg_id"] == "m-1"  # the original steer flips
+        assert t._pending_prompt_correlations == []  # no orphan left behind

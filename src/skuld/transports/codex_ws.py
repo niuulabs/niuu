@@ -1447,7 +1447,10 @@ class CodexWebSocketTransport(CLITransport):
         if prompt:
             logger.info("Codex context compaction completed; retrying user turn")
             asyncio.create_task(
-                self.send_message(prompt),
+                # Re-send of the SAME message — don't record a fresh correlation; the retry's
+                # turn/started reuses the original steer's still-queued correlation (or pops nothing
+                # if it already flipped), so the right bubble flips and no orphan is left.
+                self.send_message(prompt, record_correlation=False),
                 name=f"codex-context-retry-{self._thread_id or 'thread'}",
             )
 
@@ -1456,7 +1459,12 @@ class CodexWebSocketTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def send_message(
-        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+        self,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        request_id: str | None = None,
+        record_correlation: bool = True,
     ) -> None:
         if self._fallback_transport is not None:
             await self._fallback_transport.send_message(
@@ -1472,10 +1480,14 @@ class CodexWebSocketTransport(CLITransport):
         self._block_index = 0
         self._active_user_prompt = content
         # Correlate this turn/start back to the originating steer; popped on the matching
-        # turn/started to emit user_consumed. A retry/seed resend carries no ids → (None, None),
-        # which the `if msg_id` guard on turn/started drops (no flip). Appended BEFORE the RPC so
-        # the correlation is ready when turn/started arrives (it can race the RPC response).
-        self._pending_prompt_correlations.append((msg_id, request_id))
+        # turn/started to emit user_consumed. Appended BEFORE the RPC so the correlation is ready
+        # when turn/started arrives (it can race the RPC response).
+        # record_correlation=False for the context-compaction RETRY: it re-sends the SAME message,
+        # so its turn/started should pop the ORIGINAL correlation still queued (if the error hit
+        # before the first turn/started) or nothing (if it already fired) — NOT push a (None, None)
+        # that would leave an orphan and slip every later steer by one.
+        if record_correlation:
+            self._pending_prompt_correlations.append((msg_id, request_id))
         params: dict = {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": content, "textElements": []}],
