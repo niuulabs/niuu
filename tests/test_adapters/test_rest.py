@@ -657,6 +657,101 @@ class TestSessionMessages:
             "request_id": req_id,
         }
 
+    def test_send_message_dead_pod_self_heals_on_read_and_404s(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """INV-9: a dead pod (pod_manager reports STOPPED) is reconciled on the
+        read that resolves the proxy target, so the send returns a deterministic
+        404 (no active endpoint) and never a false 'sent'."""
+        session = Session(
+            id=uuid4(),
+            name="dead-message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/dead-message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        async def _stopped(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = _stopped  # type: ignore[method-assign]
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(
+                return_value=Principal(
+                    user_id="dev-user",
+                    email="dev@example.com",
+                    tenant_id="default",
+                    roles=[],
+                )
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "anybody home?"},
+            )
+
+        assert response.status_code == 404
+        assert "sent" not in str(response.json()).lower()
+        # The row self-healed off the dead endpoint.
+        reconciled = asyncio.run(repository.get(session.id))
+        assert reconciled.status == SessionStatus.STOPPED
+        assert reconciled.chat_endpoint is None
+        assert (reconciled.error or "").startswith("liveness:")
+
+    def test_send_message_unreachable_broker_reconciles_and_returns_409(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """INV-9: when the row still looks live (status lags) but the broker WS
+        connect fails, the send reconciles and returns a deterministic 409 —
+        never a false 'sent'."""
+
+        def _refused(url: str, **kwargs: object):
+            raise OSError("connection refused")
+
+        session = Session(
+            id=uuid4(),
+            name="lagging-message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/lagging-message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        # Pod manager still reports RUNNING (status lags reality), so the proxy
+        # target resolves and we actually attempt — and fail — the WS connect.
+        with (
+            patch("websockets.asyncio.client.connect", new=_refused),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "anybody home?"},
+            )
+
+        assert response.status_code == 409
+        assert "not delivered" in str(response.json()).lower()
+
 
 class TestSessionLogAggregationProxy:
     """Tests for aggregated session log proxy endpoints."""
@@ -914,6 +1009,86 @@ class TestWorkflowGateProxy:
             )
             == "http://localhost:8080/s/session-123/api/workflow/gates/gate%20needs%20review%3Fstep%3D1/resolve"
         )
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_gates_unreachable_pod_reconciles_and_409s(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """INV-9: an unreachable pod on the gate read path reconciles the row and
+        returns a deterministic 409 instead of a misleading 502."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/workflow/gates")
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = httpx.ConnectError("refused", request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/workflow/gates")
+
+        assert response.status_code == 409
+        assert "no longer reachable" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_unreachable_pod_reconciles_and_409s(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """INV-9: an unreachable pod on the gate resolve path reconciles the row
+        and returns a deterministic 409 — never a misleading bad-gateway."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/workflow/gates/g1/resolve"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.ConnectError("refused", request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
+                json={"decision": "approved", "notes": "", "source": "human"},
+            )
+
+        assert response.status_code == 409
+        assert "not resolved" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_resolve_workflow_gate_quotes_gate_id(

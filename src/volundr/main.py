@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib.metadata import metadata
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -426,6 +427,35 @@ async def _reconcile_liveness_loop(
             logger.exception("Liveness reconciliation iteration failed")
 
 
+async def _reconcile_active_loop(
+    session_service: SessionService,
+    *,
+    interval_seconds: int,
+) -> None:
+    """Periodically reconcile STARTING/RUNNING rows against pod_manager.status().
+
+    Pod-status authoritative (INV-9): a row is only corrected when the pod manager
+    reports the session is actually gone, so an idle-but-alive session is never
+    false-reaped. This is the always-on truth mechanism the heartbeat reaper
+    could not safely provide.
+    """
+    logger.info(
+        "Active-session reconcile loop started, interval=%ds",
+        interval_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            count = await session_service.reconcile_active_sessions()
+            if count:
+                logger.info("Reconcile: corrected %d divergent active session(s)", count)
+        except asyncio.CancelledError:
+            logger.info("Active-session reconcile loop cancelled")
+            break
+        except Exception:
+            logger.exception("Active-session reconcile iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -619,6 +649,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pod_manager = _create_pod_manager(settings)
 
             # Inject Skuld port registry for mini mode proxy routing
+            skuld_reg = None
             try:
                 from cli.server import get_skuld_registry
 
@@ -788,6 +819,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
             )
+            # Local-process brokers notify the session service when they exit so
+            # the DB row is reconciled promptly (pod-status authoritative) rather
+            # than waiting for the periodic sweep.
+            if hasattr(pod_manager, "set_death_callback"):
+
+                async def _on_broker_death(session_id: str) -> None:
+                    try:
+                        await session_service.mark_session_dead(UUID(session_id))
+                    except ValueError:
+                        logger.warning("Broker death for non-UUID session id %s", session_id)
+
+                pod_manager.set_death_callback(_on_broker_death)
+
+            # The live WS proxy reconciles the row when it can't reach a pod, so a
+            # dead-session connect self-heals the stale RUNNING status (INV-9).
+            if skuld_reg is not None and hasattr(skuld_reg, "set_reconcile_hook"):
+
+                async def _on_proxy_dead(session_id: str) -> None:
+                    try:
+                        await session_service.mark_session_dead(UUID(session_id))
+                    except ValueError:
+                        logger.warning("WS proxy reconcile for non-UUID session id %s", session_id)
+
+                skuld_reg.set_reconcile_hook(_on_proxy_dead)
+
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
@@ -1147,6 +1203,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         stale_after_seconds=settings.session_liveness.stale_after_seconds,
                     )
                 )
+
+            # Pod-status-authoritative periodic reconcile (INV-9). Always-on by
+            # default and safe: it only corrects a row when pod_manager.status()
+            # says the session is actually gone, so it never false-reaps an
+            # idle-but-alive session the way the heartbeat reaper would.
+            reconcile_task: asyncio.Task | None = None
+            if settings.session_liveness.reconcile_enabled:
+                reconcile_task = asyncio.create_task(
+                    _reconcile_active_loop(
+                        session_service,
+                        interval_seconds=settings.session_liveness.reconcile_interval_seconds,
+                    )
+                )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1174,6 +1243,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     liveness_task.cancel()
                     try:
                         await liveness_task
+                    except asyncio.CancelledError:
+                        pass  # Expected: task cancellation during shutdown
+                if reconcile_task is not None:
+                    reconcile_task.cancel()
+                    try:
+                        await reconcile_task
                     except asyncio.CancelledError:
                         pass  # Expected: task cancellation during shutdown
                 await event_ingestion.close_all()

@@ -140,6 +140,10 @@ class ForgeService:
     async def get_session(self, session_id: UUID) -> Session | None:
         return await self._session_service.reconcile_session_if_active(session_id)
 
+    async def reconcile_session(self, session_id: UUID) -> Session | None:
+        """Force a pod-status reconcile of one session (used on a dead-pod op)."""
+        return await self._session_service.mark_session_dead(session_id)
+
     async def ensure_access(
         self,
         session: Session,

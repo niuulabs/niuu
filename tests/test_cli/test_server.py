@@ -70,6 +70,35 @@ class TestSkuldPortRegistry:
         reg = SkuldPortRegistry(state_file=state_file)
         assert reg.get_port("sess-1") == 9100
 
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_invokes_hook(self) -> None:
+        reg = SkuldPortRegistry()
+        seen: list[str] = []
+
+        async def _hook(session_id: str) -> None:
+            seen.append(session_id)
+
+        reg.set_reconcile_hook(_hook)
+        await reg.reconcile_dead("sess-9")
+        assert seen == ["sess-9"]
+
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_noop_without_hook(self) -> None:
+        reg = SkuldPortRegistry()
+        # No hook registered — must be a silent no-op, never raise.
+        await reg.reconcile_dead("sess-9")
+
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_swallows_hook_errors(self) -> None:
+        reg = SkuldPortRegistry()
+
+        async def _boom(_session_id: str) -> None:
+            raise RuntimeError("reconcile failed")
+
+        reg.set_reconcile_hook(_boom)
+        # A failing hook must not propagate into the proxy close path.
+        await reg.reconcile_dead("sess-9")
+
 
 class TestPluginApiAppCreation:
     def test_plugin_api_base_url_uses_configured_host(self) -> None:
@@ -422,6 +451,66 @@ class TestRootServerBuildApp:
         resp = client.get("/s/nonexistent/health")
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Session not found"
+
+    def test_skuld_ws_proxy_dead_port_reconciles_and_closes_4410(self) -> None:
+        """INV-9: connecting to a session with no live port reconciles the row
+        and closes with the deterministic 'session gone' code (4410)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        reconciled: list[str] = []
+
+        async def _hook(session_id: str) -> None:
+            reconciled.append(session_id)
+
+        server.skuld_registry.set_reconcile_hook(_hook)
+
+        with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
+            app = server._build_app()
+        client = TestClient(app)
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/s/dead-session/session"):
+                pass
+
+        assert exc.value.code == 4410
+        assert reconciled == ["dead-session"]
+
+    def test_skuld_ws_proxy_broker_connect_failure_reconciles_and_unregisters(self) -> None:
+        """INV-9: a registered-but-dead broker port self-heals — the row is
+        reconciled, the stale port dropped, and the socket closes 4410."""
+        from starlette.websockets import WebSocketDisconnect
+
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+        server.skuld_registry.register("sess-dead", 9100)
+
+        reconciled: list[str] = []
+
+        async def _hook(session_id: str) -> None:
+            reconciled.append(session_id)
+
+        server.skuld_registry.set_reconcile_hook(_hook)
+
+        with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
+            app = server._build_app()
+        client = TestClient(app)
+
+        # The broker leg never connects: ws_client.connect raises immediately.
+        # accept() already happened, so the close surfaces on the next receive.
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=OSError("connection refused"),
+        ):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/s/sess-dead/session") as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 4410
+        assert reconciled == ["sess-dead"]
+        assert server.skuld_registry.get_port("sess-dead") is None
 
     def test_skuld_http_proxy_forwards_request(self) -> None:
         registry = PluginRegistry()

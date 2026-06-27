@@ -622,24 +622,42 @@ class EventPipelineConfig(BaseModel):
 
 
 class SessionLivenessConfig(BaseModel):
-    """Liveness reconciliation for running sessions.
+    """Liveness reconciliation for running sessions (INV-9).
 
     A session whose broker has died can otherwise sit in ``running`` forever
     with a stale ``chat_endpoint`` (clients then open a socket to a tombstone and
-    see nothing). The reconciler marks running sessions that have gone silent —
-    no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
-    their endpoints, so the list reflects reality and clients stop dialing dead
-    brokers.
+    see nothing). Two complementary mechanisms keep the row truthful:
 
-    Disabled by default: brokers currently report activity only on STATE
-    CHANGES, so a quiet-but-alive session can go silent for long stretches and
-    would be falsely reaped. Enable with a generous stale_after_seconds (or
-    once periodic broker heartbeats land).
+    1. **Pod-status reconcile** (``reconcile_enabled``, ON by default). A periodic
+       loop probes ``pod_manager.status()`` for every STARTING/RUNNING session
+       and corrects the row when the pod is actually gone. Because it consults
+       the authoritative pod manager rather than a heartbeat clock, it never
+       false-reaps a quiet-but-alive session, so it is safe to enable by default.
+
+    2. **Heartbeat reaper** (``enabled``, OFF by default). The legacy reaper marks
+       running sessions that have gone silent — no activity heartbeat for
+       ``stale_after_seconds`` — as ``stopped``. Brokers currently report activity
+       only on STATE CHANGES, so a quiet-but-alive session can go silent for long
+       stretches and would be falsely reaped; this mechanism stays secondary and
+       off by default. Enable with a generous ``stale_after_seconds`` once
+       periodic broker heartbeats land.
     """
 
     enabled: bool = Field(default=False)
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
+    reconcile_enabled: bool = Field(
+        default=True,
+        description=(
+            "Periodically reconcile STARTING/RUNNING rows against pod_manager.status(). "
+            "Pod-status authoritative, so it never false-reaps idle-but-alive sessions."
+        ),
+    )
+    reconcile_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Interval between pod-status reconcile sweeps.",
+    )
 
 
 class ReplayConfig(BaseModel):

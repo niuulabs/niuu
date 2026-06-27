@@ -7,7 +7,7 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -63,6 +63,33 @@ class SkuldPortRegistry:
                 os.environ.get("NIUU_FORGE_STATE_FILE", "~/.niuu/forge-state.json")
             ).expanduser()
         )
+        # Optional async hook invoked when the WS proxy cannot reach a live pod,
+        # so the persisted Session row self-heals (status corrected, endpoint
+        # cleared) instead of leaving a stale RUNNING tombstone. Set by the host
+        # composition root via set_reconcile_hook().
+        self._reconcile_hook: Callable[[str], Awaitable[None]] | None = None
+
+    def set_reconcile_hook(self, hook: Callable[[str], Awaitable[None]]) -> None:
+        """Inject the session-row reconcile callback used on a dead-pod proxy."""
+        self._reconcile_hook = hook
+
+    async def reconcile_dead(self, session_id: str) -> None:
+        """Reconcile a session whose pod the proxy could not reach (best effort).
+
+        Pod-status authoritative on the Volundr side: if the pod is in fact still
+        alive the row is left untouched. Failures must never block the proxy's
+        close path, so they are swallowed.
+        """
+        if self._reconcile_hook is None:
+            return
+        try:
+            await self._reconcile_hook(session_id)
+        except Exception:
+            logger.warning(
+                "Reconcile hook failed for dead-pod session %s",
+                _sanitize_log(session_id),
+                exc_info=True,
+            )
 
     def register(self, session_id: str, port: int) -> None:
         self._ports[session_id] = port
@@ -652,12 +679,17 @@ def build_root_app(
             """Proxy browser WebSocket to the Skuld subprocess."""
             port = skuld_reg.get_port(session_id)
             if port is None:
-                await websocket.close(code=4004, reason="Session not found")
+                # No live port — the broker is gone. Reconcile the row so a stale
+                # RUNNING tombstone self-heals, then close with a deterministic
+                # "session gone" code (4410) the client can branch on.
+                await skuld_reg.reconcile_dead(session_id)
+                await websocket.close(code=4410, reason="Session is no longer running")
                 return
 
             await websocket.accept()
             import websockets.asyncio.client as ws_client
 
+            connected = False
             try:
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/session",
@@ -693,6 +725,7 @@ def build_root_app(
                         },
                     },
                 ) as skuld_ws:
+                    connected = True
 
                     async def browser_to_skuld() -> None:
                         with suppress(Exception):
@@ -718,6 +751,16 @@ def build_root_app(
             except Exception:
                 logger.debug("Skuld WS proxy ended for session %s", _sanitize_log(session_id))
             finally:
+                # If we never established the broker leg, the registered port is a
+                # dead tombstone: reconcile the row so the stale RUNNING status
+                # self-heals, drop the dead port, and close deterministically
+                # (4410) instead of leaving the browser to retry a corpse.
+                if not connected:
+                    skuld_reg.unregister(session_id)
+                    await skuld_reg.reconcile_dead(session_id)
+                    with suppress(Exception):
+                        await websocket.close(code=4410, reason="Session is no longer running")
+                    return
                 with suppress(Exception):
                     await websocket.close()
 

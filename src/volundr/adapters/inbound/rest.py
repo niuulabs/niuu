@@ -2461,9 +2461,20 @@ def create_router(
                 with contextlib.suppress(Exception):
                     delivery = await asyncio.wait_for(_await_ack(), timeout=3.0)
         except Exception as e:
+            # The endpoint looked live (chat_endpoint set) but the broker socket
+            # is unreachable — the pod is gone. Reconcile the row so its stale
+            # RUNNING/endpoint self-heals, then fail deterministically (409) so
+            # the caller never reads this as a successful send (no false 'sent').
+            reconciled = await forge.reconcile_session(session_id)
+            detail = (
+                f"Session {session_id} is no longer reachable; "
+                "reconciled to "
+                f"{reconciled.status.value if reconciled else 'unknown'}. "
+                f"Message not delivered: {e}"
+            )
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to send message to session: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
             )
 
         if isinstance(delivery, dict) and delivery.get("type") == "user_delivery_failed":
@@ -2588,15 +2599,31 @@ def create_router(
                 )
                 response.raise_for_status()
                 return response.json()
-        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+        except httpx.HTTPStatusError as e:
             logger.warning(
-                "Workflow gate proxy failed for session %s: %s",
+                "Workflow gate proxy returned error for session %s: %s",
                 _sanitize_log(session_id),
                 _sanitize_log(e),
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to fetch workflow gates from session pod: {e}",
+            )
+        except (ValueError, httpx.RequestError):
+            # Couldn't reach the pod — reconcile the stale row and fail
+            # deterministically (409) instead of a misleading bad-gateway.
+            reconciled = await forge.reconcile_session(session_id)
+            logger.warning(
+                "Workflow gate pod unreachable for session %s; reconciled to %s",
+                _sanitize_log(session_id),
+                reconciled.status.value if reconciled else "unknown",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}."
+                ),
             )
 
     @router.post(
@@ -2657,9 +2684,16 @@ def create_router(
             detail = e.response.text[:500]
             raise HTTPException(status_code=status_code, detail=detail)
         except httpx.RequestError as e:
+            # Pod unreachable — reconcile the stale row and fail deterministically
+            # (409) so the caller never thinks the gate resolved.
+            reconciled = await forge.reconcile_session(session_id)
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Could not connect to session pod: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Gate not resolved: {e}"
+                ),
             )
 
     @router.get(

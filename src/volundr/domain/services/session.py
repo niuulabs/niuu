@@ -1304,18 +1304,51 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
-    async def reconcile_active_sessions(self) -> None:
+    @staticmethod
+    def _reconciled_session(session: Session, actual_status: SessionStatus) -> Session:
+        """Return the corrected session row for a pod-status divergence.
+
+        A RUNNING/STARTING row whose pod is gone is flipped to the pod manager's
+        verdict, its live-looking endpoints are cleared, and a queryable
+        ``liveness:`` error is stamped so the divergence is a loud, attributable
+        signal rather than a silent dead endpoint (INV-9). The ``liveness:``
+        prefix matches ``update_activity``'s clear-on-heartbeat rule, so a healthy
+        relaunch wipes the marker automatically.
+        """
+        if actual_status == SessionStatus.STOPPED:
+            return (
+                session.with_status(SessionStatus.STOPPED)
+                .with_cleared_endpoints()
+                .with_error("liveness: pod is no longer running — endpoint cleared")
+            )
+        if actual_status == SessionStatus.FAILED:
+            return (
+                session.with_status(SessionStatus.FAILED)
+                .with_cleared_endpoints()
+                .with_error("liveness: session runtime is no longer available")
+            )
+        return session.with_status(actual_status)
+
+    async def reconcile_active_sessions(self) -> int:
         """Reconcile stored STARTING/RUNNING sessions against the pod manager.
 
-        Local-process sessions can outlive the in-memory Skuld registry after a restart.
-        If the pod manager reports that a supposedly active session is actually stopped
-        or failed, update the persisted session record so browser clients stop trying to
-        attach to dead chat endpoints.
+        Local-process sessions can outlive the in-memory Skuld registry after a
+        restart. The pod manager is the authority on liveness — if it reports that
+        a supposedly active session is actually stopped or failed, the persisted
+        row is corrected (status flipped, endpoints cleared, queryable
+        ``liveness:`` error stamped) so clients stop dialing dead chat endpoints.
+
+        Because the verdict comes from ``pod_manager.status()`` and not a
+        heartbeat clock, an idle-but-alive session is never false-reaped — this is
+        the mechanism the disabled-by-default last_active reaper could not provide.
+
+        Returns the number of sessions reconciled.
         """
         active_sessions = [
             *await self._repository.list(status=SessionStatus.STARTING),
             *await self._repository.list(status=SessionStatus.RUNNING),
         ]
+        reconciled = 0
         for session in active_sessions:
             actual_status = await self._pod_manager.status(session)
             if actual_status == session.status:
@@ -1327,21 +1360,12 @@ class SessionService:
                 session.status.value,
                 actual_status.value,
             )
-
-            if actual_status == SessionStatus.STOPPED:
-                updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-            elif actual_status == SessionStatus.FAILED:
-                updated = (
-                    session.with_status(SessionStatus.FAILED)
-                    .with_cleared_endpoints()
-                    .with_error("Session runtime is no longer available")
-                )
-            else:
-                updated = session.with_status(actual_status)
-
+            updated = self._reconciled_session(session, actual_status)
             final = await self._repository.update(updated)
+            reconciled += 1
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
+        return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
         """Reconcile one active session against the pod manager and return it."""
@@ -1361,21 +1385,22 @@ class SessionService:
             session.status.value,
             actual_status.value,
         )
-        if actual_status == SessionStatus.STOPPED:
-            updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-        elif actual_status == SessionStatus.FAILED:
-            updated = (
-                session.with_status(SessionStatus.FAILED)
-                .with_cleared_endpoints()
-                .with_error("Session runtime is no longer available")
-            )
-        else:
-            updated = session.with_status(actual_status)
-
+        updated = self._reconciled_session(session, actual_status)
         final = await self._repository.update(updated)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         return final
+
+    async def mark_session_dead(self, session_id: UUID) -> Session | None:
+        """Force a single session to be reconciled against the pod manager NOW.
+
+        Invoked from out-of-band death signals (a local broker process exiting, a
+        WS proxy that can't reach the pod) so the row reflects reality promptly
+        instead of waiting for the next periodic sweep. Pod-status authoritative:
+        if the pod manager still reports the session live, the row is left
+        untouched (no false reap).
+        """
+        return await self.reconcile_session_if_active(session_id)
 
 
 def _communication_route_id(

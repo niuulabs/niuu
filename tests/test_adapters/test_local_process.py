@@ -2336,6 +2336,75 @@ class TestProcessMonitor:
         # State should remain RUNNING (not updated on cancel)
         assert manager._processes[sid].state == ProcessState.RUNNING
 
+    async def test_monitor_notifies_death_callback_on_exit(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A broker exit propagates to the injected death callback (INV-9)."""
+        sid = "death-cb"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+        manager._port_allocator._allocated.add(9100)
+
+        notified: list[str] = []
+
+        async def _on_death(session_id: str) -> None:
+            notified.append(session_id)
+
+        manager.set_death_callback(_on_death)
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        assert manager._processes[sid].state == ProcessState.STOPPED
+        assert notified == [sid]
+
+    async def test_monitor_swallows_death_callback_errors(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A failing death callback must not tear down the monitor."""
+        sid = "death-cb-err"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+
+        async def _boom(_session_id: str) -> None:
+            raise RuntimeError("reconcile blew up")
+
+        manager.set_death_callback(_boom)
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        # Process still reaped despite the callback failure.
+        assert manager._processes[sid].state == ProcessState.STOPPED
+
+    async def test_monitor_no_callback_is_noop(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """Without a death callback the monitor still reaps cleanly."""
+        sid = "no-cb"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        assert manager._processes[sid].state == ProcessState.STOPPED
+
 
 # ------------------------------------------------------------------
 # Constructor / config tests
