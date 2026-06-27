@@ -2580,6 +2580,78 @@ class ResidentEvolutionConfig(BaseModel):
     )
 
 
+class ResidentInboxConfig(BaseModel):
+    """Resident inbox intake and triage configuration."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Persist and triage resident inbox signals when resident autonomy is enabled.",
+    )
+    environment_signals_enabled: bool = Field(
+        default=True,
+        description="Record configured Environment signals into resident/inbox/signals.",
+    )
+    directed_messages_enabled: bool = Field(
+        default=True,
+        description=(
+            "Record generic Skuld directed messages as resident inbox signals without "
+            "consuming normal steering or task enqueue behavior."
+        ),
+    )
+    max_signals_per_wake: int = Field(
+        default=5,
+        description="Maximum new resident inbox signals triaged in one wake pass.",
+    )
+    create_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to create resident objectives for actionable signals.",
+    )
+    attach_to_existing_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to attach signals to matching resident objectives.",
+    )
+    min_attach_score: int = Field(
+        default=2,
+        description="Minimum keyword overlap required before attaching to an existing objective.",
+    )
+
+
+class ResidentStateConfig(BaseModel):
+    """Resident memory/state adapter selection.
+
+    ``adapter`` is the preferred store (GBrain by default); ``fallback_adapter``
+    is used only when the preferred adapter reports it is not available (e.g.
+    GBrain's CLI/endpoint is absent). Selection is done by
+    ``ravn.adapters.resident_state.select_resident_state`` — no caller branches
+    on adapter type.
+    """
+
+    adapter: str = Field(
+        default="ravn.adapters.resident_state.gbrain.GBrainResidentStateAdapter",
+        description="Fully-qualified preferred ResidentStatePort adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the preferred resident state adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+    fallback_adapter: str = Field(
+        default="ravn.adapters.resident_state.mimir.LocalResidentState",
+        description="Adapter used when the preferred adapter is unavailable.",
+    )
+    fallback_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the fallback resident state adapter.",
+    )
+    fallback_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps fallback adapter kwarg names to env var names for secret injection.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3161,6 +3233,9 @@ class Settings(BaseSettings):
 
     # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
     resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
+
+    resident_state: ResidentStateConfig = Field(default_factory=ResidentStateConfig)
+    resident_inbox: ResidentInboxConfig = Field(default_factory=ResidentInboxConfig)
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

@@ -55,6 +55,33 @@ _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "decision": "thinking",
 }
 
+
+def help_needed_frame_to_room_notification(meta: ParticipantMeta, frame: dict) -> dict:
+    """Translate a Ravn help_needed frame into Skuld's room notification shape."""
+    data = frame.get("data", {})
+    if isinstance(data, str):
+        data = {"summary": data}
+    if not isinstance(data, dict):
+        data = {}
+
+    notification: dict = {
+        "type": "room_notification",
+        "notificationType": "help_needed",
+        "participantId": meta.peer_id,
+        "participant": asdict(meta),
+        "persona": data.get("persona", meta.persona),
+        "reason": data.get("reason", "unknown"),
+        "summary": data.get("summary", "Agent needs help"),
+        "attempted": data.get("attempted", []),
+        "recommendation": data.get("recommendation", ""),
+        "urgency": frame.get("metadata", {}).get("urgency", 0.85),
+    }
+
+    context = data.get("context")
+    if context:
+        notification["context"] = context
+    return notification
+
 HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
     {"observer", "teacher", "approver", "debugger", "owner"}
 )
@@ -1120,28 +1147,10 @@ class RoomBridge:
         Emits a high-visibility notification that surfaces in the user's chat
         without requiring them to watch logs.
         """
-        data = frame.get("data", {})
-        if isinstance(data, str):
-            # If data is a string, wrap it
-            data = {"summary": data}
-
-        notification: dict = {
-            "type": "room_notification",
-            "notificationType": "help_needed",
-            "participantId": meta.peer_id,
-            "participant": asdict(meta),
-            "persona": data.get("persona", meta.persona),
-            "reason": data.get("reason", "unknown"),
-            "summary": data.get("summary", "Agent needs help"),
-            "attempted": data.get("attempted", []),
-            "recommendation": data.get("recommendation", ""),
-            "urgency": frame.get("metadata", {}).get("urgency", 0.85),
-        }
+        notification = help_needed_frame_to_room_notification(meta, frame)
 
         # Include context if provided (file paths, errors, etc.)
-        context = data.get("context")
-        if context:
-            notification["context"] = context
+        context = notification.get("context")
         if isinstance(context, dict):
             self._pending_help_context[meta.peer_id] = {
                 "help_summary": notification["summary"],
@@ -1328,6 +1337,10 @@ class RoomBridge:
                 exc_info=True,
             )
             return False
+
+    def pending_help_peer_ids(self) -> tuple[str, ...]:
+        """Return Ravn peer ids with pending help context for directed replies."""
+        return tuple(self._pending_help_context.keys())
 
     # ------------------------------------------------------------------
     # Room state

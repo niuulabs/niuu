@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
     EnvironmentConfig,
@@ -21,6 +23,7 @@ from ravn.ports.capability import (
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
 )
+from ravn.resident_inbox import MimirResidentInbox
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -93,6 +96,14 @@ class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
             workload_subject="system:serviceaccount:nats:valkyrie-host-jozef",
             workload_name="valkyrie-host-jozef",
         )
+
+
+class WakefulnessProbe:
+    def __init__(self) -> None:
+        self.activity_count = 0
+
+    def notify_activity(self) -> None:
+        self.activity_count += 1
 
 
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
@@ -209,6 +220,57 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    count = await runtime.collect_once()
+    source = MimirResidentInbox(mimir)
+    rows = await source.list_signals(status="", limit=5)
+    pages = await mimir.list_pages(prefix="resident/inbox/signals")
+
+    assert count == 1
+    assert len(pages) == 1
+    assert len(rows) == 1
+    _path, signal = rows[0]
+    assert signal.source == "host-events"
+    assert signal.kind == "signal.host.event"
+    assert "Disk usage crossed 95%" in signal.summary
+
+
+@pytest.mark.asyncio
+async def test_daemon_environment_signal_recording_notifies_wakefulness(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    wakefulness = WakefulnessProbe()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        resident_wakefulness=wakefulness,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    await runtime.collect_once()
+
+    assert wakefulness.activity_count == 1
 
 
 @pytest.mark.asyncio

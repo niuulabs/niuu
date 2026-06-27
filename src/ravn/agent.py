@@ -455,6 +455,19 @@ class RavnAgent:
             cumulative_usage = cumulative_usage + llm_response.usage
 
             if llm_response.stop_reason != StopReason.TOOL_USE:
+                if self._domain_drive_response_needs_more_grounding(llm_response.content):
+                    self._session.add_message(
+                        Message(role="assistant", content=llm_response.content)
+                    )
+                    self._session.add_message(
+                        Message(
+                            role="user",
+                            content=self._domain_drive_grounding_rejection_message(),
+                        )
+                    )
+                    last_had_tool_error = True
+                    continue
+
                 if llm_response.content:
                     await self._channel.emit(
                         RavnEvent.response(
@@ -479,7 +492,10 @@ class RavnAgent:
                 early_outcome = _parse_outcome_block_for_persona(
                     llm_response.content, self._persona_config
                 )
-                if early_outcome is not None:
+                if (
+                    early_outcome is not None
+                    and not self._domain_drive_response_needs_more_grounding(llm_response.content)
+                ):
                     logger.info("Early termination: outcome block detected, skipping tool calls")
                     logger.debug(
                         "outcome_block: valid=%s fields=%s errors=%s",
@@ -529,6 +545,7 @@ class RavnAgent:
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_call.id,
+                        "name": tool_call.name,
                         "content": result.content,
                         "is_error": result.is_error,
                     }
@@ -1089,6 +1106,27 @@ class RavnAgent:
             )
         )
 
+        if self._should_defer_initial_domain_drive_tool(tool_call):
+            result = ToolResult(
+                tool_call_id=tool_call.id,
+                content=(
+                    "tool deferred: initial domain-drive orientation must start "
+                    "with glob_search workspace discovery."
+                ),
+                is_error=True,
+            )
+            await self._channel.emit(
+                RavnEvent.tool_result(
+                    self._source_id,
+                    tool_call.name,
+                    result.content,
+                    self._session.id,
+                    self._session.id,
+                    is_error=True,
+                )
+            )
+            return result
+
         granted = await self._permission.check(tool.required_permission)
         if not granted:
             error = PermissionDeniedError(tool_call.name, tool.required_permission)
@@ -1161,6 +1199,27 @@ class RavnAgent:
             )
         )
 
+        if self._should_defer_initial_domain_drive_question():
+            result = ToolResult(
+                tool_call_id=tool_call.id,
+                content=(
+                    "ask_user deferred: initial domain-drive orientation must inspect "
+                    "available context before asking the operator."
+                ),
+                is_error=True,
+            )
+            await self._channel.emit(
+                RavnEvent.tool_result(
+                    self._source_id,
+                    _ASK_USER_TOOL_NAME,
+                    result.content,
+                    self._session.id,
+                    self._session.id,
+                    is_error=True,
+                )
+            )
+            return result
+
         if self._user_input_fn is None:
             result = ToolResult(
                 tool_call_id=tool_call.id,
@@ -1191,6 +1250,132 @@ class RavnAgent:
             )
         )
         return result
+
+    def _should_defer_initial_domain_drive_question(self) -> bool:
+        persona_name = getattr(self._persona_config, "name", "")
+        if persona_name != "domain-drive":
+            return False
+
+        return not self._observed_tool_result_names()
+
+    def _should_defer_initial_domain_drive_tool(self, tool_call: ToolCall) -> bool:
+        if getattr(self._persona_config, "name", "") != "domain-drive":
+            return False
+        if "glob_search" not in self._tools:
+            return False
+        if tool_call.name == "glob_search":
+            return False
+        return not self._observed_tool_result_names()
+
+    def _domain_drive_response_needs_more_grounding(self, content: str) -> bool:
+        if getattr(self._persona_config, "name", "") != "domain-drive":
+            return False
+        if self._domain_drive_outcome_needs_more_grounding(content):
+            return True
+
+        parsed = _parse_outcome_block_for_persona(content, self._persona_config)
+        if parsed is not None:
+            return False
+
+        observed_tools = self._observed_tool_result_names()
+        if not observed_tools:
+            return "glob_search" in self._tools
+
+        if "glob_search" in self._tools and "glob_search" not in observed_tools:
+            return True
+
+        grounding_tools = {
+            "read_file",
+            "grep_search",
+            "mimir_query",
+            "mimir_search",
+            "mimir_read",
+        }
+        if "glob_search" in observed_tools and observed_tools.isdisjoint(grounding_tools):
+            return True
+
+        return "write_file" in self._tools and "write_file" not in observed_tools
+
+    def _domain_drive_grounding_rejection_message(self) -> str:
+        observed_tools = self._observed_tool_result_names()
+        base = (
+            "domain-drive response rejected: continue from the same mandate. "
+            "This turn is not complete until you use actual tool calls, not code "
+            "examples or narrative claims. Do not ask_user yet. "
+        )
+        if "glob_search" in self._tools and "glob_search" not in observed_tools:
+            return (
+                base + "Call `glob_search` now for broad workspace discovery. Then read or "
+                "search at least one relevant discovered file."
+            )
+        grounding_tools = {
+            "read_file",
+            "grep_search",
+            "mimir_query",
+            "mimir_search",
+            "mimir_read",
+        }
+        if observed_tools.isdisjoint(grounding_tools):
+            return (
+                base + "Read or search at least one relevant discovered local file before "
+                "finishing."
+            )
+        if "write_file" in self._tools and "write_file" not in observed_tools:
+            return (
+                base + "Write `resident-domain-map.md` with observed evidence, any outside "
+                "context you actually gathered, hypotheses, open questions, "
+                "self-authored work, capability gaps, and one safe next action."
+            )
+        return base + "Continue grounding the orientation with available tools."
+
+    def _domain_drive_outcome_needs_more_grounding(self, content: str) -> bool:
+        if getattr(self._persona_config, "name", "") != "domain-drive":
+            return False
+        parsed = _parse_outcome_block_for_persona(content, self._persona_config)
+        if parsed is None:
+            return "---outcome---" in content
+
+        observed_tools = self._observed_tool_result_names()
+        if not observed_tools:
+            return True
+
+        if "glob_search" in self._tools and "glob_search" not in observed_tools:
+            return True
+
+        grounding_tools = {
+            "read_file",
+            "grep_search",
+            "mimir_query",
+            "mimir_search",
+            "mimir_read",
+        }
+        if "glob_search" in observed_tools and observed_tools.isdisjoint(grounding_tools):
+            return True
+
+        verdict = str(parsed.fields.get("verdict", "")).strip().casefold()
+        if (
+            verdict in {"oriented", "help_needed"}
+            and "write_file" in self._tools
+            and "write_file" not in observed_tools
+        ):
+            return True
+
+        return False
+
+    def _observed_tool_result_names(self) -> set[str]:
+        names: set[str] = set()
+        for message in self._session.messages:
+            content = message.content
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "tool_result" and not item.get("is_error", False):
+                    name = str(item.get("name", ""))
+                    if name and name != _ASK_USER_TOOL_NAME:
+                        names.add(name)
+        return names
 
 
 def _maybe_append_budget_warning(

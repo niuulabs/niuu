@@ -665,8 +665,15 @@ class MimirPublishFilesTool(ToolPort):
             if provenance_error is not None:
                 return ToolResult(tool_call_id="", content=provenance_error, is_error=True)
 
-            await self._adapter.upsert_page(path, content, mimir=mimir)
-            await self._adapter.get_page(path)
+            try:
+                await self._adapter.upsert_page(path, content, mimir=mimir)
+                await self._adapter.get_page(path)
+            except Exception as exc:
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"Failed to publish {path}: {exc}",
+                    is_error=True,
+                )
             published.append(path)
 
         if not published:

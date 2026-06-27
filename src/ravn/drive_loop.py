@@ -38,6 +38,7 @@ from ravn.config import BudgetConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
+from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
@@ -803,6 +804,9 @@ class DriveLoop:
         self._source_id = "drive_loop"
         self._counter = 0
         self._rpc_handler: MeshRpcHandler | None = None
+        self._directed_message_interceptors: list[
+            Callable[[str, dict[str, Any] | None], Awaitable[bool]]
+        ] = []
         self._result_store: TaskResultStore = TaskResultStore()
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
@@ -857,6 +861,17 @@ class DriveLoop:
     def register_trigger(self, trigger: TriggerPort) -> None:
         """Register a trigger source before calling ``run()``."""
         self._triggers.append(trigger)
+
+    def operator_contact_channel(self) -> ChannelPort | None:
+        """Return the daemon's existing outbound operator channel, when enabled."""
+        return self._skuld_channel
+
+    def register_directed_message_interceptor(
+        self,
+        handler: Callable[[str, dict[str, Any] | None], Awaitable[bool]],
+    ) -> None:
+        """Register a handler that may consume directed user messages before enqueue."""
+        self._directed_message_interceptors.append(handler)
 
     async def enqueue(self, task: AgentTask) -> None:
         """Add a task to the priority queue, honouring deadline and capacity."""
@@ -1238,6 +1253,14 @@ class DriveLoop:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
+        for handler in list(self._directed_message_interceptors):
+            try:
+                if await handler(content, metadata):
+                    logger.info("drive_loop: directed message consumed by interceptor")
+                    return
+            except Exception:
+                logger.exception("drive_loop: directed message interceptor failed")
+
         if await self._try_steer_active_agent(content):
             return
 
@@ -2200,12 +2223,12 @@ class DriveLoop:
                 "workflow_node_id": task.workflow_node_id,
                 "session_id": task.session_id,
             }
-            help_event = RavnEvent.help_needed(
+            help_event = build_help_needed_event(
                 source=self._source_id,
                 persona=self._persona_config.name,
                 reason=str(outcome_fields.get("reason") or "needs_context"),
                 summary=summary or "Agent requested human input before continuing.",
-                attempted=[str(item) for item in attempted if str(item).strip()],
+                attempted=attempted,
                 recommendation=str(
                     outcome_fields.get("recommendation")
                     or "Reply directly to this agent with the missing guidance."

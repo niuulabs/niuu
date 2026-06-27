@@ -121,6 +121,7 @@ class ProcessInfo:
             error=data.get("error"),
             flock_dir=data.get("flock_dir", ""),
             flock_base_port=data.get("flock_base_port"),
+            managed_by=data.get("managed_by", "local_process"),
         )
 
 
@@ -373,6 +374,12 @@ def _materialize_local_mimir_config(spec: SessionSpec, flock_dir: Path) -> dict[
             localized_path = _localize_mimir_path(path, flock_dir)
             Path(localized_path).mkdir(parents=True, exist_ok=True)
             instance["path"] = localized_path
+        elif str(instance.get("url") or "").strip():
+            localized_path = flock_dir / "mimir" / "local" / str(instance["name"])
+            localized_path.mkdir(parents=True, exist_ok=True)
+            instance.pop("url", None)
+            instance.pop("auth", None)
+            instance["path"] = str(localized_path)
         localized_instances.append(instance)
 
     return {

@@ -136,6 +136,17 @@ def _non_empty_str(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
+def _telegram_directed_metadata(data: dict) -> dict[str, str]:
+    """Build the directed-room-message metadata for an inbound Telegram payload."""
+    return {
+        "source": "telegram",
+        "telegram_message_id": str(data.get("message_id") or ""),
+        "telegram_chat_id": str(data.get("chat_id") or ""),
+        "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
+        "telegram_date": str(data.get("date") or ""),
+    }
+
+
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
     """Return a short human-readable description for a browser content block."""
     block_type = str(block.get("type") or "").strip()
@@ -3516,6 +3527,10 @@ class Broker:
                 content_str = _normalize_browser_message_content(message)
                 if not content_str:
                     return
+                if await self._try_route_pending_help_reply(data, content_str):
+                    return
+                if await self._try_route_single_room_peer_message(data, content_str):
+                    return
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
                 request_id = request_id if isinstance(request_id, str) and request_id else None
@@ -3578,6 +3593,57 @@ class Broker:
                     self._safe_transport_send(self._transport, content_str),
                     name=f"transport-send-{msg_id}",
                 )
+
+    async def _try_route_pending_help_reply(self, data: dict, content: str) -> bool:
+        """Route a Telegram reply to the single Ravn peer waiting on help_needed."""
+        if self._room_bridge is None:
+            return False
+        return await self._route_telegram_to_single_peer(
+            data,
+            content,
+            candidates=self._room_bridge.pending_help_peer_ids(),
+            log_message=(
+                "_dispatch_browser_message: routed Telegram reply to pending help peer_id=%s"
+            ),
+        )
+
+    async def _try_route_single_room_peer_message(self, data: dict, content: str) -> bool:
+        """Route Telegram text to the sole connected Ravn room participant."""
+        if self._room_bridge is None:
+            return False
+        return await self._route_telegram_to_single_peer(
+            data,
+            content,
+            candidates=tuple(self._room_bridge.participants.keys()),
+            log_message=(
+                "_dispatch_browser_message: routed Telegram message to sole room peer_id=%s"
+            ),
+        )
+
+    async def _route_telegram_to_single_peer(
+        self,
+        data: dict,
+        content: str,
+        *,
+        candidates: tuple[str, ...],
+        log_message: str,
+    ) -> bool:
+        """Deliver a Telegram payload to a peer when exactly one candidate exists."""
+        if str(data.get("source") or "").strip().lower() != "telegram":
+            return False
+        if len(candidates) != 1:
+            return False
+        try:
+            await self.handle_directed_room_message(
+                candidates[0],
+                content,
+                source="telegram",
+                metadata=_telegram_directed_metadata(data),
+            )
+        except LookupError:
+            return False
+        logger.info(log_message, _sanitize_log(candidates[0]))
+        return True
 
     async def _safe_transport_control(
         self,
@@ -5225,14 +5291,15 @@ class Broker:
         if not tg_config.enabled:
             return
 
-        if not tg_config.bot_token or not tg_config.chat_id:
+        bot_token, chat_id = await self._resolve_telegram_credentials()
+        if not bot_token or not chat_id:
             logger.warning("Telegram enabled but bot_token or chat_id missing, skipping")
             return
 
         try:
             channel = TelegramChannel(
-                bot_token=tg_config.bot_token,
-                chat_id=tg_config.chat_id,
+                bot_token=bot_token,
+                chat_id=chat_id,
                 notify_only=tg_config.notify_only,
                 topic_mode=tg_config.topic_mode,
                 message_thread_id=tg_config.message_thread_id,
@@ -5246,6 +5313,49 @@ class Broker:
             logger.warning("python-telegram-bot not installed, Telegram channel disabled")
         except Exception:
             logger.warning("Failed to initialize Telegram channel", exc_info=True)
+
+    async def _resolve_telegram_credentials(self) -> tuple[str, str]:
+        """Resolve Telegram credentials from direct config or the shared credential store."""
+        tg_config = self._settings.telegram
+        bot_token = tg_config.bot_token.strip()
+        chat_id = tg_config.chat_id.strip()
+        if bot_token and chat_id:
+            return bot_token, chat_id
+
+        credential_name = tg_config.credential_name.strip()
+        if not credential_name:
+            return bot_token, chat_id
+
+        try:
+            store_cls = import_class(tg_config.credential_store_adapter)
+            store = store_cls(**dict(tg_config.credential_store_kwargs))
+            values = await store.get_value(
+                tg_config.credential_owner_type,
+                tg_config.credential_owner_id,
+                credential_name,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to resolve Telegram credential %r from %s",
+                credential_name,
+                tg_config.credential_store_adapter,
+                exc_info=True,
+            )
+            return bot_token, chat_id
+
+        if not values:
+            logger.warning(
+                "Telegram credential %r not found for %s/%s",
+                credential_name,
+                tg_config.credential_owner_type,
+                tg_config.credential_owner_id,
+            )
+            return bot_token, chat_id
+
+        return (
+            bot_token or str(values.get("bot_token") or values.get("token") or "").strip(),
+            chat_id or str(values.get("chat_id") or "").strip(),
+        )
 
     def _build_telegram_topic_name(self) -> str:
         """Build a readable Telegram topic name for the active session."""

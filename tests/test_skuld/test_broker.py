@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi import WebSocketDisconnect
 
+from niuu.domain.models import SecretType
 from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
@@ -178,6 +179,128 @@ class TestBroker:
         with patch("skuld.broker.import_class", side_effect=ImportError("no module")):
             with pytest.raises(ValueError, match="Cannot load transport adapter"):
                 b._create_transport()
+
+    @pytest.mark.asyncio
+    async def test_resolve_telegram_credentials_from_file_credential_store(self, tmp_path):
+        """Telegram can reuse the shared file credential store by credential name."""
+        from volundr.adapters.outbound.file_credential_store import FileCredentialStore
+
+        store = FileCredentialStore(base_dir=str(tmp_path / "credentials"))
+        await store.store(
+            "user",
+            "dev-user",
+            "telegram-main",
+            SecretType.GENERIC,
+            {"bot_token": "123456:token", "chat_id": "-100123"},
+        )
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            telegram={
+                "enabled": True,
+                "credential_name": "telegram-main",
+                "credential_store_kwargs": {"base_dir": str(tmp_path / "credentials")},
+                "notify_only": False,
+            },
+        )
+        b = Broker(settings=settings)
+
+        assert await b._resolve_telegram_credentials() == ("123456:token", "-100123")
+
+    @pytest.mark.asyncio
+    async def test_telegram_text_routes_to_single_pending_help_peer(self, tmp_path):
+        """Telegram replies target the single Ravn peer waiting on help_needed."""
+
+        class MemoryWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, text: str) -> None:
+                self.sent_text.append(text)
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+        )
+        b = Broker(settings=settings)
+        assert b._room_bridge is not None
+        ws = MemoryWebSocket()
+        await b._room_bridge.register("ravn-1", "resident-codex", ws)
+        await b._room_bridge.handle_ravn_frame(
+            "ravn-1",
+            {
+                "type": "help_needed",
+                "data": {
+                    "persona": "resident-codex",
+                    "reason": "operator_approval_required",
+                    "summary": "May I delegate this objective?",
+                    "recommendation": "Reply with approval or denial.",
+                    "context": {
+                        "operator_contact_id": "operator-contact-risky",
+                        "operator_contact_purpose": "approval",
+                        "source_objective_id": "risky",
+                    },
+                },
+            },
+        )
+
+        routed = await b._try_route_pending_help_reply(
+            {
+                "type": "message",
+                "source": "telegram",
+                "content": "Yes, approved.",
+                "chat_id": "-100123",
+                "message_id": 42,
+            },
+            "Yes, approved.",
+        )
+
+        assert routed is True
+        assert len(ws.sent_text) == 1
+        payload = json.loads(ws.sent_text[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "Yes, approved."
+        assert payload["metadata"]["help_context"]["source_objective_id"] == "risky"
+        assert payload["metadata"]["telegram_message_id"] == "42"
+        assert b._room_bridge.pending_help_peer_ids() == ()
+
+    @pytest.mark.asyncio
+    async def test_telegram_text_routes_to_single_room_peer_without_pending_help(self, tmp_path):
+        """Telegram text can steer the sole connected Ravn room peer."""
+
+        class MemoryWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, text: str) -> None:
+                self.sent_text.append(text)
+
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+        )
+        b = Broker(settings=settings)
+        assert b._room_bridge is not None
+        ws = MemoryWebSocket()
+        await b._room_bridge.register("ravn-1", "resident-codex", ws)
+
+        routed = await b._try_route_single_room_peer_message(
+            {
+                "type": "message",
+                "source": "telegram",
+                "content": "Look at this supplier page: https://example.com/supplier",
+                "chat_id": "-100123",
+                "message_id": 43,
+            },
+            "Look at this supplier page: https://example.com/supplier",
+        )
+
+        assert routed is True
+        assert len(ws.sent_text) == 1
+        payload = json.loads(ws.sent_text[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "Look at this supplier page: https://example.com/supplier"
+        assert payload["metadata"]["source"] == "telegram"
+        assert payload["metadata"]["telegram_message_id"] == "43"
 
     @pytest.mark.asyncio
     async def test_startup_creates_workspace(self, test_broker, tmp_path):

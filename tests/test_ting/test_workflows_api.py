@@ -555,6 +555,8 @@ class TestWorkflowCatalogAPI:
                 "sessionName": "grief-companions",
                 "repo": "https://github.com/niuulabs/volundr.git",
                 "branch": "feat/research",
+                "model": "gpt-5.5",
+                "definition": "skuldCodex",
                 "provenance": {
                     "signal_id": "sig-1",
                     "valkyrie_id": "valkyrie-ymir",
@@ -571,6 +573,7 @@ class TestWorkflowCatalogAPI:
         assert len(adapter.requests) == 1
         spawn = adapter.requests[0]
         assert spawn.definition == "skuldCodex"
+        assert spawn.model == "gpt-5.5"
         assert spawn.workload_type == "ravn_flock"
         assert spawn.name == "grief-companions"
         assert spawn.repo == "https://github.com/niuulabs/volundr.git"

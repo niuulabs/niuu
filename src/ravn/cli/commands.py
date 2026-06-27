@@ -13,6 +13,7 @@ import sys
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1795,6 +1796,8 @@ def _build_agent(
         sleipnir_publisher=sleipnir_publisher,
         reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
+        persona_config=persona_config,
+        stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
     )
 
     return agent, channel
@@ -2258,7 +2261,6 @@ async def _run_evolve(settings: Settings) -> None:
     else:
         typer.echo(evolution.as_diff())
 
-    from datetime import UTC, datetime
 
     state.outcome_count_at_last_run = current_count
     state.last_run_at = datetime.now(UTC)
@@ -2863,7 +2865,7 @@ async def _run_daemon(
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
-    resident_learning_owns_publisher = False
+    environment_signal_publisher_started = False
     environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
@@ -2913,6 +2915,7 @@ async def _run_daemon(
                 settings,
                 llm=llm,
                 interaction_tracker=interaction_tracker,
+                agent_factory=_agent_factory,
             )
 
         # Wire task dispatch subscription when requested (--listen / --daemon)
@@ -2942,15 +2945,19 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
+    if environment_signal_publisher is not None and hasattr(
+        environment_signal_publisher,
+        "start",
+    ):
+        await environment_signal_publisher.start()
+        environment_signal_publisher_started = True
+
     resident_learning_runtime = _build_resident_learning_runtime(
         settings,
         publisher=environment_signal_publisher,
         workspace=_resolve_workspace(settings),
     )
     if resident_learning_runtime is not None:
-        if hasattr(environment_signal_publisher, "start"):
-            await environment_signal_publisher.start()
-            resident_learning_owns_publisher = True
         await resident_learning_runtime.start()
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
@@ -3017,9 +3024,10 @@ async def _run_daemon(
         drive_loop=drive_loop,
         persona_config=persona_config,
         publisher=environment_signal_publisher,
+        mimir=daemon_mimir,
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
-        owns_publisher=not resident_learning_owns_publisher,
+        owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:
         await environment_signal_runtime.start()
@@ -3123,7 +3131,7 @@ async def _run_daemon(
             await huddle_archiver.stop()
         if resident_learning_runtime is not None:
             await resident_learning_runtime.stop()
-        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
         return
 
@@ -3151,7 +3159,7 @@ async def _run_daemon(
             await resident_learning_runtime.stop()
         if environment_signal_runtime is not None:
             await environment_signal_runtime.stop()
-        if resident_learning_owns_publisher and environment_signal_publisher is not None:
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
@@ -3171,6 +3179,7 @@ def _build_environment_signal_runtime(
     drive_loop: Any | None = None,
     persona_config: Any | None = None,
     publisher: Any | None = None,
+    mimir: Any | None = None,
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
     owns_publisher: bool = True,
@@ -3202,17 +3211,42 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
-    if resident_learning_runtime is not None:
-        process_signal = resident_learning_runtime.process_signal
-        if resident_wakefulness is not None:
+    resident_signal_recorder = None
+    if (
+        mimir is not None
+        and settings.resident_inbox.enabled
+        and settings.resident_inbox.environment_signals_enabled
+    ):
+        from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
 
-            async def _process_with_wakefulness(event: Any) -> Any:
+        resident_signal_recorder = MimirResidentInbox(mimir)
+
+    async def _process_resident_signal(event: Any) -> Any:
+        result: dict[str, Any] = {}
+        if resident_signal_recorder is not None:
+            ref = await resident_signal_recorder.write_event(event)
+            if resident_wakefulness is not None:
                 resident_wakefulness.notify_activity()
-                return await process_signal(event)
+            result.update(
+                {
+                    "residentAutonomySignalPersisted": True,
+                    "residentAutonomySignalRef": ref,
+                }
+            )
+        if resident_learning_runtime is not None:
+            if resident_wakefulness is not None and resident_signal_recorder is None:
+                resident_wakefulness.notify_activity()
+            learned = await resident_learning_runtime.process_signal(event)
+            if isinstance(learned, dict):
+                result.update(learned)
+            elif learned is not None:
+                result["residentLearningResult"] = learned
+        return result or None
 
-            resident_signal_processor = _process_with_wakefulness
-        else:
-            resident_signal_processor = process_signal
+    if resident_learning_runtime is not None:
+        resident_signal_processor = _process_resident_signal
+    elif resident_signal_recorder is not None:
+        resident_signal_processor = _process_resident_signal
 
     return EnvironmentSignalRuntime(
         settings=settings,
@@ -3489,6 +3523,7 @@ def _wire_mimir_triggers(
     settings: Settings,
     llm: Any = None,
     interaction_tracker: Any = None,
+    agent_factory: Any | None = None,
 ) -> None:
     """Register Mímir source, staleness, and thread triggers on the drive loop.
 
@@ -5019,7 +5054,6 @@ async def _run_mimir_ingest(
     content_hash = compute_content_hash(content)
     source_id = "src_" + content_hash[:16]
 
-    from datetime import UTC, datetime
 
     source = MimirSource(
         source_id=source_id,

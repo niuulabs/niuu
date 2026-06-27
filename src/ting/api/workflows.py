@@ -67,6 +67,8 @@ class WorkflowLaunchBody(BaseModel):
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
+    model: str = Field(default="", max_length=255)
+    definition: str | None = Field(default=None, max_length=255)
     provenance: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
@@ -295,8 +297,8 @@ async def launch_workflow_execution(
     try:
         resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
             workflow_snapshot,
-            fallback_model=settings.dispatch.default_model,
-            requested_definition=_DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
+            fallback_model=launch.model or settings.dispatch.default_model,
+            requested_definition=launch.definition or _DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
             session_definitions=settings.session_definitions,
             configured_models=list(settings.bifrost.models),
         )

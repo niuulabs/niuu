@@ -11,6 +11,8 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import WebSocketDisconnect
@@ -44,7 +46,7 @@ def _is_expected_ws_disconnect(exc: Exception) -> bool:
 
 
 try:
-    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Bot, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CallbackQueryHandler,
@@ -56,6 +58,7 @@ try:
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
+    ForceReply = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +638,18 @@ def telegram_parse_mode(event: dict) -> str | None:
     return None
 
 
+def _telegram_should_send_event(event: dict) -> bool:
+    """Return whether an event belongs on the human Telegram operator channel."""
+    event_type = event.get("type", "")
+    return event_type in {
+        "room_message",
+        "room_notification",
+        "room_outcome",
+        "room_mesh_message",
+        "error",
+    }
+
+
 class TelegramChannel(MessageChannel):
     """Message channel that sends CLI events to a Telegram chat.
 
@@ -657,6 +672,8 @@ class TelegramChannel(MessageChannel):
         topic_mode: TelegramTopicMode = "topic_per_session",
         message_thread_id: int | None = None,
         topic_name: str | None = None,
+        inbound_chat_ids: Iterable[str | int] | None = None,
+        allow_any_inbound_chat: bool = False,
         on_message: object | None = None,
     ) -> None:
         if not HAS_TELEGRAM:
@@ -670,6 +687,8 @@ class TelegramChannel(MessageChannel):
         self._notify_only = notify_only
         self._topic_mode = topic_mode
         self._message_thread_id = message_thread_id
+        self._inbound_chat_ids = {str(chat_id), *(str(item) for item in inbound_chat_ids or ())}
+        self._allow_any_inbound_chat = allow_any_inbound_chat
         base_topic_name = (topic_name or "Volundr session").strip()
         self._topic_name = base_topic_name[:TELEGRAM_TOPIC_NAME_MAX_LENGTH]
         self._on_message = on_message
@@ -679,6 +698,7 @@ class TelegramChannel(MessageChannel):
         self._closed = False
         self._text_buffer: list[str] = []
         self._flush_task: asyncio.Task | None = None
+        self._last_send_results: list[dict[str, Any]] = []
 
     async def start(self) -> None:
         """Start the Telegram bot (initialize, but don't poll if notify_only)."""
@@ -724,6 +744,9 @@ class TelegramChannel(MessageChannel):
         if self._closed or not self._started:
             return
 
+        if not _telegram_should_send_event(event):
+            return
+
         text = format_telegram_event(event)
         if not text:
             return
@@ -732,6 +755,16 @@ class TelegramChannel(MessageChannel):
             text = render_telegram_html(text)
 
         event_type = event.get("type", "")
+        reply_markup = None
+        if (
+            event_type == "room_notification"
+            and event.get("notificationType") == "help_needed"
+            and ForceReply is not None
+        ):
+            reply_markup = ForceReply(
+                selective=True,
+                input_field_placeholder="Reply with the requested operator input",
+            )
 
         # Buffer streaming text deltas and flush periodically
         if event_type == "content_block_delta":
@@ -742,7 +775,7 @@ class TelegramChannel(MessageChannel):
 
         # Non-delta event: flush buffer first, then send
         await self._flush_buffer()
-        await self._send_text(text, parse_mode=parse_mode)
+        await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
     async def _scheduled_flush(self) -> None:
         """Wait then flush the text buffer."""
@@ -764,13 +797,20 @@ class TelegramChannel(MessageChannel):
         if combined.strip():
             await self._send_text(combined)
 
-    async def _send_text(self, text: str, *, parse_mode: str | None = None) -> None:
+    async def _send_text(
+        self,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        reply_markup: object | None = None,
+    ) -> None:
         """Send text to the Telegram chat, splitting if too long."""
         if not self._bot:
             return
 
         chunks = split_message(text)
-        for chunk in chunks:
+        self._last_send_results = []
+        for index, chunk in enumerate(chunks):
             try:
                 kwargs = {
                     "chat_id": self._chat_id,
@@ -780,8 +820,23 @@ class TelegramChannel(MessageChannel):
                     kwargs["parse_mode"] = parse_mode
                 if self._message_thread_id is not None:
                     kwargs["message_thread_id"] = self._message_thread_id
-                await self._bot.send_message(
-                    **kwargs,
+                if reply_markup is not None and index == 0:
+                    kwargs["reply_markup"] = reply_markup
+                sent = await self._bot.send_message(**kwargs)
+                result = {
+                    "chat_id": str(getattr(getattr(sent, "chat", None), "id", self._chat_id)),
+                    "message_id": getattr(sent, "message_id", None),
+                    "date": (
+                        sent.date.isoformat()
+                        if isinstance(getattr(sent, "date", None), datetime)
+                        else str(getattr(sent, "date", "") or "")
+                    ),
+                }
+                self._last_send_results.append(result)
+                logger.info(
+                    "Telegram message sent chat_id=%s message_id=%s",
+                    result["chat_id"],
+                    result["message_id"],
                 )
             except Exception:
                 logger.warning(
@@ -789,6 +844,11 @@ class TelegramChannel(MessageChannel):
                     self._chat_id,
                     exc_info=True,
                 )
+
+    @property
+    def last_send_results(self) -> list[dict[str, Any]]:
+        """Metadata returned by the most recent Telegram send operation."""
+        return list(self._last_send_results)
 
     async def send_permission_request(
         self,
@@ -979,7 +1039,26 @@ class TelegramChannel(MessageChannel):
         if not text:
             return
         if self._on_message:
-            await self._on_message({"type": "message", "content": text})
+            message = update.message
+            payload: dict[str, Any] = {
+                "type": "message",
+                "content": text,
+                "source": "telegram",
+            }
+            message_id = getattr(message, "message_id", None)
+            if isinstance(message_id, int):
+                payload["message_id"] = message_id
+            date = getattr(message, "date", None)
+            if isinstance(date, datetime):
+                payload["date"] = date.isoformat() if hasattr(date, "isoformat") else str(date)
+            chat = getattr(update, "effective_chat", None)
+            chat_id = getattr(chat, "id", None)
+            if isinstance(chat_id, str | int):
+                payload["chat_id"] = str(chat_id)
+            thread_id = getattr(message, "message_thread_id", None)
+            if isinstance(thread_id, int):
+                payload["message_thread_id"] = thread_id
+            await self._on_message(payload)
 
     async def _handle_callback_query(self, update: object, context: object) -> None:
         """Handle inline keyboard button presses (permission responses)."""
@@ -1018,7 +1097,9 @@ class TelegramChannel(MessageChannel):
         chat = update.effective_chat
         if not chat:
             return False
-        return str(chat.id) == str(self._chat_id)
+        if self._allow_any_inbound_chat:
+            return True
+        return str(chat.id) in self._inbound_chat_ids
 
 
 # ---------------------------------------------------------------------------

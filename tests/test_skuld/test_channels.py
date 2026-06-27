@@ -609,6 +609,8 @@ class TestTelegramChannelMocked:
             ch._notify_only = True
             ch._topic_mode = "shared_chat"
             ch._message_thread_id = None
+            ch._inbound_chat_ids = {"12345"}
+            ch._allow_any_inbound_chat = False
             ch._topic_name = "Volundr session"
             ch._on_message = None
             ch._bot = AsyncMock()
@@ -630,28 +632,28 @@ class TestTelegramChannelMocked:
         assert channel.is_open is False
 
     @pytest.mark.asyncio
-    async def test_send_event_text(self, channel):
+    async def test_send_event_skips_raw_assistant_text(self, channel):
         event = {
             "type": "assistant",
             "content": [{"type": "text", "text": "Hello"}],
         }
         await channel.send_event(event)
-        channel._bot.send_message.assert_called_once_with(
-            chat_id="12345",
-            text="Hello",
-        )
+        channel._bot.send_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_send_event_text_to_thread(self, channel):
+    async def test_send_event_room_message_to_thread(self, channel):
         channel._message_thread_id = 77
         event = {
-            "type": "assistant",
-            "content": [{"type": "text", "text": "Hello"}],
+            "type": "room_message",
+            "participant": {"persona": "resident"},
+            "content": "Hello",
+            "visibility": "public",
         }
         await channel.send_event(event)
         channel._bot.send_message.assert_called_once_with(
             chat_id="12345",
-            text="Hello",
+            text="[resident] Hello",
+            parse_mode="HTML",
             message_thread_id=77,
         )
 
@@ -687,6 +689,24 @@ class TestTelegramChannelMocked:
         assert "<pre>" in kwargs["text"]
         assert "Peer" in kwargs["text"]
         assert "blocked" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_help_needed_notification_uses_reply_markup(self, channel):
+        event = {
+            "type": "room_notification",
+            "notificationType": "help_needed",
+            "participant": {"persona": "resident"},
+            "summary": "Need operator input",
+            "reason": "needs_context",
+            "recommendation": "Reply with the missing facts.",
+        }
+
+        await channel.send_event(event)
+
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["parse_mode"] == "HTML"
+        assert "reply_markup" in kwargs
 
     @pytest.mark.asyncio
     async def test_send_event_skips_none_format(self, channel):
@@ -737,23 +757,14 @@ class TestTelegramChannelMocked:
         assert channel.is_open is False
 
     @pytest.mark.asyncio
-    async def test_streaming_buffer_delta(self, channel):
-        """Streaming deltas should buffer, non-delta should flush."""
+    async def test_streaming_delta_is_not_sent_to_telegram(self, channel):
         delta_event = {
             "type": "content_block_delta",
             "delta": {"text": "chunk1"},
         }
         await channel.send_event(delta_event)
-        # Text should be buffered, not sent yet
         channel._bot.send_message.assert_not_called()
-        assert channel._text_buffer == ["chunk1"]
-
-        # Send a non-delta event, should flush buffer first
-        system_event = {"type": "system", "content": "info"}
-        await channel.send_event(system_event)
-        # Buffer flushed + system message sent
-        assert len(channel._text_buffer) == 0
-        assert channel._bot.send_message.call_count == 2
+        assert channel._text_buffer == []
 
     @pytest.mark.asyncio
     async def test_flush_buffer_empty(self, channel):
@@ -770,6 +781,18 @@ class TestTelegramChannelMocked:
         update = MagicMock()
         update.effective_chat.id = 99999
         assert channel._validate_chat(update) is False
+
+    def test_validate_chat_extra_inbound_id(self, channel):
+        channel._inbound_chat_ids.add("99999")
+        update = MagicMock()
+        update.effective_chat.id = 99999
+        assert channel._validate_chat(update) is True
+
+    def test_validate_chat_allow_any_inbound(self, channel):
+        channel._allow_any_inbound_chat = True
+        update = MagicMock()
+        update.effective_chat.id = 99999
+        assert channel._validate_chat(update) is True
 
     def test_validate_chat_no_chat(self, channel):
         update = MagicMock()
@@ -853,7 +876,11 @@ class TestTelegramChannelMocked:
         update.effective_chat.id = 12345
         update.message.text = "hello bot"
         await channel._handle_text_message(update, None)
-        on_message.assert_called_once_with({"type": "message", "content": "hello bot"})
+        on_message.assert_called_once()
+        payload = on_message.call_args.args[0]
+        assert payload["type"] == "message"
+        assert payload["content"] == "hello bot"
+        assert payload["chat_id"] == "12345"
 
     @pytest.mark.asyncio
     async def test_handle_text_message_empty(self, channel):
@@ -1152,7 +1179,7 @@ class TestTelegramChannelMocked:
         )
 
     @pytest.mark.asyncio
-    async def test_streaming_creates_flush_task(self, channel):
+    async def test_streaming_does_not_create_flush_task_for_telegram(self, channel):
         with patch("skuld.channels.asyncio.create_task") as mock_create:
             mock_create.return_value = MagicMock(done=MagicMock(return_value=False))
             delta_event = {
@@ -1160,22 +1187,27 @@ class TestTelegramChannelMocked:
                 "delta": {"text": "chunk"},
             }
             await channel.send_event(delta_event)
-            mock_create.assert_called_once()
-            scheduled = mock_create.call_args[0][0]
-            scheduled.close()
+            mock_create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_streaming_reuses_active_flush_task(self, channel):
+    async def test_raw_assistant_tool_call_is_not_sent_to_telegram(self, channel):
         active_task = MagicMock()
         active_task.done.return_value = False
         channel._flush_task = active_task
-        with patch("skuld.channels.asyncio.create_task") as mock_create:
-            delta_event = {
-                "type": "content_block_delta",
-                "delta": {"text": "chunk"},
-            }
-            await channel.send_event(delta_event)
-            mock_create.assert_not_called()
+        event = {
+            "type": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "input": {"command": "uv run pytest"},
+                }
+            ],
+        }
+
+        await channel.send_event(event)
+
+        channel._bot.send_message.assert_not_called()
 
 
 class TestFormatTelegramEventExtra:

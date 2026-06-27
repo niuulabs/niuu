@@ -498,18 +498,25 @@ class TestProcessInfo:
             workspace="/tmp/ws",
             state=ProcessState.RUNNING,
             error=None,
+            managed_by="local_process",
         )
         restored = ProcessInfo.from_dict(info.to_dict())
         assert restored.session_id == info.session_id
         assert restored.pid == info.pid
         assert restored.port == info.port
         assert restored.state == info.state
+        assert restored.managed_by == info.managed_by
+
+    def test_from_dict_preserves_non_local_owner(self) -> None:
+        info = ProcessInfo.from_dict({"session_id": "x", "managed_by": "external"})
+        assert info.managed_by == "external"
 
     def test_from_dict_defaults(self) -> None:
         info = ProcessInfo.from_dict({"session_id": "x"})
         assert info.pid is None
         assert info.port is None
         assert info.state == ProcessState.STOPPED
+        assert info.managed_by == "local_process"
 
 
 # ------------------------------------------------------------------
@@ -1636,6 +1643,91 @@ class TestProcessSpawning:
                 ],
             }
         ]
+
+    async def test_start_flock_localizes_url_backed_mimir_runtime_for_local_sessions(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+        git_session: Session,
+    ) -> None:
+        workspace = tmp_workspaces / "session-with-remote-mimir"
+        workspace.mkdir(parents=True)
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+        (flock_dir / "node-research-framer.yaml").write_text(
+            "persona: research-framer\n",
+            encoding="utf-8",
+        )
+
+        spec = SessionSpec(
+            values={
+                "flock": {
+                    "personas": [{"name": "research-framer"}],
+                    "llm_config": {"model": "gpt-5.5"},
+                    "max_concurrent_tasks": 3,
+                },
+                "mimir": {
+                    "registryRefs": [
+                        {
+                            "registry_entry_id": "mimir-yggdrasil",
+                            "mount_name": "mimir-yggdrasil",
+                            "url": "https://mimir.yggdrasil.niuu.world/api/v1",
+                            "role": "shared",
+                            "auth_ref": "integration:volundr",
+                            "categories": ["research", "memory"],
+                        }
+                    ],
+                    "bindings": [
+                        {
+                            "mount_name": "mimir-yggdrasil",
+                            "access": "read_write",
+                            "write_prefixes": ["research/"],
+                        }
+                    ],
+                },
+            },
+            pod_spec=PodSpecAdditions(
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-research-framer"},),
+            ),
+        )
+
+        with (
+            patch("subprocess.run"),
+            patch("ravn.adapters.personas.loader.FilesystemPersonaAdapter") as loader_cls,
+        ):
+            loader_cls.return_value.load.return_value = MagicMock(allowed_tools=["file", "git"])
+            await manager._start_flock(
+                git_session,
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+
+        node_config = yaml.safe_load(
+            (flock_dir / "node-research-framer.yaml").read_text(encoding="utf-8")
+        )
+        mimir_cfg = node_config["mimir"]
+        assert mimir_cfg["enabled"] is True
+        remote_instance = next(
+            instance for instance in mimir_cfg["instances"] if instance["name"] == "mimir-yggdrasil"
+        )
+        assert "url" not in remote_instance
+        assert "auth" not in remote_instance
+        assert remote_instance["path"] == str(flock_dir / "mimir" / "local" / "mimir-yggdrasil")
+        assert Path(remote_instance["path"]).is_dir()
+        assert mimir_cfg["write_routing"]["default"] == ["mimir-yggdrasil"]
+        assert {"prefix": "research/", "mounts": ["mimir-yggdrasil"]} in mimir_cfg[
+            "write_routing"
+        ]["rules"]
 
     async def test_start_flock_enriches_cluster_peers_with_persona_metadata(
         self,

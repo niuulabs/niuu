@@ -94,7 +94,12 @@ class ReadFileTool(ToolPort):
         try:
             safe_path = resolve_safe(path_str, self._workspace)
         except PathSecurityError as exc:
-            return ToolResult(tool_call_id="", content=str(exc), is_error=True)
+            guidance = _workspace_path_guidance(self._workspace)
+            return ToolResult(
+                tool_call_id="",
+                content=f"{exc}{guidance}",
+                is_error=True,
+            )
 
         if not safe_path.exists():
             return ToolResult(
@@ -129,6 +134,23 @@ class ReadFileTool(ToolPort):
 
         numbered = "".join(f"{start + idx + 1}\t{line}" for idx, line in enumerate(slice_))
         return ToolResult(tool_call_id="", content=numbered)
+
+
+def _workspace_path_guidance(workspace: Path) -> str:
+    try:
+        candidates = sorted(
+            path.relative_to(workspace).as_posix()
+            for path in workspace.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".md", ".txt", ".yaml", ".yml"}
+        )[:10]
+    except OSError:
+        candidates = []
+    if not candidates:
+        return " Use paths relative to the configured workspace root."
+    return (
+        " Use paths relative to the configured workspace root. "
+        f"Known workspace files include: {', '.join(candidates)}."
+    )
 
 
 class WriteFileTool(ToolPort):

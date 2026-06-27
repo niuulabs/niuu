@@ -19,6 +19,8 @@ class WorkflowLaunchRequest:
     repo: str = ""
     branch: str = ""
     connection_id: str = ""
+    model: str = ""
+    definition: str = ""
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -140,4 +142,13 @@ class WorkflowCapabilityPort(ABC):
         path: str,
     ) -> WorkflowArtifactContent:
         """Read one artifact from the workflow owner."""
+        raise NotImplementedError
+
+    async def cancel_workflow(
+        self,
+        reference: WorkflowRunReference,
+        *,
+        reason: str,
+    ) -> WorkflowRunStatus:
+        """Cancel or stop a workflow run when the owner exposes a lifecycle API."""
         raise NotImplementedError
