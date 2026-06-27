@@ -13,6 +13,7 @@ ArtifactKind = Literal[
     "unresolved_tension",
     "resident_understanding_patch",
 ]
+ProvenanceStatus = Literal["verified", "unverified"]
 
 
 class SourceSpan(BaseModel):
@@ -33,6 +34,8 @@ class Provenance(BaseModel):
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     line_start: int | None = None
     line_end: int | None = None
+    verification_status: ProvenanceStatus
+    verification_reason: str
 
 
 class MomentumArtifactDraft(BaseModel):
@@ -111,6 +114,7 @@ class MomentumExtractionRun(BaseModel):
     procedure_name: str
     model_name: str
     created_at: datetime
+    provenance_fully_verified: bool
     artifact_refs: list[str]
     packet_ref: str
 

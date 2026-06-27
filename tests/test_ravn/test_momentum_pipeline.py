@@ -53,8 +53,12 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
 
     result = await pipeline.extract_file(source)
 
-    assert result.packet_ref == "resident/momentum/packets/packet-build-momentum-pipeline.md"
+    assert (
+        result.packet_ref
+        == "resident/momentum/runs/run-test/packet/packet-build-momentum-pipeline.md"
+    )
     assert len(result.artifact_refs) == 4
+    assert result.provenance_fully_verified is True
     refs = await state.list_refs("resident/momentum")
     assert result.run_ref in refs
     assert result.packet_ref in refs
@@ -65,7 +69,8 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     artifact = (tmp_path / "state" / result.artifact_refs[0]).read_text(encoding="utf-8")
     assert "- source_path:" in artifact
     assert "- extraction_run_id: run-test" in artifact
-    assert "- line_start: 1" in artifact
+    assert "- line_start: 3" in artifact
+    assert "- provenance_status: verified" in artifact
     assert "The model said this mattered." in artifact
 
 
@@ -94,8 +99,51 @@ async def test_momentum_pipeline_replays_same_refs_with_same_fake_output(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_vision_fixture_preserves_required_ideas_as_model_artifacts(tmp_path: Path):
-    fixture = Path("tests/test_ravn/fixtures/niuu_vision_messy.md")
+async def test_default_runs_are_new_extractions_not_silent_overwrites(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+
+    first = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    ).extract_file(source)
+    second = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+    ).extract_file(source)
+
+    assert first.run_ref != second.run_ref
+    assert first.packet_ref != second.packet_ref
+    assert first.extraction.run.run_id.startswith("momentum-20260627T120000Z-")
+    assert second.extraction.run.run_id.startswith("momentum-20260627T120100Z-")
+
+
+@pytest.mark.asyncio
+async def test_ungrounded_model_output_is_persisted_as_unverified(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    payload = _payload()
+    payload["artifacts"][0]["source"] = {"excerpt": "not present in the source"}
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(payload), model="fake-model"),
+        state=LocalResidentState(tmp_path / "state"),
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="ungrounded",
+    ).extract_file(source)
+
+    assert result.provenance_fully_verified is False
+    artifact = (tmp_path / "state" / result.artifact_refs[0]).read_text(encoding="utf-8")
+    run = (tmp_path / "state" / result.run_ref).read_text(encoding="utf-8")
+    assert "- provenance_status: unverified" in artifact
+    assert "- provenance_fully_verified: false" in run
+
+
+@pytest.mark.asyncio
+async def test_recorded_model_response_from_noisy_fixture_is_grounded(tmp_path: Path):
+    fixture = Path("tests/test_ravn/fixtures/niuu_vision_noisy_transcript.md")
     result = await MomentumPipeline(
         worker=MomentumExtractionWorker(FakeLLM(_vision_payload()), model="fake-model"),
         state=LocalResidentState(tmp_path / "state"),
@@ -104,35 +152,23 @@ async def test_vision_fixture_preserves_required_ideas_as_model_artifacts(tmp_pa
     ).extract_file(fixture)
 
     artifacts = [*result.extraction.artifacts, result.extraction.resident_patch]
-    titles = {artifact.title for artifact in artifacts}
-    assert {
-        "Niuu as a Momentum Engine",
-        "Drive preserves momentum",
-        "Work does not begin with a prompt",
-        "Goals are prompting in disguise",
-        "Learned reflexes over hardcoded rules",
-        "Self-awareness as operational self-modeling",
-        "Protect insight from context dilution",
-        "Use the selected memory backend",
-        "LLM council semantic authority",
-        "Autonomy proposal needs reset",
-        "Bounded cognitive workers for context hygiene",
-        "Responsibility rejected as product language",
-        "Avoid mobile-hostile vision cadence",
-    } <= titles
+    kinds = {artifact.kind for artifact in result.extraction.artifacts}
+    assert {"durable_insight", "rejected_direction", "unresolved_tension"} <= kinds
+    assert len(result.extraction.artifacts) >= 10
     assert all(artifact.reason for artifact in artifacts)
     assert all(
-        artifact.provenance.source_path.endswith("niuu_vision_messy.md")
+        artifact.provenance.source_path.endswith("niuu_vision_noisy_transcript.md")
         for artifact in artifacts
     )
     assert result.extraction.packet.out_of_scope
     assert result.extraction.packet.reuse_guidance
     assert result.extraction.packet.reflection_prompts
+    assert result.provenance_fully_verified is True
 
 
 def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     source = tmp_path / "notes.md"
-    source.write_text("messy notes", encoding="utf-8")
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
 
     monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
 
@@ -144,11 +180,42 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     result = CliRunner().invoke(commands.app, ["momentum", "extract", str(source)])
 
     assert result.exit_code == 0, result.output
+    assert "run_id:" in result.output
     assert "artifacts:   4" in result.output
     assert (
-        "packet_ref:  resident/momentum/packets/packet-build-momentum-pipeline.md"
+        "packet_ref:  resident/momentum/runs/"
         in result.output
     )
+    assert "provenance:  verified" in result.output
+
+
+def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+
+    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
+
+    assert result.exit_code == 0
+    assert "Skipped: set RAVN_LLM_EVAL=1" in result.output
+
+
+def test_momentum_eval_runs_when_opted_in(monkeypatch, tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+
+    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+
+    async def _state(_settings, _workspace):
+        return LocalResidentState(tmp_path / "state")
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
+
+    assert result.exit_code == 0, result.output
+    assert "eval:        ok" in result.output
+    assert "provenance:  verified" in result.output
 
 
 def _payload() -> dict:
@@ -165,7 +232,7 @@ def _payload() -> dict:
             "beliefs": ["Momentum Packets preserve why work matters."],
             "constraints": ["Use selected resident state, not a fixed backend."],
             "corrections": ["Do not build fake autonomy."],
-            "source": {"excerpt": "Important living idea.", "line_start": 1, "line_end": 2},
+            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
         },
         "packet": {
             "title": "Build Momentum pipeline",
@@ -177,7 +244,7 @@ def _payload() -> dict:
             "out_of_scope": ["No scheduler", "No UI", "No Mimir hardwire"],
             "success_proof": "A fake model can replay the same artifacts and packet refs.",
             "reflection_prompts": ["What changed in resident understanding?"],
-            "source": {"excerpt": "Important living idea.", "line_start": 1, "line_end": 2},
+            "source": {"excerpt": "Important living idea.", "line_start": 3, "line_end": 3},
         },
     }
 
@@ -187,17 +254,18 @@ def _vision_payload() -> dict:
         (
             "durable_insight",
             "Niuu as a Momentum Engine",
-            "Niuu is not just an agent platform; call it a Momentum Engine.",
+            "Niuu is a Momentum Engine because humans create intent faster "
+            "than they can execute it",
         ),
         (
             "durable_insight",
             "Drive preserves momentum",
-            "Drive is the mechanism behind momentum.",
+            "Drive is closer to unresolved tension inside the resident understanding.",
         ),
         (
             "durable_insight",
             "Work does not begin with a prompt",
-            "Work does not begin with a prompt.",
+            "Work does not begin with a prompt;",
         ),
         (
             "durable_insight",
@@ -207,17 +275,18 @@ def _vision_payload() -> dict:
         (
             "durable_insight",
             "Learned reflexes over hardcoded rules",
-            "Reflexes should be learned from experience instead of hardcoded rules.",
+            "Learned reflexes can become deterministic later, after experience, "
+            "review, and promotion.",
         ),
         (
             "durable_insight",
             "Self-awareness as operational self-modeling",
-            "Self-awareness here should mean operational self-modeling",
+            "Only in the operational self-modeling sense.",
         ),
         (
             "durable_insight",
             "Protect insight from context dilution",
-            "We keep losing the living shape of the idea",
+            'nearly flattened it into "build an agent workflow."',
         ),
         (
             "durable_insight",
@@ -227,12 +296,12 @@ def _vision_payload() -> dict:
         (
             "durable_insight",
             "LLM council semantic authority",
-            "semantic authority should be model or council driven",
+            "semantic authority should be LLM or council driven.",
         ),
         (
             "unresolved_tension",
             "Autonomy proposal needs reset",
-            "it is messy. It probably needs reset",
+            "Useful intent, messy code. It probably needs reset",
         ),
         (
             "durable_insight",
@@ -242,7 +311,7 @@ def _vision_payload() -> dict:
         (
             "rejected_direction",
             "Responsibility rejected as product language",
-            '"responsibility" is bad external product language',
+            "Responsibility sounds like guardrails and external product language.",
         ),
         (
             "rejected_direction",
@@ -251,20 +320,40 @@ def _vision_payload() -> dict:
         ),
     ]
     payload = _payload()
-    payload["artifacts"] = [_artifact(kind, title, excerpt) for kind, title, excerpt in titles]
+    payload["artifacts"] = [
+        _artifact(kind, title, excerpt, line_start=None, line_end=None)
+        for kind, title, excerpt in titles
+    ]
     payload["packet"]["title"] = "Preserve Niuu vision before execution"
     payload["packet"]["implementation_slice"] = (
         "Implement the first typed Momentum Packet extraction proof only."
     )
+    payload["resident_patch"]["source"] = {
+        "excerpt": "The first target is Niuu itself.",
+    }
+    payload["packet"]["source"] = {
+        "excerpt": "No scheduler, no daemon, no UI, no workflow runtime, no fake autonomy.",
+    }
     return payload
 
 
-def _artifact(kind: str, title: str, excerpt: str | None = None) -> dict:
+def _artifact(
+    kind: str,
+    title: str,
+    excerpt: str | None = None,
+    *,
+    line_start: int | None = 3,
+    line_end: int | None = 3,
+) -> dict:
     return {
         "kind": kind,
         "title": title,
         "summary": f"{title} should be preserved as resident understanding.",
         "reason": "The model said this mattered.",
-        "source": {"excerpt": excerpt or title, "line_start": 1, "line_end": 1},
+        "source": {
+            "excerpt": excerpt or "Important living idea.",
+            "line_start": line_start,
+            "line_end": line_end,
+        },
         "tags": ["vision"],
     }

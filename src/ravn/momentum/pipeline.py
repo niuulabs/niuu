@@ -19,6 +19,7 @@ from ravn.momentum.models import (
     ResidentUnderstandingPatch,
 )
 from ravn.momentum.render import render_artifact, render_packet, render_run
+from ravn.momentum.source import SourceDocument
 from ravn.momentum.worker import MomentumExtractionWorker
 from ravn.resident_continuation import _slug
 
@@ -29,6 +30,10 @@ class MomentumPipelineResult:
     run_ref: str
     artifact_refs: list[str]
     packet_ref: str
+
+    @property
+    def provenance_fully_verified(self) -> bool:
+        return self.extraction.run.provenance_fully_verified
 
 
 class MomentumPipeline:
@@ -59,6 +64,7 @@ class MomentumPipeline:
         source_path: str = "<memory>",
     ) -> MomentumPipelineResult:
         source_sha = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        source_doc = SourceDocument(markdown)
         memory = await self._state.recall(
             "Niuu Momentum Engine resident understanding and constraints",
             limit=5,
@@ -68,9 +74,10 @@ class MomentumPipeline:
             memory_frame="\n\n".join(entry.content for entry in memory),
         )
         created_at = self._now or datetime.now(UTC)
-        run_id = self._run_id or f"momentum-{source_sha[:12]}"
+        run_id = self._run_id or f"momentum-{created_at:%Y%m%dT%H%M%SZ}-{source_sha[:8]}"
         extraction = _materialize(
             draft,
+            source_doc=source_doc,
             run_id=run_id,
             source_path=source_path,
             source_sha256=source_sha,
@@ -102,6 +109,7 @@ class MomentumPipeline:
 def _materialize(
     draft: MomentumExtractionDraft,
     *,
+    source_doc: SourceDocument,
     run_id: str,
     source_path: str,
     source_sha256: str,
@@ -112,6 +120,7 @@ def _materialize(
     artifacts = [
         _artifact(
             item,
+            source_doc=source_doc,
             index=index,
             run_id=run_id,
             source_path=source_path,
@@ -124,6 +133,7 @@ def _materialize(
     ]
     patch_provenance = _provenance(
         draft.resident_patch.source,
+        source_doc=source_doc,
         run_id=run_id,
         source_path=source_path,
         source_sha256=source_sha256,
@@ -138,6 +148,7 @@ def _materialize(
     )
     packet_provenance = _provenance(
         draft.packet.source,
+        source_doc=source_doc,
         run_id=run_id,
         source_path=source_path,
         source_sha256=source_sha256,
@@ -150,6 +161,10 @@ def _materialize(
         packet_id=f"packet-{_slug(draft.packet.title) or run_id}",
         provenance=packet_provenance,
     )
+    provenance_fully_verified = all(
+        item.provenance.verification_status == "verified"
+        for item in [*artifacts, patch, packet]
+    )
     run = MomentumExtractionRun(
         run_id=run_id,
         source_path=source_path,
@@ -157,6 +172,7 @@ def _materialize(
         procedure_name=procedure_name,
         model_name=model_name,
         created_at=created_at,
+        provenance_fully_verified=provenance_fully_verified,
         artifact_refs=[],
         packet_ref="",
     )
@@ -166,6 +182,7 @@ def _materialize(
 def _artifact(
     item: MomentumArtifactDraft,
     *,
+    source_doc: SourceDocument,
     index: int,
     run_id: str,
     source_path: str,
@@ -179,6 +196,7 @@ def _artifact(
         artifact_id=f"{item.kind}-{index}-{_slug(item.title) or 'artifact'}",
         provenance=_provenance(
             item.source,
+            source_doc=source_doc,
             run_id=run_id,
             source_path=source_path,
             source_sha256=source_sha256,
@@ -192,6 +210,7 @@ def _artifact(
 def _provenance(
     source,
     *,
+    source_doc: SourceDocument,
     run_id: str,
     source_path: str,
     source_sha256: str,
@@ -199,26 +218,31 @@ def _provenance(
     model_name: str,
     created_at: datetime,
 ) -> Provenance:
+    verification = source_doc.verify(source)
     return Provenance(
         source_path=source_path,
         source_sha256=source_sha256,
-        source_excerpt=source.excerpt,
-        line_start=source.line_start,
-        line_end=source.line_end,
+        source_excerpt=verification.excerpt,
+        line_start=verification.line_start,
+        line_end=verification.line_end,
         extraction_run_id=run_id,
         procedure_name=procedure_name,
         model_name=model_name,
         extracted_at=created_at,
+        verification_status=verification.status,
+        verification_reason=verification.reason,
     )
 
 
 def _artifact_ref(artifact: MomentumArtifact | ResidentUnderstandingPatch) -> str:
-    return f"resident/momentum/artifacts/{artifact.artifact_id}.md"
+    run_id = artifact.provenance.extraction_run_id
+    return f"resident/momentum/runs/{run_id}/artifacts/{artifact.artifact_id}.md"
 
 
 def _packet_ref(packet: MomentumPacket) -> str:
-    return f"resident/momentum/packets/{packet.packet_id}.md"
+    run_id = packet.provenance.extraction_run_id
+    return f"resident/momentum/runs/{run_id}/packet/{packet.packet_id}.md"
 
 
 def _run_ref(run: MomentumExtractionRun) -> str:
-    return f"resident/momentum/runs/{run.run_id}.md"
+    return f"resident/momentum/runs/{run.run_id}/run.md"

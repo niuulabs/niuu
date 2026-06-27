@@ -24,6 +24,8 @@ def render_artifact(artifact: MomentumArtifact | ResidentUnderstandingPatch) -> 
         f"- extracted_at: {artifact.provenance.extracted_at.isoformat()}",
         f"- line_start: {artifact.provenance.line_start or '-'}",
         f"- line_end: {artifact.provenance.line_end or '-'}",
+        f"- provenance_status: {artifact.provenance.verification_status}",
+        f"- provenance_reason: {artifact.provenance.verification_reason}",
         "",
         "## Summary",
         "",
@@ -68,7 +70,9 @@ def render_packet(packet: MomentumPacket) -> str:
         f"- source_sha256: {packet.provenance.source_sha256}\n"
         f"- extracted_at: {packet.provenance.extracted_at.isoformat()}\n"
         f"- line_start: {packet.provenance.line_start or '-'}\n"
-        f"- line_end: {packet.provenance.line_end or '-'}\n\n"
+        f"- line_end: {packet.provenance.line_end or '-'}\n"
+        f"- provenance_status: {packet.provenance.verification_status}\n"
+        f"- provenance_reason: {packet.provenance.verification_reason}\n\n"
         "## Implementation Slice\n\n"
         f"{packet.implementation_slice}\n\n"
         "## Why It Matters\n\n"
@@ -98,6 +102,7 @@ def render_run(run: MomentumExtractionRun) -> str:
         f"- procedure: {run.procedure_name}\n"
         f"- model: {run.model_name}\n"
         f"- created_at: {run.created_at.isoformat()}\n"
+        f"- provenance_fully_verified: {str(run.provenance_fully_verified).lower()}\n"
         f"- packet_ref: {run.packet_ref}\n\n"
         "## Artifact Refs\n\n"
         f"{_bullets_text(run.artifact_refs)}\n"

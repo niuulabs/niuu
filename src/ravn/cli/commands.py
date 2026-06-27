@@ -4939,7 +4939,52 @@ def momentum_extract_cmd(
     asyncio.run(_run_momentum_extract(settings, path))
 
 
+@momentum_app.command("eval")
+def momentum_eval_cmd(
+    path: str = typer.Argument(..., help="Noisy markdown transcript fixture."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Run the opt-in real-LLM Momentum Packet eval."""
+    if os.environ.get("RAVN_LLM_EVAL") != "1":
+        typer.echo("Skipped: set RAVN_LLM_EVAL=1 to run the real LLM eval.")
+        return
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_eval(settings, path))
+
+
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
+    result = await _run_momentum_pipeline(settings, path)
+
+    typer.echo(f"run_id:      {result.extraction.run.run_id}")
+    typer.echo(f"run_ref:     {result.run_ref}")
+    typer.echo(f"artifacts:   {len(result.artifact_refs)}")
+    typer.echo(f"packet_ref:  {result.packet_ref}")
+    typer.echo(f"packet:      {result.extraction.packet.title}")
+    typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
+
+
+async def _run_momentum_eval(settings: Settings, path: str) -> None:
+    from ravn.momentum.eval import evaluate_extraction
+
+    result = await _run_momentum_pipeline(settings, path)
+    errors = evaluate_extraction(result.extraction)
+    typer.echo(f"run_id:      {result.extraction.run.run_id}")
+    typer.echo(f"run_ref:     {result.run_ref}")
+    typer.echo(f"packet_ref:  {result.packet_ref}")
+    typer.echo(f"artifacts:   {len(result.artifact_refs)}")
+    typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
+    if errors:
+        for error in errors:
+            typer.echo(f"eval_error:  {error}", err=True)
+        raise typer.Exit(1)
+    typer.echo("eval:        ok")
+
+
+async def _run_momentum_pipeline(settings: Settings, path: str) -> Any:
     from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
 
     source = Path(path).expanduser()
@@ -4954,12 +4999,11 @@ async def _run_momentum_extract(settings: Settings, path: str) -> None:
     state = await _build_resident_state(settings, workspace)
     llm = _build_llm(settings)
     worker = MomentumExtractionWorker(llm, model=settings.effective_model())
-    result = await MomentumPipeline(worker=worker, state=state).extract_file(source)
+    return await MomentumPipeline(worker=worker, state=state).extract_file(source)
 
-    typer.echo(f"run_ref:     {result.run_ref}")
-    typer.echo(f"artifacts:   {len(result.artifact_refs)}")
-    typer.echo(f"packet_ref:  {result.packet_ref}")
-    typer.echo(f"packet:      {result.extraction.packet.title}")
+
+def _provenance_label(verified: bool) -> str:
+    return "verified" if verified else "unverified"
 
 
 async def _build_resident_state(settings: Settings, workspace: Path) -> Any:

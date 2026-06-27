@@ -49,7 +49,8 @@ Return only JSON matching this shape:
 
 Semantic judgment belongs to you. Preserve durable insights, rejected directions,
 unresolved tensions, resident-understanding updates, and one bounded Momentum
-Packet. Do not turn the packet into a generic ticket.
+Packet. Do not turn the packet into a generic ticket. Cite exact source excerpts
+from the markdown; line ranges are useful only when they point at the cited text.
 """
 
 
