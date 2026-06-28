@@ -23,7 +23,12 @@ from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
 )
-from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
+from ravn.momentum import (
+    MomentumAttentionWorker,
+    MomentumExtractionWorker,
+    MomentumPipeline,
+    MomentumReflectionWorker,
+)
 from ravn.momentum.models import MomentumStatePatch, MomentumStateTension
 from ravn.momentum.render import judgment_event_payload
 from ravn.momentum.state import (
@@ -95,8 +100,80 @@ class RecordingStateCompactor:
         )
 
 
+class StaticCandidateSource:
+    def __init__(self, candidates: list[tuple[str, ResidentInboxSignal]]) -> None:
+        self.candidates = candidates
+        self.calls: list[dict] = []
+
+    async def list_candidates(
+        self,
+        *,
+        limit: int,
+        status: str = "",
+        classification: str = "",
+    ) -> list[tuple[str, ResidentInboxSignal]]:
+        self.calls.append(
+            {"limit": limit, "status": status, "classification": classification}
+        )
+        items = [
+            item
+            for item in self.candidates
+            if (not status or item[1].status == status)
+            and (not classification or item[1].classification == classification)
+        ]
+        return items[:limit]
+
+
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
+
+
+def _candidate(signal_id: str, summary: str, content: str) -> ResidentInboxSignal:
+    return ResidentInboxSignal(
+        id=signal_id,
+        source="test:resident",
+        kind="operator.directed_message",
+        summary=summary,
+        payload={"content": content},
+        raw_ref=f"resident/inbox/signals/{signal_id}.md",
+        classification=ResidentInboxClassification.IDEA.value,
+        evidence_refs=(f"evidence:{signal_id}",),
+        created_at=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    )
+
+
+def _attention_payload(
+    *,
+    selected_id: str | None = "sig-relevant",
+    selected_ref: str | None = "resident/inbox/signals/sig-relevant.md",
+    no_attention_needed: bool = False,
+) -> dict:
+    return {
+        "selected_signal_id": selected_id,
+        "selected_signal_ref": selected_ref,
+        "no_attention_needed": no_attention_needed,
+        "selected_tension_ids": (
+            [] if no_attention_needed else ["tension-carry-reflected-state"]
+        ),
+        "attention_tier": "present",
+        "rationale": (
+            "The selected signal directly answers the current open tension."
+            if not no_attention_needed
+            else "No candidate matches the current resident state strongly enough."
+        ),
+        "why_now": (
+            "The current state names this tension as open and the signal supplies evidence."
+            if not no_attention_needed
+            else "The candidates do not change current Momentum understanding."
+        ),
+        "evidence_refs": ["resident/continuation/momentum/state/current.md"],
+        "signal_refs": [selected_ref or selected_id or "none"],
+        "recommended_next_action": (
+            "no_action" if no_attention_needed else "extract_selected_signal"
+        ),
+        "confidence": 0.82,
+        "source_refs": ["resident/continuation/momentum/state/current.md"],
+    }
 
 
 @pytest.mark.asyncio
@@ -134,6 +211,31 @@ async def test_mimir_resident_inbox_signal_source_loads_signal_by_id_and_ref(tmp
     assert by_id.raw_ref == ref
     assert by_ref.id == "sig-source"
     assert by_ref.raw_ref == ref
+
+
+@pytest.mark.asyncio
+async def test_mimir_resident_inbox_signal_source_lists_attention_candidates(
+    tmp_path: Path,
+) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    idea = _candidate("sig-idea", "Momentum idea", "Idea content.")
+    risk = _candidate("sig-risk", "Momentum risk", "Risk content.").with_updates(
+        classification=ResidentInboxClassification.RISK.value
+    )
+    await inbox.write_signal(idea)
+    await inbox.write_signal(risk)
+
+    candidates = await MimirResidentInboxSignalSource(mimir).list_candidates(
+        limit=5,
+        status="new",
+        classification=ResidentInboxClassification.RISK.value,
+    )
+
+    assert [(ref.endswith("-sig-risk.md"), signal.id) for ref, signal in candidates] == [
+        (True, "sig-risk")
+    ]
+    assert candidates[0][0].endswith("-sig-risk.md")
 
 
 @pytest.mark.asyncio
@@ -429,6 +531,283 @@ async def test_momentum_pipeline_uses_injected_state_compactor(tmp_path: Path):
     current = await state.read_artifact(result.current_state_ref)
     assert compactor.calls == 1
     assert "compactor touched state" in current.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_reads_current_state_and_persists_decision(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    current = empty_momentum_state(updated_at=datetime(2026, 6, 27, 12, tzinfo=UTC))
+    current = current.model_copy(
+        update={
+            "open_tensions": [
+                MomentumStateTension(
+                    tension_id="tension-carry-reflected-state",
+                    title="Carry reflected state",
+                    summary="Future attention should prefer signals that resolve reflected state.",
+                    status="open",
+                )
+            ]
+        }
+    )
+    await state.write_artifact(CURRENT_MOMENTUM_STATE_REF, render_momentum_state(current))
+    candidates = [
+        (
+            "resident/inbox/signals/sig-distractor.md",
+            _candidate("sig-distractor", "Unrelated shell preference", "Use fish later."),
+        ),
+        (
+            "resident/inbox/signals/sig-relevant.md",
+            _candidate(
+                "sig-relevant",
+                "Evidence about reflected state handoff",
+                "The reflected Momentum state is visible in the next signal.",
+            ),
+        ),
+    ]
+    llm = FakeLLM(_attention_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(candidates, limit=5)
+
+    assert result.decision_ref.startswith("resident/continuation/momentum/attention/")
+    assert result.decision.selected_signal_id == "sig-relevant"
+    assert result.decision.current_state_present is True
+    assert "Carry reflected state" in llm.calls[0]["messages"][0]["content"]
+    assert "sig-distractor" in llm.calls[0]["messages"][0]["content"]
+    assert "sig-relevant" in llm.calls[0]["messages"][0]["content"]
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "## Rationale" in artifact.content
+    assert "selected_signal_id: sig-relevant" in artifact.content
+    assert "validation_status: valid" in artifact.content
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_without_current_state_records_absence(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id=None,
+            selected_ref=None,
+            no_attention_needed=True,
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-quiet.md",
+                _candidate("sig-quiet", "Routine status", "Nothing changed."),
+            )
+        ],
+        limit=5,
+    )
+
+    assert result.decision.no_attention_needed is True
+    assert result.decision.current_state_present is False
+    assert "## Current Momentum state\n\n(none)" in llm.calls[0]["messages"][0]["content"]
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "current_state_present: false" in artifact.content
+    assert "no_attention_needed: true" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_valid_no_attention_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id=None,
+            selected_ref=None,
+            no_attention_needed=True,
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-quiet.md",
+                _candidate("sig-quiet", "Routine status", "Nothing changed."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.no_attention_needed is True
+    assert result.decision.recommended_next_action == "no_action"
+    assert "recommended_next_action: no_action" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_unknown_selected_signal(tmp_path: Path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id="sig-missing",
+        selected_ref="resident/inbox/signals/sig-missing.md",
+    )
+
+    with pytest.raises(ValueError, match="selected signal id is not a candidate"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-known.md",
+                    _candidate("sig-known", "Known signal", "Known content."),
+                )
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_mismatched_selected_id_ref(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id="sig-one",
+        selected_ref="resident/inbox/signals/sig-two.md",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="selected signal id/ref do not refer to the same candidate",
+    ):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-one.md",
+                    _candidate("sig-one", "First signal", "First content."),
+                ),
+                (
+                    "resident/inbox/signals/sig-two.md",
+                    _candidate("sig-two", "Second signal", "Second content."),
+                ),
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_no_attention_with_extract_action(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id=None,
+        selected_ref=None,
+        no_attention_needed=True,
+    )
+    payload["recommended_next_action"] = "extract_selected_signal"
+
+    with pytest.raises(ValueError, match="no_attention_needed requires no_action"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-quiet.md",
+                    _candidate("sig-quiet", "Routine status", "Nothing changed."),
+                )
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_records_candidate_truncation(tmp_path: Path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    candidates = [
+        (
+            f"resident/inbox/signals/sig-{index}.md",
+            _candidate(f"sig-{index}", f"Signal {index}", f"Content {index}"),
+        )
+        for index in range(3)
+    ]
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id="sig-1",
+            selected_ref="resident/inbox/signals/sig-1.md",
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(candidates, limit=2)
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "3 candidate(s) available; limit 2; 1 truncated." in frame
+    assert "sig-2" not in frame
+    assert result.decision.candidates_truncated == 1
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "candidates_truncated: 1" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_valid_selected_signal_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(
+            FakeLLM(
+                _attention_payload(
+                    selected_id="sig-relevant",
+                    selected_ref="resident/inbox/signals/sig-relevant.md",
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-relevant.md",
+                _candidate("sig-relevant", "Relevant signal", "Relevant content."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.selected_signal_id == "sig-relevant"
+    assert result.decision.selected_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert "selected_signal_id: sig-relevant" in artifact.content
 
 
 @pytest.mark.asyncio
@@ -1106,6 +1485,59 @@ def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert "judgment_ref:resident/momentum/runs/" in result.output
     assert "packet_ref:  resident/momentum/runs/" in result.output
     assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+
+
+def test_momentum_attend_cli_prints_decision_without_executing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    candidate_ref = "resident/inbox/signals/sig-relevant.md"
+    source = StaticCandidateSource(
+        [
+            (
+                candidate_ref,
+                _candidate(
+                    "sig-relevant",
+                    "Evidence about reflected state handoff",
+                    "The reflected state is visible.",
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(commands, "_build_resident_inbox_signal_source", lambda _s: source)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_attention_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "attend", "--limit", "1", "--status", "new"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "attention_ref: resident/continuation/momentum/attention/" in result.output
+    assert "selected_signal_id: sig-relevant" in result.output
+    assert f"selected_signal_ref: {candidate_ref}" in result.output
+    assert "attention_tier: present" in result.output
+    assert "recommended_next_action: extract_selected_signal" in result.output
+    assert "confidence: 0.82" in result.output
+    assert "run_ref:" not in result.output
+    assert source.calls == [{"limit": 2, "status": "new", "classification": ""}]
+    assert asyncio.run(state.list_refs("resident/momentum/runs")) == []
+
+
+def test_momentum_attend_cli_empty_candidates_fails(monkeypatch, tmp_path: Path) -> None:
+    source = StaticCandidateSource([])
+    monkeypatch.setattr(commands, "_build_resident_inbox_signal_source", lambda _s: source)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "attend", "--limit", "1"])
+
+    assert result.exit_code == 1
+    assert "No resident signal candidates found." in result.output
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):

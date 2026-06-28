@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ravn.ports.mimir import MimirPort
-from ravn.ports.resident_signal import ResidentSignalSourcePort
+from ravn.ports.resident_signal import (
+    ResidentSignalCandidateSourcePort,
+    ResidentSignalSourcePort,
+)
 from ravn.resident_inbox.models import (
     _INBOX_SIGNAL_PREFIX,
     ResidentInboxClassification,
@@ -41,7 +44,10 @@ class MarkdownResidentSignalSource(ResidentSignalSourcePort):
         )
 
 
-class MimirResidentInboxSignalSource(ResidentSignalSourcePort):
+class MimirResidentInboxSignalSource(
+    ResidentSignalSourcePort,
+    ResidentSignalCandidateSourcePort,
+):
     """Loads stored resident inbox signals from Mimir."""
 
     def __init__(
@@ -66,6 +72,27 @@ class MimirResidentInboxSignalSource(ResidentSignalSourcePort):
             if signal.id == text:
                 return signal
         raise FileNotFoundError(text)
+
+    async def list_candidates(
+        self,
+        *,
+        limit: int,
+        status: str = "",
+        classification: str = "",
+    ) -> list[tuple[str, ResidentInboxSignal]]:
+        items: list[tuple[str, ResidentInboxSignal]] = []
+        for ref in await self._signal_refs():
+            signal = await self._read_signal_page(ref)
+            if signal is None:
+                continue
+            if status and signal.status != status:
+                continue
+            if classification and signal.classification != classification:
+                continue
+            items.append((ref, signal))
+            if len(items) >= limit:
+                break
+        return items
 
     async def _signal_refs(self) -> list[str]:
         pages = await self._mimir.list_pages(prefix=self._signal_prefix)

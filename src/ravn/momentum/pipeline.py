@@ -13,6 +13,8 @@ from ravn.momentum.models import (
     DispositionOutcome,
     MomentumArtifact,
     MomentumArtifactDraft,
+    MomentumAttentionDecision,
+    MomentumAttentionDecisionDraft,
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
@@ -25,6 +27,7 @@ from ravn.momentum.models import (
 )
 from ravn.momentum.render import (
     render_artifact,
+    render_attention_decision,
     render_disposition,
     render_judgment,
     render_packet,
@@ -43,7 +46,11 @@ from ravn.momentum.state import (
     render_momentum_state,
     render_state_patch,
 )
-from ravn.momentum.worker import MomentumExtractionWorker, MomentumReflectionWorker
+from ravn.momentum.worker import (
+    MomentumAttentionWorker,
+    MomentumExtractionWorker,
+    MomentumReflectionWorker,
+)
 from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
@@ -75,12 +82,19 @@ class MomentumReflectionResult:
     state_patch_ref: str
 
 
+@dataclass(frozen=True)
+class MomentumAttentionResult:
+    decision: MomentumAttentionDecision
+    decision_ref: str
+
+
 class MomentumPipeline:
     def __init__(
         self,
         *,
         worker: MomentumExtractionWorker,
         reflection_worker: MomentumReflectionWorker | None = None,
+        attention_worker: MomentumAttentionWorker | None = None,
         state: ResidentStatePort,
         state_compactor: MomentumStateCompactorPort | None = None,
         now: datetime | None = None,
@@ -88,10 +102,55 @@ class MomentumPipeline:
     ) -> None:
         self._worker = worker
         self._reflection_worker = reflection_worker
+        self._attention_worker = attention_worker
         self._state = state
         self._state_compactor = state_compactor or BoundedMomentumStateCompactor()
         self._now = now
         self._run_id = run_id
+
+    async def attend(
+        self,
+        candidates: list[tuple[str, ResidentInboxSignal]],
+        *,
+        limit: int,
+    ) -> MomentumAttentionResult:
+        if self._attention_worker is None:
+            raise ValueError("Momentum attention worker is required")
+        if limit < 1:
+            raise ValueError("candidate limit must be at least 1")
+        if not candidates:
+            raise ValueError("no resident signal candidates found")
+
+        created_at = self._now or datetime.now(UTC)
+        bounded = candidates[:limit]
+        truncated = max(0, len(candidates) - len(bounded))
+        memory = await self._state.recall(
+            "Niuu Momentum Engine attention and resident signal selection",
+            limit=5,
+        )
+        current_state, current_state_frame = await _load_current_state(self._state)
+        draft = await self._attention_worker.attend(
+            memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
+            candidate_frame=_candidate_frame(bounded),
+            truncation_note=_truncation_note(len(candidates), limit, truncated),
+        )
+        decision = _materialize_attention_decision(
+            draft,
+            candidates=bounded,
+            candidate_count=len(candidates),
+            candidate_limit=limit,
+            candidates_truncated=truncated,
+            current_state_present=current_state is not None,
+            created_at=created_at,
+            procedure_name=self._attention_worker.procedure_name,
+            model_name=self._attention_worker.model,
+        )
+        ref = await self._state.write_artifact(
+            _attention_decision_ref(decision),
+            render_attention_decision(decision),
+        )
+        return MomentumAttentionResult(decision=decision, decision_ref=ref)
 
     async def extract_signal(self, signal: ResidentInboxSignal) -> MomentumPipelineResult:
         return await self._extract_text(
@@ -282,6 +341,91 @@ class MomentumPipeline:
             current_state_ref=current_state_ref,
             state_patch_ref=state_patch_ref,
         )
+
+
+def _materialize_attention_decision(
+    draft: MomentumAttentionDecisionDraft,
+    *,
+    candidates: list[tuple[str, ResidentInboxSignal]],
+    candidate_count: int,
+    candidate_limit: int,
+    candidates_truncated: int,
+    current_state_present: bool,
+    created_at: datetime,
+    procedure_name: str,
+    model_name: str,
+) -> MomentumAttentionDecision:
+    _validate_attention_decision(draft, candidates)
+    selected = draft.selected_signal_ref or draft.selected_signal_id or "none"
+    return MomentumAttentionDecision(
+        **draft.model_dump(),
+        decision_id=f"attention-{_timestamp_id(created_at)}-{_slug(selected) or 'none'}",
+        created_at=created_at,
+        current_state_ref=CURRENT_MOMENTUM_STATE_REF if current_state_present else None,
+        current_state_present=current_state_present,
+        candidate_count=candidate_count,
+        candidate_limit=candidate_limit,
+        candidates_truncated=candidates_truncated,
+        procedure_name=procedure_name,
+        model_name=model_name,
+    )
+
+
+def _validate_attention_decision(
+    draft: MomentumAttentionDecisionDraft,
+    candidates: list[tuple[str, ResidentInboxSignal]],
+) -> None:
+    candidate_refs = {ref for ref, _ in candidates}
+    candidate_ids = {signal.id for _, signal in candidates}
+    candidate_pairs = {(ref, signal.id) for ref, signal in candidates}
+    if draft.no_attention_needed:
+        if draft.recommended_next_action != "no_action":
+            raise ValueError("no_attention_needed requires no_action")
+        if draft.selected_signal_id or draft.selected_signal_ref:
+            raise ValueError("no_attention_needed cannot select a signal")
+        return
+    if not draft.selected_signal_id and not draft.selected_signal_ref:
+        raise ValueError("attention decision must select a signal or no_attention_needed")
+    if draft.selected_signal_id and draft.selected_signal_id not in candidate_ids:
+        raise ValueError(f"selected signal id is not a candidate: {draft.selected_signal_id}")
+    if draft.selected_signal_ref and draft.selected_signal_ref not in candidate_refs:
+        raise ValueError(f"selected signal ref is not a candidate: {draft.selected_signal_ref}")
+    if (
+        draft.selected_signal_id
+        and draft.selected_signal_ref
+        and (draft.selected_signal_ref, draft.selected_signal_id) not in candidate_pairs
+    ):
+        raise ValueError("selected signal id/ref do not refer to the same candidate")
+
+
+def _candidate_frame(candidates: list[tuple[str, ResidentInboxSignal]]) -> str:
+    sections: list[str] = []
+    for ref, signal in candidates:
+        sections.append(
+            "### Candidate\n\n"
+            f"- ref: {ref}\n"
+            f"- id: {signal.id}\n"
+            f"- source: {signal.source}\n"
+            f"- kind: {signal.kind}\n"
+            f"- classification: {signal.classification}\n"
+            f"- status: {signal.status}\n"
+            f"- summary: {signal.summary}\n"
+            f"- evidence_refs: {', '.join(signal.evidence_refs) or '-'}\n"
+            f"- raw_ref: {signal.raw_ref or '-'}\n\n"
+            "#### Signal Markdown\n\n"
+            f"{_source_text(signal)}"
+        )
+    return "\n\n---\n\n".join(sections)
+
+
+def _truncation_note(candidate_count: int, limit: int, truncated: int) -> str:
+    if not truncated:
+        return f"{candidate_count} candidate(s) included; limit {limit}; none truncated."
+    return f"{candidate_count} candidate(s) available; limit {limit}; {truncated} truncated."
+
+
+def _attention_decision_ref(decision: MomentumAttentionDecision) -> str:
+    return f"resident/continuation/momentum/attention/{decision.decision_id}.md"
 
 
 @dataclass(frozen=True)

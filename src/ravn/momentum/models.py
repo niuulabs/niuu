@@ -16,6 +16,12 @@ ArtifactKind = Literal[
 ProvenanceStatus = Literal["verified", "unverified"]
 AttentionTier = Literal["silent", "ambient", "present", "urgent"]
 NextAction = Literal["write_momentum_packet", "update_understanding_only", "ask_human"]
+AttentionNextAction = Literal[
+    "extract_selected_signal",
+    "ask_human",
+    "update_understanding_only",
+    "no_action",
+]
 DispositionOutcome = Literal["accepted", "dismissed", "wrong", "deferred", "acted"]
 MomentumTensionStatus = Literal["pending", "open", "confirmed", "changed", "resolved"]
 
@@ -240,6 +246,41 @@ class MomentumResidentState(BaseModel):
     source_refs: list[str] = Field(default_factory=list)
     compaction: dict[str, int] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class MomentumAttentionDecisionDraft(BaseModel):
+    selected_signal_id: str | None = None
+    selected_signal_ref: str | None = None
+    no_attention_needed: bool = False
+    selected_tension_ids: list[str] = Field(default_factory=list)
+    attention_tier: AttentionTier = "ambient"
+    rationale: str = Field(min_length=1)
+    why_now: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    signal_refs: list[str] = Field(default_factory=list)
+    recommended_next_action: AttentionNextAction
+    confidence: float = Field(ge=0, le=1)
+    source_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("source_refs")
+    @classmethod
+    def _must_have_source_refs(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("attention decision must cite source refs")
+        return value
+
+
+class MomentumAttentionDecision(MomentumAttentionDecisionDraft):
+    decision_id: str = Field(min_length=1)
+    validation_status: Literal["valid"] = "valid"
+    created_at: datetime
+    current_state_ref: str | None = None
+    current_state_present: bool = False
+    candidate_count: int = Field(ge=0)
+    candidate_limit: int = Field(ge=1)
+    candidates_truncated: int = Field(ge=0)
+    procedure_name: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
 
 
 class MomentumReflectionDraft(BaseModel):
