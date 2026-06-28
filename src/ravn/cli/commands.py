@@ -5024,6 +5024,20 @@ def momentum_delegate_cmd(
     asyncio.run(_run_momentum_delegate(settings, source_ref))
 
 
+@momentum_app.command("handoff")
+def momentum_handoff_cmd(
+    brief_ref: str = typer.Argument(..., help="Momentum delegation brief ref."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Hand off a delegation brief to the configured executor."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_handoff(settings, brief_ref))
+
+
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
     from ravn.adapters.resident_signal import MarkdownResidentSignalSource
 
@@ -5178,6 +5192,42 @@ async def _run_momentum_delegate(settings: Settings, source_ref: str) -> None:
     typer.echo(f"execution_performed: {str(brief.execution_performed).lower()}")
 
 
+async def _run_momentum_handoff(settings: Settings, brief_ref: str) -> None:
+    from ravn.momentum import MomentumPipeline
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    executor = _build_momentum_executor(settings)
+    try:
+        result = await MomentumPipeline(
+            state=state,
+        ).handoff_delegation(
+            brief_ref,
+            executor=executor,
+            signal_source=_build_optional_resident_inbox_signal_source(settings),
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot hand off delegation brief: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    handoff = result.result
+    typer.echo(f"handoff_result_ref: {result.result_ref}")
+    typer.echo(f"brief_ref: {handoff.source_brief_ref}")
+    typer.echo(f"executor_label: {handoff.executor_label}")
+    typer.echo(f"status: {handoff.status}")
+    typer.echo(f"source_run_ref: {handoff.source_run_ref or '-'}")
+    typer.echo(f"source_judgment_ref: {handoff.source_judgment_ref or '-'}")
+    typer.echo(f"source_attention_ref: {handoff.source_attention_ref or '-'}")
+    typer.echo(f"source_signal_id: {handoff.source_signal_id or '-'}")
+    typer.echo(f"source_signal_ref: {handoff.source_signal_ref or '-'}")
+    typer.echo(f"produced_refs: {', '.join(handoff.produced_refs) or '-'}")
+    typer.echo(f"evidence_refs: {', '.join(handoff.evidence_refs) or '-'}")
+    typer.echo(f"follow_up_recommended: {handoff.follow_up_recommended}")
+
+
 def _print_momentum_result(result: Any) -> None:
     typer.echo(f"run_id:      {result.extraction.run.run_id}")
     typer.echo(f"run_ref:     {result.run_ref}")
@@ -5218,6 +5268,26 @@ def _build_resident_inbox_signal_source(settings: Settings) -> Any:
         typer.echo("Mímir is required to read resident inbox signals.", err=True)
         raise typer.Exit(1)
     return MimirResidentInboxSignalSource(mimir)
+
+
+def _build_optional_resident_inbox_signal_source(settings: Settings) -> Any | None:
+    from ravn.adapters.resident_signal import MimirResidentInboxSignalSource
+
+    mimir = _build_mimir(settings)
+    if mimir is None:
+        return None
+    return MimirResidentInboxSignalSource(mimir)
+
+
+def _build_momentum_executor(settings: Settings) -> Any:
+    cfg = settings.momentum_executor
+    cls = _import_class(cfg.adapter)
+    kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        typer.echo(f"Momentum executor is not configured: {exc}", err=True)
+        raise typer.Exit(1) from None
 
 
 def _provenance_label(verified: bool) -> str:

@@ -15,6 +15,7 @@ from ravn.momentum.models import (
     MomentumAttentionDecision,
     MomentumDelegationBrief,
     MomentumExtractionRun,
+    MomentumHandoffResult,
     MomentumJudgment,
     MomentumJudgmentDisposition,
     MomentumPacket,
@@ -257,6 +258,39 @@ def parse_delegation_brief(content: str) -> MomentumDelegationBrief:
     if not payload:
         raise ValueError("delegation brief missing Brief Data")
     return MomentumDelegationBrief.model_validate_json(payload)
+
+
+def render_handoff_result(result: MomentumHandoffResult) -> str:
+    return (
+        f"# Momentum Handoff Result {result.result_id}\n\n"
+        f"- result_id: {result.result_id}\n"
+        f"- source_brief_ref: {result.source_brief_ref}\n"
+        f"- source_brief_id: {result.source_brief_id}\n"
+        f"- source_run_ref: {result.source_run_ref or '-'}\n"
+        f"- source_judgment_ref: {result.source_judgment_ref or '-'}\n"
+        f"- source_attention_ref: {result.source_attention_ref or '-'}\n"
+        f"- source_signal_id: {result.source_signal_id or '-'}\n"
+        f"- source_signal_ref: {result.source_signal_ref or '-'}\n"
+        f"- executor_label: {result.executor_label}\n"
+        f"- executor_context: {result.executor_context}\n"
+        f"- status: {result.status}\n"
+        f"- follow_up_recommended: {result.follow_up_recommended}\n"
+        f"- started_at: {result.started_at.isoformat()}\n"
+        f"- completed_at: {result.completed_at.isoformat()}\n"
+        f"- created_at: {result.created_at.isoformat()}\n\n"
+        "## Result Data\n\n"
+        f"```json\n{result.model_dump_json(indent=2)}\n```\n\n"
+        "## Summary\n\n"
+        f"{result.summary}\n\n"
+        "## Output\n\n"
+        f"{result.output or '-'}\n\n"
+        "## Evidence Refs\n\n"
+        f"{_bullets_text(result.evidence_refs)}\n\n"
+        "## Produced Refs\n\n"
+        f"{_bullets_text(result.produced_refs)}\n\n"
+        "## Errors\n\n"
+        f"{_bullets_text(result.errors)}\n"
+    )
 
 
 def _parse_attention_decision_markdown(content: str) -> MomentumAttentionDecision:

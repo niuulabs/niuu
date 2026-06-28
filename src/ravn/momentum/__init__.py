@@ -3,6 +3,7 @@
 from ravn.momentum.pipeline import (
     MomentumAttentionResult,
     MomentumDelegationResult,
+    MomentumHandoffPipelineResult,
     MomentumPipeline,
     MomentumPipelineResult,
     MomentumReflectionResult,
@@ -18,6 +19,7 @@ __all__ = [
     "MomentumAttentionResult",
     "MomentumAttentionWorker",
     "MomentumDelegationResult",
+    "MomentumHandoffPipelineResult",
     "MomentumDelegationWorker",
     "MomentumExtractionWorker",
     "MomentumPipeline",
