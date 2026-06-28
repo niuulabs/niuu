@@ -895,6 +895,34 @@ async def test_momentum_pursues_attention_decision_into_linked_run(
 
 
 @pytest.mark.asyncio
+async def test_momentum_pursuit_parses_attention_decision_data_block(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    content = render_attention_decision(_attention_decision()).replace(
+        "- recommended_next_action: extract_selected_signal",
+        "- recommended_next_action: ask_human",
+        1,
+    )
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        content,
+    )
+    signal = _candidate("sig-relevant", "Relevant signal", "Important living idea.")
+    source = StaticSignalSource([signal])
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 14, tzinfo=UTC),
+        run_id="pursue-decision-data",
+    ).pursue_attention(attention_ref, signal_source=source)
+
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+    assert result.extraction.run.attention_decision_id == "attention-test"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("updates", "match"),
     [

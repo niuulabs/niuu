@@ -181,6 +181,8 @@ def render_attention_decision(decision: MomentumAttentionDecision) -> str:
         f"- procedure: {decision.procedure_name}\n"
         f"- model: {decision.model_name}\n"
         f"- created_at: {decision.created_at.isoformat()}\n\n"
+        "## Decision Data\n\n"
+        f"```json\n{decision.model_dump_json(indent=2)}\n```\n\n"
         "## Rationale\n\n"
         f"{decision.rationale}\n\n"
         "## Why Attention Now\n\n"
@@ -197,6 +199,13 @@ def render_attention_decision(decision: MomentumAttentionDecision) -> str:
 
 
 def parse_attention_decision(content: str) -> MomentumAttentionDecision:
+    payload = _json_section(content, "Decision Data")
+    if payload:
+        return MomentumAttentionDecision.model_validate_json(payload)
+    return _parse_attention_decision_markdown(content)
+
+
+def _parse_attention_decision_markdown(content: str) -> MomentumAttentionDecision:
     return MomentumAttentionDecision(
         decision_id=_field(content, "decision_id"),
         selected_signal_id=_optional_field(content, "selected_signal_id"),
@@ -221,6 +230,15 @@ def parse_attention_decision(content: str) -> MomentumAttentionDecision:
         procedure_name=_field(content, "procedure"),
         model_name=_field(content, "model"),
     )
+
+
+def _json_section(content: str, title: str) -> str:
+    body = _section_body(content, title)
+    if not body.startswith("```json"):
+        return ""
+    _, tail = body.split("\n", 1)
+    payload, _, _ = tail.partition("\n```")
+    return payload.strip()
 
 
 def render_reflection(reflection: MomentumReflection) -> str:
@@ -340,14 +358,18 @@ def _bool_field(content: str, field: str) -> bool:
 
 
 def _section_text(content: str, title: str) -> str:
-    marker = f"## {title}"
-    if marker not in content:
-        raise ValueError(f"attention decision missing section: {title}")
-    _, tail = content.split(marker, 1)
-    body = tail.split("\n## ", 1)[0].strip()
+    body = _section_body(content, title)
     if not body:
         raise ValueError(f"attention decision section is empty: {title}")
     return body
+
+
+def _section_body(content: str, title: str) -> str:
+    marker = f"## {title}"
+    if marker not in content:
+        return ""
+    _, tail = content.split(marker, 1)
+    return tail.split("\n## ", 1)[0].strip()
 
 
 def _section_bullets(content: str, title: str) -> list[str]:
