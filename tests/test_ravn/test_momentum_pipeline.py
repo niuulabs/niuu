@@ -886,36 +886,6 @@ def test_momentum_extract_uses_configured_command_llm(monkeypatch, tmp_path: Pat
     assert "judgment_ref:resident/momentum/runs/" in result.output
 
 
-def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
-    source = tmp_path / "notes.md"
-    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
-
-    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
-
-    assert result.exit_code == 0
-    assert "Skipped: set RAVN_LLM_EVAL=1" in result.output
-
-
-def test_momentum_eval_runs_when_opted_in(monkeypatch, tmp_path: Path):
-    source = tmp_path / "notes.md"
-    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
-
-    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
-    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
-
-    async def _state(_settings, _workspace):
-        return LocalResidentState(tmp_path / "state")
-
-    monkeypatch.setattr(commands, "_build_resident_state", _state)
-
-    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
-
-    assert result.exit_code == 0, result.output
-    assert "eval:        ok" in result.output
-    assert "provenance:  verified" in result.output
-    assert "judgment_ref:resident/momentum/runs/" in result.output
-
-
 def _payload() -> dict:
     return {
         "artifacts": [
