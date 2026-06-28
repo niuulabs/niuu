@@ -625,6 +625,40 @@ async def test_momentum_attention_without_current_state_records_absence(
 
 
 @pytest.mark.asyncio
+async def test_momentum_attention_valid_no_attention_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id=None,
+            selected_ref=None,
+            no_attention_needed=True,
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-quiet.md",
+                _candidate("sig-quiet", "Routine status", "Nothing changed."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.no_attention_needed is True
+    assert result.decision.recommended_next_action == "no_action"
+    assert "recommended_next_action: no_action" in artifact.content
+
+
+@pytest.mark.asyncio
 async def test_momentum_attention_rejects_unknown_selected_signal(tmp_path: Path) -> None:
     state = LocalResidentState(tmp_path / "state")
     payload = _attention_payload(
@@ -642,6 +676,67 @@ async def test_momentum_attention_rejects_unknown_selected_signal(tmp_path: Path
                 (
                     "resident/inbox/signals/sig-known.md",
                     _candidate("sig-known", "Known signal", "Known content."),
+                )
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_mismatched_selected_id_ref(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id="sig-one",
+        selected_ref="resident/inbox/signals/sig-two.md",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="selected signal id/ref do not refer to the same candidate",
+    ):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-one.md",
+                    _candidate("sig-one", "First signal", "First content."),
+                ),
+                (
+                    "resident/inbox/signals/sig-two.md",
+                    _candidate("sig-two", "Second signal", "Second content."),
+                ),
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_no_attention_with_extract_action(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id=None,
+        selected_ref=None,
+        no_attention_needed=True,
+    )
+    payload["recommended_next_action"] = "extract_selected_signal"
+
+    with pytest.raises(ValueError, match="no_attention_needed requires no_action"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-quiet.md",
+                    _candidate("sig-quiet", "Routine status", "Nothing changed."),
                 )
             ],
             limit=5,
@@ -678,6 +773,41 @@ async def test_momentum_attention_records_candidate_truncation(tmp_path: Path) -
     assert result.decision.candidates_truncated == 1
     artifact = await state.read_artifact(result.decision_ref)
     assert "candidates_truncated: 1" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_valid_selected_signal_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(
+            FakeLLM(
+                _attention_payload(
+                    selected_id="sig-relevant",
+                    selected_ref="resident/inbox/signals/sig-relevant.md",
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-relevant.md",
+                _candidate("sig-relevant", "Relevant signal", "Relevant content."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.selected_signal_id == "sig-relevant"
+    assert result.decision.selected_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert "selected_signal_id: sig-relevant" in artifact.content
 
 
 @pytest.mark.asyncio

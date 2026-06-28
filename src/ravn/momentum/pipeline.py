@@ -377,7 +377,10 @@ def _validate_attention_decision(
 ) -> None:
     candidate_refs = {ref for ref, _ in candidates}
     candidate_ids = {signal.id for _, signal in candidates}
+    candidate_pairs = {(ref, signal.id) for ref, signal in candidates}
     if draft.no_attention_needed:
+        if draft.recommended_next_action != "no_action":
+            raise ValueError("no_attention_needed requires no_action")
         if draft.selected_signal_id or draft.selected_signal_ref:
             raise ValueError("no_attention_needed cannot select a signal")
         return
@@ -387,6 +390,12 @@ def _validate_attention_decision(
         raise ValueError(f"selected signal id is not a candidate: {draft.selected_signal_id}")
     if draft.selected_signal_ref and draft.selected_signal_ref not in candidate_refs:
         raise ValueError(f"selected signal ref is not a candidate: {draft.selected_signal_ref}")
+    if (
+        draft.selected_signal_id
+        and draft.selected_signal_ref
+        and (draft.selected_signal_ref, draft.selected_signal_id) not in candidate_pairs
+    ):
+        raise ValueError("selected signal id/ref do not refer to the same candidate")
 
 
 def _candidate_frame(candidates: list[tuple[str, ResidentInboxSignal]]) -> str:
