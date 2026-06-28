@@ -5015,7 +5015,7 @@ def momentum_delegate_cmd(
     source_ref: str = typer.Argument(..., help="Momentum judgment or run artifact ref."),
     config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
 ) -> None:
-    """Prepare a bounded delegation proposal from a Momentum judgment or run."""
+    """Prepare a bounded delegation brief from a Momentum judgment or run."""
     if config:
         os.environ["RAVN_CONFIG"] = config
 
@@ -5151,34 +5151,31 @@ async def _run_momentum_delegate(settings: Settings, source_ref: str) -> None:
     workspace = _resolve_workspace(settings)
     state = await _build_resident_state(settings, workspace)
     llm = _build_llm(settings)
-    catalog = _build_momentum_delegation_target_catalog(settings)
     model = settings.effective_model()
     try:
         result = await MomentumPipeline(
             worker=MomentumExtractionWorker(llm, model=model),
             delegation_worker=MomentumDelegationWorker(llm, model=model),
             state=state,
-        ).prepare_delegation(source_ref, target_catalog=catalog)
+        ).prepare_delegation(source_ref)
     except FileNotFoundError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
     except ValueError as exc:
-        typer.echo(f"Cannot prepare delegation proposal: {exc}", err=True)
+        typer.echo(f"Cannot prepare delegation brief: {exc}", err=True)
         raise typer.Exit(1) from None
 
-    proposal = result.proposal
-    typer.echo(f"proposal_ref: {result.proposal_ref}")
-    typer.echo(f"selected_target_id: {proposal.selected_target_id}")
-    typer.echo(f"target_kind: {proposal.target_kind}")
-    typer.echo(f"proposal_kind: {proposal.proposal_kind}")
-    typer.echo(f"source_judgment_ref: {proposal.source_judgment_ref}")
-    typer.echo(f"source_run_ref: {proposal.source_run_ref or '-'}")
-    typer.echo(f"source_attention_ref: {proposal.source_attention_ref or '-'}")
-    typer.echo(f"source_signal_id: {proposal.source_signal_id or '-'}")
-    typer.echo(f"source_signal_ref: {proposal.source_signal_ref or '-'}")
-    typer.echo(f"authority_boundary: {proposal.authority_boundary}")
-    typer.echo(f"confidence: {proposal.confidence}")
-    typer.echo(f"execution_allowed_now: {str(proposal.execution_allowed_now).lower()}")
+    brief = result.brief
+    typer.echo(f"brief_ref: {result.brief_ref}")
+    typer.echo(f"source_judgment_ref: {brief.source_judgment_ref}")
+    typer.echo(f"source_run_ref: {brief.source_run_ref or '-'}")
+    typer.echo(f"source_attention_ref: {brief.source_attention_ref or '-'}")
+    typer.echo(f"source_signal_id: {brief.source_signal_id or '-'}")
+    typer.echo(f"source_signal_ref: {brief.source_signal_ref or '-'}")
+    typer.echo(f"handoff_recommended: {str(brief.handoff_recommended).lower()}")
+    typer.echo(f"suggested_executor_context: {brief.suggested_executor_context or '-'}")
+    typer.echo(f"confidence: {brief.confidence}")
+    typer.echo(f"execution_performed: {str(brief.execution_performed).lower()}")
 
 
 def _print_momentum_result(result: Any) -> None:
@@ -5221,13 +5218,6 @@ def _build_resident_inbox_signal_source(settings: Settings) -> Any:
         typer.echo("Mímir is required to read resident inbox signals.", err=True)
         raise typer.Exit(1)
     return MimirResidentInboxSignalSource(mimir)
-
-
-def _build_momentum_delegation_target_catalog(settings: Settings) -> Any:
-    cfg = settings.momentum_delegation_targets
-    cls = _import_class(cfg.adapter)
-    kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
-    return cls(**kwargs)
 
 
 def _provenance_label(verified: bool) -> str:

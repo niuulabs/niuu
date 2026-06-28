@@ -7,8 +7,7 @@ import re
 
 from ravn.momentum.models import (
     MomentumAttentionDecisionDraft,
-    MomentumDelegationProposalDraft,
-    MomentumDelegationTarget,
+    MomentumDelegationBriefDraft,
     MomentumExtractionDraft,
     MomentumJudgmentDisposition,
     MomentumReflectionDraft,
@@ -302,38 +301,41 @@ class MomentumAttentionWorker:
         )
 
 
-DELEGATION_SYSTEM_PROMPT = """You prepare bounded Momentum delegation proposals.
+DELEGATION_SYSTEM_PROMPT = """You prepare bounded Momentum delegation briefs.
 
 Return only JSON matching this shape:
 {
-  "selected_target_id": "target id from the catalog",
-  "target_kind": "one target kind from the catalog",
-  "proposal_kind": "one supported proposal kind from the selected target",
+  "handoff_recommended": true,
+  "no_handoff_reason": "",
   "title": "...",
   "rationale": "...",
-  "why_this_target": "...",
+  "desired_outcome": "...",
   "bounded_request": "...",
   "evidence_refs": ["judgment, run, attention, packet, artifact, or state refs"],
+  "constraints": ["..."],
   "out_of_scope_boundaries": ["..."],
-  "authority_boundary": "...",
-  "risk_note": "...",
-  "expected_output": "...",
+  "success_proof": "...",
+  "expected_return_format": "...",
+  "suggested_executor_context": "optional free text, or empty",
+  "skill_or_tool_hints": ["optional free text hints, not an allowlist"],
+  "capability_gap_notes": ["optional missing skill/capability notes"],
+  "handoff_notes": "...",
   "confidence": 0.82,
-  "execution_allowed_now": false
+  "execution_performed": false
 }
 
-This is proposal preparation only. Do not execute, delegate, contact humans,
-create tickets, start workflows, register capabilities, call tools, or imply
-execution is allowed. Choose no_delegation_needed when the judgment only calls
-for memory update or is not actionable. Allowed proposal kinds: human_question,
-codex_task, ravn_action_request, ting_workflow_proposal, skuld_huddle,
-capability_proposal, no_delegation_needed. The selected target id must come
-from the provided catalog and proposal_kind must be supported by that target.
+Prepare a handoff brief only. Do not execute, delegate, contact humans, create
+tickets, start workflows, register capabilities, call tools, or choose concrete
+tool calls. The future executor will use its own native tools, skills, and
+permission system. Focus on intent, evidence, constraints, desired outcome, and
+success proof. If no handoff is needed, set handoff_recommended false and
+explain no_handoff_reason. If a missing skill or capability is discovered,
+record it as a capability_gap_note, not as a registration or action.
 """
 
 
 class MomentumDelegationWorker:
-    """Typed delegation proposal preparation over a persisted Momentum judgment."""
+    """Typed delegation brief preparation over a persisted Momentum judgment."""
 
     def __init__(
         self,
@@ -358,8 +360,7 @@ class MomentumDelegationWorker:
         attention_content: str,
         artifact_contents: list[str],
         current_state_frame: str,
-        targets: list[MomentumDelegationTarget],
-    ) -> MomentumDelegationProposalDraft:
+    ) -> MomentumDelegationBriefDraft:
         response = await self._llm.generate(
             [
                 {
@@ -372,7 +373,6 @@ class MomentumDelegationWorker:
                         attention_content=attention_content,
                         artifact_contents=artifact_contents,
                         current_state_frame=current_state_frame,
-                        target_catalog_frame=_target_catalog_frame(targets),
                     ),
                 }
             ],
@@ -381,7 +381,7 @@ class MomentumDelegationWorker:
             model=self.model,
             max_tokens=self._max_tokens,
         )
-        return MomentumDelegationProposalDraft.model_validate_json(
+        return MomentumDelegationBriefDraft.model_validate_json(
             _json_payload(response.content)
         )
 
@@ -458,17 +458,16 @@ def _delegation_input_frame(
     attention_content: str,
     artifact_contents: list[str],
     current_state_frame: str,
-    target_catalog_frame: str,
 ) -> str:
     return (
         "## Delegation preparation bounds\n\n"
-        "Prepare a proposal artifact only. Do not execute anything.\n\n"
+        "Prepare a handoff brief artifact only. Do not execute anything. "
+        "Do not choose concrete tool calls. The future executor uses its own "
+        "native tools, skills, and permissions.\n\n"
         "## Source ref\n\n"
         f"{source_ref}\n\n"
         "## Current Momentum state\n\n"
         f"{current_state_frame or '(none)'}\n\n"
-        "## Available delegation target catalog\n\n"
-        f"{target_catalog_frame}\n\n"
         "## Judgment artifact\n\n"
         f"{judgment_content or '(unavailable)'}\n\n"
         "## Run artifact\n\n"
@@ -480,22 +479,6 @@ def _delegation_input_frame(
         "## Related artifacts\n\n"
         f"{_join_sections(artifact_contents)}"
     )
-
-
-def _target_catalog_frame(targets: list[MomentumDelegationTarget]) -> str:
-    sections = []
-    for target in targets:
-        sections.append(
-            "### Target\n\n"
-            f"- target_id: {target.target_id}\n"
-            f"- target_kind: {target.target_kind}\n"
-            f"- display_name: {target.display_name}\n"
-            f"- supported_proposal_kinds: {', '.join(target.supported_proposal_kinds)}\n"
-            f"- authority_boundary: {target.authority_boundary}\n"
-            f"- risk_level: {target.risk_level}\n"
-            f"- notes: {target.notes or '-'}"
-        )
-    return "\n\n".join(sections) if sections else "(none)"
 
 
 def _join_sections(contents: list[str]) -> str:

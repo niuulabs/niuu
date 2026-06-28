@@ -2652,23 +2652,6 @@ class ResidentStateConfig(BaseModel):
     )
 
 
-class MomentumDelegationTargetCatalogConfig(BaseModel):
-    """Read-only target catalog for Momentum delegation proposal preparation."""
-
-    adapter: str = Field(
-        default="ravn.adapters.momentum_delegation.StaticMomentumDelegationTargetCatalog",
-        description="Fully-qualified MomentumDelegationTargetCatalogPort adapter class.",
-    )
-    kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Constructor kwargs passed to the target catalog adapter.",
-    )
-    secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Maps adapter kwarg names to env var names for secret injection.",
-    )
-
-
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3253,9 +3236,6 @@ class Settings(BaseSettings):
 
     resident_state: ResidentStateConfig = Field(default_factory=ResidentStateConfig)
     resident_inbox: ResidentInboxConfig = Field(default_factory=ResidentInboxConfig)
-    momentum_delegation_targets: MomentumDelegationTargetCatalogConfig = Field(
-        default_factory=MomentumDelegationTargetCatalogConfig
-    )
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

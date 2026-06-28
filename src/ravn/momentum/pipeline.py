@@ -15,9 +15,8 @@ from ravn.momentum.models import (
     MomentumArtifactDraft,
     MomentumAttentionDecision,
     MomentumAttentionDecisionDraft,
-    MomentumDelegationProposal,
-    MomentumDelegationProposalDraft,
-    MomentumDelegationTarget,
+    MomentumDelegationBrief,
+    MomentumDelegationBriefDraft,
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
@@ -32,7 +31,7 @@ from ravn.momentum.render import (
     parse_attention_decision,
     render_artifact,
     render_attention_decision,
-    render_delegation_proposal,
+    render_delegation_brief,
     render_disposition,
     render_judgment,
     render_packet,
@@ -57,7 +56,6 @@ from ravn.momentum.worker import (
     MomentumExtractionWorker,
     MomentumReflectionWorker,
 )
-from ravn.ports.momentum_delegation import MomentumDelegationTargetCatalogPort
 from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_continuation import _slug
@@ -98,8 +96,8 @@ class MomentumAttentionResult:
 
 @dataclass(frozen=True)
 class MomentumDelegationResult:
-    proposal: MomentumDelegationProposal
-    proposal_ref: str
+    brief: MomentumDelegationBrief
+    brief_ref: str
 
 
 class MomentumPipeline:
@@ -399,8 +397,6 @@ class MomentumPipeline:
     async def prepare_delegation(
         self,
         source_ref: str,
-        *,
-        target_catalog: MomentumDelegationTargetCatalogPort,
     ) -> MomentumDelegationResult:
         if self._delegation_worker is None:
             raise ValueError("Momentum delegation worker is required")
@@ -409,10 +405,6 @@ class MomentumPipeline:
             source = await self._state.read_artifact(source_ref)
         except FileNotFoundError:
             raise FileNotFoundError(f"Momentum judgment or run not found: {source_ref}") from None
-
-        targets = await target_catalog.list_targets()
-        if not targets:
-            raise ValueError("delegation target catalog is empty")
 
         context = await _load_delegation_context(self._state, source)
         _, current_state_frame = await _load_current_state(self._state)
@@ -424,22 +416,20 @@ class MomentumPipeline:
             attention_content=context.attention_content,
             artifact_contents=context.artifact_contents,
             current_state_frame=current_state_frame,
-            targets=targets,
         )
         created_at = self._now or datetime.now(UTC)
-        proposal = _materialize_delegation_proposal(
+        brief = _materialize_delegation_brief(
             draft,
             context=context,
-            targets=targets,
             created_at=created_at,
             procedure_name=self._delegation_worker.procedure_name,
             model_name=self._delegation_worker.model,
         )
-        proposal_ref = await self._state.write_artifact(
-            _delegation_ref(proposal),
-            render_delegation_proposal(proposal),
+        brief_ref = await self._state.write_artifact(
+            _delegation_ref(brief),
+            render_delegation_brief(brief),
         )
-        return MomentumDelegationResult(proposal=proposal, proposal_ref=proposal_ref)
+        return MomentumDelegationResult(brief=brief, brief_ref=brief_ref)
 
 
 def _materialize_attention_decision(
@@ -538,8 +528,8 @@ def _attention_decision_ref(decision: MomentumAttentionDecision) -> str:
     return f"resident/continuation/momentum/attention/{decision.decision_id}.md"
 
 
-def _delegation_ref(proposal: MomentumDelegationProposal) -> str:
-    return f"resident/continuation/momentum/delegations/{proposal.proposal_id}.md"
+def _delegation_ref(brief: MomentumDelegationBrief) -> str:
+    return f"resident/continuation/momentum/delegations/{brief.brief_id}.md"
 
 
 @dataclass(frozen=True)
@@ -709,23 +699,19 @@ async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
         return ""
 
 
-def _materialize_delegation_proposal(
-    draft: MomentumDelegationProposalDraft,
+def _materialize_delegation_brief(
+    draft: MomentumDelegationBriefDraft,
     *,
     context: _DelegationContext,
-    targets: list[MomentumDelegationTarget],
     created_at: datetime,
     procedure_name: str,
     model_name: str,
-) -> MomentumDelegationProposal:
-    _validate_delegation_proposal(draft, targets)
-    proposal_id = (
-        f"delegation-{_timestamp_id(created_at)}-"
-        f"{_slug(draft.selected_target_id)}-{_slug(draft.proposal_kind)}"
-    )
-    return MomentumDelegationProposal(
+) -> MomentumDelegationBrief:
+    _validate_delegation_brief(draft, context)
+    brief_id = f"delegation-{_timestamp_id(created_at)}-{_slug(draft.title) or 'brief'}"
+    return MomentumDelegationBrief(
         **draft.model_dump(),
-        proposal_id=proposal_id,
+        brief_id=brief_id,
         source_run_ref=context.run_ref,
         source_judgment_ref=context.judgment_ref,
         source_attention_ref=context.attention_ref,
@@ -737,28 +723,14 @@ def _materialize_delegation_proposal(
     )
 
 
-def _validate_delegation_proposal(
-    draft: MomentumDelegationProposalDraft,
-    targets: list[MomentumDelegationTarget],
+def _validate_delegation_brief(
+    draft: MomentumDelegationBriefDraft,
+    context: _DelegationContext,
 ) -> None:
-    target = next(
-        (item for item in targets if item.target_id == draft.selected_target_id),
-        None,
-    )
-    if target is None:
-        raise ValueError(f"delegation target is not available: {draft.selected_target_id}")
-    if draft.target_kind != target.target_kind:
-        raise ValueError(
-            f"delegation target kind mismatch for {target.target_id}: "
-            f"{draft.target_kind} != {target.target_kind}"
-        )
-    if draft.proposal_kind not in target.supported_proposal_kinds:
-        raise ValueError(
-            f"delegation target {target.target_id} does not support "
-            f"{draft.proposal_kind}"
-        )
-    if draft.execution_allowed_now:
-        raise ValueError("delegation proposal execution is not allowed in v0")
+    if not context.judgment_ref:
+        raise ValueError("Momentum delegation brief requires a source judgment ref")
+    if draft.execution_performed:
+        raise ValueError("delegation brief execution must be false")
 
 
 async def _load_current_state(state: ResidentStatePort):

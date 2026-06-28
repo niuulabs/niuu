@@ -24,24 +24,6 @@ AttentionNextAction = Literal[
 ]
 DispositionOutcome = Literal["accepted", "dismissed", "wrong", "deferred", "acted"]
 MomentumTensionStatus = Literal["pending", "open", "confirmed", "changed", "resolved"]
-DelegationTargetKind = Literal[
-    "human",
-    "codex",
-    "ravn",
-    "ting",
-    "skuld",
-    "capability_proposal",
-    "none",
-]
-DelegationProposalKind = Literal[
-    "human_question",
-    "codex_task",
-    "ravn_action_request",
-    "ting_workflow_proposal",
-    "skuld_huddle",
-    "capability_proposal",
-    "no_delegation_needed",
-]
 
 
 class SourceSpan(BaseModel):
@@ -305,52 +287,35 @@ class MomentumAttentionDecision(MomentumAttentionDecisionDraft):
     model_name: str = Field(min_length=1)
 
 
-class MomentumDelegationTarget(BaseModel):
-    target_id: str = Field(min_length=1)
-    target_kind: DelegationTargetKind
-    display_name: str = Field(min_length=1)
-    supported_proposal_kinds: list[DelegationProposalKind]
-    authority_boundary: str = Field(min_length=1)
-    risk_level: str = Field(default="bounded", min_length=1)
-    notes: str = ""
-
-    @field_validator("supported_proposal_kinds")
-    @classmethod
-    def _must_support_something(
-        cls,
-        value: list[DelegationProposalKind],
-    ) -> list[DelegationProposalKind]:
-        if not value:
-            raise ValueError("delegation target must support at least one proposal kind")
-        return value
-
-
-class MomentumDelegationProposalDraft(BaseModel):
-    selected_target_id: str = Field(min_length=1)
-    target_kind: DelegationTargetKind
-    proposal_kind: DelegationProposalKind
+class MomentumDelegationBriefDraft(BaseModel):
+    handoff_recommended: bool = True
+    no_handoff_reason: str = ""
     title: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
-    why_this_target: str = Field(min_length=1)
+    desired_outcome: str = Field(min_length=1)
     bounded_request: str = Field(min_length=1)
     evidence_refs: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
     out_of_scope_boundaries: list[str] = Field(default_factory=list)
-    authority_boundary: str = Field(min_length=1)
-    risk_note: str = Field(min_length=1)
-    expected_output: str = Field(min_length=1)
+    success_proof: str = Field(min_length=1)
+    expected_return_format: str = Field(min_length=1)
+    suggested_executor_context: str = ""
+    skill_or_tool_hints: list[str] = Field(default_factory=list)
+    capability_gap_notes: list[str] = Field(default_factory=list)
+    handoff_notes: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
-    execution_allowed_now: bool = False
+    execution_performed: bool = False
 
-    @field_validator("execution_allowed_now")
+    @field_validator("execution_performed")
     @classmethod
-    def _execution_is_not_allowed(cls, value: bool) -> bool:
+    def _execution_was_not_performed(cls, value: bool) -> bool:
         if value:
-            raise ValueError("delegation proposal execution is not allowed in v0")
+            raise ValueError("delegation brief execution must be false")
         return value
 
 
-class MomentumDelegationProposal(MomentumDelegationProposalDraft):
-    proposal_id: str = Field(min_length=1)
+class MomentumDelegationBrief(MomentumDelegationBriefDraft):
+    brief_id: str = Field(min_length=1)
     source_run_ref: str | None = None
     source_judgment_ref: str = Field(min_length=1)
     source_attention_ref: str | None = None

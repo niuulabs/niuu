@@ -11,7 +11,6 @@ import pytest
 from typer.testing import CliRunner
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
-from ravn.adapters.momentum_delegation import StaticMomentumDelegationTargetCatalog
 from ravn.adapters.resident_signal import (
     MarkdownResidentSignalSource,
     MimirResidentInboxSignalSource,
@@ -33,13 +32,12 @@ from ravn.momentum import (
 )
 from ravn.momentum.models import (
     MomentumAttentionDecision,
-    MomentumDelegationTarget,
     MomentumStatePatch,
     MomentumStateTension,
 )
 from ravn.momentum.render import (
     judgment_event_payload,
-    parse_delegation_proposal,
+    parse_delegation_brief,
     render_attention_decision,
 )
 from ravn.momentum.state import (
@@ -151,16 +149,6 @@ class StaticSignalSource:
         raise FileNotFoundError(ref_or_id)
 
 
-class RecordingDelegationCatalog:
-    def __init__(self, targets: list[dict] | None = None) -> None:
-        self.catalog = StaticMomentumDelegationTargetCatalog(targets)
-        self.calls = 0
-
-    async def list_targets(self) -> list[MomentumDelegationTarget]:
-        self.calls += 1
-        return await self.catalog.list_targets()
-
-
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
 
@@ -233,26 +221,32 @@ def _attention_decision(**updates) -> MomentumAttentionDecision:
 
 def _delegation_payload(**updates) -> dict:
     payload = {
-        "selected_target_id": "codex",
-        "target_kind": "codex",
-        "proposal_kind": "codex_task",
+        "handoff_recommended": True,
+        "no_handoff_reason": "",
         "title": "Prepare a bounded implementation slice",
         "rationale": "The judgment asks for a bounded code change that needs a coding agent.",
-        "why_this_target": "The target catalog says Codex can receive coding task proposals.",
+        "desired_outcome": "A focused follow-up implementation with tests.",
         "bounded_request": "Implement only the smallest verified Momentum follow-up.",
         "evidence_refs": [
             "resident/momentum/runs/run-delegate/run.md",
             "resident/momentum/runs/run-delegate/judgment/judgment-attend-to-momentum-dilution.md",
         ],
+        "constraints": [
+            "Use the source judgment as evidence.",
+            "Do not execute external workflows.",
+        ],
         "out_of_scope_boundaries": [
             "Do not execute external workflows.",
             "Do not register capabilities.",
         ],
-        "authority_boundary": "proposal_only_no_execution",
-        "risk_note": "Requires human review before any executor acts.",
-        "expected_output": "A reviewed implementation diff with tests.",
+        "success_proof": "The implementation diff includes relevant tests.",
+        "expected_return_format": "Summarize changed files, validation, and residual risk.",
+        "suggested_executor_context": "local Codex session",
+        "skill_or_tool_hints": ["Use normal repository tests."],
+        "capability_gap_notes": [],
+        "handoff_notes": "Keep the handoff bounded and auditable.",
         "confidence": 0.81,
-        "execution_allowed_now": False,
+        "execution_performed": False,
     }
     payload.update(updates)
     return payload
@@ -1062,12 +1056,11 @@ async def test_momentum_pursuit_missing_selected_signal_creates_no_run(
 
 
 @pytest.mark.asyncio
-async def test_momentum_delegates_judgment_into_persisted_proposal(
+async def test_momentum_delegates_judgment_into_persisted_brief(
     tmp_path: Path,
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     run_ref, judgment_ref, attention_ref = await _seed_linked_momentum_run(state)
-    catalog = RecordingDelegationCatalog()
     result = await MomentumPipeline(
         worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
         delegation_worker=MomentumDelegationWorker(
@@ -1076,23 +1069,22 @@ async def test_momentum_delegates_judgment_into_persisted_proposal(
         ),
         state=state,
         now=datetime(2026, 6, 27, 15, tzinfo=UTC),
-    ).prepare_delegation(judgment_ref, target_catalog=catalog)
+    ).prepare_delegation(judgment_ref)
 
-    assert catalog.calls == 1
-    proposal = result.proposal
-    assert proposal.source_judgment_ref == judgment_ref
-    assert proposal.source_run_ref == run_ref
-    assert proposal.source_attention_ref == attention_ref
-    assert proposal.source_signal_id == "sig-relevant"
-    assert proposal.source_signal_ref == "resident/inbox/signals/sig-relevant.md"
-    assert proposal.selected_target_id == "codex"
-    assert proposal.proposal_kind == "codex_task"
-    assert proposal.execution_allowed_now is False
+    brief = result.brief
+    assert brief.source_judgment_ref == judgment_ref
+    assert brief.source_run_ref == run_ref
+    assert brief.source_attention_ref == attention_ref
+    assert brief.source_signal_id == "sig-relevant"
+    assert brief.source_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert brief.handoff_recommended is True
+    assert brief.suggested_executor_context == "local Codex session"
+    assert brief.execution_performed is False
 
-    content = (await state.read_artifact(result.proposal_ref)).content
-    parsed = parse_delegation_proposal(content)
-    assert parsed.proposal_id == proposal.proposal_id
-    assert "## Proposal Data" in content
+    content = (await state.read_artifact(result.brief_ref)).content
+    parsed = parse_delegation_brief(content)
+    assert parsed.brief_id == brief.brief_id
+    assert "## Brief Data" in content
     assert "## Bounded Request" in content
     assert f"- source_attention_ref: {attention_ref}" in content
 
@@ -1112,10 +1104,10 @@ async def test_momentum_delegates_run_by_resolving_judgment(
         ),
         state=state,
         now=datetime(2026, 6, 27, 15, tzinfo=UTC),
-    ).prepare_delegation(run_ref, target_catalog=RecordingDelegationCatalog())
+    ).prepare_delegation(run_ref)
 
-    assert result.proposal.source_run_ref == run_ref
-    assert result.proposal.source_judgment_ref == judgment_ref
+    assert result.brief.source_run_ref == run_ref
+    assert result.brief.source_judgment_ref == judgment_ref
 
 
 @pytest.mark.asyncio
@@ -1130,86 +1122,71 @@ async def test_momentum_delegation_no_delegation_needed_persists(
         delegation_worker=MomentumDelegationWorker(
             FakeLLM(
                 _delegation_payload(
-                    selected_target_id="none",
-                    target_kind="none",
-                    proposal_kind="no_delegation_needed",
+                    handoff_recommended=False,
+                    no_handoff_reason="The judgment only needs resident memory to remain updated.",
                     title="No delegation needed",
                     rationale="The judgment only needs resident memory to remain updated.",
-                    why_this_target="The none target records that no handoff is needed.",
+                    desired_outcome="No external handoff is prepared.",
                     bounded_request="No external delegation should be prepared.",
-                    authority_boundary="no_execution",
-                    risk_note="No action risk because no executor should act.",
-                    expected_output="Auditable no-delegation proposal.",
+                    success_proof="The persisted brief records why no handoff is needed.",
+                    expected_return_format="No executor response expected.",
+                    suggested_executor_context="",
+                    handoff_notes="No handoff recommended.",
                 )
             ),
             model="fake-model",
         ),
         state=state,
-    ).prepare_delegation(judgment_ref, target_catalog=RecordingDelegationCatalog())
+    ).prepare_delegation(judgment_ref)
 
-    assert result.proposal.selected_target_id == "none"
-    assert result.proposal.proposal_kind == "no_delegation_needed"
-    assert result.proposal.execution_allowed_now is False
+    assert result.brief.handoff_recommended is False
+    assert result.brief.no_handoff_reason
+    assert result.brief.execution_performed is False
     refs = await state.list_refs()
     assert not any("/reflections/" in ref or "/dispositions/" in ref for ref in refs)
 
 
 @pytest.mark.asyncio
-async def test_momentum_delegation_rejects_unavailable_target_without_artifact(
+async def test_momentum_delegation_accepts_free_text_executor_context_without_catalog(
     tmp_path: Path,
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     _, judgment_ref, _ = await _seed_linked_momentum_run(state)
 
-    with pytest.raises(ValueError, match="delegation target is not available: missing"):
-        await MomentumPipeline(
-            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
-            delegation_worker=MomentumDelegationWorker(
-                FakeLLM(_delegation_payload(selected_target_id="missing")),
-                model="fake-model",
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(
+                _delegation_payload(
+                    suggested_executor_context="unlisted future executor",
+                    skill_or_tool_hints=["executor native skills decide availability"],
+                )
             ),
-            state=state,
-        ).prepare_delegation(judgment_ref, target_catalog=RecordingDelegationCatalog())
+            model="fake-model",
+        ),
+        state=state,
+    ).prepare_delegation(judgment_ref)
 
-    assert await state.list_refs("resident/continuation/momentum/delegations") == []
+    assert result.brief.suggested_executor_context == "unlisted future executor"
+    assert result.brief.skill_or_tool_hints == ["executor native skills decide availability"]
 
 
 @pytest.mark.asyncio
-async def test_momentum_delegation_rejects_unsupported_proposal_kind(
+async def test_momentum_delegation_rejects_execution_performed(
     tmp_path: Path,
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     _, judgment_ref, _ = await _seed_linked_momentum_run(state)
 
-    with pytest.raises(ValueError, match="does not support human_question"):
+    with pytest.raises(ValueError, match="delegation brief execution must be false"):
         await MomentumPipeline(
             worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
             delegation_worker=MomentumDelegationWorker(
-                FakeLLM(_delegation_payload(proposal_kind="human_question")),
+                FakeLLM(_delegation_payload(execution_performed=True)),
                 model="fake-model",
             ),
             state=state,
-        ).prepare_delegation(judgment_ref, target_catalog=RecordingDelegationCatalog())
-
-    assert await state.list_refs("resident/continuation/momentum/delegations") == []
-
-
-@pytest.mark.asyncio
-async def test_momentum_delegation_rejects_execution_allowed_now(
-    tmp_path: Path,
-) -> None:
-    state = LocalResidentState(tmp_path / "state")
-    _, judgment_ref, _ = await _seed_linked_momentum_run(state)
-
-    with pytest.raises(ValueError, match="execution is not allowed"):
-        await MomentumPipeline(
-            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
-            delegation_worker=MomentumDelegationWorker(
-                FakeLLM(_delegation_payload(execution_allowed_now=True)),
-                model="fake-model",
-            ),
-            state=state,
-        ).prepare_delegation(judgment_ref, target_catalog=RecordingDelegationCatalog())
+        ).prepare_delegation(judgment_ref)
 
     assert await state.list_refs("resident/continuation/momentum/delegations") == []
 
@@ -1228,10 +1205,7 @@ async def test_momentum_delegation_missing_source_fails_without_artifact(
                 model="fake-model",
             ),
             state=state,
-        ).prepare_delegation(
-            "resident/momentum/runs/missing/run.md",
-            target_catalog=RecordingDelegationCatalog(),
-        )
+        ).prepare_delegation("resident/momentum/runs/missing/run.md")
 
     assert await state.list_refs("resident/continuation/momentum/delegations") == []
 
@@ -1254,7 +1228,7 @@ async def test_momentum_delegation_leaves_source_artifacts_immutable(
             model="fake-model",
         ),
         state=state,
-    ).prepare_delegation(judgment_ref, target_catalog=RecordingDelegationCatalog())
+    ).prepare_delegation(judgment_ref)
 
     after = {
         ref: (await state.read_artifact(ref)).content
@@ -2120,7 +2094,7 @@ def test_momentum_pursue_cli_non_pursuable_decision_fails(
     assert asyncio.run(state.list_refs("resident/momentum/runs")) == []
 
 
-def test_momentum_delegate_cli_prints_proposal_and_target(
+def test_momentum_delegate_cli_prints_brief_and_source_refs(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2132,11 +2106,6 @@ def test_momentum_delegate_cli_prints_proposal_and_target(
 
     run_ref = asyncio.run(_seed())
     monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_delegation_payload()))
-    monkeypatch.setattr(
-        commands,
-        "_build_momentum_delegation_target_catalog",
-        lambda _settings: RecordingDelegationCatalog(),
-    )
 
     async def _state(_settings, _workspace):
         return state
@@ -2146,10 +2115,7 @@ def test_momentum_delegate_cli_prints_proposal_and_target(
     result = CliRunner().invoke(commands.app, ["momentum", "delegate", run_ref])
 
     assert result.exit_code == 0, result.output
-    assert "proposal_ref: resident/continuation/momentum/delegations/" in result.output
-    assert "selected_target_id: codex" in result.output
-    assert "target_kind: codex" in result.output
-    assert "proposal_kind: codex_task" in result.output
+    assert "brief_ref: resident/continuation/momentum/delegations/" in result.output
     assert "source_judgment_ref: resident/momentum/runs/run-delegate/judgment/" in result.output
     assert f"source_run_ref: {run_ref}" in result.output
     assert (
@@ -2158,9 +2124,10 @@ def test_momentum_delegate_cli_prints_proposal_and_target(
     )
     assert "source_signal_id: sig-relevant" in result.output
     assert "source_signal_ref: resident/inbox/signals/sig-relevant.md" in result.output
-    assert "authority_boundary: proposal_only_no_execution" in result.output
+    assert "handoff_recommended: true" in result.output
+    assert "suggested_executor_context: local Codex session" in result.output
     assert "confidence: 0.81" in result.output
-    assert "execution_allowed_now: false" in result.output
+    assert "execution_performed: false" in result.output
 
 
 def test_momentum_delegate_cli_invalid_source_fails(
@@ -2169,11 +2136,6 @@ def test_momentum_delegate_cli_invalid_source_fails(
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_delegation_payload()))
-    monkeypatch.setattr(
-        commands,
-        "_build_momentum_delegation_target_catalog",
-        lambda _settings: RecordingDelegationCatalog(),
-    )
 
     async def _state(_settings, _workspace):
         return state
@@ -2189,7 +2151,7 @@ def test_momentum_delegate_cli_invalid_source_fails(
     assert "Momentum judgment or run not found" in result.output
 
 
-def test_momentum_delegate_cli_unavailable_target_creates_no_proposal(
+def test_momentum_delegate_cli_execution_performed_creates_no_brief(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2203,12 +2165,7 @@ def test_momentum_delegate_cli_unavailable_target_creates_no_proposal(
     monkeypatch.setattr(
         commands,
         "_build_llm",
-        lambda _settings: FakeLLM(_delegation_payload(selected_target_id="missing")),
-    )
-    monkeypatch.setattr(
-        commands,
-        "_build_momentum_delegation_target_catalog",
-        lambda _settings: RecordingDelegationCatalog(),
+        lambda _settings: FakeLLM(_delegation_payload(execution_performed=True)),
     )
 
     async def _state(_settings, _workspace):
@@ -2219,13 +2176,13 @@ def test_momentum_delegate_cli_unavailable_target_creates_no_proposal(
     result = CliRunner().invoke(commands.app, ["momentum", "delegate", judgment_ref])
 
     assert result.exit_code == 1
-    assert "delegation target is not available: missing" in result.output
+    assert "delegation brief execution must be false" in result.output
     assert asyncio.run(
         state.list_refs("resident/continuation/momentum/delegations")
     ) == []
 
 
-def test_momentum_delegate_cli_uses_replaced_target_catalog(
+def test_momentum_delegate_cli_accepts_unlisted_executor_context(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2241,27 +2198,9 @@ def test_momentum_delegate_cli_uses_replaced_target_catalog(
         "_build_llm",
         lambda _settings: FakeLLM(
             _delegation_payload(
-                selected_target_id="operator",
-                target_kind="human",
-                proposal_kind="human_question",
-                why_this_target="The replacement catalog exposes only the operator target.",
-                authority_boundary="human_review_required",
+                suggested_executor_context="operator with native tools",
+                skill_or_tool_hints=["ask the executor runtime what it supports"],
             )
-        ),
-    )
-    monkeypatch.setattr(
-        commands,
-        "_build_momentum_delegation_target_catalog",
-        lambda _settings: RecordingDelegationCatalog(
-            [
-                {
-                    "target_id": "operator",
-                    "target_kind": "human",
-                    "display_name": "Operator",
-                    "supported_proposal_kinds": ["human_question"],
-                    "authority_boundary": "human_review_required",
-                }
-            ]
         ),
     )
 
@@ -2273,9 +2212,8 @@ def test_momentum_delegate_cli_uses_replaced_target_catalog(
     result = CliRunner().invoke(commands.app, ["momentum", "delegate", judgment_ref])
 
     assert result.exit_code == 0, result.output
-    assert "selected_target_id: operator" in result.output
-    assert "target_kind: human" in result.output
-    assert "proposal_kind: human_question" in result.output
+    assert "brief_ref: resident/continuation/momentum/delegations/" in result.output
+    assert "suggested_executor_context: operator with native tools" in result.output
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):
