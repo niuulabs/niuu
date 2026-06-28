@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -273,6 +274,37 @@ async def _seed_linked_momentum_run(
         ),
     )
     return result.run_ref, result.judgment_ref, attention_ref
+
+
+def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
+    tmp_path: Path,
+) -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "seed_momentum_delegation_proof.py"
+    )
+    proof_root = tmp_path / "proof"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(proof_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert f"proof_root: {proof_root}" in result.stdout
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in result.stdout
+    assert "candidate_id: sig-attention-current-state-relevant" in result.stdout
+    assert "candidate_id: sig-attention-distractor" in result.stdout
+    assert (
+        proof_root / "state" / "resident/continuation/momentum/state/current.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
 
 
 @pytest.mark.asyncio
