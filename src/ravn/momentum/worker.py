@@ -7,6 +7,8 @@ import re
 
 from ravn.momentum.models import (
     MomentumAttentionDecisionDraft,
+    MomentumDelegationProposalDraft,
+    MomentumDelegationTarget,
     MomentumExtractionDraft,
     MomentumJudgmentDisposition,
     MomentumReflectionDraft,
@@ -16,6 +18,7 @@ from ravn.ports.llm import LLMPort
 PROCEDURE_NAME = "ravn.momentum.extract.v1"
 REFLECTION_PROCEDURE_NAME = "ravn.momentum.reflect.v1"
 ATTENTION_PROCEDURE_NAME = "ravn.momentum.attend.v1"
+DELEGATION_PROCEDURE_NAME = "ravn.momentum.delegate.v1"
 
 SYSTEM_PROMPT = """You extract the living shape of an idea into typed artifacts.
 
@@ -299,6 +302,90 @@ class MomentumAttentionWorker:
         )
 
 
+DELEGATION_SYSTEM_PROMPT = """You prepare bounded Momentum delegation proposals.
+
+Return only JSON matching this shape:
+{
+  "selected_target_id": "target id from the catalog",
+  "target_kind": "one target kind from the catalog",
+  "proposal_kind": "one supported proposal kind from the selected target",
+  "title": "...",
+  "rationale": "...",
+  "why_this_target": "...",
+  "bounded_request": "...",
+  "evidence_refs": ["judgment, run, attention, packet, artifact, or state refs"],
+  "out_of_scope_boundaries": ["..."],
+  "authority_boundary": "...",
+  "risk_note": "...",
+  "expected_output": "...",
+  "confidence": 0.82,
+  "execution_allowed_now": false
+}
+
+This is proposal preparation only. Do not execute, delegate, contact humans,
+create tickets, start workflows, register capabilities, call tools, or imply
+execution is allowed. Choose no_delegation_needed when the judgment only calls
+for memory update or is not actionable. Allowed proposal kinds: human_question,
+codex_task, ravn_action_request, ting_workflow_proposal, skuld_huddle,
+capability_proposal, no_delegation_needed. The selected target id must come
+from the provided catalog and proposal_kind must be supported by that target.
+"""
+
+
+class MomentumDelegationWorker:
+    """Typed delegation proposal preparation over a persisted Momentum judgment."""
+
+    def __init__(
+        self,
+        llm: LLMPort,
+        *,
+        model: str,
+        procedure_name: str = DELEGATION_PROCEDURE_NAME,
+        max_tokens: int = 3000,
+    ) -> None:
+        self._llm = llm
+        self.model = model
+        self.procedure_name = procedure_name
+        self._max_tokens = max_tokens
+
+    async def prepare(
+        self,
+        *,
+        source_ref: str,
+        judgment_content: str,
+        run_content: str,
+        packet_content: str,
+        attention_content: str,
+        artifact_contents: list[str],
+        current_state_frame: str,
+        targets: list[MomentumDelegationTarget],
+    ) -> MomentumDelegationProposalDraft:
+        response = await self._llm.generate(
+            [
+                {
+                    "role": "user",
+                    "content": _delegation_input_frame(
+                        source_ref=source_ref,
+                        judgment_content=judgment_content,
+                        run_content=run_content,
+                        packet_content=packet_content,
+                        attention_content=attention_content,
+                        artifact_contents=artifact_contents,
+                        current_state_frame=current_state_frame,
+                        target_catalog_frame=_target_catalog_frame(targets),
+                    ),
+                }
+            ],
+            tools=[],
+            system=DELEGATION_SYSTEM_PROMPT,
+            model=self.model,
+            max_tokens=self._max_tokens,
+        )
+        return MomentumDelegationProposalDraft.model_validate_json(
+            _json_payload(response.content)
+        )
+
+
 def _input_frame(markdown: str, *, memory_frame: str, current_state_frame: str) -> str:
     return (
         "## Existing resident memory frame\n\n"
@@ -360,6 +447,55 @@ def _reflection_input_frame(
         "## Related artifacts\n\n"
         f"{_join_sections(artifact_contents)}"
     )
+
+
+def _delegation_input_frame(
+    *,
+    source_ref: str,
+    judgment_content: str,
+    run_content: str,
+    packet_content: str,
+    attention_content: str,
+    artifact_contents: list[str],
+    current_state_frame: str,
+    target_catalog_frame: str,
+) -> str:
+    return (
+        "## Delegation preparation bounds\n\n"
+        "Prepare a proposal artifact only. Do not execute anything.\n\n"
+        "## Source ref\n\n"
+        f"{source_ref}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
+        "## Available delegation target catalog\n\n"
+        f"{target_catalog_frame}\n\n"
+        "## Judgment artifact\n\n"
+        f"{judgment_content or '(unavailable)'}\n\n"
+        "## Run artifact\n\n"
+        f"{run_content or '(unavailable)'}\n\n"
+        "## Packet artifact\n\n"
+        f"{packet_content or '(unavailable)'}\n\n"
+        "## Linked attention decision\n\n"
+        f"{attention_content or '(unavailable)'}\n\n"
+        "## Related artifacts\n\n"
+        f"{_join_sections(artifact_contents)}"
+    )
+
+
+def _target_catalog_frame(targets: list[MomentumDelegationTarget]) -> str:
+    sections = []
+    for target in targets:
+        sections.append(
+            "### Target\n\n"
+            f"- target_id: {target.target_id}\n"
+            f"- target_kind: {target.target_kind}\n"
+            f"- display_name: {target.display_name}\n"
+            f"- supported_proposal_kinds: {', '.join(target.supported_proposal_kinds)}\n"
+            f"- authority_boundary: {target.authority_boundary}\n"
+            f"- risk_level: {target.risk_level}\n"
+            f"- notes: {target.notes or '-'}"
+        )
+    return "\n\n".join(sections) if sections else "(none)"
 
 
 def _join_sections(contents: list[str]) -> str:

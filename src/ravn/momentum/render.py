@@ -13,6 +13,7 @@ from ravn.domain.valkyrie_contracts import (
 from ravn.momentum.models import (
     MomentumArtifact,
     MomentumAttentionDecision,
+    MomentumDelegationProposal,
     MomentumExtractionRun,
     MomentumJudgment,
     MomentumJudgmentDisposition,
@@ -203,6 +204,51 @@ def parse_attention_decision(content: str) -> MomentumAttentionDecision:
     if payload:
         return MomentumAttentionDecision.model_validate_json(payload)
     return _parse_attention_decision_markdown(content)
+
+
+def render_delegation_proposal(proposal: MomentumDelegationProposal) -> str:
+    return (
+        f"# Momentum Delegation Proposal {proposal.proposal_id}\n\n"
+        f"- proposal_id: {proposal.proposal_id}\n"
+        f"- validation_status: {proposal.validation_status}\n"
+        f"- selected_target_id: {proposal.selected_target_id}\n"
+        f"- target_kind: {proposal.target_kind}\n"
+        f"- proposal_kind: {proposal.proposal_kind}\n"
+        f"- source_judgment_ref: {proposal.source_judgment_ref}\n"
+        f"- source_run_ref: {proposal.source_run_ref or '-'}\n"
+        f"- source_attention_ref: {proposal.source_attention_ref or '-'}\n"
+        f"- source_signal_id: {proposal.source_signal_id or '-'}\n"
+        f"- source_signal_ref: {proposal.source_signal_ref or '-'}\n"
+        f"- authority_boundary: {proposal.authority_boundary}\n"
+        f"- confidence: {proposal.confidence}\n"
+        f"- execution_allowed_now: {str(proposal.execution_allowed_now).lower()}\n"
+        f"- procedure: {proposal.procedure_name}\n"
+        f"- model: {proposal.model_name}\n"
+        f"- created_at: {proposal.created_at.isoformat()}\n\n"
+        "## Proposal Data\n\n"
+        f"```json\n{proposal.model_dump_json(indent=2)}\n```\n\n"
+        "## Rationale\n\n"
+        f"{proposal.rationale}\n\n"
+        "## Why This Target\n\n"
+        f"{proposal.why_this_target}\n\n"
+        "## Bounded Request\n\n"
+        f"{proposal.bounded_request}\n\n"
+        "## Evidence Refs\n\n"
+        f"{_bullets_text(proposal.evidence_refs)}\n\n"
+        "## Out Of Scope Boundaries\n\n"
+        f"{_bullets_text(proposal.out_of_scope_boundaries)}\n\n"
+        "## Risk Note\n\n"
+        f"{proposal.risk_note}\n\n"
+        "## Expected Output\n\n"
+        f"{proposal.expected_output}\n"
+    )
+
+
+def parse_delegation_proposal(content: str) -> MomentumDelegationProposal:
+    payload = _json_section(content, "Proposal Data")
+    if not payload:
+        raise ValueError("delegation proposal missing Proposal Data")
+    return MomentumDelegationProposal.model_validate_json(payload)
 
 
 def _parse_attention_decision_markdown(content: str) -> MomentumAttentionDecision:

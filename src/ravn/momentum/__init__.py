@@ -2,12 +2,14 @@
 
 from ravn.momentum.pipeline import (
     MomentumAttentionResult,
+    MomentumDelegationResult,
     MomentumPipeline,
     MomentumPipelineResult,
     MomentumReflectionResult,
 )
 from ravn.momentum.worker import (
     MomentumAttentionWorker,
+    MomentumDelegationWorker,
     MomentumExtractionWorker,
     MomentumReflectionWorker,
 )
@@ -15,6 +17,8 @@ from ravn.momentum.worker import (
 __all__ = [
     "MomentumAttentionResult",
     "MomentumAttentionWorker",
+    "MomentumDelegationResult",
+    "MomentumDelegationWorker",
     "MomentumExtractionWorker",
     "MomentumPipeline",
     "MomentumPipelineResult",
