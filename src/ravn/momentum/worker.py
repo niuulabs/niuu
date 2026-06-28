@@ -74,9 +74,13 @@ Semantic judgment belongs to you. Preserve durable insights, rejected directions
 unresolved tensions, resident-understanding updates, and one bounded Momentum
 Packet when the judgment recommends one. The judgment answers what changed in
 understanding, which tension now matters most, why it deserves attention, and
-what should happen next. Do not turn the packet into a generic ticket. Cite exact
-source excerpts from the markdown; line ranges are useful only when they point
-at the cited text.
+what should happen next. Do not turn the packet into a generic ticket.
+
+Every source.excerpt must be a verbatim contiguous substring copied from the
+resident signal markdown. Do not paraphrase, summarize, or clean up source
+excerpts. Line ranges are useful only when they point at the cited text. If you
+are not certain about exact rendered line numbers, omit line_start and line_end;
+an exact source excerpt without line numbers is better than an inaccurate range.
 """
 
 

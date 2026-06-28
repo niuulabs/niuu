@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -843,32 +845,43 @@ def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Pat
     assert "accepted, dismissed, wrong, deferred, acted" in result.output
 
 
-def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
+def test_momentum_extract_uses_configured_command_llm(monkeypatch, tmp_path: Path):
     source = tmp_path / "notes.md"
     source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
-
-    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
-
-    assert result.exit_code == 0
-    assert "Skipped: set RAVN_LLM_EVAL=1" in result.output
-
-
-def test_momentum_eval_runs_when_opted_in(monkeypatch, tmp_path: Path):
-    source = tmp_path / "notes.md"
-    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
-
-    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
-    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+    command = tmp_path / "local_llm.py"
+    command.write_text(
+        "import json\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"print({json.dumps(_payload())!r})\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "ravn.yaml"
+    config.write_text(
+        "llm:\n"
+        "  model: command-test\n"
+        "  provider:\n"
+        "    adapter: ravn.adapters.llm.command.CommandLLMAdapter\n"
+        "    kwargs:\n"
+        f"      command: {sys.executable}\n"
+        "      args:\n"
+        f"        - {command}\n",
+        encoding="utf-8",
+    )
+    state = LocalResidentState(tmp_path / "state")
 
     async def _state(_settings, _workspace):
-        return LocalResidentState(tmp_path / "state")
+        return state
 
     monkeypatch.setattr(commands, "_build_resident_state", _state)
 
-    result = CliRunner().invoke(commands.app, ["momentum", "eval", str(source)])
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "extract", str(source), "--config", str(config)],
+    )
+    os.environ.pop("RAVN_CONFIG", None)
 
     assert result.exit_code == 0, result.output
-    assert "eval:        ok" in result.output
     assert "provenance:  verified" in result.output
     assert "judgment_ref:resident/momentum/runs/" in result.output
 
