@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TypeVar
 
 from ravn.momentum.models import (
     MomentumResidentState,
@@ -14,6 +15,16 @@ from ravn.momentum.models import (
 from ravn.resident_continuation import _slug
 
 CURRENT_MOMENTUM_STATE_REF = "resident/continuation/momentum/state/current.md"
+T = TypeVar("T")
+MAX_BELIEFS = 12
+MAX_CONSTRAINTS = 12
+MAX_CORRECTIONS = 12
+MAX_OPEN_TENSIONS = 8
+MAX_STALE_ASSUMPTIONS = 8
+MAX_RECENT_LESSONS = 12
+MAX_CANDIDATE_REFLEXES = 8
+MAX_CANDIDATE_CAPABILITY_GAPS = 8
+MAX_SOURCE_REFS = 24
 
 
 def empty_momentum_state(*, updated_at: datetime) -> MomentumResidentState:
@@ -129,20 +140,26 @@ def apply_state_patch(
                 update={"status": "resolved", "updated_at": patch.created_at}
             )
 
-    return MomentumResidentState(
-        beliefs=_unique([*current.beliefs, *patch.beliefs]),
-        constraints=_unique([*current.constraints, *patch.constraints]),
-        corrections=_unique([*current.corrections, *patch.corrections]),
+    state = MomentumResidentState(
+        beliefs=_unique_recent([*current.beliefs, *patch.beliefs]),
+        constraints=_unique_recent([*current.constraints, *patch.constraints]),
+        corrections=_unique_recent([*current.corrections, *patch.corrections]),
         open_tensions=list(tensions.values()),
-        stale_assumptions=_unique([*current.stale_assumptions, *patch.stale_assumptions]),
-        recent_lessons=_unique([*current.recent_lessons, *patch.recent_lessons]),
-        candidate_reflexes=_unique([*current.candidate_reflexes, *patch.candidate_reflexes]),
-        candidate_capability_gaps=_unique(
+        stale_assumptions=_unique_recent(
+            [*current.stale_assumptions, *patch.stale_assumptions]
+        ),
+        recent_lessons=_unique_recent([*current.recent_lessons, *patch.recent_lessons]),
+        candidate_reflexes=_unique_recent(
+            [*current.candidate_reflexes, *patch.candidate_reflexes]
+        ),
+        candidate_capability_gaps=_unique_recent(
             [*current.candidate_capability_gaps, *patch.candidate_capability_gaps]
         ),
-        source_refs=_unique([*current.source_refs, *patch.source_refs]),
+        source_refs=_unique_recent([*current.source_refs, *patch.source_refs]),
+        compaction=current.compaction,
         updated_at=patch.created_at,
     )
+    return _compact_state(state)
 
 
 def parse_momentum_state(content: str) -> MomentumResidentState:
@@ -173,6 +190,7 @@ def render_momentum_state(state: MomentumResidentState) -> str:
         f"{_bullets_text(state.candidate_reflexes)}\n\n"
         "## Candidate Capability Gaps (candidate-only)\n\n"
         f"{_bullets_text(state.candidate_capability_gaps)}\n\n"
+        f"{_compaction_section(state)}"
         "## Source Refs\n\n"
         f"{_bullets_text(state.source_refs)}\n\n"
         "## State Data\n\n"
@@ -233,6 +251,70 @@ def _bullets_text(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items if item) or "- none"
 
 
+def _compact_state(state: MomentumResidentState) -> MomentumResidentState:
+    compaction = dict(state.compaction)
+    beliefs, count = _keep_newest(state.beliefs, MAX_BELIEFS)
+    _record_compaction(compaction, "beliefs_truncated", count)
+    constraints, count = _keep_newest(state.constraints, MAX_CONSTRAINTS)
+    _record_compaction(compaction, "constraints_truncated", count)
+    corrections, count = _keep_newest(state.corrections, MAX_CORRECTIONS)
+    _record_compaction(compaction, "corrections_truncated", count)
+    stale_assumptions, count = _keep_newest(
+        state.stale_assumptions, MAX_STALE_ASSUMPTIONS
+    )
+    _record_compaction(compaction, "stale_assumptions_truncated", count)
+    recent_lessons, count = _keep_newest(state.recent_lessons, MAX_RECENT_LESSONS)
+    _record_compaction(compaction, "recent_lessons_truncated", count)
+    candidate_reflexes, count = _keep_newest(
+        state.candidate_reflexes, MAX_CANDIDATE_REFLEXES
+    )
+    _record_compaction(compaction, "candidate_reflexes_truncated", count)
+    candidate_capability_gaps, count = _keep_newest(
+        state.candidate_capability_gaps, MAX_CANDIDATE_CAPABILITY_GAPS
+    )
+    _record_compaction(compaction, "candidate_capability_gaps_truncated", count)
+    source_refs, count = _keep_newest(state.source_refs, MAX_SOURCE_REFS)
+    _record_compaction(compaction, "source_refs_truncated", count)
+    open_tensions = sorted(state.open_tensions, key=lambda item: item.updated_at)
+    open_tensions, count = _keep_newest(open_tensions, MAX_OPEN_TENSIONS)
+    _record_compaction(compaction, "open_tensions_truncated", count)
+    return state.model_copy(
+        update={
+            "beliefs": beliefs,
+            "constraints": constraints,
+            "corrections": corrections,
+            "open_tensions": open_tensions,
+            "stale_assumptions": stale_assumptions,
+            "recent_lessons": recent_lessons,
+            "candidate_reflexes": candidate_reflexes,
+            "candidate_capability_gaps": candidate_capability_gaps,
+            "source_refs": source_refs,
+            "compaction": compaction,
+        }
+    )
+
+
+def _keep_newest(items: list[T], limit: int) -> tuple[list[T], int]:
+    if len(items) <= limit:
+        return items, 0
+    return items[-limit:], len(items) - limit
+
+
+def _record_compaction(compaction: dict[str, int], key: str, count: int) -> None:
+    if count:
+        compaction[key] = compaction.get(key, 0) + count
+
+
+def _compaction_section(state: MomentumResidentState) -> str:
+    if not state.compaction:
+        return ""
+    lines = ["## State Compaction", ""]
+    for key, count in state.compaction.items():
+        entry_word = "entry" if count == 1 else "entries"
+        lines.append(f"- {key}: {count} older {entry_word} omitted")
+    return "\n".join(lines) + "\n\n"
+
+
 def _unique(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -243,3 +325,7 @@ def _unique(items: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def _unique_recent(items: list[str]) -> list[str]:
+    return list(reversed(_unique(list(reversed(items)))))

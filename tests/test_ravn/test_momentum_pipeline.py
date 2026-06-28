@@ -24,8 +24,16 @@ from ravn.domain.valkyrie_contracts import (
     validate_valkyrie_outcome,
 )
 from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
+from ravn.momentum.models import MomentumStatePatch, MomentumStateTension
 from ravn.momentum.render import judgment_event_payload
-from ravn.momentum.state import CURRENT_MOMENTUM_STATE_REF
+from ravn.momentum.state import (
+    CURRENT_MOMENTUM_STATE_REF,
+    MAX_BELIEFS,
+    MAX_OPEN_TENSIONS,
+    apply_state_patch,
+    empty_momentum_state,
+    render_momentum_state,
+)
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_inbox import (
     MimirResidentInbox,
@@ -342,6 +350,37 @@ async def test_current_momentum_state_is_included_on_later_runs(tmp_path: Path):
     assert "Signal compression is diluting resident understanding." in frame
     assert f"- input_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in run.content
     assert "- input_state_sha256: -" not in run.content
+
+
+def test_current_momentum_state_compacts_old_entries() -> None:
+    created_at = datetime(2026, 6, 27, 12, tzinfo=UTC)
+    patch = MomentumStatePatch(
+        patch_id="patch-compact",
+        created_at=created_at,
+        beliefs=[f"belief {index}" for index in range(MAX_BELIEFS + 2)],
+        open_tensions=[
+            MomentumStateTension(
+                tension_id=f"tension-{index}",
+                title=f"Tension {index}",
+                summary=f"Summary {index}",
+                updated_at=datetime(2026, 6, 27, 12, index, tzinfo=UTC),
+            )
+            for index in range(MAX_OPEN_TENSIONS + 1)
+        ],
+    )
+
+    state = apply_state_patch(empty_momentum_state(updated_at=created_at), patch)
+    rendered = render_momentum_state(state)
+
+    assert state.beliefs == [f"belief {index}" for index in range(2, MAX_BELIEFS + 2)]
+    assert [item.tension_id for item in state.open_tensions] == [
+        f"tension-{index}" for index in range(1, MAX_OPEN_TENSIONS + 1)
+    ]
+    assert "belief 0" not in rendered
+    assert "tension-0" not in rendered
+    assert "## State Compaction" in rendered
+    assert "- beliefs_truncated: 2 older entries omitted" in rendered
+    assert "- open_tensions_truncated: 1 older entry omitted" in rendered
 
 
 @pytest.mark.asyncio
@@ -743,6 +782,44 @@ async def test_reflection_state_patch_can_change_existing_tension_with_partial_u
         state=state,
         now=datetime(2026, 6, 27, 12, tzinfo=UTC),
         run_id="partial-change",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    assert "- status: changed" in current_state.content
+    assert "Signal compression is diluting resident understanding." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_change_tension_with_id_shorthand(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "changed_tensions": ["tension-attend-to-momentum-dilution"],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="id-change",
     )
     extraction = await pipeline.extract_signal(await _markdown_signal(source))
 

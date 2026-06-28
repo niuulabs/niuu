@@ -211,6 +211,16 @@ class MomentumStatePatchDraft(BaseModel):
     candidate_reflexes: list[str] = Field(default_factory=list)
     candidate_capability_gaps: list[str] = Field(default_factory=list)
 
+    @field_validator("changed_tensions", mode="before")
+    @classmethod
+    def _changed_tension_ids_are_patches(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [
+                {"tension_id": item} if isinstance(item, str) else item
+                for item in value
+            ]
+        return value
+
 
 class MomentumStatePatch(MomentumStatePatchDraft):
     patch_id: str = Field(min_length=1)
@@ -228,6 +238,7 @@ class MomentumResidentState(BaseModel):
     candidate_reflexes: list[str] = Field(default_factory=list)
     candidate_capability_gaps: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
+    compaction: dict[str, int] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
