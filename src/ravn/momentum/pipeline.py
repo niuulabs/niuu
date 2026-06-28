@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
+
+from pydantic import BaseModel, Field, ValidationError
 
 from ravn.domain.resident_continuation import ResidentMemoryEntry
 from ravn.domain.resident_state import ResidentStatePort
@@ -59,15 +62,25 @@ from ravn.momentum.worker import (
     MomentumExtractionWorker,
     MomentumReflectionWorker,
 )
-from ravn.ports.momentum_executor import (
-    MomentumExecutorHandoffPort,
-    MomentumExecutorInput,
-)
+from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
+
+
+class _StructuredHandoffResponse(BaseModel):
+    status: str = Field(pattern="^(completed|failed|blocked)$")
+    summary: str = Field(min_length=1)
+    output: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    produced_refs: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    follow_up_recommended: str = Field(
+        default="none",
+        pattern="^(none|reflect|ask_human|retry)$",
+    )
 
 
 @dataclass(frozen=True)
@@ -450,7 +463,7 @@ class MomentumPipeline:
         self,
         brief_ref: str,
         *,
-        executor: MomentumExecutorHandoffPort,
+        executor: ExecutionAgentPort,
         signal_source: ResidentSignalSourcePort | None = None,
     ) -> MomentumHandoffPipelineResult:
         try:
@@ -462,19 +475,37 @@ class MomentumPipeline:
         _validate_handoffable_delegation_brief(brief)
         context = await _load_handoff_context(self._state, brief, signal_source)
         started_at = self._now or datetime.now(UTC)
-        executor_output = await executor.handoff(
-            MomentumExecutorInput(
-                brief_ref=entry.path or brief_ref,
-                brief_id=brief.brief_id,
-                input_frame=_handoff_input_frame(
-                    brief_ref=entry.path or brief_ref,
-                    brief_content=entry.content,
-                    brief=brief,
-                    context=context,
-                ),
-                suggested_context=brief.suggested_executor_context,
-            )
+        input_frame = _handoff_input_frame(
+            brief_ref=entry.path or brief_ref,
+            brief_content=entry.content,
+            brief=brief,
+            context=context,
         )
+        raw_output = ""
+        structured_metadata: dict[str, object]
+        try:
+            turn_result = await executor.run_turn(_handoff_prompt(input_frame))
+            raw_output = turn_result.response
+            parsed = _parse_handoff_executor_response(raw_output)
+            structured_metadata = {"structured_response": parsed.model_dump()}
+        except (ValueError, ValidationError, json.JSONDecodeError) as exc:
+            parsed = _StructuredHandoffResponse(
+                status="blocked",
+                summary="Executor returned invalid structured handoff result.",
+                output=raw_output,
+                errors=[str(exc)],
+                follow_up_recommended="ask_human",
+            )
+            structured_metadata = {"parse_error": str(exc)}
+        except RuntimeError as exc:
+            parsed = _StructuredHandoffResponse(
+                status="blocked",
+                summary="Executor handoff did not complete.",
+                errors=[str(exc)],
+                follow_up_recommended="retry",
+            )
+            structured_metadata = {"execution_error": str(exc)}
+
         completed_at = self._now or datetime.now(UTC)
         result = MomentumHandoffResult(
             result_id=(
@@ -488,19 +519,24 @@ class MomentumPipeline:
             source_attention_ref=brief.source_attention_ref,
             source_signal_id=brief.source_signal_id,
             source_signal_ref=brief.source_signal_ref,
-            executor_label=executor_output.executor_label,
-            executor_context=executor_output.executor_context,
-            status=executor_output.status,
-            summary=executor_output.summary,
-            output=executor_output.output,
-            evidence_refs=executor_output.evidence_refs,
-            produced_refs=executor_output.produced_refs,
-            errors=executor_output.errors,
-            follow_up_recommended=executor_output.follow_up_recommended,
+            executor_label=getattr(executor, "llm_adapter_name", type(executor).__name__),
+            executor_context=brief.suggested_executor_context
+            or getattr(executor, "task_id", "")
+            or "configured executor",
+            status=parsed.status,  # type: ignore[arg-type]
+            summary=parsed.summary,
+            output=parsed.output or raw_output,
+            evidence_refs=parsed.evidence_refs,
+            produced_refs=parsed.produced_refs,
+            errors=parsed.errors,
+            follow_up_recommended=parsed.follow_up_recommended,  # type: ignore[arg-type]
             started_at=started_at,
             completed_at=completed_at,
             created_at=completed_at,
-            raw_metadata=executor_output.raw_metadata,
+            raw_metadata={
+                "raw_output": raw_output,
+                **structured_metadata,
+            },
         )
         result_ref = await self._state.write_artifact(
             _handoff_result_ref(result),
@@ -948,6 +984,38 @@ def _handoff_input_frame(
         for index, content in enumerate(context.evidence_contents, start=1):
             sections.extend([f"### Evidence {index}", "", content, ""])
     return "\n".join(sections).rstrip() + "\n"
+
+
+def _handoff_prompt(input_frame: str) -> str:
+    return (
+        f"{input_frame}\n\n"
+        "Return exactly one JSON object, with no prose outside the JSON, using this contract:\n"
+        "{\n"
+        '  "status": "completed|failed|blocked",\n'
+        '  "summary": "short factual summary",\n'
+        '  "output": "audit text or executor report",\n'
+        '  "evidence_refs": ["optional refs"],\n'
+        '  "produced_refs": ["optional refs"],\n'
+        '  "errors": ["optional errors"],\n'
+        '  "follow_up_recommended": "none|reflect|ask_human|retry"\n'
+        "}\n"
+    )
+
+
+def _parse_handoff_executor_response(content: str) -> _StructuredHandoffResponse:
+    text = content.strip()
+    if text.startswith("```json"):
+        text = text.removeprefix("```json").strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    elif text.startswith("```"):
+        text = text.removeprefix("```").strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("executor response must be a JSON object")
+    return _StructuredHandoffResponse.model_validate(payload)
 
 
 def _frame_section(title: str, content: str) -> list[str]:

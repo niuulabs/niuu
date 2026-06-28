@@ -2653,15 +2653,15 @@ class ResidentStateConfig(BaseModel):
 
 
 class MomentumExecutorConfig(BaseModel):
-    """Configured executor adapter for explicit Momentum handoffs."""
+    """Configured ExecutorPort adapter for explicit Momentum handoffs."""
 
     adapter: str = Field(
-        default="ravn.adapters.momentum_executor.command.CommandMomentumExecutorHandoffAdapter",
-        description="Fully-qualified Momentum executor handoff adapter class.",
+        default="ravn.adapters.executors.cli.CliTransportExecutor",
+        description="Fully-qualified ExecutorPort adapter class.",
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
-        description="Constructor kwargs passed to the executor handoff adapter.",
+        description="Constructor kwargs passed to the ExecutorPort adapter.",
     )
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,

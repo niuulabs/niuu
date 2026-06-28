@@ -149,10 +149,10 @@ class CodexSubprocessTransport(CLITransport):
         cmd = [
             codex_cli,
             "exec",
-            "--model",
-            self._model,
             "--json",
         ]
+        if self._model:
+            cmd.extend(["--model", self._model])
         if sandbox_mode:
             cmd.extend(["--sandbox", sandbox_mode])
         for key, value in self._mcp_overrides:

@@ -5197,7 +5197,7 @@ async def _run_momentum_handoff(settings: Settings, brief_ref: str) -> None:
 
     workspace = _resolve_workspace(settings)
     state = await _build_resident_state(settings, workspace)
-    executor = _build_momentum_executor(settings)
+    executor = _build_momentum_executor_agent(settings, workspace)
     try:
         result = await MomentumPipeline(
             state=state,
@@ -5279,7 +5279,7 @@ def _build_optional_resident_inbox_signal_source(settings: Settings) -> Any | No
     return MimirResidentInboxSignalSource(mimir)
 
 
-def _build_momentum_executor(settings: Settings) -> Any:
+def _build_momentum_executor(settings: Settings) -> ExecutorPort:
     cfg = settings.momentum_executor
     cls = _import_class(cfg.adapter)
     kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
@@ -5288,6 +5288,29 @@ def _build_momentum_executor(settings: Settings) -> Any:
     except TypeError as exc:
         typer.echo(f"Momentum executor is not configured: {exc}", err=True)
         raise typer.Exit(1) from None
+
+
+def _build_momentum_executor_agent(settings: Settings, workspace: Path) -> ExecutionAgentPort:
+    from ravn.adapters.channels.silent import SilentChannel
+    from ravn.domain.models import Session
+
+    return _build_momentum_executor(settings).build(
+        workspace_dir=str(workspace),
+        session=Session(id=uuid.uuid4()),
+        channel=SilentChannel(),
+        system_prompt=(
+            "You are a bounded Ravn/Skuld executor for one Momentum handoff. "
+            "Return only the requested structured JSON contract."
+        ),
+        model=settings.effective_model(),
+        max_iterations=1,
+        checkpoint_port=None,
+        task_id=f"momentum-handoff-{uuid.uuid4().hex[:8]}",
+        persona="momentum-handoff",
+        permission_mode=settings.permission.mode,
+        tools=[],
+        mcp_servers=_transport_mcp_servers(settings),
+    )
 
 
 def _provenance_label(verified: bool) -> str:

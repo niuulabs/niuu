@@ -35,7 +35,7 @@ SIGNAL_REF = "resident/inbox/signals/20260628T100500Z-current-state-attention.md
 DISTRACTOR_REF = "resident/inbox/signals/20260628T100400Z-distractor.md"
 
 
-async def seed(root: Path, codex_command: str) -> None:
+async def seed(root: Path) -> None:
     state = LocalResidentState(root / "state")
     current_state = (FIXTURES / "momentum_attention_current_state.md").read_text(
         encoding="utf-8"
@@ -160,7 +160,7 @@ async def seed(root: Path, codex_command: str) -> None:
         model_name="committed-fixture",
     )
     brief_ref = await state.write_artifact(BRIEF_REF, render_delegation_brief(brief))
-    config_path = _write_config(root, codex_command)
+    config_path = _write_config(root)
 
     print(f"proof_root: {root}")
     print(f"config: {config_path}")
@@ -191,7 +191,7 @@ def _judgment_markdown() -> str:
     )
 
 
-def _write_config(root: Path, codex_command: str) -> Path:
+def _write_config(root: Path) -> Path:
     config = root / "ravn.yaml"
     config.write_text(
         "resident_state:\n"
@@ -205,18 +205,11 @@ def _write_config(root: Path, codex_command: str) -> Path:
         "  enabled: true\n"
         f"  path: {root / 'mimir'}\n"
         "momentum_executor:\n"
-        "  adapter: ravn.adapters.momentum_executor.command.CommandMomentumExecutorHandoffAdapter\n"
+        "  adapter: ravn.adapters.executors.cli.CliTransportExecutor\n"
         "  kwargs:\n"
-        f"    command: {codex_command}\n"
-        "    args:\n"
-        "      - exec\n"
-        "      - -s\n"
-        "      - read-only\n"
-        "      - --ephemeral\n"
-        "      - '-'\n"
-        "    label: local-codex\n"
-        "    context_name: codex exec -s read-only --ephemeral -\n"
-        "    timeout: 300\n",
+        "    transport_adapter: skuld.transports.codex.CodexSubprocessTransport\n"
+        "    transport_kwargs:\n"
+        "      model: ''\n",
         encoding="utf-8",
     )
     return config
@@ -231,14 +224,9 @@ def _args() -> argparse.Namespace:
         default=os.environ.get(ROOT_ENV, str(DEFAULT_ROOT)),
         help=f"Temporary proof root. Defaults to ${ROOT_ENV} or {DEFAULT_ROOT}.",
     )
-    parser.add_argument(
-        "--codex-command",
-        default="/Applications/Codex.app/Contents/Resources/codex",
-        help="Path to the local Codex CLI used by the generated proof config.",
-    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     parsed = _args()
-    asyncio.run(seed(Path(parsed.root).expanduser().resolve(), parsed.codex_command))
+    asyncio.run(seed(Path(parsed.root).expanduser().resolve()))

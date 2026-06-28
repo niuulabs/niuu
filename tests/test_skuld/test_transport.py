@@ -1616,6 +1616,32 @@ class TestCodexSubprocessTransport:
             assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
 
     @pytest.mark.asyncio
+    async def test_send_message_omits_codex_model_when_empty(self, tmp_path):
+        transport = CodexSubprocessTransport(str(tmp_path), model="")
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(return_value=b"")
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch("skuld.transports.codex.resolve_codex_cli", return_value="codex"),
+        ):
+            mock_exec.return_value = mock_process
+            await transport.send_message("inspect")
+
+            assert "--model" not in mock_exec.call_args[0]
+
+    @pytest.mark.asyncio
     async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):
         transport = CodexSubprocessTransport(
             str(tmp_path),

@@ -8,11 +8,13 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.executors.cli import CliTransportExecutor
 from ravn.adapters.resident_signal import (
     MarkdownResidentSignalSource,
     MimirResidentInboxSignalSource,
@@ -20,7 +22,8 @@ from ravn.adapters.resident_signal import (
 from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
-from ravn.domain.models import LLMResponse, StopReason, TokenUsage
+from ravn.config import MomentumExecutorConfig
+from ravn.domain.models import LLMResponse, StopReason, TokenUsage, TurnResult
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
@@ -55,10 +58,6 @@ from ravn.momentum.state import (
     apply_state_patch,
     empty_momentum_state,
     render_momentum_state,
-)
-from ravn.ports.momentum_executor import (
-    MomentumExecutorInput,
-    MomentumExecutorOutput,
 )
 from ravn.ports.resident_signal import (
     ResidentSignalCandidateSourcePort,
@@ -158,7 +157,7 @@ class StaticSignalSource:
         raise FileNotFoundError(ref_or_id)
 
 
-class FakeMomentumExecutor:
+class FakeMomentumExecutorAgent:
     def __init__(
         self,
         *,
@@ -171,21 +170,41 @@ class FakeMomentumExecutor:
         self.summary = summary
         self.output = output
         self.follow_up_recommended = follow_up_recommended
-        self.calls: list[MomentumExecutorInput] = []
+        self.calls: list[str] = []
+        self.llm_adapter_name = "unit-mock-executor"
+        self.task_id = "unit/mock boundary fake"
 
-    async def handoff(self, handoff_input: MomentumExecutorInput) -> MomentumExecutorOutput:
-        self.calls.append(handoff_input)
-        return MomentumExecutorOutput(
-            executor_label="unit-mock-executor",
-            executor_context="unit/mock boundary fake",
-            status=self.status,
-            summary=self.summary,
-            output=self.output,
-            evidence_refs=["resident/evidence/unit-mock.md"],
-            produced_refs=["resident/produced/unit-mock.md"] if self.status == "completed" else [],
-            errors=["unit/mock failure"] if self.status != "completed" else [],
-            follow_up_recommended=self.follow_up_recommended,
-            raw_metadata={"proof_type": "unit/mock"},
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": self.status,
+                "summary": self.summary,
+                "output": self.output,
+                "evidence_refs": ["resident/evidence/unit-mock.md"],
+                "produced_refs": (
+                    ["resident/produced/unit-mock.md"] if self.status == "completed" else []
+                ),
+                "errors": ["unit/mock failure"] if self.status != "completed" else [],
+                "follow_up_recommended": self.follow_up_recommended,
+            }
+        )
+        return TurnResult(
+            response=response,
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeInvalidExecutorAgent(FakeMomentumExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        return TurnResult(
+            response="free text is not a structured handoff result",
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
 
 
@@ -1373,7 +1392,7 @@ async def test_momentum_handoff_unit_mock_persists_linked_result(
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     brief_ref, brief = await _seed_delegation_brief(state)
-    executor = FakeMomentumExecutor()
+    executor = FakeMomentumExecutorAgent()
 
     result = await MomentumPipeline(
         state=state,
@@ -1404,10 +1423,10 @@ async def test_momentum_handoff_unit_mock_persists_linked_result(
     )
     assert parsed.source_brief_ref == brief_ref
     assert parsed.source_signal_id == "sig-relevant"
-    assert "Source Judgment" in executor.calls[0].input_frame
-    assert "Source Attention Decision" in executor.calls[0].input_frame
-    assert "Selected Signal" in executor.calls[0].input_frame
-    assert "Current Momentum State" in executor.calls[0].input_frame
+    assert "Source Judgment" in executor.calls[0]
+    assert "Source Attention Decision" in executor.calls[0]
+    assert "Selected Signal" in executor.calls[0]
+    assert "Current Momentum State" in executor.calls[0]
 
 
 @pytest.mark.asyncio
@@ -1424,7 +1443,7 @@ async def test_momentum_handoff_non_handoff_brief_creates_no_result(
     with pytest.raises(ValueError, match="not handoffable"):
         await MomentumPipeline(state=state).handoff_delegation(
             brief_ref,
-            executor=FakeMomentumExecutor(),
+            executor=FakeMomentumExecutorAgent(),
         )
 
     assert await state.list_refs("resident/continuation/momentum/handoffs") == []
@@ -1439,7 +1458,7 @@ async def test_momentum_handoff_missing_brief_ref_fails_clearly(
     with pytest.raises(FileNotFoundError, match="delegation brief not found"):
         await MomentumPipeline(state=state).handoff_delegation(
             "resident/continuation/momentum/delegations/missing.md",
-            executor=FakeMomentumExecutor(),
+            executor=FakeMomentumExecutorAgent(),
         )
 
     assert await state.list_refs("resident/continuation/momentum/handoffs") == []
@@ -1463,7 +1482,7 @@ async def test_momentum_handoff_execution_performed_brief_creates_no_result(
     with pytest.raises(ValueError, match="delegation brief execution must be false"):
         await MomentumPipeline(state=state).handoff_delegation(
             bad_ref,
-            executor=FakeMomentumExecutor(),
+            executor=FakeMomentumExecutorAgent(),
         )
 
     assert await state.list_refs("resident/continuation/momentum/handoffs") == []
@@ -1486,7 +1505,7 @@ async def test_momentum_handoff_missing_source_ref_fails_without_result(
     with pytest.raises(FileNotFoundError, match="delegation source judgment not found"):
         await MomentumPipeline(state=state).handoff_delegation(
             bad_ref,
-            executor=FakeMomentumExecutor(),
+            executor=FakeMomentumExecutorAgent(),
         )
 
     assert await state.list_refs("resident/continuation/momentum/handoffs") == []
@@ -1502,7 +1521,7 @@ async def test_momentum_handoff_missing_selected_signal_fails_without_result(
     with pytest.raises(ValueError, match="delegation source signal not found"):
         await MomentumPipeline(state=state).handoff_delegation(
             brief_ref,
-            executor=FakeMomentumExecutor(),
+            executor=FakeMomentumExecutorAgent(),
             signal_source=StaticSignalSource([]),
         )
 
@@ -1518,7 +1537,7 @@ async def test_momentum_handoff_executor_failure_persists_failed_result(
 
     result = await MomentumPipeline(state=state).handoff_delegation(
         brief_ref,
-        executor=FakeMomentumExecutor(
+        executor=FakeMomentumExecutorAgent(
             status="failed",
             summary="unit/mock executor failed",
             output="",
@@ -1530,6 +1549,30 @@ async def test_momentum_handoff_executor_failure_persists_failed_result(
     assert result.result.errors == ["unit/mock failure"]
     assert result.result.follow_up_recommended == "ask_human"
     assert await state.read_artifact(result.result_ref)
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_invalid_structured_executor_output_is_blocked(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeInvalidExecutorAgent(),
+    )
+
+    assert result.result.status == "blocked"
+    assert result.result.follow_up_recommended == "ask_human"
+    assert result.result.output == "free text is not a structured handoff result"
+    assert result.result.produced_refs == []
+    assert result.result.evidence_refs == []
+    assert result.result.errors
+    assert result.result.raw_metadata["raw_output"] == (
+        "free text is not a structured handoff result"
+    )
+    assert "parse_error" in result.result.raw_metadata
 
 
 @pytest.mark.asyncio
@@ -1554,7 +1597,7 @@ async def test_momentum_handoff_leaves_sources_and_state_immutable(
 
     await MomentumPipeline(state=state).handoff_delegation(
         brief_ref,
-        executor=FakeMomentumExecutor(),
+        executor=FakeMomentumExecutorAgent(),
     )
 
     after = {
@@ -2563,7 +2606,11 @@ def test_momentum_handoff_cli_prints_result_status_and_linkage(
     source = StaticSignalSource(
         [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
     )
-    monkeypatch.setattr(commands, "_build_momentum_executor", lambda _s: FakeMomentumExecutor())
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
     monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: source)
 
     async def _state(_settings, _workspace):
@@ -2591,12 +2638,24 @@ def test_momentum_handoff_cli_prints_result_status_and_linkage(
     assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
 
 
+def test_momentum_handoff_uses_existing_cli_transport_executor_config() -> None:
+    settings = SimpleNamespace(momentum_executor=MomentumExecutorConfig())
+
+    executor = commands._build_momentum_executor(settings)
+
+    assert isinstance(executor, CliTransportExecutor)
+
+
 def test_momentum_handoff_cli_invalid_brief_ref_fails(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
-    monkeypatch.setattr(commands, "_build_momentum_executor", lambda _s: FakeMomentumExecutor())
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
     monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: None)
 
     async def _state(_settings, _workspace):
@@ -2628,7 +2687,11 @@ def test_momentum_handoff_cli_non_handoff_brief_fails(
         return brief_ref
 
     brief_ref = asyncio.run(_seed())
-    monkeypatch.setattr(commands, "_build_momentum_executor", lambda _s: FakeMomentumExecutor())
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
     monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: None)
 
     async def _state(_settings, _workspace):
