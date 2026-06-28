@@ -29,8 +29,12 @@ from ravn.momentum import (
     MomentumPipeline,
     MomentumReflectionWorker,
 )
-from ravn.momentum.models import MomentumStatePatch, MomentumStateTension
-from ravn.momentum.render import judgment_event_payload
+from ravn.momentum.models import (
+    MomentumAttentionDecision,
+    MomentumStatePatch,
+    MomentumStateTension,
+)
+from ravn.momentum.render import judgment_event_payload, render_attention_decision
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
     MAX_BELIEFS,
@@ -127,6 +131,19 @@ class StaticCandidateSource:
         return items[:limit]
 
 
+class StaticSignalSource:
+    def __init__(self, signals: list[ResidentInboxSignal]) -> None:
+        self.signals = signals
+        self.calls: list[str] = []
+
+    async def load_signal(self, ref_or_id: str) -> ResidentInboxSignal:
+        self.calls.append(ref_or_id)
+        for signal in self.signals:
+            if ref_or_id in {signal.id, signal.raw_ref}:
+                return signal
+        raise FileNotFoundError(ref_or_id)
+
+
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
 
@@ -177,6 +194,24 @@ def _attention_payload(
         "confidence": 0.82,
         "source_refs": ["resident/continuation/momentum/state/current.md"],
     }
+
+
+def _attention_decision(**updates) -> MomentumAttentionDecision:
+    payload = _attention_payload()
+    payload.update({k: v for k, v in updates.items() if k != "validation_status"})
+    return MomentumAttentionDecision(
+        **payload,
+        decision_id="attention-test",
+        validation_status=updates.get("validation_status", "valid"),
+        created_at=datetime(2026, 6, 27, 13, tzinfo=UTC),
+        current_state_ref=CURRENT_MOMENTUM_STATE_REF,
+        current_state_present=True,
+        candidate_count=1,
+        candidate_limit=1,
+        candidates_truncated=0,
+        procedure_name="momentum_attention_v1",
+        model_name="fake-model",
+    )
 
 
 @pytest.mark.asyncio
@@ -817,6 +852,146 @@ async def test_momentum_attention_valid_selected_signal_decision_persists(
     assert result.decision.selected_signal_id == "sig-relevant"
     assert result.decision.selected_signal_ref == "resident/inbox/signals/sig-relevant.md"
     assert "selected_signal_id: sig-relevant" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_pursues_attention_decision_into_linked_run(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        render_attention_decision(_attention_decision()),
+    )
+    attention_before = (await state.read_artifact(attention_ref)).content
+    signal = _candidate("sig-relevant", "Relevant signal", "Important living idea.")
+    source = StaticSignalSource([signal])
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 14, tzinfo=UTC),
+        run_id="pursue-linked",
+    ).pursue_attention(attention_ref, signal_source=source)
+
+    run = result.extraction.run
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+    assert run.attention_ref == attention_ref
+    assert run.attention_decision_id == "attention-test"
+    assert run.selected_signal_id == "sig-relevant"
+    assert run.selected_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert result.provenance_fully_verified is True
+
+    run_content = (await state.read_artifact(result.run_ref)).content
+    assert f"attention_ref: {attention_ref}" in run_content
+    assert "attention_decision_id: attention-test" in run_content
+    assert "selected_signal_id: sig-relevant" in run_content
+    assert "selected_signal_ref: resident/inbox/signals/sig-relevant.md" in run_content
+    assert (await state.read_artifact(attention_ref)).content == attention_before
+
+    refs = await state.list_refs()
+    assert not any("/reflections/" in ref for ref in refs)
+    assert not any("delegation" in ref or "execution" in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_momentum_pursuit_parses_attention_decision_data_block(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    content = render_attention_decision(_attention_decision()).replace(
+        "- recommended_next_action: extract_selected_signal",
+        "- recommended_next_action: ask_human",
+        1,
+    )
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        content,
+    )
+    signal = _candidate("sig-relevant", "Relevant signal", "Important living idea.")
+    source = StaticSignalSource([signal])
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 14, tzinfo=UTC),
+        run_id="pursue-decision-data",
+    ).pursue_attention(attention_ref, signal_source=source)
+
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+    assert result.extraction.run.attention_decision_id == "attention-test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("updates", "match"),
+    [
+        (
+            {
+                "selected_signal_id": None,
+                "selected_signal_ref": None,
+                "no_attention_needed": True,
+                "recommended_next_action": "no_action",
+                "selected_tension_ids": [],
+                "signal_refs": ["none"],
+            },
+            "no attention is needed",
+        ),
+        (
+            {"recommended_next_action": "ask_human"},
+            "does not recommend extracting",
+        ),
+        (
+            {"selected_signal_id": None, "selected_signal_ref": None},
+            "did not select a signal",
+        ),
+        (
+            {"validation_status": "invalid"},
+            "not valid",
+        ),
+    ],
+)
+async def test_momentum_rejects_non_pursuable_attention_decisions(
+    tmp_path: Path,
+    updates: dict,
+    match: str,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        render_attention_decision(_attention_decision(**updates)),
+    )
+    source = StaticSignalSource([_candidate("sig-relevant", "Relevant", "content")])
+
+    with pytest.raises(ValueError, match=match):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            state=state,
+        ).pursue_attention(attention_ref, signal_source=source)
+
+    assert source.calls == []
+    assert await state.list_refs("resident/momentum/runs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_pursuit_missing_selected_signal_creates_no_run(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        render_attention_decision(_attention_decision()),
+    )
+    source = StaticSignalSource([])
+
+    with pytest.raises(ValueError, match="selected signal not found"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            state=state,
+        ).pursue_attention(attention_ref, signal_source=source)
+
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+    assert await state.list_refs("resident/momentum/runs") == []
 
 
 @pytest.mark.asyncio
@@ -1547,6 +1722,108 @@ def test_momentum_attend_cli_empty_candidates_fails(monkeypatch, tmp_path: Path)
 
     assert result.exit_code == 1
     assert "No resident signal candidates found." in result.output
+
+
+def test_momentum_pursue_cli_prints_linked_run(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    attention_ref = asyncio.run(
+        state.write_artifact(
+            "resident/continuation/momentum/attention/attention-test.md",
+            render_attention_decision(_attention_decision()),
+        )
+    )
+    source = StaticSignalSource(
+        [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+    )
+    monkeypatch.setattr(commands, "_build_resident_inbox_signal_source", lambda _s: source)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "pursue", attention_ref])
+
+    assert result.exit_code == 0, result.output
+    assert f"attention_ref: {attention_ref}" in result.output
+    assert "selected_signal_id: sig-relevant" in result.output
+    assert "selected_signal_ref: resident/inbox/signals/sig-relevant.md" in result.output
+    assert "run_ref: resident/momentum/runs/" in result.output
+    assert "judgment_ref: resident/momentum/runs/" in result.output
+    assert "packet_ref: resident/momentum/runs/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref: resident/continuation/momentum/state/patches/" in result.output
+    assert "provenance: verified" in result.output
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+
+
+def test_momentum_pursue_cli_invalid_attention_ref_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    monkeypatch.setattr(
+        commands,
+        "_build_resident_inbox_signal_source",
+        lambda _s: StaticSignalSource([]),
+    )
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "pursue", "resident/continuation/momentum/attention/missing.md"],
+    )
+
+    assert result.exit_code == 1
+    assert "attention decision not found" in result.output
+
+
+def test_momentum_pursue_cli_non_pursuable_decision_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    attention_ref = asyncio.run(
+        state.write_artifact(
+            "resident/continuation/momentum/attention/attention-test.md",
+            render_attention_decision(
+                _attention_decision(
+                    selected_signal_id=None,
+                    selected_signal_ref=None,
+                    no_attention_needed=True,
+                    recommended_next_action="no_action",
+                    selected_tension_ids=[],
+                    signal_refs=["none"],
+                )
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        commands,
+        "_build_resident_inbox_signal_source",
+        lambda _s: StaticSignalSource([]),
+    )
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "pursue", attention_ref])
+
+    assert result.exit_code == 1
+    assert "Cannot pursue attention decision: attention decision says no attention" in result.output
+    assert asyncio.run(state.list_refs("resident/momentum/runs")) == []
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):

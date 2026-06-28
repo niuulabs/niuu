@@ -165,6 +165,10 @@ class MomentumExtractionRun(BaseModel):
     artifact_refs: list[str]
     judgment_ref: str
     packet_ref: str | None = None
+    attention_ref: str | None = None
+    attention_decision_id: str | None = None
+    selected_signal_id: str | None = None
+    selected_signal_ref: str | None = None
 
 
 class MomentumExtraction(BaseModel):
@@ -272,7 +276,7 @@ class MomentumAttentionDecisionDraft(BaseModel):
 
 class MomentumAttentionDecision(MomentumAttentionDecisionDraft):
     decision_id: str = Field(min_length=1)
-    validation_status: Literal["valid"] = "valid"
+    validation_status: Literal["valid", "invalid"] = "valid"
     created_at: datetime
     current_state_ref: str | None = None
     current_state_present: bool = False
