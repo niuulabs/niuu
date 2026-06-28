@@ -32,17 +32,17 @@ def _prompt(prompt: str) -> str:
     if "bounded Momentum delegation briefs" in prompt:
         return (
             prompt
-            + "\n\nReturn a bounded delegation brief. Suggest a local Codex "
-            "session as free-text executor context, but do not validate or "
-            "execute it. Set execution_performed false."
+            + "\n\nPrepare a bounded non-executing handoff brief from the linked "
+            "Momentum evidence. Do not run tools, create tasks, register "
+            "capabilities, or delegate. Set execution_performed false."
         )
     if "select Momentum attention" in prompt:
         return (
             prompt
-            + "\n\nSelect sig-attention-current-state-relevant because it addresses "
-            "the open current-state tension. Use selected_signal_ref "
-            "resident/inbox/signals/20260628T100500Z-current-state-attention.md "
-            "and recommended_next_action extract_selected_signal."
+            + "\n\nUse the current Momentum state and candidate signal content. "
+            "Choose the candidate that best addresses an open or confirmed "
+            "tension, if one is warranted. If you select a signal for judgment, "
+            "the next action should pursue extraction of that selected signal."
         )
     return (
         prompt
@@ -77,73 +77,37 @@ def _schema(prompt: str) -> dict:
                 "execution_performed",
             ],
             "properties": {
-                "handoff_recommended": {"const": True},
-                "no_handoff_reason": {"const": ""},
-                "title": {"const": "Prepare bounded executor handoff brief"},
-                "rationale": {
-                    "const": (
-                        "The judgment asks for a bounded follow-up that can be "
-                        "prepared as executor handoff context without executing it."
-                    )
-                },
-                "desired_outcome": {
-                    "const": (
-                        "A future executor can inspect the linked judgment, attention "
-                        "decision, and selected signal before deciding what to do."
-                    )
-                },
-                "bounded_request": {
-                    "const": (
-                        "Review the linked Momentum judgment and prepare only a "
-                        "human-auditable follow-up plan for the current-state attention "
-                        "handoff. Do not run tools, open tasks, or change code."
-                    )
-                },
+                "handoff_recommended": {"type": "boolean"},
+                "no_handoff_reason": {"type": "string"},
+                "title": {"type": "string", "minLength": 1},
+                "rationale": {"type": "string", "minLength": 1},
+                "desired_outcome": {"type": "string", "minLength": 1},
+                "bounded_request": {"type": "string", "minLength": 1},
                 "evidence_refs": {
                     "type": "array",
                     "minItems": 1,
                     "items": {"type": "string"},
                 },
                 "constraints": {
-                    "const": [
-                        "Use only the linked Momentum artifacts as source evidence.",
-                        "Do not execute, delegate, create tickets, or register capabilities.",
-                    ],
+                    "type": "array",
+                    "items": {"type": "string"},
                 },
                 "out_of_scope_boundaries": {
-                    "const": [
-                        "No external execution",
-                        "No task creation",
-                        "No capability registration",
-                    ],
+                    "type": "array",
+                    "items": {"type": "string"},
                 },
-                "success_proof": {
-                    "const": (
-                        "The brief is persisted with source run, judgment, attention, "
-                        "and selected signal links, and execution_performed remains false."
-                    )
-                },
-                "expected_return_format": {
-                    "const": (
-                        "Return changed files, commands run, resulting evidence, and "
-                        "any residual risks if a future executor acts."
-                    )
-                },
-                "suggested_executor_context": {"const": "local Codex session"},
+                "success_proof": {"type": "string", "minLength": 1},
+                "expected_return_format": {"type": "string", "minLength": 1},
+                "suggested_executor_context": {"type": "string"},
                 "skill_or_tool_hints": {
-                    "const": [
-                        "Use the executor's native repository inspection and test tools."
-                    ]
+                    "type": "array",
+                    "items": {"type": "string"},
                 },
                 "capability_gap_notes": {
-                    "const": ["No missing capability should be registered by this brief."]
+                    "type": "array",
+                    "items": {"type": "string"},
                 },
-                "handoff_notes": {
-                    "const": (
-                        "This is only handoff context; the future executor decides its "
-                        "own native tools and permissions."
-                    )
-                },
+                "handoff_notes": {"type": "string", "minLength": 1},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "execution_performed": {"const": False},
             },
@@ -167,18 +131,23 @@ def _schema(prompt: str) -> dict:
                 "source_refs",
             ],
             "properties": {
-                "selected_signal_id": {"const": "sig-attention-current-state-relevant"},
-                "selected_signal_ref": {
-                    "const": "resident/inbox/signals/20260628T100500Z-current-state-attention.md"
-                },
-                "no_attention_needed": {"const": False},
+                "selected_signal_id": {"type": "string"},
+                "selected_signal_ref": {"type": "string"},
+                "no_attention_needed": {"type": "boolean"},
                 "selected_tension_ids": {"type": "array", "items": {"type": "string"}},
                 "attention_tier": {"enum": ["present", "urgent", "ambient", "silent"]},
                 "rationale": {"type": "string"},
                 "why_now": {"type": "string"},
                 "evidence_refs": {"type": "array", "items": {"type": "string"}},
                 "signal_refs": {"type": "array", "items": {"type": "string"}},
-                "recommended_next_action": {"const": "extract_selected_signal"},
+                "recommended_next_action": {
+                    "enum": [
+                        "extract_selected_signal",
+                        "ask_human",
+                        "update_understanding_only",
+                        "no_action",
+                    ]
+                },
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "source_refs": {"type": "array", "items": {"type": "string"}},
             },
