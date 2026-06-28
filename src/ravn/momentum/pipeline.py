@@ -32,7 +32,19 @@ from ravn.momentum.render import (
     render_run,
 )
 from ravn.momentum.source import SourceDocument
+from ravn.momentum.state import (
+    CURRENT_MOMENTUM_STATE_REF,
+    BoundedMomentumStateCompactor,
+    apply_state_patch,
+    empty_momentum_state,
+    extraction_state_patch,
+    parse_momentum_state,
+    reflection_state_patch,
+    render_momentum_state,
+    render_state_patch,
+)
 from ravn.momentum.worker import MomentumExtractionWorker, MomentumReflectionWorker
+from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
@@ -45,6 +57,8 @@ class MomentumPipelineResult:
     artifact_refs: list[str]
     judgment_ref: str
     packet_ref: str | None
+    current_state_ref: str
+    state_patch_ref: str
 
     @property
     def provenance_fully_verified(self) -> bool:
@@ -57,6 +71,8 @@ class MomentumReflectionResult:
     reflection: MomentumReflection
     disposition_ref: str
     reflection_ref: str
+    current_state_ref: str
+    state_patch_ref: str
 
 
 class MomentumPipeline:
@@ -66,12 +82,14 @@ class MomentumPipeline:
         worker: MomentumExtractionWorker,
         reflection_worker: MomentumReflectionWorker | None = None,
         state: ResidentStatePort,
+        state_compactor: MomentumStateCompactorPort | None = None,
         now: datetime | None = None,
         run_id: str | None = None,
     ) -> None:
         self._worker = worker
         self._reflection_worker = reflection_worker
         self._state = state
+        self._state_compactor = state_compactor or BoundedMomentumStateCompactor()
         self._now = now
         self._run_id = run_id
 
@@ -93,9 +111,16 @@ class MomentumPipeline:
             "Niuu Momentum Engine resident understanding and constraints",
             limit=5,
         )
+        current_state, current_state_frame = await _load_current_state(self._state)
+        input_state_sha = (
+            hashlib.sha256(current_state_frame.encode("utf-8")).hexdigest()
+            if current_state_frame
+            else None
+        )
         draft = await self._worker.extract(
             markdown,
             memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
         )
         created_at = self._now or datetime.now(UTC)
         run_id = self._run_id or f"momentum-{created_at:%Y%m%dT%H%M%SZ}-{source_sha[:8]}"
@@ -130,16 +155,45 @@ class MomentumPipeline:
                 "artifact_refs": artifact_refs,
                 "judgment_ref": judgment_ref,
                 "packet_ref": packet_ref,
+                "input_state_ref": CURRENT_MOMENTUM_STATE_REF if current_state_frame else None,
+                "input_state_sha256": input_state_sha,
             }
         )
         run_ref = await self._state.write_artifact(_run_ref(run), render_run(run))
         extraction = extraction.model_copy(update={"run": run})
+        state_patch = extraction_state_patch(
+            patch_id=f"patch-{_timestamp_id(created_at)}-{run_id}-extract",
+            created_at=created_at,
+            belief_refs=artifact_refs,
+            judgment_title=extraction.judgment.title,
+            tension=extraction.judgment.tension_that_matters,
+            evidence_refs=[
+                ref
+                for ref in [*artifact_refs, judgment_ref, packet_ref]
+                if ref
+            ],
+            source_refs=[run_ref, judgment_ref],
+            beliefs=extraction.resident_patch.beliefs,
+            constraints=extraction.resident_patch.constraints,
+            corrections=extraction.resident_patch.corrections,
+        )
+        current_state = current_state or empty_momentum_state(updated_at=created_at)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
+        state_patch_ref = await _write_state_patch(self._state, state_patch)
+        current_state_ref = await self._state.write_artifact(
+            CURRENT_MOMENTUM_STATE_REF,
+            render_momentum_state(updated_state),
+        )
         return MomentumPipelineResult(
             extraction=extraction,
             run_ref=run_ref,
             artifact_refs=artifact_refs,
             judgment_ref=judgment_ref,
             packet_ref=packet_ref,
+            current_state_ref=current_state_ref,
+            state_patch_ref=state_patch_ref,
         )
 
     async def reflect_judgment(
@@ -174,6 +228,7 @@ class MomentumPipeline:
             "Niuu Momentum Engine judgment dispositions and reflections",
             limit=5,
         )
+        current_state, current_state_frame = await _load_current_state(self._state)
         draft = await self._reflection_worker.reflect(
             target_ref=disposition.target_ref,
             target_content=target.content,
@@ -182,6 +237,7 @@ class MomentumPipeline:
             artifact_contents=context.artifact_contents,
             disposition=disposition,
             memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
         )
         reflection = MomentumReflection(
             **draft.model_dump(),
@@ -198,11 +254,33 @@ class MomentumPipeline:
             f"{base_ref}/reflections/{reflection.reflection_id}.md",
             render_reflection(reflection),
         )
+        state_patch = reflection_state_patch(
+            patch_id=f"patch-{_timestamp_id(created_at)}-{reflection.reflection_id}",
+            created_at=created_at,
+            source_refs=[disposition.target_ref, disposition_ref, reflection_ref],
+            draft=draft.state_patch,
+            lesson_learned=reflection.lesson_learned,
+            remember_next_time=reflection.remember_next_time,
+            corrections=reflection.resident_corrections,
+            candidate_reflexes=reflection.candidate_reflexes,
+            candidate_capability_gaps=reflection.candidate_capability_gaps,
+        )
+        current_state = current_state or empty_momentum_state(updated_at=created_at)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
+        state_patch_ref = await _write_state_patch(self._state, state_patch)
+        current_state_ref = await self._state.write_artifact(
+            CURRENT_MOMENTUM_STATE_REF,
+            render_momentum_state(updated_state),
+        )
         return MomentumReflectionResult(
             disposition=disposition,
             reflection=reflection,
             disposition_ref=disposition_ref,
             reflection_ref=reflection_ref,
+            current_state_ref=current_state_ref,
+            state_patch_ref=state_patch_ref,
         )
 
 
@@ -254,6 +332,21 @@ async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
         return (await state.read_artifact(ref)).content
     except FileNotFoundError:
         return ""
+
+
+async def _load_current_state(state: ResidentStatePort):
+    try:
+        entry = await state.read_artifact(CURRENT_MOMENTUM_STATE_REF)
+    except FileNotFoundError:
+        return None, ""
+    return parse_momentum_state(entry.content), entry.content
+
+
+async def _write_state_patch(state: ResidentStatePort, patch) -> str:
+    return await state.write_artifact(
+        f"resident/continuation/momentum/state/patches/{patch.patch_id}.md",
+        render_state_patch(patch),
+    )
 
 
 def _parse_field(content: str, field: str) -> str:

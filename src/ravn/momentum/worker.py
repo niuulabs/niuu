@@ -100,12 +100,22 @@ class MomentumExtractionWorker:
         self.procedure_name = procedure_name
         self._max_tokens = max_tokens
 
-    async def extract(self, markdown: str, *, memory_frame: str = "") -> MomentumExtractionDraft:
+    async def extract(
+        self,
+        markdown: str,
+        *,
+        memory_frame: str = "",
+        current_state_frame: str = "",
+    ) -> MomentumExtractionDraft:
         response = await self._llm.generate(
             [
                 {
                     "role": "user",
-                    "content": _input_frame(markdown, memory_frame=memory_frame),
+                    "content": _input_frame(
+                        markdown,
+                        memory_frame=memory_frame,
+                        current_state_frame=current_state_frame,
+                    ),
                 }
             ],
             tools=[],
@@ -126,13 +136,37 @@ Return only JSON matching this shape:
   "remember_next_time": ["..."],
   "resident_corrections": ["..."],
   "candidate_reflexes": ["candidate only, do not promote"],
-  "candidate_capability_gaps": ["candidate only, do not register"]
+  "candidate_capability_gaps": ["candidate only, do not register"],
+  "state_patch": {
+    "beliefs": ["..."],
+    "constraints": ["..."],
+    "corrections": ["..."],
+    "open_tensions": [
+      {
+        "tension_id": "stable-explicit-id",
+        "title": "...",
+        "summary": "...",
+        "status": "pending|open|confirmed|changed|resolved",
+        "evidence_refs": ["..."],
+        "source_refs": ["..."]
+      }
+    ],
+    "changed_tensions": [],
+    "resolved_tension_ids": ["..."],
+    "confirmed_tension_ids": ["..."],
+    "stale_assumptions": ["..."],
+    "recent_lessons": ["..."],
+    "candidate_reflexes": ["candidate only, do not promote"],
+    "candidate_capability_gaps": ["candidate only, do not register"]
+  }
 }
 
 Semantic learning belongs to you. The deterministic system only records the
-operator disposition and persists your reflection. Candidate reflexes and
-capability gaps are notes for later review; do not describe them as promoted,
-executed, registered, or applied.
+operator disposition, applies your state_patch, and persists your reflection.
+Use state_patch to say what changed in current understanding, what should be
+remembered next time, what tensions are confirmed/resolved/changed/opened, and
+which corrections apply. Candidate reflexes and capability gaps are notes for
+later review; do not describe them as promoted, executed, registered, or applied.
 """
 
 
@@ -162,6 +196,7 @@ class MomentumReflectionWorker:
         artifact_contents: list[str],
         disposition: MomentumJudgmentDisposition,
         memory_frame: str = "",
+        current_state_frame: str = "",
     ) -> MomentumReflectionDraft:
         response = await self._llm.generate(
             [
@@ -175,6 +210,7 @@ class MomentumReflectionWorker:
                         artifact_contents=artifact_contents,
                         disposition=disposition,
                         memory_frame=memory_frame,
+                        current_state_frame=current_state_frame,
                     ),
                 }
             ],
@@ -186,10 +222,12 @@ class MomentumReflectionWorker:
         return MomentumReflectionDraft.model_validate_json(_json_payload(response.content))
 
 
-def _input_frame(markdown: str, *, memory_frame: str) -> str:
+def _input_frame(markdown: str, *, memory_frame: str, current_state_frame: str) -> str:
     return (
         "## Existing resident memory frame\n\n"
         f"{memory_frame or '(none)'}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
         "## Resident signal markdown\n\n"
         f"{markdown}"
     )
@@ -204,10 +242,13 @@ def _reflection_input_frame(
     artifact_contents: list[str],
     disposition: MomentumJudgmentDisposition,
     memory_frame: str,
+    current_state_frame: str,
 ) -> str:
     return (
         "## Existing resident memory frame\n\n"
         f"{memory_frame or '(none)'}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
         "## Disposition\n\n"
         f"- target_ref: {target_ref}\n"
         f"- outcome: {disposition.outcome}\n"
