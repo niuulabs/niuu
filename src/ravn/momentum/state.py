@@ -12,6 +12,7 @@ from ravn.momentum.models import (
     MomentumStateTension,
     MomentumStateTensionPatch,
 )
+from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.resident_continuation import _slug
 
 CURRENT_MOMENTUM_STATE_REF = "resident/continuation/momentum/state/current.md"
@@ -29,6 +30,52 @@ MAX_SOURCE_REFS = 24
 
 def empty_momentum_state(*, updated_at: datetime) -> MomentumResidentState:
     return MomentumResidentState(updated_at=updated_at)
+
+
+class BoundedMomentumStateCompactor(MomentumStateCompactorPort):
+    """Deterministic v0 compaction: dedupe, keep newest, record omissions."""
+
+    def compact(self, state: MomentumResidentState) -> MomentumResidentState:
+        compaction = dict(state.compaction)
+        beliefs, count = _keep_newest(state.beliefs, MAX_BELIEFS)
+        _record_compaction(compaction, "beliefs_truncated", count)
+        constraints, count = _keep_newest(state.constraints, MAX_CONSTRAINTS)
+        _record_compaction(compaction, "constraints_truncated", count)
+        corrections, count = _keep_newest(state.corrections, MAX_CORRECTIONS)
+        _record_compaction(compaction, "corrections_truncated", count)
+        stale_assumptions, count = _keep_newest(
+            state.stale_assumptions, MAX_STALE_ASSUMPTIONS
+        )
+        _record_compaction(compaction, "stale_assumptions_truncated", count)
+        recent_lessons, count = _keep_newest(state.recent_lessons, MAX_RECENT_LESSONS)
+        _record_compaction(compaction, "recent_lessons_truncated", count)
+        candidate_reflexes, count = _keep_newest(
+            state.candidate_reflexes, MAX_CANDIDATE_REFLEXES
+        )
+        _record_compaction(compaction, "candidate_reflexes_truncated", count)
+        candidate_capability_gaps, count = _keep_newest(
+            state.candidate_capability_gaps, MAX_CANDIDATE_CAPABILITY_GAPS
+        )
+        _record_compaction(compaction, "candidate_capability_gaps_truncated", count)
+        source_refs, count = _keep_newest(state.source_refs, MAX_SOURCE_REFS)
+        _record_compaction(compaction, "source_refs_truncated", count)
+        open_tensions = sorted(state.open_tensions, key=lambda item: item.updated_at)
+        open_tensions, count = _keep_newest(open_tensions, MAX_OPEN_TENSIONS)
+        _record_compaction(compaction, "open_tensions_truncated", count)
+        return state.model_copy(
+            update={
+                "beliefs": beliefs,
+                "constraints": constraints,
+                "corrections": corrections,
+                "open_tensions": open_tensions,
+                "stale_assumptions": stale_assumptions,
+                "recent_lessons": recent_lessons,
+                "candidate_reflexes": candidate_reflexes,
+                "candidate_capability_gaps": candidate_capability_gaps,
+                "source_refs": source_refs,
+                "compaction": compaction,
+            }
+        )
 
 
 def extraction_state_patch(
@@ -140,7 +187,7 @@ def apply_state_patch(
                 update={"status": "resolved", "updated_at": patch.created_at}
             )
 
-    state = MomentumResidentState(
+    return MomentumResidentState(
         beliefs=_unique_recent([*current.beliefs, *patch.beliefs]),
         constraints=_unique_recent([*current.constraints, *patch.constraints]),
         corrections=_unique_recent([*current.corrections, *patch.corrections]),
@@ -159,7 +206,6 @@ def apply_state_patch(
         compaction=current.compaction,
         updated_at=patch.created_at,
     )
-    return _compact_state(state)
 
 
 def parse_momentum_state(content: str) -> MomentumResidentState:
@@ -249,49 +295,6 @@ def _tension_text(tensions: list[MomentumStateTension | MomentumStateTensionPatc
 
 def _bullets_text(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items if item) or "- none"
-
-
-def _compact_state(state: MomentumResidentState) -> MomentumResidentState:
-    compaction = dict(state.compaction)
-    beliefs, count = _keep_newest(state.beliefs, MAX_BELIEFS)
-    _record_compaction(compaction, "beliefs_truncated", count)
-    constraints, count = _keep_newest(state.constraints, MAX_CONSTRAINTS)
-    _record_compaction(compaction, "constraints_truncated", count)
-    corrections, count = _keep_newest(state.corrections, MAX_CORRECTIONS)
-    _record_compaction(compaction, "corrections_truncated", count)
-    stale_assumptions, count = _keep_newest(
-        state.stale_assumptions, MAX_STALE_ASSUMPTIONS
-    )
-    _record_compaction(compaction, "stale_assumptions_truncated", count)
-    recent_lessons, count = _keep_newest(state.recent_lessons, MAX_RECENT_LESSONS)
-    _record_compaction(compaction, "recent_lessons_truncated", count)
-    candidate_reflexes, count = _keep_newest(
-        state.candidate_reflexes, MAX_CANDIDATE_REFLEXES
-    )
-    _record_compaction(compaction, "candidate_reflexes_truncated", count)
-    candidate_capability_gaps, count = _keep_newest(
-        state.candidate_capability_gaps, MAX_CANDIDATE_CAPABILITY_GAPS
-    )
-    _record_compaction(compaction, "candidate_capability_gaps_truncated", count)
-    source_refs, count = _keep_newest(state.source_refs, MAX_SOURCE_REFS)
-    _record_compaction(compaction, "source_refs_truncated", count)
-    open_tensions = sorted(state.open_tensions, key=lambda item: item.updated_at)
-    open_tensions, count = _keep_newest(open_tensions, MAX_OPEN_TENSIONS)
-    _record_compaction(compaction, "open_tensions_truncated", count)
-    return state.model_copy(
-        update={
-            "beliefs": beliefs,
-            "constraints": constraints,
-            "corrections": corrections,
-            "open_tensions": open_tensions,
-            "stale_assumptions": stale_assumptions,
-            "recent_lessons": recent_lessons,
-            "candidate_reflexes": candidate_reflexes,
-            "candidate_capability_gaps": candidate_capability_gaps,
-            "source_refs": source_refs,
-            "compaction": compaction,
-        }
-    )
 
 
 def _keep_newest(items: list[T], limit: int) -> tuple[list[T], int]:

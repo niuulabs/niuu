@@ -29,7 +29,10 @@ from ravn.momentum.render import judgment_event_payload
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
     MAX_BELIEFS,
+    MAX_CANDIDATE_CAPABILITY_GAPS,
+    MAX_CANDIDATE_REFLEXES,
     MAX_OPEN_TENSIONS,
+    BoundedMomentumStateCompactor,
     apply_state_patch,
     empty_momentum_state,
     render_momentum_state,
@@ -79,6 +82,17 @@ class RecordingGBrainState(GBrainResidentStateAdapter):
 
     async def _put_page_gbrain(self, ref, title, content) -> None:
         self.put_pages.append((ref, title, content))
+
+
+class RecordingStateCompactor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def compact(self, state):
+        self.calls += 1
+        return state.model_copy(
+            update={"beliefs": [*state.beliefs, "compactor touched state"]}
+        )
 
 
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
@@ -358,6 +372,12 @@ def test_current_momentum_state_compacts_old_entries() -> None:
         patch_id="patch-compact",
         created_at=created_at,
         beliefs=[f"belief {index}" for index in range(MAX_BELIEFS + 2)],
+        candidate_reflexes=[
+            f"Candidate: reflex {index}" for index in range(MAX_CANDIDATE_REFLEXES + 1)
+        ],
+        candidate_capability_gaps=[
+            f"Candidate: gap {index}" for index in range(MAX_CANDIDATE_CAPABILITY_GAPS + 1)
+        ],
         open_tensions=[
             MomentumStateTension(
                 tension_id=f"tension-{index}",
@@ -369,7 +389,9 @@ def test_current_momentum_state_compacts_old_entries() -> None:
         ],
     )
 
-    state = apply_state_patch(empty_momentum_state(updated_at=created_at), patch)
+    state = BoundedMomentumStateCompactor().compact(
+        apply_state_patch(empty_momentum_state(updated_at=created_at), patch)
+    )
     rendered = render_momentum_state(state)
 
     assert state.beliefs == [f"belief {index}" for index in range(2, MAX_BELIEFS + 2)]
@@ -378,9 +400,35 @@ def test_current_momentum_state_compacts_old_entries() -> None:
     ]
     assert "belief 0" not in rendered
     assert "tension-0" not in rendered
+    assert "Candidate Reflexes (candidate-only)" in rendered
+    assert "Candidate Capability Gaps (candidate-only)" in rendered
+    assert "Candidate: reflex 0" not in rendered
+    assert "Candidate: gap 0" not in rendered
     assert "## State Compaction" in rendered
     assert "- beliefs_truncated: 2 older entries omitted" in rendered
     assert "- open_tensions_truncated: 1 older entry omitted" in rendered
+    assert "- candidate_reflexes_truncated: 1 older entry omitted" in rendered
+    assert "- candidate_capability_gaps_truncated: 1 older entry omitted" in rendered
+
+
+@pytest.mark.asyncio
+async def test_momentum_pipeline_uses_injected_state_compactor(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    compactor = RecordingStateCompactor()
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        state_compactor=compactor,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="inject-compactor",
+    ).extract_signal(await _markdown_signal(source))
+
+    current = await state.read_artifact(result.current_state_ref)
+    assert compactor.calls == 1
+    assert "compactor touched state" in current.content
 
 
 @pytest.mark.asyncio

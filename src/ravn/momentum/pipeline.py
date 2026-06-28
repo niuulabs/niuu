@@ -34,6 +34,7 @@ from ravn.momentum.render import (
 from ravn.momentum.source import SourceDocument
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
+    BoundedMomentumStateCompactor,
     apply_state_patch,
     empty_momentum_state,
     extraction_state_patch,
@@ -43,6 +44,7 @@ from ravn.momentum.state import (
     render_state_patch,
 )
 from ravn.momentum.worker import MomentumExtractionWorker, MomentumReflectionWorker
+from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
@@ -80,12 +82,14 @@ class MomentumPipeline:
         worker: MomentumExtractionWorker,
         reflection_worker: MomentumReflectionWorker | None = None,
         state: ResidentStatePort,
+        state_compactor: MomentumStateCompactorPort | None = None,
         now: datetime | None = None,
         run_id: str | None = None,
     ) -> None:
         self._worker = worker
         self._reflection_worker = reflection_worker
         self._state = state
+        self._state_compactor = state_compactor or BoundedMomentumStateCompactor()
         self._now = now
         self._run_id = run_id
 
@@ -174,7 +178,9 @@ class MomentumPipeline:
             corrections=extraction.resident_patch.corrections,
         )
         current_state = current_state or empty_momentum_state(updated_at=created_at)
-        updated_state = apply_state_patch(current_state, state_patch)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
         state_patch_ref = await _write_state_patch(self._state, state_patch)
         current_state_ref = await self._state.write_artifact(
             CURRENT_MOMENTUM_STATE_REF,
@@ -260,7 +266,9 @@ class MomentumPipeline:
             candidate_capability_gaps=reflection.candidate_capability_gaps,
         )
         current_state = current_state or empty_momentum_state(updated_at=created_at)
-        updated_state = apply_state_patch(current_state, state_patch)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
         state_patch_ref = await _write_state_patch(self._state, state_patch)
         current_state_ref = await self._state.write_artifact(
             CURRENT_MOMENTUM_STATE_REF,
