@@ -211,6 +211,19 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_thinking=True,
         ),
         ManagedModelConfig(
+            id="grok-build",
+            name="Grok Build",
+            vendor="xai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#1DA1F2",
+            description="xAI Grok Build agentic coding model (ACP over stdio).",
+            cost_per_million_tokens=None,  # TODO: set real grok-build blended rate
+            session_definition="skuldGrok",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
             id="llama3.2:latest",
             name="Llama 3.2",
             vendor="local",

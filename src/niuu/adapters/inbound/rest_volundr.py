@@ -1039,11 +1039,37 @@ def create_volundr_router(
             request,
             method="GET",
             path=f"/sessions/{session_id}/conversation",
+            params=_query_params(request),
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
         payload = response.json()
         return payload if isinstance(payload, dict) else {"turns": []}
+
+    @router.get("/sessions/{session_id}/tool-result/{tool_use_id}")
+    async def get_tool_result(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        tool_use_id: str = Path(description="tool_use_id of the result to fetch"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=(f"/sessions/{session_id}/tool-result/{quote(tool_use_id, safe='')}"),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.get("/sessions/{session_id}/workflow/gates")
     async def get_workflow_gates(

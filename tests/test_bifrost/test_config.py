@@ -39,6 +39,18 @@ class TestBifrostConfig:
         cfg = BifrostConfig(aliases={"fast": "claude-haiku-4-5-20251001"})
         assert cfg.resolve_alias("gpt-4o") == "gpt-4o"
 
+    def test_grok_build_resolves_to_skuld_grok_definition(self):
+        # Regression: grok-build must be registered in the managed-model
+        # catalog with session_definition=skuldGrok. Otherwise a forge session
+        # created by model alone (no explicit definition) fails the catalog
+        # lookup in ForgeService._resolve_session_definition and falls back to
+        # the default skuldClaude definition — provisioning the Claude transport
+        # for a Grok session, so no grok ACP worker ever spawns.
+        grok = next((m for m in BifrostConfig().models if m.id == "grok-build"), None)
+        assert grok is not None, "grok-build missing from default model catalog"
+        assert grok.session_definition == "skuldGrok"
+        assert grok.vendor == "xai"
+
     def test_provider_for_model_found(self):
         cfg = BifrostConfig(
             providers={

@@ -68,6 +68,7 @@ from skuld.channels import (
 )
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
 from skuld.room_bridge import RoomBridge
 from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (
@@ -6524,8 +6525,14 @@ async def get_aggregate_logs(
 
 
 @app.get("/api/conversation/history")
-async def get_conversation_history() -> dict:
-    """Return the full conversation history with activity state."""
+async def get_conversation_history(detail: str = "full") -> dict:
+    """Return the conversation history with activity state.
+
+    ``detail=shallow`` elides heavy ``tool_result`` content to lazy-load
+    placeholders (see ``conversation_shallow``); the client fetches an
+    individual result on demand via ``/api/conversation/tool-result/{id}``.
+    """
+    shallow = detail == SHALLOW_DETAIL
     is_active = (
         broker._transport is not None
         and broker._transport.is_alive
@@ -6550,6 +6557,8 @@ async def get_conversation_history() -> dict:
         if d["thread_id"] is None:
             del d["thread_id"]
         # Always include visibility so clients can rely on it being present
+        if shallow:
+            d = elide_turn(d)
         return d
 
     turns = [_serialize_turn(t) for t in broker._conversation_turns]
@@ -6557,6 +6566,8 @@ async def get_conversation_history() -> dict:
     # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
     in_progress_turn = broker._serialize_in_progress_turn()
     if in_progress_turn is not None:
+        if shallow:
+            in_progress_turn = elide_turn(in_progress_turn)
         turns.append(in_progress_turn)
     return {
         "turns": turns,
@@ -6568,6 +6579,44 @@ async def get_conversation_history() -> dict:
         "activity_state": broker._activity_state,
         "activity_state_since": broker._state_since_iso(broker._activity_state_since),
     }
+
+
+@app.get("/api/conversation/tool-result/{tool_use_id}")
+async def get_tool_result(tool_use_id: str) -> dict:
+    """Return one full tool_result block by its tool_use_id.
+
+    The lazy-load target for a shallow conversation: when a client expands an
+    elided tool_result placeholder it fetches the full content here. Scans the
+    completed turns and the in-flight turn for the matching block (the same
+    authoritative data the conversation endpoint serves). 404 when no such
+    tool_result exists in this session.
+    """
+
+    def _find(parts: list[dict]) -> dict | None:
+        for block in parts:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id") == tool_use_id
+            ):
+                return block
+        return None
+
+    sources = [turn.parts for turn in broker._conversation_turns]
+    in_progress = broker._serialize_in_progress_turn()
+    if in_progress is not None:
+        sources.append(in_progress.get("parts", []))
+
+    for parts in sources:
+        found = _find(parts)
+        if found is not None:
+            return {
+                "tool_use_id": tool_use_id,
+                "content": found.get("content", ""),
+                "is_error": bool(found.get("is_error", False)),
+            }
+
+    raise HTTPException(status_code=404, detail=f"tool_result not found: {tool_use_id}")
 
 
 # --- Capabilities API ---

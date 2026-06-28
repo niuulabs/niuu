@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.models import (
@@ -164,6 +165,32 @@ def _live_transcript_is_renderable(payload: object) -> bool:
     if not has_assistant and len(turns) <= 1:
         return False  # seed-only, not active -> rebuild from the durable log
     return True
+
+
+def _live_body_has_in_progress_turn(payload: object) -> bool:
+    """True if the live conversation body carries a still-running in_progress turn.
+
+    The FAULT C count-vs-durable reconciliation must NOT run while the live body holds
+    an in_progress turn, or it can drop the live streaming turn in favour of a durable
+    rebuild that merely happens to count more turns. The broker's `is_active` /
+    `last_activity` streaming hints are NOT a reliable proxy: a tool_use-only assistant
+    block (the entire tool-execution window) leaves those flags empty while
+    `_serialize_in_progress_turn()` still emits the running turn. So gate on the turn
+    payload itself — the last turn marked `in_progress` (or `metadata.status ==
+    'in_progress'`) — rather than the buffer flags.
+    """
+    if not isinstance(payload, dict):
+        return False
+    turns = payload.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return False
+    last = turns[-1]
+    if not isinstance(last, dict):
+        return False
+    if last.get("in_progress") is True:
+        return True
+    metadata = last.get("metadata")
+    return isinstance(metadata, dict) and metadata.get("status") == "in_progress"
 
 
 def _session_proxy_url(base_url: str, *path_segments: str) -> str:
@@ -1830,8 +1857,17 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        except Exception:
+        except Exception as e:
+            # FAULT A defence: previously this swallowed the error and the endpoint
+            # still returned 204, so a real persistence failure masqueraded as
+            # success and the broker never learned delivery failed. Surface a 500
+            # so the broker can retry. (After the facade fix this path should never
+            # trigger in practice.)
             logger.exception("Activity update failed for session %s", _sanitize_log(session_id))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Activity update failed for session {session_id}",
+            ) from e
 
     @router.post(
         "/devices",
@@ -2543,8 +2579,29 @@ def create_router(
     async def get_conversation(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
+        detail: str = Query(
+            "full",
+            description=(
+                "'shallow' elides heavy tool_result content to lazy-load "
+                "placeholders; fetch a full result via "
+                "/sessions/{id}/tool-result/{tool_use_id}."
+            ),
+        ),
     ) -> dict:
-        """Return conversation history from a live session or stopped-session workspace."""
+        """Return conversation history from a live session or stopped-session workspace.
+
+        When ``detail=shallow`` the heavy ``tool_result`` payloads are elided to
+        placeholders on BOTH the live-pod path (the broker elides at the source)
+        and the durable-log rebuild fallback (elided here), so the shape is
+        identical regardless of which path served the transcript.
+        """
+        shallow = detail == SHALLOW_DETAIL
+
+        def _maybe_elide(payload: dict) -> dict:
+            if shallow and isinstance(payload, dict) and isinstance(payload.get("turns"), list):
+                return {**payload, "turns": elide_turns(payload["turns"])}
+            return payload
+
         session = await forge.get_session(session_id)
         if session is None:
             raise HTTPException(
@@ -2565,11 +2622,58 @@ def create_router(
                     response = await client.get(
                         _session_proxy_url(base_url, "api", "conversation", "history"),
                         headers=headers,
+                        params={"detail": detail},
                     )
                     response.raise_for_status()
                     live = response.json()
                     if _live_transcript_is_renderable(live):
-                        return live
+                        # FAULT C: a resumed/restarted broker can be desynced from
+                        # the durable log and serve FEWER turns than the durable
+                        # rebuild (partial history for a running session). Only when
+                        # the live body has NO in_progress/streaming turn do we
+                        # compare turn counts and prefer the durable rebuild iff it
+                        # has STRICTLY MORE turns. We gate PRIMARILY on the actual
+                        # turn payload (last turn `in_progress` /
+                        # `metadata.status == 'in_progress'`) — the broker's
+                        # is_active / last_activity buffer flags are NOT a reliable
+                        # proxy: a tool_use-only assistant block (the entire
+                        # tool-execution window) leaves those flags empty while the
+                        # body still carries the live in_progress turn, so the proxy
+                        # alone would wrongly run reconciliation and could drop it.
+                        # We ALSO keep the streaming-flag guard so a body that
+                        # signals active streaming is never reconciled.
+                        is_streaming = bool(
+                            isinstance(live, dict)
+                            and (live.get("is_active") or (live.get("last_activity") or ""))
+                        )
+                        if not (is_streaming or _live_body_has_in_progress_turn(live)):
+                            live_turns = live.get("turns") if isinstance(live, dict) else None
+                            live_count = len(live_turns) if isinstance(live_turns, list) else 0
+                            try:
+                                durable = await forge.get_transcript(session_id)
+                            except (RuntimeError, ValueError):
+                                durable = None
+                            durable_turns = (
+                                durable.get("turns") if isinstance(durable, dict) else None
+                            )
+                            durable_count = (
+                                len(durable_turns) if isinstance(durable_turns, list) else 0
+                            )
+                            if durable is not None and durable_count > live_count:
+                                logger.info(
+                                    "Live conversation for session %s is short "
+                                    "(%d turns) vs durable rebuild (%d turns); "
+                                    "preferring durable (FAULT C desync)",
+                                    _sanitize_log(session_id),
+                                    live_count,
+                                    durable_count,
+                                )
+                                return _maybe_elide(durable)
+                        # A freshly-restarted broker already elided at the source;
+                        # re-eliding here is idempotent (placeholders have no
+                        # content) and lets a long-running broker that predates
+                        # this code serve shallow without a disruptive restart.
+                        return _maybe_elide(live)
                     # BUG-2: an alive-but-empty / seed-only pod (e.g. a tmux session whose
                     # WS crashed mid-turn) returns HTTP 200 with nothing renderable. Don't
                     # short-circuit on it — fall through to the durable-log rebuild below.
@@ -2586,11 +2690,11 @@ def create_router(
             )
 
         try:
-            return await forge.get_transcript(session_id)
+            return _maybe_elide(await forge.get_transcript(session_id))
         except RuntimeError as e:
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
-                return fallback
+                return _maybe_elide(fallback)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
@@ -2600,6 +2704,88 @@ def create_router(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
+
+    @router.get(
+        "/sessions/{session_id}/tool-result/{tool_use_id}",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_tool_result(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        tool_use_id: str = Path(description="tool_use_id of the result to fetch"),
+    ) -> dict:
+        """Return one full tool_result block by tool_use_id.
+
+        The lazy-load target for a shallow conversation: when a client expands an
+        elided placeholder it fetches the full content here. Proxies the live
+        session pod; falls back to scanning the durable transcript for
+        stopped/seed-only sessions. 404 when the result is absent.
+        """
+
+        def _scan(turns: list) -> dict | None:
+            for turn in turns:
+                parts = turn.get("parts") if isinstance(turn, dict) else None
+                for block in parts or []:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == tool_use_id
+                    ):
+                        return {
+                            "tool_use_id": tool_use_id,
+                            "content": block.get("content", ""),
+                            "is_error": bool(block.get("is_error", False)),
+                        }
+            return None
+
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
+        if session.chat_endpoint:
+            try:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        _session_proxy_url(
+                            base_url, "api", "conversation", "tool-result", tool_use_id
+                        ),
+                        headers=headers,
+                    )
+                    if response.status_code != status.HTTP_404_NOT_FOUND:
+                        response.raise_for_status()
+                        return response.json()
+                    # 404 from the live pod → fall through to the durable scan
+                    # (the pod may have rebooted with a seed-only transcript).
+            except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+                logger.info(
+                    "Live tool-result fetch failed for session %s; trying durable log: %s",
+                    _sanitize_log(session_id),
+                    _sanitize_log(e),
+                )
+
+        try:
+            transcript = await forge.get_transcript(session_id)
+        except (RuntimeError, ValueError):
+            transcript = _fallback_workspace_transcript(session) or {"turns": []}
+        found = _scan(transcript.get("turns", []) if isinstance(transcript, dict) else [])
+        if found is not None:
+            return found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"tool_result not found: {tool_use_id}",
+        )
 
     @router.get(
         "/sessions/{session_id}/workflow/gates",

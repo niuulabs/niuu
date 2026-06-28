@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from uuid import UUID
 
     from volundr.adapters.inbound.rest import SessionCreate
@@ -210,7 +211,18 @@ class ForgeService:
         session_id: UUID,
         activity_state: SessionActivityState,
         metadata: dict | None,
+        state_since: datetime | None = None,
     ) -> Session:
+        # FAULT A: the REST endpoint passes ``state_since=`` (the broker-stamped
+        # UTC transition time). The facade previously dropped it, so the kwarg
+        # raised TypeError on EVERY activity report — swallowed into a false 204,
+        # so activity_state never persisted and the SSE never fired. Forward it.
+        # Forward only when present so existing 3-positional callers/mocks stay
+        # exactly equivalent (the deep method defaults state_since itself).
+        if state_since is not None:
+            return await self._session_service.update_activity(
+                session_id, activity_state, metadata, state_since=state_since
+            )
         return await self._session_service.update_activity(session_id, activity_state, metadata)
 
     async def archive_session(
