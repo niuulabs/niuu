@@ -5018,6 +5018,8 @@ async def _run_momentum_reflect(
     ).reflect_judgment(target_ref, outcome=outcome, note=note, actor=actor)
     typer.echo(f"disposition_ref: {result.disposition_ref}")
     typer.echo(f"reflection_ref:  {result.reflection_ref}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
 
 
 def _print_momentum_result(result: Any) -> None:
@@ -5029,6 +5031,8 @@ def _print_momentum_result(result: Any) -> None:
     if result.extraction.packet is not None:
         typer.echo(f"packet:      {result.extraction.packet.title}")
     typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
 
 
 async def _run_momentum_source(settings: Settings, source: Any, ref_or_id: str) -> Any:

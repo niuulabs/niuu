@@ -25,6 +25,7 @@ from ravn.domain.valkyrie_contracts import (
 )
 from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
 from ravn.momentum.render import judgment_event_payload
+from ravn.momentum.state import CURRENT_MOMENTUM_STATE_REF
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_inbox import (
     MimirResidentInbox,
@@ -201,6 +202,13 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     assert "- event_type: valkyrie.judgment.proposed" in judgment
     assert "## Tension That Matters" in judgment
     assert "Signal compression is diluting resident understanding." in judgment
+    current_state = (tmp_path / "state" / CURRENT_MOMENTUM_STATE_REF).read_text(
+        encoding="utf-8"
+    )
+    state_patch = (tmp_path / "state" / result.state_patch_ref).read_text(encoding="utf-8")
+    assert "Signal compression is diluting resident understanding." in current_state
+    assert "- status: pending" in current_state
+    assert result.judgment_ref in state_patch
 
 
 @pytest.mark.asyncio
@@ -276,6 +284,64 @@ async def test_judgment_payload_validates_against_valkyrie_contract(tmp_path: Pa
     judgment_payload = judgment_event_payload(result.extraction.judgment)
     assert judgment_payload["tier"] == "silent"
     assert validate_valkyrie_outcome(VALKYRIE_JUDGMENT_PROPOSED, judgment_payload) == []
+
+
+@pytest.mark.asyncio
+async def test_current_momentum_state_is_absent_on_first_run_then_persisted(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="state-first",
+    ).extract_signal(await _markdown_signal(source))
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "## Current Momentum state\n\n(none)" in frame
+    current = await state.read_artifact(result.current_state_ref)
+    run = await state.read_artifact(result.run_ref)
+    assert result.current_state_ref == CURRENT_MOMENTUM_STATE_REF
+    assert "- input_state_ref: -" in run.content
+    assert "- input_state_sha256: -" in run.content
+    assert "## Open Tensions" in current.content
+    assert "Signal compression is diluting resident understanding." in current.content
+    assert "tension-attend-to-momentum-dilution" in current.content
+
+
+@pytest.mark.asyncio
+async def test_current_momentum_state_is_included_on_later_runs(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="state-before",
+    ).extract_signal(await _markdown_signal(source))
+    next_llm = FakeLLM(_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(next_llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+        run_id="state-after",
+    ).extract_signal(await _markdown_signal(source))
+
+    frame = next_llm.calls[0]["messages"][0]["content"]
+    run = await state.read_artifact(result.run_ref)
+    assert "## Current Momentum state" in frame
+    assert "# Current Momentum Resident State" in frame
+    assert "Signal compression is diluting resident understanding." in frame
+    assert f"- input_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in run.content
+    assert "- input_state_sha256: -" not in run.content
 
 
 @pytest.mark.asyncio
@@ -443,8 +509,13 @@ async def test_judgment_disposition_produces_persisted_reflection(
     assert result.reflection.outcome == outcome
     disposition = await state.read_artifact(result.disposition_ref)
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
+    state_patch = await state.read_artifact(result.state_patch_ref)
     assert f"- outcome: {outcome}" in disposition.content
     assert f"Lesson for {outcome}" in reflection.content
+    assert f"Lesson for {outcome}" in current_state.content
+    assert result.disposition_ref in state_patch.content
+    assert result.reflection_ref in state_patch.content
     assert "Original Judgment Useful" in reflection.content
 
 
@@ -503,7 +574,9 @@ async def test_wrong_disposition_persists_model_authored_correction(tmp_path: Pa
     )
 
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
     assert correction in reflection.content
+    assert correction in current_state.content
     assert correction not in llm.calls[1]["messages"][0]["content"]
 
 
@@ -588,12 +661,135 @@ async def test_reflex_and_capability_gap_outputs_remain_candidates(tmp_path: Pat
     )
 
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
     refs = await state.list_refs("resident/continuation/momentum")
     assert "- candidate_reflex_status: candidate_only" in reflection.content
     assert "- candidate_capability_gap_status: candidate_only" in reflection.content
     assert "Candidate Reflexes" in reflection.content
     assert "Candidate Capability Gaps" in reflection.content
+    assert "Candidate Reflexes (candidate-only)" in current_state.content
+    assert "Candidate Capability Gaps (candidate-only)" in current_state.content
+    assert "Candidate: ask for disposition after action." in current_state.content
+    assert "Candidate: no automatic outcome feed." in current_state.content
     assert all("/reflex" not in ref and "/capabilit" not in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_confirm_tension(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "confirmed_tension_ids": ["tension-attend-to-momentum-dilution"],
+                    "recent_lessons": ["Confirmed state patch lesson."],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="confirm-tension",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    reflection_frame = llm.calls[1]["messages"][0]["content"]
+    assert "## Current Momentum state" in reflection_frame
+    assert "Signal compression is diluting resident understanding." in reflection_frame
+    assert "- status: confirmed" in current_state.content
+    assert "Confirmed state patch lesson." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_change_existing_tension_with_partial_update(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "changed_tensions": [
+                        {
+                            "tension_id": "tension-attend-to-momentum-dilution",
+                            "status": "changed",
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="partial-change",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    assert "- status: changed" in current_state.content
+    assert "Signal compression is diluting resident understanding." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_state_updates_do_not_mutate_historical_artifacts(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload("accepted"), _payload()])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="immutable-history",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+    reflection = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+    judgment_before = (await state.read_artifact(extraction.judgment_ref)).content
+    disposition_before = (await state.read_artifact(reflection.disposition_ref)).content
+    reflection_before = (await state.read_artifact(reflection.reflection_ref)).content
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+        run_id="immutable-history-next",
+    ).extract_signal(await _markdown_signal(source))
+
+    assert (await state.read_artifact(extraction.judgment_ref)).content == judgment_before
+    assert (await state.read_artifact(reflection.disposition_ref)).content == disposition_before
+    assert (await state.read_artifact(reflection.reflection_ref)).content == reflection_before
 
 
 @pytest.mark.asyncio
@@ -731,8 +927,10 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
 
+    state = LocalResidentState(tmp_path / "state")
+
     async def _state(_settings, _workspace):
-        return LocalResidentState(tmp_path / "state")
+        return state
 
     monkeypatch.setattr(commands, "_build_resident_state", _state)
 
@@ -747,6 +945,10 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
         in result.output
     )
     assert "provenance:  verified" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
+    current_state = asyncio.run(state.read_artifact(CURRENT_MOMENTUM_STATE_REF))
+    assert "Signal compression is diluting resident understanding." in current_state.content
 
 
 def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
@@ -778,6 +980,7 @@ def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "judgment_ref:resident/momentum/runs/" in result.output
     assert "packet_ref:  resident/momentum/runs/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):
@@ -818,6 +1021,48 @@ def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tm
     assert result.exit_code == 0, result.output
     assert "disposition_ref: resident/continuation/momentum/runs/cli-reflect/" in result.output
     assert "reflection_ref:  resident/continuation/momentum/runs/cli-reflect/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
+    current_state = asyncio.run(state.read_artifact(CURRENT_MOMENTUM_STATE_REF))
+    assert "Lesson for accepted" in current_state.content
+
+
+def test_later_momentum_extract_cli_includes_current_state(monkeypatch, tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    first_llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+
+    async def _seed() -> None:
+        pipeline = MomentumPipeline(
+            worker=MomentumExtractionWorker(first_llm, model="fake-model"),
+            reflection_worker=MomentumReflectionWorker(first_llm, model="fake-model"),
+            state=state,
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="cli-current-state",
+        )
+        extraction = await pipeline.extract_signal(await _markdown_signal(source))
+        await pipeline.reflect_judgment(
+            extraction.judgment_ref,
+            outcome="accepted",
+            note="The judgment helped.",
+        )
+
+    asyncio.run(_seed())
+    next_llm = FakeLLM(_payload())
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: next_llm)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "extract", str(source)])
+
+    assert result.exit_code == 0, result.output
+    frame = next_llm.calls[0]["messages"][0]["content"]
+    assert "## Current Momentum state" in frame
+    assert "Lesson for accepted" in frame
 
 
 def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Path):
@@ -946,8 +1191,9 @@ def _reflection_payload(
     outcome: str = "accepted",
     *,
     correction: str = "Remember to compare the judgment with the outcome.",
+    state_patch: dict | None = None,
 ) -> dict:
-    return {
+    payload = {
         "changed_understanding": f"The {outcome} outcome updates resident memory.",
         "lesson_learned": f"Lesson for {outcome}",
         "original_judgment_useful": outcome != "wrong",
@@ -956,6 +1202,9 @@ def _reflection_payload(
         "candidate_reflexes": ["Candidate: ask for disposition after action."],
         "candidate_capability_gaps": ["Candidate: no automatic outcome feed."],
     }
+    if state_patch is not None:
+        payload["state_patch"] = state_patch
+    return payload
 
 
 def _vision_payload() -> dict:

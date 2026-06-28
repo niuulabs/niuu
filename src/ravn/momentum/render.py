@@ -184,7 +184,9 @@ def render_reflection(reflection: MomentumReflection) -> str:
         "## Candidate Reflexes\n\n"
         f"{_bullets_text(reflection.candidate_reflexes)}\n\n"
         "## Candidate Capability Gaps\n\n"
-        f"{_bullets_text(reflection.candidate_capability_gaps)}\n"
+        f"{_bullets_text(reflection.candidate_capability_gaps)}\n\n"
+        "## State Patch\n\n"
+        f"```json\n{reflection.state_patch.model_dump_json(indent=2)}\n```\n"
     )
 
 
@@ -231,6 +233,8 @@ def render_run(run: MomentumExtractionRun) -> str:
         f"- signal_kind: {run.signal_kind}\n"
         f"- source_path: {run.source_path}\n"
         f"- source_sha256: {run.source_sha256}\n"
+        f"- input_state_ref: {run.input_state_ref or '-'}\n"
+        f"- input_state_sha256: {run.input_state_sha256 or '-'}\n"
         f"- procedure: {run.procedure_name}\n"
         f"- model: {run.model_name}\n"
         f"- created_at: {run.created_at.isoformat()}\n"
