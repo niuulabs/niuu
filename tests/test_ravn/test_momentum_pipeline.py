@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -305,6 +306,48 @@ def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
         proof_root
         / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
     ).exists()
+
+
+def test_real_llm_proof_helpers_do_not_force_semantic_answers() -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "ollama_momentum_delegation_proof_llm.py"
+    )
+    source = script.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    allowed_const_paths = {("properties", "execution_performed", "const")}
+    semantic_strings = [
+        "sig-attention-current-state-relevant",
+        "resident/inbox/signals/20260628T100500Z-current-state-attention.md",
+        "Current-state attention signal addresses open tension",
+        "Resident understanding patch",
+        "Attend to current-state signal",
+        "Momentum Handoff Brief",
+        "select this exact",
+        "return this exact",
+    ]
+
+    const_paths: list[tuple[str, ...]] = []
+
+    def walk(node: ast.AST, path: tuple[str, ...] = ()) -> None:
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                key_value = key.value if isinstance(key, ast.Constant) else None
+                next_path = (*path, str(key_value)) if isinstance(key_value, str) else path
+                if key_value == "const":
+                    const_paths.append(next_path)
+                walk(value, next_path)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, path)
+
+    walk(tree)
+
+    assert set(const_paths) <= allowed_const_paths
+    assert all(text not in source for text in semantic_strings)
+    assert "raise ValueError(\"unrecognized Momentum proof prompt\")" in source
 
 
 @pytest.mark.asyncio

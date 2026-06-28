@@ -44,12 +44,18 @@ def _prompt(prompt: str) -> str:
             "tension, if one is warranted. If you select a signal for judgment, "
             "the next action should pursue extraction of that selected signal."
         )
-    return (
-        prompt
-        + "\n\nExtract the selected signal. Use exact source excerpts copied from "
-        "the signal content; omit line ranges if unsure. Recommend ask_human or "
-        "update_understanding_only, not execution."
-    )
+    if "You extract the living shape of an idea into typed artifacts" in prompt:
+        return (
+            prompt
+            + "\n\nExtract the selected signal. Use exact source excerpts copied "
+            "from the signal content; omit line ranges if unsure. Recommend a "
+            "bounded non-executing next action. Ensure "
+            "judgment.evidence_artifact_titles exactly match titles you return "
+            "in artifacts or resident_patch. For every source.excerpt field, "
+            "copy one exact contiguous substring from the provided resident "
+            "signal; do not reconstruct headings, metadata, or punctuation."
+        )
+    raise ValueError("unrecognized Momentum proof prompt")
 
 
 def _schema(prompt: str) -> dict:
@@ -152,12 +158,12 @@ def _schema(prompt: str) -> dict:
                 "source_refs": {"type": "array", "items": {"type": "string"}},
             },
         }
-    source_excerpt = (
-        "This signal directly addresses the open Momentum tension: prove the next "
-        "selected resident signal is chosen because it addresses current Momentum "
-        "state, not because an operator manually picked it."
-    )
-    title = "Current-state attention signal addresses open tension"
+    if "You extract the living shape of an idea into typed artifacts" in prompt:
+        return _extraction_schema()
+    raise ValueError("unrecognized Momentum proof prompt")
+
+
+def _extraction_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -166,8 +172,7 @@ def _schema(prompt: str) -> dict:
             "artifacts": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 1,
-                "items": _artifact_schema(source_excerpt),
+                "items": _artifact_schema(),
             },
             "resident_patch": {
                 "type": "object",
@@ -182,13 +187,13 @@ def _schema(prompt: str) -> dict:
                     "source",
                 ],
                 "properties": {
-                    "title": {"const": "Resident understanding patch"},
-                    "summary": {"type": "string"},
-                    "reason": {"type": "string"},
+                    "title": {"type": "string", "minLength": 1},
+                    "summary": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
                     "beliefs": {"type": "array", "items": {"type": "string"}},
                     "constraints": {"type": "array", "items": {"type": "string"}},
                     "corrections": {"type": "array", "items": {"type": "string"}},
-                    "source": _source_schema(source_excerpt),
+                    "source": _source_schema(),
                 },
             },
             "judgment": {
@@ -213,19 +218,23 @@ def _schema(prompt: str) -> dict:
                     "source",
                 ],
                 "properties": {
-                    "title": {"const": "Attend to current-state signal"},
-                    "environment_id": {"const": "resident:niuu"},
-                    "valkyrie_id": {"const": "ravn-momentum"},
-                    "changed_understanding": {"type": "string"},
-                    "tension_that_matters": {"type": "string"},
-                    "why_attention_now": {"type": "string"},
+                    "title": {"type": "string", "minLength": 1},
+                    "environment_id": {"type": "string", "minLength": 1},
+                    "valkyrie_id": {"type": "string", "minLength": 1},
+                    "changed_understanding": {"type": "string", "minLength": 1},
+                    "tension_that_matters": {"type": "string", "minLength": 1},
+                    "why_attention_now": {"type": "string", "minLength": 1},
                     "recommended_next_action": {
-                        "enum": ["ask_human", "update_understanding_only"]
+                        "enum": [
+                            "write_momentum_packet",
+                            "ask_human",
+                            "update_understanding_only",
+                        ]
                     },
-                    "recommended_action": {"type": "string"},
+                    "recommended_action": {"type": "string", "minLength": 1},
                     "attention_tier": {"enum": ["present", "urgent", "ambient", "silent"]},
-                    "authority_boundary": {"type": "string"},
-                    "operational_state": {"const": "proposing"},
+                    "authority_boundary": {"type": "string", "minLength": 1},
+                    "operational_state": {"type": "string", "minLength": 1},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "signal_refs": {
                         "type": "array",
@@ -233,40 +242,109 @@ def _schema(prompt: str) -> dict:
                         "items": {"type": "string"},
                     },
                     "evidence_artifact_titles": {
-                        "const": [title, "Resident understanding patch"]
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
                     },
-                    "target_surfaces": {"type": "array", "items": {"type": "string"}},
-                    "source": _source_schema(source_excerpt),
+                    "target_surfaces": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
+                    },
+                    "source": _source_schema(),
                 },
             },
-            "packet": {"type": "null"},
+            "packet": {
+                "anyOf": [
+                    {"type": "null"},
+                    _packet_schema(),
+                ]
+            },
         },
     }
 
 
-def _artifact_schema(source_excerpt: str) -> dict:
+def _artifact_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["kind", "title", "summary", "reason", "source", "tags"],
         "properties": {
-            "kind": {"const": "durable_insight"},
-            "title": {"const": "Current-state attention signal addresses open tension"},
-            "summary": {"type": "string"},
-            "reason": {"type": "string"},
-            "source": _source_schema(source_excerpt),
+            "kind": {
+                "enum": [
+                    "durable_insight",
+                    "rejected_direction",
+                    "unresolved_tension",
+                    "resident_understanding_patch",
+                ]
+            },
+            "title": {"type": "string", "minLength": 1},
+            "summary": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1},
+            "source": _source_schema(),
             "tags": {"type": "array", "items": {"type": "string"}},
         },
     }
 
 
-def _source_schema(source_excerpt: str) -> dict:
+def _packet_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "title",
+            "implementation_slice",
+            "why_it_matters",
+            "caused_by",
+            "must_not_lose",
+            "reuse_guidance",
+            "out_of_scope",
+            "success_proof",
+            "reflection_prompts",
+            "source",
+        ],
+        "properties": {
+            "title": {"type": "string", "minLength": 1},
+            "implementation_slice": {"type": "string", "minLength": 1},
+            "why_it_matters": {"type": "string", "minLength": 1},
+            "caused_by": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
+            "must_not_lose": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
+            "reuse_guidance": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
+            "out_of_scope": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
+            "success_proof": {"type": "string", "minLength": 1},
+            "reflection_prompts": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
+            "source": _source_schema(),
+        },
+    }
+
+
+def _source_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["excerpt"],
         "properties": {
-            "excerpt": {"const": source_excerpt},
+            "excerpt": {"type": "string", "minLength": 1},
             "line_start": {"type": "integer", "minimum": 1},
             "line_end": {"type": "integer", "minimum": 1},
         },
