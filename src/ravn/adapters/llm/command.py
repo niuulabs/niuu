@@ -1,4 +1,4 @@
-"""Command-backed LLM adapter for opt-in local evals."""
+"""Command-backed LLM adapter for local LLM CLI processes."""
 
 from __future__ import annotations
 

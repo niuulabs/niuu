@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -843,48 +845,30 @@ def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Pat
     assert "accepted, dismissed, wrong, deferred, acted" in result.output
 
 
-def test_momentum_dogfood_skips_without_opt_in(tmp_path: Path):
-    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
-
-    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
-
-    assert result.exit_code == 0
-    assert "Skipped: set RAVN_LLM_EVAL=1" in result.output
-
-
-def test_momentum_dogfood_extraction_only_persists_report(monkeypatch, tmp_path: Path):
-    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
+def test_momentum_extract_uses_configured_command_llm(monkeypatch, tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    command = tmp_path / "local_llm.py"
+    command.write_text(
+        "import json\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"print({json.dumps(_payload())!r})\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "ravn.yaml"
+    config.write_text(
+        "llm:\n"
+        "  model: command-test\n"
+        "  provider:\n"
+        "    adapter: ravn.adapters.llm.command.CommandLLMAdapter\n"
+        "    kwargs:\n"
+        f"      command: {sys.executable}\n"
+        "      args:\n"
+        f"        - {command}\n",
+        encoding="utf-8",
+    )
     state = LocalResidentState(tmp_path / "state")
-
-    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
-    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_dogfood_payload()))
-
-    async def _state(_settings, _workspace):
-        return state
-
-    monkeypatch.setattr(commands, "_build_resident_state", _state)
-
-    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
-
-    assert result.exit_code == 0, result.output
-    assert "mode:          extraction-only" in result.output
-    assert "report_ref:    resident/momentum/runs/" in result.output
-    refs = asyncio.run(state.list_refs("resident/momentum"))
-    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
-    report = asyncio.run(state.read_artifact(report_ref)).content
-    assert "- mode: extraction-only" in report
-    assert "- judgment_payload_valid: true" in report
-    assert "- packet_judgment_consistent: true" in report
-    assert "- reflection_requested: false" in report
-
-
-def test_momentum_dogfood_with_reflection_persists_report(monkeypatch, tmp_path: Path):
-    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
-    state = LocalResidentState(tmp_path / "state")
-    llm = FakeLLM([_dogfood_payload(), _reflection_payload("accepted")])
-
-    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
-    monkeypatch.setattr(commands, "_build_llm", lambda _settings: llm)
 
     async def _state(_settings, _workspace):
         return state
@@ -893,51 +877,13 @@ def test_momentum_dogfood_with_reflection_persists_report(monkeypatch, tmp_path:
 
     result = CliRunner().invoke(
         commands.app,
-        [
-            "momentum",
-            "dogfood",
-            str(fixture),
-            "--reflect-outcome",
-            "accepted",
-            "--note",
-            "Accepted in dogfood.",
-        ],
+        ["momentum", "extract", str(source), "--config", str(config)],
     )
+    os.environ.pop("RAVN_CONFIG", None)
 
     assert result.exit_code == 0, result.output
-    assert "mode:          extraction+reflection" in result.output
-    assert "reflection_ref: resident/continuation/momentum/runs/" in result.output
-    refs = asyncio.run(state.list_refs("resident/momentum"))
-    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
-    report = asyncio.run(state.read_artifact(report_ref)).content
-    assert "- mode: extraction+reflection" in report
-    assert "- reflection_requested: true" in report
-    assert "- reflection_produced: true" in report
-    assert "- reflection_ref: resident/continuation/momentum/runs/" in report
-
-
-def test_momentum_dogfood_validation_failures_exit_nonzero(monkeypatch, tmp_path: Path):
-    fixture = Path("tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md")
-    state = LocalResidentState(tmp_path / "state")
-    payload = _dogfood_payload()
-    payload["artifacts"][0]["source"] = {"excerpt": "not in the noisy fixture"}
-
-    monkeypatch.setenv("RAVN_LLM_EVAL", "1")
-    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(payload))
-
-    async def _state(_settings, _workspace):
-        return state
-
-    monkeypatch.setattr(commands, "_build_resident_state", _state)
-
-    result = CliRunner().invoke(commands.app, ["momentum", "dogfood", str(fixture)])
-
-    assert result.exit_code == 1
-    assert "eval_error:    not all provenance was verified against the source" in result.output
-    refs = asyncio.run(state.list_refs("resident/momentum"))
-    report_ref = next(ref for ref in refs if ref.endswith("/dogfood/report.md"))
-    report = asyncio.run(state.read_artifact(report_ref)).content
-    assert "not all provenance was verified against the source" in report
+    assert "provenance:  verified" in result.output
+    assert "judgment_ref:resident/momentum/runs/" in result.output
 
 
 def test_momentum_eval_skips_without_opt_in(tmp_path: Path):
@@ -1040,20 +986,6 @@ def _reflection_payload(
         "candidate_reflexes": ["Candidate: ask for disposition after action."],
         "candidate_capability_gaps": ["Candidate: no automatic outcome feed."],
     }
-
-
-def _dogfood_payload() -> dict:
-    payload = _payload()
-    source = {"excerpt": "configured LLM port"}
-    for artifact in payload["artifacts"]:
-        artifact["source"] = source
-    payload["resident_patch"]["source"] = source
-    payload["judgment"]["source"] = {"excerpt": "fake LLM tests prove the plumbing"}
-    payload["packet"]["source"] = {"excerpt": "Manual dogfood proof"}
-    payload["judgment"]["signal_refs"] = [
-        "tests/test_ravn/fixtures/momentum_dogfood_noisy_signal.md"
-    ]
-    return payload
 
 
 def _vision_payload() -> dict:
