@@ -7,6 +7,7 @@ import re
 
 from ravn.momentum.models import (
     MomentumAttentionDecisionDraft,
+    MomentumDelegationBriefDraft,
     MomentumExtractionDraft,
     MomentumJudgmentDisposition,
     MomentumReflectionDraft,
@@ -16,6 +17,7 @@ from ravn.ports.llm import LLMPort
 PROCEDURE_NAME = "ravn.momentum.extract.v1"
 REFLECTION_PROCEDURE_NAME = "ravn.momentum.reflect.v1"
 ATTENTION_PROCEDURE_NAME = "ravn.momentum.attend.v1"
+DELEGATION_PROCEDURE_NAME = "ravn.momentum.delegate.v1"
 
 SYSTEM_PROMPT = """You extract the living shape of an idea into typed artifacts.
 
@@ -299,6 +301,91 @@ class MomentumAttentionWorker:
         )
 
 
+DELEGATION_SYSTEM_PROMPT = """You prepare bounded Momentum delegation briefs.
+
+Return only JSON matching this shape:
+{
+  "handoff_recommended": true,
+  "no_handoff_reason": "",
+  "title": "...",
+  "rationale": "...",
+  "desired_outcome": "...",
+  "bounded_request": "...",
+  "evidence_refs": ["judgment, run, attention, packet, artifact, or state refs"],
+  "constraints": ["..."],
+  "out_of_scope_boundaries": ["..."],
+  "success_proof": "...",
+  "expected_return_format": "...",
+  "suggested_executor_context": "optional free text, or empty",
+  "skill_or_tool_hints": ["optional free text hints, not an allowlist"],
+  "capability_gap_notes": ["optional missing skill/capability notes"],
+  "handoff_notes": "...",
+  "confidence": 0.82,
+  "execution_performed": false
+}
+
+Prepare a handoff brief only. Do not execute, delegate, contact humans, create
+tickets, start workflows, register capabilities, call tools, or choose concrete
+tool calls. The future executor will use its own native tools, skills, and
+permission system. Focus on intent, evidence, constraints, desired outcome, and
+success proof. If no handoff is needed, set handoff_recommended false and
+explain no_handoff_reason. If a missing skill or capability is discovered,
+record it as a capability_gap_note, not as a registration or action.
+"""
+
+
+class MomentumDelegationWorker:
+    """Typed delegation brief preparation over a persisted Momentum judgment."""
+
+    def __init__(
+        self,
+        llm: LLMPort,
+        *,
+        model: str,
+        procedure_name: str = DELEGATION_PROCEDURE_NAME,
+        max_tokens: int = 3000,
+    ) -> None:
+        self._llm = llm
+        self.model = model
+        self.procedure_name = procedure_name
+        self._max_tokens = max_tokens
+
+    async def prepare(
+        self,
+        *,
+        source_ref: str,
+        judgment_content: str,
+        run_content: str,
+        packet_content: str,
+        attention_content: str,
+        artifact_contents: list[str],
+        current_state_frame: str,
+    ) -> MomentumDelegationBriefDraft:
+        response = await self._llm.generate(
+            [
+                {
+                    "role": "user",
+                    "content": _delegation_input_frame(
+                        source_ref=source_ref,
+                        judgment_content=judgment_content,
+                        run_content=run_content,
+                        packet_content=packet_content,
+                        attention_content=attention_content,
+                        artifact_contents=artifact_contents,
+                        current_state_frame=current_state_frame,
+                    ),
+                }
+            ],
+            tools=[],
+            system=DELEGATION_SYSTEM_PROMPT,
+            model=self.model,
+            max_tokens=self._max_tokens,
+        )
+        return MomentumDelegationBriefDraft.model_validate_json(
+            _json_payload(response.content)
+        )
+
+
 def _input_frame(markdown: str, *, memory_frame: str, current_state_frame: str) -> str:
     return (
         "## Existing resident memory frame\n\n"
@@ -357,6 +444,38 @@ def _reflection_input_frame(
         f"{run_content or '(unavailable)'}\n\n"
         "## Judgment artifact\n\n"
         f"{judgment_content or '(unavailable)'}\n\n"
+        "## Related artifacts\n\n"
+        f"{_join_sections(artifact_contents)}"
+    )
+
+
+def _delegation_input_frame(
+    *,
+    source_ref: str,
+    judgment_content: str,
+    run_content: str,
+    packet_content: str,
+    attention_content: str,
+    artifact_contents: list[str],
+    current_state_frame: str,
+) -> str:
+    return (
+        "## Delegation preparation bounds\n\n"
+        "Prepare a handoff brief artifact only. Do not execute anything. "
+        "Do not choose concrete tool calls. The future executor uses its own "
+        "native tools, skills, and permissions.\n\n"
+        "## Source ref\n\n"
+        f"{source_ref}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
+        "## Judgment artifact\n\n"
+        f"{judgment_content or '(unavailable)'}\n\n"
+        "## Run artifact\n\n"
+        f"{run_content or '(unavailable)'}\n\n"
+        "## Packet artifact\n\n"
+        f"{packet_content or '(unavailable)'}\n\n"
+        "## Linked attention decision\n\n"
+        f"{attention_content or '(unavailable)'}\n\n"
         "## Related artifacts\n\n"
         f"{_join_sections(artifact_contents)}"
     )

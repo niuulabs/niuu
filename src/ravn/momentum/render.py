@@ -13,6 +13,7 @@ from ravn.domain.valkyrie_contracts import (
 from ravn.momentum.models import (
     MomentumArtifact,
     MomentumAttentionDecision,
+    MomentumDelegationBrief,
     MomentumExtractionRun,
     MomentumJudgment,
     MomentumJudgmentDisposition,
@@ -203,6 +204,59 @@ def parse_attention_decision(content: str) -> MomentumAttentionDecision:
     if payload:
         return MomentumAttentionDecision.model_validate_json(payload)
     return _parse_attention_decision_markdown(content)
+
+
+def render_delegation_brief(brief: MomentumDelegationBrief) -> str:
+    return (
+        f"# Momentum Delegation Brief {brief.brief_id}\n\n"
+        f"- brief_id: {brief.brief_id}\n"
+        f"- validation_status: {brief.validation_status}\n"
+        f"- handoff_recommended: {str(brief.handoff_recommended).lower()}\n"
+        f"- source_judgment_ref: {brief.source_judgment_ref}\n"
+        f"- source_run_ref: {brief.source_run_ref or '-'}\n"
+        f"- source_attention_ref: {brief.source_attention_ref or '-'}\n"
+        f"- source_signal_id: {brief.source_signal_id or '-'}\n"
+        f"- source_signal_ref: {brief.source_signal_ref or '-'}\n"
+        f"- suggested_executor_context: {brief.suggested_executor_context or '-'}\n"
+        f"- confidence: {brief.confidence}\n"
+        f"- execution_performed: {str(brief.execution_performed).lower()}\n"
+        f"- procedure: {brief.procedure_name}\n"
+        f"- model: {brief.model_name}\n"
+        f"- created_at: {brief.created_at.isoformat()}\n\n"
+        "## Brief Data\n\n"
+        f"```json\n{brief.model_dump_json(indent=2)}\n```\n\n"
+        "## Rationale\n\n"
+        f"{brief.rationale}\n\n"
+        "## Desired Outcome\n\n"
+        f"{brief.desired_outcome}\n\n"
+        "## Bounded Request\n\n"
+        f"{brief.bounded_request}\n\n"
+        "## Evidence Refs\n\n"
+        f"{_bullets_text(brief.evidence_refs)}\n\n"
+        "## Constraints\n\n"
+        f"{_bullets_text(brief.constraints)}\n\n"
+        "## Out Of Scope Boundaries\n\n"
+        f"{_bullets_text(brief.out_of_scope_boundaries)}\n\n"
+        "## Success Proof\n\n"
+        f"{brief.success_proof}\n\n"
+        "## Expected Return Format\n\n"
+        f"{brief.expected_return_format}\n\n"
+        "## Skill Or Tool Hints\n\n"
+        f"{_bullets_text(brief.skill_or_tool_hints)}\n\n"
+        "## Capability Gap Notes\n\n"
+        f"{_bullets_text(brief.capability_gap_notes)}\n\n"
+        "## Handoff Notes\n\n"
+        f"{brief.handoff_notes}\n\n"
+        "## No Handoff Reason\n\n"
+        f"{brief.no_handoff_reason or '-'}\n"
+    )
+
+
+def parse_delegation_brief(content: str) -> MomentumDelegationBrief:
+    payload = _json_section(content, "Brief Data")
+    if not payload:
+        raise ValueError("delegation brief missing Brief Data")
+    return MomentumDelegationBrief.model_validate_json(payload)
 
 
 def _parse_attention_decision_markdown(content: str) -> MomentumAttentionDecision:

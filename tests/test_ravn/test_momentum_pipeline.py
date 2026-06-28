@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +27,7 @@ from ravn.domain.valkyrie_contracts import (
 )
 from ravn.momentum import (
     MomentumAttentionWorker,
+    MomentumDelegationWorker,
     MomentumExtractionWorker,
     MomentumPipeline,
     MomentumReflectionWorker,
@@ -34,7 +37,11 @@ from ravn.momentum.models import (
     MomentumStatePatch,
     MomentumStateTension,
 )
-from ravn.momentum.render import judgment_event_payload, render_attention_decision
+from ravn.momentum.render import (
+    judgment_event_payload,
+    parse_delegation_brief,
+    render_attention_decision,
+)
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
     MAX_BELIEFS,
@@ -212,6 +219,135 @@ def _attention_decision(**updates) -> MomentumAttentionDecision:
         procedure_name="momentum_attention_v1",
         model_name="fake-model",
     )
+
+
+def _delegation_payload(**updates) -> dict:
+    payload = {
+        "handoff_recommended": True,
+        "no_handoff_reason": "",
+        "title": "Prepare a bounded implementation slice",
+        "rationale": "The judgment asks for a bounded code change that needs a coding agent.",
+        "desired_outcome": "A focused follow-up implementation with tests.",
+        "bounded_request": "Implement only the smallest verified Momentum follow-up.",
+        "evidence_refs": [
+            "resident/momentum/runs/run-delegate/run.md",
+            "resident/momentum/runs/run-delegate/judgment/judgment-attend-to-momentum-dilution.md",
+        ],
+        "constraints": [
+            "Use the source judgment as evidence.",
+            "Do not execute external workflows.",
+        ],
+        "out_of_scope_boundaries": [
+            "Do not execute external workflows.",
+            "Do not register capabilities.",
+        ],
+        "success_proof": "The implementation diff includes relevant tests.",
+        "expected_return_format": "Summarize changed files, validation, and residual risk.",
+        "suggested_executor_context": "local Codex session",
+        "skill_or_tool_hints": ["Use normal repository tests."],
+        "capability_gap_notes": [],
+        "handoff_notes": "Keep the handoff bounded and auditable.",
+        "confidence": 0.81,
+        "execution_performed": False,
+    }
+    payload.update(updates)
+    return payload
+
+
+async def _seed_linked_momentum_run(
+    state: LocalResidentState,
+    *,
+    run_id: str = "run-delegate",
+) -> tuple[str, str, str]:
+    attention_ref = await state.write_artifact(
+        "resident/continuation/momentum/attention/attention-test.md",
+        render_attention_decision(_attention_decision()),
+    )
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 14, tzinfo=UTC),
+        run_id=run_id,
+    ).pursue_attention(
+        attention_ref,
+        signal_source=StaticSignalSource(
+            [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+        ),
+    )
+    return result.run_ref, result.judgment_ref, attention_ref
+
+
+def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
+    tmp_path: Path,
+) -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "seed_momentum_delegation_proof.py"
+    )
+    proof_root = tmp_path / "proof"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(proof_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert f"proof_root: {proof_root}" in result.stdout
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in result.stdout
+    assert "candidate_id: sig-attention-current-state-relevant" in result.stdout
+    assert "candidate_id: sig-attention-distractor" in result.stdout
+    assert (
+        proof_root / "state" / "resident/continuation/momentum/state/current.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
+
+
+def test_real_llm_proof_helpers_do_not_force_semantic_answers() -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "ollama_momentum_delegation_proof_llm.py"
+    )
+    source = script.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    allowed_const_paths = {("properties", "execution_performed", "const")}
+    semantic_strings = [
+        "sig-attention-current-state-relevant",
+        "resident/inbox/signals/20260628T100500Z-current-state-attention.md",
+        "Current-state attention signal addresses open tension",
+        "Resident understanding patch",
+        "Attend to current-state signal",
+        "Momentum Handoff Brief",
+        "select this exact",
+        "return this exact",
+    ]
+
+    const_paths: list[tuple[str, ...]] = []
+
+    def walk(node: ast.AST, path: tuple[str, ...] = ()) -> None:
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                key_value = key.value if isinstance(key, ast.Constant) else None
+                next_path = (*path, str(key_value)) if isinstance(key_value, str) else path
+                if key_value == "const":
+                    const_paths.append(next_path)
+                walk(value, next_path)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, path)
+
+    walk(tree)
+
+    assert set(const_paths) <= allowed_const_paths
+    assert all(text not in source for text in semantic_strings)
+    assert "raise ValueError(\"unrecognized Momentum proof prompt\")" in source
 
 
 @pytest.mark.asyncio
@@ -992,6 +1128,213 @@ async def test_momentum_pursuit_missing_selected_signal_creates_no_run(
 
     assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
     assert await state.list_refs("resident/momentum/runs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegates_judgment_into_persisted_brief(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    run_ref, judgment_ref, attention_ref = await _seed_linked_momentum_run(state)
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(_delegation_payload()),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 15, tzinfo=UTC),
+    ).prepare_delegation(judgment_ref)
+
+    brief = result.brief
+    assert brief.source_judgment_ref == judgment_ref
+    assert brief.source_run_ref == run_ref
+    assert brief.source_attention_ref == attention_ref
+    assert brief.source_signal_id == "sig-relevant"
+    assert brief.source_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert brief.handoff_recommended is True
+    assert brief.suggested_executor_context == "local Codex session"
+    assert brief.execution_performed is False
+
+    content = (await state.read_artifact(result.brief_ref)).content
+    parsed = parse_delegation_brief(content)
+    assert parsed.brief_id == brief.brief_id
+    assert "## Brief Data" in content
+    assert "## Bounded Request" in content
+    assert f"- source_attention_ref: {attention_ref}" in content
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegates_run_by_resolving_judgment(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    run_ref, judgment_ref, _ = await _seed_linked_momentum_run(state)
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(_delegation_payload()),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 15, tzinfo=UTC),
+    ).prepare_delegation(run_ref)
+
+    assert result.brief.source_run_ref == run_ref
+    assert result.brief.source_judgment_ref == judgment_ref
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegation_no_delegation_needed_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    _, judgment_ref, _ = await _seed_linked_momentum_run(state)
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(
+                _delegation_payload(
+                    handoff_recommended=False,
+                    no_handoff_reason="The judgment only needs resident memory to remain updated.",
+                    title="No delegation needed",
+                    rationale="The judgment only needs resident memory to remain updated.",
+                    desired_outcome="No external handoff is prepared.",
+                    bounded_request="No external delegation should be prepared.",
+                    success_proof="The persisted brief records why no handoff is needed.",
+                    expected_return_format="No executor response expected.",
+                    suggested_executor_context="",
+                    handoff_notes="No handoff recommended.",
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+    ).prepare_delegation(judgment_ref)
+
+    assert result.brief.handoff_recommended is False
+    assert result.brief.no_handoff_reason
+    assert result.brief.execution_performed is False
+    refs = await state.list_refs()
+    assert not any("/reflections/" in ref or "/dispositions/" in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegation_accepts_free_text_executor_context_without_catalog(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    _, judgment_ref, _ = await _seed_linked_momentum_run(state)
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(
+                _delegation_payload(
+                    suggested_executor_context="unlisted future executor",
+                    skill_or_tool_hints=["executor native skills decide availability"],
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+    ).prepare_delegation(judgment_ref)
+
+    assert result.brief.suggested_executor_context == "unlisted future executor"
+    assert result.brief.skill_or_tool_hints == ["executor native skills decide availability"]
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegation_rejects_execution_performed(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    _, judgment_ref, _ = await _seed_linked_momentum_run(state)
+
+    with pytest.raises(ValueError, match="delegation brief execution must be false"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            delegation_worker=MomentumDelegationWorker(
+                FakeLLM(_delegation_payload(execution_performed=True)),
+                model="fake-model",
+            ),
+            state=state,
+        ).prepare_delegation(judgment_ref)
+
+    assert await state.list_refs("resident/continuation/momentum/delegations") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegation_missing_source_fails_without_artifact(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    with pytest.raises(FileNotFoundError, match="Momentum judgment or run not found"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            delegation_worker=MomentumDelegationWorker(
+                FakeLLM(_delegation_payload()),
+                model="fake-model",
+            ),
+            state=state,
+        ).prepare_delegation("resident/momentum/runs/missing/run.md")
+
+    assert await state.list_refs("resident/continuation/momentum/delegations") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_delegation_leaves_source_artifacts_immutable(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    run_ref, judgment_ref, attention_ref = await _seed_linked_momentum_run(state)
+    before = {
+        ref: (await state.read_artifact(ref)).content
+        for ref in [run_ref, judgment_ref, attention_ref]
+    }
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(_delegation_payload()),
+            model="fake-model",
+        ),
+        state=state,
+    ).prepare_delegation(judgment_ref)
+
+    after = {
+        ref: (await state.read_artifact(ref)).content
+        for ref in [run_ref, judgment_ref, attention_ref]
+    }
+    assert after == before
+
+
+def test_momentum_core_does_not_import_concrete_delegation_implementations() -> None:
+    core_files = [
+        Path("src/ravn/momentum/pipeline.py"),
+        Path("src/ravn/momentum/worker.py"),
+        Path("src/ravn/momentum/render.py"),
+    ]
+    forbidden = (
+        "ravn.adapters",
+        "github",
+        "shell",
+        "printer",
+        "provider",
+        "sleipnir",
+    )
+
+    imports = [
+        line
+        for path in core_files
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("import ") or line.startswith("from ")
+    ]
+
+    assert not any(token in line.lower() for line in imports for token in forbidden)
 
 
 @pytest.mark.asyncio
@@ -1824,6 +2167,128 @@ def test_momentum_pursue_cli_non_pursuable_decision_fails(
     assert result.exit_code == 1
     assert "Cannot pursue attention decision: attention decision says no attention" in result.output
     assert asyncio.run(state.list_refs("resident/momentum/runs")) == []
+
+
+def test_momentum_delegate_cli_prints_brief_and_source_refs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        run_ref, _, _ = await _seed_linked_momentum_run(state)
+        return run_ref
+
+    run_ref = asyncio.run(_seed())
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_delegation_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "delegate", run_ref])
+
+    assert result.exit_code == 0, result.output
+    assert "brief_ref: resident/continuation/momentum/delegations/" in result.output
+    assert "source_judgment_ref: resident/momentum/runs/run-delegate/judgment/" in result.output
+    assert f"source_run_ref: {run_ref}" in result.output
+    assert (
+        "source_attention_ref: resident/continuation/momentum/attention/attention-test.md"
+        in result.output
+    )
+    assert "source_signal_id: sig-relevant" in result.output
+    assert "source_signal_ref: resident/inbox/signals/sig-relevant.md" in result.output
+    assert "handoff_recommended: true" in result.output
+    assert "suggested_executor_context: local Codex session" in result.output
+    assert "confidence: 0.81" in result.output
+    assert "execution_performed: false" in result.output
+
+
+def test_momentum_delegate_cli_invalid_source_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_delegation_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "delegate", "resident/momentum/runs/missing/run.md"],
+    )
+
+    assert result.exit_code == 1
+    assert "Momentum judgment or run not found" in result.output
+
+
+def test_momentum_delegate_cli_execution_performed_creates_no_brief(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        _, judgment_ref, _ = await _seed_linked_momentum_run(state)
+        return judgment_ref
+
+    judgment_ref = asyncio.run(_seed())
+    monkeypatch.setattr(
+        commands,
+        "_build_llm",
+        lambda _settings: FakeLLM(_delegation_payload(execution_performed=True)),
+    )
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "delegate", judgment_ref])
+
+    assert result.exit_code == 1
+    assert "delegation brief execution must be false" in result.output
+    assert asyncio.run(
+        state.list_refs("resident/continuation/momentum/delegations")
+    ) == []
+
+
+def test_momentum_delegate_cli_accepts_unlisted_executor_context(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        _, judgment_ref, _ = await _seed_linked_momentum_run(state)
+        return judgment_ref
+
+    judgment_ref = asyncio.run(_seed())
+    monkeypatch.setattr(
+        commands,
+        "_build_llm",
+        lambda _settings: FakeLLM(
+            _delegation_payload(
+                suggested_executor_context="operator with native tools",
+                skill_or_tool_hints=["ask the executor runtime what it supports"],
+            )
+        ),
+    )
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "delegate", judgment_ref])
+
+    assert result.exit_code == 0, result.output
+    assert "brief_ref: resident/continuation/momentum/delegations/" in result.output
+    assert "suggested_executor_context: operator with native tools" in result.output
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):

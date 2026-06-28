@@ -15,6 +15,8 @@ from ravn.momentum.models import (
     MomentumArtifactDraft,
     MomentumAttentionDecision,
     MomentumAttentionDecisionDraft,
+    MomentumDelegationBrief,
+    MomentumDelegationBriefDraft,
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
@@ -29,6 +31,7 @@ from ravn.momentum.render import (
     parse_attention_decision,
     render_artifact,
     render_attention_decision,
+    render_delegation_brief,
     render_disposition,
     render_judgment,
     render_packet,
@@ -49,6 +52,7 @@ from ravn.momentum.state import (
 )
 from ravn.momentum.worker import (
     MomentumAttentionWorker,
+    MomentumDelegationWorker,
     MomentumExtractionWorker,
     MomentumReflectionWorker,
 )
@@ -90,6 +94,12 @@ class MomentumAttentionResult:
     decision_ref: str
 
 
+@dataclass(frozen=True)
+class MomentumDelegationResult:
+    brief: MomentumDelegationBrief
+    brief_ref: str
+
+
 class MomentumPipeline:
     def __init__(
         self,
@@ -97,6 +107,7 @@ class MomentumPipeline:
         worker: MomentumExtractionWorker,
         reflection_worker: MomentumReflectionWorker | None = None,
         attention_worker: MomentumAttentionWorker | None = None,
+        delegation_worker: MomentumDelegationWorker | None = None,
         state: ResidentStatePort,
         state_compactor: MomentumStateCompactorPort | None = None,
         now: datetime | None = None,
@@ -105,6 +116,7 @@ class MomentumPipeline:
         self._worker = worker
         self._reflection_worker = reflection_worker
         self._attention_worker = attention_worker
+        self._delegation_worker = delegation_worker
         self._state = state
         self._state_compactor = state_compactor or BoundedMomentumStateCompactor()
         self._now = now
@@ -382,6 +394,43 @@ class MomentumPipeline:
             state_patch_ref=state_patch_ref,
         )
 
+    async def prepare_delegation(
+        self,
+        source_ref: str,
+    ) -> MomentumDelegationResult:
+        if self._delegation_worker is None:
+            raise ValueError("Momentum delegation worker is required")
+
+        try:
+            source = await self._state.read_artifact(source_ref)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Momentum judgment or run not found: {source_ref}") from None
+
+        context = await _load_delegation_context(self._state, source)
+        _, current_state_frame = await _load_current_state(self._state)
+        draft = await self._delegation_worker.prepare(
+            source_ref=context.source_ref,
+            judgment_content=context.judgment_content,
+            run_content=context.run_content,
+            packet_content=context.packet_content,
+            attention_content=context.attention_content,
+            artifact_contents=context.artifact_contents,
+            current_state_frame=current_state_frame,
+        )
+        created_at = self._now or datetime.now(UTC)
+        brief = _materialize_delegation_brief(
+            draft,
+            context=context,
+            created_at=created_at,
+            procedure_name=self._delegation_worker.procedure_name,
+            model_name=self._delegation_worker.model,
+        )
+        brief_ref = await self._state.write_artifact(
+            _delegation_ref(brief),
+            render_delegation_brief(brief),
+        )
+        return MomentumDelegationResult(brief=brief, brief_ref=brief_ref)
+
 
 def _materialize_attention_decision(
     draft: MomentumAttentionDecisionDraft,
@@ -479,11 +528,32 @@ def _attention_decision_ref(decision: MomentumAttentionDecision) -> str:
     return f"resident/continuation/momentum/attention/{decision.decision_id}.md"
 
 
+def _delegation_ref(brief: MomentumDelegationBrief) -> str:
+    return f"resident/continuation/momentum/delegations/{brief.brief_id}.md"
+
+
 @dataclass(frozen=True)
 class _ReflectionContext:
     run_content: str
     judgment_content: str
     artifact_contents: list[str]
+
+
+@dataclass(frozen=True)
+class _DelegationContext:
+    source_ref: str
+    run_ref: str | None
+    run_content: str
+    judgment_ref: str
+    judgment_content: str
+    packet_ref: str | None
+    packet_content: str
+    attention_ref: str | None
+    attention_content: str
+    artifact_refs: list[str]
+    artifact_contents: list[str]
+    selected_signal_id: str | None
+    selected_signal_ref: str | None
 
 
 async def _load_reflection_context(
@@ -520,6 +590,106 @@ async def _load_reflection_context(
     )
 
 
+async def _load_delegation_context(
+    state: ResidentStatePort,
+    source: ResidentMemoryEntry,
+) -> _DelegationContext:
+    source_ref = source.path
+    if source_ref.endswith("/run.md"):
+        return await _delegation_context_from_run(state, source_ref, source.content)
+    if "/judgment/" in source_ref:
+        return await _delegation_context_from_judgment(state, source_ref, source.content)
+    raise ValueError("Momentum delegation source must be a run or judgment artifact")
+
+
+async def _delegation_context_from_run(
+    state: ResidentStatePort,
+    run_ref: str,
+    run_content: str,
+) -> _DelegationContext:
+    judgment_ref = _parse_field(run_content, "judgment_ref")
+    if not judgment_ref:
+        raise ValueError("Momentum run is missing judgment_ref")
+    judgment_content = await _read_required_content(
+        state,
+        judgment_ref,
+        f"Momentum run judgment not found: {judgment_ref}",
+    )
+    return await _delegation_context(
+        state,
+        source_ref=run_ref,
+        run_ref=run_ref,
+        run_content=run_content,
+        judgment_ref=judgment_ref,
+        judgment_content=judgment_content,
+    )
+
+
+async def _delegation_context_from_judgment(
+    state: ResidentStatePort,
+    judgment_ref: str,
+    judgment_content: str,
+) -> _DelegationContext:
+    run_ref = f"{judgment_ref.split('/judgment/', 1)[0]}/run.md"
+    run_content = await _read_optional_content(state, run_ref)
+    return await _delegation_context(
+        state,
+        source_ref=judgment_ref,
+        run_ref=run_ref if run_content else None,
+        run_content=run_content,
+        judgment_ref=judgment_ref,
+        judgment_content=judgment_content,
+    )
+
+
+async def _delegation_context(
+    state: ResidentStatePort,
+    *,
+    source_ref: str,
+    run_ref: str | None,
+    run_content: str,
+    judgment_ref: str,
+    judgment_content: str,
+) -> _DelegationContext:
+    packet_ref = _optional_run_field(run_content, "packet_ref")
+    attention_ref = _optional_run_field(run_content, "attention_ref")
+    artifact_refs = _parse_artifact_refs(run_content)
+    artifact_contents = [
+        content
+        for content in [
+            await _read_optional_content(state, ref)
+            for ref in artifact_refs
+        ]
+        if content
+    ]
+    return _DelegationContext(
+        source_ref=source_ref,
+        run_ref=run_ref,
+        run_content=run_content,
+        judgment_ref=judgment_ref,
+        judgment_content=judgment_content,
+        packet_ref=packet_ref,
+        packet_content=await _read_optional_content(state, packet_ref or ""),
+        attention_ref=attention_ref,
+        attention_content=await _read_optional_content(state, attention_ref or ""),
+        artifact_refs=artifact_refs,
+        artifact_contents=artifact_contents,
+        selected_signal_id=_optional_run_field(run_content, "selected_signal_id"),
+        selected_signal_ref=_optional_run_field(run_content, "selected_signal_ref"),
+    )
+
+
+async def _read_required_content(
+    state: ResidentStatePort,
+    ref: str,
+    error: str,
+) -> str:
+    try:
+        return (await state.read_artifact(ref)).content
+    except FileNotFoundError:
+        raise FileNotFoundError(error) from None
+
+
 async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
     if not ref or ref == "-":
         return ""
@@ -527,6 +697,40 @@ async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
         return (await state.read_artifact(ref)).content
     except FileNotFoundError:
         return ""
+
+
+def _materialize_delegation_brief(
+    draft: MomentumDelegationBriefDraft,
+    *,
+    context: _DelegationContext,
+    created_at: datetime,
+    procedure_name: str,
+    model_name: str,
+) -> MomentumDelegationBrief:
+    _validate_delegation_brief(draft, context)
+    brief_id = f"delegation-{_timestamp_id(created_at)}-{_slug(draft.title) or 'brief'}"
+    return MomentumDelegationBrief(
+        **draft.model_dump(),
+        brief_id=brief_id,
+        source_run_ref=context.run_ref,
+        source_judgment_ref=context.judgment_ref,
+        source_attention_ref=context.attention_ref,
+        source_signal_id=context.selected_signal_id,
+        source_signal_ref=context.selected_signal_ref,
+        created_at=created_at,
+        procedure_name=procedure_name,
+        model_name=model_name,
+    )
+
+
+def _validate_delegation_brief(
+    draft: MomentumDelegationBriefDraft,
+    context: _DelegationContext,
+) -> None:
+    if not context.judgment_ref:
+        raise ValueError("Momentum delegation brief requires a source judgment ref")
+    if draft.execution_performed:
+        raise ValueError("delegation brief execution must be false")
 
 
 async def _load_current_state(state: ResidentStatePort):
@@ -550,6 +754,13 @@ def _parse_field(content: str, field: str) -> str:
         if line.startswith(prefix):
             return line.removeprefix(prefix).strip()
     return ""
+
+
+def _optional_run_field(content: str, field: str) -> str | None:
+    value = _parse_field(content, field)
+    if not value or value == "-":
+        return None
+    return value
 
 
 def _parse_artifact_refs(content: str) -> list[str]:

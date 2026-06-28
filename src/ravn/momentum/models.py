@@ -287,6 +287,46 @@ class MomentumAttentionDecision(MomentumAttentionDecisionDraft):
     model_name: str = Field(min_length=1)
 
 
+class MomentumDelegationBriefDraft(BaseModel):
+    handoff_recommended: bool = True
+    no_handoff_reason: str = ""
+    title: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    desired_outcome: str = Field(min_length=1)
+    bounded_request: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    out_of_scope_boundaries: list[str] = Field(default_factory=list)
+    success_proof: str = Field(min_length=1)
+    expected_return_format: str = Field(min_length=1)
+    suggested_executor_context: str = ""
+    skill_or_tool_hints: list[str] = Field(default_factory=list)
+    capability_gap_notes: list[str] = Field(default_factory=list)
+    handoff_notes: str = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    execution_performed: bool = False
+
+    @field_validator("execution_performed")
+    @classmethod
+    def _execution_was_not_performed(cls, value: bool) -> bool:
+        if value:
+            raise ValueError("delegation brief execution must be false")
+        return value
+
+
+class MomentumDelegationBrief(MomentumDelegationBriefDraft):
+    brief_id: str = Field(min_length=1)
+    source_run_ref: str | None = None
+    source_judgment_ref: str = Field(min_length=1)
+    source_attention_ref: str | None = None
+    source_signal_id: str | None = None
+    source_signal_ref: str | None = None
+    validation_status: Literal["valid"] = "valid"
+    created_at: datetime
+    procedure_name: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+
+
 class MomentumReflectionDraft(BaseModel):
     changed_understanding: str = Field(min_length=1)
     lesson_learned: str = Field(min_length=1)
