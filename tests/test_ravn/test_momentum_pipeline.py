@@ -42,7 +42,10 @@ from ravn.momentum.state import (
     empty_momentum_state,
     render_momentum_state,
 )
-from ravn.ports.resident_signal import ResidentSignalSourcePort
+from ravn.ports.resident_signal import (
+    ResidentSignalCandidateSourcePort,
+    ResidentSignalSourcePort,
+)
 from ravn.resident_inbox import (
     MimirResidentInbox,
     ResidentInboxClassification,
@@ -272,8 +275,14 @@ def test_momentum_package_does_not_import_concrete_signal_storage() -> None:
     forbidden = (
         "ravn.adapters.",
         "ravn.cli",
+        "Claude",
+        "Codex",
         "MimirResidentInbox",
         "GBrainResidentStateAdapter",
+        "GitHub",
+        "Skuld",
+        "Sleipnir",
+        "printer",
         "mimir.adapters",
     )
 
@@ -1493,7 +1502,7 @@ def test_momentum_attend_cli_prints_decision_without_executing(
 ) -> None:
     state = LocalResidentState(tmp_path / "state")
     candidate_ref = "resident/inbox/signals/sig-relevant.md"
-    source = StaticCandidateSource(
+    source: ResidentSignalCandidateSourcePort = StaticCandidateSource(
         [
             (
                 candidate_ref,
