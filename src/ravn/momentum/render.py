@@ -11,6 +11,7 @@ from ravn.domain.valkyrie_contracts import (
 )
 from ravn.momentum.models import (
     MomentumArtifact,
+    MomentumAttentionDecision,
     MomentumExtractionRun,
     MomentumJudgment,
     MomentumJudgmentDisposition,
@@ -158,6 +159,42 @@ def render_disposition(disposition: MomentumJudgmentDisposition) -> str:
     )
 
 
+def render_attention_decision(decision: MomentumAttentionDecision) -> str:
+    selected = decision.selected_signal_ref or decision.selected_signal_id or "-"
+    return (
+        f"# Momentum Attention Decision {decision.decision_id}\n\n"
+        f"- decision_id: {decision.decision_id}\n"
+        f"- selected_signal_id: {decision.selected_signal_id or '-'}\n"
+        f"- selected_signal_ref: {decision.selected_signal_ref or '-'}\n"
+        f"- no_attention_needed: {str(decision.no_attention_needed).lower()}\n"
+        f"- selected: {selected}\n"
+        f"- validation_status: {decision.validation_status}\n"
+        f"- attention_tier: {decision.attention_tier}\n"
+        f"- recommended_next_action: {decision.recommended_next_action}\n"
+        f"- confidence: {decision.confidence}\n"
+        f"- current_state_ref: {decision.current_state_ref or '-'}\n"
+        f"- current_state_present: {str(decision.current_state_present).lower()}\n"
+        f"- candidate_count: {decision.candidate_count}\n"
+        f"- candidate_limit: {decision.candidate_limit}\n"
+        f"- candidates_truncated: {decision.candidates_truncated}\n"
+        f"- procedure: {decision.procedure_name}\n"
+        f"- model: {decision.model_name}\n"
+        f"- created_at: {decision.created_at.isoformat()}\n\n"
+        "## Rationale\n\n"
+        f"{decision.rationale}\n\n"
+        "## Why Attention Now\n\n"
+        f"{decision.why_now}\n\n"
+        "## Selected Tensions\n\n"
+        f"{_bullets_text(decision.selected_tension_ids)}\n\n"
+        "## Evidence Refs\n\n"
+        f"{_bullets_text(decision.evidence_refs)}\n\n"
+        "## Signal Refs\n\n"
+        f"{_bullets_text(decision.signal_refs)}\n\n"
+        "## Source Refs\n\n"
+        f"{_bullets_text(decision.source_refs)}\n"
+    )
+
+
 def render_reflection(reflection: MomentumReflection) -> str:
     return (
         "# Momentum Judgment Reflection\n\n"
@@ -184,7 +221,9 @@ def render_reflection(reflection: MomentumReflection) -> str:
         "## Candidate Reflexes\n\n"
         f"{_bullets_text(reflection.candidate_reflexes)}\n\n"
         "## Candidate Capability Gaps\n\n"
-        f"{_bullets_text(reflection.candidate_capability_gaps)}\n"
+        f"{_bullets_text(reflection.candidate_capability_gaps)}\n\n"
+        "## State Patch\n\n"
+        f"```json\n{reflection.state_patch.model_dump_json(indent=2)}\n```\n"
     )
 
 
@@ -231,6 +270,8 @@ def render_run(run: MomentumExtractionRun) -> str:
         f"- signal_kind: {run.signal_kind}\n"
         f"- source_path: {run.source_path}\n"
         f"- source_sha256: {run.source_sha256}\n"
+        f"- input_state_ref: {run.input_state_ref or '-'}\n"
+        f"- input_state_sha256: {run.input_state_sha256 or '-'}\n"
         f"- procedure: {run.procedure_name}\n"
         f"- model: {run.model_name}\n"
         f"- created_at: {run.created_at.isoformat()}\n"

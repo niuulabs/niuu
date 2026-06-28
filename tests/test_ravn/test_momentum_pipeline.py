@@ -23,9 +23,29 @@ from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
 )
-from ravn.momentum import MomentumExtractionWorker, MomentumPipeline, MomentumReflectionWorker
+from ravn.momentum import (
+    MomentumAttentionWorker,
+    MomentumExtractionWorker,
+    MomentumPipeline,
+    MomentumReflectionWorker,
+)
+from ravn.momentum.models import MomentumStatePatch, MomentumStateTension
 from ravn.momentum.render import judgment_event_payload
-from ravn.ports.resident_signal import ResidentSignalSourcePort
+from ravn.momentum.state import (
+    CURRENT_MOMENTUM_STATE_REF,
+    MAX_BELIEFS,
+    MAX_CANDIDATE_CAPABILITY_GAPS,
+    MAX_CANDIDATE_REFLEXES,
+    MAX_OPEN_TENSIONS,
+    BoundedMomentumStateCompactor,
+    apply_state_patch,
+    empty_momentum_state,
+    render_momentum_state,
+)
+from ravn.ports.resident_signal import (
+    ResidentSignalCandidateSourcePort,
+    ResidentSignalSourcePort,
+)
 from ravn.resident_inbox import (
     MimirResidentInbox,
     ResidentInboxClassification,
@@ -72,8 +92,91 @@ class RecordingGBrainState(GBrainResidentStateAdapter):
         self.put_pages.append((ref, title, content))
 
 
+class RecordingStateCompactor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def compact(self, state):
+        self.calls += 1
+        return state.model_copy(
+            update={"beliefs": [*state.beliefs, "compactor touched state"]}
+        )
+
+
+class StaticCandidateSource:
+    def __init__(self, candidates: list[tuple[str, ResidentInboxSignal]]) -> None:
+        self.candidates = candidates
+        self.calls: list[dict] = []
+
+    async def list_candidates(
+        self,
+        *,
+        limit: int,
+        status: str = "",
+        classification: str = "",
+    ) -> list[tuple[str, ResidentInboxSignal]]:
+        self.calls.append(
+            {"limit": limit, "status": status, "classification": classification}
+        )
+        items = [
+            item
+            for item in self.candidates
+            if (not status or item[1].status == status)
+            and (not classification or item[1].classification == classification)
+        ]
+        return items[:limit]
+
+
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
+
+
+def _candidate(signal_id: str, summary: str, content: str) -> ResidentInboxSignal:
+    return ResidentInboxSignal(
+        id=signal_id,
+        source="test:resident",
+        kind="operator.directed_message",
+        summary=summary,
+        payload={"content": content},
+        raw_ref=f"resident/inbox/signals/{signal_id}.md",
+        classification=ResidentInboxClassification.IDEA.value,
+        evidence_refs=(f"evidence:{signal_id}",),
+        created_at=datetime(2026, 6, 27, 12, tzinfo=UTC),
+    )
+
+
+def _attention_payload(
+    *,
+    selected_id: str | None = "sig-relevant",
+    selected_ref: str | None = "resident/inbox/signals/sig-relevant.md",
+    no_attention_needed: bool = False,
+) -> dict:
+    return {
+        "selected_signal_id": selected_id,
+        "selected_signal_ref": selected_ref,
+        "no_attention_needed": no_attention_needed,
+        "selected_tension_ids": (
+            [] if no_attention_needed else ["tension-carry-reflected-state"]
+        ),
+        "attention_tier": "present",
+        "rationale": (
+            "The selected signal directly answers the current open tension."
+            if not no_attention_needed
+            else "No candidate matches the current resident state strongly enough."
+        ),
+        "why_now": (
+            "The current state names this tension as open and the signal supplies evidence."
+            if not no_attention_needed
+            else "The candidates do not change current Momentum understanding."
+        ),
+        "evidence_refs": ["resident/continuation/momentum/state/current.md"],
+        "signal_refs": [selected_ref or selected_id or "none"],
+        "recommended_next_action": (
+            "no_action" if no_attention_needed else "extract_selected_signal"
+        ),
+        "confidence": 0.82,
+        "source_refs": ["resident/continuation/momentum/state/current.md"],
+    }
 
 
 @pytest.mark.asyncio
@@ -114,6 +217,31 @@ async def test_mimir_resident_inbox_signal_source_loads_signal_by_id_and_ref(tmp
 
 
 @pytest.mark.asyncio
+async def test_mimir_resident_inbox_signal_source_lists_attention_candidates(
+    tmp_path: Path,
+) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    idea = _candidate("sig-idea", "Momentum idea", "Idea content.")
+    risk = _candidate("sig-risk", "Momentum risk", "Risk content.").with_updates(
+        classification=ResidentInboxClassification.RISK.value
+    )
+    await inbox.write_signal(idea)
+    await inbox.write_signal(risk)
+
+    candidates = await MimirResidentInboxSignalSource(mimir).list_candidates(
+        limit=5,
+        status="new",
+        classification=ResidentInboxClassification.RISK.value,
+    )
+
+    assert [(ref.endswith("-sig-risk.md"), signal.id) for ref, signal in candidates] == [
+        (True, "sig-risk")
+    ]
+    assert candidates[0][0].endswith("-sig-risk.md")
+
+
+@pytest.mark.asyncio
 async def test_pipeline_only_needs_signal_source_port_and_normalized_signal(tmp_path: Path):
     class StaticSignalSource:
         async def load_signal(self, ref_or_id: str) -> ResidentInboxSignal:
@@ -147,8 +275,14 @@ def test_momentum_package_does_not_import_concrete_signal_storage() -> None:
     forbidden = (
         "ravn.adapters.",
         "ravn.cli",
+        "Claude",
+        "Codex",
         "MimirResidentInbox",
         "GBrainResidentStateAdapter",
+        "GitHub",
+        "Skuld",
+        "Sleipnir",
+        "printer",
         "mimir.adapters",
     )
 
@@ -201,6 +335,13 @@ async def test_momentum_pipeline_persists_typed_artifacts_with_selected_state(tm
     assert "- event_type: valkyrie.judgment.proposed" in judgment
     assert "## Tension That Matters" in judgment
     assert "Signal compression is diluting resident understanding." in judgment
+    current_state = (tmp_path / "state" / CURRENT_MOMENTUM_STATE_REF).read_text(
+        encoding="utf-8"
+    )
+    state_patch = (tmp_path / "state" / result.state_patch_ref).read_text(encoding="utf-8")
+    assert "Signal compression is diluting resident understanding." in current_state
+    assert "- status: pending" in current_state
+    assert result.judgment_ref in state_patch
 
 
 @pytest.mark.asyncio
@@ -276,6 +417,406 @@ async def test_judgment_payload_validates_against_valkyrie_contract(tmp_path: Pa
     judgment_payload = judgment_event_payload(result.extraction.judgment)
     assert judgment_payload["tier"] == "silent"
     assert validate_valkyrie_outcome(VALKYRIE_JUDGMENT_PROPOSED, judgment_payload) == []
+
+
+@pytest.mark.asyncio
+async def test_current_momentum_state_is_absent_on_first_run_then_persisted(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="state-first",
+    ).extract_signal(await _markdown_signal(source))
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "## Current Momentum state\n\n(none)" in frame
+    current = await state.read_artifact(result.current_state_ref)
+    run = await state.read_artifact(result.run_ref)
+    assert result.current_state_ref == CURRENT_MOMENTUM_STATE_REF
+    assert "- input_state_ref: -" in run.content
+    assert "- input_state_sha256: -" in run.content
+    assert "## Open Tensions" in current.content
+    assert "Signal compression is diluting resident understanding." in current.content
+    assert "tension-attend-to-momentum-dilution" in current.content
+
+
+@pytest.mark.asyncio
+async def test_current_momentum_state_is_included_on_later_runs(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="state-before",
+    ).extract_signal(await _markdown_signal(source))
+    next_llm = FakeLLM(_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(next_llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+        run_id="state-after",
+    ).extract_signal(await _markdown_signal(source))
+
+    frame = next_llm.calls[0]["messages"][0]["content"]
+    run = await state.read_artifact(result.run_ref)
+    assert "## Current Momentum state" in frame
+    assert "# Current Momentum Resident State" in frame
+    assert "Signal compression is diluting resident understanding." in frame
+    assert f"- input_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in run.content
+    assert "- input_state_sha256: -" not in run.content
+
+
+def test_current_momentum_state_compacts_old_entries() -> None:
+    created_at = datetime(2026, 6, 27, 12, tzinfo=UTC)
+    patch = MomentumStatePatch(
+        patch_id="patch-compact",
+        created_at=created_at,
+        beliefs=[f"belief {index}" for index in range(MAX_BELIEFS + 2)],
+        candidate_reflexes=[
+            f"Candidate: reflex {index}" for index in range(MAX_CANDIDATE_REFLEXES + 1)
+        ],
+        candidate_capability_gaps=[
+            f"Candidate: gap {index}" for index in range(MAX_CANDIDATE_CAPABILITY_GAPS + 1)
+        ],
+        open_tensions=[
+            MomentumStateTension(
+                tension_id=f"tension-{index}",
+                title=f"Tension {index}",
+                summary=f"Summary {index}",
+                updated_at=datetime(2026, 6, 27, 12, index, tzinfo=UTC),
+            )
+            for index in range(MAX_OPEN_TENSIONS + 1)
+        ],
+    )
+
+    state = BoundedMomentumStateCompactor().compact(
+        apply_state_patch(empty_momentum_state(updated_at=created_at), patch)
+    )
+    rendered = render_momentum_state(state)
+
+    assert state.beliefs == [f"belief {index}" for index in range(2, MAX_BELIEFS + 2)]
+    assert [item.tension_id for item in state.open_tensions] == [
+        f"tension-{index}" for index in range(1, MAX_OPEN_TENSIONS + 1)
+    ]
+    assert "belief 0" not in rendered
+    assert "tension-0" not in rendered
+    assert "Candidate Reflexes (candidate-only)" in rendered
+    assert "Candidate Capability Gaps (candidate-only)" in rendered
+    assert "Candidate: reflex 0" not in rendered
+    assert "Candidate: gap 0" not in rendered
+    assert "## State Compaction" in rendered
+    assert "- beliefs_truncated: 2 older entries omitted" in rendered
+    assert "- open_tensions_truncated: 1 older entry omitted" in rendered
+    assert "- candidate_reflexes_truncated: 1 older entry omitted" in rendered
+    assert "- candidate_capability_gaps_truncated: 1 older entry omitted" in rendered
+
+
+@pytest.mark.asyncio
+async def test_momentum_pipeline_uses_injected_state_compactor(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    compactor = RecordingStateCompactor()
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        state=state,
+        state_compactor=compactor,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="inject-compactor",
+    ).extract_signal(await _markdown_signal(source))
+
+    current = await state.read_artifact(result.current_state_ref)
+    assert compactor.calls == 1
+    assert "compactor touched state" in current.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_reads_current_state_and_persists_decision(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    current = empty_momentum_state(updated_at=datetime(2026, 6, 27, 12, tzinfo=UTC))
+    current = current.model_copy(
+        update={
+            "open_tensions": [
+                MomentumStateTension(
+                    tension_id="tension-carry-reflected-state",
+                    title="Carry reflected state",
+                    summary="Future attention should prefer signals that resolve reflected state.",
+                    status="open",
+                )
+            ]
+        }
+    )
+    await state.write_artifact(CURRENT_MOMENTUM_STATE_REF, render_momentum_state(current))
+    candidates = [
+        (
+            "resident/inbox/signals/sig-distractor.md",
+            _candidate("sig-distractor", "Unrelated shell preference", "Use fish later."),
+        ),
+        (
+            "resident/inbox/signals/sig-relevant.md",
+            _candidate(
+                "sig-relevant",
+                "Evidence about reflected state handoff",
+                "The reflected Momentum state is visible in the next signal.",
+            ),
+        ),
+    ]
+    llm = FakeLLM(_attention_payload())
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(candidates, limit=5)
+
+    assert result.decision_ref.startswith("resident/continuation/momentum/attention/")
+    assert result.decision.selected_signal_id == "sig-relevant"
+    assert result.decision.current_state_present is True
+    assert "Carry reflected state" in llm.calls[0]["messages"][0]["content"]
+    assert "sig-distractor" in llm.calls[0]["messages"][0]["content"]
+    assert "sig-relevant" in llm.calls[0]["messages"][0]["content"]
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "## Rationale" in artifact.content
+    assert "selected_signal_id: sig-relevant" in artifact.content
+    assert "validation_status: valid" in artifact.content
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_without_current_state_records_absence(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id=None,
+            selected_ref=None,
+            no_attention_needed=True,
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-quiet.md",
+                _candidate("sig-quiet", "Routine status", "Nothing changed."),
+            )
+        ],
+        limit=5,
+    )
+
+    assert result.decision.no_attention_needed is True
+    assert result.decision.current_state_present is False
+    assert "## Current Momentum state\n\n(none)" in llm.calls[0]["messages"][0]["content"]
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "current_state_present: false" in artifact.content
+    assert "no_attention_needed: true" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_valid_no_attention_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id=None,
+            selected_ref=None,
+            no_attention_needed=True,
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-quiet.md",
+                _candidate("sig-quiet", "Routine status", "Nothing changed."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.no_attention_needed is True
+    assert result.decision.recommended_next_action == "no_action"
+    assert "recommended_next_action: no_action" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_unknown_selected_signal(tmp_path: Path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id="sig-missing",
+        selected_ref="resident/inbox/signals/sig-missing.md",
+    )
+
+    with pytest.raises(ValueError, match="selected signal id is not a candidate"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-known.md",
+                    _candidate("sig-known", "Known signal", "Known content."),
+                )
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_mismatched_selected_id_ref(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id="sig-one",
+        selected_ref="resident/inbox/signals/sig-two.md",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="selected signal id/ref do not refer to the same candidate",
+    ):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-one.md",
+                    _candidate("sig-one", "First signal", "First content."),
+                ),
+                (
+                    "resident/inbox/signals/sig-two.md",
+                    _candidate("sig-two", "Second signal", "Second content."),
+                ),
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_rejects_no_attention_with_extract_action(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    payload = _attention_payload(
+        selected_id=None,
+        selected_ref=None,
+        no_attention_needed=True,
+    )
+    payload["recommended_next_action"] = "extract_selected_signal"
+
+    with pytest.raises(ValueError, match="no_attention_needed requires no_action"):
+        await MomentumPipeline(
+            worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+            attention_worker=MomentumAttentionWorker(FakeLLM(payload), model="fake-model"),
+            state=state,
+        ).attend(
+            [
+                (
+                    "resident/inbox/signals/sig-quiet.md",
+                    _candidate("sig-quiet", "Routine status", "Nothing changed."),
+                )
+            ],
+            limit=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_records_candidate_truncation(tmp_path: Path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    candidates = [
+        (
+            f"resident/inbox/signals/sig-{index}.md",
+            _candidate(f"sig-{index}", f"Signal {index}", f"Content {index}"),
+        )
+        for index in range(3)
+    ]
+    llm = FakeLLM(
+        _attention_payload(
+            selected_id="sig-1",
+            selected_ref="resident/inbox/signals/sig-1.md",
+        )
+    )
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(candidates, limit=2)
+
+    frame = llm.calls[0]["messages"][0]["content"]
+    assert "3 candidate(s) available; limit 2; 1 truncated." in frame
+    assert "sig-2" not in frame
+    assert result.decision.candidates_truncated == 1
+    artifact = await state.read_artifact(result.decision_ref)
+    assert "candidates_truncated: 1" in artifact.content
+
+
+@pytest.mark.asyncio
+async def test_momentum_attention_valid_selected_signal_decision_persists(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        attention_worker=MomentumAttentionWorker(
+            FakeLLM(
+                _attention_payload(
+                    selected_id="sig-relevant",
+                    selected_ref="resident/inbox/signals/sig-relevant.md",
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 13, tzinfo=UTC),
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-relevant.md",
+                _candidate("sig-relevant", "Relevant signal", "Relevant content."),
+            )
+        ],
+        limit=5,
+    )
+
+    artifact = await state.read_artifact(result.decision_ref)
+    assert result.decision.selected_signal_id == "sig-relevant"
+    assert result.decision.selected_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert "selected_signal_id: sig-relevant" in artifact.content
 
 
 @pytest.mark.asyncio
@@ -443,8 +984,13 @@ async def test_judgment_disposition_produces_persisted_reflection(
     assert result.reflection.outcome == outcome
     disposition = await state.read_artifact(result.disposition_ref)
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
+    state_patch = await state.read_artifact(result.state_patch_ref)
     assert f"- outcome: {outcome}" in disposition.content
     assert f"Lesson for {outcome}" in reflection.content
+    assert f"Lesson for {outcome}" in current_state.content
+    assert result.disposition_ref in state_patch.content
+    assert result.reflection_ref in state_patch.content
     assert "Original Judgment Useful" in reflection.content
 
 
@@ -503,7 +1049,9 @@ async def test_wrong_disposition_persists_model_authored_correction(tmp_path: Pa
     )
 
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
     assert correction in reflection.content
+    assert correction in current_state.content
     assert correction not in llm.calls[1]["messages"][0]["content"]
 
 
@@ -588,12 +1136,173 @@ async def test_reflex_and_capability_gap_outputs_remain_candidates(tmp_path: Pat
     )
 
     reflection = await state.read_artifact(result.reflection_ref)
+    current_state = await state.read_artifact(result.current_state_ref)
     refs = await state.list_refs("resident/continuation/momentum")
     assert "- candidate_reflex_status: candidate_only" in reflection.content
     assert "- candidate_capability_gap_status: candidate_only" in reflection.content
     assert "Candidate Reflexes" in reflection.content
     assert "Candidate Capability Gaps" in reflection.content
+    assert "Candidate Reflexes (candidate-only)" in current_state.content
+    assert "Candidate Capability Gaps (candidate-only)" in current_state.content
+    assert "Candidate: ask for disposition after action." in current_state.content
+    assert "Candidate: no automatic outcome feed." in current_state.content
     assert all("/reflex" not in ref and "/capabilit" not in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_confirm_tension(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "confirmed_tension_ids": ["tension-attend-to-momentum-dilution"],
+                    "recent_lessons": ["Confirmed state patch lesson."],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="confirm-tension",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    reflection_frame = llm.calls[1]["messages"][0]["content"]
+    assert "## Current Momentum state" in reflection_frame
+    assert "Signal compression is diluting resident understanding." in reflection_frame
+    assert "- status: confirmed" in current_state.content
+    assert "Confirmed state patch lesson." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_change_existing_tension_with_partial_update(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "changed_tensions": [
+                        {
+                            "tension_id": "tension-attend-to-momentum-dilution",
+                            "status": "changed",
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="partial-change",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    assert "- status: changed" in current_state.content
+    assert "Signal compression is diluting resident understanding." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_reflection_state_patch_can_change_tension_with_id_shorthand(
+    tmp_path: Path,
+):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM(
+        [
+            _payload(),
+            _reflection_payload(
+                "accepted",
+                state_patch={
+                    "changed_tensions": ["tension-attend-to-momentum-dilution"],
+                },
+            ),
+        ]
+    )
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="id-change",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+
+    result = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+
+    current_state = await state.read_artifact(result.current_state_ref)
+    assert "- status: changed" in current_state.content
+    assert "Signal compression is diluting resident understanding." in current_state.content
+
+
+@pytest.mark.asyncio
+async def test_state_updates_do_not_mutate_historical_artifacts(tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    llm = FakeLLM([_payload(), _reflection_payload("accepted"), _payload()])
+    pipeline = MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+        run_id="immutable-history",
+    )
+    extraction = await pipeline.extract_signal(await _markdown_signal(source))
+    reflection = await pipeline.reflect_judgment(
+        extraction.judgment_ref,
+        outcome="accepted",
+        note="The judgment helped.",
+    )
+    judgment_before = (await state.read_artifact(extraction.judgment_ref)).content
+    disposition_before = (await state.read_artifact(reflection.disposition_ref)).content
+    reflection_before = (await state.read_artifact(reflection.reflection_ref)).content
+
+    await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 12, 1, tzinfo=UTC),
+        run_id="immutable-history-next",
+    ).extract_signal(await _markdown_signal(source))
+
+    assert (await state.read_artifact(extraction.judgment_ref)).content == judgment_before
+    assert (await state.read_artifact(reflection.disposition_ref)).content == disposition_before
+    assert (await state.read_artifact(reflection.reflection_ref)).content == reflection_before
 
 
 @pytest.mark.asyncio
@@ -731,8 +1440,10 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_payload()))
 
+    state = LocalResidentState(tmp_path / "state")
+
     async def _state(_settings, _workspace):
-        return LocalResidentState(tmp_path / "state")
+        return state
 
     monkeypatch.setattr(commands, "_build_resident_state", _state)
 
@@ -747,6 +1458,10 @@ def test_momentum_extract_cli_runs_pipeline(monkeypatch, tmp_path: Path):
         in result.output
     )
     assert "provenance:  verified" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
+    current_state = asyncio.run(state.read_artifact(CURRENT_MOMENTUM_STATE_REF))
+    assert "Signal compression is diluting resident understanding." in current_state.content
 
 
 def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
@@ -778,6 +1493,60 @@ def test_momentum_inbox_cli_runs_pipeline(monkeypatch, tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "judgment_ref:resident/momentum/runs/" in result.output
     assert "packet_ref:  resident/momentum/runs/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+
+
+def test_momentum_attend_cli_prints_decision_without_executing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    candidate_ref = "resident/inbox/signals/sig-relevant.md"
+    source: ResidentSignalCandidateSourcePort = StaticCandidateSource(
+        [
+            (
+                candidate_ref,
+                _candidate(
+                    "sig-relevant",
+                    "Evidence about reflected state handoff",
+                    "The reflected state is visible.",
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(commands, "_build_resident_inbox_signal_source", lambda _s: source)
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: FakeLLM(_attention_payload()))
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "attend", "--limit", "1", "--status", "new"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "attention_ref: resident/continuation/momentum/attention/" in result.output
+    assert "selected_signal_id: sig-relevant" in result.output
+    assert f"selected_signal_ref: {candidate_ref}" in result.output
+    assert "attention_tier: present" in result.output
+    assert "recommended_next_action: extract_selected_signal" in result.output
+    assert "confidence: 0.82" in result.output
+    assert "run_ref:" not in result.output
+    assert source.calls == [{"limit": 2, "status": "new", "classification": ""}]
+    assert asyncio.run(state.list_refs("resident/momentum/runs")) == []
+
+
+def test_momentum_attend_cli_empty_candidates_fails(monkeypatch, tmp_path: Path) -> None:
+    source = StaticCandidateSource([])
+    monkeypatch.setattr(commands, "_build_resident_inbox_signal_source", lambda _s: source)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "attend", "--limit", "1"])
+
+    assert result.exit_code == 1
+    assert "No resident signal candidates found." in result.output
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):
@@ -818,6 +1587,48 @@ def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tm
     assert result.exit_code == 0, result.output
     assert "disposition_ref: resident/continuation/momentum/runs/cli-reflect/" in result.output
     assert "reflection_ref:  resident/continuation/momentum/runs/cli-reflect/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
+    current_state = asyncio.run(state.read_artifact(CURRENT_MOMENTUM_STATE_REF))
+    assert "Lesson for accepted" in current_state.content
+
+
+def test_later_momentum_extract_cli_includes_current_state(monkeypatch, tmp_path: Path):
+    source = tmp_path / "notes.md"
+    source.write_text("# Messy notes\n\nImportant living idea.", encoding="utf-8")
+    state = LocalResidentState(tmp_path / "state")
+    first_llm = FakeLLM([_payload(), _reflection_payload("accepted")])
+
+    async def _seed() -> None:
+        pipeline = MomentumPipeline(
+            worker=MomentumExtractionWorker(first_llm, model="fake-model"),
+            reflection_worker=MomentumReflectionWorker(first_llm, model="fake-model"),
+            state=state,
+            now=datetime(2026, 6, 27, 12, tzinfo=UTC),
+            run_id="cli-current-state",
+        )
+        extraction = await pipeline.extract_signal(await _markdown_signal(source))
+        await pipeline.reflect_judgment(
+            extraction.judgment_ref,
+            outcome="accepted",
+            note="The judgment helped.",
+        )
+
+    asyncio.run(_seed())
+    next_llm = FakeLLM(_payload())
+    monkeypatch.setattr(commands, "_build_llm", lambda _settings: next_llm)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "extract", str(source)])
+
+    assert result.exit_code == 0, result.output
+    frame = next_llm.calls[0]["messages"][0]["content"]
+    assert "## Current Momentum state" in frame
+    assert "Lesson for accepted" in frame
 
 
 def test_momentum_reflect_cli_rejects_invalid_outcome(monkeypatch, tmp_path: Path):
@@ -946,8 +1757,9 @@ def _reflection_payload(
     outcome: str = "accepted",
     *,
     correction: str = "Remember to compare the judgment with the outcome.",
+    state_patch: dict | None = None,
 ) -> dict:
-    return {
+    payload = {
         "changed_understanding": f"The {outcome} outcome updates resident memory.",
         "lesson_learned": f"Lesson for {outcome}",
         "original_judgment_useful": outcome != "wrong",
@@ -956,6 +1768,9 @@ def _reflection_payload(
         "candidate_reflexes": ["Candidate: ask for disposition after action."],
         "candidate_capability_gaps": ["Candidate: no automatic outcome feed."],
     }
+    if state_patch is not None:
+        payload["state_patch"] = state_patch
+    return payload
 
 
 def _vision_payload() -> dict:

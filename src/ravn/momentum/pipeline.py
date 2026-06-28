@@ -13,6 +13,8 @@ from ravn.momentum.models import (
     DispositionOutcome,
     MomentumArtifact,
     MomentumArtifactDraft,
+    MomentumAttentionDecision,
+    MomentumAttentionDecisionDraft,
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
@@ -25,6 +27,7 @@ from ravn.momentum.models import (
 )
 from ravn.momentum.render import (
     render_artifact,
+    render_attention_decision,
     render_disposition,
     render_judgment,
     render_packet,
@@ -32,7 +35,23 @@ from ravn.momentum.render import (
     render_run,
 )
 from ravn.momentum.source import SourceDocument
-from ravn.momentum.worker import MomentumExtractionWorker, MomentumReflectionWorker
+from ravn.momentum.state import (
+    CURRENT_MOMENTUM_STATE_REF,
+    BoundedMomentumStateCompactor,
+    apply_state_patch,
+    empty_momentum_state,
+    extraction_state_patch,
+    parse_momentum_state,
+    reflection_state_patch,
+    render_momentum_state,
+    render_state_patch,
+)
+from ravn.momentum.worker import (
+    MomentumAttentionWorker,
+    MomentumExtractionWorker,
+    MomentumReflectionWorker,
+)
+from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
@@ -45,6 +64,8 @@ class MomentumPipelineResult:
     artifact_refs: list[str]
     judgment_ref: str
     packet_ref: str | None
+    current_state_ref: str
+    state_patch_ref: str
 
     @property
     def provenance_fully_verified(self) -> bool:
@@ -57,6 +78,14 @@ class MomentumReflectionResult:
     reflection: MomentumReflection
     disposition_ref: str
     reflection_ref: str
+    current_state_ref: str
+    state_patch_ref: str
+
+
+@dataclass(frozen=True)
+class MomentumAttentionResult:
+    decision: MomentumAttentionDecision
+    decision_ref: str
 
 
 class MomentumPipeline:
@@ -65,15 +94,63 @@ class MomentumPipeline:
         *,
         worker: MomentumExtractionWorker,
         reflection_worker: MomentumReflectionWorker | None = None,
+        attention_worker: MomentumAttentionWorker | None = None,
         state: ResidentStatePort,
+        state_compactor: MomentumStateCompactorPort | None = None,
         now: datetime | None = None,
         run_id: str | None = None,
     ) -> None:
         self._worker = worker
         self._reflection_worker = reflection_worker
+        self._attention_worker = attention_worker
         self._state = state
+        self._state_compactor = state_compactor or BoundedMomentumStateCompactor()
         self._now = now
         self._run_id = run_id
+
+    async def attend(
+        self,
+        candidates: list[tuple[str, ResidentInboxSignal]],
+        *,
+        limit: int,
+    ) -> MomentumAttentionResult:
+        if self._attention_worker is None:
+            raise ValueError("Momentum attention worker is required")
+        if limit < 1:
+            raise ValueError("candidate limit must be at least 1")
+        if not candidates:
+            raise ValueError("no resident signal candidates found")
+
+        created_at = self._now or datetime.now(UTC)
+        bounded = candidates[:limit]
+        truncated = max(0, len(candidates) - len(bounded))
+        memory = await self._state.recall(
+            "Niuu Momentum Engine attention and resident signal selection",
+            limit=5,
+        )
+        current_state, current_state_frame = await _load_current_state(self._state)
+        draft = await self._attention_worker.attend(
+            memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
+            candidate_frame=_candidate_frame(bounded),
+            truncation_note=_truncation_note(len(candidates), limit, truncated),
+        )
+        decision = _materialize_attention_decision(
+            draft,
+            candidates=bounded,
+            candidate_count=len(candidates),
+            candidate_limit=limit,
+            candidates_truncated=truncated,
+            current_state_present=current_state is not None,
+            created_at=created_at,
+            procedure_name=self._attention_worker.procedure_name,
+            model_name=self._attention_worker.model,
+        )
+        ref = await self._state.write_artifact(
+            _attention_decision_ref(decision),
+            render_attention_decision(decision),
+        )
+        return MomentumAttentionResult(decision=decision, decision_ref=ref)
 
     async def extract_signal(self, signal: ResidentInboxSignal) -> MomentumPipelineResult:
         return await self._extract_text(
@@ -93,9 +170,16 @@ class MomentumPipeline:
             "Niuu Momentum Engine resident understanding and constraints",
             limit=5,
         )
+        current_state, current_state_frame = await _load_current_state(self._state)
+        input_state_sha = (
+            hashlib.sha256(current_state_frame.encode("utf-8")).hexdigest()
+            if current_state_frame
+            else None
+        )
         draft = await self._worker.extract(
             markdown,
             memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
         )
         created_at = self._now or datetime.now(UTC)
         run_id = self._run_id or f"momentum-{created_at:%Y%m%dT%H%M%SZ}-{source_sha[:8]}"
@@ -130,16 +214,45 @@ class MomentumPipeline:
                 "artifact_refs": artifact_refs,
                 "judgment_ref": judgment_ref,
                 "packet_ref": packet_ref,
+                "input_state_ref": CURRENT_MOMENTUM_STATE_REF if current_state_frame else None,
+                "input_state_sha256": input_state_sha,
             }
         )
         run_ref = await self._state.write_artifact(_run_ref(run), render_run(run))
         extraction = extraction.model_copy(update={"run": run})
+        state_patch = extraction_state_patch(
+            patch_id=f"patch-{_timestamp_id(created_at)}-{run_id}-extract",
+            created_at=created_at,
+            belief_refs=artifact_refs,
+            judgment_title=extraction.judgment.title,
+            tension=extraction.judgment.tension_that_matters,
+            evidence_refs=[
+                ref
+                for ref in [*artifact_refs, judgment_ref, packet_ref]
+                if ref
+            ],
+            source_refs=[run_ref, judgment_ref],
+            beliefs=extraction.resident_patch.beliefs,
+            constraints=extraction.resident_patch.constraints,
+            corrections=extraction.resident_patch.corrections,
+        )
+        current_state = current_state or empty_momentum_state(updated_at=created_at)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
+        state_patch_ref = await _write_state_patch(self._state, state_patch)
+        current_state_ref = await self._state.write_artifact(
+            CURRENT_MOMENTUM_STATE_REF,
+            render_momentum_state(updated_state),
+        )
         return MomentumPipelineResult(
             extraction=extraction,
             run_ref=run_ref,
             artifact_refs=artifact_refs,
             judgment_ref=judgment_ref,
             packet_ref=packet_ref,
+            current_state_ref=current_state_ref,
+            state_patch_ref=state_patch_ref,
         )
 
     async def reflect_judgment(
@@ -174,6 +287,7 @@ class MomentumPipeline:
             "Niuu Momentum Engine judgment dispositions and reflections",
             limit=5,
         )
+        current_state, current_state_frame = await _load_current_state(self._state)
         draft = await self._reflection_worker.reflect(
             target_ref=disposition.target_ref,
             target_content=target.content,
@@ -182,6 +296,7 @@ class MomentumPipeline:
             artifact_contents=context.artifact_contents,
             disposition=disposition,
             memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
         )
         reflection = MomentumReflection(
             **draft.model_dump(),
@@ -198,12 +313,119 @@ class MomentumPipeline:
             f"{base_ref}/reflections/{reflection.reflection_id}.md",
             render_reflection(reflection),
         )
+        state_patch = reflection_state_patch(
+            patch_id=f"patch-{_timestamp_id(created_at)}-{reflection.reflection_id}",
+            created_at=created_at,
+            source_refs=[disposition.target_ref, disposition_ref, reflection_ref],
+            draft=draft.state_patch,
+            lesson_learned=reflection.lesson_learned,
+            remember_next_time=reflection.remember_next_time,
+            corrections=reflection.resident_corrections,
+            candidate_reflexes=reflection.candidate_reflexes,
+            candidate_capability_gaps=reflection.candidate_capability_gaps,
+        )
+        current_state = current_state or empty_momentum_state(updated_at=created_at)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
+        state_patch_ref = await _write_state_patch(self._state, state_patch)
+        current_state_ref = await self._state.write_artifact(
+            CURRENT_MOMENTUM_STATE_REF,
+            render_momentum_state(updated_state),
+        )
         return MomentumReflectionResult(
             disposition=disposition,
             reflection=reflection,
             disposition_ref=disposition_ref,
             reflection_ref=reflection_ref,
+            current_state_ref=current_state_ref,
+            state_patch_ref=state_patch_ref,
         )
+
+
+def _materialize_attention_decision(
+    draft: MomentumAttentionDecisionDraft,
+    *,
+    candidates: list[tuple[str, ResidentInboxSignal]],
+    candidate_count: int,
+    candidate_limit: int,
+    candidates_truncated: int,
+    current_state_present: bool,
+    created_at: datetime,
+    procedure_name: str,
+    model_name: str,
+) -> MomentumAttentionDecision:
+    _validate_attention_decision(draft, candidates)
+    selected = draft.selected_signal_ref or draft.selected_signal_id or "none"
+    return MomentumAttentionDecision(
+        **draft.model_dump(),
+        decision_id=f"attention-{_timestamp_id(created_at)}-{_slug(selected) or 'none'}",
+        created_at=created_at,
+        current_state_ref=CURRENT_MOMENTUM_STATE_REF if current_state_present else None,
+        current_state_present=current_state_present,
+        candidate_count=candidate_count,
+        candidate_limit=candidate_limit,
+        candidates_truncated=candidates_truncated,
+        procedure_name=procedure_name,
+        model_name=model_name,
+    )
+
+
+def _validate_attention_decision(
+    draft: MomentumAttentionDecisionDraft,
+    candidates: list[tuple[str, ResidentInboxSignal]],
+) -> None:
+    candidate_refs = {ref for ref, _ in candidates}
+    candidate_ids = {signal.id for _, signal in candidates}
+    candidate_pairs = {(ref, signal.id) for ref, signal in candidates}
+    if draft.no_attention_needed:
+        if draft.recommended_next_action != "no_action":
+            raise ValueError("no_attention_needed requires no_action")
+        if draft.selected_signal_id or draft.selected_signal_ref:
+            raise ValueError("no_attention_needed cannot select a signal")
+        return
+    if not draft.selected_signal_id and not draft.selected_signal_ref:
+        raise ValueError("attention decision must select a signal or no_attention_needed")
+    if draft.selected_signal_id and draft.selected_signal_id not in candidate_ids:
+        raise ValueError(f"selected signal id is not a candidate: {draft.selected_signal_id}")
+    if draft.selected_signal_ref and draft.selected_signal_ref not in candidate_refs:
+        raise ValueError(f"selected signal ref is not a candidate: {draft.selected_signal_ref}")
+    if (
+        draft.selected_signal_id
+        and draft.selected_signal_ref
+        and (draft.selected_signal_ref, draft.selected_signal_id) not in candidate_pairs
+    ):
+        raise ValueError("selected signal id/ref do not refer to the same candidate")
+
+
+def _candidate_frame(candidates: list[tuple[str, ResidentInboxSignal]]) -> str:
+    sections: list[str] = []
+    for ref, signal in candidates:
+        sections.append(
+            "### Candidate\n\n"
+            f"- ref: {ref}\n"
+            f"- id: {signal.id}\n"
+            f"- source: {signal.source}\n"
+            f"- kind: {signal.kind}\n"
+            f"- classification: {signal.classification}\n"
+            f"- status: {signal.status}\n"
+            f"- summary: {signal.summary}\n"
+            f"- evidence_refs: {', '.join(signal.evidence_refs) or '-'}\n"
+            f"- raw_ref: {signal.raw_ref or '-'}\n\n"
+            "#### Signal Markdown\n\n"
+            f"{_source_text(signal)}"
+        )
+    return "\n\n---\n\n".join(sections)
+
+
+def _truncation_note(candidate_count: int, limit: int, truncated: int) -> str:
+    if not truncated:
+        return f"{candidate_count} candidate(s) included; limit {limit}; none truncated."
+    return f"{candidate_count} candidate(s) available; limit {limit}; {truncated} truncated."
+
+
+def _attention_decision_ref(decision: MomentumAttentionDecision) -> str:
+    return f"resident/continuation/momentum/attention/{decision.decision_id}.md"
 
 
 @dataclass(frozen=True)
@@ -254,6 +476,21 @@ async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
         return (await state.read_artifact(ref)).content
     except FileNotFoundError:
         return ""
+
+
+async def _load_current_state(state: ResidentStatePort):
+    try:
+        entry = await state.read_artifact(CURRENT_MOMENTUM_STATE_REF)
+    except FileNotFoundError:
+        return None, ""
+    return parse_momentum_state(entry.content), entry.content
+
+
+async def _write_state_patch(state: ResidentStatePort, patch) -> str:
+    return await state.write_artifact(
+        f"resident/continuation/momentum/state/patches/{patch.patch_id}.md",
+        render_state_patch(patch),
+    )
 
 
 def _parse_field(content: str, field: str) -> str:

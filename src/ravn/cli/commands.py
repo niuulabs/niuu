@@ -4976,6 +4976,26 @@ def momentum_reflect_cmd(
     asyncio.run(_run_momentum_reflect(settings, target_ref, outcome, note, actor))
 
 
+@momentum_app.command("attend")
+def momentum_attend_cmd(
+    limit: int = typer.Option(5, "--limit", "-n", min=1, help="Candidate signal limit."),
+    status: str = typer.Option("new", "--status", help="Candidate inbox status filter."),
+    classification: str = typer.Option(
+        "",
+        "--classification",
+        help="Optional candidate classification filter.",
+    ),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Select which resident inbox signal deserves Momentum attention."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_attend(settings, limit, status, classification))
+
+
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
     from ravn.adapters.resident_signal import MarkdownResidentSignalSource
 
@@ -5018,6 +5038,48 @@ async def _run_momentum_reflect(
     ).reflect_judgment(target_ref, outcome=outcome, note=note, actor=actor)
     typer.echo(f"disposition_ref: {result.disposition_ref}")
     typer.echo(f"reflection_ref:  {result.reflection_ref}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
+
+
+async def _run_momentum_attend(
+    settings: Settings,
+    limit: int,
+    status: str,
+    classification: str,
+) -> None:
+    from ravn.momentum import (
+        MomentumAttentionWorker,
+        MomentumExtractionWorker,
+        MomentumPipeline,
+    )
+
+    source = _build_resident_inbox_signal_source(settings)
+    candidates = await source.list_candidates(
+        limit=limit + 1,
+        status=status.strip(),
+        classification=classification.strip(),
+    )
+    if not candidates:
+        typer.echo("No resident signal candidates found.", err=True)
+        raise typer.Exit(1)
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model=model),
+        attention_worker=MomentumAttentionWorker(llm, model=model),
+        state=state,
+    ).attend(candidates, limit=limit)
+    decision = result.decision
+    typer.echo(f"attention_ref: {result.decision_ref}")
+    typer.echo(f"selected_signal_id: {decision.selected_signal_id or '-'}")
+    typer.echo(f"selected_signal_ref: {decision.selected_signal_ref or '-'}")
+    typer.echo(f"attention_tier: {decision.attention_tier}")
+    typer.echo(f"recommended_next_action: {decision.recommended_next_action}")
+    typer.echo(f"confidence: {decision.confidence}")
 
 
 def _print_momentum_result(result: Any) -> None:
@@ -5029,6 +5091,8 @@ def _print_momentum_result(result: Any) -> None:
     if result.extraction.packet is not None:
         typer.echo(f"packet:      {result.extraction.packet.title}")
     typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
 
 
 async def _run_momentum_source(settings: Settings, source: Any, ref_or_id: str) -> Any:

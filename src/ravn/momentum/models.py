@@ -16,7 +16,14 @@ ArtifactKind = Literal[
 ProvenanceStatus = Literal["verified", "unverified"]
 AttentionTier = Literal["silent", "ambient", "present", "urgent"]
 NextAction = Literal["write_momentum_packet", "update_understanding_only", "ask_human"]
+AttentionNextAction = Literal[
+    "extract_selected_signal",
+    "ask_human",
+    "update_understanding_only",
+    "no_action",
+]
 DispositionOutcome = Literal["accepted", "dismissed", "wrong", "deferred", "acted"]
+MomentumTensionStatus = Literal["pending", "open", "confirmed", "changed", "resolved"]
 
 
 class SourceSpan(BaseModel):
@@ -149,6 +156,8 @@ class MomentumExtractionRun(BaseModel):
     signal_kind: Literal["resident_signal"] = "resident_signal"
     source_path: str
     source_sha256: str
+    input_state_ref: str | None = None
+    input_state_sha256: str | None = None
     procedure_name: str
     model_name: str
     created_at: datetime
@@ -176,6 +185,104 @@ class MomentumJudgmentDisposition(BaseModel):
     source: Literal["manual"] = "manual"
 
 
+class MomentumStateTension(BaseModel):
+    tension_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    status: MomentumTensionStatus = "pending"
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class MomentumStateTensionPatch(BaseModel):
+    tension_id: str = Field(min_length=1)
+    title: str | None = None
+    summary: str | None = None
+    status: MomentumTensionStatus | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class MomentumStatePatchDraft(BaseModel):
+    beliefs: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    corrections: list[str] = Field(default_factory=list)
+    open_tensions: list[MomentumStateTension] = Field(default_factory=list)
+    changed_tensions: list[MomentumStateTensionPatch] = Field(default_factory=list)
+    resolved_tension_ids: list[str] = Field(default_factory=list)
+    confirmed_tension_ids: list[str] = Field(default_factory=list)
+    stale_assumptions: list[str] = Field(default_factory=list)
+    recent_lessons: list[str] = Field(default_factory=list)
+    candidate_reflexes: list[str] = Field(default_factory=list)
+    candidate_capability_gaps: list[str] = Field(default_factory=list)
+
+    @field_validator("changed_tensions", mode="before")
+    @classmethod
+    def _changed_tension_ids_are_patches(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [
+                {"tension_id": item} if isinstance(item, str) else item
+                for item in value
+            ]
+        return value
+
+
+class MomentumStatePatch(MomentumStatePatchDraft):
+    patch_id: str = Field(min_length=1)
+    created_at: datetime
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class MomentumResidentState(BaseModel):
+    beliefs: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    corrections: list[str] = Field(default_factory=list)
+    open_tensions: list[MomentumStateTension] = Field(default_factory=list)
+    stale_assumptions: list[str] = Field(default_factory=list)
+    recent_lessons: list[str] = Field(default_factory=list)
+    candidate_reflexes: list[str] = Field(default_factory=list)
+    candidate_capability_gaps: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    compaction: dict[str, int] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class MomentumAttentionDecisionDraft(BaseModel):
+    selected_signal_id: str | None = None
+    selected_signal_ref: str | None = None
+    no_attention_needed: bool = False
+    selected_tension_ids: list[str] = Field(default_factory=list)
+    attention_tier: AttentionTier = "ambient"
+    rationale: str = Field(min_length=1)
+    why_now: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    signal_refs: list[str] = Field(default_factory=list)
+    recommended_next_action: AttentionNextAction
+    confidence: float = Field(ge=0, le=1)
+    source_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("source_refs")
+    @classmethod
+    def _must_have_source_refs(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("attention decision must cite source refs")
+        return value
+
+
+class MomentumAttentionDecision(MomentumAttentionDecisionDraft):
+    decision_id: str = Field(min_length=1)
+    validation_status: Literal["valid"] = "valid"
+    created_at: datetime
+    current_state_ref: str | None = None
+    current_state_present: bool = False
+    candidate_count: int = Field(ge=0)
+    candidate_limit: int = Field(ge=1)
+    candidates_truncated: int = Field(ge=0)
+    procedure_name: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+
+
 class MomentumReflectionDraft(BaseModel):
     changed_understanding: str = Field(min_length=1)
     lesson_learned: str = Field(min_length=1)
@@ -184,6 +291,7 @@ class MomentumReflectionDraft(BaseModel):
     resident_corrections: list[str] = Field(default_factory=list)
     candidate_reflexes: list[str] = Field(default_factory=list)
     candidate_capability_gaps: list[str] = Field(default_factory=list)
+    state_patch: MomentumStatePatchDraft = Field(default_factory=MomentumStatePatchDraft)
 
     @field_validator("remember_next_time")
     @classmethod

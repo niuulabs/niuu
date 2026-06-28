@@ -6,6 +6,7 @@ import json
 import re
 
 from ravn.momentum.models import (
+    MomentumAttentionDecisionDraft,
     MomentumExtractionDraft,
     MomentumJudgmentDisposition,
     MomentumReflectionDraft,
@@ -14,6 +15,7 @@ from ravn.ports.llm import LLMPort
 
 PROCEDURE_NAME = "ravn.momentum.extract.v1"
 REFLECTION_PROCEDURE_NAME = "ravn.momentum.reflect.v1"
+ATTENTION_PROCEDURE_NAME = "ravn.momentum.attend.v1"
 
 SYSTEM_PROMPT = """You extract the living shape of an idea into typed artifacts.
 
@@ -100,12 +102,22 @@ class MomentumExtractionWorker:
         self.procedure_name = procedure_name
         self._max_tokens = max_tokens
 
-    async def extract(self, markdown: str, *, memory_frame: str = "") -> MomentumExtractionDraft:
+    async def extract(
+        self,
+        markdown: str,
+        *,
+        memory_frame: str = "",
+        current_state_frame: str = "",
+    ) -> MomentumExtractionDraft:
         response = await self._llm.generate(
             [
                 {
                     "role": "user",
-                    "content": _input_frame(markdown, memory_frame=memory_frame),
+                    "content": _input_frame(
+                        markdown,
+                        memory_frame=memory_frame,
+                        current_state_frame=current_state_frame,
+                    ),
                 }
             ],
             tools=[],
@@ -126,13 +138,37 @@ Return only JSON matching this shape:
   "remember_next_time": ["..."],
   "resident_corrections": ["..."],
   "candidate_reflexes": ["candidate only, do not promote"],
-  "candidate_capability_gaps": ["candidate only, do not register"]
+  "candidate_capability_gaps": ["candidate only, do not register"],
+  "state_patch": {
+    "beliefs": ["..."],
+    "constraints": ["..."],
+    "corrections": ["..."],
+    "open_tensions": [
+      {
+        "tension_id": "stable-explicit-id",
+        "title": "...",
+        "summary": "...",
+        "status": "pending|open|confirmed|changed|resolved",
+        "evidence_refs": ["..."],
+        "source_refs": ["..."]
+      }
+    ],
+    "changed_tensions": [],
+    "resolved_tension_ids": ["..."],
+    "confirmed_tension_ids": ["..."],
+    "stale_assumptions": ["..."],
+    "recent_lessons": ["..."],
+    "candidate_reflexes": ["candidate only, do not promote"],
+    "candidate_capability_gaps": ["candidate only, do not register"]
+  }
 }
 
 Semantic learning belongs to you. The deterministic system only records the
-operator disposition and persists your reflection. Candidate reflexes and
-capability gaps are notes for later review; do not describe them as promoted,
-executed, registered, or applied.
+operator disposition, applies your state_patch, and persists your reflection.
+Use state_patch to say what changed in current understanding, what should be
+remembered next time, what tensions are confirmed/resolved/changed/opened, and
+which corrections apply. Candidate reflexes and capability gaps are notes for
+later review; do not describe them as promoted, executed, registered, or applied.
 """
 
 
@@ -162,6 +198,7 @@ class MomentumReflectionWorker:
         artifact_contents: list[str],
         disposition: MomentumJudgmentDisposition,
         memory_frame: str = "",
+        current_state_frame: str = "",
     ) -> MomentumReflectionDraft:
         response = await self._llm.generate(
             [
@@ -175,6 +212,7 @@ class MomentumReflectionWorker:
                         artifact_contents=artifact_contents,
                         disposition=disposition,
                         memory_frame=memory_frame,
+                        current_state_frame=current_state_frame,
                     ),
                 }
             ],
@@ -186,12 +224,108 @@ class MomentumReflectionWorker:
         return MomentumReflectionDraft.model_validate_json(_json_payload(response.content))
 
 
-def _input_frame(markdown: str, *, memory_frame: str) -> str:
+ATTENTION_SYSTEM_PROMPT = """You select Momentum attention from current resident state
+and candidate signals.
+
+Return only JSON matching this shape:
+{
+  "selected_signal_id": "signal id or null",
+  "selected_signal_ref": "signal ref or null",
+  "no_attention_needed": false,
+  "selected_tension_ids": ["current-state tension id"],
+  "attention_tier": "silent|ambient|present|urgent",
+  "rationale": "...",
+  "why_now": "...",
+  "evidence_refs": ["candidate signal ref/id or current-state ref"],
+  "signal_refs": ["candidate signal ref/id"],
+  "recommended_next_action": "extract_selected_signal",
+  "confidence": 0.82,
+  "source_refs": ["candidate signal ref/id or current-state ref"]
+}
+
+Select based on current Momentum state and open tensions, not simply newest,
+loudest, or most detailed. If nothing deserves attention now, set
+no_attention_needed true, selected_signal_id/ref null, recommended_next_action
+no_action, and explain why.
+
+Allowed recommended_next_action values: extract_selected_signal, ask_human,
+update_understanding_only, no_action.
+"""
+
+
+class MomentumAttentionWorker:
+    """Typed attention selection over current state and candidate signals."""
+
+    def __init__(
+        self,
+        llm: LLMPort,
+        *,
+        model: str,
+        procedure_name: str = ATTENTION_PROCEDURE_NAME,
+        max_tokens: int = 3000,
+    ) -> None:
+        self._llm = llm
+        self.model = model
+        self.procedure_name = procedure_name
+        self._max_tokens = max_tokens
+
+    async def attend(
+        self,
+        *,
+        memory_frame: str,
+        current_state_frame: str,
+        candidate_frame: str,
+        truncation_note: str,
+    ) -> MomentumAttentionDecisionDraft:
+        response = await self._llm.generate(
+            [
+                {
+                    "role": "user",
+                    "content": _attention_input_frame(
+                        memory_frame=memory_frame,
+                        current_state_frame=current_state_frame,
+                        candidate_frame=candidate_frame,
+                        truncation_note=truncation_note,
+                    ),
+                }
+            ],
+            tools=[],
+            system=ATTENTION_SYSTEM_PROMPT,
+            model=self.model,
+            max_tokens=self._max_tokens,
+        )
+        return MomentumAttentionDecisionDraft.model_validate_json(
+            _json_payload(response.content)
+        )
+
+
+def _input_frame(markdown: str, *, memory_frame: str, current_state_frame: str) -> str:
     return (
         "## Existing resident memory frame\n\n"
         f"{memory_frame or '(none)'}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
         "## Resident signal markdown\n\n"
         f"{markdown}"
+    )
+
+
+def _attention_input_frame(
+    *,
+    memory_frame: str,
+    current_state_frame: str,
+    candidate_frame: str,
+    truncation_note: str,
+) -> str:
+    return (
+        "## Existing resident memory frame\n\n"
+        f"{memory_frame or '(none)'}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
+        "## Candidate resident signals\n\n"
+        f"{candidate_frame or '(none)'}\n\n"
+        "## Candidate frame bounds\n\n"
+        f"{truncation_note or 'No candidate truncation.'}"
     )
 
 
@@ -204,10 +338,13 @@ def _reflection_input_frame(
     artifact_contents: list[str],
     disposition: MomentumJudgmentDisposition,
     memory_frame: str,
+    current_state_frame: str,
 ) -> str:
     return (
         "## Existing resident memory frame\n\n"
         f"{memory_frame or '(none)'}\n\n"
+        "## Current Momentum state\n\n"
+        f"{current_state_frame or '(none)'}\n\n"
         "## Disposition\n\n"
         f"- target_ref: {target_ref}\n"
         f"- outcome: {disposition.outcome}\n"
