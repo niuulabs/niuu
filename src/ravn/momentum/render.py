@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
@@ -195,6 +196,33 @@ def render_attention_decision(decision: MomentumAttentionDecision) -> str:
     )
 
 
+def parse_attention_decision(content: str) -> MomentumAttentionDecision:
+    return MomentumAttentionDecision(
+        decision_id=_field(content, "decision_id"),
+        selected_signal_id=_optional_field(content, "selected_signal_id"),
+        selected_signal_ref=_optional_field(content, "selected_signal_ref"),
+        no_attention_needed=_bool_field(content, "no_attention_needed"),
+        selected_tension_ids=_section_bullets(content, "Selected Tensions"),
+        validation_status=_field(content, "validation_status"),
+        attention_tier=_field(content, "attention_tier"),
+        rationale=_section_text(content, "Rationale"),
+        why_now=_section_text(content, "Why Attention Now"),
+        evidence_refs=_section_bullets(content, "Evidence Refs"),
+        signal_refs=_section_bullets(content, "Signal Refs"),
+        recommended_next_action=_field(content, "recommended_next_action"),
+        confidence=float(_field(content, "confidence")),
+        source_refs=_section_bullets(content, "Source Refs"),
+        created_at=datetime.fromisoformat(_field(content, "created_at")),
+        current_state_ref=_optional_field(content, "current_state_ref"),
+        current_state_present=_bool_field(content, "current_state_present"),
+        candidate_count=int(_field(content, "candidate_count")),
+        candidate_limit=int(_field(content, "candidate_limit")),
+        candidates_truncated=int(_field(content, "candidates_truncated")),
+        procedure_name=_field(content, "procedure"),
+        model_name=_field(content, "model"),
+    )
+
+
 def render_reflection(reflection: MomentumReflection) -> str:
     return (
         "# Momentum Judgment Reflection\n\n"
@@ -277,10 +305,61 @@ def render_run(run: MomentumExtractionRun) -> str:
         f"- created_at: {run.created_at.isoformat()}\n"
         f"- provenance_fully_verified: {str(run.provenance_fully_verified).lower()}\n"
         f"- judgment_ref: {run.judgment_ref}\n"
-        f"- packet_ref: {run.packet_ref or '-'}\n\n"
+        f"- packet_ref: {run.packet_ref or '-'}\n"
+        f"- attention_ref: {run.attention_ref or '-'}\n"
+        f"- attention_decision_id: {run.attention_decision_id or '-'}\n"
+        f"- selected_signal_id: {run.selected_signal_id or '-'}\n"
+        f"- selected_signal_ref: {run.selected_signal_ref or '-'}\n\n"
         "## Artifact Refs\n\n"
         f"{_bullets_text(run.artifact_refs)}\n"
     )
+
+
+def _field(content: str, field: str) -> str:
+    prefix = f"- {field}:"
+    for line in content.splitlines():
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    raise ValueError(f"attention decision missing field: {field}")
+
+
+def _optional_field(content: str, field: str) -> str | None:
+    value = _field(content, field)
+    if not value or value == "-":
+        return None
+    return value
+
+
+def _bool_field(content: str, field: str) -> bool:
+    value = _field(content, field).lower()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(f"attention decision field is not a boolean: {field}")
+
+
+def _section_text(content: str, title: str) -> str:
+    marker = f"## {title}"
+    if marker not in content:
+        raise ValueError(f"attention decision missing section: {title}")
+    _, tail = content.split(marker, 1)
+    body = tail.split("\n## ", 1)[0].strip()
+    if not body:
+        raise ValueError(f"attention decision section is empty: {title}")
+    return body
+
+
+def _section_bullets(content: str, title: str) -> list[str]:
+    items: list[str] = []
+    for line in _section_text(content, title).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        item = stripped.removeprefix("- ").strip()
+        if item and item != "none":
+            items.append(item)
+    return items
 
 
 def _bullets(items: list[str]) -> list[str]:

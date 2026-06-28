@@ -1,4 +1,4 @@
-"""Momentum Packet proof pipeline."""
+"""Momentum Packet pipeline."""
 
 from ravn.momentum.pipeline import (
     MomentumAttentionResult,

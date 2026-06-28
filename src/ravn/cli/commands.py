@@ -4919,7 +4919,7 @@ def evolve_main() -> None:
 
 momentum_app = typer.Typer(
     name="momentum",
-    help="Momentum Packet proof utilities.",
+    help="Momentum Packet commands.",
     add_completion=False,
 )
 app.add_typer(momentum_app, name="momentum")
@@ -4994,6 +4994,20 @@ def momentum_attend_cmd(
     settings = Settings()
     _configure_logging(settings)
     asyncio.run(_run_momentum_attend(settings, limit, status, classification))
+
+
+@momentum_app.command("pursue")
+def momentum_pursue_cmd(
+    attention_ref: str = typer.Argument(..., help="Momentum attention decision ref."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Pursue an attention decision into a linked Momentum judgment run."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_pursue(settings, attention_ref))
 
 
 async def _run_momentum_extract(settings: Settings, path: str) -> None:
@@ -5080,6 +5094,37 @@ async def _run_momentum_attend(
     typer.echo(f"attention_tier: {decision.attention_tier}")
     typer.echo(f"recommended_next_action: {decision.recommended_next_action}")
     typer.echo(f"confidence: {decision.confidence}")
+
+
+async def _run_momentum_pursue(settings: Settings, attention_ref: str) -> None:
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+
+    source = _build_resident_inbox_signal_source(settings)
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    try:
+        result = await MomentumPipeline(
+            worker=MomentumExtractionWorker(llm, model=settings.effective_model()),
+            state=state,
+        ).pursue_attention(attention_ref, signal_source=source)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot pursue attention decision: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    run = result.extraction.run
+    typer.echo(f"attention_ref: {run.attention_ref or attention_ref}")
+    typer.echo(f"selected_signal_id: {run.selected_signal_id or '-'}")
+    typer.echo(f"selected_signal_ref: {run.selected_signal_ref or '-'}")
+    typer.echo(f"run_ref: {result.run_ref}")
+    typer.echo(f"judgment_ref: {result.judgment_ref}")
+    typer.echo(f"packet_ref: {result.packet_ref or '-'}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref: {result.state_patch_ref}")
+    typer.echo(f"provenance: {_provenance_label(result.provenance_fully_verified)}")
 
 
 def _print_momentum_result(result: Any) -> None:

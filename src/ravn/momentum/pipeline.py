@@ -26,6 +26,7 @@ from ravn.momentum.models import (
     ResidentUnderstandingPatch,
 )
 from ravn.momentum.render import (
+    parse_attention_decision,
     render_artifact,
     render_attention_decision,
     render_disposition,
@@ -52,6 +53,7 @@ from ravn.momentum.worker import (
     MomentumReflectionWorker,
 )
 from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
+from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
@@ -158,11 +160,45 @@ class MomentumPipeline:
             source_path=signal.raw_ref or signal.id,
         )
 
+    async def pursue_attention(
+        self,
+        attention_ref: str,
+        *,
+        signal_source: ResidentSignalSourcePort,
+    ) -> MomentumPipelineResult:
+        try:
+            entry = await self._state.read_artifact(attention_ref)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"attention decision not found: {attention_ref}") from None
+        decision = parse_attention_decision(entry.content)
+        _validate_pursuable_attention_decision(decision)
+
+        selected = decision.selected_signal_ref or decision.selected_signal_id
+        if selected is None:
+            raise ValueError("attention decision did not select a signal")
+
+        try:
+            signal = await signal_source.load_signal(selected)
+        except FileNotFoundError:
+            raise ValueError(f"selected signal not found: {selected}") from None
+        return await self._extract_text(
+            _source_text(signal),
+            source_path=signal.raw_ref or signal.id,
+            attention_ref=entry.path or attention_ref,
+            attention_decision_id=decision.decision_id,
+            selected_signal_id=decision.selected_signal_id,
+            selected_signal_ref=decision.selected_signal_ref,
+        )
+
     async def _extract_text(
         self,
         markdown: str,
         *,
         source_path: str = "<memory>",
+        attention_ref: str | None = None,
+        attention_decision_id: str | None = None,
+        selected_signal_id: str | None = None,
+        selected_signal_ref: str | None = None,
     ) -> MomentumPipelineResult:
         source_sha = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
         source_doc = SourceDocument(markdown)
@@ -216,6 +252,10 @@ class MomentumPipeline:
                 "packet_ref": packet_ref,
                 "input_state_ref": CURRENT_MOMENTUM_STATE_REF if current_state_frame else None,
                 "input_state_sha256": input_state_sha,
+                "attention_ref": attention_ref,
+                "attention_decision_id": attention_decision_id,
+                "selected_signal_id": selected_signal_id,
+                "selected_signal_ref": selected_signal_ref,
             }
         )
         run_ref = await self._state.write_artifact(_run_ref(run), render_run(run))
@@ -396,6 +436,17 @@ def _validate_attention_decision(
         and (draft.selected_signal_ref, draft.selected_signal_id) not in candidate_pairs
     ):
         raise ValueError("selected signal id/ref do not refer to the same candidate")
+
+
+def _validate_pursuable_attention_decision(decision: MomentumAttentionDecision) -> None:
+    if decision.validation_status != "valid":
+        raise ValueError("attention decision is not valid")
+    if decision.no_attention_needed:
+        raise ValueError("attention decision says no attention is needed")
+    if not decision.selected_signal_id and not decision.selected_signal_ref:
+        raise ValueError("attention decision did not select a signal")
+    if decision.recommended_next_action != "extract_selected_signal":
+        raise ValueError("attention decision does not recommend extracting the selected signal")
 
 
 def _candidate_frame(candidates: list[tuple[str, ResidentInboxSignal]]) -> str:
