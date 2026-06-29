@@ -34,6 +34,7 @@ from ravn.momentum.models import (
 from ravn.momentum.render import (
     parse_attention_decision,
     parse_delegation_brief,
+    parse_handoff_result,
     render_artifact,
     render_attention_decision,
     render_delegation_brief,
@@ -423,6 +424,104 @@ class MomentumPipeline:
             state_patch_ref=state_patch_ref,
         )
 
+    async def reflect_handoff_episode(
+        self,
+        handoff_refs: list[str],
+        *,
+        signal_source: ResidentSignalSourcePort | None = None,
+        outcome: DispositionOutcome = "acted",
+        note: str = "Reflect completed Momentum handoff episode.",
+        actor: str = "operator",
+    ) -> MomentumReflectionResult:
+        if self._reflection_worker is None:
+            raise ValueError("Momentum reflection worker is required")
+        if not handoff_refs:
+            raise ValueError("at least one handoff result ref is required")
+
+        created_at = self._now or datetime.now(UTC)
+        context = await _load_handoff_reflection_context(
+            self._state,
+            handoff_refs,
+            signal_source,
+        )
+        base_ref = "resident/continuation/momentum/handoffs"
+        reflection_suffix = f"{_timestamp_id(created_at)}-{outcome}-{uuid4().hex[:6]}"
+        disposition = MomentumJudgmentDisposition(
+            disposition_id=f"disposition-{reflection_suffix}",
+            target_ref=", ".join(context.handoff_refs),
+            outcome=outcome,
+            actor=actor,
+            note=note,
+            created_at=created_at,
+        )
+        disposition_ref = await self._state.write_artifact(
+            f"{base_ref}/dispositions/{disposition.disposition_id}.md",
+            render_disposition(disposition),
+        )
+        memory = await self._state.recall(
+            "Niuu Momentum Engine handoff episode learning and reflections",
+            limit=5,
+        )
+        current_state, current_state_frame = await _load_current_state(self._state)
+        draft = await self._reflection_worker.reflect(
+            target_ref=disposition.target_ref,
+            target_content=context.target_content,
+            run_content=context.run_content,
+            judgment_content=context.judgment_content,
+            artifact_contents=context.artifact_contents,
+            disposition=disposition,
+            memory_frame="\n\n".join(entry.content for entry in memory),
+            current_state_frame=current_state_frame,
+            episode_context=context.episode_context,
+        )
+        reflection = MomentumReflection(
+            **draft.model_dump(),
+            reflection_id=f"reflection-{reflection_suffix}",
+            target_ref=disposition.target_ref,
+            disposition_ref=disposition_ref,
+            outcome=outcome,
+            actor=actor,
+            procedure_name=self._reflection_worker.procedure_name,
+            model_name=self._reflection_worker.model,
+            reflected_at=created_at,
+        )
+        reflection_ref = await self._state.write_artifact(
+            f"{base_ref}/reflections/{reflection.reflection_id}.md",
+            render_reflection(reflection),
+        )
+        state_patch = reflection_state_patch(
+            patch_id=f"patch-{_timestamp_id(created_at)}-{reflection.reflection_id}",
+            created_at=created_at,
+            source_refs=[
+                *context.source_refs,
+                disposition_ref,
+                reflection_ref,
+            ],
+            draft=draft.state_patch,
+            lesson_learned=reflection.lesson_learned,
+            remember_next_time=reflection.remember_next_time,
+            corrections=reflection.resident_corrections,
+            candidate_reflexes=reflection.candidate_reflexes,
+            candidate_capability_gaps=reflection.candidate_capability_gaps,
+        )
+        current_state = current_state or empty_momentum_state(updated_at=created_at)
+        updated_state = self._state_compactor.compact(
+            apply_state_patch(current_state, state_patch)
+        )
+        state_patch_ref = await _write_state_patch(self._state, state_patch)
+        current_state_ref = await self._state.write_artifact(
+            CURRENT_MOMENTUM_STATE_REF,
+            render_momentum_state(updated_state),
+        )
+        return MomentumReflectionResult(
+            disposition=disposition,
+            reflection=reflection,
+            disposition_ref=disposition_ref,
+            reflection_ref=reflection_ref,
+            current_state_ref=current_state_ref,
+            state_patch_ref=state_patch_ref,
+        )
+
     async def prepare_delegation(
         self,
         source_ref: str,
@@ -671,6 +770,17 @@ class _ReflectionContext:
 
 
 @dataclass(frozen=True)
+class _HandoffReflectionContext:
+    handoff_refs: list[str]
+    target_content: str
+    run_content: str
+    judgment_content: str
+    artifact_contents: list[str]
+    episode_context: str
+    source_refs: list[str]
+
+
+@dataclass(frozen=True)
 class _DelegationContext:
     source_ref: str
     run_ref: str | None
@@ -729,6 +839,170 @@ async def _load_reflection_context(
         judgment_content=judgment_content,
         artifact_contents=artifact_contents,
     )
+
+
+async def _load_handoff_reflection_context(
+    state: ResidentStatePort,
+    handoff_refs: list[str],
+    signal_source: ResidentSignalSourcePort | None,
+) -> _HandoffReflectionContext:
+    entries: list[ResidentMemoryEntry] = []
+    handoffs: list[MomentumHandoffResult] = []
+    for ref in handoff_refs:
+        try:
+            entry = await state.read_artifact(ref)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"handoff result not found: {ref}") from None
+        result = parse_handoff_result(entry.content)
+        if result.status != "completed":
+            raise ValueError(f"handoff result is not completed: {entry.path or ref}")
+        entries.append(entry)
+        handoffs.append(result)
+
+    refs = [entry.path for entry in entries]
+    trace_sections: list[str] = []
+    brief_sections: list[str] = []
+    run_sections: list[str] = []
+    judgment_sections: list[str] = []
+    packet_sections: list[str] = []
+    attention_sections: list[str] = []
+    signal_sections: list[str] = []
+    artifact_contents: list[str] = []
+    source_refs: list[str] = []
+
+    for entry, result in zip(entries, handoffs, strict=True):
+        source_refs.append(entry.path)
+        if result.executor_trace_ref:
+            source_refs.append(result.executor_trace_ref)
+            trace_sections.append(
+                await _ref_section_or_missing(
+                    state,
+                    result.executor_trace_ref,
+                    "Executor trace unavailable",
+                )
+            )
+        else:
+            trace_sections.append("### Executor trace\n\n(missing executor_trace_ref)")
+        brief_sections.append(
+            await _ref_section_or_missing(
+                state,
+                result.source_brief_ref,
+                "Delegation brief unavailable",
+            )
+        )
+        if result.source_run_ref:
+            run_content = await _read_optional_content(state, result.source_run_ref)
+            run_sections.append(
+                _ref_section(
+                    result.source_run_ref,
+                    run_content or f"(Source run unavailable: {result.source_run_ref})",
+                )
+            )
+            packet_ref = _optional_run_field(run_content, "packet_ref")
+            if packet_ref:
+                packet_sections.append(
+                    await _ref_section_or_missing(
+                        state,
+                        packet_ref,
+                        "Source packet unavailable",
+                    )
+                )
+        if result.source_judgment_ref:
+            judgment_sections.append(
+                await _ref_section_or_missing(
+                    state,
+                    result.source_judgment_ref,
+                    "Source judgment unavailable",
+                )
+            )
+        if result.source_attention_ref:
+            attention_sections.append(
+                await _ref_section_or_missing(
+                    state,
+                    result.source_attention_ref,
+                    "Source attention decision unavailable",
+                )
+            )
+        selected_signal_ref = result.source_signal_ref or result.source_signal_id or ""
+        if selected_signal_ref:
+            signal_content = await _load_signal_for_reflection(
+                state,
+                selected_signal_ref,
+                signal_source,
+            )
+            signal_sections.append(_ref_section(selected_signal_ref, signal_content))
+        artifact_contents.extend(
+            [
+                content
+                for content in [
+                    await _ref_section_or_missing(
+                        state,
+                        ref,
+                        "Handoff evidence unavailable",
+                    )
+                    for ref in [*result.evidence_refs, *result.produced_refs]
+                ]
+                if content
+            ]
+        )
+
+    _, current_state_frame = await _load_current_state(state)
+    episode_context = (
+        "## Handoff Result Refs\n\n"
+        f"{_bullets_text(refs)}\n\n"
+        "## Executor Traces\n\n"
+        f"{_join_sections(trace_sections)}\n\n"
+        "## Delegation Briefs\n\n"
+        f"{_join_sections(brief_sections)}\n\n"
+        "## Source Attention Decisions\n\n"
+        f"{_join_sections(attention_sections)}\n\n"
+        "## Source Packets\n\n"
+        f"{_join_sections(packet_sections)}\n\n"
+        "## Selected Signals\n\n"
+        f"{_join_sections(signal_sections)}\n\n"
+        "## Current Momentum State At Reflection Time\n\n"
+        f"{current_state_frame or '(none)'}"
+    )
+    return _HandoffReflectionContext(
+        handoff_refs=refs,
+        target_content=_join_sections([entry.content for entry in entries]),
+        run_content=_join_sections(run_sections),
+        judgment_content=_join_sections(judgment_sections),
+        artifact_contents=artifact_contents,
+        episode_context=episode_context,
+        source_refs=_unique_refs(source_refs),
+    )
+
+
+async def _ref_section_or_missing(
+    state: ResidentStatePort,
+    ref: str,
+    missing_label: str,
+) -> str:
+    content = await _read_optional_content(state, ref)
+    if not content:
+        content = f"({missing_label}: {ref})"
+    return _ref_section(ref, content)
+
+
+async def _load_signal_for_reflection(
+    state: ResidentStatePort,
+    ref_or_id: str,
+    signal_source: ResidentSignalSourcePort | None,
+) -> str:
+    content = await _read_optional_content(state, ref_or_id)
+    if content:
+        return content
+    if signal_source is not None:
+        try:
+            return _source_text(await signal_source.load_signal(ref_or_id))
+        except FileNotFoundError:
+            pass
+    return f"(Selected signal unavailable: {ref_or_id})"
+
+
+def _ref_section(ref: str, content: str) -> str:
+    return f"### {ref}\n\n{content}"
 
 
 async def _load_delegation_context(
@@ -834,10 +1108,23 @@ async def _read_required_content(
 async def _read_optional_content(state: ResidentStatePort, ref: str) -> str:
     if not ref or ref == "-":
         return ""
-    try:
-        return (await state.read_artifact(ref)).content
-    except FileNotFoundError:
-        return ""
+    for candidate in _resident_ref_candidates(ref):
+        try:
+            return (await state.read_artifact(candidate)).content
+        except FileNotFoundError:
+            continue
+    return ""
+
+
+def _resident_ref_candidates(ref: str) -> list[str]:
+    candidates = [ref]
+    if ref.startswith("state/resident/"):
+        candidates.append(ref.removeprefix("state/"))
+    marker = "/state/resident/"
+    if marker in ref:
+        _, tail = ref.split(marker, 1)
+        candidates.append(f"resident/{tail}")
+    return _unique_refs(candidates)
 
 
 def _materialize_delegation_brief(
@@ -1032,6 +1319,27 @@ def _frame_section(title: str, content: str) -> list[str]:
     if not content:
         return ["", f"## {title}", "", "-"]
     return ["", f"## {title}", "", content]
+
+
+def _join_sections(contents: list[str]) -> str:
+    if not contents:
+        return "(none)"
+    return "\n\n---\n\n".join(contents)
+
+
+def _bullets_text(items: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in items if item) or "- none"
+
+
+def _unique_refs(refs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for ref in refs:
+        if not ref or ref == "-" or ref in seen:
+            continue
+        seen.add(ref)
+        result.append(ref)
+    return result
 
 
 async def _load_current_state(state: ResidentStatePort):

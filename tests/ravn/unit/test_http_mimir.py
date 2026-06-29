@@ -581,6 +581,6 @@ async def test_assign_thread_owner_raises_file_not_found_on_404(
 async def test_aclose_is_idempotent() -> None:
     adapter = HttpMimirAdapter(base_url="http://mimir.test")
     # Trigger client creation
-    _ = adapter._get_client()
+    _ = await adapter._get_client()
     await adapter.aclose()
     await adapter.aclose()  # should not raise

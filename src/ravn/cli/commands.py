@@ -4957,23 +4957,30 @@ def momentum_inbox_cmd(
 
 @momentum_app.command("reflect")
 def momentum_reflect_cmd(
-    target_ref: str = typer.Argument(..., help="Momentum run or judgment artifact ref."),
-    outcome: str = typer.Option(
+    target_refs: list[str] = typer.Argument(
         ...,
+        help="Momentum run, judgment, or handoff result artifact ref.",
+    ),
+    outcome: str = typer.Option(
+        "acted",
         "--outcome",
         help="Disposition: accepted, dismissed, wrong, deferred, or acted.",
     ),
-    note: str = typer.Option(..., "--note", help="What happened to this judgment."),
+    note: str = typer.Option(
+        "Reflect completed Momentum handoff episode.",
+        "--note",
+        help="What happened to this judgment or handoff episode.",
+    ),
     actor: str = typer.Option("operator", "--actor", help="Disposition actor."),
     config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
 ) -> None:
-    """Record a judgment disposition and model-authored reflection."""
+    """Record model-authored Momentum reflection."""
     if config:
         os.environ["RAVN_CONFIG"] = config
 
     settings = Settings()
     _configure_logging(settings)
-    asyncio.run(_run_momentum_reflect(settings, target_ref, outcome, note, actor))
+    asyncio.run(_run_momentum_reflect(settings, target_refs, outcome, note, actor))
 
 
 @momentum_app.command("attend")
@@ -5053,7 +5060,7 @@ async def _run_momentum_inbox(settings: Settings, signal_ref_or_id: str) -> None
 
 async def _run_momentum_reflect(
     settings: Settings,
-    target_ref: str,
+    target_refs: list[str] | str,
     outcome: str,
     note: str,
     actor: str,
@@ -5073,15 +5080,73 @@ async def _run_momentum_reflect(
     state = await _build_resident_state(settings, workspace)
     llm = _build_llm(settings)
     model = settings.effective_model()
-    result = await MomentumPipeline(
+    refs = [target_refs] if isinstance(target_refs, str) else list(target_refs)
+    pipeline = MomentumPipeline(
         worker=MomentumExtractionWorker(llm, model=model),
         reflection_worker=MomentumReflectionWorker(llm, model=model),
         state=state,
-    ).reflect_judgment(target_ref, outcome=outcome, note=note, actor=actor)
+    )
+    try:
+        if _momentum_refs_are_handoffs(refs):
+            result = await pipeline.reflect_handoff_episode(
+                refs,
+                signal_source=_build_optional_resident_inbox_signal_source(settings),
+                outcome=outcome,
+                note=note,
+                actor=actor,
+            )
+        elif len(refs) == 1:
+            result = await pipeline.reflect_judgment(
+                refs[0],
+                outcome=outcome,
+                note=note,
+                actor=actor,
+            )
+        else:
+            typer.echo("Multiple reflect refs must all be handoff result refs.", err=True)
+            raise typer.Exit(1)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot reflect Momentum episode: {exc}", err=True)
+        raise typer.Exit(1) from None
     typer.echo(f"disposition_ref: {result.disposition_ref}")
     typer.echo(f"reflection_ref:  {result.reflection_ref}")
     typer.echo(f"current_state_ref: {result.current_state_ref}")
     typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
+    typer.echo(
+        "changed_tensions: "
+        f"{_momentum_tension_patch_summary(result.reflection.state_patch)}"
+    )
+    typer.echo(f"lesson_learned: {result.reflection.lesson_learned}")
+    typer.echo(
+        "candidate_reflexes: "
+        f"{', '.join(result.reflection.candidate_reflexes) or '-'}"
+    )
+    typer.echo(
+        "candidate_capability_gaps: "
+        f"{', '.join(result.reflection.candidate_capability_gaps) or '-'}"
+    )
+
+
+def _momentum_refs_are_handoffs(refs: list[str]) -> bool:
+    return bool(refs) and all(
+        ref.startswith("resident/continuation/momentum/handoffs/")
+        and "/traces/" not in ref
+        and "/evidence/" not in ref
+        for ref in refs
+    )
+
+
+def _momentum_tension_patch_summary(patch: Any) -> str:
+    items = [
+        *[f"changed:{item.tension_id}" for item in patch.changed_tensions],
+        *[f"resolved:{item}" for item in patch.resolved_tension_ids],
+        *[f"confirmed:{item}" for item in patch.confirmed_tension_ids],
+        *[f"opened:{item.tension_id}" for item in patch.open_tensions],
+    ]
+    return ", ".join(items) or "-"
 
 
 async def _run_momentum_attend(
