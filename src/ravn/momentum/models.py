@@ -347,6 +347,7 @@ class MomentumHandoffResult(BaseModel):
     produced_refs: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     follow_up_recommended: HandoffFollowUp = "none"
+    executor_trace_ref: str = ""
     started_at: datetime
     completed_at: datetime
     created_at: datetime
