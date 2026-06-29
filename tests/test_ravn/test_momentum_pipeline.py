@@ -47,6 +47,7 @@ from ravn.momentum.render import (
     parse_delegation_brief,
     render_attention_decision,
     render_delegation_brief,
+    render_handoff_result,
 )
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
@@ -256,6 +257,32 @@ class FakeTraceExecutorAgent(FakeMomentumExecutorAgent):
         )
 
 
+class FakeWorkspacePrefixedTraceExecutorAgent(FakeTraceExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": "completed",
+                "summary": "unit/mock executor reported workspace-prefixed evidence",
+                "output": "unit/mock output",
+                "evidence_refs": ["state/resident/produced/unit-mock.md"],
+                "produced_refs": ["state/resident/produced/unit-mock.md"],
+                "errors": [],
+                "follow_up_recommended": "none",
+            }
+        )
+        return TurnResult(
+            response=response,
+            tool_calls=[
+                ToolCall(id="call-1", name="Read", input={"file_path": "state/ref.md"})
+            ],
+            tool_results=[
+                ToolResult(tool_call_id="call-1", content="read result", is_error=False)
+            ],
+            usage=TokenUsage(input_tokens=3, output_tokens=5),
+        )
+
+
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
 
@@ -397,6 +424,25 @@ async def _seed_delegation_brief(
         now=datetime(2026, 6, 27, 15, tzinfo=UTC),
     ).prepare_delegation(run_ref)
     return result.brief_ref, result.brief
+
+
+async def _seed_handoff_result(
+    state: LocalResidentState,
+    *,
+    executor=None,
+) -> tuple[str, MomentumHandoffResult]:
+    brief_ref, _ = await _seed_delegation_brief(state)
+    result = await MomentumPipeline(
+        state=state,
+        now=datetime(2026, 6, 27, 16, tzinfo=UTC),
+    ).handoff_delegation(
+        brief_ref,
+        executor=executor or FakeTraceExecutorAgent(),
+        signal_source=StaticSignalSource(
+            [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+        ),
+    )
+    return result.result_ref, result.result
 
 
 def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
@@ -1780,6 +1826,199 @@ async def test_momentum_handoff_leaves_sources_and_state_immutable(
     assert not any("/reflections/" in ref or "/dispositions/" in ref for ref in refs_after)
 
 
+@pytest.mark.asyncio
+async def test_handoff_episode_reflection_updates_state_from_trace_context(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    await state.write_artifact(
+        "resident/produced/unit-mock.md",
+        "Workspace-prefixed evidence body.",
+    )
+    handoff_ref, handoff = await _seed_handoff_result(
+        state,
+        executor=FakeWorkspacePrefixedTraceExecutorAgent(),
+    )
+    signal_source = StaticSignalSource(
+        [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+    )
+    llm = FakeLLM(
+        _reflection_payload(
+            "acted",
+            state_patch={
+                "changed_tensions": [
+                    {
+                        "tension_id": "tension-attend-to-momentum-dilution",
+                        "status": "resolved",
+                        "evidence_refs": [handoff_ref, handoff.executor_trace_ref],
+                    }
+                ],
+                "recent_lessons": [
+                    "Completed handoff traces are evidence for resident learning."
+                ],
+                "candidate_reflexes": ["Candidate only: reflect after completed handoff."],
+                "candidate_capability_gaps": [
+                    "Candidate only: compare executor traces across providers."
+                ],
+            },
+        )
+    )
+
+    result = await MomentumPipeline(
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+        now=datetime(2026, 6, 27, 17, tzinfo=UTC),
+    ).reflect_handoff_episode([handoff_ref], signal_source=signal_source)
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    state_patch = (await state.read_artifact(result.state_patch_ref)).content
+    current_state = (await state.read_artifact(result.current_state_ref)).content
+    assert "## Episode context" in prompt
+    assert handoff_ref in prompt
+    assert handoff.executor_trace_ref in prompt
+    assert '"name": "Read"' in prompt
+    assert "Momentum Delegation Brief" in prompt
+    assert "Momentum Attention Decision" in prompt
+    assert "Build Momentum pipeline" in prompt
+    assert "Important living idea." in prompt
+    assert "Workspace-prefixed evidence body." in prompt
+    assert signal_source.calls == ["resident/inbox/signals/sig-relevant.md"]
+    assert handoff_ref in state_patch
+    assert handoff.executor_trace_ref in state_patch
+    assert "Completed handoff traces are evidence for resident learning." in current_state
+    assert "Candidate only: reflect after completed handoff." in current_state
+    assert "Candidate only: compare executor traces across providers." in current_state
+    refs = await state.list_refs("resident/continuation/momentum")
+    assert all("/reflex" not in ref and "/capabilit" not in ref for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_future_attention_sees_handoff_episode_learning(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    handoff_ref, _ = await _seed_handoff_result(state)
+    await MomentumPipeline(
+        reflection_worker=MomentumReflectionWorker(
+            FakeLLM(
+                _reflection_payload(
+                    "acted",
+                    state_patch={
+                        "recent_lessons": [
+                            "Future attention should prefer signals with executor trace evidence."
+                        ],
+                    },
+                )
+            ),
+            model="fake-model",
+        ),
+        state=state,
+    ).reflect_handoff_episode([handoff_ref])
+    attention_llm = FakeLLM(_attention_payload())
+
+    await MomentumPipeline(
+        attention_worker=MomentumAttentionWorker(attention_llm, model="fake-model"),
+        state=state,
+    ).attend(
+        [
+            (
+                "resident/inbox/signals/sig-relevant.md",
+                _candidate("sig-relevant", "Relevant", "Trace-backed follow-up."),
+            )
+        ],
+        limit=1,
+    )
+
+    frame = attention_llm.calls[0]["messages"][0]["content"]
+    assert "Future attention should prefer signals with executor trace evidence." in frame
+
+
+@pytest.mark.asyncio
+async def test_multiple_handoff_results_can_be_reflected_together(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    first_ref, _ = await _seed_handoff_result(state)
+    second_ref, _ = await _seed_handoff_result(state)
+    llm = FakeLLM(_reflection_payload("acted"))
+
+    result = await MomentumPipeline(
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+    ).reflect_handoff_episode([first_ref, second_ref])
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert first_ref in prompt
+    assert second_ref in prompt
+    assert first_ref in result.disposition.target_ref
+    assert second_ref in result.disposition.target_ref
+
+
+@pytest.mark.asyncio
+async def test_handoff_episode_reflection_missing_result_creates_no_patch(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    with pytest.raises(FileNotFoundError, match="handoff result not found"):
+        await MomentumPipeline(
+            reflection_worker=MomentumReflectionWorker(
+                FakeLLM(_reflection_payload("acted")),
+                model="fake-model",
+            ),
+            state=state,
+        ).reflect_handoff_episode(["resident/continuation/momentum/handoffs/missing.md"])
+
+    assert await state.list_refs("resident/continuation/momentum/state/patches") == []
+
+
+@pytest.mark.asyncio
+async def test_handoff_episode_reflection_missing_trace_is_visible(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    handoff_ref, handoff = await _seed_handoff_result(state)
+    missing_trace = "resident/continuation/momentum/handoffs/traces/missing-turn.md"
+    broken_ref = await state.write_artifact(
+        "resident/continuation/momentum/handoffs/missing-trace.md",
+        render_handoff_result(handoff.model_copy(update={"executor_trace_ref": missing_trace})),
+    )
+    llm = FakeLLM(_reflection_payload("acted"))
+
+    await MomentumPipeline(
+        reflection_worker=MomentumReflectionWorker(llm, model="fake-model"),
+        state=state,
+    ).reflect_handoff_episode([broken_ref])
+
+    prompt = llm.calls[0]["messages"][0]["content"]
+    assert handoff_ref not in prompt
+    assert f"Executor trace unavailable: {missing_trace}" in prompt
+
+
+@pytest.mark.asyncio
+async def test_handoff_episode_reflection_rejects_blocked_handoff_without_patch(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    handoff_ref, handoff = await _seed_handoff_result(
+        state,
+        executor=FakeMomentumExecutorAgent(status="blocked", follow_up_recommended="retry"),
+    )
+    patches_before = await state.list_refs("resident/continuation/momentum/state/patches")
+
+    with pytest.raises(ValueError, match="handoff result is not completed"):
+        await MomentumPipeline(
+            reflection_worker=MomentumReflectionWorker(
+                FakeLLM(_reflection_payload("acted")),
+                model="fake-model",
+            ),
+            state=state,
+        ).reflect_handoff_episode([handoff_ref])
+
+    assert handoff.status == "blocked"
+    assert await state.list_refs("resident/continuation/momentum/state/patches") == patches_before
+
+
 def test_momentum_core_does_not_import_concrete_delegation_implementations() -> None:
     core_files = [
         Path("src/ravn/momentum/pipeline.py"),
@@ -2918,6 +3157,67 @@ def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tm
     assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
     current_state = asyncio.run(state.read_artifact(CURRENT_MOMENTUM_STATE_REF))
     assert "Lesson for accepted" in current_state.content
+
+
+def test_momentum_reflect_cli_accepts_handoff_result_ref(monkeypatch, tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        handoff_ref, _ = await _seed_handoff_result(state)
+        return handoff_ref
+
+    handoff_ref = asyncio.run(_seed())
+    source = StaticSignalSource(
+        [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+    )
+    monkeypatch.setattr(
+        commands,
+        "_build_llm",
+        lambda _settings: FakeLLM(_reflection_payload("acted")),
+    )
+    monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: source)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "reflect", handoff_ref])
+
+    assert result.exit_code == 0, result.output
+    assert "disposition_ref: resident/continuation/momentum/handoffs/dispositions/" in result.output
+    assert "reflection_ref:  resident/continuation/momentum/handoffs/reflections/" in result.output
+    assert f"current_state_ref: {CURRENT_MOMENTUM_STATE_REF}" in result.output
+    assert "state_patch_ref:   resident/continuation/momentum/state/patches/" in result.output
+    assert "lesson_learned: Lesson for acted" in result.output
+    assert "candidate_reflexes: Candidate: ask for disposition after action." in result.output
+    assert "candidate_capability_gaps: Candidate: no automatic outcome feed." in result.output
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+
+
+def test_momentum_reflect_cli_invalid_handoff_ref_fails(monkeypatch, tmp_path: Path):
+    state = LocalResidentState(tmp_path / "state")
+    monkeypatch.setattr(
+        commands,
+        "_build_llm",
+        lambda _settings: FakeLLM(_reflection_payload("acted")),
+    )
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "reflect", "resident/continuation/momentum/handoffs/missing.md"],
+    )
+
+    assert result.exit_code == 1
+    assert "handoff result not found" in result.output
+    assert asyncio.run(
+        state.list_refs("resident/continuation/momentum/state/patches")
+    ) == []
 
 
 def test_later_momentum_extract_cli_includes_current_state(monkeypatch, tmp_path: Path):

@@ -295,6 +295,13 @@ def render_handoff_result(result: MomentumHandoffResult) -> str:
     )
 
 
+def parse_handoff_result(content: str) -> MomentumHandoffResult:
+    payload = _json_section(content, "Result Data")
+    if not payload:
+        raise ValueError("handoff result missing Result Data")
+    return MomentumHandoffResult.model_validate_json(payload)
+
+
 def render_handoff_turn_trace(
     *,
     result: MomentumHandoffResult,

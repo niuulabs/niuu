@@ -21,7 +21,8 @@ DELEGATION_PROCEDURE_NAME = "ravn.momentum.delegate.v1"
 
 SYSTEM_PROMPT = """You extract the living shape of an idea into typed artifacts.
 
-Return only JSON matching this shape:
+Return exactly one JSON object matching this shape, with no prose, markdown, or
+code fences before or after it. The response must start with { and end with }.
 {
   "artifacts": [
     {
@@ -80,11 +81,14 @@ Packet when the judgment recommends one. The judgment answers what changed in
 understanding, which tension now matters most, why it deserves attention, and
 what should happen next. Do not turn the packet into a generic ticket.
 
-Every source.excerpt must be a verbatim contiguous substring copied from the
+Every source.excerpt, including resident_patch.source, judgment.source, packet.source,
+and each artifact.source, must be a verbatim contiguous substring copied from the
 resident signal markdown. Do not paraphrase, summarize, or clean up source
-excerpts. Line ranges are useful only when they point at the cited text. If you
-are not certain about exact rendered line numbers, omit line_start and line_end;
-an exact source excerpt without line numbers is better than an inaccurate range.
+excerpts. If a source excerpt is not exact, deterministic provenance will mark
+the run unverified. Line ranges are useful only when they point at the cited
+text. If you are not certain about exact rendered line numbers, omit line_start
+and line_end; an exact source excerpt without line numbers is better than an
+inaccurate range.
 """
 
 
@@ -130,7 +134,8 @@ class MomentumExtractionWorker:
         return MomentumExtractionDraft.model_validate_json(_json_payload(response.content))
 
 
-REFLECTION_SYSTEM_PROMPT = """You reflect on a Momentum judgment after an outcome is known.
+REFLECTION_SYSTEM_PROMPT = """You reflect on a Momentum judgment or handoff episode after
+an outcome is known.
 
 Return only JSON matching this shape:
 {
@@ -166,7 +171,7 @@ Return only JSON matching this shape:
 }
 
 Semantic learning belongs to you. The deterministic system only records the
-operator disposition, applies your state_patch, and persists your reflection.
+episode disposition, applies your state_patch, and persists your reflection.
 Use state_patch to say what changed in current understanding, what should be
 remembered next time, what tensions are confirmed/resolved/changed/opened, and
 which corrections apply. Candidate reflexes and capability gaps are notes for
@@ -201,6 +206,7 @@ class MomentumReflectionWorker:
         disposition: MomentumJudgmentDisposition,
         memory_frame: str = "",
         current_state_frame: str = "",
+        episode_context: str = "",
     ) -> MomentumReflectionDraft:
         response = await self._llm.generate(
             [
@@ -215,6 +221,7 @@ class MomentumReflectionWorker:
                         disposition=disposition,
                         memory_frame=memory_frame,
                         current_state_frame=current_state_frame,
+                        episode_context=episode_context,
                     ),
                 }
             ],
@@ -433,6 +440,7 @@ def _reflection_input_frame(
     disposition: MomentumJudgmentDisposition,
     memory_frame: str,
     current_state_frame: str,
+    episode_context: str,
 ) -> str:
     return (
         "## Existing resident memory frame\n\n"
@@ -452,7 +460,9 @@ def _reflection_input_frame(
         "## Judgment artifact\n\n"
         f"{judgment_content or '(unavailable)'}\n\n"
         "## Related artifacts\n\n"
-        f"{_join_sections(artifact_contents)}"
+        f"{_join_sections(artifact_contents)}\n\n"
+        "## Episode context\n\n"
+        f"{episode_context or '(none)'}"
     )
 
 
