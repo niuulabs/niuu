@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from typing import Any
@@ -143,6 +144,25 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
         path = FilePath(session.source.local_path)
         return path if path.exists() else None
     return None
+
+
+# FAULT-C durable-count cache: `session_id -> (event_log_seq, durable_turn_count)`. The FAULT-C
+# reconciliation needs the durable turn count to detect a desynced (short) live body, but rebuilding
+# the whole durable transcript on every poll is ~4s on a big session (profiled). The count is stable
+# while the event log hasn't grown, so we key the cached count on MAX(seq): a hit at the same seq
+# skips the rebuild entirely; a new seq (or a short live body) falls back to the exact rebuild.
+_DURABLE_COUNT_CACHE: dict[str, tuple[int, int]] = {}
+_DURABLE_COUNT_CACHE_MAX = 512
+
+
+def _durable_count_cache_put(session_id: str, seq: int, count: int) -> None:
+    if (
+        len(_DURABLE_COUNT_CACHE) >= _DURABLE_COUNT_CACHE_MAX
+        and session_id not in _DURABLE_COUNT_CACHE
+    ):
+        # Crude bound: drop an arbitrary existing entry (FIFO-ish via iteration order).
+        _DURABLE_COUNT_CACHE.pop(next(iter(_DURABLE_COUNT_CACHE)), None)
+    _DURABLE_COUNT_CACHE[session_id] = (seq, count)
 
 
 def _live_transcript_is_renderable(payload: object) -> bool:
@@ -2596,13 +2616,42 @@ def create_router(
         identical regardless of which path served the transcript.
         """
         shallow = detail == SHALLOW_DETAIL
+        timings: dict[str, float] = {}
 
-        def _maybe_elide(payload: dict) -> dict:
-            if shallow and isinstance(payload, dict) and isinstance(payload.get("turns"), list):
-                return {**payload, "turns": elide_turns(payload["turns"])}
-            return payload
+        def _maybe_elide(payload: dict, fetch_ms: float | None = None) -> dict:
+            """Elide (when shallow) AND attach a server-side perf summary: time the volundr
+            re-elide, merge the broker's `_prep` (build/elide ms), and log one `[perf]` line — so
+            the whole shallow-prep breakdown is visible in the response `_prep` and the log."""
+            if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
+                return payload
+            out = payload
+            reelide_ms = 0.0
+            if shallow:
+                t = time.perf_counter()
+                out = {**payload, "turns": elide_turns(payload["turns"])}
+                reelide_ms = (time.perf_counter() - t) * 1000.0
+            prep = dict(payload.get("_prep") or {})
+            prep.update(timings)
+            if fetch_ms is not None:
+                prep["volundr_fetch_ms"] = round(fetch_ms, 1)
+            prep["volundr_reelide_ms"] = round(reelide_ms, 1)
+            out = {**out, "_prep": prep}
+            logger.info(
+                "[perf] conversation session=%s shallow=%s fetch=%sms reelide=%.1fms "
+                "broker_build=%sms broker_elide=%sms turns=%s",
+                _sanitize_log(session_id),
+                shallow,
+                (f"{fetch_ms:.1f}" if fetch_ms is not None else "-"),
+                reelide_ms,
+                prep.get("build_ms", "-"),
+                prep.get("elide_ms", "-"),
+                prep.get("turns", len(out.get("turns", []))),
+            )
+            return out
 
+        t_sess = time.perf_counter()
         session = await forge.get_session(session_id)
+        timings["session_lookup_ms"] = round((time.perf_counter() - t_sess) * 1000.0, 1)
         if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2611,13 +2660,16 @@ def create_router(
 
         try:
             if session.chat_endpoint:
+                t_tgt = time.perf_counter()
                 _, base_url = await forge.get_session_proxy_target(session_id)
+                timings["proxy_target_ms"] = round((time.perf_counter() - t_tgt) * 1000.0, 1)
 
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
 
+                t_fetch = time.perf_counter()
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
                         _session_proxy_url(base_url, "api", "conversation", "history"),
@@ -2626,6 +2678,9 @@ def create_router(
                     )
                     response.raise_for_status()
                     live = response.json()
+                    # Broker round-trip: build + (source) elide + serialize + localhost transfer +
+                    # JSON parse. For an old broker that ignores `detail` this is the FULL payload.
+                    fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
                     if _live_transcript_is_renderable(live):
                         # FAULT C: a resumed/restarted broker can be desynced from
                         # the durable log and serve FEWER turns than the durable
@@ -2649,31 +2704,53 @@ def create_router(
                         if not (is_streaming or _live_body_has_in_progress_turn(live)):
                             live_turns = live.get("turns") if isinstance(live, dict) else None
                             live_count = len(live_turns) if isinstance(live_turns, list) else 0
-                            try:
-                                durable = await forge.get_transcript(session_id)
-                            except (RuntimeError, ValueError):
-                                durable = None
-                            durable_turns = (
-                                durable.get("turns") if isinstance(durable, dict) else None
-                            )
+                            # CHEAP GATE: the durable count is stable while the event log hasn't
+                            # grown, so cache it keyed on MAX(seq). A hit at the current seq where
+                            # durable is NOT ahead of live skips the ~4s rebuild (the hot poll
+                            # path). Only a new seq, a cold cache, or a short live body (possible
+                            # desync) pays the rebuild. seq==0 (no event log) never caches.
+                            sid_str = str(session_id)
+                            seq = await forge.durable_latest_seq(session_id)
+                            cached = _DURABLE_COUNT_CACHE.get(sid_str)
                             durable_count = (
-                                len(durable_turns) if isinstance(durable_turns, list) else 0
+                                cached[1]
+                                if (cached is not None and seq > 0 and cached[0] == seq)
+                                else None
                             )
-                            if durable is not None and durable_count > live_count:
-                                logger.info(
-                                    "Live conversation for session %s is short "
-                                    "(%d turns) vs durable rebuild (%d turns); "
-                                    "preferring durable (FAULT C desync)",
-                                    _sanitize_log(session_id),
-                                    live_count,
-                                    durable_count,
+                            if durable_count is not None and durable_count <= live_count:
+                                # Durable not ahead of live -> live is complete; no rebuild needed.
+                                timings["fault_c_cached"] = 1.0
+                            else:
+                                t_dur = time.perf_counter()
+                                try:
+                                    durable = await forge.get_transcript(session_id)
+                                except (RuntimeError, ValueError):
+                                    durable = None
+                                timings["fault_c_rebuild_ms"] = round(
+                                    (time.perf_counter() - t_dur) * 1000.0, 1
                                 )
-                                return _maybe_elide(durable)
+                                durable_turns = (
+                                    durable.get("turns") if isinstance(durable, dict) else None
+                                )
+                                durable_count = (
+                                    len(durable_turns) if isinstance(durable_turns, list) else 0
+                                )
+                                _durable_count_cache_put(sid_str, seq, durable_count)
+                                if durable is not None and durable_count > live_count:
+                                    logger.info(
+                                        "Live conversation for session %s is short "
+                                        "(%d turns) vs durable rebuild (%d turns); "
+                                        "preferring durable (FAULT C desync)",
+                                        _sanitize_log(session_id),
+                                        live_count,
+                                        durable_count,
+                                    )
+                                    return _maybe_elide(durable)
                         # A freshly-restarted broker already elided at the source;
                         # re-eliding here is idempotent (placeholders have no
                         # content) and lets a long-running broker that predates
                         # this code serve shallow without a disruptive restart.
-                        return _maybe_elide(live)
+                        return _maybe_elide(live, fetch_ms=fetch_ms)
                     # BUG-2: an alive-but-empty / seed-only pod (e.g. a tmux session whose
                     # WS crashed mid-turn) returns HTTP 200 with nothing renderable. Don't
                     # short-circuit on it — fall through to the durable-log rebuild below.

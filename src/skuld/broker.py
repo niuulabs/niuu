@@ -6557,22 +6557,48 @@ async def get_conversation_history(detail: str = "full") -> dict:
         if d["thread_id"] is None:
             del d["thread_id"]
         # Always include visibility so clients can rely on it being present
-        if shallow:
-            d = elide_turn(d)
         return d
 
+    # PERF PROFILE (server-side): the open latency the client sees is mostly here. Time the two
+    # phases SEPARATELY — the `asdict` BUILD (a deep copy of every turn incl. the heavy tool_result
+    # content) vs the shallow ELIDE — because `asdict` runs on the FULL payload BEFORE the elide
+    # shrinks it, so a shallow request still pays the full build/serialize cost. If build_ms
+    # dominates, the real fix is eliding BEFORE asdict (never materialize the heavy content), not
+    # the transfer size. `_prep` rides in the response so volundr + the client see the breakdown.
+    t_build = time.perf_counter()
     turns = [_serialize_turn(t) for t in broker._conversation_turns]
     # Whole-truth unification: append the in-flight turn so a first connect / other device sees
     # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
     in_progress_turn = broker._serialize_in_progress_turn()
     if in_progress_turn is not None:
-        if shallow:
-            in_progress_turn = elide_turn(in_progress_turn)
         turns.append(in_progress_turn)
+    build_ms = (time.perf_counter() - t_build) * 1000.0
+
+    elide_ms = 0.0
+    if shallow:
+        t_elide = time.perf_counter()
+        turns = [elide_turn(d) for d in turns]
+        elide_ms = (time.perf_counter() - t_elide) * 1000.0
+
+    prep = {
+        "layer": "skuld",
+        "shallow": shallow,
+        "turns": len(turns),
+        "build_ms": round(build_ms, 1),
+        "elide_ms": round(elide_ms, 1),
+    }
+    logger.info(
+        "[perf] conversation prep shallow=%s turns=%d build=%.1fms elide=%.1fms",
+        shallow,
+        len(turns),
+        build_ms,
+        elide_ms,
+    )
     return {
         "turns": turns,
         "is_active": is_active,
         "last_activity": last_activity,
+        "_prep": prep,
         # Seed the first paint after a reconnect with the authoritative activity
         # state + when it was entered, so a client doesn't have to wait for the
         # next SSE/activity report to know whether the session is active/idle/etc.

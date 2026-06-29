@@ -61,6 +61,19 @@ class SessionArchiveService:
             f"No accessible workspace path for session {session_id}"
         )
 
+    async def latest_event_seq(self, session_id: UUID) -> int:
+        """Cheap durable-freshness signal: the MAX(seq) of the session's event log (0 when none).
+
+        A stable seq guarantees the durable transcript hasn't grown, so a cached turn count keyed
+        on it stays valid — lets the read path skip the expensive `get_transcript` rebuild when the
+        durable log is unchanged (see the FAULT-C reconciliation in the REST adapter)."""
+        if self._event_log_repository is None:
+            return 0
+        try:
+            return await self._event_log_repository.latest_seq(session_id)
+        except Exception:  # pragma: no cover - a freshness probe must never fail the read
+            return 0
+
     async def get_transcript(self, session_id: UUID) -> dict[str, Any]:
         """Return the persisted transcript payload for a session."""
         session_id_str = str(session_id)

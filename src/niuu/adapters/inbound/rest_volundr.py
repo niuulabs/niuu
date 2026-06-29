@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -1027,6 +1028,10 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        # PERF PROFILE (aggregate layer): the broker prepares the shallow payload in ~200ms, but
+        # the client-observed open is multiple seconds — time THIS layer's three steps (owner
+        # resolve, remote proxy fetch, JSON re-parse) to localize the gap. Merged into `_prep`.
+        t0 = time.perf_counter()
         instance, _ = await _find_session_owner(
             service,
             principal,
@@ -1034,6 +1039,7 @@ def create_volundr_router(
             session_id,
             embedded_app=embedded_forge_app,
         )
+        t_owner = time.perf_counter()
         response = await _request_remote(
             instance,
             request,
@@ -1042,8 +1048,16 @@ def create_volundr_router(
             params=_query_params(request),
             embedded_app=embedded_forge_app,
         )
+        t_remote = time.perf_counter()
         _ensure_remote_success(response)
         payload = response.json()
+        t_json = time.perf_counter()
+        if isinstance(payload, dict):
+            prep = dict(payload.get("_prep") or {})
+            prep["agg_find_owner_ms"] = round((t_owner - t0) * 1000, 1)
+            prep["agg_request_remote_ms"] = round((t_remote - t_owner) * 1000, 1)
+            prep["agg_json_parse_ms"] = round((t_json - t_remote) * 1000, 1)
+            payload["_prep"] = prep
         return payload if isinstance(payload, dict) else {"turns": []}
 
     @router.get("/sessions/{session_id}/tool-result/{tool_use_id}")
