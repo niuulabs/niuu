@@ -2652,6 +2652,23 @@ class ResidentStateConfig(BaseModel):
     )
 
 
+class MomentumExecutorConfig(BaseModel):
+    """Configured ExecutorPort adapter for explicit Momentum handoffs."""
+
+    adapter: str = Field(
+        default="ravn.adapters.executors.cli.CliTransportExecutor",
+        description="Fully-qualified ExecutorPort adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the ExecutorPort adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # NIU-571: Trust gradient — constrains tool availability per category
 # ---------------------------------------------------------------------------
@@ -3236,6 +3253,9 @@ class Settings(BaseSettings):
 
     resident_state: ResidentStateConfig = Field(default_factory=ResidentStateConfig)
     resident_inbox: ResidentInboxConfig = Field(default_factory=ResidentInboxConfig)
+    momentum_executor: MomentumExecutorConfig = Field(
+        default_factory=MomentumExecutorConfig
+    )
 
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)

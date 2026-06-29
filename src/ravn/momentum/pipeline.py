@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
+
+from pydantic import BaseModel, Field, ValidationError
 
 from ravn.domain.resident_continuation import ResidentMemoryEntry
 from ravn.domain.resident_state import ResidentStatePort
@@ -20,6 +23,7 @@ from ravn.momentum.models import (
     MomentumExtraction,
     MomentumExtractionDraft,
     MomentumExtractionRun,
+    MomentumHandoffResult,
     MomentumJudgment,
     MomentumJudgmentDisposition,
     MomentumPacket,
@@ -29,10 +33,12 @@ from ravn.momentum.models import (
 )
 from ravn.momentum.render import (
     parse_attention_decision,
+    parse_delegation_brief,
     render_artifact,
     render_attention_decision,
     render_delegation_brief,
     render_disposition,
+    render_handoff_result,
     render_judgment,
     render_packet,
     render_reflection,
@@ -56,11 +62,25 @@ from ravn.momentum.worker import (
     MomentumExtractionWorker,
     MomentumReflectionWorker,
 )
+from ravn.ports.executor import ExecutionAgentPort
 from ravn.ports.momentum_state_compactor import MomentumStateCompactorPort
 from ravn.ports.resident_signal import ResidentSignalSourcePort
 from ravn.resident_continuation import _slug
 from ravn.resident_inbox.models import ResidentInboxSignal
 from ravn.resident_inbox.serialization import render_inbox_signal
+
+
+class _StructuredHandoffResponse(BaseModel):
+    status: str = Field(pattern="^(completed|failed|blocked)$")
+    summary: str = Field(min_length=1)
+    output: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    produced_refs: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    follow_up_recommended: str = Field(
+        default="none",
+        pattern="^(none|reflect|ask_human|retry)$",
+    )
 
 
 @dataclass(frozen=True)
@@ -100,11 +120,17 @@ class MomentumDelegationResult:
     brief_ref: str
 
 
+@dataclass(frozen=True)
+class MomentumHandoffPipelineResult:
+    result: MomentumHandoffResult
+    result_ref: str
+
+
 class MomentumPipeline:
     def __init__(
         self,
         *,
-        worker: MomentumExtractionWorker,
+        worker: MomentumExtractionWorker | None = None,
         reflection_worker: MomentumReflectionWorker | None = None,
         attention_worker: MomentumAttentionWorker | None = None,
         delegation_worker: MomentumDelegationWorker | None = None,
@@ -212,6 +238,8 @@ class MomentumPipeline:
         selected_signal_id: str | None = None,
         selected_signal_ref: str | None = None,
     ) -> MomentumPipelineResult:
+        if self._worker is None:
+            raise ValueError("Momentum extraction worker is required")
         source_sha = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
         source_doc = SourceDocument(markdown)
         memory = await self._state.recall(
@@ -431,6 +459,91 @@ class MomentumPipeline:
         )
         return MomentumDelegationResult(brief=brief, brief_ref=brief_ref)
 
+    async def handoff_delegation(
+        self,
+        brief_ref: str,
+        *,
+        executor: ExecutionAgentPort,
+        signal_source: ResidentSignalSourcePort | None = None,
+    ) -> MomentumHandoffPipelineResult:
+        try:
+            entry = await self._state.read_artifact(brief_ref)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"delegation brief not found: {brief_ref}") from None
+
+        brief = parse_delegation_brief(entry.content)
+        _validate_handoffable_delegation_brief(brief)
+        context = await _load_handoff_context(self._state, brief, signal_source)
+        started_at = self._now or datetime.now(UTC)
+        input_frame = _handoff_input_frame(
+            brief_ref=entry.path or brief_ref,
+            brief_content=entry.content,
+            brief=brief,
+            context=context,
+        )
+        raw_output = ""
+        structured_metadata: dict[str, object]
+        try:
+            turn_result = await executor.run_turn(_handoff_prompt(input_frame))
+            raw_output = turn_result.response
+            parsed = _parse_handoff_executor_response(raw_output)
+            structured_metadata = {"structured_response": parsed.model_dump()}
+        except (ValueError, ValidationError, json.JSONDecodeError) as exc:
+            parsed = _StructuredHandoffResponse(
+                status="blocked",
+                summary="Executor returned invalid structured handoff result.",
+                output=raw_output,
+                errors=[str(exc)],
+                follow_up_recommended="ask_human",
+            )
+            structured_metadata = {"parse_error": str(exc)}
+        except RuntimeError as exc:
+            parsed = _StructuredHandoffResponse(
+                status="blocked",
+                summary="Executor handoff did not complete.",
+                errors=[str(exc)],
+                follow_up_recommended="retry",
+            )
+            structured_metadata = {"execution_error": str(exc)}
+
+        completed_at = self._now or datetime.now(UTC)
+        result = MomentumHandoffResult(
+            result_id=(
+                f"handoff-{_timestamp_id(completed_at)}-"
+                f"{_slug(brief.title) or brief.brief_id}-{uuid4().hex[:6]}"
+            ),
+            source_brief_ref=entry.path or brief_ref,
+            source_brief_id=brief.brief_id,
+            source_run_ref=brief.source_run_ref,
+            source_judgment_ref=brief.source_judgment_ref,
+            source_attention_ref=brief.source_attention_ref,
+            source_signal_id=brief.source_signal_id,
+            source_signal_ref=brief.source_signal_ref,
+            executor_label=getattr(executor, "llm_adapter_name", type(executor).__name__),
+            executor_context=brief.suggested_executor_context
+            or getattr(executor, "task_id", "")
+            or "configured executor",
+            status=parsed.status,  # type: ignore[arg-type]
+            summary=parsed.summary,
+            output=parsed.output or raw_output,
+            evidence_refs=parsed.evidence_refs,
+            produced_refs=parsed.produced_refs,
+            errors=parsed.errors,
+            follow_up_recommended=parsed.follow_up_recommended,  # type: ignore[arg-type]
+            started_at=started_at,
+            completed_at=completed_at,
+            created_at=completed_at,
+            raw_metadata={
+                "raw_output": raw_output,
+                **structured_metadata,
+            },
+        )
+        result_ref = await self._state.write_artifact(
+            _handoff_result_ref(result),
+            render_handoff_result(result),
+        )
+        return MomentumHandoffPipelineResult(result=result, result_ref=result_ref)
+
 
 def _materialize_attention_decision(
     draft: MomentumAttentionDecisionDraft,
@@ -532,6 +645,10 @@ def _delegation_ref(brief: MomentumDelegationBrief) -> str:
     return f"resident/continuation/momentum/delegations/{brief.brief_id}.md"
 
 
+def _handoff_result_ref(result: MomentumHandoffResult) -> str:
+    return f"resident/continuation/momentum/handoffs/{result.result_id}.md"
+
+
 @dataclass(frozen=True)
 class _ReflectionContext:
     run_content: str
@@ -554,6 +671,16 @@ class _DelegationContext:
     artifact_contents: list[str]
     selected_signal_id: str | None
     selected_signal_ref: str | None
+
+
+@dataclass(frozen=True)
+class _HandoffContext:
+    run_content: str
+    judgment_content: str
+    attention_content: str
+    selected_signal_content: str
+    current_state_content: str
+    evidence_contents: list[str]
 
 
 async def _load_reflection_context(
@@ -731,6 +858,166 @@ def _validate_delegation_brief(
         raise ValueError("Momentum delegation brief requires a source judgment ref")
     if draft.execution_performed:
         raise ValueError("delegation brief execution must be false")
+
+
+def _validate_handoffable_delegation_brief(brief: MomentumDelegationBrief) -> None:
+    if brief.validation_status != "valid":
+        raise ValueError("delegation brief is not valid")
+    if not brief.handoff_recommended:
+        reason = brief.no_handoff_reason or "handoff was not recommended"
+        raise ValueError(f"delegation brief is not handoffable: {reason}")
+    if brief.execution_performed:
+        raise ValueError("delegation brief already performed execution")
+    if not brief.source_judgment_ref:
+        raise ValueError("delegation brief is missing source judgment ref")
+
+
+async def _load_handoff_context(
+    state: ResidentStatePort,
+    brief: MomentumDelegationBrief,
+    signal_source: ResidentSignalSourcePort | None,
+) -> _HandoffContext:
+    run_content = (
+        await _read_required_content(
+            state,
+            brief.source_run_ref,
+            f"delegation source run not found: {brief.source_run_ref}",
+        )
+        if brief.source_run_ref
+        else ""
+    )
+    judgment_content = await _read_required_content(
+        state,
+        brief.source_judgment_ref,
+        f"delegation source judgment not found: {brief.source_judgment_ref}",
+    )
+    attention_content = (
+        await _read_required_content(
+            state,
+            brief.source_attention_ref,
+            f"delegation source attention decision not found: {brief.source_attention_ref}",
+        )
+        if brief.source_attention_ref
+        else ""
+    )
+    evidence_contents = [
+        content
+        for content in [
+            await _read_optional_content(state, ref)
+            for ref in brief.evidence_refs
+        ]
+        if content
+    ]
+    _, current_state_content = await _load_current_state(state)
+    return _HandoffContext(
+        run_content=run_content,
+        judgment_content=judgment_content,
+        attention_content=attention_content,
+        selected_signal_content=await _load_selected_signal_content(
+            state,
+            brief,
+            signal_source,
+        ),
+        current_state_content=current_state_content,
+        evidence_contents=evidence_contents,
+    )
+
+
+async def _load_selected_signal_content(
+    state: ResidentStatePort,
+    brief: MomentumDelegationBrief,
+    signal_source: ResidentSignalSourcePort | None,
+) -> str:
+    selected = brief.source_signal_ref or brief.source_signal_id
+    if not selected:
+        return ""
+    content = await _read_optional_content(state, selected)
+    if content:
+        return content
+    if signal_source is None:
+        return ""
+    try:
+        signal = await signal_source.load_signal(selected)
+    except FileNotFoundError:
+        raise ValueError(f"delegation source signal not found: {selected}") from None
+    return _source_text(signal)
+
+
+def _handoff_input_frame(
+    *,
+    brief_ref: str,
+    brief_content: str,
+    brief: MomentumDelegationBrief,
+    context: _HandoffContext,
+) -> str:
+    sections = [
+        "# Momentum Executor Handoff",
+        "",
+        "You are receiving one bounded Momentum delegation brief.",
+        "Follow the delegation brief. Use your native tools and permissions inside",
+        "the configured executor workspace. Do not exceed the brief's constraints",
+        "and out-of-scope boundaries. Report exactly what you did, what evidence",
+        "you produced, what failed, and what follow-up is recommended.",
+        "When resident refs are filesystem-backed in your configured workspace,",
+        "inspect them from disk as state/<resident-ref>.",
+        "",
+        "## Handoff Metadata",
+        "",
+        f"- brief_ref: {brief_ref}",
+        f"- brief_id: {brief.brief_id}",
+        f"- source_run_ref: {brief.source_run_ref or '-'}",
+        f"- source_judgment_ref: {brief.source_judgment_ref}",
+        f"- source_attention_ref: {brief.source_attention_ref or '-'}",
+        f"- source_signal_id: {brief.source_signal_id or '-'}",
+        f"- source_signal_ref: {brief.source_signal_ref or '-'}",
+        f"- suggested_executor_context: {brief.suggested_executor_context or '-'}",
+        "",
+        "## Delegation Brief",
+        "",
+        brief_content,
+    ]
+    sections.extend(_frame_section("Source Judgment", context.judgment_content))
+    sections.extend(_frame_section("Source Run", context.run_content))
+    sections.extend(_frame_section("Source Attention Decision", context.attention_content))
+    sections.extend(_frame_section("Selected Signal", context.selected_signal_content))
+    sections.extend(_frame_section("Current Momentum State", context.current_state_content))
+    if context.evidence_contents:
+        sections.extend(["## Evidence Artifacts", ""])
+        for index, content in enumerate(context.evidence_contents, start=1):
+            sections.extend([f"### Evidence {index}", "", content, ""])
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _handoff_prompt(input_frame: str) -> str:
+    return (
+        f"{input_frame}\n\n"
+        "Return exactly one structured JSON result. If you completed the bounded "
+        'delegation request, set status to "completed". Return raw JSON only: '
+        "no markdown fences, no introductory sentence, and no trailing commentary.\n"
+        "Use this contract:\n"
+        "{\n"
+        '  "status": "completed|failed|blocked",\n'
+        '  "summary": "short factual summary",\n'
+        '  "output": "audit text or executor report",\n'
+        '  "evidence_refs": ["optional refs"],\n'
+        '  "produced_refs": ["optional refs"],\n'
+        '  "errors": ["optional errors"],\n'
+        '  "follow_up_recommended": "none|reflect|ask_human|retry"\n'
+        "}\n"
+    )
+
+
+def _parse_handoff_executor_response(content: str) -> _StructuredHandoffResponse:
+    payload = json.loads(content.strip())
+    if not isinstance(payload, dict):
+        raise ValueError("executor response must be a JSON object")
+    return _StructuredHandoffResponse.model_validate(payload)
+
+
+def _frame_section(title: str, content: str) -> list[str]:
+    if not content:
+        return ["", f"## {title}", "", "-"]
+    return ["", f"## {title}", "", content]
 
 
 async def _load_current_state(state: ResidentStatePort):

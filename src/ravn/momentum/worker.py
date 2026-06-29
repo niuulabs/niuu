@@ -324,11 +324,18 @@ Return only JSON matching this shape:
   "execution_performed": false
 }
 
-Prepare a handoff brief only. Do not execute, delegate, contact humans, create
-tickets, start workflows, register capabilities, call tools, or choose concrete
-tool calls. The future executor will use its own native tools, skills, and
-permission system. Focus on intent, evidence, constraints, desired outcome, and
-success proof. If no handoff is needed, set handoff_recommended false and
+Prepare a handoff brief only. Do not execute the handoff yourself. The future
+executor will use its own native tools, skills, and permission system. Focus on
+intent, evidence, constraints, desired outcome, and success proof from the
+source artifacts. evidence_refs must be exact resident refs already present in
+the source artifacts; do not invent traversal paths or derived relative paths.
+When the handoff depends on attention/current-state/selected-signal lineage,
+preserve those linked resident refs in evidence_refs so executors can inspect
+the same audit chain from their configured workspace.
+Do not ask the future executor to redo completed upstream Momentum steps such
+as attention, pursuit, extraction, or delegation; the handoff starts from the
+persisted run, judgment, packet, and linked artifacts.
+If no handoff is needed, set handoff_recommended false and
 explain no_handoff_reason. If a missing skill or capability is discovered,
 record it as a capability_gap_note, not as a registration or action.
 """
@@ -461,9 +468,10 @@ def _delegation_input_frame(
 ) -> str:
     return (
         "## Delegation preparation bounds\n\n"
-        "Prepare a handoff brief artifact only. Do not execute anything. "
-        "Do not choose concrete tool calls. The future executor uses its own "
-        "native tools, skills, and permissions.\n\n"
+        "Prepare a handoff brief artifact only. Do not execute the handoff "
+        "yourself. The future executor uses its own native tools, skills, and "
+        "permissions; the brief should describe the bounded request and any "
+        "constraints from the source artifacts.\n\n"
         "## Source ref\n\n"
         f"{source_ref}\n\n"
         "## Current Momentum state\n\n"

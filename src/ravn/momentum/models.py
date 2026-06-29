@@ -22,6 +22,8 @@ AttentionNextAction = Literal[
     "update_understanding_only",
     "no_action",
 ]
+HandoffStatus = Literal["completed", "failed", "blocked"]
+HandoffFollowUp = Literal["none", "reflect", "ask_human", "retry"]
 DispositionOutcome = Literal["accepted", "dismissed", "wrong", "deferred", "acted"]
 MomentumTensionStatus = Literal["pending", "open", "confirmed", "changed", "resolved"]
 
@@ -325,6 +327,30 @@ class MomentumDelegationBrief(MomentumDelegationBriefDraft):
     created_at: datetime
     procedure_name: str = Field(min_length=1)
     model_name: str = Field(min_length=1)
+
+
+class MomentumHandoffResult(BaseModel):
+    result_id: str = Field(min_length=1)
+    source_brief_ref: str = Field(min_length=1)
+    source_brief_id: str = Field(min_length=1)
+    source_run_ref: str | None = None
+    source_judgment_ref: str | None = None
+    source_attention_ref: str | None = None
+    source_signal_id: str | None = None
+    source_signal_ref: str | None = None
+    executor_label: str = Field(min_length=1)
+    executor_context: str = Field(min_length=1)
+    status: HandoffStatus
+    summary: str = Field(min_length=1)
+    output: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    produced_refs: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    follow_up_recommended: HandoffFollowUp = "none"
+    started_at: datetime
+    completed_at: datetime
+    created_at: datetime
+    raw_metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class MomentumReflectionDraft(BaseModel):

@@ -6,6 +6,7 @@ Before changing code, read:
 - `.claude/rules/architecture.md`
 - `.claude/rules/module-boundaries.md`
 - `.claude/rules/dynamic-adapters.md`
+- `.claude/rules/reuse-before-build.md`
 - `.claude/rules/testing.md`
 - `.claude/rules/integrity.md`
 - any `.claude/rules/*.md` relevant to the files you touch

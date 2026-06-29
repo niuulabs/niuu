@@ -8,11 +8,13 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.adapters.executors.cli import CliTransportExecutor
 from ravn.adapters.resident_signal import (
     MarkdownResidentSignalSource,
     MimirResidentInboxSignalSource,
@@ -20,7 +22,8 @@ from ravn.adapters.resident_signal import (
 from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
-from ravn.domain.models import LLMResponse, StopReason, TokenUsage
+from ravn.config import MomentumExecutorConfig
+from ravn.domain.models import LLMResponse, StopReason, TokenUsage, TurnResult
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
@@ -34,6 +37,8 @@ from ravn.momentum import (
 )
 from ravn.momentum.models import (
     MomentumAttentionDecision,
+    MomentumDelegationBrief,
+    MomentumHandoffResult,
     MomentumStatePatch,
     MomentumStateTension,
 )
@@ -41,6 +46,7 @@ from ravn.momentum.render import (
     judgment_event_payload,
     parse_delegation_brief,
     render_attention_decision,
+    render_delegation_brief,
 )
 from ravn.momentum.state import (
     CURRENT_MOMENTUM_STATE_REF,
@@ -149,6 +155,79 @@ class StaticSignalSource:
             if ref_or_id in {signal.id, signal.raw_ref}:
                 return signal
         raise FileNotFoundError(ref_or_id)
+
+
+class FakeMomentumExecutorAgent:
+    def __init__(
+        self,
+        *,
+        status: str = "completed",
+        summary: str = "unit/mock executor handled the brief",
+        output: str = "unit/mock output",
+        follow_up_recommended: str = "reflect",
+    ) -> None:
+        self.status = status
+        self.summary = summary
+        self.output = output
+        self.follow_up_recommended = follow_up_recommended
+        self.calls: list[str] = []
+        self.llm_adapter_name = "unit-mock-executor"
+        self.task_id = "unit/mock boundary fake"
+
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": self.status,
+                "summary": self.summary,
+                "output": self.output,
+                "evidence_refs": ["resident/evidence/unit-mock.md"],
+                "produced_refs": (
+                    ["resident/produced/unit-mock.md"] if self.status == "completed" else []
+                ),
+                "errors": ["unit/mock failure"] if self.status != "completed" else [],
+                "follow_up_recommended": self.follow_up_recommended,
+            }
+        )
+        return TurnResult(
+            response=response,
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeInvalidExecutorAgent(FakeMomentumExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        return TurnResult(
+            response="free text is not a structured handoff result",
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeFencedExecutorAgent(FakeMomentumExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": "completed",
+                "summary": "unit/mock executor used fenced JSON",
+                "output": "unit/mock output",
+                "evidence_refs": [],
+                "produced_refs": ["resident/produced/unit-mock.md"],
+                "errors": [],
+                "follow_up_recommended": "none",
+            }
+        )
+        return TurnResult(
+            response=f"```json\n{response}\n```",
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
 
 
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
@@ -277,6 +356,23 @@ async def _seed_linked_momentum_run(
     return result.run_ref, result.judgment_ref, attention_ref
 
 
+async def _seed_delegation_brief(
+    state: LocalResidentState,
+    **payload_updates,
+) -> tuple[str, MomentumDelegationBrief]:
+    run_ref, _, _ = await _seed_linked_momentum_run(state)
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(FakeLLM(_payload()), model="fake-model"),
+        delegation_worker=MomentumDelegationWorker(
+            FakeLLM(_delegation_payload(**payload_updates)),
+            model="fake-model",
+        ),
+        state=state,
+        now=datetime(2026, 6, 27, 15, tzinfo=UTC),
+    ).prepare_delegation(run_ref)
+    return result.brief_ref, result.brief
+
+
 def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
     tmp_path: Path,
 ) -> None:
@@ -306,6 +402,64 @@ def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
         proof_root
         / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
     ).exists()
+
+
+def test_momentum_handoff_proof_seed_script_writes_only_state_and_signals(
+    tmp_path: Path,
+) -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "seed_momentum_handoff_proof.py"
+    )
+    proof_root = tmp_path / "proof"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(proof_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in result.stdout
+    assert "candidate_id: sig-attention-current-state-relevant" in result.stdout
+    assert "candidate_id: sig-attention-distractor" in result.stdout
+    assert "attention_ref:" not in result.stdout
+    assert "run_ref:" not in result.stdout
+    assert "judgment_ref:" not in result.stdout
+    assert "brief_ref:" not in result.stdout
+
+    assert (
+        proof_root / "state" / "resident/continuation/momentum/state/current.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
+    assert (
+        proof_root
+        / "state/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100400Z-distractor.md"
+    ).exists()
+    assert (
+        proof_root
+        / "state/resident/inbox/signals/20260628T100400Z-distractor.md"
+    ).exists()
+
+    forbidden = [
+        "state/resident/continuation/momentum/attention",
+        "state/resident/momentum/runs",
+        "state/resident/continuation/momentum/delegations",
+        "state/resident/continuation/momentum/handoffs",
+        "state/resident/continuation/momentum/handoffs/evidence",
+        "executor-reports",
+    ]
+    for relative in forbidden:
+        assert not (proof_root / relative).exists(), relative
 
 
 def test_real_llm_proof_helpers_do_not_force_semantic_answers() -> None:
@@ -1312,6 +1466,258 @@ async def test_momentum_delegation_leaves_source_artifacts_immutable(
     assert after == before
 
 
+@pytest.mark.asyncio
+async def test_momentum_handoff_unit_mock_persists_linked_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, brief = await _seed_delegation_brief(state)
+    executor = FakeMomentumExecutorAgent()
+
+    result = await MomentumPipeline(
+        state=state,
+        now=datetime(2026, 6, 27, 16, tzinfo=UTC),
+    ).handoff_delegation(
+        brief_ref,
+        executor=executor,
+        signal_source=StaticSignalSource(
+            [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+        ),
+    )
+
+    assert result.result_ref.startswith("resident/continuation/momentum/handoffs/")
+    assert result.result.source_brief_ref == brief_ref
+    assert result.result.source_brief_id == brief.brief_id
+    assert result.result.source_run_ref == brief.source_run_ref
+    assert result.result.source_judgment_ref == brief.source_judgment_ref
+    assert result.result.source_attention_ref == brief.source_attention_ref
+    assert result.result.source_signal_id == "sig-relevant"
+    assert result.result.source_signal_ref == "resident/inbox/signals/sig-relevant.md"
+    assert result.result.executor_label == "unit-mock-executor"
+    assert result.result.status == "completed"
+    assert result.result.produced_refs == ["resident/produced/unit-mock.md"]
+    assert result.result.follow_up_recommended == "reflect"
+    rendered = await state.read_artifact(result.result_ref)
+    parsed = MomentumHandoffResult.model_validate_json(
+        rendered.content.split("```json\n", 1)[1].split("\n```", 1)[0]
+    )
+    assert parsed.source_brief_ref == brief_ref
+    assert parsed.source_signal_id == "sig-relevant"
+    assert "Source Judgment" in executor.calls[0]
+    assert "Source Attention Decision" in executor.calls[0]
+    assert "Selected Signal" in executor.calls[0]
+    assert "Current Momentum State" in executor.calls[0]
+    preamble = executor.calls[0].split("## Delegation Brief", 1)[0]
+    assert "Follow the delegation brief." in preamble
+    assert "native tools and permissions" in preamble
+    assert "Do not mutate Momentum current state" not in preamble
+    assert "promote reflexes" not in preamble
+    assert "register capabilities" not in preamble
+    assert "schedule follow-up loops" not in preamble
+    assert "continue automatically" not in preamble
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_non_handoff_brief_creates_no_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(
+        state,
+        handoff_recommended=False,
+        no_handoff_reason="The judgment needs no executor.",
+    )
+
+    with pytest.raises(ValueError, match="not handoffable"):
+        await MomentumPipeline(state=state).handoff_delegation(
+            brief_ref,
+            executor=FakeMomentumExecutorAgent(),
+        )
+
+    assert await state.list_refs("resident/continuation/momentum/handoffs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_missing_brief_ref_fails_clearly(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    with pytest.raises(FileNotFoundError, match="delegation brief not found"):
+        await MomentumPipeline(state=state).handoff_delegation(
+            "resident/continuation/momentum/delegations/missing.md",
+            executor=FakeMomentumExecutorAgent(),
+        )
+
+    assert await state.list_refs("resident/continuation/momentum/handoffs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_execution_performed_brief_creates_no_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+    content = (await state.read_artifact(brief_ref)).content.replace(
+        '"execution_performed": false',
+        '"execution_performed": true',
+    )
+    bad_ref = await state.write_artifact(
+        "resident/continuation/momentum/delegations/executed.md",
+        content,
+    )
+
+    with pytest.raises(ValueError, match="delegation brief execution must be false"):
+        await MomentumPipeline(state=state).handoff_delegation(
+            bad_ref,
+            executor=FakeMomentumExecutorAgent(),
+        )
+
+    assert await state.list_refs("resident/continuation/momentum/handoffs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_missing_source_ref_fails_without_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    _, brief = await _seed_delegation_brief(state)
+    bad_brief = brief.model_copy(
+        update={"source_judgment_ref": "resident/momentum/runs/missing/judgment/missing.md"}
+    )
+    bad_ref = await state.write_artifact(
+        "resident/continuation/momentum/delegations/missing-source.md",
+        render_delegation_brief(bad_brief),
+    )
+
+    with pytest.raises(FileNotFoundError, match="delegation source judgment not found"):
+        await MomentumPipeline(state=state).handoff_delegation(
+            bad_ref,
+            executor=FakeMomentumExecutorAgent(),
+        )
+
+    assert await state.list_refs("resident/continuation/momentum/handoffs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_missing_selected_signal_fails_without_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    with pytest.raises(ValueError, match="delegation source signal not found"):
+        await MomentumPipeline(state=state).handoff_delegation(
+            brief_ref,
+            executor=FakeMomentumExecutorAgent(),
+            signal_source=StaticSignalSource([]),
+        )
+
+    assert await state.list_refs("resident/continuation/momentum/handoffs") == []
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_executor_failure_persists_failed_result(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeMomentumExecutorAgent(
+            status="failed",
+            summary="unit/mock executor failed",
+            output="",
+            follow_up_recommended="ask_human",
+        ),
+    )
+
+    assert result.result.status == "failed"
+    assert result.result.errors == ["unit/mock failure"]
+    assert result.result.follow_up_recommended == "ask_human"
+    assert await state.read_artifact(result.result_ref)
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_invalid_structured_executor_output_is_blocked(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeInvalidExecutorAgent(),
+    )
+
+    assert result.result.status == "blocked"
+    assert result.result.follow_up_recommended == "ask_human"
+    assert result.result.output == "free text is not a structured handoff result"
+    assert result.result.produced_refs == []
+    assert result.result.evidence_refs == []
+    assert result.result.errors
+    assert result.result.raw_metadata["raw_output"] == (
+        "free text is not a structured handoff result"
+    )
+    assert "parse_error" in result.result.raw_metadata
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_fenced_json_executor_output_is_blocked(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeFencedExecutorAgent(),
+    )
+
+    assert result.result.status == "blocked"
+    assert result.result.produced_refs == []
+    assert "parse_error" in result.result.raw_metadata
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_leaves_sources_and_state_immutable(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, brief = await _seed_delegation_brief(state)
+    refs = [
+        brief_ref,
+        brief.source_run_ref,
+        brief.source_judgment_ref,
+        brief.source_attention_ref,
+        CURRENT_MOMENTUM_STATE_REF,
+    ]
+    before = {
+        ref: (await state.read_artifact(ref)).content
+        for ref in refs
+        if ref
+    }
+    patches_before = await state.list_refs("resident/continuation/momentum/state/patches")
+
+    await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeMomentumExecutorAgent(),
+    )
+
+    after = {
+        ref: (await state.read_artifact(ref)).content
+        for ref in refs
+        if ref
+    }
+    assert after == before
+    assert (
+        await state.list_refs("resident/continuation/momentum/state/patches")
+    ) == patches_before
+    refs_after = await state.list_refs("resident/continuation/momentum")
+    assert not any("/reflections/" in ref or "/dispositions/" in ref for ref in refs_after)
+
+
 def test_momentum_core_does_not_import_concrete_delegation_implementations() -> None:
     core_files = [
         Path("src/ravn/momentum/pipeline.py"),
@@ -2289,6 +2695,122 @@ def test_momentum_delegate_cli_accepts_unlisted_executor_context(
     assert result.exit_code == 0, result.output
     assert "brief_ref: resident/continuation/momentum/delegations/" in result.output
     assert "suggested_executor_context: operator with native tools" in result.output
+
+
+def test_momentum_handoff_cli_prints_result_status_and_linkage(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        brief_ref, _ = await _seed_delegation_brief(state)
+        return brief_ref
+
+    brief_ref = asyncio.run(_seed())
+    source = StaticSignalSource(
+        [_candidate("sig-relevant", "Relevant signal", "Important living idea.")]
+    )
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
+    monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: source)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "handoff", brief_ref])
+
+    assert result.exit_code == 0, result.output
+    assert "handoff_result_ref: resident/continuation/momentum/handoffs/" in result.output
+    assert f"brief_ref: {brief_ref}" in result.output
+    assert "executor_label: unit-mock-executor" in result.output
+    assert "status: completed" in result.output
+    assert "source_run_ref: resident/momentum/runs/run-delegate/run.md" in result.output
+    assert "source_judgment_ref: resident/momentum/runs/run-delegate/judgment/" in result.output
+    assert (
+        "source_attention_ref: resident/continuation/momentum/attention/attention-test.md"
+        in result.output
+    )
+    assert "source_signal_id: sig-relevant" in result.output
+    assert "source_signal_ref: resident/inbox/signals/sig-relevant.md" in result.output
+    assert "produced_refs: resident/produced/unit-mock.md" in result.output
+    assert "follow_up_recommended: reflect" in result.output
+    assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
+
+
+def test_momentum_handoff_uses_existing_cli_transport_executor_config() -> None:
+    settings = SimpleNamespace(momentum_executor=MomentumExecutorConfig())
+
+    executor = commands._build_momentum_executor(settings)
+
+    assert isinstance(executor, CliTransportExecutor)
+
+
+def test_momentum_handoff_cli_invalid_brief_ref_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
+    monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: None)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(
+        commands.app,
+        ["momentum", "handoff", "resident/continuation/momentum/delegations/missing.md"],
+    )
+
+    assert result.exit_code == 1
+    assert "delegation brief not found" in result.output
+
+
+def test_momentum_handoff_cli_non_handoff_brief_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+
+    async def _seed() -> str:
+        brief_ref, _ = await _seed_delegation_brief(
+            state,
+            handoff_recommended=False,
+            no_handoff_reason="No executor is needed.",
+        )
+        return brief_ref
+
+    brief_ref = asyncio.run(_seed())
+    monkeypatch.setattr(
+        commands,
+        "_build_momentum_executor_agent",
+        lambda _s, _w: FakeMomentumExecutorAgent(),
+    )
+    monkeypatch.setattr(commands, "_build_optional_resident_inbox_signal_source", lambda _s: None)
+
+    async def _state(_settings, _workspace):
+        return state
+
+    monkeypatch.setattr(commands, "_build_resident_state", _state)
+
+    result = CliRunner().invoke(commands.app, ["momentum", "handoff", brief_ref])
+
+    assert result.exit_code == 1
+    assert "Cannot hand off delegation brief: delegation brief is not handoffable" in result.output
+    assert asyncio.run(
+        state.list_refs("resident/continuation/momentum/handoffs")
+    ) == []
 
 
 def test_momentum_reflect_cli_records_disposition_and_reflection(monkeypatch, tmp_path: Path):

@@ -109,10 +109,12 @@ class CodexSubprocessTransport(CLITransport):
         workspace_dir: str,
         model: str = "o4-mini",
         mcp_servers: list[dict] | None = None,
+        skip_git_repo_check: bool = False,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        self._skip_git_repo_check = skip_git_repo_check
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
         self._mcp_servers = list(mcp_servers or [])
         self._process: asyncio.subprocess.Process | None = None
@@ -149,12 +151,14 @@ class CodexSubprocessTransport(CLITransport):
         cmd = [
             codex_cli,
             "exec",
-            "--model",
-            self._model,
             "--json",
         ]
+        if self._model:
+            cmd.extend(["--model", self._model])
         if sandbox_mode:
             cmd.extend(["--sandbox", sandbox_mode])
+        if self._skip_git_repo_check:
+            cmd.append("--skip-git-repo-check")
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         cmd.append(content)
