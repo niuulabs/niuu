@@ -19,7 +19,7 @@
 - Carry reflected state into attention selection
   - id: tension-carry-reflected-state-into-attention
   - status: open
-  - summary: Prove the next selected resident signal is chosen because it addresses current Momentum state, not because an operator manually picked it.
+  - summary: Prove the next selected resident signal is chosen because it addresses current Momentum state, then carry the generated judgment into a read-only executor handoff report.
   - evidence_refs: resident/continuation/momentum/runs/proof/reflections/reflection-proof.md
   - source_refs: resident/continuation/momentum/state/patches/patch-proof.md
 
@@ -29,7 +29,7 @@
 
 ## Recent Lessons
 
-- Current-state handoff is only useful if future attention can see and apply it.
+- Current-state handoff is only useful if future attention can see and apply it, then hand a generated brief to an executor for read-only inspection/reporting.
 
 ## Candidate Reflexes (candidate-only)
 
@@ -58,7 +58,7 @@
     {
       "tension_id": "tension-carry-reflected-state-into-attention",
       "title": "Carry reflected state into attention selection",
-      "summary": "Prove the next selected resident signal is chosen because it addresses current Momentum state, not because an operator manually picked it.",
+      "summary": "Prove the next selected resident signal is chosen because it addresses current Momentum state, then carry the generated judgment into a read-only executor handoff report.",
       "status": "open",
       "evidence_refs": [
         "resident/continuation/momentum/runs/proof/reflections/reflection-proof.md"
@@ -71,7 +71,7 @@
   ],
   "stale_assumptions": [],
   "recent_lessons": [
-    "Current-state handoff is only useful if future attention can see and apply it."
+    "Current-state handoff is only useful if future attention can see and apply it, then hand a generated brief to an executor for read-only inspection/reporting."
   ],
   "candidate_reflexes": [],
   "candidate_capability_gaps": [],

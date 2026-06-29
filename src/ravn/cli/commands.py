@@ -5300,7 +5300,9 @@ def _build_momentum_executor_agent(settings: Settings, workspace: Path) -> Execu
         channel=SilentChannel(),
         system_prompt=(
             "You are a bounded Ravn/Skuld executor for one Momentum handoff. "
-            "Return only the requested structured JSON contract."
+            "Return only the requested structured JSON contract. Your entire "
+            "response must be exactly one JSON object: no prose, no markdown "
+            "fences, no explanation before it, and no trailing text."
         ),
         model=settings.effective_model(),
         max_iterations=1,

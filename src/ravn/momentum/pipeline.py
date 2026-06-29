@@ -954,6 +954,9 @@ def _handoff_input_frame(
         "# Momentum Executor Handoff",
         "",
         "You are receiving one bounded Momentum delegation brief.",
+        "For this handoff, completed means you successfully inspected the bounded",
+        "handoff frame and returned the required structured report.",
+        "Use blocked only if you genuinely cannot inspect the frame or report.",
         "Use your native tools and permissions. Report what you did, evidence or refs",
         "produced, failures, and whether reflection is recommended.",
         "Do not mutate Momentum current state, promote reflexes, register capabilities,",
@@ -989,6 +992,9 @@ def _handoff_input_frame(
 def _handoff_prompt(input_frame: str) -> str:
     return (
         f"{input_frame}\n\n"
+        "If you completed the read-only inspection/reporting request, set "
+        'status to "completed". Return raw JSON only: no markdown fences, no '
+        "introductory sentence, and no trailing commentary.\n"
         "Return exactly one JSON object, with no prose outside the JSON, using this contract:\n"
         "{\n"
         '  "status": "completed|failed|blocked",\n'
