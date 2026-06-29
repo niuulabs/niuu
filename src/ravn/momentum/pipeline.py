@@ -39,6 +39,7 @@ from ravn.momentum.render import (
     render_delegation_brief,
     render_disposition,
     render_handoff_result,
+    render_handoff_turn_trace,
     render_judgment,
     render_packet,
     render_reflection,
@@ -483,6 +484,7 @@ class MomentumPipeline:
         )
         raw_output = ""
         structured_metadata: dict[str, object]
+        turn_result = None
         try:
             turn_result = await executor.run_turn(_handoff_prompt(input_frame))
             raw_output = turn_result.response
@@ -507,11 +509,13 @@ class MomentumPipeline:
             structured_metadata = {"execution_error": str(exc)}
 
         completed_at = self._now or datetime.now(UTC)
+        result_id = (
+            f"handoff-{_timestamp_id(completed_at)}-"
+            f"{_slug(brief.title) or brief.brief_id}-{uuid4().hex[:6]}"
+        )
+        trace_ref = _handoff_trace_ref(result_id) if turn_result is not None else ""
         result = MomentumHandoffResult(
-            result_id=(
-                f"handoff-{_timestamp_id(completed_at)}-"
-                f"{_slug(brief.title) or brief.brief_id}-{uuid4().hex[:6]}"
-            ),
+            result_id=result_id,
             source_brief_ref=entry.path or brief_ref,
             source_brief_id=brief.brief_id,
             source_run_ref=brief.source_run_ref,
@@ -530,6 +534,7 @@ class MomentumPipeline:
             produced_refs=parsed.produced_refs,
             errors=parsed.errors,
             follow_up_recommended=parsed.follow_up_recommended,  # type: ignore[arg-type]
+            executor_trace_ref=trace_ref,
             started_at=started_at,
             completed_at=completed_at,
             created_at=completed_at,
@@ -538,6 +543,11 @@ class MomentumPipeline:
                 **structured_metadata,
             },
         )
+        if turn_result is not None:
+            await self._state.write_artifact(
+                trace_ref,
+                render_handoff_turn_trace(result=result, turn=turn_result),
+            )
         result_ref = await self._state.write_artifact(
             _handoff_result_ref(result),
             render_handoff_result(result),
@@ -647,6 +657,10 @@ def _delegation_ref(brief: MomentumDelegationBrief) -> str:
 
 def _handoff_result_ref(result: MomentumHandoffResult) -> str:
     return f"resident/continuation/momentum/handoffs/{result.result_id}.md"
+
+
+def _handoff_trace_ref(result_id: str) -> str:
+    return f"resident/continuation/momentum/handoffs/traces/{result_id}-turn.md"
 
 
 @dataclass(frozen=True)

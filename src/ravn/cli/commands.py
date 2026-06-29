@@ -5223,6 +5223,7 @@ async def _run_momentum_handoff(settings: Settings, brief_ref: str) -> None:
     typer.echo(f"source_attention_ref: {handoff.source_attention_ref or '-'}")
     typer.echo(f"source_signal_id: {handoff.source_signal_id or '-'}")
     typer.echo(f"source_signal_ref: {handoff.source_signal_ref or '-'}")
+    typer.echo(f"executor_trace_ref: {handoff.executor_trace_ref or '-'}")
     typer.echo(f"produced_refs: {', '.join(handoff.produced_refs) or '-'}")
     typer.echo(f"evidence_refs: {', '.join(handoff.evidence_refs) or '-'}")
     typer.echo(f"follow_up_recommended: {handoff.follow_up_recommended}")

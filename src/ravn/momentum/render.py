@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from ravn.domain.models import TurnResult
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     normalize_valkyrie_outcome,
@@ -275,6 +276,7 @@ def render_handoff_result(result: MomentumHandoffResult) -> str:
         f"- executor_context: {result.executor_context}\n"
         f"- status: {result.status}\n"
         f"- follow_up_recommended: {result.follow_up_recommended}\n"
+        f"- executor_trace_ref: {result.executor_trace_ref or '-'}\n"
         f"- started_at: {result.started_at.isoformat()}\n"
         f"- completed_at: {result.completed_at.isoformat()}\n"
         f"- created_at: {result.created_at.isoformat()}\n\n"
@@ -290,6 +292,45 @@ def render_handoff_result(result: MomentumHandoffResult) -> str:
         f"{_bullets_text(result.produced_refs)}\n\n"
         "## Errors\n\n"
         f"{_bullets_text(result.errors)}\n"
+    )
+
+
+def render_handoff_turn_trace(
+    *,
+    result: MomentumHandoffResult,
+    turn: TurnResult,
+) -> str:
+    usage = turn.usage
+    tool_calls = [
+        {"id": call.id, "name": call.name, "input": call.input}
+        for call in turn.tool_calls
+    ]
+    tool_results = [
+        {
+            "tool_call_id": item.tool_call_id,
+            "content": item.content,
+            "is_error": item.is_error,
+        }
+        for item in turn.tool_results
+    ]
+    return (
+        f"# Momentum Handoff Executor Trace {result.result_id}\n\n"
+        f"- result_id: {result.result_id}\n"
+        f"- source_brief_ref: {result.source_brief_ref}\n"
+        f"- executor_label: {result.executor_label}\n"
+        f"- tool_call_count: {len(tool_calls)}\n"
+        f"- tool_result_count: {len(tool_results)}\n"
+        f"- input_tokens: {usage.input_tokens}\n"
+        f"- output_tokens: {usage.output_tokens}\n"
+        f"- cache_read_tokens: {usage.cache_read_tokens}\n"
+        f"- cache_write_tokens: {usage.cache_write_tokens}\n"
+        f"- thinking_tokens: {usage.thinking_tokens}\n\n"
+        "## Tool Calls\n\n"
+        f"```json\n{json.dumps(tool_calls, indent=2)}\n```\n\n"
+        "## Tool Results\n\n"
+        f"```json\n{json.dumps(tool_results, indent=2)}\n```\n\n"
+        "## Response\n\n"
+        f"{turn.response or '-'}\n"
     )
 
 

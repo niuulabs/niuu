@@ -23,7 +23,7 @@ from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.cli import commands
 from ravn.config import MomentumExecutorConfig
-from ravn.domain.models import LLMResponse, StopReason, TokenUsage, TurnResult
+from ravn.domain.models import LLMResponse, StopReason, TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_PROPOSED,
     validate_valkyrie_outcome,
@@ -227,6 +227,32 @@ class FakeFencedExecutorAgent(FakeMomentumExecutorAgent):
             tool_calls=[],
             tool_results=[],
             usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeTraceExecutorAgent(FakeMomentumExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": "completed",
+                "summary": "unit/mock executor reported an existing trace",
+                "output": "unit/mock output",
+                "evidence_refs": ["resident/evidence/unit-mock.md"],
+                "produced_refs": ["resident/produced/unit-mock.md"],
+                "errors": [],
+                "follow_up_recommended": "none",
+            }
+        )
+        return TurnResult(
+            response=response,
+            tool_calls=[
+                ToolCall(id="call-1", name="Read", input={"file_path": "state/ref.md"})
+            ],
+            tool_results=[
+                ToolResult(tool_call_id="call-1", content="read result", is_error=False)
+            ],
+            usage=TokenUsage(input_tokens=11, output_tokens=7, cache_read_tokens=3),
         )
 
 
@@ -1497,12 +1523,21 @@ async def test_momentum_handoff_unit_mock_persists_linked_result(
     assert result.result.status == "completed"
     assert result.result.produced_refs == ["resident/produced/unit-mock.md"]
     assert result.result.follow_up_recommended == "reflect"
+    assert result.result.executor_trace_ref.startswith(
+        "resident/continuation/momentum/handoffs/traces/"
+    )
     rendered = await state.read_artifact(result.result_ref)
     parsed = MomentumHandoffResult.model_validate_json(
         rendered.content.split("```json\n", 1)[1].split("\n```", 1)[0]
     )
     assert parsed.source_brief_ref == brief_ref
     assert parsed.source_signal_id == "sig-relevant"
+    assert parsed.executor_trace_ref == result.result.executor_trace_ref
+    trace = (await state.read_artifact(result.result.executor_trace_ref)).content
+    assert "- tool_call_count: 0" in trace
+    assert "- tool_result_count: 0" in trace
+    assert '"input_tokens":' not in trace
+    assert "unit/mock output" in trace
     assert "Source Judgment" in executor.calls[0]
     assert "Source Attention Decision" in executor.calls[0]
     assert "Selected Signal" in executor.calls[0]
@@ -1515,6 +1550,30 @@ async def test_momentum_handoff_unit_mock_persists_linked_result(
     assert "register capabilities" not in preamble
     assert "schedule follow-up loops" not in preamble
     assert "continue automatically" not in preamble
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_persists_existing_executor_turn_trace(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeTraceExecutorAgent(),
+    )
+
+    trace = (await state.read_artifact(result.result.executor_trace_ref)).content
+    assert "- tool_call_count: 1" in trace
+    assert "- tool_result_count: 1" in trace
+    assert "- input_tokens: 11" in trace
+    assert "- output_tokens: 7" in trace
+    assert "- cache_read_tokens: 3" in trace
+    assert '"name": "Read"' in trace
+    assert '"file_path": "state/ref.md"' in trace
+    assert '"tool_call_id": "call-1"' in trace
+    assert '"content": "read result"' in trace
 
 
 @pytest.mark.asyncio
@@ -1656,11 +1715,14 @@ async def test_momentum_handoff_invalid_structured_executor_output_is_blocked(
     assert result.result.output == "free text is not a structured handoff result"
     assert result.result.produced_refs == []
     assert result.result.evidence_refs == []
+    assert result.result.executor_trace_ref
     assert result.result.errors
     assert result.result.raw_metadata["raw_output"] == (
         "free text is not a structured handoff result"
     )
     assert "parse_error" in result.result.raw_metadata
+    trace = (await state.read_artifact(result.result.executor_trace_ref)).content
+    assert "free text is not a structured handoff result" in trace
 
 
 @pytest.mark.asyncio
@@ -2738,6 +2800,7 @@ def test_momentum_handoff_cli_prints_result_status_and_linkage(
     )
     assert "source_signal_id: sig-relevant" in result.output
     assert "source_signal_ref: resident/inbox/signals/sig-relevant.md" in result.output
+    assert "executor_trace_ref: resident/continuation/momentum/handoffs/traces/" in result.output
     assert "produced_refs: resident/produced/unit-mock.md" in result.output
     assert "follow_up_recommended: reflect" in result.output
     assert source.calls == ["resident/inbox/signals/sig-relevant.md"]
