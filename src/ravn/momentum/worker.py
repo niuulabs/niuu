@@ -329,6 +329,9 @@ executor will use its own native tools, skills, and permission system. Focus on
 intent, evidence, constraints, desired outcome, and success proof from the
 source artifacts. evidence_refs must be exact resident refs already present in
 the source artifacts; do not invent traversal paths or derived relative paths.
+When the handoff depends on attention/current-state/selected-signal lineage,
+preserve those linked resident refs in evidence_refs so executors can inspect
+the same audit chain from their configured workspace.
 Do not ask the future executor to redo completed upstream Momentum steps such
 as attention, pursuit, extraction, or delegation; the handoff starts from the
 persisted run, judgment, packet, and linked artifacts.

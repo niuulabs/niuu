@@ -33,6 +33,7 @@ async def seed(root: Path) -> None:
         content = (FIXTURES / name).read_text(encoding="utf-8")
         signal = parse_inbox_signal(content)
         await mimir.upsert_page(ref, content)
+        await state.write_artifact(ref, content)
         signal_rows.append((ref, signal.id, signal.summary))
 
     config_path = _write_config(root)

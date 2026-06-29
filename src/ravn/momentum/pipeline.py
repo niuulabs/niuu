@@ -954,9 +954,12 @@ def _handoff_input_frame(
         "# Momentum Executor Handoff",
         "",
         "You are receiving one bounded Momentum delegation brief.",
-        "Respect the delegation brief and your native executor tools and permissions.",
-        "Report what you did, evidence or refs produced, failures, and whether",
-        "reflection is recommended. Do not continue beyond the bounded brief.",
+        "Follow the delegation brief. Use your native tools and permissions inside",
+        "the configured executor workspace. Do not exceed the brief's constraints",
+        "and out-of-scope boundaries. Report exactly what you did, what evidence",
+        "you produced, what failed, and what follow-up is recommended.",
+        "When resident refs are filesystem-backed in your configured workspace,",
+        "inspect them from disk as state/<resident-ref>.",
         "",
         "## Handoff Metadata",
         "",
@@ -988,10 +991,10 @@ def _handoff_input_frame(
 def _handoff_prompt(input_frame: str) -> str:
     return (
         f"{input_frame}\n\n"
-        "If you completed the bounded delegation request, set "
-        'status to "completed". Return raw JSON only: no markdown fences, no '
-        "introductory sentence, and no trailing commentary.\n"
-        "Return exactly one JSON object, with no prose outside the JSON, using this contract:\n"
+        "Return exactly one structured JSON result. If you completed the bounded "
+        'delegation request, set status to "completed". Return raw JSON only: '
+        "no markdown fences, no introductory sentence, and no trailing commentary.\n"
+        "Use this contract:\n"
         "{\n"
         '  "status": "completed|failed|blocked",\n'
         '  "summary": "short factual summary",\n'
@@ -1005,16 +1008,7 @@ def _handoff_prompt(input_frame: str) -> str:
 
 
 def _parse_handoff_executor_response(content: str) -> _StructuredHandoffResponse:
-    text = content.strip()
-    if text.startswith("```json"):
-        text = text.removeprefix("```json").strip()
-        if text.endswith("```"):
-            text = text[:-3].strip()
-    elif text.startswith("```"):
-        text = text.removeprefix("```").strip()
-        if text.endswith("```"):
-            text = text[:-3].strip()
-    payload = json.loads(text)
+    payload = json.loads(content.strip())
     if not isinstance(payload, dict):
         raise ValueError("executor response must be a JSON object")
     return _StructuredHandoffResponse.model_validate(payload)

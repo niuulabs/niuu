@@ -208,6 +208,28 @@ class FakeInvalidExecutorAgent(FakeMomentumExecutorAgent):
         )
 
 
+class FakeFencedExecutorAgent(FakeMomentumExecutorAgent):
+    async def run_turn(self, user_input: str) -> TurnResult:
+        self.calls.append(user_input)
+        response = json.dumps(
+            {
+                "status": "completed",
+                "summary": "unit/mock executor used fenced JSON",
+                "output": "unit/mock output",
+                "evidence_refs": [],
+                "produced_refs": ["resident/produced/unit-mock.md"],
+                "errors": [],
+                "follow_up_recommended": "none",
+            }
+        )
+        return TurnResult(
+            response=f"```json\n{response}\n```",
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
 async def _markdown_signal(path: Path) -> ResidentInboxSignal:
     return await MarkdownResidentSignalSource().load_signal(str(path))
 
@@ -417,7 +439,15 @@ def test_momentum_handoff_proof_seed_script_writes_only_state_and_signals(
     ).exists()
     assert (
         proof_root
+        / "state/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
+    assert (
+        proof_root
         / "mimir/wiki/resident/inbox/signals/20260628T100400Z-distractor.md"
+    ).exists()
+    assert (
+        proof_root
+        / "state/resident/inbox/signals/20260628T100400Z-distractor.md"
     ).exists()
 
     forbidden = [
@@ -425,6 +455,8 @@ def test_momentum_handoff_proof_seed_script_writes_only_state_and_signals(
         "state/resident/momentum/runs",
         "state/resident/continuation/momentum/delegations",
         "state/resident/continuation/momentum/handoffs",
+        "state/resident/continuation/momentum/handoffs/evidence",
+        "executor-reports",
     ]
     for relative in forbidden:
         assert not (proof_root / relative).exists(), relative
@@ -1475,6 +1507,14 @@ async def test_momentum_handoff_unit_mock_persists_linked_result(
     assert "Source Attention Decision" in executor.calls[0]
     assert "Selected Signal" in executor.calls[0]
     assert "Current Momentum State" in executor.calls[0]
+    preamble = executor.calls[0].split("## Delegation Brief", 1)[0]
+    assert "Follow the delegation brief." in preamble
+    assert "native tools and permissions" in preamble
+    assert "Do not mutate Momentum current state" not in preamble
+    assert "promote reflexes" not in preamble
+    assert "register capabilities" not in preamble
+    assert "schedule follow-up loops" not in preamble
+    assert "continue automatically" not in preamble
 
 
 @pytest.mark.asyncio
@@ -1620,6 +1660,23 @@ async def test_momentum_handoff_invalid_structured_executor_output_is_blocked(
     assert result.result.raw_metadata["raw_output"] == (
         "free text is not a structured handoff result"
     )
+    assert "parse_error" in result.result.raw_metadata
+
+
+@pytest.mark.asyncio
+async def test_momentum_handoff_fenced_json_executor_output_is_blocked(
+    tmp_path: Path,
+) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    brief_ref, _ = await _seed_delegation_brief(state)
+
+    result = await MomentumPipeline(state=state).handoff_delegation(
+        brief_ref,
+        executor=FakeFencedExecutorAgent(),
+    )
+
+    assert result.result.status == "blocked"
+    assert result.result.produced_refs == []
     assert "parse_error" in result.result.raw_metadata
 
 
