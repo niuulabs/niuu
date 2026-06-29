@@ -1057,6 +1057,9 @@ def create_volundr_router(
             prep["agg_find_owner_ms"] = round((t_owner - t0) * 1000, 1)
             prep["agg_request_remote_ms"] = round((t_remote - t_owner) * 1000, 1)
             prep["agg_json_parse_ms"] = round((t_json - t_remote) * 1000, 1)
+            # Total server-side time the client subtracts from its round-trip to isolate network
+            # TRANSIT (the dominant phone cost): transit = client_fetch_ms - server_total_ms.
+            prep["server_total_ms"] = round((t_json - t0) * 1000, 1)
             payload["_prep"] = prep
         return payload if isinstance(payload, dict) else {"turns": []}
 

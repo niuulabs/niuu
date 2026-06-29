@@ -2628,6 +2628,17 @@ def create_router(
                 "/sessions/{id}/tool-result/{tool_use_id}."
             ),
         ),
+        limit: int = Query(
+            0,
+            ge=0,
+            description="Window to the last N turns (0 = all). The response carries total_turns "
+            "+ window_offset; fetch older turns with `before`.",
+        ),
+        before: int = Query(
+            0,
+            ge=0,
+            description="Skip N turns from the end before applying `limit` (Show-earlier paging).",
+        ),
     ) -> dict:
         """Return conversation history from a live session or stopped-session workspace.
 
@@ -2640,23 +2651,41 @@ def create_router(
         timings: dict[str, float] = {}
 
         def _maybe_elide(payload: dict, fetch_ms: float | None = None) -> dict:
-            """Elide (when shallow) AND attach a server-side perf summary: time the volundr
-            re-elide, merge the broker's `_prep` (build/elide ms), and log one `[perf]` line — so
-            the whole shallow-prep breakdown is visible in the response `_prep` and the log."""
+            """WINDOW (when limit>0) + elide (when shallow) + attach a server-side perf summary.
+
+            Windowing slices the turns to the LAST `limit` (skipping `before` from the end for
+            Show-earlier paging) and reports `total_turns` + `window_offset` so the client can show
+            "N earlier" and page older — this is the big TRANSIT win (a 1.7MB/82-turn open becomes
+            ~300KB/15 turns). The perf `_prep` block + `[perf]` log make prep-vs-transit visible."""
             if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
                 return payload
-            out = payload
+            all_turns = payload["turns"]
+            total = len(all_turns)
+            if limit > 0:
+                end = max(0, total - before)
+                start = max(0, end - limit)
+                turns = all_turns[start:end]
+                window_offset = start  # older turns available before this window
+            else:
+                turns = all_turns
+                window_offset = 0
             reelide_ms = 0.0
             if shallow:
                 t = time.perf_counter()
-                out = {**payload, "turns": elide_turns(payload["turns"])}
+                turns = elide_turns(turns)
                 reelide_ms = (time.perf_counter() - t) * 1000.0
             prep = dict(payload.get("_prep") or {})
             prep.update(timings)
             if fetch_ms is not None:
                 prep["volundr_fetch_ms"] = round(fetch_ms, 1)
             prep["volundr_reelide_ms"] = round(reelide_ms, 1)
-            out = {**out, "_prep": prep}
+            out = {
+                **payload,
+                "turns": turns,
+                "total_turns": total,
+                "window_offset": window_offset,
+                "_prep": prep,
+            }
             logger.info(
                 "[perf] conversation session=%s shallow=%s fetch=%sms reelide=%.1fms "
                 "broker_build=%sms broker_elide=%sms turns=%s",
