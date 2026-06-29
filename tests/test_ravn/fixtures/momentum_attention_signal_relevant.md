@@ -31,7 +31,7 @@ Fixture for NIU-1077 attention proof.
   "kind": "operator.directed_message",
   "observed_at": "2026-06-28T10:05:00Z",
   "payload": {
-    "content": "# Attention Proof Signal\n\nThis signal directly addresses the open Momentum tension: prove the next selected resident signal is chosen because it addresses current Momentum state, then carry the generated judgment into a read-only executor handoff report.\n\nExpected next step: extract this selected signal through the normal Momentum inbox path after attention selects it, prepare a delegation brief that asks only for read-only inspection/reporting of the bounded handoff frame, and hand that brief to configured executors. The executor should not mutate Momentum current state, register capabilities, create work items, run reflection, execute follow-up actions, or change code."
+    "content": "# Attention Proof Signal\n\nThis signal directly addresses the open Momentum tension: prove the next selected resident signal is chosen because it addresses current Momentum state, then carry the generated judgment into an executor handoff that can inspect resident artifacts from its configured workspace and write a bounded report artifact.\n\nExpected next step: extract this selected signal through the normal Momentum inbox path after attention selects it, prepare a delegation brief that asks each configured executor to inspect the persisted resident artifacts in its workspace, write a concise executor-specific report under executor-reports/, and return the structured handoff result with evidence_refs and produced_refs."
   },
   "processed_at": "",
   "raw_ref": "proof:signal:current-state-attention",

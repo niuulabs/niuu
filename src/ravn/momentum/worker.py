@@ -324,14 +324,15 @@ Return only JSON matching this shape:
   "execution_performed": false
 }
 
-Prepare a handoff brief only. The v0 handoff is read-only inspection/reporting:
-ask the future executor to inspect the bounded handoff frame and return a
-structured report. Do not ask it to mutate Momentum current state, perform
-authoritative state updates, change code, create tickets, start workflows,
-register capabilities, run reflection, execute follow-up actions, or choose
-concrete tool calls. The future executor will use its own native tools, skills,
-and permission system. Focus on intent, evidence, constraints, desired outcome,
-and success proof. If no handoff is needed, set handoff_recommended false and
+Prepare a handoff brief only. Do not execute the handoff yourself. The future
+executor will use its own native tools, skills, and permission system. Focus on
+intent, evidence, constraints, desired outcome, and success proof from the
+source artifacts. evidence_refs must be exact resident refs already present in
+the source artifacts; do not invent traversal paths or derived relative paths.
+Do not ask the future executor to redo completed upstream Momentum steps such
+as attention, pursuit, extraction, or delegation; the handoff starts from the
+persisted run, judgment, packet, and linked artifacts.
+If no handoff is needed, set handoff_recommended false and
 explain no_handoff_reason. If a missing skill or capability is discovered,
 record it as a capability_gap_note, not as a registration or action.
 """
@@ -464,13 +465,10 @@ def _delegation_input_frame(
 ) -> str:
     return (
         "## Delegation preparation bounds\n\n"
-        "Prepare a read-only handoff brief artifact only. The future executor "
-        "must only inspect the bounded handoff frame and return a structured "
-        "report. Do not ask it to mutate Momentum current state, perform an "
-        "authoritative state update, change code, create tickets, start "
-        "workflows, register capabilities, run reflection, execute follow-up "
-        "actions, or choose concrete tool calls. The future executor uses its "
-        "own native tools, skills, and permissions.\n\n"
+        "Prepare a handoff brief artifact only. Do not execute the handoff "
+        "yourself. The future executor uses its own native tools, skills, and "
+        "permissions; the brief should describe the bounded request and any "
+        "constraints from the source artifacts.\n\n"
         "## Source ref\n\n"
         f"{source_ref}\n\n"
         "## Current Momentum state\n\n"

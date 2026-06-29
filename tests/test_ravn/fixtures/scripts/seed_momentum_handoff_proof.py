@@ -59,6 +59,9 @@ def _write_config(root: Path) -> Path:
         "mimir:\n"
         "  enabled: true\n"
         f"  path: {root / 'mimir'}\n"
+        "permission:\n"
+        "  mode: workspace_write\n"
+        f"  workspace_root: {root}\n"
         "llm:\n"
         "  model: claude-opus-4-8[1m]\n"
         "  max_tokens: 8192\n"
@@ -76,7 +79,8 @@ def _write_config(root: Path) -> Path:
         "  kwargs:\n"
         "    transport_adapter: skuld.transports.codex.CodexSubprocessTransport\n"
         "    transport_kwargs:\n"
-        "      model: ''\n",
+        "      model: ''\n"
+        "      skip_git_repo_check: true\n",
         encoding="utf-8",
     )
     return config
