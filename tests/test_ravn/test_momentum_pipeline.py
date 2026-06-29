@@ -382,6 +382,54 @@ def test_momentum_delegation_proof_seed_script_replays_committed_fixtures(
     ).exists()
 
 
+def test_momentum_handoff_proof_seed_script_writes_only_state_and_signals(
+    tmp_path: Path,
+) -> None:
+    script = (
+        Path(__file__).parent
+        / "fixtures"
+        / "scripts"
+        / "seed_momentum_handoff_proof.py"
+    )
+    proof_root = tmp_path / "proof"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(proof_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "current_state_ref: resident/continuation/momentum/state/current.md" in result.stdout
+    assert "candidate_id: sig-attention-current-state-relevant" in result.stdout
+    assert "candidate_id: sig-attention-distractor" in result.stdout
+    assert "attention_ref:" not in result.stdout
+    assert "run_ref:" not in result.stdout
+    assert "judgment_ref:" not in result.stdout
+    assert "brief_ref:" not in result.stdout
+
+    assert (
+        proof_root / "state" / "resident/continuation/momentum/state/current.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100500Z-current-state-attention.md"
+    ).exists()
+    assert (
+        proof_root
+        / "mimir/wiki/resident/inbox/signals/20260628T100400Z-distractor.md"
+    ).exists()
+
+    forbidden = [
+        "state/resident/continuation/momentum/attention",
+        "state/resident/momentum/runs",
+        "state/resident/continuation/momentum/delegations",
+        "state/resident/continuation/momentum/handoffs",
+    ]
+    for relative in forbidden:
+        assert not (proof_root / relative).exists(), relative
+
+
 def test_real_llm_proof_helpers_do_not_force_semantic_answers() -> None:
     script = (
         Path(__file__).parent
