@@ -165,6 +165,27 @@ def _durable_count_cache_put(session_id: str, seq: int, count: int) -> None:
     _DURABLE_COUNT_CACHE[session_id] = (seq, count)
 
 
+# Sessions with an in-flight background durable-count warm (dedup so a burst of cold polls spawns
+# at most ONE rebuild per session).
+_DURABLE_WARMING: set[str] = set()
+
+
+async def _warm_durable_count(
+    forge: ForgeService, session_id: UUID, seq: int, sid_str: str
+) -> None:
+    """Background: rebuild the durable transcript ONCE to populate the count cache at ``seq`` so
+    the next conversation poll can detect a desync WITHOUT blocking the (cold) open. Fire-and-
+    forget; never raises into the event loop."""
+    try:
+        durable = await forge.get_transcript(session_id)
+        turns = durable.get("turns") if isinstance(durable, dict) else None
+        _durable_count_cache_put(sid_str, seq, len(turns) if isinstance(turns, list) else 0)
+    except Exception:  # pragma: no cover - a background warmer must never crash the loop
+        pass
+    finally:
+        _DURABLE_WARMING.discard(sid_str)
+
+
 def _live_transcript_is_renderable(payload: object) -> bool:
     """True if a live-pod conversation result is worth returning verbatim.
 
@@ -2704,11 +2725,13 @@ def create_router(
                         if not (is_streaming or _live_body_has_in_progress_turn(live)):
                             live_turns = live.get("turns") if isinstance(live, dict) else None
                             live_count = len(live_turns) if isinstance(live_turns, list) else 0
-                            # CHEAP GATE: the durable count is stable while the event log hasn't
-                            # grown, so cache it keyed on MAX(seq). A hit at the current seq where
-                            # durable is NOT ahead of live skips the ~4s rebuild (the hot poll
-                            # path). Only a new seq, a cold cache, or a short live body (possible
-                            # desync) pays the rebuild. seq==0 (no event log) never caches.
+                            # CHEAP GATE + OPTIMISTIC OPEN: detecting a desync (broker serving
+                            # fewer turns than the durable log) needs the durable turn count, but
+                            # rebuilding the whole transcript for it is ~4s on a big session. Cache
+                            # the count keyed on MAX(seq): a warm hit answers instantly; a COLD miss
+                            # serves the live body NOW and warms the count in the BACKGROUND, so the
+                            # open never blocks on the rebuild. A real desync (rare; only after a
+                            # broker resume) self-heals on the next reconcile poll once warm.
                             sid_str = str(session_id)
                             seq = await forge.durable_latest_seq(session_id)
                             cached = _DURABLE_COUNT_CACHE.get(sid_str)
@@ -2717,10 +2740,16 @@ def create_router(
                                 if (cached is not None and seq > 0 and cached[0] == seq)
                                 else None
                             )
-                            if durable_count is not None and durable_count <= live_count:
-                                # Durable not ahead of live -> live is complete; no rebuild needed.
-                                timings["fault_c_cached"] = 1.0
-                            else:
+                            if durable_count is None:
+                                # COLD: serve live immediately; warm the count off the request path.
+                                timings["fault_c_optimistic"] = 1.0
+                                if seq > 0 and sid_str not in _DURABLE_WARMING:
+                                    _DURABLE_WARMING.add(sid_str)
+                                    asyncio.create_task(
+                                        _warm_durable_count(forge, session_id, seq, sid_str)
+                                    )
+                            elif durable_count > live_count:
+                                # WARM + desync: rebuild to return the fuller durable body (rare).
                                 t_dur = time.perf_counter()
                                 try:
                                     durable = await forge.get_transcript(session_id)
@@ -2732,20 +2761,23 @@ def create_router(
                                 durable_turns = (
                                     durable.get("turns") if isinstance(durable, dict) else None
                                 )
-                                durable_count = (
+                                rebuilt = (
                                     len(durable_turns) if isinstance(durable_turns, list) else 0
                                 )
-                                _durable_count_cache_put(sid_str, seq, durable_count)
-                                if durable is not None and durable_count > live_count:
+                                _durable_count_cache_put(sid_str, seq, rebuilt)
+                                if durable is not None and rebuilt > live_count:
                                     logger.info(
                                         "Live conversation for session %s is short "
                                         "(%d turns) vs durable rebuild (%d turns); "
                                         "preferring durable (FAULT C desync)",
                                         _sanitize_log(session_id),
                                         live_count,
-                                        durable_count,
+                                        rebuilt,
                                     )
                                     return _maybe_elide(durable)
+                            else:
+                                # Warm + live complete (durable not ahead) — no rebuild.
+                                timings["fault_c_cached"] = 1.0
                         # A freshly-restarted broker already elided at the source;
                         # re-eliding here is idempotent (placeholders have no
                         # content) and lets a long-running broker that predates
