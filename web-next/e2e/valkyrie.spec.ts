@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('odin review inbox lists pending decisions with full lineage', async ({ page }) => {
-  await page.goto('/valkyrie');
+  await page.goto('/valkyrie/inbox');
 
   await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('review-card')).toHaveCount(3);
@@ -11,7 +11,7 @@ test('odin review inbox lists pending decisions with full lineage', async ({ pag
 });
 
 test('operator can inspect the artifact and approve a held build', async ({ page }) => {
-  await page.goto('/valkyrie');
+  await page.goto('/valkyrie/inbox');
   await expect(page.getByTestId('review-card')).toHaveCount(3);
 
   await page
@@ -28,7 +28,7 @@ test('operator can inspect the artifact and approve a held build', async ({ page
 });
 
 test('rejecting without a reason is refused', async ({ page }) => {
-  await page.goto('/valkyrie');
+  await page.goto('/valkyrie/inbox');
   await expect(page.getByTestId('review-card')).toHaveCount(3);
 
   await page.getByRole('button', { name: /reject/i }).click();
@@ -46,16 +46,16 @@ test('fleet view exposes autonomy control per resident', async ({ page }) => {
   await expect(cards.first().getByRole('combobox')).toBeVisible();
 });
 
-test('activity shows the decided ledger', async ({ page }) => {
-  await page.goto('/valkyrie/activity');
+test('activity shows fleet telemetry by default', async ({ page }) => {
+  await page.goto('/valkyrie');
 
   await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('activity-row').first()).toContainText('decided by');
+  await expect(page.getByTestId('activity-row').first()).toBeVisible();
 });
 
-test('legacy valkyrie routes redirect to the inbox', async ({ page }) => {
+test('legacy valkyrie routes redirect to activity', async ({ page }) => {
   await page.goto('/valkyries/learning');
 
   await expect(page).toHaveURL(/\/valkyrie$/);
-  await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
 });

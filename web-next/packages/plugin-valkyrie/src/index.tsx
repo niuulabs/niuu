@@ -33,22 +33,27 @@ export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
   rune: 'ᛒ',
   title: 'Valkyrie',
-  subtitle: 'odin review',
+  subtitle: 'resident telemetry',
   tabs: [
-    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie' },
+    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie' },
     { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
-    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
+    { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/valkyrie',
-      component: () => <InboxPage />,
+      component: () => <ActivityPage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/valkyrie/fleet',
       component: () => <FleetPage />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyrie/inbox',
+      component: () => <InboxPage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

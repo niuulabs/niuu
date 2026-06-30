@@ -125,6 +125,15 @@ def _environment_id(record: dict[str, Any]) -> str:
     return f"env-{raw_id}"
 
 
+def _canonical_environment_id(value: Any) -> str:
+    raw_id = str(value or "").strip()
+    if not raw_id:
+        return "unknown"
+    if raw_id == "unknown" or raw_id.startswith("env-"):
+        return raw_id
+    return f"env-k8s-{_slug(raw_id)}"
+
+
 def _valkyrie_id(record: dict[str, Any], environment_id: str) -> str:
     explicit = str(_field(record, "valkyrieId", "valkyrie_id", default="")).strip()
     if explicit:
@@ -349,7 +358,7 @@ def _payload_float(payload: dict[str, Any], key: str) -> float:
 
 
 def _event_environment_id(event: dict[str, Any], payload: dict[str, Any]) -> str:
-    return str(
+    return _canonical_environment_id(
         payload.get("environment_id")
         or payload.get("environmentId")
         or event.get("tenant_id")
@@ -1458,13 +1467,10 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
     for entry in runtime:
         if not isinstance(entry, dict):
             continue
-        env_id = str(entry.get("environmentId") or "")
+        env_id = _canonical_environment_id(entry.get("environmentId"))
         if not env_id:
             continue
         observed_by_env[env_id] = entry
-        observed_by_env[f"env-k8s-{env_id}"] = entry
-        observed_by_env[f"env-host-{env_id}"] = entry
-        observed_by_env[f"env-printer-{env_id}"] = entry
     for environment in dashboard.get("environments", []):
         if not isinstance(environment, dict):
             continue
@@ -2670,10 +2676,11 @@ class ValkyrieDashboardProjection:
                 event for event in filtered if str(event.get("eventType") or "") == event_type
             ]
         if environment_id:
+            canonical_environment_id = _canonical_environment_id(environment_id)
             filtered = [
                 event
                 for event in filtered
-                if str(event.get("environmentId") or "") == environment_id
+                if str(event.get("environmentId") or "") == canonical_environment_id
             ]
         if valkyrie_id:
             filtered = [

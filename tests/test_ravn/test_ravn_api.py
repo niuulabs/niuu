@@ -401,7 +401,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["totals"]["llmTokens"] == 42
     assert telemetry["totals"]["logEvents"] == 1
     assert telemetry["totals"]["budgetDrops"] == 1
-    assert telemetry["byEnvironment"][0]["environmentId"] == "ymir"
+    assert telemetry["byEnvironment"][0]["environmentId"] == "env-k8s-ymir"
     assert telemetry["byEnvironment"][0]["tasksEnqueued"] == 2
     assert telemetry["byEnvironment"][0]["judgments"] == 1
     assert telemetry["recentOutcomes"][0]["type"] == "action"
@@ -411,7 +411,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
         == "Persistent ImagePullBackOff requires inspection."
     )
     assert telemetry["recentEvents"][0]["kind"] == "log"
-    assert telemetry["recentEvents"][0]["environmentId"] == "ymir"
+    assert telemetry["recentEvents"][0]["environmentId"] == "env-k8s-ymir"
     assert telemetry["recentLogs"][0]["message"] == "daily budget warning"
     assert telemetry["recentLearning"][0]["status"] == "wakefulness"
     assert telemetry["recentToolNeeds"][0]["capability"] == "k8s.inspect_pod"
@@ -919,8 +919,20 @@ def test_valkyrie_telemetry_events_can_be_filtered_and_limited(client: TestClien
     events = response.json()
     assert len(events) == 1
     assert events[0]["eventType"] == "learning.adoption.recorded"
-    assert events[0]["environmentId"] == "ymir"
+    assert events[0]["environmentId"] == "env-k8s-ymir"
     assert events[0]["details"]["learning_id"] == "learning-2"
+
+    canonical_response = client.get(
+        "/api/v1/ravn/valkyrie/telemetry/events",
+        params={
+            "event_type": "learning.adoption.recorded",
+            "environment_id": "env-k8s-ymir",
+            "contains": "learning-2",
+            "limit": 1,
+        },
+    )
+    assert canonical_response.status_code == 200
+    assert canonical_response.json() == events
 
 
 def test_valkyrie_telemetry_events_filter_before_recent_display_cap(client: TestClient):
