@@ -83,12 +83,33 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
 
     # ---- PASS 2: raw-frame / tmux reduction via the SHARED reducer (the crash tail, or a
     # pure tmux session). Same per-frame transitions the live broker drives. ----
+    #
+    # DOUBLE-MESSAGE FIX: when the SDK emits structured ASSISTANT conversation.turn rows they are
+    # authoritative and complete up to their last seq, so PASS 2 must only reduce the UNCOVERED TAIL
+    # (frames after the last conversation.turn — a crash/in-progress message never finalized).
+    # Reducing the WHOLE log re-built every captured message as a raw + pane-scrape twin alongside
+    # its conversation.turn: the request-id dedup is a no-op because these tmux / remote-control
+    # logs carry NO request_id on conversation.turn / assistant / terminal_frame rows (verified: 88
+    # conversation.turns rebuilt to 157). The pane scrape is then suppressed too — a pure-tmux
+    # last resort, never an SDK session's idle trailing pane paint.
+    #
+    # Gate on ASSISTANT turns: a tmux session can have a USER-seed conversation.turn but scrape-only
+    # assistant replies (no SDK assistant turns) — that path MUST still full-reduce + scrape (the
+    # load-bearing crash-mid-tmux case), so a bare user seed does not trip the cutoff.
+    has_sdk_assistant = any(
+        isinstance(r.payload, dict)
+        and isinstance(r.payload.get("turn"), dict)
+        and r.payload["turn"].get("role") == "assistant"
+        for r in sdk_turn_rows
+    )
+    last_sdk_seq = max((r.seq for r in sdk_turn_rows), default=0)
+    tail = [r for r in rows if r.seq > last_sdk_seq] if has_sdk_assistant else rows
     result = reduce_frames(
-        rows,
+        tail,
         sdk_turns=sdk_turns,
         folded_request_ids=folded_request_ids,
         seen_ids=seen_ids,
-        scrape=_extract_assistant_text,
+        scrape=None if has_sdk_assistant else _extract_assistant_text,
     )
     return RebuildResult(turns=result.turns, partial=result.partial)
 

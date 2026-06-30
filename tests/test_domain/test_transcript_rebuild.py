@@ -31,6 +31,33 @@ def _conv_turn(seq, turn, request_id=None):
     )
 
 
+def test_sdk_assistant_turns_not_duplicated_by_unkeyed_raw_frames():
+    """Double-message regression: tmux / claude --remote-control logs carry NO request_id on
+    conversation.turn / assistant / terminal_frame rows, so the request-id dedup is a no-op. The
+    rebuild must STILL not re-emit each SDK message as a raw + pane-scrape twin — only the
+    authoritative conversation.turns (plus any genuine uncovered tail) survive. Before the fix a
+    real 88-conversation.turn session rebuilt to 157 turns; the markdown turn AND a formatting-less
+    pane scrape both showed."""
+    rows = [
+        _conv_turn(1, {"id": "u1", "role": "user", "content": "go", "uuid": "U1"}),
+        _entry(2, "user", {"uuid": "U1", "message": {"content": "go"}}, role="user"),
+        _entry(
+            3,
+            "assistant",
+            {"message": {"content": [{"type": "text", "text": "working"}]}},
+            role="assistant",
+        ),
+        _entry(4, "terminal_frame", {"rows": ["raw pane paint", "edited foo.py"]}),
+        _entry(5, "result", {"subtype": "success"}),
+        _conv_turn(6, {"id": "a1", "role": "assistant", "content": "**Done** — clean markdown"}),
+    ]
+    res = rebuild_turns(rows)
+    # Exactly the two authoritative turns — no raw/scrape twins from the unkeyed frames.
+    assert [t["role"] for t in res.turns] == ["user", "assistant"]
+    assert res.turns[1]["content"] == "**Done** — clean markdown"
+    assert res.turns[1].get("metadata", {}).get("provenance") != "terminal_scrape"
+
+
 def test_sdk_conversation_turn_passthrough_and_no_refold():
     rows = [
         _conv_turn(

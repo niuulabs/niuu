@@ -480,7 +480,9 @@ def reduce_frames(
     """
     rows = sorted(frames, key=lambda e: e.seq)
     if not rows:
-        return ReduceResult(turns=[], partial=False)
+        # No raw frames to reduce — the result is just the authoritative SDK turns (the rebuild
+        # passes only the uncovered tail; an empty tail = every message has a conversation.turn).
+        return ReduceResult(turns=list(sdk_turns or []), partial=False)
 
     session_id = _session_id_of(rows[0])
     folded_request_ids = set(folded_request_ids or set())

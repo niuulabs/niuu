@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import InMemorySessionRepository, MockPodManager
 from tests.test_domain.test_session_archive_service import InMemorySessionEventLog
+from volundr.adapters.inbound import rest as rest_mod
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.outbound.archive_store import FileSystemArchiveStore
 from volundr.config import LocalMountsConfig
@@ -410,6 +411,14 @@ async def test_running_short_live_body_falls_back_to_longer_durable(
     assert len(expected_turns) == 4
     assert len(_renderable_short_live_body()["turns"]) == 2
 
+    # The cold open serves the live body optimistically (no synchronous rebuild) and warms the
+    # durable-count cache off the request path; the desync is corrected once that cache is warm
+    # (steady state / next poll). Seed it warm so this asserts the CORRECTION path, not the open.
+    rest_mod._DURABLE_COUNT_CACHE[str(session.id)] = (
+        await event_log.latest_seq(session.id),
+        len(expected_turns),
+    )
+
     _, mock_client = _patch_live_pod(_renderable_short_live_body())
     with monkeypatch.context() as m:
         client_cls = MagicMock()
@@ -713,6 +722,13 @@ async def test_shallow_elides_on_fault_c_durable_return(
         "last_activity": "",
     }
     assert len(short_live["turns"]) < len(durable_turns)
+
+    # Warm the durable-count cache so the FAULT C desync correction fires on this call (the cold
+    # open otherwise serves the live body optimistically and warms the count in the background).
+    rest_mod._DURABLE_COUNT_CACHE[str(session.id)] = (
+        await event_log.latest_seq(session.id),
+        len(durable_turns),
+    )
 
     _, mock_client = _patch_live_pod(short_live)
     with monkeypatch.context() as m:
