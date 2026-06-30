@@ -1774,6 +1774,7 @@ class MimirRouter:
                         ingest_agent="mimir",
                         compiled_into=source_pages.get(source.source_id, []),
                         mount_name=resolved_mount,
+                        content=source.content,
                     )
                 )
             if unprocessed:

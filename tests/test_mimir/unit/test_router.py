@@ -916,6 +916,11 @@ def test_sources_filters_unprocessed_and_missing_page_sources(
     all_sources = client_with_sourced_page.get("/mimir/sources")
     assert all_sources.status_code == 200
     assert any(source["source_id"] == loose_source_id for source in all_sources.json())
+    assert any(
+        source["source_id"] == loose_source_id
+        and source["content"] == "Not yet referenced by any page."
+        for source in all_sources.json()
+    )
 
     file_sources = client_with_sourced_page.get("/mimir/sources", params={"origin_type": "file"})
     assert file_sources.status_code == 200
