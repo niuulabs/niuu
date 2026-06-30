@@ -77,7 +77,8 @@ export function ActivityPage() {
     );
   }
   const blockingError =
-    dashboard.error ?? (telemetryEvents.length === 0 && settled.length === 0 ? reviews.error : null);
+    dashboard.error ??
+    (telemetryEvents.length === 0 && settled.length === 0 ? reviews.error : null);
   if (blockingError) {
     return (
       <div
