@@ -243,6 +243,67 @@ describe('usePlanWizard — submitAnswers', () => {
     expect(result.current.state.step).toBe('running');
   });
 
+  it('shows the running step while workflow gate feedback is still being sent', async () => {
+    let resolveFeedback!: () => void;
+    const sendPlanFeedback = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFeedback = resolve;
+        }),
+    );
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      sendPlanFeedback,
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      void result.current.submitAnswers({ q1: 'Keep this to one saga' });
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith(
+      'plan-auth',
+      'Planning feedback:\n- Keep this to one saga',
+    );
+    expect(result.current.state.step).toBe('running');
+    expect(result.current.state.answers).toEqual({ q1: 'Keep this to one saga' });
+
+    await act(async () => {
+      resolveFeedback();
+    });
+  });
+
+  it('surfaces workflow gate feedback failures on the running step', async () => {
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      sendPlanFeedback: vi.fn().mockRejectedValue(new Error('gate unavailable')),
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'Keep this to one saga' });
+    });
+
+    expect(result.current.state.step).toBe('running');
+    await waitFor(() => expect(result.current.state.error).toBe('gate unavailable'));
+  });
+
   it('auto-decomposes and transitions to draft', async () => {
     const svc = makeMockService();
     const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });

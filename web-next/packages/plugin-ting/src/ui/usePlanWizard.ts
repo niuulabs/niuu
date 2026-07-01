@@ -360,6 +360,7 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   async function submitAnswers(answers: Record<string, string>) {
     const campaignSlug = stateRef.current.session?.campaignSlug;
     const feedback = buildFeedbackMessage(answers);
+    dispatch({ type: 'SUBMIT_ANSWERS', answers });
     if (campaignSlug && feedback && ting.sendPlanFeedback) {
       try {
         await ting.sendPlanFeedback(campaignSlug, feedback);
@@ -371,7 +372,6 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
         return;
       }
     }
-    dispatch({ type: 'SUBMIT_ANSWERS', answers });
   }
 
   async function approveDraft() {
