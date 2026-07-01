@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RepoSelect, type RepoRecord } from '@niuulabs/ui';
 
 interface PlanPromptProps {
@@ -30,13 +30,18 @@ export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptP
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
 
+  useEffect(() => {
+    if (repo || repos.length === 0) return;
+    setRepo(repos[0]?.cloneUrl ?? '');
+  }, [repo, repos]);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || !repo.trim()) return;
     onSubmit(prompt.trim(), repo.trim());
   }
 
-  const canSubmit = prompt.trim().length > 0 && !loading;
+  const canSubmit = prompt.trim().length > 0 && repo.trim().length > 0 && !loading;
 
   return (
     <form

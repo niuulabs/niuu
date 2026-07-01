@@ -213,6 +213,32 @@ describe('PlanPrompt', () => {
     expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
   });
 
+  it('defaults to the first shared repository when repos are available', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} repos={MOCK_REPOS} />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/target repository/i)).toHaveValue(
+        'https://github.com/niuulabs/volundr.git',
+      ),
+    );
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
+  });
+
+  it('does not submit when repository is empty', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} />);
+
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('does not submit when prompt is empty', () => {
     const onSubmit = vi.fn();
     render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} />);
