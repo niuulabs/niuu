@@ -1,4 +1,7 @@
+import { useQuery } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
 import { Rune } from '@niuulabs/ui';
+import type { RepoRecord } from '@niuulabs/ui';
 import { PLAN_STEPS } from '../domain/plan';
 import { StepDots } from './StepDots';
 import { usePlanWizard } from './usePlanWizard';
@@ -11,6 +14,10 @@ import { PlanApproved } from './PlanApproved';
 import { PlanGuidanceRail } from './PlanGuidanceRail';
 import './PlanWizard.css';
 
+type RepoCatalogService = {
+  getRepos(): Promise<RepoRecord[]>;
+};
+
 /**
  * Plan wizard — five‐step flow for decomposing a human goal into a saga.
  *
@@ -20,6 +27,7 @@ import './PlanWizard.css';
  *         Full-width on running and approved (content fills the width).
  */
 export function PlanWizard() {
+  const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const {
     state,
     submitPrompt,
@@ -33,6 +41,10 @@ export function PlanWizard() {
     saveDraft,
   } = usePlanWizard();
   const { data: workflows = [] } = useWorkflows();
+  const { data: repos = [] } = useQuery({
+    queryKey: ['ting-plan-repos'],
+    queryFn: () => repoCatalog.getRepos(),
+  });
 
   function handleNewPlan() {
     // Navigate back to /ting/plan to start fresh (the wizard unmounts and remounts)
@@ -62,7 +74,12 @@ export function PlanWizard() {
           <StepDots steps={PLAN_STEPS} current={state.step} />
 
           {state.step === 'prompt' && (
-            <PlanPrompt onSubmit={submitPrompt} loading={state.loading} error={state.error} />
+            <PlanPrompt
+              onSubmit={submitPrompt}
+              loading={state.loading}
+              error={state.error}
+              repos={repos}
+            />
           )}
 
           {state.step === 'questions' && (

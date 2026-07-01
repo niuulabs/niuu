@@ -78,7 +78,26 @@ function withServices(story: () => React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={client}>
-      <ServicesProvider services={{ ting: createMockTingService() }}>{story()}</ServicesProvider>
+      <ServicesProvider
+        services={{
+          ting: createMockTingService(),
+          'niuu.repos': {
+            getRepos: async () => [
+              {
+                provider: 'github',
+                org: 'niuulabs',
+                name: 'volundr',
+                url: 'https://github.com/niuulabs/volundr',
+                cloneUrl: 'https://github.com/niuulabs/volundr.git',
+                defaultBranch: 'dev',
+                branches: ['dev', 'main'],
+              },
+            ],
+          },
+        }}
+      >
+        {story()}
+      </ServicesProvider>
     </QueryClientProvider>
   );
 }

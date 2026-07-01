@@ -18,6 +18,7 @@ import type {
 } from '../ports';
 import type { Saga } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
+import type { RepoRecord } from '@niuulabs/ui';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -115,6 +116,18 @@ const MOCK_WORKFLOW: Workflow = {
   edges: [],
 };
 
+const MOCK_REPOS: RepoRecord[] = [
+  {
+    provider: 'github',
+    org: 'niuulabs',
+    name: 'volundr',
+    url: 'https://github.com/niuulabs/volundr',
+    cloneUrl: 'https://github.com/niuulabs/volundr.git',
+    defaultBranch: 'dev',
+    branches: ['dev', 'main'],
+  },
+];
+
 function makeSvc(overrides: Partial<ITingService> = {}): Partial<ITingService> {
   return {
     getSagas: vi.fn().mockResolvedValue([]),
@@ -145,7 +158,13 @@ function wrap(svc: Partial<ITingService>, workflowSvc?: Partial<IWorkflowService
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={{ ting: svc, 'ting.workflows': wfSvc }}>
+        <ServicesProvider
+          services={{
+            ting: svc,
+            'ting.workflows': wfSvc,
+            'niuu.repos': { getRepos: vi.fn().mockResolvedValue(MOCK_REPOS) },
+          }}
+        >
           {children}
         </ServicesProvider>
       </QueryClientProvider>
@@ -178,6 +197,20 @@ describe('PlanPrompt', () => {
     fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
 
     expect(onSubmit).toHaveBeenCalledWith('Build auth', 'niuulabs/volundr');
+  });
+
+  it('uses the shared repository select when repos are available', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} repos={MOCK_REPOS} />);
+
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    await userEvent.selectOptions(
+      screen.getByLabelText(/target repository/i),
+      'https://github.com/niuulabs/volundr.git',
+    );
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
   });
 
   it('does not submit when prompt is empty', () => {

@@ -32,25 +32,11 @@ const guildPlugin = definePlugin({
   rune: 'ᚹ',
   title: 'Guild',
   subtitle: 'runtime registry',
-  tabs: [
-    { id: 'instances', label: 'Instances', path: '/guild' },
-    { id: 'access', label: 'Access', path: '/guild/access' },
-    { id: 'connections', label: 'Connections', path: '/guild/connections' },
-  ],
+  tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/guild',
-      component: GuildPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/guild/access',
-      component: GuildPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/guild/connections',
       component: GuildPage,
     }),
   ],
