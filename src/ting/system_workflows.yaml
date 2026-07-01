@@ -324,7 +324,7 @@
         stageMembers:
           - personaId: specification-framer
             budget: 12
-            model: claude-sonnet-4-6
+            model: gpt-5.5
             consumesEventTypes: [plan.requested, plan.brief.changes_requested]
         position:
           x: 352
@@ -350,7 +350,7 @@
         stageMembers:
           - personaId: saga-planner
             budget: 18
-            model: claude-sonnet-4-6
+            model: gpt-5.5
             consumesEventTypes: [plan.brief.approved, plan.breakdown.changes_requested]
         position:
           x: 864
@@ -363,7 +363,7 @@
         stageMembers:
           - personaId: saga-plan-reviewer
             budget: 12
-            model: claude-sonnet-4-6
+            model: gpt-5.5
             consumesEventTypes: [plan.breakdown.drafted]
         position:
           x: 1120
@@ -389,7 +389,7 @@
         stageMembers:
           - personaId: saga-plan-publisher
             budget: 8
-            model: claude-sonnet-4-6
+            model: gpt-5.5
             consumesEventTypes: [plan.approved]
         position:
           x: 1376
