@@ -3,6 +3,7 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
 import { FleetPage } from './ui/FleetPage';
 import { InboxPage } from './ui/InboxPage';
+import { ValkyrieConsolePage } from './ui/ValkyrieConsolePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
 
 const LEGACY_PATHS = [
@@ -35,7 +36,8 @@ export const valkyriePlugin = definePlugin({
   title: 'Valkyrie',
   subtitle: 'resident telemetry',
   tabs: [
-    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie' },
+    { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
+    { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
     { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
     { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
@@ -43,7 +45,7 @@ export const valkyriePlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/valkyrie',
-      component: () => <ActivityPage />,
+      component: () => <ValkyrieConsolePage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

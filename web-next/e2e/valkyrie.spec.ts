@@ -18,7 +18,7 @@ test('operator can inspect the artifact and approve a held build', async ({ page
     .getByTestId('review-card')
     .filter({ hasText: 'valkyrie-inspect-kubernetes-pod-oomkilled' })
     .click();
-  await page.getByRole('tab', { name: 'tool' }).click();
+  await page.getByTestId('review-artifact').getByRole('button', { name: 'Tool' }).click();
   await expect(page.getByTestId('review-artifact')).toContainText('def run(signal: dict)');
 
   await page.getByLabel('Decision reason').fill('canary verified, safe');
@@ -46,16 +46,24 @@ test('fleet view exposes autonomy control per resident', async ({ page }) => {
   await expect(cards.first().getByRole('combobox')).toBeVisible();
 });
 
-test('activity shows fleet telemetry by default', async ({ page }) => {
+test('console is the default valkyrie view', async ({ page }) => {
   await page.goto('/valkyrie');
+
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('valkyrie-roster')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-signal-timeline')).toBeVisible();
+});
+
+test('activity shows fleet telemetry', async ({ page }) => {
+  await page.goto('/valkyrie/activity');
 
   await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('activity-row').first()).toBeVisible();
 });
 
-test('legacy valkyrie routes redirect to activity', async ({ page }) => {
+test('legacy valkyrie routes redirect to console', async ({ page }) => {
   await page.goto('/valkyries/learning');
 
   await expect(page).toHaveURL(/\/valkyrie$/);
-  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 });

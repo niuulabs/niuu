@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { valkyriePlugin } from './index';
 
 describe('valkyriePlugin', () => {
-  it('centers the plugin on fleet activity', () => {
+  it('centers the plugin on the resident console', () => {
     expect(valkyriePlugin.tabs).toEqual([
-      { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie' },
+      { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
+      { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
       { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
       { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
     ]);
