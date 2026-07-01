@@ -40,6 +40,8 @@ const initialState: PlanWizardState = {
   draftSaved: false,
 };
 
+const PLAN_DRAFT_POLL_MS = 5000;
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
@@ -309,12 +311,16 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
       const fullSpec = buildFullSpec(prompt, answers);
       try {
         if (session?.campaignSlug && ting.getPlanDraft) {
-          const draft = await ting.getPlanDraft(session.campaignSlug);
-          if (cancelled) return;
-          if (draft.found && draft.structure) {
-            dispatch({ type: 'DECOMPOSE_DONE', phases: [], structure: draft });
-            return;
+          while (!cancelled) {
+            const draft = await ting.getPlanDraft(session.campaignSlug);
+            if (cancelled) return;
+            if (draft.found && draft.structure) {
+              dispatch({ type: 'DECOMPOSE_DONE', phases: [], structure: draft });
+              return;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, PLAN_DRAFT_POLL_MS));
           }
+          return;
         }
 
         const phases = await ting.decompose(fullSpec, repo);

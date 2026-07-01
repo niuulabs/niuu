@@ -286,17 +286,18 @@ describe('usePlanWizard — submitAnswers', () => {
     expect(result.current.state.structure?.structure?.name).toBe('Test Saga');
   });
 
-  it('falls back to decompose when workflow draft is not ready', async () => {
+  it('waits for workflow draft when it is not ready', async () => {
     const decompose = vi.fn().mockResolvedValue(MOCK_PHASES);
+    const getPlanDraft = vi.fn().mockResolvedValue({ found: false, structure: null });
     const svc = makeMockService({
       spawnPlanSession: vi.fn().mockResolvedValue({
         ...MOCK_SESSION,
         campaignSlug: 'plan-auth',
       }),
-      getPlanDraft: vi.fn().mockResolvedValue({ found: false, structure: null }),
+      getPlanDraft,
       decompose,
     });
-    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+    const { result, unmount } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
 
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
@@ -306,8 +307,11 @@ describe('usePlanWizard — submitAnswers', () => {
       await result.current.submitAnswers({ q1: 'niuulabs/volundr' });
     });
 
-    await waitFor(() => expect(result.current.state.step).toBe('draft'));
-    expect(decompose).toHaveBeenCalled();
+    await waitFor(() => expect(getPlanDraft).toHaveBeenCalledTimes(1));
+    expect(result.current.state.step).toBe('running');
+    expect(decompose).not.toHaveBeenCalled();
+
+    unmount();
   });
 });
 
