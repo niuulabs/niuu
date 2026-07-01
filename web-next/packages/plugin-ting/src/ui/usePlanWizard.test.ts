@@ -182,6 +182,70 @@ describe('usePlanWizard — submitPrompt', () => {
     });
   });
 
+  it('shows a live draft review gate question in the Plan wizard', async () => {
+    vi.useFakeTimers();
+    try {
+      const getPlanSession = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          questions: [],
+        })
+        .mockResolvedValueOnce({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          questions: [],
+        })
+        .mockResolvedValue({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          activeStageId: 'plan-review-gate',
+          questions: [
+            {
+              id: 'draft-feedback',
+              question: 'The workflow is waiting on draft plan review.',
+            },
+          ],
+        });
+      const svc = makeMockService({
+        decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+        spawnPlanSession: vi.fn().mockResolvedValue({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'pending',
+        }),
+        getPlanSession,
+      });
+      const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+      await act(async () => {
+        await result.current.submitPrompt('Build auth module', 'niuulabs/volundr');
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await result.current.submitAnswers({ q1: 'Keep this to one saga' });
+      });
+      expect(result.current.state.step).toBe('running');
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+        await Promise.resolve();
+      });
+
+      expect(result.current.state.step).toBe('questions');
+      expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sets error on service failure', async () => {
     const svc = makeMockService({
       spawnPlanSession: vi.fn().mockRejectedValue(new Error('service down')),

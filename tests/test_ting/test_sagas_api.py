@@ -995,7 +995,31 @@ class TestSpawnPlanSession:
 
         status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
         assert status_resp.status_code == 200
-        assert status_resp.json()["session_id"] == "plan-1"
+        status_body = status_resp.json()
+        assert status_body["session_id"] == "plan-1"
+        assert status_body["active_stage_id"] == "plan-brief-gate"
+        assert status_body["questions"][0]["id"] == "planning-feedback"
+        assert status_body["questions"][0]["hint"] == (
+            "Keep this focused; the answer is sent to the active workflow run before drafting."
+        )
+
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:2",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+                "summary": "Review the bounded one-phase draft before publishing.",
+            }
+        ]
+        review_status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
+        assert review_status_resp.status_code == 200
+        review_status_body = review_status_resp.json()
+        assert review_status_body["active_stage_id"] == "plan-review-gate"
+        assert review_status_body["questions"][0]["id"] == "draft-feedback"
+        assert "draft plan review" in review_status_body["questions"][0]["question"]
+        assert review_status_body["questions"][0]["hint"] == (
+            "Review the bounded one-phase draft before publishing."
+        )
 
         draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
         assert draft_resp.status_code == 200
@@ -1009,6 +1033,13 @@ class TestSpawnPlanSession:
         assert adapter.get_last_assistant_message.await_args.args == ("plan-1",)
         assert adapter.get_last_assistant_message.await_args.kwargs["auth_token"] is None
 
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-brief-gate:plan-1:1",
+                "node_id": "plan-brief-gate",
+                "status": "pending",
+            }
+        ]
         feedback_resp = client.post(
             "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
             json={"content": "Keep the first pass to one saga."},
@@ -1025,6 +1056,30 @@ class TestSpawnPlanSession:
             "plan-brief-gate:plan-1:1",
             "APPROVE",
             notes="Keep the first pass to one saga.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:2",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+            }
+        ]
+        review_feedback_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Approved; show this in Ting."},
+        )
+        assert review_feedback_resp.status_code == 200
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-review-gate:plan-1:2",
+            "APPROVE",
+            notes="Approved; show this in Ting.",
             source="ting.plan",
             auth_token=None,
             principal=adapter.send_message.await_args.kwargs["principal"],

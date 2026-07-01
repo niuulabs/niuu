@@ -85,12 +85,21 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
       };
     }
 
-    case 'SESSION_STATUS':
+    case 'SESSION_STATUS': {
+      const questions =
+        action.session.questions.length > 0 ? action.session.questions : state.questions;
+      const hasDraftFeedback = questions.some((question) => question.id === 'draft-feedback');
+      const step =
+        state.step === 'running' && hasDraftFeedback
+          ? planTransition(state.step, 'questions')
+          : state.step;
       return {
         ...state,
+        step,
         session: state.session ? { ...state.session, ...action.session } : action.session,
-        questions: action.session.questions.length > 0 ? action.session.questions : state.questions,
+        questions,
       };
+    }
 
     case 'SUBMIT_ANSWERS': {
       const step = planTransition(state.step, 'running');

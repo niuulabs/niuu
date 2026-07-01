@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from inspect import isawaitable
@@ -59,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 _PLANNING_WORKFLOW_NAME = "Saga Planning"
 _PLAN_BRIEF_GATE_NODE_ID = "plan-brief-gate"
+_PLAN_REVIEW_GATE_NODE_ID = "plan-review-gate"
+_PLAN_GATE_NODE_IDS = (_PLAN_BRIEF_GATE_NODE_ID, _PLAN_REVIEW_GATE_NODE_ID)
 _PLAN_GATE_DECISION_APPROVE = "APPROVE"
 _PLAN_GATE_POLL_SECONDS = 2.0
 _PLAN_GATE_POLL_ATTEMPTS = 6
@@ -77,16 +80,32 @@ def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
     return workflow.owner_id == principal.user_id
 
 
-def _pending_gate_id(gates: list[dict], node_id: str) -> str | None:
+def _pending_gate(gates: list[dict], node_id: str) -> dict | None:
     for gate in gates:
         if gate.get("node_id") != node_id and gate.get("nodeId") != node_id:
             continue
         status_value = str(gate.get("status", "")).lower()
         if status_value not in {"", "pending", "open", "waiting"}:
             continue
-        gate_id = gate.get("id") or gate.get("gate_id") or gate.get("gateId")
-        if gate_id:
-            return str(gate_id)
+        if gate.get("id") or gate.get("gate_id") or gate.get("gateId"):
+            return gate
+    return None
+
+
+def _pending_gate_id(gates: list[dict], node_id: str) -> str | None:
+    gate = _pending_gate(gates, node_id)
+    if gate is None:
+        return None
+    gate_id = gate.get("id") or gate.get("gate_id") or gate.get("gateId")
+    if gate_id:
+        return str(gate_id)
+    return None
+
+
+def _pending_plan_gate_node_id(gates: list[dict]) -> str | None:
+    for node_id in _PLAN_GATE_NODE_IDS:
+        if _pending_gate(gates, node_id) is not None:
+            return node_id
     return None
 
 
@@ -94,31 +113,34 @@ async def _approve_pending_plan_gate(
     *,
     adapter: VolundrPort,
     campaign: WorkflowCampaign,
-    node_id: str,
+    node_id: str | None = None,
+    node_ids: Sequence[str] | None = None,
     notes: str,
     auth_token: str | None,
     principal: Principal,
     attempts: int = _PLAN_GATE_POLL_ATTEMPTS,
 ) -> bool:
     """Resolve a workflow gate if it is already waiting for Ting's next step."""
+    candidate_node_ids = tuple(node_ids or ([node_id] if node_id else []))
     for attempt in range(max(1, attempts)):
         gates = await adapter.get_workflow_gates(
             campaign.session_id,
             auth_token=auth_token,
             principal=principal,
         )
-        gate_id = _pending_gate_id(gates, node_id)
-        if gate_id is not None:
-            await adapter.resolve_workflow_gate(
-                campaign.session_id,
-                gate_id,
-                _PLAN_GATE_DECISION_APPROVE,
-                notes=notes,
-                source="ting.plan",
-                auth_token=auth_token,
-                principal=principal,
-            )
-            return True
+        for candidate_node_id in candidate_node_ids:
+            gate_id = _pending_gate_id(gates, candidate_node_id)
+            if gate_id is not None:
+                await adapter.resolve_workflow_gate(
+                    campaign.session_id,
+                    gate_id,
+                    _PLAN_GATE_DECISION_APPROVE,
+                    notes=notes,
+                    source="ting.plan",
+                    auth_token=auth_token,
+                    principal=principal,
+                )
+                return True
         if attempt < attempts - 1:
             await asyncio.sleep(_PLAN_GATE_POLL_SECONDS)
     return False
@@ -354,8 +376,38 @@ def _to_plan_stage_response(stage: CampaignStageState) -> PlanStageStateResponse
     )
 
 
-def _plan_questions_for_campaign(campaign: WorkflowCampaign) -> list[PlanQuestionResponse]:
-    active_stage = campaign.active_stage_id or ""
+def _gate_hint(gate: dict | None, fallback: str) -> str:
+    if gate:
+        for key in ("summary", "instructions", "condition", "description"):
+            value = gate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return fallback
+
+
+def _plan_questions_for_campaign(
+    campaign: WorkflowCampaign,
+    gates: list[dict] | None = None,
+) -> list[PlanQuestionResponse]:
+    gates = gates or []
+    review_gate = _pending_gate(gates, _PLAN_REVIEW_GATE_NODE_ID)
+    if review_gate is not None:
+        return [
+            PlanQuestionResponse(
+                id="draft-feedback",
+                question=(
+                    "The workflow is waiting on draft plan review. What focused changes should "
+                    "it make before Ting shows the final draft?"
+                ),
+                hint=_gate_hint(
+                    review_gate,
+                    "Type a focused change request, or type approved if the draft is ready.",
+                ),
+            )
+        ]
+
+    brief_gate = _pending_gate(gates, _PLAN_BRIEF_GATE_NODE_ID)
+    active_stage = _pending_plan_gate_node_id(gates) or campaign.active_stage_id or ""
     if active_stage in {"plan-clarify", "plan-brief-gate"}:
         return [
             PlanQuestionResponse(
@@ -364,9 +416,12 @@ def _plan_questions_for_campaign(campaign: WorkflowCampaign) -> list[PlanQuestio
                     "What constraints, scope boundaries, or acceptance expectations should this "
                     "planning workflow account for?"
                 ),
-                hint=(
-                    "Keep this focused; the answer is sent to the active workflow run before "
-                    "drafting."
+                hint=_gate_hint(
+                    brief_gate,
+                    (
+                        "Keep this focused; the answer is sent to the active workflow run before "
+                        "drafting."
+                    ),
                 ),
             )
         ]
@@ -411,16 +466,18 @@ def _to_saga_structure_response(structure: SagaStructure) -> SagaStructureRespon
 def _to_plan_session_response(
     campaign: WorkflowCampaign,
     chat_endpoint: str | None,
+    gates: list[dict] | None = None,
 ) -> PlanSessionResponse:
+    active_gate_node_id = _pending_plan_gate_node_id(gates or [])
     return PlanSessionResponse(
         session_id=campaign.session_id,
         chat_endpoint=chat_endpoint,
         campaign_slug=campaign.slug,
         workflow_name=campaign.workflow_name,
         status=campaign.status.value,
-        active_stage_id=campaign.active_stage_id,
+        active_stage_id=active_gate_node_id or campaign.active_stage_id,
         stage_state=[_to_plan_stage_response(stage) for stage in campaign.stage_state],
-        questions=_plan_questions_for_campaign(campaign),
+        questions=_plan_questions_for_campaign(campaign, gates),
     )
 
 
@@ -1021,13 +1078,33 @@ def create_sagas_router() -> APIRouter:
     @router.get("/plan/{slug}", response_model=PlanSessionResponse)
     async def get_plan_session(
         slug: str,
+        request: Request,
         principal: Principal = Depends(extract_principal),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> PlanSessionResponse:
         campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="Plan run not found")
-        return _to_plan_session_response(campaign, chat_endpoint=None)
+        gates: list[dict] = []
+        try:
+            adapter = await _resolve_plan_volundr_adapter(
+                volundr_factory=volundr_factory,
+                principal=principal,
+            )
+            if adapter is not None:
+                gates = await adapter.get_workflow_gates(
+                    campaign.session_id,
+                    auth_token=extract_bearer_token(request),
+                    principal=principal,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to load planning workflow gates for campaign %s",
+                _sanitize_log(campaign.id),
+                exc_info=True,
+            )
+        return _to_plan_session_response(campaign, chat_endpoint=None, gates=gates)
 
     @router.get("/plan/{slug}/draft", response_model=ExtractStructureResponse)
     async def get_plan_draft(
@@ -1113,7 +1190,7 @@ def create_sagas_router() -> APIRouter:
             gate_resolved = await _approve_pending_plan_gate(
                 adapter=adapter,
                 campaign=campaign,
-                node_id=_PLAN_BRIEF_GATE_NODE_ID,
+                node_ids=_PLAN_GATE_NODE_IDS,
                 notes=body.content,
                 auth_token=auth_token,
                 principal=principal,
