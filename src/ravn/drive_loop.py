@@ -2270,7 +2270,6 @@ class DriveLoop:
         alias_payload["canonical_event_type"] = canonical_event_type
         alias_payload["routing_only"] = True
         alias_payload["bubble_up"] = False
-        alias_payload["room_bridge_skip"] = True
 
         alias_event = RavnEvent(
             type=RavnEventType.OUTCOME,
