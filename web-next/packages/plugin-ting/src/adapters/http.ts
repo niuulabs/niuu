@@ -930,9 +930,14 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       return toExtractedStructure(raw);
     },
 
-    async sendPlanFeedback(campaignSlug: string, content: string) {
+    async sendPlanFeedback(
+      campaignSlug: string,
+      content: string,
+      decision?: 'approve' | 'changes_requested',
+    ) {
       await client.post(`/sagas/plan/${encodeURIComponent(campaignSlug)}/feedback`, {
         content,
+        ...(decision ? { decision } : {}),
       });
     },
 

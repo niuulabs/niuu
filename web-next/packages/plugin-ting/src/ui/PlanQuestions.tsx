@@ -31,6 +31,9 @@ export function PlanQuestions({
   onBack,
 }: PlanQuestionsProps) {
   const [answers, setAnswers] = useState<Record<string, string>>(initialAnswers);
+  const submitLabel = questions.some((question) => question.id === 'draft-feedback')
+    ? 'Send feedback ->'
+    : 'Decompose ->';
 
   function handleChange(id: string, value: string) {
     setAnswers((prev) => ({ ...prev, [id]: value }));
@@ -145,7 +148,7 @@ export function PlanQuestions({
           ← Back
         </button>
         <button type="submit" className="ting-plan-primary-btn">
-          Decompose →
+          {submitLabel}
         </button>
       </div>
     </form>

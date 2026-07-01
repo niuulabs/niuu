@@ -37,6 +37,10 @@ describe('planTransition — valid paths', () => {
   it('allows draft → running (back)', () => {
     expect(planTransition('draft', 'running')).toBe('running');
   });
+
+  it('allows draft → questions (workflow change request)', () => {
+    expect(planTransition('draft', 'questions')).toBe('questions');
+  });
 });
 
 describe('planTransition — refused transitions', () => {

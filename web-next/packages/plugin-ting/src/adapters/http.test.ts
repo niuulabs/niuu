@@ -581,10 +581,15 @@ describe('buildTingHttpAdapter', () => {
       const client = makeClient();
       client.post.mockResolvedValue({ status: 'sent' });
 
-      await buildTingHttpAdapter(client).sendPlanFeedback?.('plan-auth', 'looks good');
+      await buildTingHttpAdapter(client).sendPlanFeedback?.(
+        'plan-auth',
+        'make it smaller',
+        'changes_requested',
+      );
 
       expect(client.post).toHaveBeenCalledWith('/sagas/plan/plan-auth/feedback', {
-        content: 'looks good',
+        content: 'make it smaller',
+        decision: 'changes_requested',
       });
     });
   });

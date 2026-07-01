@@ -64,9 +64,11 @@ _PLAN_BRIEF_GATE_NODE_ID = "plan-brief-gate"
 _PLAN_REVIEW_GATE_NODE_ID = "plan-review-gate"
 _PLAN_GATE_NODE_IDS = (_PLAN_BRIEF_GATE_NODE_ID, _PLAN_REVIEW_GATE_NODE_ID)
 _PLAN_GATE_DECISION_APPROVE = "APPROVE"
+_PLAN_GATE_DECISION_CHANGES_REQUESTED = "CHANGES_REQUESTED"
 _PLAN_GATE_POLL_SECONDS = 2.0
 _PLAN_GATE_POLL_ATTEMPTS = 6
 _PLAN_FEEDBACK_METADATA_KEY = "planning_feedback_notes"
+_PLAN_FEEDBACK_DECISION_METADATA_KEY = "planning_feedback_decision"
 _PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY = "planning_brief_gate_resolved"
 _PLAN_PENDING_GATES_METADATA_KEY = "pending_workflow_gates"
 _TRANSIENT_PLAN_DRAFT_STATUS_CODES = {404, 409, 425, 502, 503, 504}
@@ -112,12 +114,13 @@ def _pending_plan_gate_node_id(gates: list[dict]) -> str | None:
     return None
 
 
-async def _approve_pending_plan_gate(
+async def _resolve_pending_plan_gate(
     *,
     adapter: VolundrPort,
     campaign: WorkflowCampaign,
     node_id: str | None = None,
     node_ids: Sequence[str] | None = None,
+    decision: str,
     notes: str,
     auth_token: str | None,
     principal: Principal,
@@ -137,7 +140,7 @@ async def _approve_pending_plan_gate(
                 await adapter.resolve_workflow_gate(
                     campaign.session_id,
                     gate_id,
-                    _PLAN_GATE_DECISION_APPROVE,
+                    decision,
                     notes=notes,
                     source="ting.plan",
                     auth_token=auth_token,
@@ -149,15 +152,44 @@ async def _approve_pending_plan_gate(
     return False
 
 
+async def _approve_pending_plan_gate(
+    *,
+    adapter: VolundrPort,
+    campaign: WorkflowCampaign,
+    node_id: str | None = None,
+    node_ids: Sequence[str] | None = None,
+    notes: str,
+    auth_token: str | None,
+    principal: Principal,
+    attempts: int = _PLAN_GATE_POLL_ATTEMPTS,
+) -> bool:
+    """Approve a workflow gate if it is already waiting for Ting's next step."""
+    return await _resolve_pending_plan_gate(
+        adapter=adapter,
+        campaign=campaign,
+        node_id=node_id,
+        node_ids=node_ids,
+        decision=_PLAN_GATE_DECISION_APPROVE,
+        notes=notes,
+        auth_token=auth_token,
+        principal=principal,
+        attempts=attempts,
+    )
+
+
 async def _record_plan_feedback(
     *,
     campaign_repo: WorkflowCampaignRepository,
     campaign: WorkflowCampaign,
     notes: str,
+    decision: str,
 ) -> WorkflowCampaign:
     metadata = dict(campaign.metadata)
     metadata[_PLAN_FEEDBACK_METADATA_KEY] = notes
+    metadata[_PLAN_FEEDBACK_DECISION_METADATA_KEY] = decision
     metadata.pop(_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY, None)
+    if decision == "changes_requested":
+        metadata.pop(_PLAN_PENDING_GATES_METADATA_KEY, None)
     return await campaign_repo.save_campaign(
         replace(campaign, metadata=metadata, updated_at=datetime.now(UTC))
     )
@@ -187,6 +219,9 @@ async def _retry_recorded_plan_gate_resolution(
     if campaign.metadata.get(_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY) is True:
         return campaign
     notes = campaign.metadata.get(_PLAN_FEEDBACK_METADATA_KEY)
+    decision = campaign.metadata.get(_PLAN_FEEDBACK_DECISION_METADATA_KEY)
+    if decision not in {None, "approve", "approved"}:
+        return campaign
     if not isinstance(notes, str) or not notes.strip():
         return campaign
     try:
@@ -665,6 +700,10 @@ class PlanRequest(BaseModel):
 
 class PlanFeedbackRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
+    decision: str = Field(
+        default="approve",
+        description="Gate decision: approve or changes_requested.",
+    )
 
 
 class PlanStageStateResponse(BaseModel):
@@ -1146,6 +1185,25 @@ def create_sagas_router() -> APIRouter:
             auth_token=auth_token,
             principal=principal,
         )
+        gates: list[dict] = []
+        try:
+            gates = await adapter.get_workflow_gates(
+                campaign.session_id,
+                auth_token=auth_token,
+                principal=principal,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to load planning workflow gates before draft read for campaign %s",
+                _sanitize_log(campaign.id),
+                exc_info=True,
+            )
+        visible_gates = gates or _stored_plan_gates(campaign)
+        if (
+            campaign.metadata.get(_PLAN_FEEDBACK_DECISION_METADATA_KEY) == "changes_requested"
+            and _pending_gate(visible_gates, _PLAN_REVIEW_GATE_NODE_ID) is None
+        ):
+            return ExtractStructureResponse(found=False)
         try:
             text = await adapter.get_last_assistant_message(
                 campaign.session_id,
@@ -1207,20 +1265,36 @@ def create_sagas_router() -> APIRouter:
                 auth_token=auth_token,
                 principal=principal,
             )
+            normalized_decision = body.decision.strip().lower().replace("-", "_")
+            if normalized_decision in {"changes_requested", "change_requested"}:
+                normalized_decision = "changes_requested"
+                gate_decision = _PLAN_GATE_DECISION_CHANGES_REQUESTED
+                target_node_ids = (_PLAN_REVIEW_GATE_NODE_ID, _PLAN_BRIEF_GATE_NODE_ID)
+            elif normalized_decision in {"approve", "approved"}:
+                normalized_decision = "approve"
+                gate_decision = _PLAN_GATE_DECISION_APPROVE
+                target_node_ids = _PLAN_GATE_NODE_IDS
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="decision must be approve or changes_requested",
+                )
             campaign = await _record_plan_feedback(
                 campaign_repo=campaign_repo,
                 campaign=campaign,
                 notes=body.content,
+                decision=normalized_decision,
             )
-            gate_resolved = await _approve_pending_plan_gate(
+            gate_resolved = await _resolve_pending_plan_gate(
                 adapter=adapter,
                 campaign=campaign,
-                node_ids=_PLAN_GATE_NODE_IDS,
+                node_ids=target_node_ids,
+                decision=gate_decision,
                 notes=body.content,
                 auth_token=auth_token,
                 principal=principal,
             )
-            if gate_resolved:
+            if gate_resolved and gate_decision == _PLAN_GATE_DECISION_APPROVE:
                 campaign = await _mark_plan_brief_gate_resolved(
                     campaign_repo=campaign_repo,
                     campaign=campaign,
@@ -1230,6 +1304,8 @@ def create_sagas_router() -> APIRouter:
                     _sanitize_log(_PLAN_BRIEF_GATE_NODE_ID),
                     _sanitize_log(campaign.id),
                 )
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

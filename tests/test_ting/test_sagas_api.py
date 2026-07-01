@@ -1109,12 +1109,42 @@ class TestSpawnPlanSession:
         ]
         review_feedback_resp = client.post(
             "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
-            json={"content": "Approved; show this in Ting."},
+            json={"content": "Keep this as one phase.", "decision": "changes_requested"},
         )
         assert review_feedback_resp.status_code == 200
         adapter.resolve_workflow_gate.assert_awaited_once_with(
             "plan-1",
             "plan-review-gate:plan-1:2",
+            "CHANGES_REQUESTED",
+            notes="Keep this as one phase.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+        adapter.get_last_assistant_message.reset_mock()
+        adapter.get_workflow_gates.return_value = []
+        stale_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert stale_draft_resp.status_code == 200
+        assert stale_draft_resp.json() == {"found": False, "structure": None}
+        adapter.get_last_assistant_message.assert_not_awaited()
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:3",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+            }
+        ]
+        review_approve_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Approved; show this in Ting.", "decision": "approve"},
+        )
+        assert review_approve_resp.status_code == 200
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-review-gate:plan-1:3",
             "APPROVE",
             notes="Approved; show this in Ting.",
             source="ting.plan",
