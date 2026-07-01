@@ -56,6 +56,13 @@ Prefer subagents for independent, parallelizable work; keep dependent steps seri
 - When a steering message arrives mid-task, fold it into the task list (a new task or an \
 adjustment) rather than silently dropping your current plan."""
 
+_PRESENT_FILE_INSTRUCTION = """\
+FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
+screenshot, chart, or build artifact), run `present-file <path> [--caption "…"] [--title "…"]`. It \
+surfaces the file in the user's app as a tappable card that opens in the file preview, and accepts \
+ANY path, including scratch files outside the workspace (e.g. /tmp). Use it for finished \
+deliverables the user would want to open — not for routine tool output or intermediate files."""
+
 _BUILT_IN_SLASH_COMMANDS = [
     {"name": "/agents", "description": "Manage agent teams and subagents"},
     {"name": "/compact", "description": "Compact the current conversation"},
@@ -1625,6 +1632,8 @@ class TmuxInteractiveTransport(CLITransport):
         parts: list[str] = []
         if self._steering_instructions_enabled:
             parts.append(_STEERING_TASK_INSTRUCTION)
+        # Always advertise the present-file capability so any Forge agent can hand the user a file.
+        parts.append(_PRESENT_FILE_INSTRUCTION)
         if self._system_prompt:
             parts.append(self._system_prompt)
         return "\n\n".join(parts)
