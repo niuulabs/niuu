@@ -57,6 +57,13 @@ _LINEAR_TO_RUN: dict[str, RunStatus] = {
 }
 
 _UNASSIGNED_PHASE_PREFIX = "__unassigned__:"
+_MAX_LINEAR_PROJECT_DESCRIPTION_LENGTH = 255
+
+
+def _linear_project_description(text: str) -> str:
+    if len(text) <= _MAX_LINEAR_PROJECT_DESCRIPTION_LENGTH:
+        return text
+    return text[: _MAX_LINEAR_PROJECT_DESCRIPTION_LENGTH - 3].rstrip() + "..."
 
 
 def _unassigned_phase_tracker_id(saga_tracker_id: str) -> str:
@@ -432,6 +439,7 @@ class LinearTrackerAdapter(TrackerPort):
         project_desc = description or (
             f"Saga: {saga.slug}\nRepos: {', '.join(saga.repos)}\nBranch: {saga.feature_branch}"
         )
+        project_desc = _linear_project_description(project_desc)
         data = await self._gql.query(
             _CREATE_PROJECT_QUERY,
             {

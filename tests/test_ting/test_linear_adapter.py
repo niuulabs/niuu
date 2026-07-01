@@ -296,6 +296,35 @@ class TestCreateSaga:
         result = await adapter.create_saga(saga)
         assert result == "new-proj"
 
+    async def test_truncates_project_description_to_linear_limit(self):
+        adapter = _make_adapter()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.return_value = _mock_response(
+            {"data": {"projectCreate": {"project": {"id": "new-proj"}, "success": True}}}
+        )
+
+        now = datetime.now(UTC)
+        saga = Saga(
+            id=uuid4(),
+            tracker_id="",
+            tracker_type="linear",
+            slug="test-saga",
+            name="Test Saga",
+            repos=["org/repo"],
+            feature_branch="feat/test",
+            status=SagaStatus.ACTIVE,
+            confidence=0.0,
+            created_at=now,
+            base_branch="dev",
+        )
+
+        await adapter.create_saga(saga, description="x" * 300)
+
+        payload = adapter._gql._client.post.call_args.kwargs["json"]
+        description = payload["variables"]["description"]
+        assert len(description) == 255
+        assert description.endswith("...")
+
     async def test_failure(self):
         adapter = _make_adapter()
         adapter._gql._client = AsyncMock()
