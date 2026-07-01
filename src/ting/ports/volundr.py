@@ -176,6 +176,30 @@ class VolundrPort(ABC):
             principal=principal,
         )
 
+    async def get_workflow_gates(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        """Return workflow gates for a running Volundr session."""
+        return []
+
+    async def resolve_workflow_gate(
+        self,
+        session_id: str,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        """Resolve a workflow gate for a running Volundr session."""
+        raise NotImplementedError
+
     @abstractmethod
     async def stop_session(
         self,
@@ -208,12 +232,24 @@ class VolundrPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_last_assistant_message(self, session_id: str) -> str:
+    async def get_last_assistant_message(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str:
         """Return the last assistant message from the session's conversation history."""
         raise NotImplementedError
 
     @abstractmethod
-    async def get_conversation(self, session_id: str) -> dict:
+    async def get_conversation(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
         """Return the full conversation history for a session."""
         raise NotImplementedError
 

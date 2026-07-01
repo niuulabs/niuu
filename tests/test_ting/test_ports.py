@@ -73,6 +73,8 @@ class TestVolundrPort:
             "get_chronicle_summary",
             "send_message",
             "send_directed_room_message",
+            "get_workflow_gates",
+            "resolve_workflow_gate",
             "stop_session",
             "list_integration_ids",
             "list_repos",

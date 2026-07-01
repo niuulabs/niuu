@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 INTEGRATIONS_PATH = "/api/v1/integrations"
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -287,6 +289,49 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
 
+    async def get_workflow_gates(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates",
+                headers=self._headers(auth_token, principal),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                gates = data.get("gates", [])
+                return gates if isinstance(gates, list) else []
+            return data if isinstance(data, list) else []
+
+    async def resolve_workflow_gate(
+        self,
+        session_id: str,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        headers = self._headers(auth_token, principal)
+        headers[WORKFLOW_GATE_INTENT_HEADER] = WORKFLOW_GATE_INTENT_RESOLVE
+        encoded_gate_id = quote(gate_id, safe="")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates/"
+                f"{encoded_gate_id}/resolve",
+                headers=headers,
+                json={"decision": decision, "notes": notes, "source": source},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def stop_session(
         self,
         session_id: str,
@@ -357,24 +402,40 @@ class VolundrHTTPAdapter(VolundrPort):
                 repos.extend(provider_repos)
             return repos
 
-    async def get_conversation(self, session_id: str) -> dict:
+    async def get_conversation(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
         """Fetch the full conversation history for a session."""
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/conversation",
-                headers=self._headers(),
+                headers=self._headers(auth_token, principal),
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def get_last_assistant_message(self, session_id: str) -> str:
+    async def get_last_assistant_message(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str:
         """Fetch the most recent assistant message containing a JSON assessment.
 
         Scans the last 3 assistant messages for a JSON block with a
         ``confidence`` key (the reviewer's final output).  Falls back to
         the very last assistant message if no JSON assessment is found.
         """
-        data = await self.get_conversation(session_id)
+        data = await self.get_conversation(
+            session_id,
+            auth_token=auth_token,
+            principal=principal,
+        )
         turns = data.get("turns", [])
         assistant_turns = [t for t in turns if t.get("role") == "assistant"]
         if not assistant_turns:

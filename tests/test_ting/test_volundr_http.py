@@ -724,20 +724,22 @@ class TestConversation:
     @pytest.mark.asyncio
     @respx.mock
     async def test_get_conversation(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/conversation").mock(
+        route = respx.get(f"{SESSIONS_URL}/ses-1/conversation").mock(
             return_value=httpx.Response(200, json={"turns": [{"role": "user", "content": "hi"}]})
         )
 
-        conversation = await adapter.get_conversation("ses-1")
+        conversation = await adapter.get_conversation("ses-1", auth_token="tok-123")
 
         assert conversation["turns"][0]["content"] == "hi"
+        assert route.calls.last.request.headers["Authorization"] == "Bearer tok-123"
 
     @pytest.mark.asyncio
     async def test_get_last_assistant_message_prefers_recent_json_assessment(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             assert session_id == "ses-1"
+            assert kwargs["auth_token"] == "tok-123"
             return {
                 "turns": [
                     {"role": "assistant", "content": "plain response"},
@@ -748,7 +750,7 @@ class TestConversation:
 
         monkeypatch.setattr(adapter, "get_conversation", fake_conversation)
 
-        content = await adapter.get_last_assistant_message("ses-1")
+        content = await adapter.get_last_assistant_message("ses-1", auth_token="tok-123")
 
         assert '"confidence": 0.92' in content
 
@@ -756,7 +758,7 @@ class TestConversation:
     async def test_get_last_assistant_message_falls_back_to_latest_assistant(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             return {
                 "turns": [
                     {"role": "user", "content": "hi"},
@@ -774,13 +776,56 @@ class TestConversation:
     async def test_get_last_assistant_message_raises_when_missing(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             return {"turns": [{"role": "user", "content": "hi"}]}
 
         monkeypatch.setattr(adapter, "get_conversation", fake_conversation)
 
         with pytest.raises(ValueError):
             await adapter.get_last_assistant_message("ses-3")
+
+
+class TestWorkflowGates:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_workflow_gates_returns_gate_list(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1/workflow/gates").mock(
+            return_value=httpx.Response(
+                200,
+                json={"gates": [{"id": "gate-1", "node_id": "plan-brief-gate"}]},
+            )
+        )
+
+        gates = await adapter.get_workflow_gates("ses-1")
+
+        assert gates == [{"id": "gate-1", "node_id": "plan-brief-gate"}]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_resolve_workflow_gate_encodes_id_and_sends_intent(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(
+            f"{SESSIONS_URL}/ses-1/workflow/gates/plan%20brief%3Fstep%3D1/resolve"
+        ).mock(return_value=httpx.Response(200, json={"status": "resolved"}))
+
+        result = await adapter.resolve_workflow_gate(
+            "ses-1",
+            "plan brief?step=1",
+            "APPROVE",
+            notes="Looks bounded.",
+            source="ting.plan",
+            auth_token="tok-123",
+        )
+
+        assert result == {"status": "resolved"}
+        assert route.calls.last.request.headers["Authorization"] == "Bearer tok-123"
+        assert route.calls.last.request.headers["x-niuu-workflow-gate-intent"] == "resolve"
+        assert json.loads(route.calls.last.request.content) == {
+            "decision": "APPROVE",
+            "notes": "Looks bounded.",
+            "source": "ting.plan",
+        }
 
 
 class _FakeLineIterator:

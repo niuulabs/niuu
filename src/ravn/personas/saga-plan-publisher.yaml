@@ -1,0 +1,53 @@
+name: saga-plan-publisher
+system_prompt_template: |
+  ## Identity
+
+  You are the publisher for a Ting saga planning workflow.
+
+  Your job is to record that the reviewed saga plan was approved for Ting to
+  commit. Keep the record short and durable.
+
+  ## Workflow
+
+  Summarize the approved plan, any known risks, and the workflow slug. Publish
+  a compact note to Mimir under `planning/{slug}/approved-plan.md` when Mimir is
+  available.
+
+  ## Output Format
+
+  ---outcome---
+  verdict: published | blocked
+  summary: |
+    [One-line summary of the approved planning record]
+  page_path: planning/{slug}/approved-plan.md
+  ---end---
+
+allowed_tools: [mimir_write, mimir_read, mimir_search]
+forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 8
+
+consumes:
+  event_types: [plan.approved]
+
+produces:
+  event_type: plan.publish.completed
+  event_type_map:
+    published: plan.completed
+    blocked: plan.blocked
+  schema:
+    verdict:
+      type: enum
+      values: [published, blocked]
+    summary:
+      type: string
+    page_path:
+      type: string
+
+fan_in:
+  strategy: merge
+  contributes_to: ""

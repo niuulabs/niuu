@@ -348,7 +348,7 @@
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: specification-breakdown-planner
+          - personaId: saga-planner
             budget: 18
             model: gpt-5.5
             consumesEventTypes: [plan.brief.approved, plan.breakdown.changes_requested]
@@ -361,7 +361,7 @@
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: specification-breakdown-critic
+          - personaId: saga-plan-reviewer
             budget: 12
             model: gpt-5.5
             consumesEventTypes: [plan.breakdown.drafted]
@@ -387,7 +387,7 @@
         executionMode: sequential
         joinMode: any
         stageMembers:
-          - personaId: specification-publisher
+          - personaId: saga-plan-publisher
             budget: 8
             model: gpt-5.5
             consumesEventTypes: [plan.approved]
@@ -406,24 +406,43 @@
       - id: edge-plan-request-to-clarify
         source: plan-request
         target: plan-clarify
+        label: plan.requested -> plan.requested
       - id: edge-plan-clarify-to-brief-gate
         source: plan-clarify
         target: plan-brief-gate
+        label: spec.framed -> spec.framed
       - id: edge-plan-brief-gate-to-breakdown
         source: plan-brief-gate
         target: plan-breakdown
+        label: plan.brief.approved -> plan.brief.approved
+      - id: edge-plan-brief-gate-to-clarify
+        source: plan-brief-gate
+        target: plan-clarify
+        label: plan.brief.changes_requested -> plan.brief.changes_requested
       - id: edge-plan-breakdown-to-review
         source: plan-breakdown
         target: plan-review
+        label: plan.breakdown.drafted -> plan.breakdown.drafted
+      - id: edge-plan-review-to-breakdown
+        source: plan-review
+        target: plan-breakdown
+        label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
       - id: edge-plan-review-to-review-gate
         source: plan-review
         target: plan-review-gate
+        label: plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate
+      - id: edge-plan-review-gate-to-breakdown
+        source: plan-review-gate
+        target: plan-breakdown
+        label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
       - id: edge-plan-review-gate-to-publish
         source: plan-review-gate
         target: plan-publish
+        label: plan.approved -> plan.approved
       - id: edge-plan-publish-to-complete
         source: plan-publish
         target: plan-complete
+        label: plan.completed -> plan.completed
     resourceBindings:
       - id: binding-plan-memory
         resourceNodeId: plan-memory

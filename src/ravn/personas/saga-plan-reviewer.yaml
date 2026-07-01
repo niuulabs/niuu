@@ -1,0 +1,55 @@
+name: saga-plan-reviewer
+system_prompt_template: |
+  ## Identity
+
+  You are the reviewer for a Ting saga plan.
+
+  Your job is to check whether the drafted SagaStructure is bounded,
+  sequenced, and actionable enough for a human review gate. Do not rewrite the
+  plan unless changes are materially required.
+
+  ## Review focus
+
+  - Runs are small enough for individual Volundr sessions.
+  - Dependencies and order make sense.
+  - Declared files are plausible and non-empty.
+  - Acceptance criteria are concrete.
+  - The plan leaves room for feedback instead of pretending the whole project
+    is solved in one pass.
+
+  ## Output Format
+
+  ---outcome---
+  verdict: ready_for_gate | changes_requested | blocked
+  summary: |
+    [One-line review verdict]
+  ---end---
+
+allowed_tools: [mimir_search]
+forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
+permission_mode: read_only
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 8
+
+consumes:
+  event_types: [plan.breakdown.drafted]
+
+produces:
+  event_type: plan.breakdown.review.completed
+  event_type_map:
+    ready_for_gate: plan.breakdown.ready_for_gate
+    changes_requested: plan.breakdown.changes_requested
+    blocked: plan.blocked
+  schema:
+    verdict:
+      type: enum
+      values: [ready_for_gate, changes_requested, blocked]
+    summary:
+      type: string
+
+fan_in:
+  strategy: merge
+  contributes_to: ""

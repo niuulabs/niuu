@@ -935,6 +935,16 @@ class TestSpawnPlanSession:
 ```"""
         )
         adapter.send_message = AsyncMock()
+        adapter.get_workflow_gates = AsyncMock(
+            return_value=[
+                {
+                    "id": "plan-brief-gate:plan-1:1",
+                    "node_id": "plan-brief-gate",
+                    "status": "pending",
+                }
+            ]
+        )
+        adapter.resolve_workflow_gate = AsyncMock(return_value={"status": "resolved"})
         volundr_factory = AsyncMock()
         volundr_factory.for_principal.return_value = [adapter]
         volundr_factory.primary_for_principal.return_value = adapter
@@ -995,7 +1005,9 @@ class TestSpawnPlanSession:
         assert draft["structure"]["risks"] == [
             {"kind": "blast", "message": "Touches dashboard routing."}
         ]
-        adapter.get_last_assistant_message.assert_awaited_once_with("plan-1")
+        adapter.get_last_assistant_message.assert_awaited_once()
+        assert adapter.get_last_assistant_message.await_args.args == ("plan-1",)
+        assert adapter.get_last_assistant_message.await_args.kwargs["auth_token"] is None
 
         feedback_resp = client.post(
             "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
@@ -1007,6 +1019,15 @@ class TestSpawnPlanSession:
         assert adapter.send_message.await_args.args[:2] == (
             "plan-1",
             "Keep the first pass to one saga.",
+        )
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-brief-gate:plan-1:1",
+            "APPROVE",
+            notes="Keep the first pass to one saga.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
         )
 
 

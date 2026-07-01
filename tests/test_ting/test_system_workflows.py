@@ -102,6 +102,23 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "gate"
     ]
     assert planning_gate_labels == ["Planning feedback gate", "Draft plan review gate"]
+    planning_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in planning_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert planning_stage_personas["Draft saga breakdown"] == ["saga-planner"]
+    assert planning_stage_personas["Review saga breakdown"] == ["saga-plan-reviewer"]
+    assert planning_stage_personas["Publish planning draft"] == ["saga-plan-publisher"]
+    planning_edge_labels = {edge.get("label") for edge in planning_flow.graph["edges"]}
+    assert None not in planning_edge_labels
+    assert "spec.framed -> spec.framed" in planning_edge_labels
+    assert "plan.brief.approved -> plan.brief.approved" in planning_edge_labels
+    assert "plan.breakdown.drafted -> plan.breakdown.drafted" in planning_edge_labels
+    assert "plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate" in (
+        planning_edge_labels
+    )
+    assert "plan.approved -> plan.approved" in planning_edge_labels
     planning_resources = {
         node["label"]: node
         for node in planning_flow.graph["nodes"]
