@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
@@ -1032,6 +1033,17 @@ class TestSpawnPlanSession:
         adapter.get_last_assistant_message.assert_awaited_once()
         assert adapter.get_last_assistant_message.await_args.args == ("plan-1",)
         assert adapter.get_last_assistant_message.await_args.kwargs["auth_token"] is None
+
+        adapter.get_last_assistant_message.reset_mock()
+        adapter.get_last_assistant_message.side_effect = httpx.HTTPStatusError(
+            "session gateway not ready",
+            request=httpx.Request("GET", "https://volundr.example/sessions/plan-1/conversation"),
+            response=httpx.Response(502),
+        )
+        transient_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert transient_draft_resp.status_code == 200
+        assert transient_draft_resp.json() == {"found": False, "structure": None}
+        adapter.get_last_assistant_message.side_effect = None
 
         adapter.get_workflow_gates.return_value = [
             {

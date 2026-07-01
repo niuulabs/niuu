@@ -15,6 +15,7 @@ from inspect import isawaitable
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 try:
@@ -67,6 +68,7 @@ _PLAN_GATE_POLL_SECONDS = 2.0
 _PLAN_GATE_POLL_ATTEMPTS = 6
 _PLAN_FEEDBACK_METADATA_KEY = "planning_feedback_notes"
 _PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY = "planning_brief_gate_resolved"
+_TRANSIENT_PLAN_DRAFT_STATUS_CODES = {404, 409, 425, 502, 503, 504}
 
 
 def _sanitize_log(value: object) -> str:
@@ -1141,6 +1143,18 @@ def create_sagas_router() -> APIRouter:
             )
         except ValueError:
             return ExtractStructureResponse(found=False)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _TRANSIENT_PLAN_DRAFT_STATUS_CODES:
+                logger.info(
+                    "Planning draft not ready for campaign %s: session API returned %s",
+                    _sanitize_log(campaign.id),
+                    exc.response.status_code,
+                )
+                return ExtractStructureResponse(found=False)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to load plan draft: {exc}",
+            ) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
