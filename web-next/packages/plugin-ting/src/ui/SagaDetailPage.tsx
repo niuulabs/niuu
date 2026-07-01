@@ -583,7 +583,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     .filter((run) => run.sessionId && ['running', 'review', 'escalated'].includes(run.status));
   const branchLabel = `${saga.featureBranch} → ${saga.baseBranch}`;
   const trackerLabel = saga.trackerId && !isUuidLike(saga.trackerId) ? saga.trackerId : '';
-  const trackerLinkLabel = trackerLabel || (saga.url ? 'Open in Linear' : '');
+  const trackerLinkLabel = trackerLabel || (saga.url ? 'Open in Tracker' : '');
 
   function handleAssignWorkflow(workflowId: string | null) {
     assignWorkflow.mutate(workflowId, {

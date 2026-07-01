@@ -709,6 +709,17 @@ class TestGetRun:
         with pytest.raises(GraphQLError, match="Issue not found"):
             await adapter.get_run("bad-id")
 
+    async def test_uses_recent_create_metadata_when_lookup_fails(self):
+        adapter = _make_adapter()
+        adapter._created_run_nodes["issue-1"] = _issue_node()
+        adapter._gql._client = AsyncMock()
+        adapter._gql._client.post.side_effect = RuntimeError("linear lookup failed")
+
+        run = await adapter.get_run("issue-1")
+
+        assert run.identifier == "TEST-1"
+        assert run.url == "https://linear.app/test/issue/TEST-1"
+
 
 # ---------------------------------------------------------------------------
 # _parse_progress

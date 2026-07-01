@@ -325,7 +325,20 @@ mutation CreateIssue(
     teamId: $teamId,
     estimate: $estimate
   }) {
-    issue { id identifier }
+    issue {
+      id
+      identifier
+      title
+      description
+      state { name }
+      assignee { name }
+      labels { nodes { name } }
+      priority
+      url
+      projectMilestone { id }
+      createdAt
+      updatedAt
+    }
     success
   }
 }
@@ -414,6 +427,7 @@ class LinearTrackerAdapter(TrackerPort):
     ) -> None:
         self._team_id = team_id
         self._pool = pool
+        self._created_run_nodes: dict[str, dict] = {}
         self._gql = LinearGraphQLClient(
             api_key=api_key,
             api_url=api_url,
@@ -533,6 +547,7 @@ class LinearTrackerAdapter(TrackerPort):
         issue = data.get("issueCreate", {}).get("issue")
         if issue is None:
             raise GraphQLError("Failed to create Linear issue")
+        self._created_run_nodes[issue["id"]] = issue
         self._gql.invalidate_cache("issues")
         return issue["id"]
 
@@ -587,10 +602,17 @@ class LinearTrackerAdapter(TrackerPort):
         return self._milestone_to_phase(milestone)
 
     async def get_run(self, tracker_id: str) -> Run:
-        data = await self._gql.query(_GET_ISSUE_QUERY, {"id": tracker_id})
-        issue = data.get("issue")
+        try:
+            data = await self._gql.query(_GET_ISSUE_QUERY, {"id": tracker_id})
+            issue = data.get("issue")
+        except Exception:
+            issue = self._created_run_nodes.get(tracker_id)
+            if issue is None:
+                raise
         if issue is None:
-            raise GraphQLError(f"Issue not found: {tracker_id}")
+            issue = self._created_run_nodes.get(tracker_id)
+            if issue is None:
+                raise GraphQLError(f"Issue not found: {tracker_id}")
         progress = await self._fetch_progress(tracker_id)
         return self._issue_to_run(issue, progress=progress)
 

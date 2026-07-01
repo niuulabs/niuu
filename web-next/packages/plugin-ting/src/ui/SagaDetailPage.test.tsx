@@ -174,7 +174,7 @@ describe('SagaDetailPage', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole('link', { name: 'Open in Linear' })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: 'Open in Tracker' })).toHaveAttribute(
         'href',
         'https://linear.app/niuu/project/ui-proof',
       ),
