@@ -1,6 +1,7 @@
 """Kubernetes resource provider — discovers cluster resources via K8s API."""
 
 import logging
+from collections import defaultdict
 
 from volundr.domain.models import (
     ClusterResourceInfo,
@@ -24,6 +25,37 @@ _WELL_KNOWN_RESOURCES: dict[str, tuple[str, str, ResourceCategory]] = {
     "ephemeral-storage": ("Ephemeral Storage", "bytes", ResourceCategory.COMPUTE),
     "pods": ("Pods", "pods", ResourceCategory.COMPUTE),
 }
+
+_MEMORY_MULTIPLIERS = {
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+}
+
+
+def _add_resource(total: dict[str, int], key: str, value: object) -> None:
+    raw = str(value)
+    if key == "cpu":
+        total[key] += int(float(raw[:-1]) if raw.endswith("m") else float(raw) * 1000)
+        return
+    if key == "memory":
+        for suffix, multiplier in _MEMORY_MULTIPLIERS.items():
+            if raw.endswith(suffix):
+                total[key] += int(float(raw[: -len(suffix)]) * multiplier)
+                return
+        total[key] += int(float(raw))
+        return
+    total[key] += int(float(raw))
+
+
+def _format_allocated(values: dict[str, int]) -> dict[str, str]:
+    formatted = {key: str(value) for key, value in values.items() if key not in {"cpu", "memory"}}
+    if values.get("cpu"):
+        formatted["cpu"] = f"{values['cpu']}m"
+    if values.get("memory"):
+        formatted["memory"] = f"{values['memory'] // (1024**2)}Mi"
+    return formatted
 
 
 def _resource_type_from_key(key: str) -> ResourceType:
@@ -102,6 +134,7 @@ class K8sResourceProvider(ResourceProvider):
                 nodes=[],
             )
 
+        allocated_by_node = await self._allocated_by_node(v1)
         seen_gpu_products: set[str] = set()
         seen_resource_keys: set[str] = set()
         nodes: list[NodeResourceSummary] = []
@@ -123,7 +156,7 @@ class K8sResourceProvider(ResourceProvider):
                     name=node.metadata.name,
                     labels=labels,
                     allocatable=allocatable,
-                    allocated={},  # Would require metrics-server to compute
+                    allocated=allocated_by_node.get(node.metadata.name, {}),
                     available=allocatable,  # Approximate
                 )
             )
@@ -157,6 +190,26 @@ class K8sResourceProvider(ResourceProvider):
             resource_types.append(_resource_type_from_key(key))
 
         return ClusterResourceInfo(resource_types=resource_types, nodes=nodes)
+
+    async def _allocated_by_node(self, v1: object) -> dict[str, dict[str, str]]:
+        try:
+            pods_resp = await v1.list_namespaced_pod(namespace=self._namespace)
+        except Exception:
+            logger.warning("Failed to query K8s API for pod resource requests", exc_info=True)
+            return {}
+
+        totals: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for pod in pods_resp.items:
+            if pod.status.phase in {"Failed", "Succeeded"} or not pod.spec.node_name:
+                continue
+            for container in pod.spec.containers or []:
+                for key, value in (container.resources.requests or {}).items():
+                    try:
+                        _add_resource(totals[pod.spec.node_name], key, value)
+                    except (TypeError, ValueError):
+                        logger.debug("Ignoring unparsable pod request %s=%r", key, value)
+
+        return {node: _format_allocated(values) for node, values in totals.items()}
 
     def translate(self, resource_config: dict) -> TranslatedResources:
         return translate_resource_config(resource_config)
