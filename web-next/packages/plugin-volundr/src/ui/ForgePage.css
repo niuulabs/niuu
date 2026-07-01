@@ -94,27 +94,6 @@
   color: var(--brand-300);
 }
 
-.vol-forge__gpu-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-top: 8px;
-}
-
-.vol-forge__gpu-cell {
-  width: 14px;
-  height: 18px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
-}
-
-.vol-forge__gpu-cell.is-used {
-  background: linear-gradient(180deg, var(--brand-400) 0%, var(--brand-500) 100%);
-  border-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--brand-400) 18%, transparent);
-}
-
 .vol-forge__grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(360px, 1fr);

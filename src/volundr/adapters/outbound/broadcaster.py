@@ -271,10 +271,12 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             data={
                 "active_sessions": stats.active_sessions,
                 "total_sessions": stats.total_sessions,
+                "sessions_today": stats.sessions_today,
                 "tokens_today": stats.tokens_today,
                 "local_tokens": stats.local_tokens,
                 "cloud_tokens": stats.cloud_tokens,
                 "cost_today": float(stats.cost_today),
+                "sparklines": stats.sparklines or {},
             },
             timestamp=datetime.now(UTC),
         )

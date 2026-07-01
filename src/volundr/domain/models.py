@@ -220,6 +220,8 @@ class Stats:
     local_tokens: int
     cloud_tokens: int
     cost_today: Decimal
+    sessions_today: int = 0
+    sparklines: dict[str, list[float]] | None = None
 
 
 @dataclass(frozen=True)

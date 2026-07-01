@@ -22,7 +22,10 @@ class PostgresStatsRepository(StatsRepository):
                 """
                 SELECT
                     COUNT(*) FILTER (WHERE status = 'running') AS active_sessions,
-                    COUNT(*) AS total_sessions
+                    COUNT(*) AS total_sessions,
+                    COUNT(*) FILTER (
+                        WHERE created_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                    ) AS sessions_today
                 FROM sessions
                 """
             )
@@ -72,6 +75,29 @@ class PostgresStatsRepository(StatsRepository):
             chronicle_tokens = int(chronicle_stats["tokens_today"])
             token_usage_cost = Decimal(str(token_stats["cost_today"]))
             chronicle_cost = Decimal(str(chronicle_stats["cost_today"]))
+            sessions_by_day = await conn.fetch(
+                """
+                WITH days AS (
+                    SELECT generate_series(
+                        CURRENT_DATE - INTERVAL '29 days',
+                        CURRENT_DATE,
+                        INTERVAL '1 day'
+                    )::date AS day
+                ),
+                session_counts AS (
+                    SELECT
+                        (created_at AT TIME ZONE 'UTC')::date AS day,
+                        COUNT(*)::float AS count
+                    FROM sessions
+                    WHERE created_at >= (CURRENT_DATE - INTERVAL '29 days') AT TIME ZONE 'UTC'
+                    GROUP BY 1
+                )
+                SELECT COALESCE(session_counts.count, 0) AS count
+                FROM days
+                LEFT JOIN session_counts USING (day)
+                ORDER BY days.day
+                """
+            )
 
             return Stats(
                 active_sessions=session_counts["active_sessions"],
@@ -80,4 +106,8 @@ class PostgresStatsRepository(StatsRepository):
                 local_tokens=token_stats["local_tokens"],
                 cloud_tokens=token_stats["cloud_tokens"] + chronicle_tokens,
                 cost_today=token_usage_cost + chronicle_cost,
+                sessions_today=session_counts["sessions_today"],
+                sparklines={
+                    "sessionsToday": [float(row["count"]) for row in sessions_by_day],
+                },
             )

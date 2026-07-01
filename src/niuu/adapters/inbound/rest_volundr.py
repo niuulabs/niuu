@@ -492,6 +492,7 @@ def create_volundr_router(
         return {
             "active_sessions": _sum_int("active_sessions", "activeSessions"),
             "total_sessions": _sum_int("total_sessions", "totalSessions"),
+            "sessions_today": _sum_int("sessions_today", "sessionsToday"),
             "tokens_today": _sum_int("tokens_today", "tokensToday"),
             "local_tokens": _sum_int("local_tokens", "localTokens"),
             "cloud_tokens": _sum_int("cloud_tokens", "cloudTokens"),

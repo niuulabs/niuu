@@ -64,7 +64,7 @@ describe('ForgePage', () => {
     await waitFor(() => expect(screen.getByText(/active pods/i)).toBeInTheDocument());
     expect(screen.getByText(/tokens today/i)).toBeInTheDocument();
     expect(screen.getByText(/cost today/i)).toBeInTheDocument();
-    expect(screen.getByText('GPUs')).toBeInTheDocument();
+    expect(screen.getByText(/sessions today/i)).toBeInTheDocument();
   });
 
   it('renders the in-flight pods panel', async () => {

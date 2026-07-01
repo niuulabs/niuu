@@ -282,6 +282,8 @@ class InMemoryStatsRepository(StatsRepository):
         local_tokens: int = 0,
         cloud_tokens: int = 0,
         cost_today: Decimal = Decimal("0"),
+        sessions_today: int = 0,
+        sparklines: dict[str, list[float]] | None = None,
     ):
         self._stats = Stats(
             active_sessions=active_sessions,
@@ -290,6 +292,8 @@ class InMemoryStatsRepository(StatsRepository):
             local_tokens=local_tokens,
             cloud_tokens=cloud_tokens,
             cost_today=cost_today,
+            sessions_today=sessions_today,
+            sparklines=sparklines,
         )
 
     async def get_stats(self) -> Stats:
@@ -303,6 +307,8 @@ class InMemoryStatsRepository(StatsRepository):
         local_tokens: int | None = None,
         cloud_tokens: int | None = None,
         cost_today: Decimal | None = None,
+        sessions_today: int | None = None,
+        sparklines: dict[str, list[float]] | None = None,
     ) -> None:
         """Update stats for testing different scenarios."""
         current = self._stats
@@ -317,6 +323,10 @@ class InMemoryStatsRepository(StatsRepository):
             local_tokens=local_tokens if local_tokens is not None else current.local_tokens,
             cloud_tokens=cloud_tokens if cloud_tokens is not None else current.cloud_tokens,
             cost_today=cost_today if cost_today is not None else current.cost_today,
+            sessions_today=(
+                sessions_today if sessions_today is not None else current.sessions_today
+            ),
+            sparklines=sparklines if sparklines is not None else current.sparklines,
         )
 
 

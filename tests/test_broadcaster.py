@@ -52,6 +52,8 @@ def sample_stats() -> Stats:
         local_tokens=200,
         cloud_tokens=800,
         cost_today=Decimal("0.50"),
+        sessions_today=3,
+        sparklines={"sessionsToday": [1.0, 2.0, 3.0]},
     )
 
 
@@ -332,7 +334,9 @@ class TestInMemoryEventBroadcaster:
 
         assert event.type == EventType.STATS_UPDATED
         assert event.data["active_sessions"] == sample_stats.active_sessions
+        assert event.data["sessions_today"] == sample_stats.sessions_today
         assert event.data["cost_today"] == float(sample_stats.cost_today)
+        assert event.data["sparklines"] == sample_stats.sparklines
 
     @pytest.mark.asyncio
     async def test_create_heartbeat_event(self, broadcaster: InMemoryEventBroadcaster):

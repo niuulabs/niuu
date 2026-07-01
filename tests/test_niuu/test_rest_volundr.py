@@ -387,11 +387,12 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
             json={
                 "active_sessions": 2,
                 "totalSessions": 5,
+                "sessions_today": 1,
                 "tokens_today": 10,
                 "localTokens": 3,
                 "cloud_tokens": 7,
                 "costToday": 1.25,
-                "sparklines": {"tokens": [1, 2], "cost": [0.5, 0.75]},
+                "sparklines": {"tokens": [1, 2], "cost": [0.5, 0.75], "sessionsToday": [1, 0]},
             },
         )
     )
@@ -401,11 +402,12 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
             json={
                 "activeSessions": 4,
                 "total_sessions": 6,
+                "sessionsToday": 2,
                 "tokensToday": 20,
                 "local_tokens": 5,
                 "cloudTokens": 9,
                 "cost_today": 2.5,
-                "sparklines": {"tokens": [3, 4, 5]},
+                "sparklines": {"tokens": [3, 4, 5], "sessionsToday": [0, 2, 1]},
             },
         )
     )
@@ -416,11 +418,16 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
     assert response.json() == {
         "active_sessions": 6,
         "total_sessions": 11,
+        "sessions_today": 3,
         "tokens_today": 30,
         "local_tokens": 8,
         "cloud_tokens": 16,
         "cost_today": 3.75,
-        "sparklines": {"tokens": [4.0, 6.0, 5.0], "cost": [0.5, 0.75]},
+        "sparklines": {
+            "tokens": [4.0, 6.0, 5.0],
+            "cost": [0.5, 0.75],
+            "sessionsToday": [1.0, 2.0, 1.0],
+        },
     }
 
 

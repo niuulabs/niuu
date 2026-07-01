@@ -177,27 +177,6 @@ function MetricTile({
   );
 }
 
-function GpuStrip({ clusters }: { clusters: ForgeClusterView[] }) {
-  const cells = clusters.flatMap((cluster) =>
-    Array.from({ length: cluster.capacity.gpu }, (_, index) => ({
-      id: `${cluster.id}-${index}`,
-      used: index < cluster.used.gpu,
-      kind: cluster.displayKind,
-    })),
-  );
-
-  return (
-    <div className="vol-forge__gpu-strip" data-testid="gpu-heatmap">
-      {cells.map((cell) => (
-        <span
-          key={cell.id}
-          className={`vol-forge__gpu-cell${cell.used ? ' is-used' : ''} ${cell.kind === 'gpu' ? 'is-gpu' : ''}`}
-        />
-      ))}
-    </div>
-  );
-}
-
 function InflightRow({
   session,
   clusterLabel,
@@ -485,10 +464,9 @@ export function ForgePage() {
     [dashboardSessions],
   );
 
-  const totalGpuUsed = forgeClusters.reduce((sum, cluster) => sum + cluster.used.gpu, 0);
-  const totalGpuCap = forgeClusters.reduce((sum, cluster) => sum + cluster.capacity.gpu, 0);
   const tokenSparkline = stats.data?.sparklines?.tokensToday ?? [];
   const activePodSparkline = stats.data?.sparklines?.activePods ?? [];
+  const sessionsTodaySparkline = stats.data?.sparklines?.sessionsToday ?? [];
   const tokenRate = tokenSparkline.length > 0 ? Math.round(average(tokenSparkline, 5) / 100) : 0;
   const projectedCost = stats.data ? Math.round(stats.data.costToday * 1.07) : 0;
 
@@ -532,12 +510,14 @@ export function ForgePage() {
             subline={`$${projectedCost} projected 24h`}
           />
           <MetricTile
-            label="GPUs"
-            value={`${totalGpuUsed}/${totalGpuCap}`}
-            subline={`across ${forgeClusters.length} clusters`}
+            label="SESSIONS TODAY"
+            value={stats.data ? stats.data.sessionsToday : '—'}
+            subline={`${stats.data ? stats.data.totalSessions : '—'} total · last 30d`}
             accent="neutral"
           >
-            <GpuStrip clusters={forgeClusters} />
+            {sessionsTodaySparkline.length > 0 ? (
+              <Sparkline values={sessionsTodaySparkline} width={180} height={46} fill />
+            ) : null}
           </MetricTile>
         </section>
 

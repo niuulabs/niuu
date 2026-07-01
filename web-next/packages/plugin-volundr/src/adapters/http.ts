@@ -160,6 +160,8 @@ type StatsPayload = {
   active_sessions?: number;
   totalSessions?: number;
   total_sessions?: number;
+  sessionsToday?: number;
+  sessions_today?: number;
   tokensToday?: number;
   tokens_today?: number;
   localTokens?: number;
@@ -542,6 +544,7 @@ function normalizeStats(stats: StatsPayload): VolundrStats {
   return {
     activeSessions: stats.activeSessions ?? stats.active_sessions ?? 0,
     totalSessions: stats.totalSessions ?? stats.total_sessions ?? 0,
+    sessionsToday: stats.sessionsToday ?? stats.sessions_today ?? 0,
     tokensToday: stats.tokensToday ?? stats.tokens_today ?? 0,
     localTokens: stats.localTokens ?? stats.local_tokens ?? 0,
     cloudTokens: stats.cloudTokens ?? stats.cloud_tokens ?? 0,

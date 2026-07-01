@@ -1023,17 +1023,21 @@ class TestStatsResponse:
         stats = StatsResponse(
             active_sessions=3,
             total_sessions=10,
+            sessions_today=2,
             tokens_today=50000,
             local_tokens=20000,
             cloud_tokens=30000,
             cost_today=1.50,
+            sparklines={"sessionsToday": [1.0, 2.0]},
         )
         assert stats.active_sessions == 3
         assert stats.total_sessions == 10
+        assert stats.sessions_today == 2
         assert stats.tokens_today == 50000
         assert stats.local_tokens == 20000
         assert stats.cloud_tokens == 30000
         assert stats.cost_today == 1.50
+        assert stats.sparklines == {"sessionsToday": [1.0, 2.0]}
 
 
 class TestGetStats:
@@ -1046,10 +1050,12 @@ class TestGetStats:
         data = response.json()
         assert data["active_sessions"] == 3
         assert data["total_sessions"] == 10
+        assert data["sessions_today"] == 0
         assert data["tokens_today"] == 50000
         assert data["local_tokens"] == 20000
         assert data["cloud_tokens"] == 30000
         assert data["cost_today"] == 1.50
+        assert data["sparklines"] == {}
 
     def test_get_stats_has_all_fields(self, client: TestClient):
         """Stats response contains all expected fields."""
@@ -1058,10 +1064,12 @@ class TestGetStats:
         data = response.json()
         assert "active_sessions" in data
         assert "total_sessions" in data
+        assert "sessions_today" in data
         assert "tokens_today" in data
         assert "local_tokens" in data
         assert "cloud_tokens" in data
         assert "cost_today" in data
+        assert "sparklines" in data
 
     def test_get_stats_without_service(self, service: SessionService):
         """Returns 503 when stats service is not available."""

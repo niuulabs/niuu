@@ -989,10 +989,15 @@ class StatsResponse(BaseModel):
 
     active_sessions: int = Field(description="Currently running sessions")
     total_sessions: int = Field(description="Total sessions (all statuses)")
+    sessions_today: int = Field(default=0, description="Sessions created today")
     tokens_today: int = Field(description="Tokens consumed today")
     local_tokens: int = Field(description="Tokens from local models today")
     cloud_tokens: int = Field(description="Tokens from cloud models today")
     cost_today: float = Field(description="Total cloud cost today in USD")
+    sparklines: dict[str, list[float]] = Field(
+        default_factory=dict,
+        description="Historical KPI samples for lightweight dashboard sparklines",
+    )
 
 
 class TokenUsageReport(BaseModel):
@@ -1799,10 +1804,12 @@ def create_router(
         return StatsResponse(
             active_sessions=stats.active_sessions,
             total_sessions=stats.total_sessions,
+            sessions_today=stats.sessions_today,
             tokens_today=stats.tokens_today,
             local_tokens=stats.local_tokens,
             cloud_tokens=stats.cloud_tokens,
             cost_today=float(stats.cost_today),
+            sparklines=stats.sparklines or {},
         )
 
     @router.post(

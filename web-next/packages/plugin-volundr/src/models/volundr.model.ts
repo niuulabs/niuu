@@ -219,6 +219,7 @@ export interface VolundrWorkflowGate {
 export interface VolundrStats {
   activeSessions: number;
   totalSessions: number;
+  sessionsToday: number;
   tokensToday: number;
   localTokens: number;
   cloudTokens: number;
@@ -228,7 +229,7 @@ export interface VolundrStats {
     activePods?: number[];
     tokensToday?: number[];
     costToday?: number[];
-    gpus?: number[];
+    sessionsToday?: number[];
   };
 }
 
