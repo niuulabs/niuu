@@ -1351,6 +1351,7 @@ class Broker:
                         subscriber=sleipnir_subscriber,
                         room_bridge=self._room_bridge,
                         session_id=self.session_id,
+                        report_usage=self._report_usage,
                     )
                     await self._room_mesh_bridge.start()
                     logger.info("RoomMeshBridge started (session_id=%s)", self.session_id)

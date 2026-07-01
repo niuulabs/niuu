@@ -522,6 +522,91 @@ class TestActivityTranslation:
         await bridge.stop()
 
 
+class TestUsageReporting:
+    @pytest.mark.asyncio
+    async def test_usage_event_reports_model_usage(self):
+        room = _make_room_bridge(known_peers=["skuld-01"])
+        report_usage = AsyncMock()
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+            report_usage=report_usage,
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {
+                    "model": "gpt-5.5",
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "cacheReadInputTokens": 2,
+                    "cacheCreationInputTokens": 1,
+                    "costUSD": 0.01,
+                    "usage_id": "usage-1",
+                },
+                "ravn_type": "RavnEventType.USAGE",
+                "ravn_source": "skuld-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.0,
+                "ravn_task_id": "task-1",
+            }
+        )
+        await bridge._handle_event(evt)
+
+        report_usage.assert_awaited_once_with(
+            {
+                "modelUsage": {
+                    "gpt-5.5": {
+                        "inputTokens": 10,
+                        "outputTokens": 5,
+                        "cacheReadInputTokens": 2,
+                        "cacheCreationInputTokens": 1,
+                        "costUSD": 0.01,
+                    }
+                }
+            }
+        )
+        room.handle_ravn_frame.assert_not_awaited()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_usage_event_dedupes_by_usage_id(self):
+        room = _make_room_bridge(known_peers=["skuld-01"])
+        report_usage = AsyncMock()
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+            report_usage=report_usage,
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            payload={
+                "ravn_event": {
+                    "model": "gpt-5.5",
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "usage_id": "usage-1",
+                },
+                "ravn_type": "RavnEventType.USAGE",
+                "ravn_source": "skuld-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.0,
+                "ravn_task_id": "task-1",
+            }
+        )
+        await bridge._handle_event(evt)
+        await bridge._handle_event(evt)
+
+        report_usage.assert_awaited_once()
+        await bridge.stop()
+
+
 # ---------------------------------------------------------------------------
 # Auto-registration of mesh peers
 # ---------------------------------------------------------------------------

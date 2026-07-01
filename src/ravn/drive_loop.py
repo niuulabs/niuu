@@ -1558,7 +1558,8 @@ class DriveLoop:
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
-                self._record_task_cost(task, turn_result)
+                cost_usd = self._record_task_cost(task, turn_result)
+                await self._emit_task_usage(channel, task, turn_result, cost_usd, agent)
                 response_text = (
                     capture_channel.response_text if capture_channel else turn_result.response
                 )
@@ -1568,7 +1569,10 @@ class DriveLoop:
                     response_text=response_text,
                 )
                 if repair_result is not None:
-                    self._record_task_cost(task, repair_result)
+                    repair_cost_usd = self._record_task_cost(task, repair_result)
+                    await self._emit_task_usage(
+                        channel, task, repair_result, repair_cost_usd, agent
+                    )
                     response_text = repair_result.response
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
@@ -2455,11 +2459,11 @@ class DriveLoop:
             )
         )
 
-    def _record_task_cost(self, task: AgentTask, turn_result: object) -> None:
+    def _record_task_cost(self, task: AgentTask, turn_result: object) -> float | None:
         """Compute cost from turn_result.usage and record it on the budget tracker."""
         usage = getattr(turn_result, "usage", None)
         if usage is None:
-            return
+            return None
         input_tokens: int = getattr(usage, "input_tokens", 0)
         output_tokens: int = getattr(usage, "output_tokens", 0)
         budget_cfg = getattr(self._settings, "budget", None)
@@ -2477,6 +2481,50 @@ class DriveLoop:
             cost_usd,
             self._budget.spent_today_usd,
             self._budget.remaining_usd,
+        )
+        return cost_usd
+
+    async def _emit_task_usage(
+        self,
+        channel: ChannelPort,
+        task: AgentTask,
+        turn_result: object,
+        cost_usd: float | None,
+        agent: object,
+    ) -> None:
+        usage = getattr(turn_result, "usage", None)
+        if usage is None:
+            return
+
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cache_read_tokens = int(getattr(usage, "cache_read_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(usage, "cache_write_tokens", 0) or 0)
+        thinking_tokens = int(getattr(usage, "thinking_tokens", 0) or 0)
+        if input_tokens + output_tokens + cache_read_tokens + cache_write_tokens <= 0:
+            return
+
+        model = str(getattr(agent, "_model", "") or getattr(self._settings.llm, "model", ""))
+        usage_id = (
+            f"{task.task_id}:{id(turn_result)}:{model}:{input_tokens}:{output_tokens}:"
+            f"{cache_read_tokens}:{cache_write_tokens}:{thinking_tokens}"
+        )
+        await channel.emit(
+            RavnEvent.usage(
+                source=self._source_id,
+                model=model or "unknown",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                thinking_tokens=thinking_tokens,
+                cost_usd=cost_usd,
+                usage_id=usage_id,
+                persona=task.persona,
+                correlation_id=task.task_id,
+                session_id=task.session_id or task.task_id,
+                task_id=task.task_id,
+            )
         )
 
     async def _re_deliver_surface(self, task: AgentTask, text: str) -> None:

@@ -25,6 +25,7 @@ def event_to_dict(event: RavnEvent) -> dict:
         "correlation_id": event.correlation_id,
         "session_id": event.session_id,
         "task_id": event.task_id,
+        "root_correlation_id": event.root_correlation_id,
     }
 
 
@@ -39,6 +40,7 @@ def dict_to_event(raw: dict) -> RavnEvent:
         correlation_id=raw["correlation_id"],
         session_id=raw["session_id"],
         task_id=raw.get("task_id"),
+        root_correlation_id=raw.get("root_correlation_id", ""),
     )
 
 

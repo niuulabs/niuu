@@ -40,7 +40,8 @@ event arrives, so the browser learns about them without any extra wiring.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirSubscriber, Subscription
@@ -139,6 +140,13 @@ def _build_activity_frame(ravn_type: str, ravn_event_payload: dict) -> dict | No
     return None
 
 
+def _as_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class RoomMeshBridge:
     """Subscribes to Sleipnir mesh events and translates them to room wire events.
 
@@ -165,11 +173,14 @@ class RoomMeshBridge:
         room_bridge: RoomBridge,
         session_id: str | None = None,
         patterns: list[str] | None = None,
+        report_usage: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._subscriber = subscriber
         self._room_bridge = room_bridge
         self._session_id = session_id
         self._patterns = patterns if patterns is not None else list(MESH_PATTERNS)
+        self._report_usage = report_usage
+        self._reported_usage_ids: set[str] = set()
         self._subscription: Subscription | None = None
 
     # ------------------------------------------------------------------
@@ -237,6 +248,10 @@ class RoomMeshBridge:
 
         if "outcome" in ravn_type.lower():
             await self._translate_outcome(peer_id, mesh_topic, ravn_event_payload)
+            return
+
+        if "usage" in ravn_type.lower():
+            await self._handle_usage(ravn_event_payload)
             return
 
         activity_type = self._ravn_type_to_activity(ravn_type)
@@ -343,6 +358,31 @@ class RoomMeshBridge:
         if not frame:
             return
         await self._room_bridge.handle_ravn_frame(peer_id, frame)
+
+    async def _handle_usage(self, ravn_event_payload: dict) -> None:
+        """Forward mesh usage events into the existing Forge usage reporter."""
+        if self._report_usage is None:
+            return
+
+        usage_id = str(ravn_event_payload.get("usage_id") or "")
+        if usage_id:
+            if usage_id in self._reported_usage_ids:
+                return
+            self._reported_usage_ids.add(usage_id)
+
+        model = str(ravn_event_payload.get("model") or "unknown")
+        usage = {
+            "inputTokens": _as_int(ravn_event_payload.get("inputTokens")),
+            "outputTokens": _as_int(ravn_event_payload.get("outputTokens")),
+            "cacheReadInputTokens": _as_int(ravn_event_payload.get("cacheReadInputTokens")),
+            "cacheCreationInputTokens": _as_int(
+                ravn_event_payload.get("cacheCreationInputTokens")
+            ),
+        }
+        if ravn_event_payload.get("costUSD") is not None:
+            usage["costUSD"] = float(ravn_event_payload["costUSD"])
+
+        await self._report_usage({"modelUsage": {model: usage}})
 
     @staticmethod
     def _ravn_type_to_activity(ravn_type: str) -> str:

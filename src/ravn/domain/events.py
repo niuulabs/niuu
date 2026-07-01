@@ -19,6 +19,7 @@ class RavnEventType(StrEnum):
     TASK_STUCK = "task_stuck"  # emitted by Watchdog on stuck detection (NIU-510)
     OUTCOME = "outcome"  # emitted when persona produces outcome (mesh event routing)
     HELP_NEEDED = "help_needed"  # emitted when persona needs human input to proceed
+    USAGE = "usage"  # emitted when a turn reports token usage for session accounting
 
 
 @dataclass(frozen=True)
@@ -263,6 +264,47 @@ class RavnEvent:
             },
             timestamp=datetime.now(UTC),
             urgency=0.85,  # High priority, below decision_required (0.9)
+            correlation_id=correlation_id,
+            session_id=session_id,
+            task_id=task_id,
+        )
+
+    @classmethod
+    def usage(
+        cls,
+        source: str,
+        *,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        thinking_tokens: int = 0,
+        cost_usd: float | None = None,
+        usage_id: str = "",
+        persona: str = "",
+        correlation_id: str,
+        session_id: str,
+        task_id: str | None = None,
+    ) -> RavnEvent:
+        payload = {
+            "model": model,
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+            "cacheReadInputTokens": cache_read_tokens,
+            "cacheCreationInputTokens": cache_write_tokens,
+            "thinkingTokens": thinking_tokens,
+            "usage_id": usage_id,
+            "persona": persona,
+        }
+        if cost_usd is not None:
+            payload["costUSD"] = cost_usd
+        return cls(
+            type=RavnEventType.USAGE,
+            source=source,
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.0,
             correlation_id=correlation_id,
             session_id=session_id,
             task_id=task_id,
