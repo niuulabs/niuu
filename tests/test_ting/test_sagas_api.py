@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -940,6 +941,7 @@ class TestSpawnPlanSession:
 }
 ```"""
         )
+        adapter.get_conversation = AsyncMock(return_value={"turns": []})
         adapter.send_message = AsyncMock()
         adapter.get_workflow_gates = AsyncMock(
             return_value=[
@@ -1064,6 +1066,55 @@ class TestSpawnPlanSession:
         assert adapter.get_last_assistant_message.await_args.args == ("plan-1",)
         assert adapter.get_last_assistant_message.await_args.kwargs["auth_token"] is None
 
+        adapter.get_last_assistant_message.reset_mock()
+        outcome_structure = json.dumps(
+            {
+                "name": "Workflow Outcome Draft",
+                "phases": [
+                    {
+                        "name": "Docs",
+                        "runs": [
+                            {
+                                "name": "Document workflow outcome",
+                                "description": "Record the reviewable draft path.",
+                                "acceptance_criteria": ["Draft renders before approval"],
+                                "declared_files": ["docs/workflow.md"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        adapter.get_conversation.return_value = {
+            "turns": [
+                {
+                    "role": "assistant",
+                    "content": f"""---outcome---
+verdict: drafted
+summary: Drafted one docs-only phase.
+structure: '{outcome_structure}'
+---end---""",
+                },
+                {
+                    "role": "assistant",
+                    "content": """---outcome---
+verdict: ready_for_gate
+summary: Plan is bounded and ready for human review.
+---end---""",
+                },
+            ],
+        }
+        outcome_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert outcome_draft_resp.status_code == 200
+        outcome_draft = outcome_draft_resp.json()
+        assert outcome_draft["found"] is True
+        assert outcome_draft["structure"]["name"] == "Workflow Outcome Draft"
+        assert outcome_draft["structure"]["phases"][0]["runs"][0]["declared_files"] == [
+            "docs/workflow.md"
+        ]
+        adapter.get_last_assistant_message.assert_not_awaited()
+
+        adapter.get_conversation.return_value = {"turns": []}
         adapter.get_last_assistant_message.reset_mock()
         adapter.get_last_assistant_message.side_effect = httpx.HTTPStatusError(
             "session gateway not ready",

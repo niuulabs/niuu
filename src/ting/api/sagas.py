@@ -7,8 +7,10 @@ milestones, issues) is fetched live from the tracker at read time.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from inspect import isawaitable
@@ -17,6 +19,8 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from niuu.domain.outcome import parse_outcome_block
 
 try:
     from sleipnir.domain.catalog import ting_saga_created as _catalog_saga_created
@@ -543,6 +547,52 @@ def _to_saga_structure_response(structure: SagaStructure) -> SagaStructureRespon
         ],
         risks=[PlanRiskResponse(kind=risk.kind, message=risk.message) for risk in structure.risks],
     )
+
+
+def _extract_plan_structure(text: str) -> SagaStructure | None:
+    from ting.domain.validation import parse_and_validate, try_extract_structure
+
+    outcome = parse_outcome_block(text)
+    if outcome is not None:
+        raw_structure = outcome.fields.get("structure")
+        if isinstance(raw_structure, str):
+            with suppress(Exception):
+                return parse_and_validate(raw_structure)
+        if isinstance(raw_structure, dict):
+            with suppress(Exception):
+                return parse_and_validate(json.dumps(raw_structure))
+    return try_extract_structure(text)
+
+
+async def _read_plan_draft(
+    adapter: VolundrPort,
+    session_id: str,
+    *,
+    auth_token: str | None,
+    principal: Principal,
+) -> SagaStructure | None:
+    conversation = await adapter.get_conversation(
+        session_id,
+        auth_token=auth_token,
+        principal=principal,
+    )
+    turns = conversation.get("turns", []) if isinstance(conversation, dict) else []
+    for turn in reversed(turns):
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = turn.get("content", "")
+        if not isinstance(content, str):
+            continue
+        structure = _extract_plan_structure(content)
+        if structure is not None:
+            return structure
+
+    text = await adapter.get_last_assistant_message(
+        session_id,
+        auth_token=auth_token,
+        principal=principal,
+    )
+    return _extract_plan_structure(text)
 
 
 def _to_plan_session_response(
@@ -1241,7 +1291,8 @@ def create_sagas_router() -> APIRouter:
         ):
             return ExtractStructureResponse(found=False)
         try:
-            text = await adapter.get_last_assistant_message(
+            result = await _read_plan_draft(
+                adapter,
                 campaign.session_id,
                 auth_token=auth_token,
                 principal=principal,
@@ -1266,9 +1317,6 @@ def create_sagas_router() -> APIRouter:
                 detail=f"Failed to load plan draft: {exc}",
             ) from exc
 
-        from ting.domain.validation import try_extract_structure
-
-        result = try_extract_structure(text)
         if result is None:
             return ExtractStructureResponse(found=False)
         return ExtractStructureResponse(found=True, structure=_to_saga_structure_response(result))
