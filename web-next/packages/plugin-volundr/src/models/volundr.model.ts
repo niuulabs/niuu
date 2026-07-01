@@ -49,6 +49,12 @@ export interface ResourceType {
 
 export interface NodeResourceSummary {
   name: string;
+  instanceId?: string;
+  instance_id?: string;
+  instanceName?: string;
+  instance_name?: string;
+  instanceSlug?: string;
+  instance_slug?: string;
   labels: Record<string, string>;
   allocatable: Record<string, string>;
   allocated: Record<string, string>;
@@ -56,6 +62,14 @@ export interface NodeResourceSummary {
 }
 
 export interface ClusterResourceInfo {
+  instances?: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    isDefault?: boolean;
+    is_default?: boolean;
+    tags?: string[];
+  }>;
   resourceTypes: ResourceType[];
   nodes: NodeResourceSummary[];
 }

@@ -1144,6 +1144,7 @@ describe('buildServices', () => {
         {
           id: 'sess-running',
           name: 'agent-runtime',
+          instanceName: 'Valhalla',
           podName: 'forge-pod-1',
           status: 'running',
           lastActive: Date.parse('2026-04-24T12:30:00Z'),
@@ -1156,6 +1157,7 @@ describe('buildServices', () => {
         {
           id: 'sess-queued',
           name: 'queued-runtime',
+          instanceName: 'Noatun',
           status: 'provisioning',
           lastActive: 0,
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
@@ -1171,6 +1173,7 @@ describe('buildServices', () => {
         nodes: [
           {
             name: 'node-a',
+            instanceSlug: 'valhalla',
             labels: {
               'topology.kubernetes.io/region': 'ca-hamilton-1',
             },
@@ -1188,6 +1191,7 @@ describe('buildServices', () => {
           },
           {
             name: 'node-b',
+            instanceSlug: 'noatun',
             labels: {
               'node-role.kubernetes.io/control-plane': 'true',
             },
@@ -1203,6 +1207,28 @@ describe('buildServices', () => {
           },
         ],
       }),
+      getTargets: vi.fn().mockResolvedValue([
+        {
+          id: 'target-noatun',
+          slug: 'noatun',
+          name: 'Noatun',
+          baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+          enabled: true,
+          isDefault: true,
+          visibility: 'system',
+          tags: ['noatun', 'cpu'],
+        },
+        {
+          id: 'target-valhalla',
+          slug: 'valhalla',
+          name: 'Valhalla',
+          baseUrl: 'https://volundr.valhalla.asgard.niuu.world',
+          enabled: true,
+          isDefault: false,
+          visibility: 'system',
+          tags: ['valhalla', 'gpu'],
+        },
+      ]),
       getLaunchSpecs: vi.fn().mockResolvedValue([]),
       getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
@@ -1222,35 +1248,45 @@ describe('buildServices', () => {
     const clusterAdapter = services['volundr.clusters'] as any;
     await expect(clusterAdapter.getClusters()).resolves.toEqual([
       expect.objectContaining({
-        id: 'shared',
-        name: 'Shared GPU Forge',
-        kind: 'gpu',
-        region: 'ca-hamilton-1',
-        capacity: { cpu: 12, memMi: 24576, gpu: 1 },
-        used: { cpu: 2, memMi: 9216, gpu: 1 },
-        runningSessions: 1,
+        id: 'target-noatun',
+        name: 'Noatun',
+        kind: 'primary',
+        region: 'noatun',
+        capacity: { cpu: 4, memMi: 8192, gpu: 0 },
+        used: { cpu: 0.5, memMi: 1024, gpu: 0 },
+        runningSessions: 0,
         queuedProvisions: 1,
         pods: [
-          expect.objectContaining({
-            name: 'forge-pod-1',
-            status: 'running',
-            startedAt: '2026-04-24T12:30:00.000Z',
-          }),
           expect.objectContaining({
             name: 'queued-runtime',
             status: 'pending',
             startedAt: '1970-01-01T00:00:00.000Z',
           }),
         ],
-        nodes: [
-          { id: 'node-a', status: 'ready', role: 'worker' },
-          { id: 'node-b', status: 'ready', role: 'control-plane' },
+        nodes: [{ id: 'node-b', status: 'ready', role: 'control-plane' }],
+      }),
+      expect.objectContaining({
+        id: 'target-valhalla',
+        name: 'Valhalla',
+        kind: 'gpu',
+        region: 'ca-hamilton-1',
+        capacity: { cpu: 8, memMi: 16384, gpu: 1 },
+        used: { cpu: 1.5, memMi: 8192, gpu: 1 },
+        runningSessions: 1,
+        queuedProvisions: 0,
+        pods: [
+          expect.objectContaining({
+            name: 'forge-pod-1',
+            status: 'running',
+            startedAt: '2026-04-24T12:30:00.000Z',
+          }),
         ],
+        nodes: [{ id: 'node-a', status: 'ready', role: 'worker' }],
       }),
     ]);
     expect(services.clusterAdapter).toBe(services['volundr.clusters']);
-    await expect(clusterAdapter.getCluster('shared')).resolves.toEqual(
-      expect.objectContaining({ id: 'shared' }),
+    await expect(clusterAdapter.getCluster('target-valhalla')).resolves.toEqual(
+      expect.objectContaining({ id: 'target-valhalla' }),
     );
   });
 
@@ -1356,7 +1392,7 @@ describe('buildServices', () => {
     await expect(clusterAdapter.getClusters()).resolves.toEqual([
       expect.objectContaining({
         region: 'shared',
-        status: 'warning',
+        status: 'healthy',
       }),
     ]);
   });

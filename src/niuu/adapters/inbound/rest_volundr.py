@@ -117,7 +117,17 @@ def _merge_cluster_resources(
 ) -> dict[str, Any]:
     resource_types: dict[str, dict[str, Any]] = {}
     nodes: list[dict[str, Any]] = []
+    instance_items: list[dict[str, Any]] = []
     for instance, item in zip(instances, items, strict=False):
+        instance_items.append(
+            {
+                "id": instance.id,
+                "name": instance.name,
+                "slug": instance.slug,
+                "is_default": instance.is_default,
+                "tags": instance.tags,
+            }
+        )
         for raw_type in item.get("resource_types") or item.get("resourceTypes") or []:
             if isinstance(raw_type, dict):
                 key = str(raw_type.get("name") or raw_type.get("resource_key") or raw_type)
@@ -134,6 +144,7 @@ def _merge_cluster_resources(
             nodes.append(node)
     resource_type_items = [_with_resource_type_aliases(item) for item in resource_types.values()]
     return {
+        "instances": instance_items,
         "resource_types": resource_type_items,
         "resourceTypes": resource_type_items,
         "nodes": nodes,
@@ -512,7 +523,8 @@ def create_volundr_router(
                     instance,
                     request,
                     method="GET",
-                    path="/cluster/resources",
+                    path="/resources",
+                    remote_prefix="/api/v1/volundr",
                     embedded_app=embedded_forge_app,
                 )
                 for instance in instances

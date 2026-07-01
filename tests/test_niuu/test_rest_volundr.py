@@ -434,7 +434,7 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
 @respx.mock
 def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
     client = _client([_instance("alpha", base_url="http://alpha")])
-    respx.get("http://alpha/api/v1/forge/cluster/resources").mock(
+    respx.get("http://alpha/api/v1/volundr/resources").mock(
         return_value=Response(
             200,
             json={
@@ -468,7 +468,9 @@ def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
     assert payload["resourceTypes"][0]["resourceKey"] == "nvidia.com/gpu"
     assert payload["resourceTypes"][0]["display_name"] == "GPU"
     assert payload["resourceTypes"][0]["displayName"] == "GPU"
+    assert payload["instances"][0]["slug"] == "alpha"
     assert payload["nodes"][0]["name"] == "alpha/node-a"
+    assert payload["nodes"][0]["instance_slug"] == "alpha"
 
 
 @respx.mock

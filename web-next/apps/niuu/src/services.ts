@@ -751,7 +751,7 @@ function buildSplitVolundrService(
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: () => forge.getStats(),
     getRepos: () => forge.getRepos(),
-    getTargets: () => forge.getTargets(),
+    getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
     subscribe: (callback) => forge.subscribe(callback),
     subscribeStats: (callback) => forge.subscribeStats(callback),
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),
@@ -901,14 +901,39 @@ function parseIntegerResource(value: unknown, fallback: number): number {
 }
 
 type ClusterResourceRecord = {
+  instances?: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    isDefault?: boolean;
+    is_default?: boolean;
+    tags?: string[];
+  }>;
   resourceTypes?: Array<{ name?: string; resourceKey?: string }>;
   nodes?: Array<{
     name: string;
+    instanceId?: string;
+    instance_id?: string;
+    instanceName?: string;
+    instance_name?: string;
+    instanceSlug?: string;
+    instance_slug?: string;
     labels?: Record<string, string>;
     allocatable?: Record<string, string>;
     allocated?: Record<string, string>;
     available?: Record<string, string>;
   }>;
+};
+
+type VolundrTargetRecord = Awaited<ReturnType<IVolundrService['getTargets']>>[number];
+type ClusterNodeRecord = NonNullable<ClusterResourceRecord['nodes']>[number] & {
+  id: string;
+  status: Cluster['nodes'][number]['status'];
+  role: string;
+  allocatable: Record<string, string>;
+  allocated: Record<string, string>;
+  available: Record<string, string>;
+  labels: Record<string, string>;
 };
 
 function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status'] {
@@ -927,18 +952,156 @@ function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status']
   }
 }
 
+function clusterKey(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function targetFromResourceInstance(
+  instance: NonNullable<ClusterResourceRecord['instances']>[number],
+): VolundrTargetRecord {
+  return {
+    id: instance.id,
+    slug: instance.slug,
+    name: instance.name,
+    baseUrl: '',
+    enabled: true,
+    isDefault: instance.isDefault ?? instance.is_default ?? false,
+    visibility: 'system',
+    tags: instance.tags ?? [],
+  };
+}
+
+function sessionBelongsToTarget(session: VolundrSession, target: VolundrTargetRecord): boolean {
+  if (session.instanceId && session.instanceId === target.id) return true;
+  const sessionName = clusterKey(session.instanceName);
+  if (!sessionName) return false;
+  return sessionName === clusterKey(target.name) || sessionName === clusterKey(target.slug);
+}
+
+function nodeBelongsToTarget(node: ClusterNodeRecord, target: VolundrTargetRecord): boolean {
+  const ids = [
+    node.instanceId,
+    node.instance_id,
+    node.instanceName,
+    node.instance_name,
+    node.instanceSlug,
+    node.instance_slug,
+  ].map(clusterKey);
+  return (
+    ids.includes(clusterKey(target.id)) ||
+    ids.includes(clusterKey(target.name)) ||
+    ids.includes(clusterKey(target.slug))
+  );
+}
+
+function parseRealmFromTarget(target: VolundrTargetRecord): string {
+  try {
+    const host = new URL(target.baseUrl).hostname;
+    const parts = host.split('.');
+    const slugIndex = parts.findIndex((part) => clusterKey(part) === clusterKey(target.slug));
+    if (slugIndex >= 0 && parts[slugIndex + 1]) return parts[slugIndex + 1]!;
+  } catch {
+    // Keep the display stable when baseUrl is absent or not absolute.
+  }
+  return target.tags.find((tag) => !['cpu', 'gpu'].includes(clusterKey(tag))) ?? target.slug;
+}
+
+function capacityFromNodes(nodes: ClusterNodeRecord[]): Cluster['capacity'] {
+  return nodes.reduce(
+    (acc, node) => ({
+      cpu: acc.cpu + parseCpuCores(node.allocatable.cpu, 0),
+      memMi: acc.memMi + parseMemoryToMi(node.allocatable.memory, 0),
+      gpu: acc.gpu + parseIntegerResource(node.allocatable['nvidia.com/gpu'], 0),
+    }),
+    { cpu: 0, memMi: 0, gpu: 0 },
+  );
+}
+
+function usedFromNodes(nodes: ClusterNodeRecord[]): Cluster['used'] {
+  return nodes.reduce(
+    (acc, node) => ({
+      cpu: acc.cpu + parseCpuCores(node.allocated.cpu, 0),
+      memMi: acc.memMi + parseMemoryToMi(node.allocated.memory, 0),
+      gpu: acc.gpu + parseIntegerResource(node.allocated['nvidia.com/gpu'], 0),
+    }),
+    { cpu: 0, memMi: 0, gpu: 0 },
+  );
+}
+
+function buildClusterFromParts(
+  target: VolundrTargetRecord,
+  nodes: ClusterNodeRecord[],
+  sessions: VolundrSession[],
+): Cluster {
+  const capacity = capacityFromNodes(nodes);
+  const used = usedFromNodes(nodes);
+  const sampleLabels = nodes[0]?.labels ?? {};
+  const region =
+    sampleLabels['topology.kubernetes.io/region'] ??
+    sampleLabels['failure-domain.beta.kubernetes.io/region'] ??
+    target.slug;
+  const isGpu = capacity.gpu > 0 || target.tags.some((tag) => clusterKey(tag) === 'gpu');
+
+  return {
+    id: target.id,
+    realm: parseRealmFromTarget(target),
+    name: target.name,
+    kind: isGpu ? 'gpu' : 'primary',
+    status: nodes.length > 0 || sessions.length > 0 ? 'healthy' : 'warning',
+    region,
+    capacity,
+    used,
+    disk: {
+      usedGi: 0,
+      totalGi: 0,
+      systemGi: 0,
+      podsGi: 0,
+      logsGi: 0,
+    },
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      status: node.status,
+      role: node.role,
+    })),
+    pods: sessions.map((session) => ({
+      name: session.podName ?? session.name,
+      status: toPodStatus(session),
+      startedAt: toIsoFromEpochMs(session.lastActive) ?? new Date(0).toISOString(),
+      cpuUsed: 0,
+      cpuLimit: 0,
+      memUsedMi: 0,
+      memLimitMi: 0,
+      restarts: 0,
+    })),
+    runningSessions: sessions.filter((session) => session.status === 'running').length,
+    queuedProvisions: sessions.filter(
+      (session) =>
+        session.status === 'created' ||
+        session.status === 'starting' ||
+        session.status === 'provisioning',
+    ).length,
+  };
+}
+
 function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
   return {
     async getClusters() {
-      const [resources, sessions] = await Promise.all([
+      const [resources, sessions, rawTargets] = await Promise.all([
         volundr
           .getClusterResources()
           .catch(() => ({ resourceTypes: [], nodes: [] }) as ClusterResourceRecord),
         volundr.getSessions().catch(() => [] as VolundrSession[]),
+        Promise.resolve(volundr.getTargets?.() ?? []).catch(() => [] as VolundrTargetRecord[]),
       ]);
 
       const nodes = (resources.nodes ?? []).map((node, index) => ({
         id: node.name || `node-${index + 1}`,
+        name: node.name || `node-${index + 1}`,
         status: 'ready' as const,
         role:
           node.labels?.['node-role.kubernetes.io/control-plane'] != null ||
@@ -949,73 +1112,74 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
         allocated: node.allocated ?? {},
         available: node.available ?? {},
         labels: node.labels ?? {},
+        instanceId: node.instanceId,
+        instance_id: node.instance_id,
+        instanceName: node.instanceName,
+        instance_name: node.instance_name,
+        instanceSlug: node.instanceSlug,
+        instance_slug: node.instance_slug,
       }));
+      const targets =
+        rawTargets.length > 0
+          ? rawTargets
+          : (resources.instances ?? []).map(targetFromResourceInstance);
+
+      if (targets.length > 0) {
+        const claimedSessionIds = new Set<string>();
+        const clusters = targets.map((target) => {
+          const targetSessions = sessions.filter((session) => {
+            const belongs = sessionBelongsToTarget(session, target);
+            if (belongs) claimedSessionIds.add(session.id);
+            return belongs;
+          });
+          return buildClusterFromParts(
+            target,
+            nodes.filter((node) => nodeBelongsToTarget(node, target)),
+            targetSessions,
+          );
+        });
+
+        const unclaimedSessions = sessions.filter((session) => !claimedSessionIds.has(session.id));
+        if (unclaimedSessions.length > 0) {
+          clusters.push(
+            buildClusterFromParts(
+              {
+                id: 'shared',
+                slug: 'shared',
+                name: 'Shared Forge',
+                baseUrl: '',
+                enabled: true,
+                isDefault: false,
+                visibility: 'system',
+                tags: [],
+              },
+              nodes.filter((node) => !targets.some((target) => nodeBelongsToTarget(node, target))),
+              unclaimedSessions,
+            ),
+          );
+        }
+
+        return clusters;
+      }
 
       if (nodes.length === 0 && sessions.length === 0) return [];
 
-      const capacity = nodes.reduce(
-        (acc, node) => ({
-          cpu: acc.cpu + parseCpuCores(node.allocatable.cpu, 0),
-          memMi: acc.memMi + parseMemoryToMi(node.allocatable.memory, 0),
-          gpu: acc.gpu + parseIntegerResource(node.allocatable['nvidia.com/gpu'], 0),
-        }),
-        { cpu: 0, memMi: 0, gpu: 0 },
-      );
-      const used = nodes.reduce(
-        (acc, node) => ({
-          cpu: acc.cpu + parseCpuCores(node.allocated.cpu, 0),
-          memMi: acc.memMi + parseMemoryToMi(node.allocated.memory, 0),
-          gpu: acc.gpu + parseIntegerResource(node.allocated['nvidia.com/gpu'], 0),
-        }),
-        { cpu: 0, memMi: 0, gpu: 0 },
-      );
-
-      const sampleLabels = nodes[0]?.labels ?? {};
-      const region =
-        sampleLabels['topology.kubernetes.io/region'] ??
-        sampleLabels['failure-domain.beta.kubernetes.io/region'] ??
-        'shared';
-      const cluster: Cluster = {
-        id: 'shared',
-        realm: 'shared',
-        name: capacity.gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
-        kind: capacity.gpu > 0 ? 'gpu' : 'primary',
-        status: nodes.length > 0 ? 'healthy' : 'warning',
-        region,
-        capacity,
-        used,
-        disk: {
-          usedGi: 0,
-          totalGi: 0,
-          systemGi: 0,
-          podsGi: 0,
-          logsGi: 0,
-        },
-        nodes: nodes.map((node) => ({
-          id: node.id,
-          status: node.status,
-          role: node.role,
-        })),
-        pods: sessions.map((session) => ({
-          name: session.podName ?? session.name,
-          status: toPodStatus(session),
-          startedAt: toIsoFromEpochMs(session.lastActive) ?? new Date(0).toISOString(),
-          cpuUsed: 0,
-          cpuLimit: 0,
-          memUsedMi: 0,
-          memLimitMi: 0,
-          restarts: 0,
-        })),
-        runningSessions: sessions.filter((session) => session.status === 'running').length,
-        queuedProvisions: sessions.filter(
-          (session) =>
-            session.status === 'created' ||
-            session.status === 'starting' ||
-            session.status === 'provisioning',
-        ).length,
-      };
-
-      return [cluster];
+      return [
+        buildClusterFromParts(
+          {
+            id: 'shared',
+            slug: 'shared',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
+            baseUrl: '',
+            enabled: true,
+            isDefault: false,
+            visibility: 'system',
+            tags: [],
+          },
+          nodes,
+          sessions,
+        ),
+      ];
     },
     async getCluster(id: string) {
       const clusters = await this.getClusters();
