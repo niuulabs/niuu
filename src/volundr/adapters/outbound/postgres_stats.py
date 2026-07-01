@@ -40,11 +40,44 @@ class PostgresStatsRepository(StatsRepository):
                 """
             )
 
+            # Some live sessions only persist final usage on their chronicle. Treat
+            # that as a fallback for sessions without token_usage rows today.
+            chronicle_stats = await conn.fetchrow(
+                """
+                WITH today_token_sessions AS (
+                    SELECT DISTINCT session_id
+                    FROM token_usage
+                    WHERE recorded_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                ),
+                latest_chronicles AS (
+                    SELECT DISTINCT ON (session_id)
+                        session_id,
+                        token_usage,
+                        cost
+                    FROM chronicles
+                    WHERE
+                        session_id IS NOT NULL
+                        AND updated_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                    ORDER BY session_id, updated_at DESC
+                )
+                SELECT
+                    COALESCE(SUM(token_usage), 0) AS tokens_today,
+                    COALESCE(SUM(cost), 0) AS cost_today
+                FROM latest_chronicles
+                WHERE session_id NOT IN (SELECT session_id FROM today_token_sessions)
+                """
+            )
+
+            token_usage_tokens = int(token_stats["tokens_today"])
+            chronicle_tokens = int(chronicle_stats["tokens_today"])
+            token_usage_cost = Decimal(str(token_stats["cost_today"]))
+            chronicle_cost = Decimal(str(chronicle_stats["cost_today"]))
+
             return Stats(
                 active_sessions=session_counts["active_sessions"],
                 total_sessions=session_counts["total_sessions"],
-                tokens_today=token_stats["tokens_today"],
+                tokens_today=token_usage_tokens + chronicle_tokens,
                 local_tokens=token_stats["local_tokens"],
-                cloud_tokens=token_stats["cloud_tokens"],
-                cost_today=Decimal(str(token_stats["cost_today"])),
+                cloud_tokens=token_stats["cloud_tokens"] + chronicle_tokens,
+                cost_today=token_usage_cost + chronicle_cost,
             )
