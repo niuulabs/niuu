@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { LaunchCatalogPage } from './LaunchCatalogPage';
 import { renderWithVolundr } from '../testing/renderWithVolundr';
 import { createMockVolundrService } from '../adapters/mock';
@@ -59,7 +59,7 @@ describe('LaunchCatalogPage', () => {
       },
     });
 
-    expect(screen.getByText(/loading launch catalog/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading catalog/i)).toBeInTheDocument();
   });
 
   it('renders error state with the Error message', async () => {
@@ -72,9 +72,7 @@ describe('LaunchCatalogPage', () => {
       },
     });
 
-    await waitFor(() =>
-      expect(screen.getByText(/failed to load launch catalog/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/failed to load catalog/i)).toBeInTheDocument());
     expect(screen.getByText('catalog unavailable')).toBeInTheDocument();
   });
 
@@ -86,9 +84,7 @@ describe('LaunchCatalogPage', () => {
       },
     });
 
-    await waitFor(() =>
-      expect(screen.getByText(/failed to load launch catalog/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/failed to load catalog/i)).toBeInTheDocument());
     expect(screen.getByText('Unknown error')).toBeInTheDocument();
   });
 
@@ -96,25 +92,26 @@ describe('LaunchCatalogPage', () => {
     renderWithSpecs([]);
 
     await waitForPage();
-    expect(screen.getByText(/no launch specs configured yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no catalog specs configured yet/i)).toBeInTheDocument();
   });
 
-  it('renders header copy and one card per spec', async () => {
+  it('renders the catalog sidebar and one list item per spec', async () => {
     renderWithSpecs([makeSpec({ name: 'alpha-spec' }), makeSpec({ name: 'beta-spec' })]);
 
     await waitForPage();
-    expect(screen.getByText('Launch Catalog')).toBeInTheDocument();
-    expect(screen.getByText(/preloaded catalog specs/i)).toBeInTheDocument();
-    expect(screen.getByText('alpha-spec')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Catalog' })).toBeInTheDocument();
+    expect(screen.getByText('workspace + runtime bundles')).toBeInTheDocument();
+    expect(screen.getAllByText('alpha-spec').length).toBeGreaterThan(0);
     expect(screen.getByText('beta-spec')).toBeInTheDocument();
-    expect(screen.queryByText(/no launch specs configured yet/i)).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('catalog-template-item')).toHaveLength(2);
+    expect(screen.queryByText(/no catalog specs configured yet/i)).not.toBeInTheDocument();
   });
 
   it('renders specs from the default mock service', async () => {
     renderWithVolundr(<LaunchCatalogPage />);
 
     await waitForPage();
-    expect(screen.getAllByRole('article').length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('catalog-template-item').length).toBeGreaterThan(0);
   });
 
   it('shows the default badge only for default specs', async () => {
@@ -124,10 +121,10 @@ describe('LaunchCatalogPage', () => {
     ]);
 
     await waitForPage();
-    expect(screen.getByText('default')).toBeInTheDocument();
-    const plainCard = screen.getByText('plain-spec').closest('article');
-    expect(plainCard).not.toBeNull();
-    expect(within(plainCard!).queryByText('default')).not.toBeInTheDocument();
+    expect(screen.getAllByText('default').length).toBeGreaterThan(0);
+    const plainRow = screen.getByText('plain-spec').closest('button');
+    expect(plainRow).not.toBeNull();
+    expect(within(plainRow!).queryByText('default')).not.toBeInTheDocument();
   });
 
   it('falls back to placeholder copy when description is empty', async () => {
@@ -138,18 +135,19 @@ describe('LaunchCatalogPage', () => {
 
     await waitForPage();
     expect(screen.getByText('Runs the nightly batch.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('undescribed'));
     expect(screen.getByText('No description configured.')).toBeInTheDocument();
   });
 
-  it('shows the scope label on each card', async () => {
+  it('groups system and user specs in the sidebar', async () => {
     renderWithSpecs([
       makeSpec({ name: 'sys-spec', scope: 'system', id: null }),
       makeSpec({ name: 'user-spec', scope: 'user' }),
     ]);
 
     await waitForPage();
-    expect(screen.getByText('system')).toBeInTheDocument();
-    expect(screen.getByText('user')).toBeInTheDocument();
+    expect(screen.getByText('built-in')).toBeInTheDocument();
+    expect(screen.getByText('saved')).toBeInTheDocument();
   });
 
   it('prefers sessionDefinition over workloadType for the runtime field', async () => {
@@ -160,6 +158,7 @@ describe('LaunchCatalogPage', () => {
 
     await waitForPage();
     expect(screen.getByText('skuldClaude')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('without-def'));
     expect(screen.getByText('batch-runner')).toBeInTheDocument();
   });
 
@@ -171,6 +170,7 @@ describe('LaunchCatalogPage', () => {
 
     await waitForPage();
     expect(screen.getByText('claude-sonnet')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('without-model'));
     expect(screen.getByText('selected at launch')).toBeInTheDocument();
   });
 
@@ -183,7 +183,9 @@ describe('LaunchCatalogPage', () => {
     ]);
 
     await waitForPage();
-    expect(screen.getByText('cpu 4 · mem 8Gi · gpu 1')).toBeInTheDocument();
+    expect(screen.getByText('4 cores')).toBeInTheDocument();
+    expect(screen.getByText('8Gi')).toBeInTheDocument();
+    expect(screen.getAllByText('1').length).toBeGreaterThan(0);
   });
 
   it('omits gpu when it is "0" and falls back when nothing is set', async () => {
@@ -193,15 +195,17 @@ describe('LaunchCatalogPage', () => {
     ]);
 
     await waitForPage();
-    expect(screen.getByText('cpu 2 · mem 4Gi')).toBeInTheDocument();
-    expect(screen.getByText('default resources')).toBeInTheDocument();
+    expect(screen.getByText('2 cores')).toBeInTheDocument();
+    expect(screen.getByText('4Gi')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('no-resources'));
+    expect(screen.getAllByText('default').length).toBeGreaterThan(0);
   });
 
   it('formats partial resource config without cpu', async () => {
     renderWithSpecs([makeSpec({ name: 'mem-only', resourceConfig: { memory: '2Gi' } })]);
 
     await waitForPage();
-    expect(screen.getByText('mem 2Gi')).toBeInTheDocument();
+    expect(screen.getByText('2Gi')).toBeInTheDocument();
   });
 
   it('shows launch-time placeholder when no source is configured', async () => {
@@ -220,6 +224,7 @@ describe('LaunchCatalogPage', () => {
     ]);
 
     await waitForPage();
+    fireEvent.click(screen.getByRole('tab', { name: /workspace/i }));
     expect(screen.getByText('github.com/niuulabs/volundr @ main')).toBeInTheDocument();
   });
 
@@ -270,7 +275,27 @@ describe('LaunchCatalogPage', () => {
     ]);
 
     await waitForPage();
+    fireEvent.click(screen.getByRole('tab', { name: /mcp/i }));
     expect(screen.getByText('mimir')).toBeInTheDocument();
     expect(screen.getByText('bifrost')).toBeInTheDocument();
+  });
+
+  it('shows clone, launch, edit and new actions where appropriate', async () => {
+    renderWithSpecs([makeSpec({ name: 'user-template', scope: 'user', id: 'user-template' })]);
+
+    await waitForPage();
+    expect(screen.getByRole('button', { name: /clone/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /launch from this/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /new/i })).toBeInTheDocument();
+  });
+
+  it('opens the create catalog spec editor', async () => {
+    renderWithSpecs([makeSpec({ name: 'starter' })]);
+
+    await waitForPage();
+    fireEvent.click(screen.getByRole('button', { name: /new/i }));
+    expect(screen.getByText('Create catalog spec')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Launch spec YAML')).toBeInTheDocument();
   });
 });
