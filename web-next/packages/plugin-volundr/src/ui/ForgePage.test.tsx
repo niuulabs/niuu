@@ -117,9 +117,9 @@ describe('ForgePage', () => {
     wrap(createMockVolundrService(), clusterAdapter);
     await waitFor(() => expect(screen.getByText('Test Forge')).toBeInTheDocument());
 
-    expect(screen.getByTestId('cluster-meter-cpu')).toHaveTextContent('500m / 8c · 6%');
-    expect(screen.getByTestId('cluster-meter-mem')).toHaveTextContent('2Gi / 16Gi · 13%');
-    expect(screen.getByTestId('cluster-meter-gpu')).toHaveTextContent('1 / 2 · 50%');
+    expect(screen.getByTestId('cluster-meter-cpu')).toHaveTextContent('500m / 8c');
+    expect(screen.getByTestId('cluster-meter-mem')).toHaveTextContent('2Gi / 16Gi');
+    expect(screen.getByTestId('cluster-meter-gpu')).toHaveTextContent('1 / 2');
   });
 
   it('renders error strip when failed sessions exist', async () => {

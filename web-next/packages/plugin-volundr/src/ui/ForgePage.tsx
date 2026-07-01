@@ -126,13 +126,6 @@ function meterToneClass(value: number) {
   return 'vol-forge__meter-fill--ok';
 }
 
-function percentLabel(value: number) {
-  const pct = clampPct(value);
-  if (pct === 0) return '0%';
-  if (pct < 0.01) return '<1%';
-  return `${Math.round(pct * 100)}%`;
-}
-
 function conciseNumber(value: number, digits = 1) {
   if (!Number.isFinite(value)) return '0';
   const fixed = value.toFixed(digits);
@@ -172,7 +165,7 @@ function ClusterMeter({
       <div className="vol-forge__meter-label">
         <span>{label}</span>
         <strong>
-          {used} / {total} · {percentLabel(pct)}
+          {used} / {total}
         </strong>
       </div>
       <div
@@ -180,6 +173,7 @@ function ClusterMeter({
         role="progressbar"
         aria-valuenow={Math.round(pct * 100)}
         aria-valuemax={100}
+        aria-valuetext={`${used} / ${total}`}
         aria-label={`${label} utilization`}
       >
         <div
