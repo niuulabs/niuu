@@ -807,6 +807,31 @@ class TestAssignWorkflow:
         assert data[0]["runs"][0]["reviewer_session_id"] == "reviewer-1"
         assert data[0]["runs"][0]["review_round"] == 2
 
+    def test_hydrates_persisted_run_tracker_link(self, saga_repo: MockSagaRepo):
+        class LinkTracker(MockTracker):
+            async def get_run(self, tracker_id: str) -> Run:
+                run = await super().get_run(tracker_id)
+                return replace(
+                    run,
+                    identifier="A-2",
+                    url="https://linear.app/test/issue/A-2/open-task",
+                )
+
+        app = FastAPI()
+        app.include_router(create_saga_phases_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [LinkTracker()]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+        saga_id = str(saga_repo.sagas[0].id)
+
+        resp = client.get(f"/api/v1/ting/sagas/{saga_id}/phases")
+
+        assert resp.status_code == 200
+        run = resp.json()[0]["runs"][0]
+        assert run["identifier"] == "A-2"
+        assert run["url"] == "https://linear.app/test/issue/A-2/open-task"
+
     def test_synthesizes_tracker_backed_phases_when_repo_has_none(
         self,
         client: TestClient,

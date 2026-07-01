@@ -112,6 +112,19 @@ def _fallback_run(issue: TrackerIssue, *, phase_id: str) -> RunPhaseItemResponse
     )
 
 
+async def _tracker_run_metadata(
+    trackers: list[TrackerPort],
+    tracker_id: str,
+) -> tuple[str, str]:
+    for tracker in trackers:
+        try:
+            run = await tracker.get_run(tracker_id)
+        except Exception:
+            continue
+        return run.identifier, run.url
+    return "", ""
+
+
 async def _hydrate_tracker_backed_phases(
     tracker: TrackerPort,
     *,
@@ -279,6 +292,41 @@ def create_saga_phases_router() -> APIRouter:
         responses: list[SagaPhaseItemResponse] = []
         for phase in phases:
             runs = await repo.get_runs_by_phase(phase.id)
+            run_items: list[RunPhaseItemResponse] = []
+            for run in runs:
+                identifier = run.identifier
+                url = run.url
+                if run.tracker_id and (not identifier or not url):
+                    tracker_identifier, tracker_url = await _tracker_run_metadata(
+                        trackers,
+                        run.tracker_id,
+                    )
+                    identifier = identifier or tracker_identifier
+                    url = url or tracker_url
+                run_items.append(
+                    RunPhaseItemResponse(
+                        id=str(run.id),
+                        phase_id=str(run.phase_id),
+                        tracker_id=run.tracker_id,
+                        identifier=identifier,
+                        url=url,
+                        name=run.name,
+                        description=run.description,
+                        acceptance_criteria=run.acceptance_criteria,
+                        declared_files=run.declared_files,
+                        estimate_hours=run.estimate_hours,
+                        status=run.status.value.lower(),
+                        confidence=run.confidence,
+                        session_id=run.session_id,
+                        reviewer_session_id=run.reviewer_session_id,
+                        review_round=run.review_round,
+                        branch=run.branch,
+                        chronicle_summary=run.chronicle_summary,
+                        retry_count=run.retry_count,
+                        created_at=run.created_at,
+                        updated_at=run.updated_at,
+                    )
+                )
             responses.append(
                 SagaPhaseItemResponse(
                     id=str(phase.id),
@@ -288,31 +336,7 @@ def create_saga_phases_router() -> APIRouter:
                     name=phase.name,
                     status=phase.status.value.lower(),
                     confidence=phase.confidence,
-                    runs=[
-                        RunPhaseItemResponse(
-                            id=str(run.id),
-                            phase_id=str(run.phase_id),
-                            tracker_id=run.tracker_id,
-                            identifier=run.identifier,
-                            url=run.url,
-                            name=run.name,
-                            description=run.description,
-                            acceptance_criteria=run.acceptance_criteria,
-                            declared_files=run.declared_files,
-                            estimate_hours=run.estimate_hours,
-                            status=run.status.value.lower(),
-                            confidence=run.confidence,
-                            session_id=run.session_id,
-                            reviewer_session_id=run.reviewer_session_id,
-                            review_round=run.review_round,
-                            branch=run.branch,
-                            chronicle_summary=run.chronicle_summary,
-                            retry_count=run.retry_count,
-                            created_at=run.created_at,
-                            updated_at=run.updated_at,
-                        )
-                        for run in runs
-                    ],
+                    runs=run_items,
                 )
             )
         return responses
