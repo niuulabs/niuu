@@ -182,7 +182,7 @@ describe('usePlanWizard — submitPrompt', () => {
     });
   });
 
-  it('shows a live draft review gate question in the Plan wizard', async () => {
+  it('keeps waiting for the draft when a live draft review gate appears', async () => {
     vi.useFakeTimers();
     try {
       const getPlanSession = vi
@@ -239,7 +239,7 @@ describe('usePlanWizard — submitPrompt', () => {
         await Promise.resolve();
       });
 
-      expect(result.current.state.step).toBe('questions');
+      expect(result.current.state.step).toBe('running');
       expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
     } finally {
       vi.useRealTimers();
@@ -656,6 +656,38 @@ describe('usePlanWizard — replan', () => {
       'changes_requested',
     );
     expect(result.current.state.step).toBe('running');
+  });
+
+  it('uses the live draft review gate question when re-planning a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+        questions: [
+          {
+            id: 'draft-feedback',
+            question: 'The workflow is waiting on draft plan review.',
+            hint: 'Review the bounded draft.',
+          },
+        ],
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+    });
+    const result = await advanceToDraft(svc);
+
+    act(() => result.current.replan());
+
+    expect(result.current.state.step).toBe('questions');
+    expect(result.current.state.questions[0]?.question).toBe(
+      'The workflow is waiting on draft plan review.',
+    );
+    expect(result.current.state.questions[0]?.hint).toBe('Review the bounded draft.');
   });
 });
 

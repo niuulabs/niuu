@@ -88,14 +88,8 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
     case 'SESSION_STATUS': {
       const questions =
         action.session.questions.length > 0 ? action.session.questions : state.questions;
-      const hasDraftFeedback = questions.some((question) => question.id === 'draft-feedback');
-      const step =
-        state.step === 'running' && hasDraftFeedback
-          ? planTransition(state.step, 'questions')
-          : state.step;
       return {
         ...state,
-        step,
         session: state.session ? { ...state.session, ...action.session } : action.session,
         questions,
       };
@@ -446,9 +440,16 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
 
   function replan() {
     const campaignSlug = stateRef.current.session?.campaignSlug;
+    const draftFeedbackQuestions = stateRef.current.questions.filter(
+      (question) => question.id === 'draft-feedback',
+    );
     dispatch({
       type: 'REPLAN',
-      questions: campaignSlug ? [defaultDraftFeedbackQuestion()] : undefined,
+      questions: campaignSlug
+        ? draftFeedbackQuestions.length > 0
+          ? draftFeedbackQuestions
+          : [defaultDraftFeedbackQuestion()]
+        : undefined,
     });
   }
 
