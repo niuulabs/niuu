@@ -1664,6 +1664,10 @@ class TmuxInteractiveTransport(CLITransport):
             mcp_servers=self._raw_mcp_servers,
         )
         env.update(shim_env)
+        # The present-file shim POSTs here (broker app == sdk_port). Set for every engine so the
+        # `present-file` command works in both claude and codex tmux sessions.
+        if self._sdk_port:
+            env["FORGE_PRESENT_FILE_URL"] = f"http://127.0.0.1:{self._sdk_port}/api/present-file"
         return env
 
     async def _emit_system_init(self) -> None:

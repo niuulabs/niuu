@@ -12,6 +12,7 @@ import contextlib
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -1632,6 +1633,7 @@ class Broker:
         return {
             "workspace_dir": self.workspace_dir,
             "model": self.model,
+            "reasoning_effort": self._settings.session.reasoning_effort,
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
             "skip_permissions": self._settings.skip_permissions,
@@ -1710,6 +1712,7 @@ class Broker:
         """Initialize the broker on startup."""
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
+        _rebuild_presented_registry()  # recover present-file cards across broker restarts
         await self._ensure_session_trace_started()
 
         if self.volundr_api_url:
@@ -6906,6 +6909,144 @@ async def download_file(path: str, root: str = "workspace") -> FileResponse:
         path=target_real,
         filename=os.path.basename(target_real),
         media_type="application/octet-stream",
+    )
+
+
+# --------------------------------------------------------------------------- present-file
+#
+# The `present-file <path>` command (engine-agnostic PATH shim) lets a Forge agent hand the user ANY
+# file on the host — including /tmp scratchpad artifacts outside the workspace — that lands in the
+# Lexi app as a tappable card. The broker STAGES a copy under a broker-owned dir (outside the
+# workspace so the git tree stays clean, on the persistence mount so it survives restart), mints an
+# opaque file_id, and EMITS the file as a self-contained `conversation.turn` (durable through PASS-1
+# rebuild + live broadcast). The blob is served by opaque id (never by a client-supplied path), so
+# the workspace path-traversal guards are safely bypassed rather than relaxed. In-app analogue of
+# the harness SendUserFile tool.
+
+_PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
+_MAX_PRESENTED_FILE_BYTES = int(
+    os.environ.get("SKULD__MAX_PRESENTED_FILE_BYTES", str(50 * 1024 * 1024))
+)
+# file_id -> staged realpath. Rebuilt from the self-describing staging dir on startup.
+_presented_registry: dict[str, str] = {}
+
+
+def _presented_staging_dir() -> Path:
+    """Broker-owned staging root, OUTSIDE the workspace (keeps the git tree pristine) and on the
+    session home mount (survives broker restart)."""
+    return Path(broker._settings.home_path).resolve() / ".forge-presented"
+
+
+def _rebuild_presented_registry() -> None:
+    """Repopulate the file_id -> staged-path registry from the self-describing staging dir
+    ({staging}/{file_id}/{basename}) so present-file cards keep resolving after a broker restart."""
+    _presented_registry.clear()
+    root = _presented_staging_dir()
+    try:
+        if not root.is_dir():
+            return
+        for entry in root.iterdir():
+            if not entry.is_dir() or not _PRESENTED_ID_RE.match(entry.name):
+                continue
+            files = [f for f in entry.iterdir() if f.is_file()]
+            if files:
+                _presented_registry[entry.name] = str(files[0].resolve())
+    except OSError as exc:  # pragma: no cover - best-effort recovery
+        logger.warning("present-file: registry rebuild failed: %s", exc)
+
+
+@app.post("/api/present-file")
+async def present_file(body: dict) -> dict:
+    """Stage a host file, emit a durable present_file turn, and return its id/metadata.
+
+    Loopback, in-session agent only (the `present-file` shim curls this). Body:
+    ``{ "path": "<absolute host path>", "caption"?: str, "title"?: str }``.
+    """
+    raw_path = str((body or {}).get("path") or "").strip()
+    if not raw_path:
+        raise HTTPException(400, "path is required")
+    caption = str((body or {}).get("caption") or "").strip() or None
+    title = str((body or {}).get("title") or "").strip() or None
+
+    src = Path(raw_path).expanduser()
+    try:
+        src_real = src.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(404, "no such file") from None
+    if not src_real.is_file():
+        raise HTTPException(400, "not a regular file")
+    size = src_real.stat().st_size
+    if size > _MAX_PRESENTED_FILE_BYTES:
+        raise HTTPException(413, "file exceeds max_presented_file_bytes")
+
+    file_id = "pf_" + uuid.uuid4().hex
+    name = title or src_real.name
+    mime = mimetypes.guess_type(src_real.name)[0] or "application/octet-stream"
+
+    # Stage a COPY so a later /tmp GC or edit cannot change/lose what the user tapped.
+    dest_dir = _presented_staging_dir() / file_id
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src_real.name
+        shutil.copyfile(src_real, dest)
+    except OSError as exc:
+        logger.warning("present-file: staging copy failed: %s", exc)
+        raise HTTPException(500, "could not stage file") from None
+    _presented_registry[file_id] = str(dest.resolve())
+
+    await broker._emit_broker_frame(_build_present_file_turn(file_id, name, mime, size, caption))
+    logger.info("present-file: staged %s (%d bytes) as %s", name, size, file_id)
+    return {"file_id": file_id, "name": name, "size": size, "mime": mime}
+
+
+def _build_present_file_turn(
+    file_id: str, name: str, mime: str, size: int, caption: str | None
+) -> dict:
+    """A self-contained assistant `conversation.turn` carrying the file as a `present_file` tool_use
+    part (no inline bytes). PASS-1 authoritative → survives reconnect + the durable rebuild."""
+    tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
+    if caption:
+        tool_input["caption"] = caption
+    part = {"id": file_id, "name": "present_file", "type": "tool_use", "input": tool_input}
+    return {
+        "type": "conversation.turn",
+        "turn": {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "parts": [part],
+            "content": caption or name,
+            "metadata": {"cost": None, "model": None, "usage": {}, "present_file": True},
+            "thread_id": None,
+            "created_at": datetime.now(UTC).isoformat(),
+            "visibility": "public",
+            "participant_id": None,
+            "participant_meta": None,
+        },
+    }
+
+
+@app.get("/api/files/presented/{file_id}")
+async def download_presented_file(file_id: str) -> FileResponse:
+    """Serve a staged presented file by OPAQUE id (never a client path → traversal-safe)."""
+    if not _PRESENTED_ID_RE.match(file_id):
+        raise HTTPException(400, "invalid file_id")
+    path = _presented_registry.get(file_id)
+    if path is None:
+        # A restart may have dropped the in-memory entry before the lazy rebuild — try the dir.
+        candidate = _presented_staging_dir() / file_id
+        if candidate.is_dir():
+            files = [f for f in candidate.iterdir() if f.is_file()]
+            if files:
+                path = str(files[0].resolve())
+                _presented_registry[file_id] = path
+    if path is None:
+        raise HTTPException(404, "unknown file_id")
+    if not os.path.isfile(path):
+        raise HTTPException(410, "file no longer available")
+    return FileResponse(
+        path=path,
+        filename=os.path.basename(path),
+        media_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
     )
 
 

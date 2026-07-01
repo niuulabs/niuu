@@ -2406,6 +2406,24 @@ def create_router(
             headers=headers,
         )
 
+    @router.get("/sessions/{session_id}/files/presented/{file_id}", tags=["Sessions"])
+    async def download_presented_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        file_id: str = Path(description="Opaque presented-file id (present-file command)"),
+    ) -> Response:
+        """Download a presented file (present-file command) by opaque id via the owning broker."""
+        response = await _proxy_session_api(request, session_id, "files", "presented", file_id)
+        headers = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
     @router.post("/sessions/{session_id}/files/upload", tags=["Sessions"])
     async def upload_session_files(
         request: Request,

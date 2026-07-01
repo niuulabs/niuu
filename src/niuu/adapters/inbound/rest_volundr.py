@@ -1344,6 +1344,31 @@ def create_volundr_router(
             headers=headers,
         )
 
+    @router.get("/sessions/{session_id}/files/presented/{file_id}")
+    async def download_presented_file(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        file_id: str = Path(description="Opaque presented-file id (present-file command)"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        response = await _proxy_session_file_api(
+            request,
+            principal,
+            session_id,
+            method="GET",
+            path=f"/sessions/{session_id}/files/presented/{file_id}",
+        )
+        _ensure_remote_success(response)
+        headers: dict[str, str] = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
     @router.post("/sessions/{session_id}/files/upload")
     async def upload_session_files(
         request: Request,
