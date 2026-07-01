@@ -679,7 +679,7 @@ class TestPeerAutoRegistration:
         await bridge.stop()
 
     @pytest.mark.asyncio
-    async def test_routing_only_outcome_is_not_forwarded(self):
+    async def test_routing_only_outcome_is_forwarded_for_workflow_routing(self):
         room = _make_room_bridge(known_peers=["flock-reviewer"])
         bus = InProcessBus()
         bridge = RoomMeshBridge(
@@ -707,7 +707,7 @@ class TestPeerAutoRegistration:
         )
         await bridge._handle_event(evt)
 
-        room.handle_ravn_frame.assert_not_awaited()
+        room.handle_ravn_frame.assert_awaited_once()
         await bridge.stop()
 
     @pytest.mark.asyncio

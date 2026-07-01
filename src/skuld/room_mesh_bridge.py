@@ -330,7 +330,7 @@ class RoomMeshBridge:
         ravn_event_payload: dict,
     ) -> None:
         """Translate an OUTCOME mesh event into a ``room_outcome`` wire event."""
-        if ravn_event_payload.get("routing_only") or ravn_event_payload.get("room_bridge_skip"):
+        if ravn_event_payload.get("room_bridge_skip"):
             logger.debug(
                 "RoomMeshBridge: skipping internal outcome peer_id=%s event_type=%s",
                 peer_id,
@@ -375,9 +375,7 @@ class RoomMeshBridge:
             "inputTokens": _as_int(ravn_event_payload.get("inputTokens")),
             "outputTokens": _as_int(ravn_event_payload.get("outputTokens")),
             "cacheReadInputTokens": _as_int(ravn_event_payload.get("cacheReadInputTokens")),
-            "cacheCreationInputTokens": _as_int(
-                ravn_event_payload.get("cacheCreationInputTokens")
-            ),
+            "cacheCreationInputTokens": _as_int(ravn_event_payload.get("cacheCreationInputTokens")),
         }
         if ravn_event_payload.get("costUSD") is not None:
             usage["costUSD"] = float(ravn_event_payload["costUSD"])
