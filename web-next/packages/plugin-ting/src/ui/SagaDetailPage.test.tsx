@@ -131,7 +131,8 @@ describe('SagaDetailPage', () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
     expect(screen.getByText('feat/auth-rewrite → main')).toBeInTheDocument();
   });
 
@@ -146,6 +147,44 @@ describe('SagaDetailPage', () => {
     await waitFor(() => expect(screen.getByText('Phase 1 · Plan')).toBeInTheDocument());
     expect(screen.getByText('NIU-501')).toBeInTheDocument();
     expect(screen.getByText('Implement OIDC flow')).toBeInTheDocument();
+  });
+
+  it('links tracker-backed saga and run labels without showing internal UUIDs', async () => {
+    const sagaTrackerId = '4dfa3eab-c00f-46e8-bdc3-c17f8a184f39';
+    const runTrackerId = '09436690-32d6-4a44-90e0-a88ca5477281';
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          trackerId: sagaTrackerId,
+          url: 'https://linear.app/niuu/project/ui-proof',
+        }),
+      getPhases: async () => [
+        makePhase([
+          makeRun({
+            trackerId: runTrackerId,
+            identifier: 'NIU-777',
+            url: 'https://linear.app/niuu/issue/NIU-777/document-proof',
+          }),
+        ]),
+      ],
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open in Linear' })).toHaveAttribute(
+        'href',
+        'https://linear.app/niuu/project/ui-proof',
+      ),
+    );
+    expect(screen.getByRole('link', { name: 'NIU-777' })).toHaveAttribute(
+      'href',
+      'https://linear.app/niuu/issue/NIU-777/document-proof',
+    );
+    expect(screen.queryByText(sagaTrackerId)).not.toBeInTheDocument();
+    expect(screen.queryByText(runTrackerId)).not.toBeInTheDocument();
   });
 
   it('renders workflow, stage progress, and confidence cards', async () => {
@@ -187,7 +226,8 @@ describe('SagaDetailPage', () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
     screen.getByRole('button', { name: /Sagas/i }).click();
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
   });
@@ -305,6 +345,7 @@ describe('SagaDetailRoute', () => {
     render(<SagaDetailRoute />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
   });
 });

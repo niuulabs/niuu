@@ -79,6 +79,10 @@ function downloadJson(filename: string, data: string): void {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
   getBranches(repoUrl: string): Promise<string[]>;
@@ -127,9 +131,11 @@ function SagaRailItem({
             {statusLabel(saga.status)}
           </span>
         </span>
-        <span className="niuu:mt-1 niuu:truncate niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
-          {saga.trackerId}
-        </span>
+        {saga.trackerId && !isUuidLike(saga.trackerId) ? (
+          <span className="niuu:mt-1 niuu:truncate niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
+            {saga.trackerId}
+          </span>
+        ) : null}
         <span className="niuu:mt-2 niuu:grid niuu:grid-cols-[minmax(0,1fr)_auto] niuu:gap-x-3 niuu:gap-y-1 niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.06em] niuu:text-text-muted">
           <span className="niuu:truncate">{saga.repos[0] ?? 'niuulabs/volundr'}</span>
           <span>{`${saga.phaseSummary.completed}/${saga.phaseSummary.total} runs`}</span>

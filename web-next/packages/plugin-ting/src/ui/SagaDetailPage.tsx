@@ -45,6 +45,35 @@ function statusLabel(status: RunStatus | Saga['status'] | Phase['status']): stri
   }
 }
 
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function TrackerLink({
+  href,
+  label,
+  fallback,
+}: {
+  href?: string;
+  label?: string;
+  fallback?: string;
+}) {
+  const text = (label || fallback || '').trim();
+  if (!text || isUuidLike(text)) return null;
+  if (!href) return <span>{text}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="niuu:text-brand niuu:underline-offset-4 niuu:hover:text-brand-muted niuu:hover:underline"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {text}
+    </a>
+  );
+}
+
 function statusClasses(status: RunStatus | Saga['status'] | Phase['status']): string {
   const base =
     'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:min-w-[116px] niuu:justify-center niuu:rounded-full niuu:border niuu:px-3 niuu:py-1 niuu:text-[11px] niuu:font-mono niuu:tracking-[0.1em]';
@@ -490,7 +519,7 @@ function PhaseCard({ phase }: { phase: Phase }) {
               >
                 <span className={runDotClasses(run.status)} />
                 <span className="niuu:font-mono niuu:text-[12px] niuu:text-text-secondary">
-                  {run.trackerId}
+                  <TrackerLink href={run.url} label={run.identifier} fallback={run.trackerId} />
                 </span>
                 <span className="niuu:text-[14px] niuu:font-medium niuu:text-text-primary niuu:truncate">
                   {run.name}
@@ -553,6 +582,8 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
     .flatMap((phase) => phase.runs)
     .filter((run) => run.sessionId && ['running', 'review', 'escalated'].includes(run.status));
   const branchLabel = `${saga.featureBranch} → ${saga.baseBranch}`;
+  const trackerLabel = saga.trackerId && !isUuidLike(saga.trackerId) ? saga.trackerId : '';
+  const trackerLinkLabel = trackerLabel || (saga.url ? 'Open in Linear' : '');
 
   function handleAssignWorkflow(workflowId: string | null) {
     assignWorkflow.mutate(workflowId, {
@@ -583,7 +614,13 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
           <div className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-4 niuu:px-1">
             <div className="niuu:min-w-0">
               <div className="niuu:mb-1 niuu:text-[12px] niuu:font-mono niuu:tracking-[0.08em] niuu:text-text-muted niuu:uppercase">
-                {`${saga.trackerId} · ${saga.name}`}
+                {trackerLinkLabel ? (
+                  <>
+                    <TrackerLink href={saga.url} label={trackerLinkLabel} />
+                    {' · '}
+                  </>
+                ) : null}
+                <span>{saga.name}</span>
               </div>
               <div className="niuu:text-[13px] niuu:font-mono niuu:text-text-muted">
                 {branchLabel}

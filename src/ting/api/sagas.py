@@ -1927,7 +1927,24 @@ def create_sagas_router() -> APIRouter:
                         status_code=status.HTTP_502_BAD_GATEWAY,
                         detail=f"Failed to create run '{run_spec.name}' in tracker: {exc}",
                     )
-                run = replace(run, tracker_id=tracker_run_id)
+                identifier = ""
+                url = ""
+                try:
+                    tracker_run = await tracker.get_run(tracker_run_id)
+                    identifier = tracker_run.identifier
+                    url = tracker_run.url
+                except Exception:
+                    logger.debug(
+                        "Tracker run metadata unavailable for %s",
+                        _sanitize_log(tracker_run_id),
+                        exc_info=True,
+                    )
+                run = replace(
+                    run,
+                    tracker_id=tracker_run_id,
+                    identifier=identifier,
+                    url=url,
+                )
                 runs.append(run)
 
                 run_responses.append(

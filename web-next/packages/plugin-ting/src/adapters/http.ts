@@ -66,6 +66,7 @@ interface RawSaga {
   feature_branch: string;
   base_branch?: string;
   status: string;
+  url?: string;
   confidence?: number;
   created_at: string;
   workflow_id?: string | null;
@@ -89,6 +90,8 @@ interface RawRun {
   id: string;
   phase_id: string;
   tracker_id: string;
+  identifier?: string;
+  url?: string;
   name: string;
   description: string;
   acceptance_criteria: string[];
@@ -399,6 +402,8 @@ function toRun(raw: RawRun): Run {
     id: raw.id,
     phaseId: raw.phase_id,
     trackerId: raw.tracker_id,
+    identifier: raw.identifier || raw.tracker_id,
+    url: raw.url || undefined,
     name: raw.name,
     description: raw.description,
     acceptanceCriteria: raw.acceptance_criteria,
@@ -445,6 +450,7 @@ function toSaga(raw: RawSaga): Saga {
     id: raw.id,
     trackerId: raw.tracker_id,
     trackerType: raw.tracker_type ?? 'linear',
+    url: raw.url || undefined,
     slug:
       raw.slug ??
       raw.name

@@ -21,6 +21,8 @@ class RunPhaseItemResponse(BaseModel):
     id: str
     phase_id: str
     tracker_id: str
+    identifier: str = ""
+    url: str = ""
     name: str
     description: str
     acceptance_criteria: list[str]
@@ -90,6 +92,8 @@ def _fallback_run(issue: TrackerIssue, *, phase_id: str) -> RunPhaseItemResponse
         id=issue.id,
         phase_id=phase_id,
         tracker_id=issue.identifier,
+        identifier=issue.identifier,
+        url=issue.url,
         name=issue.title,
         description=issue.description,
         acceptance_criteria=[],
@@ -136,6 +140,8 @@ async def _hydrate_tracker_backed_phases(
                         id=str(run.id),
                         phase_id=str(run.phase_id),
                         tracker_id=run.tracker_id,
+                        identifier=run.identifier,
+                        url=run.url,
                         name=run.name,
                         description=run.description,
                         acceptance_criteria=run.acceptance_criteria,
@@ -186,6 +192,8 @@ async def _hydrate_tracker_backed_phases(
                         id=str(run.id),
                         phase_id=str(run.phase_id),
                         tracker_id=run.tracker_id,
+                        identifier=run.identifier,
+                        url=run.url,
                         name=run.name,
                         description=run.description,
                         acceptance_criteria=run.acceptance_criteria,
@@ -285,6 +293,8 @@ def create_saga_phases_router() -> APIRouter:
                             id=str(run.id),
                             phase_id=str(run.phase_id),
                             tracker_id=run.tracker_id,
+                            identifier=run.identifier,
+                            url=run.url,
                             name=run.name,
                             description=run.description,
                             acceptance_criteria=run.acceptance_criteria,

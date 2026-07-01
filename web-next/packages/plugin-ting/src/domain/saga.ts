@@ -51,6 +51,8 @@ export const sagaSchema = z.object({
   trackerId: z.string(),
   /** Tracker system type (e.g. "linear", "github"). */
   trackerType: z.string(),
+  /** External tracker URL. */
+  url: z.string().optional(),
   /** URL-safe slug derived from saga name. */
   slug: z.string(),
   /** Human-readable saga name. */
@@ -92,6 +94,8 @@ export const runSchema = z.object({
   id: z.string().uuid(),
   phaseId: z.string(),
   trackerId: z.string(),
+  identifier: z.string().optional(),
+  url: z.string().optional(),
   name: z.string().min(1),
   description: z.string(),
   acceptanceCriteria: z.array(z.string()),
