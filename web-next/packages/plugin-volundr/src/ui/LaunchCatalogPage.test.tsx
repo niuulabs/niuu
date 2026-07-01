@@ -296,6 +296,20 @@ describe('LaunchCatalogPage', () => {
     await waitForPage();
     fireEvent.click(screen.getByRole('button', { name: /new/i }));
     expect(screen.getByText('Create catalog spec')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Launch spec YAML')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('new-template')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('skuldClaude')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('one command per line')).toBeInTheDocument();
+  });
+
+  it('lets built-in specs open the edit form as a user copy', async () => {
+    renderWithSpecs([makeSpec({ name: 'built-in', scope: 'system', id: null })]);
+
+    await waitForPage();
+    fireEvent.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.getByText('Edit catalog spec')).toBeInTheDocument();
+    expect(
+      screen.getByText('Built-in templates are saved as user launch specs.'),
+    ).toBeInTheDocument();
+    expect(screen.getByDisplayValue('built-in-custom')).toBeInTheDocument();
   });
 });

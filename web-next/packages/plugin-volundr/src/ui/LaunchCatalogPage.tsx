@@ -8,6 +8,7 @@ import {
   Field,
   Input,
   LoadingState,
+  Select,
   Textarea,
 } from '@niuulabs/ui';
 import { Copy, Edit3, PanelLeftClose, PanelLeftOpen, Plus, Rocket, Search } from 'lucide-react';
@@ -16,11 +17,16 @@ import { LaunchWizard, launchSpecRef } from './LaunchWizard';
 import { useLaunchSpecs } from './useLaunchSpecs';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { PresetRuntimeFields } from '../utils/presetYaml';
-import { parsePresetYaml, serializePresetYaml } from '../utils/presetYaml';
-import type { VolundrLaunchSpec } from '../models/volundr.model';
+import type {
+  CliTool,
+  McpServerConfig,
+  SessionSource,
+  VolundrLaunchSpec,
+} from '../models/volundr.model';
 
 type CatalogTab = 'overview' | 'workspace' | 'runtime' | 'mcp' | 'rules';
 type EditorMode = 'create' | 'edit' | 'clone';
+type EditorSourceMode = 'launch' | 'git' | 'local_mount';
 
 const CATALOG_TABS: CatalogTab[] = ['overview', 'workspace', 'runtime', 'mcp', 'rules'];
 
@@ -175,13 +181,41 @@ interface SpecEditorState {
   base: VolundrLaunchSpec | null;
   name: string;
   description: string;
-  yaml: string;
+  sessionDefinition: string;
+  runtime: PresetRuntimeFields;
+  sourceMode: EditorSourceMode;
+  mcpNames: string;
+  setupScripts: string;
   error: string | null;
   saving: boolean;
 }
 
+function sourceMode(source: SessionSource | null): EditorSourceMode {
+  return source?.type ?? 'launch';
+}
+
+function compactResourceConfig(fields: PresetRuntimeFields['resourceConfig']) {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value && value.trim() !== ''),
+  );
+}
+
+function parseList(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function mcpServersFromNames(value: string, existing: McpServerConfig[]): McpServerConfig[] {
+  const existingByName = new Map(existing.map((server) => [server.name, server]));
+  return parseList(value).map((name) => existingByName.get(name) ?? { name, type: 'stdio' });
+}
+
 function buildEditorState(mode: EditorMode, base: VolundrLaunchSpec | null): SpecEditorState {
   const cloneName = base ? `${base.name}-copy` : 'new-template';
+  const systemEditName = base?.scope === 'system' ? `${base.name}-custom` : base?.name;
+  const runtime = base ? specRuntimeFields(base) : DEFAULT_RUNTIME_FIELDS;
   return {
     mode,
     base,
@@ -190,9 +224,13 @@ function buildEditorState(mode: EditorMode, base: VolundrLaunchSpec | null): Spe
         ? 'new-template'
         : mode === 'clone'
           ? cloneName
-          : (base?.name ?? 'new-template'),
+          : (systemEditName ?? 'new-template'),
     description: base?.description ?? '',
-    yaml: serializePresetYaml(base ? specRuntimeFields(base) : DEFAULT_RUNTIME_FIELDS),
+    sessionDefinition: base?.sessionDefinition ?? 'skuldClaude',
+    runtime,
+    sourceMode: sourceMode(runtime.source),
+    mcpNames: runtime.mcpServers.map((server) => server.name).join(', '),
+    setupScripts: runtime.setupScripts.join('\n'),
     error: null,
     saving: false,
   };
@@ -243,33 +281,41 @@ export function LaunchCatalogPage() {
     setEditor({ ...editor, error: null, saving: true });
 
     try {
-      const parsed = parsePresetYaml(editor.yaml);
-      const base = editor.mode === 'edit' ? editor.base : null;
+      const updateBase =
+        editor.mode === 'edit' && editor.base?.scope === 'user' ? editor.base : null;
+      const sourceBase = editor.base;
+      const runtime = {
+        ...editor.runtime,
+        resourceConfig: compactResourceConfig(editor.runtime.resourceConfig),
+        mcpServers: mcpServersFromNames(editor.mcpNames, editor.runtime.mcpServers),
+        setupScripts: editor.setupScripts
+          .split('\n')
+          .map((script) => script.trim())
+          .filter(Boolean),
+      };
       const saved = await volundr.saveLaunchSpec({
-        id: base?.id ?? undefined,
+        id: updateBase?.id ?? undefined,
         name,
         description: editor.description,
-        isDefault: base?.isDefault ?? false,
-        sessionDefinition: base?.sessionDefinition ?? 'skuldClaude',
-        workloadType:
-          parsed.workloadType ?? base?.workloadType ?? DEFAULT_RUNTIME_FIELDS.workloadType,
-        model: parsed.model ?? base?.model ?? DEFAULT_RUNTIME_FIELDS.model,
-        systemPrompt: parsed.systemPrompt ?? base?.systemPrompt ?? '',
-        resourceConfig: parsed.resourceConfig ?? base?.resourceConfig ?? {},
-        mcpServers: parsed.mcpServers ?? base?.mcpServers ?? [],
-        terminalSidecar:
-          parsed.terminalSidecar ?? base?.terminalSidecar ?? DEFAULT_RUNTIME_FIELDS.terminalSidecar,
-        cliTool: parsed.cliTool ?? base?.cliTool ?? DEFAULT_RUNTIME_FIELDS.cliTool,
-        skills: parsed.skills ?? base?.skills ?? [],
-        rules: parsed.rules ?? base?.rules ?? [],
-        envVars: parsed.envVars ?? base?.envVars ?? {},
-        envSecretRefs: parsed.envSecretRefs ?? base?.envSecretRefs ?? [],
-        workloadConfig: parsed.workloadConfig ?? base?.workloadConfig ?? {},
-        repos: base?.repos ?? [],
-        source: parsed.source ?? base?.source ?? null,
-        setupScripts: parsed.setupScripts ?? base?.setupScripts ?? [],
-        workspaceLayout: base?.workspaceLayout ?? {},
-        integrationIds: parsed.integrationIds ?? base?.integrationIds ?? [],
+        isDefault: updateBase?.isDefault ?? false,
+        sessionDefinition: editor.sessionDefinition.trim() || null,
+        workloadType: runtime.workloadType,
+        model: runtime.model,
+        systemPrompt: runtime.systemPrompt,
+        resourceConfig: runtime.resourceConfig,
+        mcpServers: runtime.mcpServers,
+        terminalSidecar: runtime.terminalSidecar,
+        cliTool: runtime.cliTool,
+        skills: runtime.skills,
+        rules: runtime.rules,
+        envVars: runtime.envVars,
+        envSecretRefs: runtime.envSecretRefs,
+        workloadConfig: runtime.workloadConfig,
+        repos: sourceBase?.repos ?? [],
+        source: runtime.source,
+        setupScripts: runtime.setupScripts,
+        workspaceLayout: sourceBase?.workspaceLayout ?? {},
+        integrationIds: runtime.integrationIds,
       });
       await queryClient.invalidateQueries({ queryKey: ['volundr', 'launch-specs'] });
       setSelectedRef(launchSpecRef(saved));
@@ -308,6 +354,69 @@ export function LaunchCatalogPage() {
           />
         ))}
       </div>
+    );
+  }
+
+  function updateEditorRuntime(patch: Partial<PresetRuntimeFields>) {
+    setEditor((current) =>
+      current ? { ...current, runtime: { ...current.runtime, ...patch } } : current,
+    );
+  }
+
+  function updateEditorResource(key: 'cpu' | 'memory' | 'gpu', value: string) {
+    setEditor((current) =>
+      current
+        ? {
+            ...current,
+            runtime: {
+              ...current.runtime,
+              resourceConfig: { ...current.runtime.resourceConfig, [key]: value },
+            },
+          }
+        : current,
+    );
+  }
+
+  function updateEditorSourceMode(mode: EditorSourceMode) {
+    const source =
+      mode === 'launch'
+        ? null
+        : mode === 'git'
+          ? { type: 'git' as const, repo: '', branch: 'main' }
+          : { type: 'local_mount' as const, local_path: '', paths: [] };
+    setEditor((current) =>
+      current
+        ? {
+            ...current,
+            sourceMode: mode,
+            runtime: { ...current.runtime, source },
+          }
+        : current,
+    );
+  }
+
+  function updateEditorGitSource(patch: { repo?: string; branch?: string }) {
+    setEditor((current) =>
+      current && current.runtime.source?.type === 'git'
+        ? {
+            ...current,
+            runtime: { ...current.runtime, source: { ...current.runtime.source, ...patch } },
+          }
+        : current,
+    );
+  }
+
+  function updateEditorLocalSource(localPath: string) {
+    setEditor((current) =>
+      current && current.runtime.source?.type === 'local_mount'
+        ? {
+            ...current,
+            runtime: {
+              ...current.runtime,
+              source: { ...current.runtime.source, local_path: localPath },
+            },
+          }
+        : current,
     );
   }
 
@@ -411,16 +520,14 @@ export function LaunchCatalogPage() {
                     <Copy className="niuu:h-4 niuu:w-4" />
                     Clone
                   </button>
-                  {selected.scope === 'user' && selected.id ? (
-                    <button
-                      type="button"
-                      onClick={() => setEditor(buildEditorState('edit', selected))}
-                      className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-semibold niuu:text-text-muted niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
-                    >
-                      <Edit3 className="niuu:h-4 niuu:w-4" />
-                      Edit
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setEditor(buildEditorState('edit', selected))}
+                    className="niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:px-3 niuu:py-2 niuu:text-sm niuu:font-semibold niuu:text-text-muted niuu:hover:bg-bg-secondary niuu:hover:text-text-primary"
+                  >
+                    <Edit3 className="niuu:h-4 niuu:w-4" />
+                    Edit
+                  </button>
                   <button
                     type="button"
                     onClick={() => openLaunch(selected)}
@@ -592,29 +699,135 @@ export function LaunchCatalogPage() {
         {editor ? (
           <DialogContent
             title={`${editor.mode === 'edit' ? 'Edit' : editor.mode === 'clone' ? 'Clone' : 'Create'} catalog spec`}
-            description="Catalog specs are saved as user launch specs."
-            className="niuu:max-w-3xl"
+            description={
+              editor.mode === 'edit' && editor.base?.scope === 'system'
+                ? 'Built-in templates are saved as user launch specs.'
+                : 'Catalog specs are saved as user launch specs.'
+            }
+            className="niuu:max-w-4xl"
           >
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
-              <Field label="Name" required>
-                <Input
-                  value={editor.name}
-                  onChange={(event) => setEditor({ ...editor, name: event.target.value })}
-                />
-              </Field>
+              <div className="niuu:grid niuu:grid-cols-1 niuu:gap-4 md:niuu:grid-cols-2">
+                <Field label="Name" required error={editor.error ?? undefined}>
+                  <Input
+                    value={editor.name}
+                    onChange={(event) => setEditor({ ...editor, name: event.target.value })}
+                  />
+                </Field>
+                <Field label="CLI">
+                  <Select
+                    value={editor.runtime.cliTool}
+                    onValueChange={(value) => updateEditorRuntime({ cliTool: value as CliTool })}
+                    options={[
+                      { value: 'claude', label: 'Claude Code' },
+                      { value: 'codex', label: 'Codex' },
+                      { value: 'gemini', label: 'Gemini' },
+                      { value: 'aider', label: 'Aider' },
+                    ]}
+                  />
+                </Field>
+                <Field label="Runtime definition">
+                  <Input
+                    value={editor.sessionDefinition}
+                    onChange={(event) =>
+                      setEditor({ ...editor, sessionDefinition: event.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="Workload type">
+                  <Input
+                    value={editor.runtime.workloadType}
+                    onChange={(event) => updateEditorRuntime({ workloadType: event.target.value })}
+                  />
+                </Field>
+                <Field label="Model">
+                  <Input
+                    value={editor.runtime.model}
+                    onChange={(event) => updateEditorRuntime({ model: event.target.value })}
+                  />
+                </Field>
+                <Field label="Source">
+                  <Select
+                    value={editor.sourceMode}
+                    onValueChange={(value) => updateEditorSourceMode(value as EditorSourceMode)}
+                    options={[
+                      { value: 'launch', label: 'Selected at launch' },
+                      { value: 'git', label: 'Git repository' },
+                      { value: 'local_mount', label: 'Local mount' },
+                    ]}
+                  />
+                </Field>
+                {editor.sourceMode === 'git' && editor.runtime.source?.type === 'git' ? (
+                  <>
+                    <Field label="Git repo">
+                      <Input
+                        value={editor.runtime.source.repo}
+                        onChange={(event) => updateEditorGitSource({ repo: event.target.value })}
+                      />
+                    </Field>
+                    <Field label="Branch">
+                      <Input
+                        value={editor.runtime.source.branch}
+                        onChange={(event) => updateEditorGitSource({ branch: event.target.value })}
+                      />
+                    </Field>
+                  </>
+                ) : null}
+                {editor.sourceMode === 'local_mount' &&
+                editor.runtime.source?.type === 'local_mount' ? (
+                  <Field label="Local path">
+                    <Input
+                      value={editor.runtime.source.local_path ?? ''}
+                      onChange={(event) => updateEditorLocalSource(event.target.value)}
+                    />
+                  </Field>
+                ) : null}
+                <Field label="CPU">
+                  <Input
+                    value={editor.runtime.resourceConfig.cpu ?? ''}
+                    onChange={(event) => updateEditorResource('cpu', event.target.value)}
+                  />
+                </Field>
+                <Field label="Memory">
+                  <Input
+                    value={editor.runtime.resourceConfig.memory ?? ''}
+                    onChange={(event) => updateEditorResource('memory', event.target.value)}
+                  />
+                </Field>
+                <Field label="GPU">
+                  <Input
+                    value={editor.runtime.resourceConfig.gpu ?? ''}
+                    onChange={(event) => updateEditorResource('gpu', event.target.value)}
+                  />
+                </Field>
+                <Field label="MCP servers">
+                  <Input
+                    value={editor.mcpNames}
+                    onChange={(event) => setEditor({ ...editor, mcpNames: event.target.value })}
+                    placeholder="filesystem, git"
+                  />
+                </Field>
+              </div>
               <Field label="Description">
-                <Input
+                <Textarea
+                  rows={2}
                   value={editor.description}
                   onChange={(event) => setEditor({ ...editor, description: event.target.value })}
                 />
               </Field>
-              <Field label="Runtime YAML" error={editor.error ?? undefined}>
+              <Field label="System prompt">
                 <Textarea
-                  rows={16}
-                  value={editor.yaml}
-                  onChange={(event) => setEditor({ ...editor, yaml: event.target.value })}
-                  className="niuu:font-mono niuu:text-xs"
-                  placeholder="Launch spec YAML"
+                  rows={3}
+                  value={editor.runtime.systemPrompt}
+                  onChange={(event) => updateEditorRuntime({ systemPrompt: event.target.value })}
+                />
+              </Field>
+              <Field label="Setup scripts">
+                <Textarea
+                  rows={4}
+                  value={editor.setupScripts}
+                  onChange={(event) => setEditor({ ...editor, setupScripts: event.target.value })}
+                  placeholder="one command per line"
                 />
               </Field>
               <div className="niuu:flex niuu:justify-end niuu:gap-2">
