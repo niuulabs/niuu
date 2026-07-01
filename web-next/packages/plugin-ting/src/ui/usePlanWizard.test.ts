@@ -303,6 +303,7 @@ describe('usePlanWizard — submitAnswers', () => {
     expect(sendPlanFeedback).toHaveBeenCalledWith(
       'plan-auth',
       'Planning feedback:\n- Keep this to one saga',
+      'approve',
     );
     expect(result.current.state.step).toBe('running');
   });
@@ -336,6 +337,7 @@ describe('usePlanWizard — submitAnswers', () => {
     expect(sendPlanFeedback).toHaveBeenCalledWith(
       'plan-auth',
       'Planning feedback:\n- Keep this to one saga',
+      'approve',
     );
     expect(result.current.state.step).toBe('running');
     expect(result.current.state.answers).toEqual({ q1: 'Keep this to one saga' });
@@ -466,6 +468,33 @@ describe('usePlanWizard — approveDraft', () => {
 
     expect(result.current.state.step).toBe('approved');
     expect(result.current.state.saga).not.toBeNull();
+  });
+
+  it('approves the workflow review gate before committing a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const commitSaga = vi.fn().mockResolvedValue(MOCK_SAGA);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+      commitSaga,
+    });
+    const result = await advanceToDraft(svc);
+
+    await act(async () => {
+      await result.current.approveDraft();
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith(
+      'plan-auth',
+      'Approved in Ting Plan.',
+      'approve',
+    );
+    expect(commitSaga).toHaveBeenCalled();
+    expect(result.current.state.step).toBe('approved');
   });
 
   it('sets error on commit failure', async () => {
@@ -599,6 +628,38 @@ describe('usePlanWizard — replan', () => {
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
     // decompose called twice: once initially, once after replan
     expect(svc.decompose).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks for draft feedback when re-planning a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi
+        .fn()
+        .mockResolvedValueOnce(MOCK_STRUCTURE)
+        .mockResolvedValue({ found: false, structure: null }),
+      sendPlanFeedback,
+    });
+    const result = await advanceToDraft(svc);
+
+    act(() => result.current.replan());
+
+    expect(result.current.state.step).toBe('questions');
+    expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
+
+    await act(async () => {
+      await result.current.submitAnswers({ 'draft-feedback': 'Keep it to one phase.' });
+    });
+
+    expect(sendPlanFeedback).toHaveBeenLastCalledWith(
+      'plan-auth',
+      'Draft feedback:\n- Keep it to one phase.',
+      'changes_requested',
+    );
+    expect(result.current.state.step).toBe('running');
   });
 });
 

@@ -56,7 +56,7 @@ type Action =
   | { type: 'APPROVE_DONE'; saga: Saga }
   | { type: 'APPROVE_ERROR'; error: string }
   | { type: 'BACK' }
-  | { type: 'REPLAN' }
+  | { type: 'REPLAN'; questions?: ClarifyingQuestion[] }
   | { type: 'EDIT_PHASE'; phaseIndex: number; name: string }
   | { type: 'REMOVE_RUN'; phaseIndex: number; runIndex: number }
   | { type: 'SAVE_DRAFT' }
@@ -107,6 +107,8 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
         ...state,
         step,
         answers: action.answers,
+        structure: null,
+        phases: [],
         loading: false,
         error: null,
       };
@@ -158,8 +160,19 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
     }
 
     case 'REPLAN': {
-      const step = planTransition(state.step, 'running');
-      return { ...state, step, structure: null, phases: [], loading: false, error: null };
+      const step = action.questions?.length
+        ? planTransition(state.step, 'questions')
+        : planTransition(state.step, 'running');
+      return {
+        ...state,
+        step,
+        questions: action.questions ?? state.questions,
+        answers: action.questions?.length ? {} : state.answers,
+        structure: action.questions?.length ? state.structure : null,
+        phases: action.questions?.length ? state.phases : [],
+        loading: false,
+        error: null,
+      };
     }
 
     case 'EDIT_PHASE': {
@@ -221,7 +234,18 @@ function buildFeedbackMessage(answers: Record<string, string>): string {
     .filter(Boolean)
     .map((answer) => `- ${answer}`);
   if (lines.length === 0) return '';
-  return ['Planning feedback:', ...lines].join('\n');
+  const label = Object.keys(answers).some((id) => id === 'draft-feedback')
+    ? 'Draft feedback:'
+    : 'Planning feedback:';
+  return [label, ...lines].join('\n');
+}
+
+function defaultDraftFeedbackQuestion(): ClarifyingQuestion {
+  return {
+    id: 'draft-feedback',
+    question: 'What focused changes should the planning workflow make to this draft?',
+    hint: 'Request one bounded change. Ting will send it back through the workflow before showing a revised draft.',
+  };
 }
 
 function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
@@ -369,10 +393,13 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   async function submitAnswers(answers: Record<string, string>) {
     const campaignSlug = stateRef.current.session?.campaignSlug;
     const feedback = buildFeedbackMessage(answers);
+    const decision = Object.keys(answers).some((id) => id === 'draft-feedback')
+      ? 'changes_requested'
+      : 'approve';
     dispatch({ type: 'SUBMIT_ANSWERS', answers });
     if (campaignSlug && feedback && ting.sendPlanFeedback) {
       try {
-        await ting.sendPlanFeedback(campaignSlug, feedback);
+        await ting.sendPlanFeedback(campaignSlug, feedback, decision);
       } catch (err) {
         dispatch({
           type: 'DECOMPOSE_ERROR',
@@ -386,6 +413,10 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   async function approveDraft() {
     dispatch({ type: 'SET_LOADING' });
     try {
+      const campaignSlug = stateRef.current.session?.campaignSlug;
+      if (campaignSlug && ting.sendPlanFeedback) {
+        await ting.sendPlanFeedback(campaignSlug, 'Approved in Ting Plan.', 'approve');
+      }
       const request = buildCommitRequest(stateRef.current);
       const saga = await ting.commitSaga(request);
       dispatch({ type: 'APPROVE_DONE', saga });
@@ -414,7 +445,11 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   }
 
   function replan() {
-    dispatch({ type: 'REPLAN' });
+    const campaignSlug = stateRef.current.session?.campaignSlug;
+    dispatch({
+      type: 'REPLAN',
+      questions: campaignSlug ? [defaultDraftFeedbackQuestion()] : undefined,
+    });
   }
 
   function saveDraft() {

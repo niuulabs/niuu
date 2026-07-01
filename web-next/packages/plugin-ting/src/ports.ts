@@ -169,7 +169,11 @@ export interface ITingService {
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
   getPlanSession?(campaignSlug: string): Promise<PlanSession | null>;
   getPlanDraft?(campaignSlug: string): Promise<ExtractedStructure>;
-  sendPlanFeedback?(campaignSlug: string, content: string): Promise<void>;
+  sendPlanFeedback?(
+    campaignSlug: string,
+    content: string,
+    decision?: 'approve' | 'changes_requested',
+  ): Promise<void>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
   assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;
