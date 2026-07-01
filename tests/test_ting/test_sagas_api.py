@@ -1256,6 +1256,22 @@ summary: Plan is bounded and ready for human review.
             principal=adapter.send_message.await_args.kwargs["principal"],
         )
 
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.reset_mock()
+        adapter.send_message.side_effect = httpx.HTTPStatusError(
+            "session gateway already closed",
+            request=httpx.Request("POST", "https://volundr.example/sessions/plan-1/messages"),
+            response=httpx.Response(502),
+        )
+        stale_final_approve_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Approved in Ting Plan.", "decision": "approve"},
+        )
+        assert stale_final_approve_resp.status_code == 200
+        assert stale_final_approve_resp.json() == {"status": "sent", "session_id": "plan-1"}
+        adapter.resolve_workflow_gate.assert_not_awaited()
+
 
 class TestDeleteSaga:
     def test_delete_existing(self, client: TestClient, saga_repo: MockSagaRepo):

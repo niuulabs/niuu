@@ -1343,6 +1343,11 @@ def create_sagas_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         try:
+            normalized_decision = body.decision.strip().lower().replace("-", "_")
+            final_approval = (
+                normalized_decision in {"approve", "approved"}
+                and body.content.strip() == "Approved in Ting Plan."
+            )
             await _send_plan_message_with_retry(
                 adapter=adapter,
                 session_id=campaign.session_id,
@@ -1350,7 +1355,20 @@ def create_sagas_router() -> APIRouter:
                 auth_token=auth_token,
                 principal=principal,
             )
-            normalized_decision = body.decision.strip().lower().replace("-", "_")
+            message_sent = True
+        except httpx.HTTPStatusError as exc:
+            if not final_approval or not _is_transient_plan_http_error(exc):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to send plan feedback: {exc}",
+                ) from exc
+            logger.info(
+                "Skipping stale final plan approval feedback for campaign %s: session returned %s",
+                _sanitize_log(campaign.id),
+                exc.response.status_code,
+            )
+            message_sent = False
+        try:
             if normalized_decision in {"changes_requested", "change_requested"}:
                 normalized_decision = "changes_requested"
                 gate_decision = _PLAN_GATE_DECISION_CHANGES_REQUESTED
@@ -1370,6 +1388,8 @@ def create_sagas_router() -> APIRouter:
                 notes=body.content,
                 decision=normalized_decision,
             )
+            if final_approval and not message_sent:
+                return {"status": "sent", "session_id": campaign.session_id}
             gate_resolved = await _resolve_pending_plan_gate(
                 adapter=adapter,
                 campaign=campaign,
