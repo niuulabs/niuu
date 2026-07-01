@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
+import ting.api.sagas as sagas_api
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -888,7 +889,11 @@ class TestSpawnPlanSession:
         assert response.status_code == 200
         assert response.json() == {"finalize_prompt": "Finish the structure"}
 
-    def test_defaults_base_branch_to_main(self, mock_tracker: MockTracker) -> None:
+    def test_defaults_base_branch_to_main(
+        self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sagas_api, "_PLAN_FEEDBACK_POLL_SECONDS", 0)
+        monkeypatch.setattr(sagas_api, "_PLAN_GATE_POLL_SECONDS", 0)
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
@@ -1097,6 +1102,54 @@ class TestSpawnPlanSession:
             auth_token=None,
             principal=adapter.send_message.await_args.kwargs["principal"],
         )
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.reset_mock()
+        adapter.send_message.side_effect = [
+            httpx.HTTPStatusError(
+                "session gateway not ready",
+                request=httpx.Request(
+                    "POST", "https://volundr.example/sessions/plan-1/messages"
+                ),
+                response=httpx.Response(503),
+            ),
+            None,
+        ]
+        adapter.get_workflow_gates.side_effect = [
+            httpx.HTTPStatusError(
+                "session gate endpoint not ready",
+                request=httpx.Request(
+                    "GET", "https://volundr.example/sessions/plan-1/workflow/gates"
+                ),
+                response=httpx.Response(502),
+            ),
+            [
+                {
+                    "id": "plan-brief-gate:plan-1:retry",
+                    "node_id": "plan-brief-gate",
+                    "status": "pending",
+                }
+            ],
+        ]
+        transient_feedback_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Retry once the session gateway is ready."},
+        )
+        assert transient_feedback_resp.status_code == 200
+        assert adapter.send_message.await_count == 2
+        assert adapter.get_workflow_gates.await_count == 2
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-brief-gate:plan-1:retry",
+            "APPROVE",
+            notes="Retry once the session gateway is ready.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+        adapter.send_message.side_effect = None
+        adapter.get_workflow_gates.side_effect = None
 
         adapter.send_message.reset_mock()
         adapter.resolve_workflow_gate.reset_mock()

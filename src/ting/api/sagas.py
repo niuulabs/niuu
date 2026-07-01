@@ -67,6 +67,8 @@ _PLAN_GATE_DECISION_APPROVE = "APPROVE"
 _PLAN_GATE_DECISION_CHANGES_REQUESTED = "CHANGES_REQUESTED"
 _PLAN_GATE_POLL_SECONDS = 2.0
 _PLAN_GATE_POLL_ATTEMPTS = 6
+_PLAN_FEEDBACK_POLL_SECONDS = 2.0
+_PLAN_FEEDBACK_POLL_ATTEMPTS = 20
 _PLAN_FEEDBACK_METADATA_KEY = "planning_feedback_notes"
 _PLAN_FEEDBACK_DECISION_METADATA_KEY = "planning_feedback_decision"
 _PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY = "planning_brief_gate_resolved"
@@ -114,6 +116,10 @@ def _pending_plan_gate_node_id(gates: list[dict]) -> str | None:
     return None
 
 
+def _is_transient_plan_http_error(exc: httpx.HTTPStatusError) -> bool:
+    return exc.response.status_code in _TRANSIENT_PLAN_DRAFT_STATUS_CODES
+
+
 async def _resolve_pending_plan_gate(
     *,
     adapter: VolundrPort,
@@ -129,11 +135,17 @@ async def _resolve_pending_plan_gate(
     """Resolve a workflow gate if it is already waiting for Ting's next step."""
     candidate_node_ids = tuple(node_ids or ([node_id] if node_id else []))
     for attempt in range(max(1, attempts)):
-        gates = await adapter.get_workflow_gates(
-            campaign.session_id,
-            auth_token=auth_token,
-            principal=principal,
-        )
+        try:
+            gates = await adapter.get_workflow_gates(
+                campaign.session_id,
+                auth_token=auth_token,
+                principal=principal,
+            )
+        except httpx.HTTPStatusError as exc:
+            if not _is_transient_plan_http_error(exc) or attempt >= attempts - 1:
+                raise
+            await asyncio.sleep(_PLAN_GATE_POLL_SECONDS)
+            continue
         for candidate_node_id in candidate_node_ids:
             gate_id = _pending_gate_id(gates, candidate_node_id)
             if gate_id is not None:
@@ -175,6 +187,30 @@ async def _approve_pending_plan_gate(
         principal=principal,
         attempts=attempts,
     )
+
+
+async def _send_plan_message_with_retry(
+    *,
+    adapter: VolundrPort,
+    session_id: str,
+    content: str,
+    auth_token: str | None,
+    principal: Principal,
+    attempts: int = _PLAN_FEEDBACK_POLL_ATTEMPTS,
+) -> None:
+    for attempt in range(max(1, attempts)):
+        try:
+            await adapter.send_message(
+                session_id,
+                content,
+                auth_token=auth_token,
+                principal=principal,
+            )
+            return
+        except httpx.HTTPStatusError as exc:
+            if not _is_transient_plan_http_error(exc) or attempt >= attempts - 1:
+                raise
+            await asyncio.sleep(_PLAN_FEEDBACK_POLL_SECONDS)
 
 
 async def _record_plan_feedback(
@@ -1259,9 +1295,10 @@ def create_sagas_router() -> APIRouter:
 
         auth_token = extract_bearer_token(request)
         try:
-            await adapter.send_message(
-                campaign.session_id,
-                body.content,
+            await _send_plan_message_with_retry(
+                adapter=adapter,
+                session_id=campaign.session_id,
+                content=body.content,
                 auth_token=auth_token,
                 principal=principal,
             )
