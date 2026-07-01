@@ -1022,6 +1022,31 @@ class TestSpawnPlanSession:
             "Review the bounded one-phase draft before publishing."
         )
 
+        adapter.get_workflow_gates.return_value = []
+        campaign_repo._campaigns[campaign.id] = replace(
+            campaign,
+            active_stage_id="plan-clarify",
+            metadata={
+                **campaign.metadata,
+                "pending_workflow_gates": [
+                    {
+                        "id": "plan-review-gate:plan-1:2",
+                        "node_id": "plan-review-gate",
+                        "status": "pending",
+                        "summary": "Persisted review gate from activity metadata.",
+                    }
+                ],
+            },
+        )
+        stored_status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
+        assert stored_status_resp.status_code == 200
+        stored_status_body = stored_status_resp.json()
+        assert stored_status_body["active_stage_id"] == "plan-review-gate"
+        assert stored_status_body["questions"][0]["id"] == "draft-feedback"
+        assert stored_status_body["questions"][0]["hint"] == (
+            "Persisted review gate from activity metadata."
+        )
+
         draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
         assert draft_resp.status_code == 200
         draft = draft_resp.json()

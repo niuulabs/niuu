@@ -873,6 +873,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 review_engine=review_engine,
                 sleipnir_publisher=sleipnir_bus,
                 ravn_scope_adherence_threshold=settings.ravn_outcome.scope_adherence_threshold,
+                workflow_campaign_repo=workflow_campaign_repo,
             )
             app.state.subscriber = subscriber
             await subscriber.start()

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -37,6 +37,7 @@ from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
 
 if TYPE_CHECKING:
     from ting.domain.services.review_engine import ReviewEngine
+    from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class SessionActivitySubscriber:
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
         ravn_scope_adherence_threshold: float = 0.7,
+        workflow_campaign_repo: WorkflowCampaignRepository | None = None,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory
@@ -79,6 +81,7 @@ class SessionActivitySubscriber:
         self._review_engine = review_engine
         self._sleipnir_publisher = sleipnir_publisher
         self._ravn_scope_adherence_threshold = ravn_scope_adherence_threshold
+        self._workflow_campaign_repo = workflow_campaign_repo
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
@@ -497,6 +500,8 @@ class SessionActivitySubscriber:
 
         run, tracker = await self._find_run_for_session(event.session_id, owner_id)
         if run is None or tracker is None:
+            if await self._maybe_record_workflow_campaign_help_needed(event, payload, owner_id):
+                return True
             logger.warning(
                 "Help-needed activity received for unknown session %s",
                 event.session_id[:8] if event.session_id else "?",
@@ -547,6 +552,68 @@ class SessionActivitySubscriber:
             "Recorded help-needed request for run=%s session=%s",
             run.tracker_id,
             event.session_id[:8] if event.session_id else "?",
+        )
+        return True
+
+    async def _maybe_record_workflow_campaign_help_needed(
+        self,
+        event: ActivityEvent,
+        payload: dict[str, object],
+        owner_id: str,
+    ) -> bool:
+        if self._workflow_campaign_repo is None:
+            return False
+
+        session_id = _help_needed_session_id(payload) or event.session_id
+        if not session_id:
+            return False
+
+        campaigns = await self._workflow_campaign_repo.list_active_campaigns()
+        campaign = next(
+            (
+                item
+                for item in campaigns
+                if item.owner_id == owner_id and item.session_id == session_id
+            ),
+            None,
+        )
+        if campaign is None:
+            return False
+
+        gate = _workflow_gate_from_help_needed(payload)
+        metadata = dict(campaign.metadata)
+        metadata["pending_workflow_gates"] = [gate]
+        metadata["latest_help_needed"] = dict(payload)
+        now = datetime.now(UTC)
+        await self._workflow_campaign_repo.save_campaign(
+            replace(
+                campaign,
+                active_stage_id=str(gate.get("node_id") or campaign.active_stage_id or "")
+                or None,
+                metadata=metadata,
+                updated_at=now,
+                last_activity_at=now,
+            )
+        )
+        await self._event_bus.emit(
+            TingEvent(
+                event="workflow.campaign.feedback_requested",
+                owner_id=owner_id,
+                data={
+                    "owner_id": owner_id,
+                    "campaign_id": str(campaign.id),
+                    "slug": campaign.slug,
+                    "session_id": session_id,
+                    "summary": payload.get("summary", ""),
+                    "reason": payload.get("reason", ""),
+                    "recommendation": payload.get("recommendation", ""),
+                },
+            )
+        )
+        logger.info(
+            "Recorded workflow campaign help-needed request for campaign=%s session=%s",
+            campaign.slug,
+            session_id[:8],
         )
         return True
 
@@ -901,6 +968,33 @@ def _help_needed_payload(metadata: dict) -> dict[str, object] | None:
         "persona": str(raw.get("persona") or ""),
         "target_peer_id": str(raw.get("target_peer_id") or ""),
         "session_id": str(raw.get("session_id") or ""),
+    }
+
+
+def _help_needed_session_id(payload: dict[str, object]) -> str:
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id:
+        return session_id
+    context = payload.get("context")
+    if isinstance(context, dict):
+        return str(context.get("session_id") or context.get("ravn_session_id") or "").strip()
+    return ""
+
+
+def _workflow_gate_from_help_needed(payload: dict[str, object]) -> dict[str, object]:
+    context = payload.get("context")
+    context_dict = context if isinstance(context, dict) else {}
+    gate_id = str(context_dict.get("gate_id") or "").strip()
+    node_id = str(context_dict.get("gate_node_id") or context_dict.get("node_id") or "").strip()
+    return {
+        "id": gate_id,
+        "node_id": node_id,
+        "status": str(context_dict.get("gate_status") or "pending"),
+        "summary": str(payload.get("summary") or ""),
+        "instructions": str(
+            context_dict.get("instructions") or payload.get("recommendation") or ""
+        ),
+        "reason": str(payload.get("reason") or ""),
     }
 
 

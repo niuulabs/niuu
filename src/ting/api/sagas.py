@@ -68,6 +68,7 @@ _PLAN_GATE_POLL_SECONDS = 2.0
 _PLAN_GATE_POLL_ATTEMPTS = 6
 _PLAN_FEEDBACK_METADATA_KEY = "planning_feedback_notes"
 _PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY = "planning_brief_gate_resolved"
+_PLAN_PENDING_GATES_METADATA_KEY = "pending_workflow_gates"
 _TRANSIENT_PLAN_DRAFT_STATUS_CODES = {404, 409, 425, 502, 503, 504}
 
 
@@ -169,6 +170,7 @@ async def _mark_plan_brief_gate_resolved(
 ) -> WorkflowCampaign:
     metadata = dict(campaign.metadata)
     metadata[_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY] = True
+    metadata.pop(_PLAN_PENDING_GATES_METADATA_KEY, None)
     return await campaign_repo.save_campaign(
         replace(campaign, metadata=metadata, updated_at=datetime.now(UTC))
     )
@@ -385,6 +387,13 @@ def _gate_hint(gate: dict | None, fallback: str) -> str:
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return fallback
+
+
+def _stored_plan_gates(campaign: WorkflowCampaign) -> list[dict]:
+    raw = campaign.metadata.get(_PLAN_PENDING_GATES_METADATA_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
 
 
 def _plan_questions_for_campaign(
@@ -1106,6 +1115,8 @@ def create_sagas_router() -> APIRouter:
                 _sanitize_log(campaign.id),
                 exc_info=True,
             )
+        if not gates:
+            gates = _stored_plan_gates(campaign)
         return _to_plan_session_response(campaign, chat_endpoint=None, gates=gates)
 
     @router.get("/plan/{slug}/draft", response_model=ExtractStructureResponse)
