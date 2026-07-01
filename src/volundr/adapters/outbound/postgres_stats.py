@@ -17,16 +17,32 @@ class PostgresStatsRepository(StatsRepository):
     async def get_stats(self) -> Stats:
         """Retrieve aggregate statistics for the dashboard."""
         async with self._pool.acquire() as conn:
-            # Get session counts
+            # Get session counts. Chronicles are durable after session deletion,
+            # so include them for history-oriented totals and sparklines.
             session_counts = await conn.fetchrow(
                 """
+                WITH session_starts AS (
+                    SELECT
+                        session_key,
+                        MIN(created_at) AS started_at
+                    FROM (
+                        SELECT id::text AS session_key, created_at
+                        FROM sessions
+
+                        UNION ALL
+
+                        SELECT COALESCE(session_id::text, id::text) AS session_key, created_at
+                        FROM chronicles
+                    ) raw_starts
+                    GROUP BY session_key
+                )
                 SELECT
-                    COUNT(*) FILTER (WHERE status = 'running') AS active_sessions,
+                    (SELECT COUNT(*) FROM sessions WHERE status = 'running') AS active_sessions,
                     COUNT(*) AS total_sessions,
                     COUNT(*) FILTER (
-                        WHERE created_at >= CURRENT_DATE AT TIME ZONE 'UTC'
+                        WHERE started_at >= CURRENT_DATE AT TIME ZONE 'UTC'
                     ) AS sessions_today
-                FROM sessions
+                FROM session_starts
                 """
             )
 
@@ -84,12 +100,27 @@ class PostgresStatsRepository(StatsRepository):
                         INTERVAL '1 day'
                     )::date AS day
                 ),
+                session_starts AS (
+                    SELECT
+                        session_key,
+                        MIN(created_at) AS started_at
+                    FROM (
+                        SELECT id::text AS session_key, created_at
+                        FROM sessions
+
+                        UNION ALL
+
+                        SELECT COALESCE(session_id::text, id::text) AS session_key, created_at
+                        FROM chronicles
+                    ) raw_starts
+                    GROUP BY session_key
+                ),
                 session_counts AS (
                     SELECT
-                        (created_at AT TIME ZONE 'UTC')::date AS day,
+                        (started_at AT TIME ZONE 'UTC')::date AS day,
                         COUNT(*)::float AS count
-                    FROM sessions
-                    WHERE created_at >= (CURRENT_DATE - INTERVAL '29 days') AT TIME ZONE 'UTC'
+                    FROM session_starts
+                    WHERE started_at >= (CURRENT_DATE - INTERVAL '29 days') AT TIME ZONE 'UTC'
                     GROUP BY 1
                 )
                 SELECT COALESCE(session_counts.count, 0) AS count

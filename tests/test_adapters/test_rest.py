@@ -1039,6 +1039,18 @@ class TestStatsResponse:
         assert stats.cost_today == 1.50
         assert stats.sparklines == {"sessionsToday": [1.0, 2.0]}
 
+    def test_stats_response_defaults_to_zero_values(self):
+        """StatsResponse can represent an empty stats payload."""
+        stats = StatsResponse()
+        assert stats.active_sessions == 0
+        assert stats.total_sessions == 0
+        assert stats.sessions_today == 0
+        assert stats.tokens_today == 0
+        assert stats.local_tokens == 0
+        assert stats.cloud_tokens == 0
+        assert stats.cost_today == 0.0
+        assert stats.sparklines == {}
+
 
 class TestGetStats:
     """Tests for GET /api/v1/forge/stats."""

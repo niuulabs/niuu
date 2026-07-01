@@ -987,13 +987,13 @@ class TimelineEventCreate(BaseModel):
 class StatsResponse(BaseModel):
     """Response model for aggregate statistics."""
 
-    active_sessions: int = Field(description="Currently running sessions")
-    total_sessions: int = Field(description="Total sessions (all statuses)")
+    active_sessions: int = Field(default=0, description="Currently running sessions")
+    total_sessions: int = Field(default=0, description="Total sessions (all statuses)")
     sessions_today: int = Field(default=0, description="Sessions created today")
-    tokens_today: int = Field(description="Tokens consumed today")
-    local_tokens: int = Field(description="Tokens from local models today")
-    cloud_tokens: int = Field(description="Tokens from cloud models today")
-    cost_today: float = Field(description="Total cloud cost today in USD")
+    tokens_today: int = Field(default=0, description="Tokens consumed today")
+    local_tokens: int = Field(default=0, description="Tokens from local models today")
+    cloud_tokens: int = Field(default=0, description="Tokens from cloud models today")
+    cost_today: float = Field(default=0.0, description="Total cloud cost today in USD")
     sparklines: dict[str, list[float]] = Field(
         default_factory=dict,
         description="Historical KPI samples for lightweight dashboard sparklines",
