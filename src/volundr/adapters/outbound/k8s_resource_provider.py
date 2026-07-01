@@ -2,6 +2,7 @@
 
 import logging
 from collections import defaultdict
+from inspect import isawaitable
 
 from volundr.domain.models import (
     ClusterResourceInfo,
@@ -56,6 +57,11 @@ def _format_allocated(values: dict[str, int]) -> dict[str, str]:
     if values.get("memory"):
         formatted["memory"] = f"{values['memory'] // (1024**2)}Mi"
     return formatted
+
+
+async def _maybe_await(value: object) -> None:
+    if isawaitable(value):
+        await value
 
 
 def _resource_type_from_key(key: str) -> ResourceType:
@@ -116,12 +122,12 @@ class K8sResourceProvider(ResourceProvider):
             from kubernetes_asyncio import client, config
 
             if self._kubeconfig:
-                await config.load_kube_config(config_file=self._kubeconfig)
+                await _maybe_await(config.load_kube_config(config_file=self._kubeconfig))
             else:
                 try:
-                    await config.load_incluster_config()
+                    await _maybe_await(config.load_incluster_config())
                 except config.ConfigException:
-                    await config.load_kube_config()
+                    await _maybe_await(config.load_kube_config())
             v1 = client.CoreV1Api()
             nodes_resp = await v1.list_node()
         except Exception:
