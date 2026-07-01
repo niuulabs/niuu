@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { RepoSelect, type RepoRecord } from '@niuulabs/ui';
 
 interface PlanPromptProps {
@@ -29,19 +29,15 @@ const HINT_CHIPS = [
 export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptProps) {
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
-
-  useEffect(() => {
-    if (repo || repos.length === 0) return;
-    setRepo(repos[0]?.cloneUrl ?? '');
-  }, [repo, repos]);
+  const effectiveRepo = repo || repos[0]?.cloneUrl || '';
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim() || !repo.trim()) return;
-    onSubmit(prompt.trim(), repo.trim());
+    if (!prompt.trim() || !effectiveRepo.trim()) return;
+    onSubmit(prompt.trim(), effectiveRepo.trim());
   }
 
-  const canSubmit = prompt.trim().length > 0 && repo.trim().length > 0 && !loading;
+  const canSubmit = prompt.trim().length > 0 && effectiveRepo.trim().length > 0 && !loading;
 
   return (
     <form
@@ -108,7 +104,7 @@ export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptP
           <RepoSelect
             id="plan-repo"
             repos={repos}
-            value={repo}
+            value={effectiveRepo}
             onChange={setRepo}
             placeholder="Select repository"
             valueMode="cloneUrl"
