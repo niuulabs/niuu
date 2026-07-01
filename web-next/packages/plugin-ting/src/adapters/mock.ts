@@ -1216,6 +1216,10 @@ export function createMockTingService(): ITingService {
       };
     },
 
+    async listPlanSessions(): Promise<PlanSession[]> {
+      return [];
+    },
+
     async extractStructure(_text: string): Promise<ExtractedStructure> {
       return {
         found: true,

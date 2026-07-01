@@ -519,6 +519,33 @@ describe('buildTingHttpAdapter', () => {
       expect(result.questions[0]?.id).toBe('planning-feedback');
     });
 
+    it('lists active plan sessions', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([
+        {
+          session_id: 'sess-1',
+          chat_endpoint: null,
+          name: 'Plan SDCP operator',
+          prompt: 'Plan SDCP operator',
+          repo: '',
+          campaign_slug: 'plan-sdcp-operator',
+          workflow_name: 'Saga Planning',
+          status: 'running',
+          active_stage_id: 'plan-clarify',
+          updated_at: '2026-07-01T12:00:00Z',
+          stage_state: [{ stage_id: 'plan-clarify', label: 'Clarify brief', status: 'active' }],
+        },
+      ]);
+
+      const result = await buildTingHttpAdapter(client).listPlanSessions?.();
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan');
+      expect(result?.[0]?.sessionId).toBe('sess-1');
+      expect(result?.[0]?.name).toBe('Plan SDCP operator');
+      expect(result?.[0]?.repo).toBe('');
+      expect(result?.[0]?.updatedAt).toBe('2026-07-01T12:00:00Z');
+    });
+
     it('fetches persisted plan session status', async () => {
       const client = makeClient();
       client.get.mockResolvedValue({

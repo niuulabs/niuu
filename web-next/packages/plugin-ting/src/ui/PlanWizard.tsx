@@ -12,6 +12,7 @@ import { PlanRuns } from './PlanRuns';
 import { PlanDraft } from './PlanDraft';
 import { PlanApproved } from './PlanApproved';
 import { PlanGuidanceRail } from './PlanGuidanceRail';
+import type { ITingService, PlanSession } from '../ports';
 import './PlanWizard.css';
 
 type RepoCatalogService = {
@@ -27,10 +28,12 @@ type RepoCatalogService = {
  *         Full-width on running and approved (content fills the width).
  */
 export function PlanWizard() {
+  const ting = useService<ITingService>('ting');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const {
     state,
     submitPrompt,
+    resumePlanSession,
     submitAnswers,
     approveDraft,
     editPhase,
@@ -44,6 +47,12 @@ export function PlanWizard() {
   const { data: repos = [] } = useQuery({
     queryKey: ['ting-plan-repos'],
     queryFn: () => repoCatalog.getRepos(),
+  });
+  const { data: planSessions = [] } = useQuery({
+    queryKey: ['ting-plan-sessions'],
+    queryFn: () => (ting.listPlanSessions ? ting.listPlanSessions() : Promise.resolve([])),
+    enabled: state.step === 'prompt' && Boolean(ting.listPlanSessions),
+    refetchInterval: state.step === 'prompt' ? 5000 : false,
   });
 
   function handleNewPlan() {
@@ -74,12 +83,19 @@ export function PlanWizard() {
           <StepDots steps={PLAN_STEPS} current={state.step} />
 
           {state.step === 'prompt' && (
-            <PlanPrompt
-              onSubmit={submitPrompt}
-              loading={state.loading}
-              error={state.error}
-              repos={repos}
-            />
+            <>
+              <ActivePlanSessions
+                sessions={planSessions}
+                loading={state.loading}
+                onResume={resumePlanSession}
+              />
+              <PlanPrompt
+                onSubmit={submitPrompt}
+                loading={state.loading}
+                error={state.error}
+                repos={repos}
+              />
+            </>
           )}
 
           {state.step === 'questions' && (
@@ -135,5 +151,48 @@ export function PlanWizard() {
         </div>
       )}
     </div>
+  );
+}
+
+function ActivePlanSessions({
+  sessions,
+  loading,
+  onResume,
+}: {
+  sessions: PlanSession[];
+  loading: boolean;
+  onResume(session: PlanSession): void;
+}) {
+  if (sessions.length === 0) return null;
+
+  return (
+    <section className="ting-plan-card ting-plan-sessions" aria-label="Active planning sessions">
+      <div className="ting-plan-sessions__head">
+        <div>
+          <h2>Active plans</h2>
+          <p>Resume a planning workflow that is already running.</p>
+        </div>
+        <span>{sessions.length}</span>
+      </div>
+      <div className="ting-plan-sessions__list">
+        {sessions.map((session) => (
+          <button
+            key={session.campaignSlug ?? session.sessionId}
+            type="button"
+            className="ting-plan-session-row"
+            disabled={loading}
+            onClick={() => onResume(session)}
+          >
+            <span>
+              <strong>{session.name || session.prompt || session.campaignSlug || 'Plan'}</strong>
+              <small>{session.repo || 'no repository selected'}</small>
+            </span>
+            <span className="ting-plan-session-row__meta">
+              {session.status || 'running'} · resume
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }

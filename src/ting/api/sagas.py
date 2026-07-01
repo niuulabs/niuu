@@ -604,10 +604,14 @@ def _to_plan_session_response(
     return PlanSessionResponse(
         session_id=campaign.session_id,
         chat_endpoint=chat_endpoint,
+        name=campaign.name,
+        prompt=str(campaign.metadata.get("spec") or ""),
+        repo=str(campaign.metadata.get("repo") or ""),
         campaign_slug=campaign.slug,
         workflow_name=campaign.workflow_name,
         status=campaign.status.value,
         active_stage_id=active_gate_node_id or campaign.active_stage_id,
+        updated_at=campaign.updated_at,
         stage_state=[_to_plan_stage_response(stage) for stage in campaign.stage_state],
         questions=_plan_questions_for_campaign(campaign, gates),
     )
@@ -779,7 +783,7 @@ class PlanRequest(BaseModel):
     """Request to spawn an interactive planning session."""
 
     spec: str = Field(min_length=1)
-    repo: str = Field(min_length=1)
+    repo: str = ""
     base_branch: str = Field(default="main", description="Base branch for the planning session")
     model: str = Field(default="")
 
@@ -813,10 +817,14 @@ class PlanSessionResponse(BaseModel):
 
     session_id: str
     chat_endpoint: str | None = None
+    name: str | None = None
+    prompt: str | None = None
+    repo: str | None = None
     campaign_slug: str | None = None
     workflow_name: str | None = None
     status: str | None = None
     active_stage_id: str | None = None
+    updated_at: datetime | None = None
     stage_state: list[PlanStageStateResponse] = Field(default_factory=list)
     questions: list[PlanQuestionResponse] = Field(default_factory=list)
 
@@ -1067,6 +1075,35 @@ def create_sagas_router() -> APIRouter:
                 )
             )
         return items
+
+    @router.get("/plan", response_model=list[PlanSessionResponse])
+    async def list_plan_sessions(
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> list[PlanSessionResponse]:
+        campaigns = await campaign_repo.list_campaigns(owner_id=principal.user_id)
+        active_statuses = {
+            WorkflowCampaignStatus.PENDING,
+            WorkflowCampaignStatus.RUNNING,
+            WorkflowCampaignStatus.BLOCKED,
+        }
+        plan_campaigns = [
+            campaign
+            for campaign in campaigns
+            if campaign.status in active_statuses
+            and (
+                campaign.metadata.get("surface") == "ting.plan"
+                or campaign.workflow_name == _PLANNING_WORKFLOW_NAME
+            )
+        ]
+        return [
+            _to_plan_session_response(
+                campaign,
+                chat_endpoint=None,
+                gates=_stored_plan_gates(campaign),
+            )
+            for campaign in plan_campaigns
+        ]
 
     @router.get("/{saga_id}", response_model=SagaDetailResponse)
     async def get_saga(
@@ -1430,20 +1467,21 @@ def create_sagas_router() -> APIRouter:
         """Spawn a workflow-backed planning session via Volundr."""
         settings = request.app.state.settings
         model = body.model or settings.dispatch.default_model
+        repo = body.repo.strip()
 
         auth_token = extract_bearer_token(request)
 
         planner_template = settings.planner.planner_system_prompt
         if planner_template:
             planner_prompt = planner_template.format(
-                repo=body.repo,
+                repo=repo or "No repository selected",
                 base_branch=body.base_branch,
                 spec=body.spec,
             )
         else:
             planner_prompt = (
                 f"Help decompose this specification into phases and runs.\n\n"
-                f"Repository: {body.repo}\n"
+                f"Repository: {repo or 'No repository selected'}\n"
                 f"Base branch: {body.base_branch}\n"
                 f"Specification:\n{body.spec}"
             )
@@ -1457,12 +1495,12 @@ def create_sagas_router() -> APIRouter:
                 launch=WorkflowLaunchBody(
                     prompt=planner_prompt,
                     sessionName=_session_name(f"plan-{_slugify(plan_name)}"),
-                    repo=body.repo,
+                    repo=repo,
                     branch=body.base_branch,
                     model=model,
                     provenance={
                         "surface": "ting.plan",
-                        "repo": body.repo,
+                        "repo": repo,
                         "base_branch": body.base_branch,
                     },
                 ),
@@ -1491,7 +1529,7 @@ def create_sagas_router() -> APIRouter:
                 metadata={
                     "surface": "ting.plan",
                     "spec": body.spec,
-                    "repo": body.repo,
+                    "repo": repo,
                     "base_branch": body.base_branch,
                     "cluster_name": execution.session.cluster_name,
                 },

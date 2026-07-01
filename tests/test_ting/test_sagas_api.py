@@ -915,6 +915,58 @@ class TestSpawnPlanSession:
         assert response.status_code == 200
         assert response.json() == {"finalize_prompt": "Finish the structure"}
 
+    def test_plan_request_allows_missing_repo(self) -> None:
+        body = sagas_api.PlanRequest.model_validate({"spec": "Plan SDCP operator"})
+
+        assert body.repo == ""
+        assert body.base_branch == "main"
+
+    def test_lists_active_plan_sessions(self, mock_tracker: MockTracker) -> None:
+        workflow = _planning_workflow()
+        now = datetime.now(UTC)
+        active_plan = WorkflowCampaign(
+            id=uuid4(),
+            slug="plan-sdcp-operator",
+            name="Plan SDCP operator",
+            owner_id="dev-user",
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_name=workflow.name,
+            workflow_snapshot={"graph": workflow.graph},
+            session_id="plan-1",
+            session_name="plan-sdcp-operator",
+            status=WorkflowCampaignStatus.RUNNING,
+            active_stage_id="plan-clarify",
+            stage_state=[],
+            metadata={"surface": "ting.plan", "spec": "Plan SDCP operator", "repo": ""},
+            created_at=now,
+            updated_at=now,
+        )
+        completed_plan = replace(
+            active_plan,
+            id=uuid4(),
+            slug="done",
+            status=WorkflowCampaignStatus.COMPLETED,
+        )
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: (
+            InMemoryWorkflowCampaignRepository([active_plan, completed_plan])
+        )
+        app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        response = client.get("/api/v1/ting/sagas/plan")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["campaign_slug"] for item in body] == ["plan-sdcp-operator"]
+        assert body[0]["name"] == "Plan SDCP operator"
+        assert body[0]["prompt"] == "Plan SDCP operator"
+        assert body[0]["repo"] == ""
+
     def test_defaults_base_branch_to_main(
         self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
     ) -> None:

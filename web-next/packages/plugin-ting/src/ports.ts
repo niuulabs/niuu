@@ -79,10 +79,14 @@ export interface CommitSagaRequest {
 export interface PlanSession {
   sessionId: string;
   chatEndpoint: string | null;
+  name?: string | null;
+  prompt?: string | null;
+  repo?: string | null;
   campaignSlug?: string | null;
   workflowName?: string | null;
   status?: string | null;
   activeStageId?: string | null;
+  updatedAt?: string | null;
   stageState?: {
     stageId: string;
     label: string;
@@ -167,6 +171,7 @@ export interface ITingService {
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
+  listPlanSessions?(): Promise<PlanSession[]>;
   getPlanSession?(campaignSlug: string): Promise<PlanSession | null>;
   getPlanDraft?(campaignSlug: string): Promise<ExtractedStructure>;
   sendPlanFeedback?(

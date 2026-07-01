@@ -49,6 +49,78 @@
   padding: 20px;
 }
 
+.ting-plan-sessions {
+  margin-bottom: 16px;
+}
+
+.ting-plan-sessions__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.ting-plan-sessions__head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--color-text-primary);
+}
+
+.ting-plan-sessions__head p,
+.ting-plan-session-row small,
+.ting-plan-session-row__meta {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.ting-plan-sessions__head span {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--brand-300);
+}
+
+.ting-plan-sessions__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ting-plan-session-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.ting-plan-session-row:hover {
+  border-color: color-mix(in srgb, var(--color-brand) 45%, var(--color-border));
+}
+
+.ting-plan-session-row strong,
+.ting-plan-session-row small {
+  display: block;
+}
+
+.ting-plan-session-row strong {
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.ting-plan-session-row__meta {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
 .ting-plan-step-head {
   display: flex;
   align-items: flex-start;

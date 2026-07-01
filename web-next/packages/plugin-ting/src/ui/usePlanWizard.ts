@@ -49,6 +49,7 @@ const PLAN_DRAFT_POLL_MS = 5000;
 type Action =
   | { type: 'SET_LOADING' }
   | { type: 'SESSION_READY'; prompt: string; repo: string; session: PlanSession }
+  | { type: 'RESUME_READY'; session: PlanSession }
   | { type: 'SESSION_STATUS'; session: PlanSession }
   | { type: 'SUBMIT_ANSWERS'; answers: Record<string, string> }
   | { type: 'DECOMPOSE_DONE'; phases: Phase[]; structure: ExtractedStructure }
@@ -80,6 +81,23 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
         repo: action.repo,
         session: action.session,
         questions: action.session.questions,
+        loading: false,
+        error: null,
+      };
+    }
+
+    case 'RESUME_READY': {
+      const questions = action.session.questions;
+      return {
+        ...state,
+        step: questions.length > 0 ? 'questions' : 'running',
+        prompt: action.session.prompt ?? action.session.name ?? state.prompt,
+        repo: action.session.repo ?? '',
+        session: action.session,
+        questions,
+        answers: {},
+        structure: null,
+        phases: [],
         loading: false,
         error: null,
       };
@@ -276,6 +294,7 @@ function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
 
 export interface PlanWizardActions {
   submitPrompt(prompt: string, repo: string): Promise<void>;
+  resumePlanSession(session: PlanSession): Promise<void>;
   submitAnswers(answers: Record<string, string>): Promise<void>;
   approveDraft(): Promise<void>;
   editPhase(phaseIndex: number, name: string): void;
@@ -374,12 +393,29 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   async function submitPrompt(prompt: string, repo: string) {
     dispatch({ type: 'SET_LOADING' });
     try {
-      const session = await ting.spawnPlanSession(prompt, repo);
-      dispatch({ type: 'SESSION_READY', prompt, repo, session });
+      const trimmedRepo = repo.trim();
+      const session = await ting.spawnPlanSession(prompt, trimmedRepo);
+      dispatch({ type: 'SESSION_READY', prompt, repo: trimmedRepo, session });
     } catch (err) {
       dispatch({
         type: 'DECOMPOSE_ERROR',
         error: err instanceof Error ? err.message : 'Failed to start plan session',
+      });
+    }
+  }
+
+  async function resumePlanSession(session: PlanSession) {
+    dispatch({ type: 'SET_LOADING' });
+    try {
+      const refreshed =
+        session.campaignSlug && ting.getPlanSession
+          ? await ting.getPlanSession(session.campaignSlug)
+          : session;
+      dispatch({ type: 'RESUME_READY', session: refreshed ?? session });
+    } catch (err) {
+      dispatch({
+        type: 'DECOMPOSE_ERROR',
+        error: err instanceof Error ? err.message : 'Failed to resume plan session',
       });
     }
   }
@@ -466,6 +502,7 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   return {
     state,
     submitPrompt,
+    resumePlanSession,
     submitAnswers,
     approveDraft,
     editPhase,

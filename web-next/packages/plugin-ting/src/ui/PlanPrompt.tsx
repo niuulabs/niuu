@@ -29,15 +29,14 @@ const HINT_CHIPS = [
 export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptProps) {
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
-  const effectiveRepo = repo || repos[0]?.cloneUrl || '';
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim() || !effectiveRepo.trim()) return;
-    onSubmit(prompt.trim(), effectiveRepo.trim());
+    if (!prompt.trim()) return;
+    onSubmit(prompt.trim(), repo.trim());
   }
 
-  const canSubmit = prompt.trim().length > 0 && effectiveRepo.trim().length > 0 && !loading;
+  const canSubmit = prompt.trim().length > 0 && !loading;
 
   return (
     <form
@@ -98,15 +97,15 @@ export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptP
           htmlFor="plan-repo"
           className="niuu:text-sm niuu:font-medium niuu:text-text-secondary"
         >
-          Target repository
+          Target repository <span className="niuu:text-text-tertiary">(optional)</span>
         </label>
         {repos.length > 0 ? (
           <RepoSelect
             id="plan-repo"
             repos={repos}
-            value={effectiveRepo}
+            value={repo}
             onChange={setRepo}
-            placeholder="Select repository"
+            placeholder="No repository selected"
             valueMode="cloneUrl"
             testId="plan-repo-select"
             className="ting-plan-input"
@@ -117,7 +116,7 @@ export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptP
             type="text"
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
-            placeholder="e.g. niuulabs/volundr"
+            placeholder="Optional: niuulabs/volundr"
             className="ting-plan-input"
           />
         )}

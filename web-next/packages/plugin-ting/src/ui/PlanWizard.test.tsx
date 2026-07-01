@@ -213,30 +213,26 @@ describe('PlanPrompt', () => {
     expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
   });
 
-  it('defaults to the first shared repository when repos are available', async () => {
+  it('leaves the shared repository select empty by default', async () => {
     const onSubmit = vi.fn();
     render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} repos={MOCK_REPOS} />);
 
-    await waitFor(() =>
-      expect(screen.getByLabelText(/target repository/i)).toHaveValue(
-        'https://github.com/niuulabs/volundr.git',
-      ),
-    );
+    await waitFor(() => expect(screen.getByLabelText(/target repository/i)).toHaveValue(''));
     await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
     fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
 
-    expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', '');
   });
 
-  it('does not submit when repository is empty', async () => {
+  it('submits when repository is empty', async () => {
     const onSubmit = vi.fn();
     render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} />);
 
     await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
-    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /next/i })).toBeEnabled();
     fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
 
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', '');
   });
 
   it('does not submit when prompt is empty', () => {
@@ -987,6 +983,32 @@ describe('PlanWizard integration', () => {
 
     await waitFor(() => expect(screen.getByTestId('plan-approved')).toBeInTheDocument());
     expect(screen.getByText('Saga launched!')).toBeInTheDocument();
+  });
+
+  it('lists and resumes active planning sessions', async () => {
+    const activeSession: PlanSession = {
+      sessionId: 'plan-active-1',
+      campaignSlug: 'plan-sdcp-operator',
+      name: 'Plan SDCP operator',
+      prompt: 'Plan SDCP operator',
+      repo: '',
+      status: 'running',
+      chatEndpoint: null,
+      questions: [{ id: 'planning-feedback', question: 'Any scope boundaries?' }],
+    };
+    const getPlanSession = vi.fn().mockResolvedValue(activeSession);
+    const svc = makeSvc({
+      listPlanSessions: vi.fn().mockResolvedValue([activeSession]),
+      getPlanSession,
+    });
+    render(<PlanWizard />, { wrapper: wrap(svc) });
+
+    await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /plan sdcp operator/i }));
+
+    await waitFor(() => expect(getPlanSession).toHaveBeenCalledWith('plan-sdcp-operator'));
+    expect(screen.getByText('Clarify your plan')).toBeInTheDocument();
+    expect(screen.getByText('Any scope boundaries?')).toBeInTheDocument();
   });
 
   it('can navigate back from questions to prompt', async () => {

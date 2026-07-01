@@ -300,10 +300,14 @@ interface RawCampaignStageState {
 interface RawPlanSession {
   session_id: string;
   chat_endpoint: string | null;
+  name?: string | null;
+  prompt?: string | null;
+  repo?: string | null;
   campaign_slug?: string | null;
   workflow_name?: string | null;
   status?: string | null;
   active_stage_id?: string | null;
+  updated_at?: string | null;
   stage_state?: RawCampaignStageState[];
   questions?: { id: string; question: string; hint?: string; kind?: 'text' | 'workflow' }[];
 }
@@ -733,10 +737,14 @@ function toPlanSession(raw: RawPlanSession): PlanSession {
   return {
     sessionId: raw.session_id,
     chatEndpoint: raw.chat_endpoint,
+    name: raw.name,
+    prompt: raw.prompt,
+    repo: raw.repo,
     campaignSlug: raw.campaign_slug,
     workflowName: raw.workflow_name,
     status: raw.status,
     activeStageId: raw.active_stage_id,
+    updatedAt: raw.updated_at,
     stageState: (raw.stage_state ?? []).map(toCampaignStageState),
     questions: raw.questions ?? [],
   };
@@ -920,6 +928,11 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
     async spawnPlanSession(spec: string, repo: string) {
       const raw = await client.post<RawPlanSession>('/sagas/plan', { spec, repo });
       return toPlanSession(raw);
+    },
+
+    async listPlanSessions() {
+      const raw = await client.get<RawPlanSession[]>('/sagas/plan');
+      return raw.map(toPlanSession);
     },
 
     async getPlanSession(campaignSlug: string) {
