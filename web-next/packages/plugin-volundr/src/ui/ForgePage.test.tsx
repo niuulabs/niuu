@@ -10,6 +10,8 @@ import {
   createMockSessionStore,
 } from '../adapters/mock';
 import type { ISessionStore } from '../ports/ISessionStore';
+import type { IClusterAdapter } from '../ports/IClusterAdapter';
+import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
 
 vi.mock('@tanstack/react-router', () => ({
@@ -89,6 +91,35 @@ describe('ForgePage', () => {
     wrap();
     await waitFor(() => expect(screen.getAllByText('Eitri').length).toBeGreaterThan(0));
     expect(screen.getAllByTestId('cluster-load-row').length).toBeGreaterThan(0);
+  });
+
+  it('renders cluster resource usage values above load meters', async () => {
+    const cluster: Cluster = {
+      id: 'cl-test',
+      realm: 'asgard',
+      name: 'Test Forge',
+      kind: 'gpu',
+      status: 'healthy',
+      region: 'test',
+      capacity: { cpu: 8, memMi: 16_384, gpu: 2 },
+      used: { cpu: 0.5, memMi: 2_048, gpu: 1 },
+      disk: { usedGi: 0, totalGi: 0, systemGi: 0, podsGi: 0, logsGi: 0 },
+      nodes: [],
+      pods: [],
+      runningSessions: 0,
+      queuedProvisions: 0,
+    };
+    const clusterAdapter: IClusterAdapter = {
+      getClusters: async () => [cluster],
+      getCluster: async () => cluster,
+    };
+
+    wrap(createMockVolundrService(), clusterAdapter);
+    await waitFor(() => expect(screen.getByText('Test Forge')).toBeInTheDocument());
+
+    expect(screen.getByTestId('cluster-meter-cpu')).toHaveTextContent('500m / 8c · 6%');
+    expect(screen.getByTestId('cluster-meter-mem')).toHaveTextContent('2Gi / 16Gi · 13%');
+    expect(screen.getByTestId('cluster-meter-gpu')).toHaveTextContent('1 / 2 · 50%');
   });
 
   it('renders error strip when failed sessions exist', async () => {

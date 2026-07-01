@@ -108,6 +108,89 @@ function displayCluster(session: Session, clusterMap: Map<string, ForgeClusterVi
   return clusterMap.get(normalizeKey(session.clusterId))?.displayName ?? session.clusterId;
 }
 
+function clampPct(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function meterFillPct(value: number) {
+  const pct = clampPct(value);
+  if (pct === 0) return 0;
+  return Math.max(2, pct * 100);
+}
+
+function meterToneClass(value: number) {
+  const pct = clampPct(value);
+  if (pct > 0.85) return 'vol-forge__meter-fill--critical';
+  if (pct > 0.6) return 'vol-forge__meter-fill--warn';
+  return 'vol-forge__meter-fill--ok';
+}
+
+function percentLabel(value: number) {
+  const pct = clampPct(value);
+  if (pct === 0) return '0%';
+  if (pct < 0.01) return '<1%';
+  return `${Math.round(pct * 100)}%`;
+}
+
+function conciseNumber(value: number, digits = 1) {
+  if (!Number.isFinite(value)) return '0';
+  const fixed = value.toFixed(digits);
+  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function cpuLabel(value: number) {
+  if (value === 0) return '0';
+  if (Math.abs(value) < 1) return `${Math.round(value * 1000)}m`;
+  return `${conciseNumber(value)}c`;
+}
+
+function memLabel(mi: number) {
+  if (mi === 0) return '0';
+  if (Math.abs(mi) < 1024) return `${Math.round(mi)}Mi`;
+  return `${conciseNumber(mi / 1024)}Gi`;
+}
+
+function gpuLabel(value: number) {
+  return String(Math.round(value));
+}
+
+function ClusterMeter({
+  label,
+  value,
+  used,
+  total,
+}: {
+  label: string;
+  value: number;
+  used: string;
+  total: string;
+}) {
+  const pct = clampPct(value);
+  return (
+    <div className="vol-forge__meter" data-testid={`cluster-meter-${label}`}>
+      <div className="vol-forge__meter-label">
+        <span>{label}</span>
+        <strong>
+          {used} / {total} · {percentLabel(pct)}
+        </strong>
+      </div>
+      <div
+        className="vol-forge__meter-track"
+        role="progressbar"
+        aria-valuenow={Math.round(pct * 100)}
+        aria-valuemax={100}
+        aria-label={`${label} utilization`}
+      >
+        <div
+          className={`vol-forge__meter-fill ${meterToneClass(pct)}`}
+          style={{ width: `${meterFillPct(pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function sessionPrimaryLabel(session: Session) {
   return (
     session.title?.trim() ||
@@ -299,16 +382,24 @@ function ForgeLoadRow({ cluster }: { cluster: ForgeClusterView }) {
       </div>
 
       <div className="vol-forge__cluster-meters">
-        <MiniBar value={cluster.cpuPct} label="cpu" />
-        <MiniBar value={cluster.memPct} label="mem" />
-        {cluster.capacity.gpu > 0 ? (
-          <MiniBar value={cluster.gpuPct} label="gpu" />
-        ) : (
-          <div className="vol-forge__meter-empty">
-            <span>gpu</span>
-            <div className="vol-forge__meter-empty-track" />
-          </div>
-        )}
+        <ClusterMeter
+          label="cpu"
+          value={cluster.cpuPct}
+          used={cpuLabel(cluster.used.cpu)}
+          total={cpuLabel(cluster.capacity.cpu)}
+        />
+        <ClusterMeter
+          label="mem"
+          value={cluster.memPct}
+          used={memLabel(cluster.used.memMi)}
+          total={memLabel(cluster.capacity.memMi)}
+        />
+        <ClusterMeter
+          label="gpu"
+          value={cluster.gpuPct}
+          used={gpuLabel(cluster.used.gpu)}
+          total={gpuLabel(cluster.capacity.gpu)}
+        />
       </div>
     </div>
   );

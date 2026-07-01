@@ -463,14 +463,20 @@
   margin-top: 12px;
 }
 
-.vol-forge__meter-empty {
+.vol-forge__meter {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  min-width: 0;
 }
 
-.vol-forge__meter-empty span {
+.vol-forge__meter-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
   color: var(--color-text-muted);
   font-family:
     ui-monospace,
@@ -483,10 +489,42 @@
   font-size: 11px;
 }
 
-.vol-forge__meter-empty-track {
+.vol-forge__meter-label span {
+  flex: 0 0 auto;
+}
+
+.vol-forge__meter-label strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-weight: 700;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vol-forge__meter-track {
   height: 4px;
+  overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+}
+
+.vol-forge__meter-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.vol-forge__meter-fill--ok {
+  background: var(--color-brand);
+}
+
+.vol-forge__meter-fill--warn {
+  background: var(--color-state-warn);
+}
+
+.vol-forge__meter-fill--critical {
+  background: var(--color-critical);
 }
 
 .vol-forge__launch-grid {
