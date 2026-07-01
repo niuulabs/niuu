@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
@@ -202,7 +202,7 @@ export function LaunchCatalogPage() {
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
   const launchSpecs = useLaunchSpecs();
-  const specs = launchSpecs.data ?? [];
+  const specs = useMemo(() => launchSpecs.data ?? [], [launchSpecs.data]);
   const [selectedRef, setSelectedRef] = useState<string>('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [search, setSearch] = useState('');
@@ -217,15 +217,11 @@ export function LaunchCatalogPage() {
   );
   const groups = useMemo(() => groupedSpecs(filteredSpecs), [filteredSpecs]);
   const selected =
-    specs.find((spec) => launchSpecRef(spec) === selectedRef) ??
+    filteredSpecs.find((spec) => launchSpecRef(spec) === selectedRef) ??
     filteredSpecs[0] ??
+    specs.find((spec) => launchSpecRef(spec) === selectedRef) ??
     specs[0] ??
     null;
-
-  useEffect(() => {
-    if (!selected && selectedRef) setSelectedRef('');
-    if (!selectedRef && selected) setSelectedRef(launchSpecRef(selected));
-  }, [selected, selectedRef]);
 
   if (launchSpecs.isLoading) return <LoadingState label="Loading catalog..." />;
   if (launchSpecs.isError) {
