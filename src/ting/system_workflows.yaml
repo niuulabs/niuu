@@ -289,6 +289,149 @@
         access: read_write
         writePrefixes: [research/, learnings/, followups/]
         readPriority: 1
+- name: Saga Planning
+  description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for review before publishing the plan.
+  version: 1.0.0
+  graph:
+    tags: [planning, saga]
+    nodes:
+      - id: plan-request
+        kind: trigger
+        label: Start saga planning
+        source: ting plan
+        dispatchEvent: plan.requested
+        position:
+          x: 96
+          y: 320
+      - id: plan-memory
+        kind: resource
+        label: Planning Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
+        role: shared
+        categories: [planning, saga]
+        position:
+          x: 352
+          y: 560
+      - id: plan-clarify
+        kind: stage
+        label: Clarify brief
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-framer
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [plan.requested, plan.brief.changes_requested]
+        position:
+          x: 352
+          y: 320
+      - id: plan-brief-gate
+        kind: gate
+        label: Planning feedback gate
+        condition: Review the framed planning brief before drafting implementation work.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: plan.brief.approved
+        changesRequestedEvent: plan.brief.changes_requested
+        instructions: Approve the framed brief when it captures the intent, or request focused changes before breakdown planning.
+        autoForwardAfter: 30m
+        position:
+          x: 608
+          y: 448
+      - id: plan-breakdown
+        kind: stage
+        label: Draft saga breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-planner
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [plan.brief.approved, plan.breakdown.changes_requested]
+        position:
+          x: 864
+          y: 320
+      - id: plan-review
+        kind: stage
+        label: Review saga breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-breakdown-critic
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [plan.breakdown.drafted]
+        position:
+          x: 1120
+          y: 224
+      - id: plan-review-gate
+        kind: gate
+        label: Draft plan review gate
+        condition: Review the draft saga plan before publishing it for approval in Ting.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: plan.approved
+        changesRequestedEvent: plan.breakdown.changes_requested
+        instructions: Approve the draft if it is bounded and actionable, or request focused changes before Ting commit.
+        autoForwardAfter: 30m
+        position:
+          x: 1120
+          y: 448
+      - id: plan-publish
+        kind: stage
+        label: Publish planning draft
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-publisher
+            budget: 8
+            model: gpt-5.5
+            consumesEventTypes: [plan.approved]
+        position:
+          x: 1376
+          y: 320
+      - id: plan-complete
+        kind: end
+        label: Saga planning complete
+        joinMode: all
+        completionEvent: plan.completed
+        position:
+          x: 1632
+          y: 320
+    edges:
+      - id: edge-plan-request-to-clarify
+        source: plan-request
+        target: plan-clarify
+      - id: edge-plan-clarify-to-brief-gate
+        source: plan-clarify
+        target: plan-brief-gate
+      - id: edge-plan-brief-gate-to-breakdown
+        source: plan-brief-gate
+        target: plan-breakdown
+      - id: edge-plan-breakdown-to-review
+        source: plan-breakdown
+        target: plan-review
+      - id: edge-plan-review-to-review-gate
+        source: plan-review
+        target: plan-review-gate
+      - id: edge-plan-review-gate-to-publish
+        source: plan-review-gate
+        target: plan-publish
+      - id: edge-plan-publish-to-complete
+        source: plan-publish
+        target: plan-complete
+    resourceBindings:
+      - id: binding-plan-memory
+        resourceNodeId: plan-memory
+        targetType: workflow
+        targetId: saga-planning
+        access: read_write
+        writePrefixes: [planning/, sagas/]
+        readPriority: 1
 - name: Specification Stack
   description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact.
   version: 1.0.0

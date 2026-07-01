@@ -43,6 +43,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
         "Code & Review Flow",
@@ -85,6 +86,32 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
     assert research_resources["Research Memory"]["authRef"] == "integration:volundr"
+
+    planning_flow = next(workflow for workflow in workflows if workflow.name == "Saga Planning")
+    assert {"planning", "saga"}.issubset(set(planning_flow.graph["tags"]))
+    planning_stage_labels = [
+        node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert planning_stage_labels == [
+        "Clarify brief",
+        "Draft saga breakdown",
+        "Review saga breakdown",
+        "Publish planning draft",
+    ]
+    planning_gate_labels = [
+        node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "gate"
+    ]
+    assert planning_gate_labels == ["Planning feedback gate", "Draft plan review gate"]
+    planning_resources = {
+        node["label"]: node
+        for node in planning_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert planning_resources["Planning Memory"]["bindingMode"] == "registry"
+    assert planning_resources["Planning Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert planning_resources["Planning Memory"]["authRef"] == "integration:volundr"
 
     specification_flow = next(
         workflow for workflow in workflows if workflow.name == "Specification Stack"
@@ -292,6 +319,7 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
         "Code & Review Flow",
@@ -300,5 +328,5 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 6
+    assert len(current_catalog) == 7
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)

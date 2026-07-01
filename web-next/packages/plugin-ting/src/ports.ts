@@ -79,6 +79,18 @@ export interface CommitSagaRequest {
 export interface PlanSession {
   sessionId: string;
   chatEndpoint: string | null;
+  campaignSlug?: string | null;
+  workflowName?: string | null;
+  status?: string | null;
+  activeStageId?: string | null;
+  stageState?: {
+    stageId: string;
+    label: string;
+    status: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    reason?: string | null;
+  }[];
   /** Clarifying questions from the planning raven. Empty when the backend omits them. */
   questions: ClarifyingQuestion[];
 }
@@ -155,6 +167,9 @@ export interface ITingService {
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
+  getPlanSession?(campaignSlug: string): Promise<PlanSession | null>;
+  getPlanDraft?(campaignSlug: string): Promise<ExtractedStructure>;
+  sendPlanFeedback?(campaignSlug: string, content: string): Promise<void>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
   assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;

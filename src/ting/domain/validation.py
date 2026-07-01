@@ -10,7 +10,7 @@ import json
 import re
 from contextlib import suppress
 
-from ting.domain.models import PhaseSpec, RunSpec, SagaStructure
+from ting.domain.models import PhaseSpec, PlanRisk, RunSpec, SagaStructure
 
 
 class ValidationError(Exception):
@@ -73,7 +73,23 @@ def parse_and_validate(
 
         phases.append(PhaseSpec(name=phase_name, runs=runs))
 
-    return SagaStructure(name=name, phases=phases)
+    risks: list[PlanRisk] = []
+    risks_raw = data.get("risks", [])
+    if isinstance(risks_raw, list):
+        for risk_data in risks_raw:
+            if not isinstance(risk_data, dict):
+                continue
+            kind = risk_data.get("kind")
+            message = risk_data.get("message")
+            if (
+                isinstance(kind, str)
+                and kind.strip()
+                and isinstance(message, str)
+                and message.strip()
+            ):
+                risks.append(PlanRisk(kind=kind.strip(), message=message.strip()))
+
+    return SagaStructure(name=name, phases=phases, risks=risks)
 
 
 def validate_run(

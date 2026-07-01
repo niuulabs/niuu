@@ -37,7 +37,6 @@ import type {
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
-  PhaseSpec,
   RunSessionMessage,
   RunHelpRequest,
   FlockConfig,
@@ -293,6 +292,47 @@ interface RawCampaignStageState {
   completedAt?: string | null;
   completed_at?: string | null;
   reason?: string | null;
+}
+
+interface RawPlanSession {
+  session_id: string;
+  chat_endpoint: string | null;
+  campaign_slug?: string | null;
+  workflow_name?: string | null;
+  status?: string | null;
+  active_stage_id?: string | null;
+  stage_state?: RawCampaignStageState[];
+  questions?: { id: string; question: string; hint?: string; kind?: 'text' | 'workflow' }[];
+}
+
+interface RawRunSpec {
+  name: string;
+  description?: string;
+  acceptanceCriteria?: string[];
+  acceptance_criteria?: string[];
+  declaredFiles?: string[];
+  declared_files?: string[];
+  estimateHours?: number;
+  estimate_hours?: number;
+  confidence?: number;
+  size?: 'S' | 'M' | 'L';
+  persona?: string;
+  phase?: string;
+}
+
+interface RawPhaseSpec {
+  name: string;
+  runs: RawRunSpec[];
+}
+
+interface RawPlanRisk {
+  kind: string;
+  message: string;
+}
+
+interface RawExtractedStructure {
+  found: boolean;
+  structure: { name: string; phases: RawPhaseSpec[]; risks?: RawPlanRisk[] } | null;
 }
 
 interface RawCampaignArtifact {
@@ -683,6 +723,45 @@ function toCampaignStageState(raw: RawCampaignStageState) {
   };
 }
 
+function toPlanSession(raw: RawPlanSession): PlanSession {
+  return {
+    sessionId: raw.session_id,
+    chatEndpoint: raw.chat_endpoint,
+    campaignSlug: raw.campaign_slug,
+    workflowName: raw.workflow_name,
+    status: raw.status,
+    activeStageId: raw.active_stage_id,
+    stageState: (raw.stage_state ?? []).map(toCampaignStageState),
+    questions: raw.questions ?? [],
+  };
+}
+
+function toExtractedStructure(raw: RawExtractedStructure): ExtractedStructure {
+  return {
+    found: raw.found,
+    structure: raw.structure
+      ? {
+          name: raw.structure.name,
+          phases: raw.structure.phases.map((phase) => ({
+            name: phase.name,
+            runs: phase.runs.map((run) => ({
+              name: run.name,
+              description: run.description ?? '',
+              acceptanceCriteria: run.acceptanceCriteria ?? run.acceptance_criteria ?? [],
+              declaredFiles: run.declaredFiles ?? run.declared_files ?? [],
+              estimateHours: run.estimateHours ?? run.estimate_hours ?? 0,
+              confidence: run.confidence ?? 0,
+              size: run.size,
+              persona: run.persona,
+              phase: run.phase,
+            })),
+          })),
+          risks: raw.structure.risks ?? [],
+        }
+      : null,
+  };
+}
+
 function toCampaignArtifact(raw: RawCampaignArtifact): CampaignArtifact {
   return {
     path: raw.path,
@@ -833,24 +912,33 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
     },
 
     async spawnPlanSession(spec: string, repo: string) {
-      const raw = await client.post<{
-        session_id: string;
-        chat_endpoint: string | null;
-        questions?: { id: string; question: string; hint?: string }[];
-      }>('/sagas/plan', { spec, repo });
-      return {
-        sessionId: raw.session_id,
-        chatEndpoint: raw.chat_endpoint,
-        questions: raw.questions ?? [],
-      } satisfies PlanSession;
+      const raw = await client.post<RawPlanSession>('/sagas/plan', { spec, repo });
+      return toPlanSession(raw);
+    },
+
+    async getPlanSession(campaignSlug: string) {
+      const raw = await client.get<RawPlanSession>(
+        `/sagas/plan/${encodeURIComponent(campaignSlug)}`,
+      );
+      return toPlanSession(raw);
+    },
+
+    async getPlanDraft(campaignSlug: string) {
+      const raw = await client.get<RawExtractedStructure>(
+        `/sagas/plan/${encodeURIComponent(campaignSlug)}/draft`,
+      );
+      return toExtractedStructure(raw);
+    },
+
+    async sendPlanFeedback(campaignSlug: string, content: string) {
+      await client.post(`/sagas/plan/${encodeURIComponent(campaignSlug)}/feedback`, {
+        content,
+      });
     },
 
     async extractStructure(text: string) {
-      const raw = await client.post<{
-        found: boolean;
-        structure: { name: string; phases: PhaseSpec[] } | null;
-      }>('/sagas/extract-structure', { text });
-      return raw satisfies ExtractedStructure;
+      const raw = await client.post<RawExtractedStructure>('/sagas/extract-structure', { text });
+      return toExtractedStructure(raw);
     },
 
     async assignWorkflow(sagaId: string, workflowId: string | null) {

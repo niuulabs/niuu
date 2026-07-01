@@ -488,7 +488,23 @@ describe('buildTingHttpAdapter', () => {
   describe('spawnPlanSession', () => {
     it('calls POST /sagas/plan', async () => {
       const client = makeClient();
-      client.post.mockResolvedValue({ session_id: 'sess-1', chat_endpoint: null });
+      client.post.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'pending',
+        active_stage_id: 'plan-clarify',
+        stage_state: [{ stage_id: 'plan-clarify', label: 'Clarify brief', status: 'active' }],
+        questions: [
+          {
+            id: 'planning-feedback',
+            question: 'What constraints should this workflow account for?',
+            hint: 'Keep this focused.',
+            kind: 'text',
+          },
+        ],
+      });
       const result = await buildTingHttpAdapter(client).spawnPlanSession('spec text', 'my/repo');
       expect(client.post).toHaveBeenCalledWith('/sagas/plan', {
         spec: 'spec text',
@@ -496,15 +512,112 @@ describe('buildTingHttpAdapter', () => {
       });
       expect(result.sessionId).toBe('sess-1');
       expect(result.chatEndpoint).toBeNull();
+      expect(result.campaignSlug).toBe('plan-auth');
+      expect(result.workflowName).toBe('Saga Planning');
+      expect(result.activeStageId).toBe('plan-clarify');
+      expect(result.stageState?.[0]?.label).toBe('Clarify brief');
+      expect(result.questions[0]?.id).toBe('planning-feedback');
+    });
+
+    it('fetches persisted plan session status', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'running',
+        active_stage_id: 'plan-breakdown',
+        stage_state: [
+          { stage_id: 'plan-breakdown', label: 'Draft saga breakdown', status: 'active' },
+        ],
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanSession?.('plan-auth');
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan/plan-auth');
+      expect(result?.status).toBe('running');
+      expect(result?.activeStageId).toBe('plan-breakdown');
+      expect(result?.stageState?.[0]?.label).toBe('Draft saga breakdown');
+    });
+
+    it('fetches a workflow-backed plan draft', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          risks: [{ kind: 'blast', message: 'Touches auth dispatch.' }],
+          phases: [
+            {
+              name: 'Build',
+              runs: [
+                {
+                  name: 'JWT refresh',
+                  description: 'Add silent refresh',
+                  acceptance_criteria: ['Refreshes before expiry'],
+                  declared_files: ['src/auth/refresh.ts'],
+                  estimate_hours: 4,
+                  confidence: 80,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanDraft?.('plan-auth');
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan/plan-auth/draft');
+      expect(result?.found).toBe(true);
+      expect(result?.structure?.name).toBe('Auth Saga');
+      expect(result?.structure?.risks?.[0]?.kind).toBe('blast');
+      expect(result?.structure?.phases[0]?.runs[0]?.acceptanceCriteria).toEqual([
+        'Refreshes before expiry',
+      ]);
+    });
+
+    it('sends plan feedback to the workflow session', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({ status: 'sent' });
+
+      await buildTingHttpAdapter(client).sendPlanFeedback?.('plan-auth', 'looks good');
+
+      expect(client.post).toHaveBeenCalledWith('/sagas/plan/plan-auth/feedback', {
+        content: 'looks good',
+      });
     });
   });
 
   describe('extractStructure', () => {
     it('calls POST /sagas/extract-structure', async () => {
       const client = makeClient();
-      client.post.mockResolvedValue({ found: true, structure: null });
-      await buildTingHttpAdapter(client).extractStructure('some text');
+      client.post.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          risks: [{ kind: 'blast', message: 'Touches auth dispatch.' }],
+          phases: [
+            {
+              name: 'Build',
+              runs: [
+                {
+                  name: 'JWT refresh',
+                  description: 'Add silent refresh',
+                  acceptance_criteria: ['Refreshes before expiry'],
+                  declared_files: ['src/auth/refresh.ts'],
+                  estimate_hours: 4,
+                  confidence: 80,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const result = await buildTingHttpAdapter(client).extractStructure('some text');
       expect(client.post).toHaveBeenCalledWith('/sagas/extract-structure', { text: 'some text' });
+      expect(result.structure?.phases[0]?.runs[0]?.declaredFiles).toEqual(['src/auth/refresh.ts']);
+      expect(result.structure?.risks?.[0]?.message).toBe('Touches auth dispatch.');
     });
   });
 

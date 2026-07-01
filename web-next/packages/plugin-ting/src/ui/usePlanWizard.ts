@@ -47,6 +47,7 @@ const initialState: PlanWizardState = {
 type Action =
   | { type: 'SET_LOADING' }
   | { type: 'SESSION_READY'; prompt: string; repo: string; session: PlanSession }
+  | { type: 'SESSION_STATUS'; session: PlanSession }
   | { type: 'SUBMIT_ANSWERS'; answers: Record<string, string> }
   | { type: 'DECOMPOSE_DONE'; phases: Phase[]; structure: ExtractedStructure }
   | { type: 'DECOMPOSE_ERROR'; error: string }
@@ -81,6 +82,13 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
         error: null,
       };
     }
+
+    case 'SESSION_STATUS':
+      return {
+        ...state,
+        session: state.session ? { ...state.session, ...action.session } : action.session,
+        questions: action.session.questions.length > 0 ? action.session.questions : state.questions,
+      };
 
     case 'SUBMIT_ANSWERS': {
       const step = planTransition(state.step, 'running');
@@ -196,6 +204,15 @@ function buildFullSpec(prompt: string, answers: Record<string, string>): string 
   return `${prompt}\n\nAdditional context:\n${answerBlock}`;
 }
 
+function buildFeedbackMessage(answers: Record<string, string>): string {
+  const lines = Object.values(answers)
+    .map((answer) => answer.trim())
+    .filter(Boolean)
+    .map((answer) => `- ${answer}`);
+  if (lines.length === 0) return '';
+  return ['Planning feedback:', ...lines].join('\n');
+}
+
 function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
   const structure = state.structure?.structure;
   const name = structure?.name ?? 'New Saga';
@@ -230,7 +247,7 @@ function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
 
 export interface PlanWizardActions {
   submitPrompt(prompt: string, repo: string): Promise<void>;
-  submitAnswers(answers: Record<string, string>): void;
+  submitAnswers(answers: Record<string, string>): Promise<void>;
   approveDraft(): Promise<void>;
   editPhase(phaseIndex: number, name: string): void;
   removeRun(phaseIndex: number, runIndex: number): void;
@@ -252,6 +269,35 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     stateRef.current = state;
   }, [state]);
 
+  useEffect(() => {
+    const campaignSlug = state.session?.campaignSlug;
+    const getPlanSession = ting.getPlanSession;
+    if (!campaignSlug || state.step === 'approved' || !getPlanSession) return;
+
+    const refreshSlug = campaignSlug;
+    const refresh = getPlanSession;
+    let cancelled = false;
+    async function refreshPlanSession() {
+      try {
+        const session = await refresh(refreshSlug);
+        if (!cancelled && session) {
+          dispatch({ type: 'SESSION_STATUS', session });
+        }
+      } catch {
+        // Polling is advisory; the active planning flow should keep moving.
+      }
+    }
+
+    void refreshPlanSession();
+    const timer = window.setInterval(() => {
+      void refreshPlanSession();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [state.session?.campaignSlug, state.step, ting]);
+
   // Auto-decompose when entering the running step
   useEffect(() => {
     if (state.step !== 'running') return;
@@ -259,9 +305,18 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     let cancelled = false;
 
     async function runDecompose() {
-      const { prompt, repo, answers } = stateRef.current;
+      const { prompt, repo, answers, session } = stateRef.current;
       const fullSpec = buildFullSpec(prompt, answers);
       try {
+        if (session?.campaignSlug && ting.getPlanDraft) {
+          const draft = await ting.getPlanDraft(session.campaignSlug);
+          if (cancelled) return;
+          if (draft.found && draft.structure) {
+            dispatch({ type: 'DECOMPOSE_DONE', phases: [], structure: draft });
+            return;
+          }
+        }
+
         const phases = await ting.decompose(fullSpec, repo);
         if (cancelled) return;
         const phasesText = JSON.stringify(phases);
@@ -296,7 +351,20 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     }
   }
 
-  function submitAnswers(answers: Record<string, string>) {
+  async function submitAnswers(answers: Record<string, string>) {
+    const campaignSlug = stateRef.current.session?.campaignSlug;
+    const feedback = buildFeedbackMessage(answers);
+    if (campaignSlug && feedback && ting.sendPlanFeedback) {
+      try {
+        await ting.sendPlanFeedback(campaignSlug, feedback);
+      } catch (err) {
+        dispatch({
+          type: 'DECOMPOSE_ERROR',
+          error: err instanceof Error ? err.message : 'Failed to send plan feedback',
+        });
+        return;
+      }
+    }
     dispatch({ type: 'SUBMIT_ANSWERS', answers });
   }
 
