@@ -493,6 +493,30 @@ describe('usePlanWizard — approveDraft', () => {
     expect(result.current.state.step).toBe('approved');
   });
 
+  it('still commits when final workflow approval feedback is already stale', async () => {
+    const sendPlanFeedback = vi.fn().mockRejectedValue(new Error('session gateway closed'));
+    const commitSaga = vi.fn().mockResolvedValue(MOCK_SAGA);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+      commitSaga,
+    });
+    const result = await advanceToDraft(svc);
+
+    await act(async () => {
+      await result.current.approveDraft();
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Ting Plan.', 'approve');
+    expect(commitSaga).toHaveBeenCalled();
+    expect(result.current.state.step).toBe('approved');
+    expect(result.current.state.error).toBeNull();
+  });
+
   it('sets error on commit failure', async () => {
     const svc = makeMockService({
       commitSaga: vi.fn().mockRejectedValue(new Error('commit failed')),

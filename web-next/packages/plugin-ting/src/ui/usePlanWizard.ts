@@ -409,7 +409,12 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     try {
       const campaignSlug = stateRef.current.session?.campaignSlug;
       if (campaignSlug && ting.sendPlanFeedback) {
-        await ting.sendPlanFeedback(campaignSlug, 'Approved in Ting Plan.', 'approve');
+        try {
+          await ting.sendPlanFeedback(campaignSlug, 'Approved in Ting Plan.', 'approve');
+        } catch {
+          // Final approval already carries the user's commit intent; a closed workflow session
+          // should not block materializing the reviewed draft.
+        }
       }
       const request = buildCommitRequest(stateRef.current);
       const saga = await ting.commitSaga(request);
