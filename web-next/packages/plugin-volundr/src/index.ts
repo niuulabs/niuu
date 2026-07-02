@@ -9,7 +9,7 @@ import { HistoryPage } from './ui/HistoryPage';
 
 export const volundrPlugin = definePlugin({
   id: 'volundr',
-  rune: 'ᚲ',
+  rune: 'V',
   title: 'Völundr',
   subtitle: 'session forge · remote dev pods',
   tabs: [

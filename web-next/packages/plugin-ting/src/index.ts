@@ -1,6 +1,5 @@
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { SERVICE_RUNES } from '@niuulabs/ui';
 import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { SagasPage } from './ui/SagasPage';
@@ -31,7 +30,7 @@ function resolveLegacySettingsTarget(sectionId?: string): string {
 
 export const tingPlugin = definePlugin({
   id: 'ting',
-  rune: SERVICE_RUNES.ting,
+  rune: 'T',
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
   tabs: [

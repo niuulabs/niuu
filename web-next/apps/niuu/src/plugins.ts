@@ -29,7 +29,7 @@ function GuildTopbar() {
 
 const guildPlugin = definePlugin({
   id: 'guild',
-  rune: 'ᚹ',
+  rune: 'G',
   title: 'Guild',
   subtitle: 'runtime registry',
   tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
@@ -70,13 +70,13 @@ const settingsPlugin = definePlugin({
 
 export const plugins: PluginDescriptor[] = [
   loginPlugin,
-  bifrostPlugin,
   volundrPlugin,
   tingPlugin,
-  mimirPlugin,
   ravnPlugin,
+  mimirPlugin,
   valkyriePlugin,
   observatoryPlugin,
+  bifrostPlugin,
   guildPlugin,
   settingsPlugin,
 ];

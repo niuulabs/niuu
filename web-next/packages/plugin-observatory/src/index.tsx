@@ -7,7 +7,7 @@ import { ObservatoryTopbar } from './ui/ObservatoryTopbar';
 
 export const observatoryPlugin = definePlugin({
   id: 'observatory',
-  rune: 'ᚠ',
+  rune: 'O',
   title: 'Observatory',
   subtitle: 'live topology · registry',
   tabs: [

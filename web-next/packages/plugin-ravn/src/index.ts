@@ -11,7 +11,7 @@ import { RavnFooter } from './ui/RavnFooter';
 
 export const ravnPlugin = definePlugin({
   id: 'ravn',
-  rune: 'ᚱ',
+  rune: 'R',
   title: 'Ravn',
   subtitle: 'personas · ravens · sessions',
   tabs: [

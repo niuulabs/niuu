@@ -32,7 +32,7 @@ const createLegacyRedirect =
 
 export const valkyriePlugin = definePlugin({
   id: 'valkyrie',
-  rune: 'ᛒ',
+  rune: 'V',
   title: 'Valkyrie',
   subtitle: 'resident telemetry',
   tabs: [
