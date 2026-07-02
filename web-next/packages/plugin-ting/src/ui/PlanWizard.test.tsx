@@ -390,6 +390,7 @@ describe('PlanRuns', () => {
     // Use aria-label to disambiguate from StateDot's inner role="status"
     expect(screen.getByLabelText(/decomposing plan/i)).toBeInTheDocument();
     expect(screen.getByText(/Ravns are mapping the work/i)).toBeInTheDocument();
+    expect(screen.getByText(/can take a few minutes or longer/i)).toBeInTheDocument();
   });
 
   it('shows raven activity lines', () => {
