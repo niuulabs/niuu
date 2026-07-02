@@ -41,6 +41,8 @@ export type {
   CampaignStageState,
   ResearchCampaignStatus,
 } from './domain/research';
+export type SpecCampaign = ResearchCampaign;
+export type SpecCampaignDetail = ResearchCampaignDetail;
 export type {
   FlockConfig,
   DispatchDefaults,
@@ -323,6 +325,34 @@ export interface IResearchService {
   deleteCampaign(slug: string): Promise<void>;
   listArtifacts(slug: string): Promise<CampaignArtifact[]>;
   getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
+}
+
+export interface CreateSpecCampaignRequest {
+  prompt: string;
+  name?: string;
+  workflowId?: string;
+  repo?: string;
+  repos?: string[];
+  branch?: string;
+  context?: string;
+  connectionId?: string;
+}
+
+export interface ReviewSpecCampaignRequest {
+  decision: 'approve' | 'changes_requested';
+  notes?: string;
+  gateId?: string;
+  nodeId?: string;
+}
+
+export interface ISpecsService {
+  listCampaigns(): Promise<SpecCampaign[]>;
+  getCampaign(slug: string): Promise<SpecCampaignDetail | null>;
+  createCampaign(request: CreateSpecCampaignRequest): Promise<SpecCampaign>;
+  deleteCampaign(slug: string): Promise<void>;
+  listArtifacts(slug: string): Promise<CampaignArtifact[]>;
+  getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
+  reviewCampaign(slug: string, request: ReviewSpecCampaignRequest): Promise<SpecCampaign>;
 }
 
 // ---------------------------------------------------------------------------

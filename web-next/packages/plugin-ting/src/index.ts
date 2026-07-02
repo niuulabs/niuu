@@ -12,6 +12,9 @@ import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
 import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
+import { SpecsCenterPage } from './ui/SpecsCenterPage';
+import { SpecsNewPage } from './ui/SpecsNewPage';
+import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
 
 const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
@@ -37,6 +40,7 @@ export const tingPlugin = definePlugin({
     { id: 'dispatch', label: 'Dispatch', rune: '⇥', path: '/ting/dispatch' },
     { id: 'plan', label: 'Plan', rune: '◇', path: '/ting/plan' },
     { id: 'research', label: 'Research', rune: '⌁', path: '/ting/research' },
+    { id: 'specs', label: 'Specs', rune: '▤', path: '/ting/specs' },
     { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
   ],
   routes: (rootRoute) => [
@@ -64,6 +68,21 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/research/$slug',
       component: ResearchCampaignPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs',
+      component: SpecsCenterPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs/new',
+      component: SpecsNewPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs/$slug',
+      component: SpecsCampaignPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -123,6 +142,7 @@ export {
   createMockTrackerService,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -136,6 +156,7 @@ export {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildResearchHttpAdapter,
+  buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
@@ -149,7 +170,10 @@ export type {
   ITrackerBrowserService,
   IWorkflowService,
   IResearchService,
+  ISpecsService,
   CreateResearchCampaignRequest,
+  CreateSpecCampaignRequest,
+  ReviewSpecCampaignRequest,
   UpdateResearchCampaignRequest,
   IDispatchBus,
   DispatchResult,
@@ -184,6 +208,8 @@ export type {
   RepoInfo,
   ResearchCampaign,
   ResearchCampaignDetail,
+  SpecCampaign,
+  SpecCampaignDetail,
   CampaignArtifact,
   CampaignArtifactDetail,
   CampaignStageState,

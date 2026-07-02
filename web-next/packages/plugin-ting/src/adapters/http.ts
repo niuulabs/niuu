@@ -25,7 +25,10 @@ import type {
   WorkflowLaunchRequest,
   WorkflowLaunchResult,
   IResearchService,
+  ISpecsService,
   CreateResearchCampaignRequest,
+  CreateSpecCampaignRequest,
+  ReviewSpecCampaignRequest,
   UpdateResearchCampaignRequest,
   CampaignArtifact,
   CampaignArtifactDetail,
@@ -855,6 +858,28 @@ function toResearchCampaignPatchBody(
   };
 }
 
+function toSpecCampaignCreateBody(request: CreateSpecCampaignRequest): Record<string, unknown> {
+  return {
+    prompt: request.prompt,
+    name: request.name,
+    workflowId: request.workflowId,
+    repo: request.repo,
+    repos: request.repos,
+    branch: request.branch,
+    context: request.context,
+    connectionId: request.connectionId,
+  };
+}
+
+function toSpecReviewBody(request: ReviewSpecCampaignRequest): Record<string, unknown> {
+  return {
+    decision: request.decision,
+    notes: request.notes,
+    gateId: request.gateId,
+    nodeId: request.nodeId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory functions
 // ---------------------------------------------------------------------------
@@ -1289,6 +1314,64 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
       } catch {
         return null;
       }
+    },
+  };
+}
+
+export function buildSpecsHttpAdapter(client: ApiClient): ISpecsService {
+  return {
+    async listCampaigns() {
+      const raw = await client.get<RawResearchCampaign[]>('/specs/campaigns');
+      return raw.map(toResearchCampaign);
+    },
+
+    async getCampaign(slug: string) {
+      try {
+        const raw = await client.get<RawResearchCampaignDetail>(
+          `/specs/campaigns/${encodeURIComponent(slug)}`,
+        );
+        return toResearchCampaignDetail(raw);
+      } catch {
+        return null;
+      }
+    },
+
+    async createCampaign(request: CreateSpecCampaignRequest) {
+      const raw = await client.post<RawResearchCampaign>(
+        '/specs/campaigns',
+        toSpecCampaignCreateBody(request),
+      );
+      return toResearchCampaign(raw);
+    },
+
+    async deleteCampaign(slug: string) {
+      await client.delete<void>(`/specs/campaigns/${encodeURIComponent(slug)}`);
+    },
+
+    async listArtifacts(slug: string) {
+      const raw = await client.get<RawCampaignArtifact[]>(
+        `/specs/campaigns/${encodeURIComponent(slug)}/artifacts`,
+      );
+      return raw.map(toCampaignArtifact);
+    },
+
+    async getArtifact(slug: string, path: string) {
+      try {
+        const raw = await client.get<RawCampaignArtifactDetail>(
+          `/specs/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
+        );
+        return toCampaignArtifactDetail(raw);
+      } catch {
+        return null;
+      }
+    },
+
+    async reviewCampaign(slug: string, request: ReviewSpecCampaignRequest) {
+      const raw = await client.post<RawResearchCampaign>(
+        `/specs/campaigns/${encodeURIComponent(slug)}/review`,
+        toSpecReviewBody(request),
+      );
+      return toResearchCampaign(raw);
     },
   };
 }

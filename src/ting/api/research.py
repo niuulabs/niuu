@@ -44,6 +44,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
+_RESEARCH_SURFACE = "ting.research"
 logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
@@ -160,7 +161,11 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> list[ResearchCampaignResponse]:
-        campaigns = await repo.list_campaigns(owner_id=principal.user_id)
+        campaigns = [
+            campaign
+            for campaign in await repo.list_campaigns(owner_id=principal.user_id)
+            if _is_research_campaign(campaign)
+        ]
         refreshed = [
             await _refresh_campaign_runtime(
                 request=request,
@@ -230,6 +235,7 @@ def create_research_router() -> APIRouter:
             stage_state=stage_state,
             metadata={
                 "question": body.question,
+                "surface": _RESEARCH_SURFACE,
                 "mode": body.mode,
                 "audience": body.audience,
                 "deliverable": body.deliverable,
@@ -259,7 +265,7 @@ def create_research_router() -> APIRouter:
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> ResearchCampaignDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         refreshed = await _refresh_campaign_runtime(
             request=request,
@@ -302,7 +308,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> ResearchCampaignResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
 
         next_slug = campaign.slug
@@ -347,7 +353,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> None:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         deleted = await repo.delete_campaign(campaign.id)
         if not deleted:
@@ -374,7 +380,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[CampaignArtifactResponse]:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         artifacts, _canonical = await _load_campaign_artifacts(
             campaign,
@@ -391,7 +397,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> CampaignArtifactDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         if not _campaign_owns_path(campaign.slug, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -451,6 +457,16 @@ def _workflow_has_tag(workflow: WorkflowDefinition, tag: str) -> bool:
     raw_tags = graph.get("tags") or []
     normalized = {str(item).strip().lower() for item in raw_tags if str(item).strip()}
     return tag.strip().lower() in normalized
+
+
+def _is_research_campaign(campaign: WorkflowCampaign) -> bool:
+    surface = str(campaign.metadata.get("surface") or "").strip()
+    if surface:
+        return surface == _RESEARCH_SURFACE
+    return (
+        campaign.workflow_name == _DEFAULT_RESEARCH_WORKFLOW_NAME
+        or campaign.metadata.get("question") is not None
+    )
 
 
 async def _reserve_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:

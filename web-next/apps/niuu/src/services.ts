@@ -21,6 +21,7 @@ import {
   createMockTrackerService,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -30,6 +31,7 @@ import {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildResearchHttpAdapter,
+  buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
@@ -338,7 +340,8 @@ function resolveTingServiceBase(
     | 'ting.dispatch'
     | 'ting.settings'
     | 'ting.workflows'
-    | 'ting.research',
+    | 'ting.research'
+    | 'ting.specs',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (!explicitBase) return resolveDirectServiceBase(config, 'ting');
@@ -356,6 +359,8 @@ function resolveTingServiceBase(
       return explicitBase.replace(/\/workflows\/?$/, '');
     case 'ting.research':
       return explicitBase.replace(/\/research\/?$/, '');
+    case 'ting.specs':
+      return explicitBase.replace(/\/specs\/?$/, '');
     default:
       return explicitBase;
   }
@@ -621,6 +626,7 @@ export function buildServiceBackendStatus(
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
+    'ting.specs': resolveDirectServiceStatus(config, 'http', 'ting.specs', 'ting'),
     filesystem: resolveFilesystemStatus(config),
   };
 }
@@ -1307,6 +1313,8 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const workflowClient = workflowBase ? createApiClient(workflowBase) : null;
   const researchBase = resolveTingServiceBase(config, 'ting.research');
   const researchClient = researchBase ? createApiClient(researchBase) : null;
+  const specsBase = resolveTingServiceBase(config, 'ting.specs');
+  const specsClient = specsBase ? createApiClient(specsBase) : null;
   const tingService = tingClient ? buildTingHttpAdapter(tingClient) : createMockTingService();
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
@@ -1323,6 +1331,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const researchService = researchClient
     ? buildResearchHttpAdapter(researchClient)
     : createMockResearchService();
+  const specsService = specsClient ? buildSpecsHttpAdapter(specsClient) : createMockSpecsService();
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
     : createMockDispatchBus();
@@ -1340,6 +1349,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ting.tracker': trackerService,
     'ting.workflows': workflowService,
     'ting.research': researchService,
+    'ting.specs': specsService,
     'ting.dispatch': dispatchBus,
     'ting.settings': tingSettingsService,
     'ting.audit': tingAuditLogService,

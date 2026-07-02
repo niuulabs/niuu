@@ -23,6 +23,7 @@ const tingMocks = vi.hoisted(() => ({
   createMockTrackerService: vi.fn(() => ({ kind: 'mock-tracker' })),
   createMockWorkflowService: vi.fn(() => ({ kind: 'mock-workflows' })),
   createMockResearchService: vi.fn(() => ({ kind: 'mock-research' })),
+  createMockSpecsService: vi.fn(() => ({ kind: 'mock-specs' })),
   createMockDispatchBus: vi.fn(() => ({ kind: 'mock-dispatch' })),
   createMockTingSettingsService: vi.fn(() => ({ kind: 'mock-settings' })),
   createMockAuditLogService: vi.fn(() => ({ kind: 'mock-audit' })),
@@ -32,6 +33,7 @@ const tingMocks = vi.hoisted(() => ({
   buildTrackerHttpAdapter: vi.fn((client) => ({ kind: 'tracker', client })),
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
   buildResearchHttpAdapter: vi.fn((client) => ({ kind: 'research', client })),
+  buildSpecsHttpAdapter: vi.fn((client) => ({ kind: 'specs', client })),
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
   buildTingSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
   buildTingAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
@@ -465,6 +467,10 @@ describe('buildServices live base selection', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/research',
         },
+        'ting.specs': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ting/specs',
+        },
       },
     } as any);
 
@@ -481,6 +487,9 @@ describe('buildServices live base selection', () => {
       basePath: 'http://localhost:8080/api/v1/ting',
     });
     expect(tingMocks.buildResearchHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
+    });
+    expect(tingMocks.buildSpecsHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ting',
     });
   });
@@ -826,6 +835,10 @@ describe('buildServices', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/research',
         },
+        'ting.specs': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ting/specs',
+        },
       },
     } as any);
 
@@ -845,6 +858,9 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1/ting',
     });
     expect(tingMocks.buildResearchHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
+    });
+    expect(tingMocks.buildSpecsHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ting',
     });
   });

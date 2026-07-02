@@ -103,6 +103,7 @@ class TingPlugin(ServicePlugin):
                     "/api/v1/ting/flock",
                     "/api/v1/ting/flock_flows",
                     "/api/v1/ting/research",
+                    "/api/v1/ting/specs",
                 ),
                 description="Flock configuration and flow library routes.",
             ),

@@ -68,6 +68,7 @@ from ting.api.sagas import resolve_git as sagas_resolve_git
 from ting.api.sagas import resolve_volundr as sagas_resolve_volundr
 from ting.api.sessions import create_sessions_router
 from ting.api.settings import create_settings_router
+from ting.api.specs import create_specs_router
 from ting.api.tracker import (
     create_canonical_tracker_router,
     create_tracker_router,
@@ -364,6 +365,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(create_settings_router())
     app.include_router(create_workflows_router())
     app.include_router(create_research_router())
+    app.include_router(create_specs_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
     from ting.adapters.inbound.auth import extract_principal as _extract_principal
