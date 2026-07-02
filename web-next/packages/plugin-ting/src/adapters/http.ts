@@ -880,6 +880,10 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       }
     },
 
+    async deleteSaga(id: string) {
+      await client.delete<void>(`/sagas/${encodeURIComponent(id)}`);
+    },
+
     async getPhases(sagaId: string) {
       const raw = await client.get<RawPhase[]>(`/sagas/${encodeURIComponent(sagaId)}/phases`);
       return raw.map(toPhase);
@@ -940,6 +944,10 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
         `/sagas/plan/${encodeURIComponent(campaignSlug)}`,
       );
       return toPlanSession(raw);
+    },
+
+    async cancelPlanSession(campaignSlug: string) {
+      await client.delete<void>(`/sagas/plan/${encodeURIComponent(campaignSlug)}`);
     },
 
     async getPlanDraft(campaignSlug: string) {

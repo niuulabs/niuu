@@ -21,6 +21,7 @@ import type { SagaStatus } from '../domain/saga';
 import type {
   DispatchCluster,
   IDispatchBus,
+  ITingService,
   ITrackerBrowserService,
   TrackerProject,
 } from '../ports';
@@ -193,6 +194,7 @@ function SagasPageContent() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const params = useParams({ strict: false }) as { sagaId?: string };
+  const ting = useService<ITingService>('ting');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
@@ -212,6 +214,7 @@ function SagasPageContent() {
   const [targetTagsDraft, setTargetTagsDraft] = useState('');
   const [targetMatch, setTargetMatch] = useState<'all' | 'any'>('all');
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeletingSaga, setIsDeletingSaga] = useState(false);
   const selectedRepos = useMemo(
     () => selectedRepoRefs.map((entry) => entry.repo),
     [selectedRepoRefs],
@@ -394,6 +397,27 @@ function SagasPageContent() {
     }
   }
 
+  async function handleDeleteSelectedSaga() {
+    if (!selectedSaga || !ting.deleteSaga) return;
+    if (!window.confirm(`Delete the Ting import for "${selectedSaga.name}"?`)) return;
+
+    setIsDeletingSaga(true);
+    try {
+      await ting.deleteSaga(selectedSaga.id);
+      await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
+      setSelectedSagaIdState(null);
+      toast({ title: `Deleted ${selectedSaga.name}`, tone: 'success' });
+      void navigate({ to: '/ting/sagas' });
+    } catch (deleteError) {
+      toast({
+        title: deleteError instanceof Error ? deleteError.message : 'Failed to delete saga',
+        tone: 'critical',
+      });
+    } finally {
+      setIsDeletingSaga(false);
+    }
+  }
+
   return (
     <div className="niuu:flex niuu:h-full niuu:overflow-hidden niuu:bg-bg-primary">
       <aside className="niuu:flex niuu:w-[294px] niuu:shrink-0 niuu:flex-col niuu:border-r niuu:border-border-subtle niuu:bg-[#151a20]">
@@ -485,6 +509,17 @@ function SagasPageContent() {
             >
               Export
             </button>
+            {selectedSaga && ting.deleteSaga ? (
+              <button
+                type="button"
+                className="niuu:rounded-lg niuu:border niuu:border-critical/50 niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-critical"
+                onClick={() => void handleDeleteSelectedSaga()}
+                disabled={isDeletingSaga}
+                aria-label="Delete selected saga import"
+              >
+                {isDeletingSaga ? 'Deleting…' : 'Delete import'}
+              </button>
+            ) : null}
             <button
               type="button"
               className="niuu:rounded-lg niuu:border niuu:border-brand/50 niuu:bg-brand niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-bg-primary"

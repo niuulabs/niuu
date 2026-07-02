@@ -1052,6 +1052,10 @@ export function createMockTingService(): ITingService {
       return sagas.get(id) ?? null;
     },
 
+    async deleteSaga(id: string) {
+      sagas.delete(id);
+    },
+
     async getPhases(sagaId: string) {
       return phasesBySaga.get(sagaId) ?? [];
     },
@@ -1218,6 +1222,10 @@ export function createMockTingService(): ITingService {
 
     async listPlanSessions(): Promise<PlanSession[]> {
       return [];
+    },
+
+    async cancelPlanSession(_campaignSlug: string): Promise<void> {
+      return undefined;
     },
 
     async extractStructure(_text: string): Promise<ExtractedStructure> {

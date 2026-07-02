@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { Rune } from '@niuulabs/ui';
 import type { RepoRecord } from '@niuulabs/ui';
@@ -29,6 +29,7 @@ type RepoCatalogService = {
  */
 export function PlanWizard() {
   const ting = useService<ITingService>('ting');
+  const queryClient = useQueryClient();
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const {
     state,
@@ -60,6 +61,15 @@ export function PlanWizard() {
     window.location.href = '/ting/plan';
   }
 
+  async function handleCancelPlanSession(session: PlanSession) {
+    if (!session.campaignSlug || !ting.cancelPlanSession) return;
+    if (!window.confirm(`Cancel "${session.name || session.prompt || session.campaignSlug}"?`)) {
+      return;
+    }
+    await ting.cancelPlanSession(session.campaignSlug);
+    await queryClient.invalidateQueries({ queryKey: ['ting-plan-sessions'] });
+  }
+
   const showGuidance =
     state.step === 'prompt' || state.step === 'questions' || state.step === 'draft';
 
@@ -88,6 +98,7 @@ export function PlanWizard() {
                 sessions={planSessions}
                 loading={state.loading}
                 onResume={resumePlanSession}
+                onCancel={handleCancelPlanSession}
               />
               <PlanPrompt
                 onSubmit={submitPrompt}
@@ -158,10 +169,12 @@ function ActivePlanSessions({
   sessions,
   loading,
   onResume,
+  onCancel,
 }: {
   sessions: PlanSession[];
   loading: boolean;
   onResume(session: PlanSession): void;
+  onCancel(session: PlanSession): void;
 }) {
   if (sessions.length === 0) return null;
 
@@ -176,21 +189,28 @@ function ActivePlanSessions({
       </div>
       <div className="ting-plan-sessions__list">
         {sessions.map((session) => (
-          <button
+          <div
             key={session.campaignSlug ?? session.sessionId}
-            type="button"
             className="ting-plan-session-row"
-            disabled={loading}
-            onClick={() => onResume(session)}
           >
             <span>
               <strong>{session.name || session.prompt || session.campaignSlug || 'Plan'}</strong>
               <small>{session.repo || 'no repository selected'}</small>
             </span>
-            <span className="ting-plan-session-row__meta">
-              {session.status || 'running'} · resume
+            <span className="ting-plan-session-row__actions">
+              <span className="ting-plan-session-row__meta">{session.status || 'running'}</span>
+              <button type="button" disabled={loading} onClick={() => onResume(session)}>
+                Resume
+              </button>
+              <button
+                type="button"
+                disabled={loading || !session.campaignSlug}
+                onClick={() => onCancel(session)}
+              >
+                Cancel
+              </button>
             </span>
-          </button>
+          </div>
         ))}
       </div>
     </section>

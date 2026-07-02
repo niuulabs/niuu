@@ -967,6 +967,49 @@ class TestSpawnPlanSession:
         assert body[0]["prompt"] == "Plan SDCP operator"
         assert body[0]["repo"] == ""
 
+    def test_cancels_active_plan_session(self, mock_tracker: MockTracker) -> None:
+        workflow = _planning_workflow()
+        now = datetime.now(UTC)
+        active_plan = WorkflowCampaign(
+            id=uuid4(),
+            slug="plan-sdcp-operator",
+            name="Plan SDCP operator",
+            owner_id="dev-user",
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_name=workflow.name,
+            workflow_snapshot={"graph": workflow.graph},
+            session_id="plan-1",
+            session_name="plan-sdcp-operator",
+            status=WorkflowCampaignStatus.RUNNING,
+            active_stage_id="plan-clarify",
+            stage_state=[],
+            metadata={"surface": "ting.plan", "spec": "Plan SDCP operator", "repo": ""},
+            created_at=now,
+            updated_at=now,
+        )
+        campaign_repo = InMemoryWorkflowCampaignRepository([active_plan])
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
+        app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        response = client.delete("/api/v1/ting/sagas/plan/plan-sdcp-operator")
+
+        assert response.status_code == 204
+        stored = campaign_repo._campaigns[active_plan.id]
+        assert stored.status == WorkflowCampaignStatus.FAILED
+        assert stored.active_stage_id is None
+        assert stored.metadata["cancelled_by"] == "ting.plan"
+        assert stored.completed_at is not None
+
+        list_response = client.get("/api/v1/ting/sagas/plan")
+        assert list_response.status_code == 200
+        assert list_response.json() == []
+
     def test_defaults_base_branch_to_main(
         self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -1281,6 +1281,28 @@ def create_sagas_router() -> APIRouter:
             gates = _stored_plan_gates(campaign)
         return _to_plan_session_response(campaign, chat_endpoint=None, gates=gates)
 
+    @router.delete("/plan/{slug}", status_code=204)
+    async def cancel_plan_session(
+        slug: str,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> None:
+        campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Plan run not found")
+
+        now = datetime.now(UTC)
+        await campaign_repo.save_campaign(
+            replace(
+                campaign,
+                status=WorkflowCampaignStatus.FAILED,
+                active_stage_id=None,
+                metadata={**campaign.metadata, "cancelled_by": "ting.plan"},
+                updated_at=now,
+                completed_at=campaign.completed_at or now,
+            )
+        )
+
     @router.get("/plan/{slug}/draft", response_model=ExtractStructureResponse)
     async def get_plan_draft(
         slug: str,

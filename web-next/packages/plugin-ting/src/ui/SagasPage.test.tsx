@@ -114,7 +114,7 @@ describe('SagasPage', () => {
       .find((button) => button.textContent?.includes(sagaName));
     expect(railButton).toBeDefined();
     expect(railButton).toHaveTextContent(sagaName);
-    expect(railButton).toHaveTextContent(trackerId);
+    expect(railButton).not.toHaveTextContent(trackerId);
     expect(railButton).toHaveTextContent(repoName);
     expect(railButton).toHaveTextContent(branchName);
     expect(railButton).toHaveTextContent('2/4 runs');
@@ -218,6 +218,26 @@ describe('SagasPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Export sagas as JSON/i }));
     await waitFor(() => expect(screen.getByText(/Exported \d+ sagas/i)).toBeInTheDocument());
     expect(anchorClickSpy).toHaveBeenCalled();
+  });
+
+  it('deletes the selected saga import', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const saga = makeSaga({ name: 'Imported Saga' });
+    const deleteSaga = vi.fn().mockResolvedValue(undefined);
+    const sagasSvc = {
+      ...createMockTingService(),
+      getSagas: async (): Promise<Saga[]> => [saga],
+      getSaga: async (id: string): Promise<Saga | null> => (id === saga.id ? saga : null),
+      deleteSaga,
+    };
+
+    render(<SagasPage />, { wrapper: wrap(withDefaults({ ting: sagasSvc })) });
+
+    await waitFor(() => expect(screen.getAllByText('Imported Saga').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /delete selected saga import/i }));
+
+    await waitFor(() => expect(deleteSaga).toHaveBeenCalledWith(saga.id));
+    confirmSpy.mockRestore();
   });
 
   it('opens new saga modal', async () => {

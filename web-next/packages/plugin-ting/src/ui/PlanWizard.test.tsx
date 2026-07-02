@@ -1004,11 +1004,37 @@ describe('PlanWizard integration', () => {
     render(<PlanWizard />, { wrapper: wrap(svc) });
 
     await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /plan sdcp operator/i }));
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }));
 
     await waitFor(() => expect(getPlanSession).toHaveBeenCalledWith('plan-sdcp-operator'));
     expect(screen.getByText('Clarify your plan')).toBeInTheDocument();
     expect(screen.getByText('Any scope boundaries?')).toBeInTheDocument();
+  });
+
+  it('cancels active planning sessions from the prompt step', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const activeSession: PlanSession = {
+      sessionId: 'plan-active-1',
+      campaignSlug: 'plan-sdcp-operator',
+      name: 'Plan SDCP operator',
+      prompt: 'Plan SDCP operator',
+      repo: '',
+      status: 'running',
+      chatEndpoint: null,
+      questions: [],
+    };
+    const cancelPlanSession = vi.fn().mockResolvedValue(undefined);
+    const svc = makeSvc({
+      listPlanSessions: vi.fn().mockResolvedValue([activeSession]),
+      cancelPlanSession,
+    });
+    render(<PlanWizard />, { wrapper: wrap(svc) });
+
+    await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(cancelPlanSession).toHaveBeenCalledWith('plan-sdcp-operator'));
+    confirmSpy.mockRestore();
   });
 
   it('can navigate back from questions to prompt', async () => {

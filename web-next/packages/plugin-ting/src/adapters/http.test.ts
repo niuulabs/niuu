@@ -373,6 +373,14 @@ describe('buildTingHttpAdapter', () => {
     });
   });
 
+  describe('deleteSaga', () => {
+    it('calls DELETE /sagas/:id', async () => {
+      const client = makeClient();
+      await buildTingHttpAdapter(client).deleteSaga?.('saga-1');
+      expect(client.delete).toHaveBeenCalledWith('/sagas/saga-1');
+    });
+  });
+
   describe('getPhases', () => {
     it('calls GET /sagas/:id/phases', async () => {
       const client = makeClient();
@@ -619,6 +627,14 @@ describe('buildTingHttpAdapter', () => {
         decision: 'changes_requested',
       });
     });
+
+    it('cancels a plan session', async () => {
+      const client = makeClient();
+
+      await buildTingHttpAdapter(client).cancelPlanSession?.('plan-auth');
+
+      expect(client.delete).toHaveBeenCalledWith('/sagas/plan/plan-auth');
+    });
   });
 
   describe('extractStructure', () => {
@@ -793,11 +809,13 @@ describe('buildTingHttpAdapter', () => {
       const svc: ITingService = buildTingHttpAdapter(client);
       expect(typeof svc.getSagas).toBe('function');
       expect(typeof svc.getSaga).toBe('function');
+      expect(typeof svc.deleteSaga).toBe('function');
       expect(typeof svc.getPhases).toBe('function');
       expect(typeof svc.createSaga).toBe('function');
       expect(typeof svc.commitSaga).toBe('function');
       expect(typeof svc.decompose).toBe('function');
       expect(typeof svc.spawnPlanSession).toBe('function');
+      expect(typeof svc.cancelPlanSession).toBe('function');
       expect(typeof svc.extractStructure).toBe('function');
     });
   });

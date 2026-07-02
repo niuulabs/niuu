@@ -164,6 +164,7 @@ export interface RunSessionMessage {
 export interface ITingService {
   getSagas(): Promise<Saga[]>;
   getSaga(id: string): Promise<Saga | null>;
+  deleteSaga?(id: string): Promise<void>;
   getPhases(sagaId: string): Promise<Phase[]>;
   listRunMessages(runId: string): Promise<RunSessionMessage[]>;
   sendRunMessage(runId: string, content: string, targetPeerId?: string): Promise<RunSessionMessage>;
@@ -173,6 +174,7 @@ export interface ITingService {
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
   listPlanSessions?(): Promise<PlanSession[]>;
   getPlanSession?(campaignSlug: string): Promise<PlanSession | null>;
+  cancelPlanSession?(campaignSlug: string): Promise<void>;
   getPlanDraft?(campaignSlug: string): Promise<ExtractedStructure>;
   sendPlanFeedback?(
     campaignSlug: string,
