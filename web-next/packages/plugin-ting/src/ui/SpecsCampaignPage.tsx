@@ -235,6 +235,10 @@ export function SpecsCampaignPage() {
   const [notes, setNotes] = useState('');
   const effectivePath = campaign ? (selectedPath ?? firstDocPath(campaign, preferredKind)) : null;
   const artifactQuery = useSpecArtifact(slug, effectivePath);
+  const reviewKind = primaryGate ? docKindForGate(primaryGate.nodeId) : null;
+  const reviewNotesPath =
+    campaign && reviewKind ? (campaign.canonicalArtifacts[`${reviewKind}_review`] ?? null) : null;
+  const reviewNotesQuery = useSpecArtifact(slug, reviewNotesPath);
 
   useEffect(() => {
     if (!campaign) return;
@@ -262,7 +266,6 @@ export function SpecsCampaignPage() {
   }, [queryClient, slug]);
 
   const repos = useMemo(() => (campaign ? metadataRepos(campaign) : []), [campaign]);
-  const reviewKind = primaryGate ? docKindForGate(primaryGate.nodeId) : null;
 
   async function submitReview(decision: 'approve' | 'changes_requested') {
     if (!primaryGate) return;
@@ -378,6 +381,18 @@ export function SpecsCampaignPage() {
                   <p className="niuu:m-0 niuu:mb-3 niuu:text-sm niuu:text-text-secondary">
                     {primaryGate.instructions || 'Approve or request changes for this document.'}
                   </p>
+                  {reviewNotesPath ? (
+                    <div className="specs-review-notes">
+                      <h3>Critic notes</h3>
+                      {reviewNotesQuery.isLoading ? (
+                        <p>Loading critic notes…</p>
+                      ) : reviewNotesQuery.data ? (
+                        <SpecMarkdown content={reviewNotesQuery.data.content} />
+                      ) : (
+                        <p>No critic notes are available yet.</p>
+                      )}
+                    </div>
+                  ) : null}
                   <textarea
                     value={notes}
                     onChange={(event) => setNotes(event.target.value)}
@@ -414,7 +429,19 @@ export function SpecsCampaignPage() {
               <dl className="specs-meta-list">
                 <div>
                   <dt>Session</dt>
-                  <dd>{campaign.sessionName || campaign.sessionId}</dd>
+                  <dd>
+                    <button
+                      type="button"
+                      className="specs-inline-link"
+                      onClick={() =>
+                        window.location.assign(
+                          `/volundr/sessions/${encodeURIComponent(campaign.sessionId)}`,
+                        )
+                      }
+                    >
+                      {campaign.sessionName || campaign.sessionId}
+                    </button>
+                  </dd>
                 </div>
                 <div>
                   <dt>Workflow</dt>

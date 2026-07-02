@@ -9,6 +9,26 @@
   text-align: left;
 }
 
+.specs-campaign-card__stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-secondary, #a1a1aa);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.specs-campaign-card__stage span {
+  color: var(--text-faint, #71717a);
+  text-transform: uppercase;
+}
+
+.specs-campaign-card__stage strong {
+  color: var(--text-primary, #f4f4f5);
+  font-weight: 650;
+}
+
 .specs-campaign-card__doc-row {
   display: flex;
   flex-wrap: wrap;
@@ -182,6 +202,45 @@
   padding: 1px 5px;
   color: #bae6fd;
   font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.specs-review-notes {
+  margin: 0 0 14px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.18));
+  border-radius: 8px;
+  background: var(--bg-primary, #09090b);
+  padding: 12px;
+}
+
+.specs-review-notes h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary, #f4f4f5);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.specs-review-notes p {
+  margin: 0;
+  color: var(--text-secondary, #a1a1aa);
+  font-size: 13px;
+}
+
+.specs-review-notes .specs-markdown {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.specs-inline-link {
+  border: 0;
+  background: transparent;
+  color: #bae6fd;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.specs-inline-link:hover {
+  text-decoration: underline;
 }
 
 .specs-review-panel textarea {

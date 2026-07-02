@@ -76,6 +76,17 @@ function progressPercent(campaign: SpecCampaign): number {
   );
 }
 
+function activeStageLabel(campaign: SpecCampaign): string {
+  const stages = campaign.stageState;
+  const active =
+    stages.find((stage) => stage.status === 'blocked' || stage.status === 'active') ??
+    stages.find((stage) => stage.stageId === campaign.activeStageId) ??
+    stages.find((stage) => stage.status === 'pending') ??
+    stages.at(-1);
+  if (!active) return campaign.status === 'pending' ? 'Queued' : 'Starting';
+  return active.label || active.stageId.replace(/^spec-/, '').replace(/-/g, ' ');
+}
+
 function filterMatches(campaign: SpecCampaign, query: string, filter: SpecFilter): boolean {
   const status = statusForCampaign(campaign);
   if (filter !== 'all' && status !== filter) return false;
@@ -97,6 +108,7 @@ function SpecCard({ campaign, onOpen }: { campaign: SpecCampaign; onOpen: () => 
   const status = statusForCampaign(campaign);
   const kinds = artifactKinds(campaign);
   const progress = progressPercent(campaign);
+  const stage = activeStageLabel(campaign);
   return (
     <button type="button" onClick={onOpen} className="research-campaign-card specs-campaign-card">
       <div className="research-campaign-card__topline">
@@ -123,6 +135,10 @@ function SpecCard({ campaign, onOpen }: { campaign: SpecCampaign; onOpen: () => 
       </div>
 
       <h2 className="research-campaign-card__title">{campaign.name}</h2>
+      <div className="specs-campaign-card__stage">
+        <span>Stage</span>
+        <strong>{stage}</strong>
+      </div>
       <p className="research-campaign-card__question">{campaignPrompt(campaign)}</p>
 
       <div className="research-progress" aria-hidden="true">
