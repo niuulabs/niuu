@@ -1,5 +1,6 @@
-import { createElement } from 'react';
+import { createElement, useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
+import { useAuth } from '@niuulabs/auth';
 import { bifrostPlugin } from '@niuulabs/plugin-bifrost/plugin';
 import { loginPlugin } from '@niuulabs/plugin-login';
 import { ravnPlugin } from '@niuulabs/plugin-ravn';
@@ -25,6 +26,16 @@ function GuildTopbar() {
     },
     '+ register',
   );
+}
+
+function LogoutRoute() {
+  const { logout } = useAuth();
+
+  useEffect(() => {
+    logout();
+  }, [logout]);
+
+  return null;
 }
 
 const guildPlugin = definePlugin({
@@ -68,6 +79,21 @@ const settingsPlugin = definePlugin({
   ],
 });
 
+const logoutPlugin = definePlugin({
+  id: 'logout',
+  rune: '\u23fb',
+  title: 'Sign out',
+  subtitle: 'end session',
+  position: 'bottom',
+  routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/logout',
+      component: LogoutRoute,
+    }),
+  ],
+});
+
 export const plugins: PluginDescriptor[] = [
   loginPlugin,
   volundrPlugin,
@@ -79,4 +105,5 @@ export const plugins: PluginDescriptor[] = [
   bifrostPlugin,
   guildPlugin,
   settingsPlugin,
+  logoutPlugin,
 ];
