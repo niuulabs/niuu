@@ -328,6 +328,53 @@ describe('SagaDetailPage', () => {
     );
   });
 
+  it('edits saga repositories when the repo catalog is empty', async () => {
+    const user = userEvent.setup();
+    const assignRepos = vi.fn(async () =>
+      makeSaga({
+        repos: ['custom/device-operator', 'custom/protocol-tests'],
+        repoRefs: [
+          { repo: 'custom/device-operator', branch: 'main' },
+          { repo: 'custom/protocol-tests', branch: 'release' },
+        ],
+      }),
+    );
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          repos: ['custom/device-operator'],
+          repoRefs: undefined,
+          baseBranch: '',
+        }),
+      getPhases: async () => [makePhase([makeRun()])],
+      assignRepos,
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({
+        ting: svc,
+        'ting.dispatch': mockDispatchBus,
+        'niuu.repos': { getRepos: async () => [] },
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit repos' })).toBeVisible());
+    await user.click(screen.getByRole('button', { name: 'Edit repos' }));
+    await user.clear(screen.getByLabelText('Branch for custom/device-operator'));
+    await user.type(screen.getByLabelText('Repository'), 'custom/protocol-tests');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+    await user.clear(screen.getByLabelText('Branch for custom/protocol-tests'));
+    await user.type(screen.getByLabelText('Branch for custom/protocol-tests'), 'release');
+    await user.click(screen.getByRole('button', { name: 'Save repos' }));
+
+    await waitFor(() =>
+      expect(assignRepos).toHaveBeenCalledWith(SAGA_ID, [
+        { repo: 'custom/device-operator', branch: 'main' },
+        { repo: 'custom/protocol-tests', branch: 'release' },
+      ]),
+    );
+  });
+
   it('shows pending feedback requests and sends a directed reply', async () => {
     const user = userEvent.setup();
     const listRunMessages = vi.fn(

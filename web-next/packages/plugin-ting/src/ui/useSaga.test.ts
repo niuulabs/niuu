@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createElement } from 'react';
 import type { ReactNode } from 'react';
-import { useSaga } from './useSaga';
+import { useAssignSagaRepos, useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
 import type { Saga } from '../domain/saga';
 
 const MOCK_SAGA: Saga = {
@@ -21,8 +21,10 @@ const MOCK_SAGA: Saga = {
   phaseSummary: { total: 3, completed: 1 },
 };
 
-function makeWrapper(service: Record<string, unknown>) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function makeWrapper(
+  service: Record<string, unknown>,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return createElement(
       QueryClientProvider,
@@ -76,5 +78,80 @@ describe('useSaga', () => {
     });
     expect(result.current.fetchStatus).toBe('idle');
     expect(svc.getSaga).not.toHaveBeenCalled();
+  });
+
+  it('assigns repositories and updates cached saga data', async () => {
+    const updatedSaga: Saga = {
+      ...MOCK_SAGA,
+      repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+      repoRefs: [
+        { repo: 'niuulabs/volundr', branch: 'dev' },
+        { repo: 'niuulabs/infrastructure', branch: 'main' },
+      ],
+    };
+    const svc = { assignRepos: vi.fn().mockResolvedValue(updatedSaga) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['ting', 'sagas', MOCK_SAGA.id], MOCK_SAGA);
+    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+
+    const { result } = renderHook(() => useAssignSagaRepos(MOCK_SAGA.id), {
+      wrapper: makeWrapper({ ting: svc }, client),
+    });
+
+    await result.current.mutateAsync(updatedSaga.repoRefs ?? []);
+
+    expect(svc.assignRepos).toHaveBeenCalledWith(MOCK_SAGA.id, updatedSaga.repoRefs);
+    expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+  });
+
+  it('assigns workflow and updates cached saga data', async () => {
+    const updatedSaga: Saga = { ...MOCK_SAGA, workflowId: 'workflow-1', workflow: 'Ship' };
+    const svc = { assignWorkflow: vi.fn().mockResolvedValue(updatedSaga) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+
+    const { result } = renderHook(() => useAssignSagaWorkflow(MOCK_SAGA.id), {
+      wrapper: makeWrapper({ ting: svc }, client),
+    });
+
+    await result.current.mutateAsync('workflow-1');
+
+    expect(svc.assignWorkflow).toHaveBeenCalledWith(MOCK_SAGA.id, 'workflow-1');
+    expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+  });
+
+  it('assigns target and updates cached saga data', async () => {
+    const target = { mode: 'cluster' as const, cluster: 'ymir', targetTags: ['k8s'] };
+    const updatedSaga: Saga = { ...MOCK_SAGA, targetTags: ['k8s'] };
+    const svc = { assignTarget: vi.fn().mockResolvedValue(updatedSaga) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+
+    const { result } = renderHook(() => useAssignSagaTarget(MOCK_SAGA.id), {
+      wrapper: makeWrapper({ ting: svc }, client),
+    });
+
+    await result.current.mutateAsync(target);
+
+    expect(svc.assignTarget).toHaveBeenCalledWith(MOCK_SAGA.id, target);
+    expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+  });
+
+  it('leaves non-list saga cache entries alone after assignment', async () => {
+    const updatedSaga: Saga = { ...MOCK_SAGA, workflowId: 'workflow-1' };
+    const svc = { assignWorkflow: vi.fn().mockResolvedValue(updatedSaga) };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['ting', 'sagas'], { stale: true });
+
+    const { result } = renderHook(() => useAssignSagaWorkflow(MOCK_SAGA.id), {
+      wrapper: makeWrapper({ ting: svc }, client),
+    });
+
+    await result.current.mutateAsync('workflow-1');
+
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual({ stale: true });
   });
 });

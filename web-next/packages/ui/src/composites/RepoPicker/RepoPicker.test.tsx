@@ -27,12 +27,23 @@ const REPOS: RepoRecord[] = [
     defaultBranch: 'main',
     branches: ['main', 'develop'],
   },
+  {
+    provider: 'forgejo',
+    org: 'local',
+    name: 'device-operator',
+    cloneUrl: 'https://git.local/device-operator.git',
+    url: 'https://git.local/device-operator',
+    defaultBranch: 'trunk',
+    branches: ['trunk'],
+  },
 ];
 
 describe('RepoPicker', () => {
   it('matches repos by clone url or slug', () => {
     expect(findRepoByRef(REPOS, 'https://github.com/niuulabs/volundr')?.name).toBe('volundr');
+    expect(findRepoByRef(REPOS, 'https://github.com/niuulabs/ravn')?.name).toBe('ravn');
     expect(findRepoByRef(REPOS, 'niuulabs/ravn')?.name).toBe('ravn');
+    expect(findRepoByRef(REPOS, 'missing/repo')).toBeUndefined();
   });
 
   it('computes common branches for multiple repos', () => {
@@ -40,6 +51,9 @@ describe('RepoPicker', () => {
       'main',
       'develop',
     ]);
+    expect(getCommonBranches(REPOS, 'local/device-operator')).toEqual(['trunk']);
+    expect(getCommonBranches(REPOS, '')).toEqual([]);
+    expect(getCommonBranches(REPOS, ['missing/repo'])).toEqual([]);
   });
 
   it('renders repo options using slug mode', () => {
@@ -56,6 +70,24 @@ describe('RepoPicker', () => {
     const select = screen.getByTestId('repo-select') as HTMLSelectElement;
     expect(select).toBeInTheDocument();
     expect(select.innerHTML).toContain('niuulabs/volundr');
+    expect(select.innerHTML).toContain('niuulabs/ravn');
+    expect(select.innerHTML).toContain('forgejo');
+  });
+
+  it('omits excluded repo options', () => {
+    render(
+      <RepoSelect
+        repos={REPOS}
+        value=""
+        valueMode="slug"
+        excludedRepos={['niuulabs/volundr']}
+        onChange={() => undefined}
+        testId="repo-select"
+      />,
+    );
+
+    const select = screen.getByTestId('repo-select') as HTMLSelectElement;
+    expect(select.innerHTML).not.toContain('niuulabs/volundr');
     expect(select.innerHTML).toContain('niuulabs/ravn');
   });
 
