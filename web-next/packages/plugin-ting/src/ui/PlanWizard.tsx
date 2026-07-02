@@ -189,10 +189,7 @@ function ActivePlanSessions({
       </div>
       <div className="ting-plan-sessions__list">
         {sessions.map((session) => (
-          <div
-            key={session.campaignSlug ?? session.sessionId}
-            className="ting-plan-session-row"
-          >
+          <div key={session.campaignSlug ?? session.sessionId} className="ting-plan-session-row">
             <span>
               <strong>{session.name || session.prompt || session.campaignSlug || 'Plan'}</strong>
               <small>{session.repo || 'no repository selected'}</small>
