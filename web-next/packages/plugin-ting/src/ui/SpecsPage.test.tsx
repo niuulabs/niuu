@@ -8,6 +8,7 @@ import type {
   CreateSpecCampaignRequest,
   ISpecsService,
   IWorkflowService,
+  SpecCampaign,
   SpecCampaignDetail,
 } from '../ports';
 import { createMockDispatchBus } from '../adapters/mock';
@@ -541,6 +542,27 @@ describe('Specs pages', () => {
         nodeId: 'spec-prd-gate',
       }),
     );
+  });
+
+  it('does not replace spec detail cache with a summary review response', async () => {
+    const {
+      artifacts: _artifacts,
+      canonicalArtifacts: _canonicalArtifacts,
+      ...summaryCampaign
+    } = campaign;
+    const reviewCampaign = vi.fn(async (): Promise<SpecCampaign> => summaryCampaign);
+
+    render(<SpecsCampaignPage />, {
+      wrapper: wrap({ 'ting.specs': makeSpecsService({ reviewCampaign }) }),
+    });
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'PRD' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve/i }));
+
+    await waitFor(() => expect(reviewCampaign).toHaveBeenCalled());
+    expect(screen.getByRole('heading', { name: 'PRD' })).toBeInTheDocument();
+    expect(screen.queryByText('Something went wrong!')).not.toBeInTheDocument();
   });
 
   it('opens Mimir and deletes completed specs without a pending gate', async () => {

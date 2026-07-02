@@ -58,8 +58,7 @@ export function useReviewSpecCampaign(slug: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (request: ReviewSpecCampaignRequest) => svc.reviewCampaign(slug, request),
-    onSuccess: (campaign) => {
-      queryClient.setQueryData(['ting', 'specs', 'campaign', slug], campaign);
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ting', 'specs', 'campaigns'] });
       void queryClient.invalidateQueries({ queryKey: ['ting', 'specs', 'campaign', slug] });
     },
