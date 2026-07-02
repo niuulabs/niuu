@@ -67,6 +67,17 @@ async def test_write_turn_perceives_and_breathes(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_artifact_reads_use_inherited_local_state(tmp_path, monkeypatch) -> None:
+    adapter = _adapter(tmp_path, _FakeSession(), monkeypatch)
+
+    ref = await adapter.write_artifact("resident/momentum/demo.md", "# Demo\n\ncontent")
+    artifact = await adapter.read_artifact(ref)
+
+    assert artifact.path == ref
+    assert artifact.content == "# Demo\n\ncontent"
+
+
+@pytest.mark.asyncio
 async def test_recall_prepends_unified_evocation(tmp_path, monkeypatch) -> None:
     adapter = _adapter(tmp_path, _FakeSession(mode="unified"), monkeypatch)
     await adapter.write_turn(_turn())

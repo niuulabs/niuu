@@ -36,6 +36,8 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 - Migrations go in BOTH `migrations/` and the Helm configmap — `.claude/rules/migrations.md`
 - Raw SQL with asyncpg, no ORM — `.claude/rules/database.md`
 - 85% coverage gates on backend and web; never lower them — `.claude/rules/testing.md`
+- Proofs must disclose their proof type and any mocks/fakes/scripted helpers — `.claude/rules/integrity.md`
+- Reuse existing primitives before adding ports/adapters/runners/frameworks — `.claude/rules/reuse-before-build.md`
 - Conventional commits — `.claude/rules/commits.md`
 - New adapters use dynamic `adapter:` + kwargs config — `.claude/rules/dynamic-adapters.md`
 - `web-next/` is Tailwind + tokens and has its own `web-next/CLAUDE.md`; legacy `web/` rules differ

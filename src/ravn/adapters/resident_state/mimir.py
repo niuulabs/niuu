@@ -66,6 +66,20 @@ class MimirResidentState(ResidentStatePort):
                 break
         return entries
 
+    async def write_artifact(self, ref: str, content: str) -> str:
+        path = _artifact_ref(ref)
+        await self._mimir.upsert_page(path, content)
+        return path
+
+    async def read_artifact(self, ref: str) -> ResidentMemoryEntry:
+        path = _artifact_ref(ref)
+        content = await self._mimir.read_page(path)
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         path = f"{self._prefix}/turns/{stamp}-{record.turn_index}.md"
@@ -181,6 +195,14 @@ class MimirResidentState(ResidentStatePort):
         return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
 
 
+def _artifact_ref(ref: str) -> str:
+    raw = ref.strip()
+    path = Path(raw)
+    if not raw or path.is_absolute() or ".." in path.parts:
+        raise ValueError("resident artifact ref is required")
+    return raw.strip("/")
+
+
 class LocalResidentState(LocalResidentMemory, ResidentStatePort):
     """Filesystem-backed resident state adapter for local development/tests."""
 
@@ -194,6 +216,21 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
 
     async def available(self) -> bool:
         return True
+
+    async def write_artifact(self, ref: str, content: str) -> str:
+        return self._write(Path(_artifact_ref(ref)), content)
+
+    async def read_artifact(self, ref: str) -> ResidentMemoryEntry:
+        rel = Path(_artifact_ref(ref))
+        path = self._root / rel
+        if not path.exists():
+            raise FileNotFoundError(str(rel))
+        content = path.read_text(encoding="utf-8")
+        return ResidentMemoryEntry(
+            path=str(rel),
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         base = self._root / (Path(prefix) if prefix else self._prefix)

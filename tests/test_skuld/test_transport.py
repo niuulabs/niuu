@@ -1529,6 +1529,7 @@ class TestCodexSubprocessTransport:
     def test_init(self, transport, tmp_path):
         assert transport.workspace_dir == str(tmp_path)
         assert transport._model == "o4-mini"
+        assert transport._skip_git_repo_check is False
         assert transport.session_id is None
         assert transport.last_result is None
         assert transport.is_alive is False
@@ -1610,10 +1611,63 @@ class TestCodexSubprocessTransport:
             assert "--model" in call_args
             assert "o4-mini" in call_args
             assert "--sandbox" not in call_args
+            assert "--skip-git-repo-check" not in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
             assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
+
+    @pytest.mark.asyncio
+    async def test_send_message_can_skip_git_repo_check(self, tmp_path):
+        transport = CodexSubprocessTransport(str(tmp_path), skip_git_repo_check=True)
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(return_value=b"")
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch("skuld.transports.codex.resolve_codex_cli", return_value="codex"),
+        ):
+            mock_exec.return_value = mock_process
+            await transport.send_message("inspect")
+
+            assert "--skip-git-repo-check" in mock_exec.call_args[0]
+
+    @pytest.mark.asyncio
+    async def test_send_message_omits_codex_model_when_empty(self, tmp_path):
+        transport = CodexSubprocessTransport(str(tmp_path), model="")
+        mock_stdout = AsyncMock()
+        mock_stdout.read = AsyncMock(return_value=b"")
+
+        mock_process = MagicMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock(return_value=0)
+
+        transport.on_event(AsyncMock())
+
+        with (
+            patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch("skuld.transports.codex.resolve_codex_cli", return_value="codex"),
+        ):
+            mock_exec.return_value = mock_process
+            await transport.send_message("inspect")
+
+            assert "--model" not in mock_exec.call_args[0]
 
     @pytest.mark.asyncio
     async def test_send_message_spawns_codex_with_mcp_overrides(self, tmp_path):

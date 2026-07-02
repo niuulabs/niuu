@@ -4914,6 +4914,447 @@ def evolve_main() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Momentum Packet CLI
+# ---------------------------------------------------------------------------
+
+momentum_app = typer.Typer(
+    name="momentum",
+    help="Momentum Packet commands.",
+    add_completion=False,
+)
+app.add_typer(momentum_app, name="momentum")
+
+_MOMENTUM_DISPOSITION_OUTCOMES = ("accepted", "dismissed", "wrong", "deferred", "acted")
+
+
+@momentum_app.command("extract")
+def momentum_extract_cmd(
+    path: str = typer.Argument(..., help="Markdown resident signal file."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Extract resident understanding, judgment, and maybe one packet from a signal."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_extract(settings, path))
+
+
+@momentum_app.command("inbox")
+def momentum_inbox_cmd(
+    signal_ref_or_id: str = typer.Argument(..., help="Resident inbox signal ref or id."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Run Momentum extraction from a resident inbox signal."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_inbox(settings, signal_ref_or_id))
+
+
+@momentum_app.command("reflect")
+def momentum_reflect_cmd(
+    target_ref: str = typer.Argument(..., help="Momentum run or judgment artifact ref."),
+    outcome: str = typer.Option(
+        ...,
+        "--outcome",
+        help="Disposition: accepted, dismissed, wrong, deferred, or acted.",
+    ),
+    note: str = typer.Option(..., "--note", help="What happened to this judgment."),
+    actor: str = typer.Option("operator", "--actor", help="Disposition actor."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Record a judgment disposition and model-authored reflection."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_reflect(settings, target_ref, outcome, note, actor))
+
+
+@momentum_app.command("attend")
+def momentum_attend_cmd(
+    limit: int = typer.Option(5, "--limit", "-n", min=1, help="Candidate signal limit."),
+    status: str = typer.Option("new", "--status", help="Candidate inbox status filter."),
+    classification: str = typer.Option(
+        "",
+        "--classification",
+        help="Optional candidate classification filter.",
+    ),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Select which resident inbox signal deserves Momentum attention."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_attend(settings, limit, status, classification))
+
+
+@momentum_app.command("pursue")
+def momentum_pursue_cmd(
+    attention_ref: str = typer.Argument(..., help="Momentum attention decision ref."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Pursue an attention decision into a linked Momentum judgment run."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_pursue(settings, attention_ref))
+
+
+@momentum_app.command("delegate")
+def momentum_delegate_cmd(
+    source_ref: str = typer.Argument(..., help="Momentum judgment or run artifact ref."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Prepare a bounded delegation brief from a Momentum judgment or run."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_delegate(settings, source_ref))
+
+
+@momentum_app.command("handoff")
+def momentum_handoff_cmd(
+    brief_ref: str = typer.Argument(..., help="Momentum delegation brief ref."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+) -> None:
+    """Hand off a delegation brief to the configured executor."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    asyncio.run(_run_momentum_handoff(settings, brief_ref))
+
+
+async def _run_momentum_extract(settings: Settings, path: str) -> None:
+    from ravn.adapters.resident_signal import MarkdownResidentSignalSource
+
+    result = await _run_momentum_source(settings, MarkdownResidentSignalSource(), path)
+    _print_momentum_result(result)
+
+
+async def _run_momentum_inbox(settings: Settings, signal_ref_or_id: str) -> None:
+    source = _build_resident_inbox_signal_source(settings)
+    result = await _run_momentum_source(settings, source, signal_ref_or_id)
+    _print_momentum_result(result)
+
+
+async def _run_momentum_reflect(
+    settings: Settings,
+    target_ref: str,
+    outcome: str,
+    note: str,
+    actor: str,
+) -> None:
+    from ravn.momentum import (
+        MomentumExtractionWorker,
+        MomentumPipeline,
+        MomentumReflectionWorker,
+    )
+
+    if outcome not in _MOMENTUM_DISPOSITION_OUTCOMES:
+        allowed = ", ".join(_MOMENTUM_DISPOSITION_OUTCOMES)
+        typer.echo(f"Invalid outcome: {outcome}. Allowed values: {allowed}", err=True)
+        raise typer.Exit(2)
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model=model),
+        reflection_worker=MomentumReflectionWorker(llm, model=model),
+        state=state,
+    ).reflect_judgment(target_ref, outcome=outcome, note=note, actor=actor)
+    typer.echo(f"disposition_ref: {result.disposition_ref}")
+    typer.echo(f"reflection_ref:  {result.reflection_ref}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
+
+
+async def _run_momentum_attend(
+    settings: Settings,
+    limit: int,
+    status: str,
+    classification: str,
+) -> None:
+    from ravn.momentum import (
+        MomentumAttentionWorker,
+        MomentumExtractionWorker,
+        MomentumPipeline,
+    )
+
+    source = _build_resident_inbox_signal_source(settings)
+    candidates = await source.list_candidates(
+        limit=limit + 1,
+        status=status.strip(),
+        classification=classification.strip(),
+    )
+    if not candidates:
+        typer.echo("No resident signal candidates found.", err=True)
+        raise typer.Exit(1)
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    result = await MomentumPipeline(
+        worker=MomentumExtractionWorker(llm, model=model),
+        attention_worker=MomentumAttentionWorker(llm, model=model),
+        state=state,
+    ).attend(candidates, limit=limit)
+    decision = result.decision
+    typer.echo(f"attention_ref: {result.decision_ref}")
+    typer.echo(f"selected_signal_id: {decision.selected_signal_id or '-'}")
+    typer.echo(f"selected_signal_ref: {decision.selected_signal_ref or '-'}")
+    typer.echo(f"attention_tier: {decision.attention_tier}")
+    typer.echo(f"recommended_next_action: {decision.recommended_next_action}")
+    typer.echo(f"confidence: {decision.confidence}")
+
+
+async def _run_momentum_pursue(settings: Settings, attention_ref: str) -> None:
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+
+    source = _build_resident_inbox_signal_source(settings)
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    try:
+        result = await MomentumPipeline(
+            worker=MomentumExtractionWorker(llm, model=settings.effective_model()),
+            state=state,
+        ).pursue_attention(attention_ref, signal_source=source)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot pursue attention decision: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    run = result.extraction.run
+    typer.echo(f"attention_ref: {run.attention_ref or attention_ref}")
+    typer.echo(f"selected_signal_id: {run.selected_signal_id or '-'}")
+    typer.echo(f"selected_signal_ref: {run.selected_signal_ref or '-'}")
+    typer.echo(f"run_ref: {result.run_ref}")
+    typer.echo(f"judgment_ref: {result.judgment_ref}")
+    typer.echo(f"packet_ref: {result.packet_ref or '-'}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref: {result.state_patch_ref}")
+    typer.echo(f"provenance: {_provenance_label(result.provenance_fully_verified)}")
+
+
+async def _run_momentum_delegate(settings: Settings, source_ref: str) -> None:
+    from ravn.momentum import (
+        MomentumDelegationWorker,
+        MomentumExtractionWorker,
+        MomentumPipeline,
+    )
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    model = settings.effective_model()
+    try:
+        result = await MomentumPipeline(
+            worker=MomentumExtractionWorker(llm, model=model),
+            delegation_worker=MomentumDelegationWorker(llm, model=model),
+            state=state,
+        ).prepare_delegation(source_ref)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot prepare delegation brief: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    brief = result.brief
+    typer.echo(f"brief_ref: {result.brief_ref}")
+    typer.echo(f"source_judgment_ref: {brief.source_judgment_ref}")
+    typer.echo(f"source_run_ref: {brief.source_run_ref or '-'}")
+    typer.echo(f"source_attention_ref: {brief.source_attention_ref or '-'}")
+    typer.echo(f"source_signal_id: {brief.source_signal_id or '-'}")
+    typer.echo(f"source_signal_ref: {brief.source_signal_ref or '-'}")
+    typer.echo(f"handoff_recommended: {str(brief.handoff_recommended).lower()}")
+    typer.echo(f"suggested_executor_context: {brief.suggested_executor_context or '-'}")
+    typer.echo(f"confidence: {brief.confidence}")
+    typer.echo(f"execution_performed: {str(brief.execution_performed).lower()}")
+
+
+async def _run_momentum_handoff(settings: Settings, brief_ref: str) -> None:
+    from ravn.momentum import MomentumPipeline
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    executor = _build_momentum_executor_agent(settings, workspace)
+    try:
+        result = await MomentumPipeline(
+            state=state,
+        ).handoff_delegation(
+            brief_ref,
+            executor=executor,
+            signal_source=_build_optional_resident_inbox_signal_source(settings),
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"Cannot hand off delegation brief: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    handoff = result.result
+    typer.echo(f"handoff_result_ref: {result.result_ref}")
+    typer.echo(f"brief_ref: {handoff.source_brief_ref}")
+    typer.echo(f"executor_label: {handoff.executor_label}")
+    typer.echo(f"status: {handoff.status}")
+    typer.echo(f"source_run_ref: {handoff.source_run_ref or '-'}")
+    typer.echo(f"source_judgment_ref: {handoff.source_judgment_ref or '-'}")
+    typer.echo(f"source_attention_ref: {handoff.source_attention_ref or '-'}")
+    typer.echo(f"source_signal_id: {handoff.source_signal_id or '-'}")
+    typer.echo(f"source_signal_ref: {handoff.source_signal_ref or '-'}")
+    typer.echo(f"executor_trace_ref: {handoff.executor_trace_ref or '-'}")
+    typer.echo(f"produced_refs: {', '.join(handoff.produced_refs) or '-'}")
+    typer.echo(f"evidence_refs: {', '.join(handoff.evidence_refs) or '-'}")
+    typer.echo(f"follow_up_recommended: {handoff.follow_up_recommended}")
+
+
+def _print_momentum_result(result: Any) -> None:
+    typer.echo(f"run_id:      {result.extraction.run.run_id}")
+    typer.echo(f"run_ref:     {result.run_ref}")
+    typer.echo(f"artifacts:   {len(result.artifact_refs)}")
+    typer.echo(f"judgment_ref:{result.judgment_ref}")
+    typer.echo(f"packet_ref:  {result.packet_ref or '-'}")
+    if result.extraction.packet is not None:
+        typer.echo(f"packet:      {result.extraction.packet.title}")
+    typer.echo(f"provenance:  {_provenance_label(result.provenance_fully_verified)}")
+    typer.echo(f"current_state_ref: {result.current_state_ref}")
+    typer.echo(f"state_patch_ref:   {result.state_patch_ref}")
+
+
+async def _run_momentum_source(settings: Settings, source: Any, ref_or_id: str) -> Any:
+    from ravn.momentum import MomentumExtractionWorker, MomentumPipeline
+
+    try:
+        signal = await source.load_signal(ref_or_id)
+    except FileNotFoundError:
+        typer.echo(f"Resident signal not found: {ref_or_id}", err=True)
+        raise typer.Exit(1) from None
+    except IsADirectoryError:
+        typer.echo(f"Not a file: {ref_or_id}", err=True)
+        raise typer.Exit(1) from None
+
+    workspace = _resolve_workspace(settings)
+    state = await _build_resident_state(settings, workspace)
+    llm = _build_llm(settings)
+    worker = MomentumExtractionWorker(llm, model=settings.effective_model())
+    return await MomentumPipeline(worker=worker, state=state).extract_signal(signal)
+
+
+def _build_resident_inbox_signal_source(settings: Settings) -> Any:
+    from ravn.adapters.resident_signal import MimirResidentInboxSignalSource
+
+    mimir = _build_mimir(settings)
+    if mimir is None:
+        typer.echo("Mímir is required to read resident inbox signals.", err=True)
+        raise typer.Exit(1)
+    return MimirResidentInboxSignalSource(mimir)
+
+
+def _build_optional_resident_inbox_signal_source(settings: Settings) -> Any | None:
+    from ravn.adapters.resident_signal import MimirResidentInboxSignalSource
+
+    mimir = _build_mimir(settings)
+    if mimir is None:
+        return None
+    return MimirResidentInboxSignalSource(mimir)
+
+
+def _build_momentum_executor(settings: Settings) -> ExecutorPort:
+    cfg = settings.momentum_executor
+    cls = _import_class(cfg.adapter)
+    kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        typer.echo(f"Momentum executor is not configured: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+def _build_momentum_executor_agent(settings: Settings, workspace: Path) -> ExecutionAgentPort:
+    from ravn.adapters.channels.silent import SilentChannel
+    from ravn.domain.models import Session
+
+    return _build_momentum_executor(settings).build(
+        workspace_dir=str(workspace),
+        session=Session(id=uuid.uuid4()),
+        channel=SilentChannel(),
+        system_prompt=(
+            "You are a bounded Ravn/Skuld executor for one Momentum handoff. "
+            "Return only the requested structured JSON contract. Your entire "
+            "response must be exactly one JSON object: no prose, no markdown "
+            "fences, no explanation before it, and no trailing text."
+        ),
+        model=settings.effective_model(),
+        max_iterations=1,
+        checkpoint_port=None,
+        task_id=f"momentum-handoff-{uuid.uuid4().hex[:8]}",
+        persona="momentum-handoff",
+        permission_mode=settings.permission.mode,
+        tools=[],
+        mcp_servers=_transport_mcp_servers(settings),
+    )
+
+
+def _provenance_label(verified: bool) -> str:
+    return "verified" if verified else "unverified"
+
+
+async def _build_resident_state(settings: Settings, workspace: Path) -> Any:
+    from ravn.adapters.resident_state import select_resident_state
+
+    cfg = settings.resident_state
+    root = _resident_ravn_state_dir(workspace) / "resident-state"
+    preferred = _build_resident_state_adapter(
+        cfg.adapter,
+        cfg.kwargs,
+        cfg.secret_kwargs_env,
+        default_root=root / "preferred",
+    )
+    fallback = _build_resident_state_adapter(
+        cfg.fallback_adapter,
+        cfg.fallback_kwargs,
+        cfg.fallback_secret_kwargs_env,
+        default_root=root / "fallback",
+    )
+    return await select_resident_state(preferred, fallback)
+
+
+def _build_resident_state_adapter(
+    adapter: str,
+    kwargs: dict[str, Any],
+    secret_kwargs_env: dict[str, str],
+    *,
+    default_root: Path,
+) -> Any:
+    cls = _import_class(adapter)
+    merged = _inject_secrets(dict(kwargs), secret_kwargs_env)
+    if _constructor_accepts_kwarg(cls, "root"):
+        merged.setdefault("root", default_root)
+    return cls(**merged)
+
+
+# ---------------------------------------------------------------------------
 # Mímir CLI
 # ---------------------------------------------------------------------------
 

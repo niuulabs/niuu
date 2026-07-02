@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 
@@ -18,13 +19,16 @@ async def run_command(
     *,
     timeout_seconds: float,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
     input_text: str = "",
     check: bool = True,
 ) -> CommandResult:
     """Run ``argv`` to completion, killing it on timeout and decoding output as UTF-8."""
+    process_env = os.environ | env if env else None
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(cwd) if cwd else None,
+        env=process_env,
         stdin=asyncio.subprocess.PIPE if input_text else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
