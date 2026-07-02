@@ -566,7 +566,7 @@ async def _load_spec_gates(
         for gate in live_gates
         if _gate_node_id(gate) in _SPEC_GATE_NODE_IDS and _is_pending_gate(gate)
     ]
-    return pending or _stored_spec_gates(campaign)
+    return pending
 
 
 def _stored_spec_gates(campaign: WorkflowCampaign) -> list[dict[str, Any]]:

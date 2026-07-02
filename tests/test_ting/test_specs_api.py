@@ -285,6 +285,20 @@ def test_detail_reads_spec_artifacts_from_mimir(tmp_path: Path) -> None:
     )
 
 
+def test_detail_clears_stored_gate_when_live_gate_is_resolved(tmp_path: Path) -> None:
+    workflow = _spec_workflow(tmp_path)
+    campaign = _campaign_for_workflow(workflow, "sdcp-operator")
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    volundr_port = GateRecordingVolundrPort()
+    volundr_port.gates = []
+    client = _make_client(InMemoryWorkflowRepository([workflow]), campaign_repo, volundr_port)
+
+    response = client.get("/api/v1/ting/specs/campaigns/sdcp-operator", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["metadata"]["pending_workflow_gates"] == []
+
+
 def test_review_resolves_pending_spec_gate(tmp_path: Path) -> None:
     workflow = _spec_workflow(tmp_path)
     campaign = _campaign_for_workflow(workflow, "sdcp-operator")
