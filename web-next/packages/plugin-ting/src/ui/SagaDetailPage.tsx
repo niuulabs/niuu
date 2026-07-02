@@ -3,8 +3,18 @@ import { useService } from '@niuulabs/plugin-sdk';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import type { PersonaRole } from '@niuulabs/domain';
-import { EmptyState, ErrorState, LoadingState, PersonaAvatar, SegmentedFilter } from '@niuulabs/ui';
-import type { RunStatus, Saga, Phase, Run } from '../domain/saga';
+import {
+  BranchSelect,
+  EmptyState,
+  ErrorState,
+  findRepoByRef,
+  LoadingState,
+  PersonaAvatar,
+  RepoSelect,
+  SegmentedFilter,
+  type RepoRecord,
+} from '@niuulabs/ui';
+import type { RunStatus, Saga, Phase, Run, SagaRepoRef } from '../domain/saga';
 import type {
   DispatchCluster,
   IDispatchBus,
@@ -12,7 +22,12 @@ import type {
   RunSessionMessage,
   SagaTargetSelection,
 } from '../ports';
-import { useAssignSagaTarget, useAssignSagaWorkflow, useSaga } from './useSaga';
+import {
+  useAssignSagaRepos,
+  useAssignSagaTarget,
+  useAssignSagaWorkflow,
+  useSaga,
+} from './useSaga';
 import { usePhases } from './usePhases';
 import { useSendRunMessage } from './useRunMessages';
 import { WorkflowCard } from './WorkflowCard';
@@ -43,6 +58,15 @@ function statusLabel(status: RunStatus | Saga['status'] | Phase['status']): stri
     case 'gated':
       return 'GATED';
   }
+}
+
+type RepoCatalogService = {
+  getRepos(): Promise<RepoRecord[]>;
+};
+
+function repoRefsForSaga(saga: Saga): SagaRepoRef[] {
+  if (saga.repoRefs?.length) return saga.repoRefs;
+  return saga.repos.map((repo) => ({ repo, branch: saga.baseBranch || 'main' }));
 }
 
 function isUuidLike(value: string): boolean {
@@ -440,6 +464,207 @@ function TargetCard({
   );
 }
 
+function SagaReposCard({
+  saga,
+  repos,
+  isLoading,
+  isUpdating,
+  onSave,
+}: {
+  saga: Saga;
+  repos: RepoRecord[];
+  isLoading: boolean;
+  isUpdating: boolean;
+  onSave: (repoRefs: SagaRepoRef[]) => void;
+}) {
+  const currentRefs = repoRefsForSaga(saga);
+  const [editing, setEditing] = useState(false);
+  const [selectedRefs, setSelectedRefs] = useState<SagaRepoRef[]>(currentRefs);
+  const [repoCandidate, setRepoCandidate] = useState('');
+  const selectedRepos = useMemo(() => selectedRefs.map((entry) => entry.repo), [selectedRefs]);
+
+  function startEditing() {
+    setSelectedRefs(currentRefs);
+    setRepoCandidate('');
+    setEditing(true);
+  }
+
+  function addRepo(repoRef: string) {
+    const value = repoRef.trim();
+    if (!value || selectedRepos.includes(value)) return;
+    const repo = findRepoByRef(repos, value);
+    setSelectedRefs((current) => [
+      ...current,
+      { repo: value, branch: repo?.defaultBranch || saga.baseBranch || 'main' },
+    ]);
+    setRepoCandidate('');
+  }
+
+  function updateBranch(repo: string, branch: string) {
+    setSelectedRefs((current) =>
+      current.map((entry) => (entry.repo === repo ? { ...entry, branch } : entry)),
+    );
+  }
+
+  function removeRepo(repo: string) {
+    setSelectedRefs((current) => current.filter((entry) => entry.repo !== repo));
+  }
+
+  const cleanRefs = selectedRefs
+    .map((entry) => ({ repo: entry.repo.trim(), branch: entry.branch.trim() || 'main' }))
+    .filter((entry) => entry.repo);
+  const canSave = cleanRefs.length > 0 && !isUpdating;
+
+  return (
+    <section className="niuu:rounded-xl niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:space-y-3">
+      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
+        <div className="niuu:space-y-1">
+          <div className="niuu:text-[11px] niuu:font-mono niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted">
+            Saga repositories
+          </div>
+          <h3 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
+            {currentRefs.length} {currentRefs.length === 1 ? 'repo' : 'repos'}
+          </h3>
+        </div>
+        {!editing ? (
+          <button
+            type="button"
+            onClick={startEditing}
+            className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-secondary niuu:hover:text-text-primary"
+          >
+            Edit repos
+          </button>
+        ) : null}
+      </div>
+
+      {!editing ? (
+        <div className="niuu:space-y-2">
+          {currentRefs.map((entry) => {
+            const repo = findRepoByRef(repos, entry.repo);
+            const label = repo ? `${repo.org}/${repo.name}` : entry.repo;
+            return (
+              <div
+                key={entry.repo}
+                className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2"
+              >
+                <span className="niuu:min-w-0 niuu:truncate niuu:font-mono niuu:text-xs niuu:text-text-secondary">
+                  {label}
+                </span>
+                <span className="niuu:shrink-0 niuu:font-mono niuu:text-xs niuu:text-text-muted">
+                  {entry.branch}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="niuu:space-y-3">
+          <div className="niuu:space-y-2">
+            {selectedRefs.map((entry) => {
+              const repo = findRepoByRef(repos, entry.repo);
+              const label = repo ? `${repo.org}/${repo.name}` : entry.repo;
+              return (
+                <div
+                  key={entry.repo}
+                  className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_minmax(104px,0.8fr)_auto] niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-2"
+                >
+                  <span className="niuu:min-w-0 niuu:truncate niuu:font-mono niuu:text-xs niuu:text-text-secondary">
+                    {label}
+                  </span>
+                  {repos.length > 0 ? (
+                    <BranchSelect
+                      repos={repos}
+                      selectedRepos={[entry.repo]}
+                      value={entry.branch}
+                      onChange={(branch) => updateBranch(entry.repo, branch)}
+                      placeholder="Branch"
+                      testId={`saga-repo-branch-${entry.repo}`}
+                      className="niuu:bg-bg-primary"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={entry.branch}
+                      onChange={(event) => updateBranch(entry.repo, event.target.value)}
+                      aria-label={`Branch for ${entry.repo}`}
+                      className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeRepo(entry.repo)}
+                    className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-muted"
+                    aria-label={`Remove ${label}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {repos.length > 0 ? (
+            <RepoSelect
+              repos={repos}
+              value={repoCandidate}
+              excludedRepos={selectedRepos}
+              valueMode="slug"
+              onChange={addRepo}
+              placeholder={selectedRepos.length > 0 ? 'Add repository' : 'Select repository'}
+              testId="saga-repo-select"
+            />
+          ) : (
+            <div className="niuu:flex niuu:gap-2">
+              <input
+                type="text"
+                value={repoCandidate}
+                onChange={(event) => setRepoCandidate(event.target.value)}
+                placeholder="org/repo"
+                aria-label="Repository"
+                className="niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+              />
+              <button
+                type="button"
+                onClick={() => addRepo(repoCandidate)}
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-primary"
+              >
+                Add
+              </button>
+            </div>
+          )}
+
+          <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+            <span className="niuu:text-xs niuu:text-text-muted">
+              {isLoading ? 'Loading repository catalog…' : 'Each repository keeps its own branch.'}
+            </span>
+            <div className="niuu:flex niuu:gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                disabled={isUpdating}
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-secondary niuu:hover:text-text-primary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onSave(cleanRefs);
+                  setEditing(false);
+                }}
+                disabled={!canSave}
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-primary niuu:disabled:opacity-50"
+              >
+                {isUpdating ? 'Saving…' : 'Save repos'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SagaFeedbackPanel({ runs }: { runs: Run[] }) {
   const ting = useService<ITingService>('ting');
   const runIds = useMemo(() => runs.map((run) => run.id), [runs]);
@@ -544,6 +769,7 @@ interface SagaDetailPageProps {
 export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPageProps) {
   const navigate = useNavigate();
   const dispatchBus = useService<IDispatchBus>('ting.dispatch');
+  const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
   const {
     data: saga,
@@ -559,9 +785,14 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
   } = usePhases(sagaId);
   const assignWorkflow = useAssignSagaWorkflow(sagaId);
   const assignTarget = useAssignSagaTarget(sagaId);
+  const assignRepos = useAssignSagaRepos(sagaId);
   const targetsQuery = useQuery({
     queryKey: ['ting', 'dispatch-clusters'],
     queryFn: () => dispatchBus.getClusters(),
+  });
+  const repoCatalogQuery = useQuery({
+    queryKey: ['niuu', 'repos'],
+    queryFn: () => repoCatalog.getRepos(),
   });
 
   if (sagaLoading || phasesLoading) return <LoadingState label="Loading saga…" />;
@@ -595,6 +826,10 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
 
   function handleAssignTarget(target: SagaTargetSelection) {
     assignTarget.mutate(target);
+  }
+
+  function handleAssignRepos(repoRefs: SagaRepoRef[]) {
+    assignRepos.mutate(repoRefs);
   }
 
   return (
@@ -640,6 +875,13 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
 
         <div className="niuu:space-y-4">
           <SagaFeedbackPanel runs={activeRuns} />
+          <SagaReposCard
+            saga={saga}
+            repos={repoCatalogQuery.data ?? []}
+            isLoading={repoCatalogQuery.isLoading}
+            isUpdating={assignRepos.isPending}
+            onSave={handleAssignRepos}
+          />
           <TargetCard
             saga={saga}
             targets={(targetsQuery.data ?? []).filter((target) => target.enabled)}

@@ -801,6 +801,30 @@ describe('buildTingHttpAdapter', () => {
       });
       expect(saga.targetTags).toEqual(['gpu', 'valhalla']);
     });
+
+    it('assigns saga repositories with per-repo branches', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue({
+        ...rawSaga,
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repo_refs: [
+          { repo: 'niuulabs/volundr', branch: 'dev' },
+          { repo: 'niuulabs/infrastructure', branch: 'main' },
+        ],
+      });
+
+      const repoRefs = [
+        { repo: 'niuulabs/volundr', branch: 'dev' },
+        { repo: 'niuulabs/infrastructure', branch: 'main' },
+      ];
+      const saga = await buildTingHttpAdapter(client).assignRepos('saga-1', repoRefs);
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/repos', {
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repo_refs: repoRefs,
+      });
+      expect(saga.repoRefs).toEqual(repoRefs);
+    });
   });
 
   describe('interface compliance', () => {
@@ -817,6 +841,7 @@ describe('buildTingHttpAdapter', () => {
       expect(typeof svc.spawnPlanSession).toBe('function');
       expect(typeof svc.cancelPlanSession).toBe('function');
       expect(typeof svc.extractStructure).toBe('function');
+      expect(typeof svc.assignRepos).toBe('function');
     });
   });
 });

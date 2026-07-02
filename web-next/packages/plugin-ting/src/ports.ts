@@ -7,7 +7,7 @@
  * Implementations live in src/adapters/.
  */
 
-import type { Saga, Phase } from './domain/saga';
+import type { Saga, Phase, SagaRepoRef } from './domain/saga';
 import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
@@ -184,6 +184,7 @@ export interface ITingService {
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
   assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;
+  assignRepos(sagaId: string, repoRefs: SagaRepoRef[]): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------

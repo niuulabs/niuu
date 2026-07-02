@@ -1297,6 +1297,22 @@ export function createMockTingService(): ITingService {
       sagas.set(sagaId, updated);
       return updated;
     },
+
+    async assignRepos(sagaId: string, repoRefs) {
+      const saga = sagas.get(sagaId);
+      if (!saga) {
+        throw new Error(`Saga not found: ${sagaId}`);
+      }
+
+      const updated: Saga = {
+        ...saga,
+        repos: repoRefs.map((entry) => entry.repo),
+        repoRefs,
+        baseBranch: repoRefs[0]?.branch ?? saga.baseBranch,
+      };
+      sagas.set(sagaId, updated);
+      return updated;
+    },
   };
 }
 

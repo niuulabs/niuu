@@ -1,12 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ConfidenceBar, type ConfidenceLevel } from '@niuulabs/ui';
 import type { ExtractedStructure, PhaseSpec } from '../ports';
-
-function toLevel(value: number): ConfidenceLevel {
-  if (value >= 80) return 'high';
-  if (value >= 50) return 'medium';
-  return 'low';
-}
 
 const SIZE_CLASSES: Record<'S' | 'M' | 'L', string> = {
   S: 'niuu:bg-accent-emerald/20 niuu:text-accent-emerald niuu:border-accent-emerald/30',
@@ -58,11 +51,6 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
     setEditing(false);
   }
 
-  const avgConfidence =
-    phase.runs.length > 0
-      ? Math.round(phase.runs.reduce((sum, r) => sum + r.confidence, 0) / phase.runs.length)
-      : 0;
-
   return (
     <div
       className="niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4 niuu:flex niuu:flex-col niuu:gap-3"
@@ -102,7 +90,6 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               </h3>
               {phase.runs.length > 0 && (
                 <div className="niuu:flex niuu:items-center niuu:gap-2">
-                  <ConfidenceBar level={toLevel(avgConfidence)} />
                   <span className="niuu:text-xs niuu:text-text-muted">
                     {phase.runs.length} run{phase.runs.length !== 1 ? 's' : ''}
                   </span>

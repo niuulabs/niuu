@@ -22,10 +22,35 @@ vi.mock('@tanstack/react-router', () => ({
 
 function wrap(services: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const defaults = {
+    'niuu.repos': {
+      getRepos: async () => [
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'volundr',
+          cloneUrl: 'https://github.com/niuulabs/volundr.git',
+          url: 'https://github.com/niuulabs/volundr',
+          defaultBranch: 'main',
+          branches: ['main', 'dev'],
+        },
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'infrastructure',
+          cloneUrl: 'https://github.com/niuulabs/infrastructure.git',
+          url: 'https://github.com/niuulabs/infrastructure',
+          defaultBranch: 'main',
+          branches: ['main'],
+        },
+      ],
+    },
+    ...services,
+  };
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={services}>{children}</ServicesProvider>
+        <ServicesProvider services={defaults}>{children}</ServicesProvider>
       </QueryClientProvider>
     );
   };
@@ -261,6 +286,45 @@ describe('SagaDetailPage', () => {
     await user.click(screen.getByText('Ship Workflow'));
     await waitFor(() =>
       expect(assignWorkflow).toHaveBeenCalledWith(SAGA_ID, '00000000-0000-0000-0000-0000000000aa'),
+    );
+  });
+
+  it('edits saga repositories with the shared repo dropdown', async () => {
+    const user = userEvent.setup();
+    const assignRepos = vi.fn(async () =>
+      makeSaga({
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repoRefs: [
+          { repo: 'niuulabs/volundr', branch: 'dev' },
+          { repo: 'niuulabs/infrastructure', branch: 'main' },
+        ],
+        baseBranch: 'dev',
+      }),
+    );
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          repoRefs: [{ repo: 'niuulabs/volundr', branch: 'dev' }],
+          baseBranch: 'dev',
+        }),
+      getPhases: async () => [makePhase([makeRun()])],
+      assignRepos,
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit repos' })).toBeVisible());
+    await user.click(screen.getByRole('button', { name: 'Edit repos' }));
+    await user.selectOptions(screen.getByTestId('saga-repo-select'), 'niuulabs/infrastructure');
+    await user.click(screen.getByRole('button', { name: 'Save repos' }));
+
+    await waitFor(() =>
+      expect(assignRepos).toHaveBeenCalledWith(SAGA_ID, [
+        { repo: 'niuulabs/volundr', branch: 'dev' },
+        { repo: 'niuulabs/infrastructure', branch: 'main' },
+      ]),
     );
   });
 

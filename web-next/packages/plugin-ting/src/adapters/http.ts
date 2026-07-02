@@ -988,6 +988,14 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       });
       return toSaga(raw);
     },
+
+    async assignRepos(sagaId: string, repoRefs) {
+      const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/repos`, {
+        repos: repoRefs.map((entry) => entry.repo),
+        repo_refs: repoRefs,
+      });
+      return toSaga(raw);
+    },
   };
 }
 

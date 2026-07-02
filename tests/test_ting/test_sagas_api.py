@@ -900,6 +900,50 @@ class TestGetSagaErrors:
         assert data[0]["name"] == "Alpha"
 
 
+class TestAssignRepos:
+    def test_assigns_multiple_repos_with_branches(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        saga_id = saga_repo.sagas[0].id
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/repos",
+            json={
+                "repo_refs": [
+                    {"repo": "niuulabs/volundr", "branch": "dev"},
+                    {"repo": "niuulabs/infrastructure", "branch": "main"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repos"] == ["niuulabs/volundr", "niuulabs/infrastructure"]
+        assert body["repo_refs"] == [
+            {"repo": "niuulabs/volundr", "branch": "dev"},
+            {"repo": "niuulabs/infrastructure", "branch": "main"},
+        ]
+        assert saga_repo.sagas[0].repo_branches == {
+            "niuulabs/volundr": "dev",
+            "niuulabs/infrastructure": "main",
+        }
+
+    def test_rejects_empty_repo_assignment(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
+            json={"repo_refs": []},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "At least one repository is required"
+
+
 class TestSpawnPlanSession:
     def test_plan_config_returns_finalize_prompt(self, mock_tracker: MockTracker) -> None:
         app = FastAPI()

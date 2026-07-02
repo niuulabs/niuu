@@ -736,6 +736,17 @@ class SagaTargetAssignmentRequest(BaseModel):
     target_match: str = "all"
 
 
+class SagaRepoRefRequest(BaseModel):
+    repo: str
+    branch: str = "main"
+
+
+class SagaReposAssignmentRequest(BaseModel):
+    repos: list[str] = Field(default_factory=list)
+    repo_refs: list[SagaRepoRefRequest] = Field(default_factory=list)
+    base_branch: str = "main"
+
+
 class RunSpecResponse(BaseModel):
     name: str
     description: str
@@ -1717,6 +1728,87 @@ def create_sagas_router() -> APIRouter:
             instance_name=instance_name,
             target_tags=updated.target_tags,
             target_match=updated.target_match,
+        )
+
+    @router.put("/{saga_id}/repos", response_model=SagaListItem)
+    async def assign_repos(
+        saga_id: str,
+        body: SagaReposAssignmentRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        repo: SagaRepository = Depends(resolve_saga_repo),
+        adapters: list[TrackerPort] = Depends(resolve_trackers),
+    ) -> SagaListItem:
+        try:
+            parsed_id = UUID(saga_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        saga = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        default_branch = body.base_branch.strip() or saga.base_branch or "main"
+        raw_refs = (
+            [(entry.repo, entry.branch) for entry in body.repo_refs]
+            if body.repo_refs
+            else [(repo_name, default_branch) for repo_name in body.repos]
+        )
+        repo_branches: dict[str, str] = {}
+        for repo_name, branch_name in raw_refs:
+            repo_ref = repo_name.strip()
+            if not repo_ref or repo_ref in repo_branches:
+                continue
+            repo_branches[repo_ref] = branch_name.strip() or default_branch
+        if not repo_branches:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="At least one repository is required",
+            )
+
+        updated_saga = replace(
+            saga,
+            repos=list(repo_branches),
+            repo_branches=repo_branches,
+            base_branch=next(iter(repo_branches.values())),
+        )
+        await repo.save_saga(updated_saga)
+
+        project = await _find_project(updated_saga.tracker_id, adapters)
+        phase_summary = await _build_phase_summary(repo, updated_saga.id)
+        instance_name = await _resolve_instance_name(request, principal, updated_saga.instance_id)
+        return SagaListItem(
+            id=str(updated_saga.id),
+            tracker_id=updated_saga.tracker_id,
+            tracker_type=updated_saga.tracker_type,
+            slug=updated_saga.slug,
+            name=project.name if project else updated_saga.name,
+            repos=updated_saga.repos,
+            repo_branches=updated_saga.repo_branches,
+            repo_refs=_repo_refs(updated_saga),
+            feature_branch=updated_saga.feature_branch,
+            status=updated_saga.status.value.lower(),
+            progress=_display_progress(updated_saga, project, phase_summary),
+            milestone_count=project.milestone_count if project else 0,
+            issue_count=project.issue_count if project else 0,
+            url=project.url if project else "",
+            base_branch=updated_saga.base_branch,
+            confidence=updated_saga.confidence,
+            created_at=updated_saga.created_at.isoformat(),
+            phase_summary=phase_summary,
+            workflow_id=str(updated_saga.workflow_id) if updated_saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(updated_saga.workflow_snapshot),
+            workflow_version=updated_saga.workflow_version,
+            instance_id=updated_saga.instance_id,
+            instance_name=instance_name,
+            target_tags=updated_saga.target_tags,
+            target_match=updated_saga.target_match,
         )
 
     @router.put("/{saga_id}/target", response_model=SagaListItem)
