@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import jwt
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -212,6 +213,18 @@ def _make_research_workflow() -> WorkflowDefinition:
         },
         created_at=now,
         updated_at=now,
+    )
+
+
+_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
+
+
+def _build_token(scopes: list[str]) -> str:
+    """Mint a Valkyrie build token JWT (signature ignored downstream)."""
+    return jwt.encode(
+        {"sub": "user-1", "token_use": "valkyrie_build", "scopes": scopes},
+        _SIGNING_KEY,
+        algorithm="HS256",
     )
 
 
@@ -610,3 +623,55 @@ class TestWorkflowCatalogAPI:
         assert response.status_code == 201
         assert len(primary.requests) == 1
         assert len(secondary.requests) == 0
+
+    def test_launch_workflow_scoped_build_token_missing_scope_is_403(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        # A build token scoped only for Forge session creation must NOT be able
+        # to launch a Ting workflow.
+        token = _build_token(["forge:session:create"])
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers={**_headers(roles="ting:admin"), "Authorization": f"Bearer {token}"},
+            json={"prompt": "Attempt a launch with the wrong scope."},
+        )
+
+        assert response.status_code == 403
+        assert "ting:workflow:launch" in response.json()["detail"]
+        assert len(adapter.requests) == 0
+
+    def test_launch_workflow_scoped_build_token_with_scope_admitted(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        token = _build_token(["ting:workflow:launch"])
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers={**_headers(roles="ting:admin"), "Authorization": f"Bearer {token}"},
+            json={"prompt": "Launch with the matching build scope."},
+        )
+
+        assert response.status_code == 201
+        assert len(adapter.requests) == 1
+
+    def test_launch_workflow_normal_token_unaffected(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        # A plain (non-build) bearer token has no scope claim and must pass.
+        token = jwt.encode({"type": "pat", "sub": "user-1"}, _SIGNING_KEY, algorithm="HS256")
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers={**_headers(roles="ting:admin"), "Authorization": f"Bearer {token}"},
+            json={"prompt": "A human PAT launches normally."},
+        )
+
+        assert response.status_code == 201
+        assert len(adapter.requests) == 1

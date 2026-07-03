@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.domain.services.token_scope import require_build_scope
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.config import PermissionAutoApprovalConfig
@@ -1596,12 +1597,19 @@ def create_router(
         },
         tags=["Sessions"],
     )
-    async def create_session(request: Request, data: SessionCreate) -> SessionResponse:
+    async def create_session(
+        request: Request,
+        data: SessionCreate,
+        _build_scope: None = Depends(require_build_scope("forge:session:create")),
+    ) -> SessionResponse:
         """Create and start a new session.
 
         Creates the session record then immediately starts its pods.
         If launch_spec is set, the launch spec provides defaults for
         repo/branch/model and is passed to the pod manager to build task_args.
+
+        A Valkyrie build token must carry the ``forge:session:create`` scope;
+        ordinary human PATs and workload tokens are unaffected.
         """
         principal = await _optional_principal(request)
         try:

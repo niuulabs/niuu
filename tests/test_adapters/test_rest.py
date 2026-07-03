@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
+import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -31,6 +32,17 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
+
+_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
+
+
+def _build_token(scopes: list[str]) -> str:
+    """Mint a Valkyrie build token JWT (signature ignored downstream)."""
+    return jwt.encode(
+        {"sub": "user-1", "token_use": "valkyrie_build", "scopes": scopes},
+        _SIGNING_KEY,
+        algorithm="HS256",
+    )
 
 
 @pytest.fixture
@@ -290,6 +302,49 @@ class TestCreateSession:
             },
         )
         assert response.status_code == 422
+
+    def test_create_session_scoped_build_token_missing_scope_is_403(self, client: TestClient):
+        """A Valkyrie build token lacking forge:session:create is 403'd."""
+        token = _build_token(["ting:workflow:launch"])
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "my-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 403
+        assert "forge:session:create" in response.json()["detail"]
+
+    def test_create_session_scoped_build_token_with_scope_admitted(self, client: TestClient):
+        """A build token carrying forge:session:create proceeds normally."""
+        token = _build_token(["forge:session:create"])
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "scoped-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 201
+
+    def test_create_session_normal_token_unaffected(self, client: TestClient):
+        """A plain (non-build) bearer token has no scope constraint."""
+        token = jwt.encode({"type": "pat", "sub": "user-1"}, _SIGNING_KEY, algorithm="HS256")
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "human-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 201
 
 
 class TestGetSession:
