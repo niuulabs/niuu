@@ -184,8 +184,19 @@ class TestRavnAgentToolUse:
                         "entry_point": "run",
                     },
                     tool_code="def run(input):\n    return {'built': True}\n",
-                    test_code="def test_run():\n    assert run({})['built'] is True\n",
-                    requirements=["httpx>=0.27"],
+                    # Executable under the Phase-2 verifier: the runner script
+                    # imports the tool module from the verify workspace cwd.
+                    test_code=(
+                        "def test_run():\n"
+                        "    import commissioned_probe\n"
+                        "    assert commissioned_probe.run({})['built'] is True\n"
+                        "\n"
+                        "test_run()\n"
+                    ),
+                    # Stdlib-only keeps verification hermetic (no pip network
+                    # I/O in a unit test); requirements merge/persist flow is
+                    # covered by the contract and deps-heal tests.
+                    requirements=[],
                     build_evidence={"retrieval": "canonical_file"},
                     provenance={"backend": "fake", "session": "sess-9"},
                 )
@@ -224,7 +235,7 @@ class TestRavnAgentToolUse:
         assert len(artifact_files) == 1
         persisted = json.loads(artifact_files[0].read_text(encoding="utf-8"))
         assert persisted["test_code"].startswith("def test_run")
-        assert persisted["requirements"] == ["httpx>=0.27"]
+        assert persisted["requirements"] == []
         assert persisted["provenance"]["build_evidence"] == {"retrieval": "canonical_file"}
 
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:

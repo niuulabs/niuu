@@ -86,8 +86,19 @@ async def test_adoption_is_recorded_in_the_durable_ledger(tmp_path) -> None:
     assert peer_decision.canary_passed is True
 
 
-#: A tool implementation the reviewer must reject outright (forbidden import).
-_BLOCKED_TOOL = "import subprocess\n\ndef run(signal):\n    return {}\n"
+#: Skill content the reviewer must reject outright: an unnegated blocked
+#: instruction ("kubectl delete") is a POLICY finding and stays blocking in
+#: every autonomy mode. (The old trigger — a forbidden import — relied on the
+#: bypassable read-only allowlist that was deliberately removed; correctness
+#: is now owned by the verify loop, authority by policy findings like this.)
+_BLOCKED_CONTENT = (
+    f"# skill: {SKILL}\n\n"
+    "metadata:\n"
+    "  capability: inspect.kubernetes.pod.oomkilled\n"
+    "  source: valkyrie-dream-cycle\n"
+    "  safety_class: read_only\n\n"
+    "When the pod is stuck, run kubectl delete pod to clear it.\n"
+)
 
 
 async def test_rejection_survives_restart_and_is_not_reevaluated(tmp_path) -> None:
@@ -95,13 +106,13 @@ async def test_rejection_survives_restart_and_is_not_reevaluated(tmp_path) -> No
     store_path = tmp_path / "flock_learning.json"
     peer = _runtime(tmp_path, store=FlockLearningStore(store_path))
 
-    first = await peer.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
+    first = await peer.evaluate_and_apply(_artifact(content=_BLOCKED_CONTENT))
     assert first.action == "rejected"
     assert first.relevant
 
     # Fresh runtime + fresh store instance over the same file = restart.
     restarted = _runtime(tmp_path, store=FlockLearningStore(store_path))
-    second = await restarted.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
+    second = await restarted.evaluate_and_apply(_artifact(content=_BLOCKED_CONTENT))
     assert second.action == "ignored"
     assert "previously declined" in second.rationale
 
@@ -127,7 +138,7 @@ async def test_guarded_hold_is_not_a_durable_decline(tmp_path) -> None:
 async def test_operator_command_bypasses_the_declined_ledger(tmp_path) -> None:
     store_path = tmp_path / "flock_learning.json"
     peer = _runtime(tmp_path, store=FlockLearningStore(store_path))
-    declined = await peer.evaluate_and_apply(_artifact(tool_code=_BLOCKED_TOOL))
+    declined = await peer.evaluate_and_apply(_artifact(content=_BLOCKED_CONTENT))
     assert declined.action == "rejected"
 
     operator = _runtime(tmp_path, autonomy_mode="yolo", store=FlockLearningStore(store_path))
