@@ -224,8 +224,9 @@ def create_session_replay_router(
             return
         sid = uuid5(NAMESPACE_URL, f"replay-fixture/{name}")
         try:
-            path = resolve_fixture(name, config.fixtures_dir_path())
-            entries = load_fixture_entries(path, session_id=sid)
+            fixtures_dir = config.fixtures_dir_path()
+            path = resolve_fixture(name, fixtures_dir)
+            entries = load_fixture_entries(path, session_id=sid, fixtures_dir=fixtures_dir)
         except (ValueError, FileNotFoundError, KeyError):
             await websocket.close(code=1008)
             return

@@ -87,7 +87,12 @@ def _entry_from_fixture_row(row: dict, *, session_id: UUID) -> SessionLogEntry:
     )
 
 
-def load_fixture_entries(path: Path, *, session_id: UUID) -> list[SessionLogEntry]:
+def load_fixture_entries(
+    path: Path,
+    *,
+    session_id: UUID,
+    fixtures_dir: Path | None = None,
+) -> list[SessionLogEntry]:
     """Load a ``SessionLogEntry[]`` fixture file, sorted by ``seq`` ascending.
 
     Each row's own ``session_id`` is ignored; we stamp the route-derived
@@ -95,9 +100,14 @@ def load_fixture_entries(path: Path, *, session_id: UUID) -> list[SessionLogEntr
     ``kind`` falls back to ``payload.type``; a missing ``ts`` is tolerated.
 
     Raises:
-        ValueError: the file is not a JSON array.
+        ValueError: the file is not a JSON array, or path escapes ``fixtures_dir``.
         KeyError: a row is missing the required ``seq``.
     """
+    if fixtures_dir is not None:
+        root = fixtures_dir.resolve()
+        resolved_path = path.resolve()
+        if root != resolved_path and root not in resolved_path.parents:
+            raise ValueError("fixture path escapes fixtures_dir")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise ValueError(f"fixture {path} is not a SessionLogEntry[] array")
