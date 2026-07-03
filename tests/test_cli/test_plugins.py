@@ -344,6 +344,7 @@ class TestTingPlugin:
             "/api/v1/ting/flock",
             "/api/v1/ting/flock_flows",
             "/api/v1/ting/research",
+            "/api/v1/ting/specs",
         )
         assert route_domains[5].prefixes == ("/api/v1/ting/settings",)
         assert route_domains[6].prefixes == ("/api/v1/ting/telegram",)
