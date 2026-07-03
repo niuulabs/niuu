@@ -15,7 +15,19 @@ from typing import Any
 from sleipnir.domain import registry
 
 #: Judgment authorities that must land in the operator review inbox.
-REVIEW_REQUIRED_AUTHORITIES = frozenset({"court_required", "human_review_required"})
+#: ``court_required`` is deliberately absent: the ODIN court subscribes to
+#: those judgments itself and files a ``draft_for_review`` escalation when
+#: one is warranted — central filing would duplicate every court case.
+REVIEW_REQUIRED_AUTHORITIES = frozenset({"human_review_required"})
+
+#: Attention tiers that mean "a human should look at this". Guarded
+#: residents stamp human_review_required on every judgment — including
+#: ambient "used a learned skill, all fine" telemetry — so authority alone
+#: is not consent to page the operator.
+_REVIEW_ATTENTION_TIERS = frozenset({"present", "urgent"})
+
+#: Recommendations that describe observation, not an action to approve.
+_OBSERVATIONAL_ACTIONS = frozenset({"", "none", "n/a", "watch", "observe"})
 
 _ACTION_EVENT_TYPES = frozenset(
     {
@@ -179,5 +191,16 @@ def signal_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def decision_requires_review(record: dict[str, Any]) -> bool:
-    """True when a stored decision must be routed to the operator inbox."""
-    return str(record.get("actionAuthority") or "") in REVIEW_REQUIRED_AUTHORITIES
+    """True when a stored decision must be routed to the operator inbox.
+
+    Three things must hold: the authority demands a human, the judgment is
+    pitched at an attention tier that asks for one, and it recommends an
+    actual action rather than continued observation. Anything less is
+    telemetry, not a decision awaiting approval.
+    """
+    if str(record.get("actionAuthority") or "") not in REVIEW_REQUIRED_AUTHORITIES:
+        return False
+    if str(record.get("tier") or "").lower() not in _REVIEW_ATTENTION_TIERS:
+        return False
+    recommended = str(record.get("recommendedAction") or "").strip().lower()
+    return recommended not in _OBSERVATIONAL_ACTIONS

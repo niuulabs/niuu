@@ -139,11 +139,44 @@ def test_decision_record_reads_wrapped_fields_payloads() -> None:
     assert record["signalRefs"] == ["sig-1", "sig-2"]
 
 
-def test_decision_record_requires_review_for_gated_authorities() -> None:
-    for authority in ("court_required", "human_review_required"):
-        record = decision_record_from_event(_judgment_event(authority=authority))
-        assert record is not None
-        assert decision_requires_review(record)
+def test_decision_requires_review_only_when_a_human_is_actually_asked() -> None:
+    # Attention-seeking judgment with a real recommendation: escalate.
+    record = decision_record_from_event(_judgment_event(authority="human_review_required"))
+    assert record is not None
+    assert record["tier"] == "present"
+    assert decision_requires_review(record)
+
+    # court_required is the ODIN court's path — never centrally filed.
+    court = decision_record_from_event(_judgment_event(authority="court_required"))
+    assert court is not None
+    assert not decision_requires_review(court)
+
+
+def test_ambient_and_observational_judgments_never_reach_the_inbox() -> None:
+    """Guarded residents stamp human_review_required on ALL judgments —
+    including 'used a learned skill, all fine' telemetry. Only judgments
+    pitched at present/urgent with a real recommended action escalate."""
+    ambient = _judgment_event(authority="human_review_required")
+    ambient["payload"]["tier"] = "ambient"
+    ambient["payload"]["operational_state"] = "using_adopted_learning"
+    ambient["payload"]["recommended_action"] = "inspect_with_adopted_learning"
+    record = decision_record_from_event(ambient)
+    assert record is not None
+    assert not decision_requires_review(record)
+
+    watching = _judgment_event(authority="human_review_required")
+    watching["payload"]["recommended_action"] = "none"
+    record = decision_record_from_event(watching)
+    assert record is not None
+    assert not decision_requires_review(record)
+
+    failure = _judgment_event(authority="human_review_required")
+    failure["payload"]["tier"] = "present"
+    failure["payload"]["operational_state"] = "adopted_learning_failed"
+    failure["payload"]["recommended_action"] = "review_adopted_learning_failure"
+    record = decision_record_from_event(failure)
+    assert record is not None
+    assert decision_requires_review(record)
 
 
 def test_decision_record_ignores_other_events_and_missing_ids() -> None:
@@ -233,9 +266,12 @@ async def test_memory_store_outcome_stamping_and_review_link() -> None:
     assert stored["outcome"] == "executed"
     assert stored["outcomeDetail"] == "rollout restarted"
     assert stored["reviewItemId"] == "review:court_escalation:evt-judgment-1"
-    assert await store.record_decision_outcome(
-        correlation_id="", outcome="executed", detail="", outcome_at=""
-    ) == 0
+    assert (
+        await store.record_decision_outcome(
+            correlation_id="", outcome="executed", detail="", outcome_at=""
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -327,9 +363,12 @@ async def test_postgres_store_lists_and_updates() -> None:
         correlation_id="corr-1", outcome="executed", detail="ok", outcome_at="t"
     )
     assert updated == 2
-    assert await store.record_decision_outcome(
-        correlation_id="", outcome="executed", detail="", outcome_at=""
-    ) == 0
+    assert (
+        await store.record_decision_outcome(
+            correlation_id="", outcome="executed", detail="", outcome_at=""
+        )
+        == 0
+    )
 
     pool.fetch_results = [[{"signal_id": "sig-1", "payload": {"signalId": "sig-1"}}]]
     assert await store.signals_by_ids(["sig-1"]) == [{"signalId": "sig-1"}]
@@ -417,7 +456,7 @@ async def test_autonomous_judgment_stays_out_of_inbox(tmp_path: Any) -> None:
 
 
 def test_review_item_for_judgment_contract() -> None:
-    record = decision_record_from_event(_judgment_event(authority="court_required"))
+    record = decision_record_from_event(_judgment_event(authority="human_review_required"))
     assert record is not None
     item = review_item_for_judgment(record)
 
