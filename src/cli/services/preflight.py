@@ -42,7 +42,6 @@ class PreflightConfig:
     """Configuration for preflight checks."""
 
     claude_binary: str = "claude"
-    api_key_env: str = "ANTHROPIC_API_KEY"
     ports: list[int] = field(default_factory=lambda: list(DEFAULT_PORTS))
     workspaces_dir: str = "~/.niuu/workspaces"
     min_disk_space_bytes: int = MIN_DISK_SPACE_BYTES
@@ -70,29 +69,6 @@ def check_claude_binary(config: PreflightConfig) -> PreflightResult:
         name="claude binary",
         passed=True,
         message=f"claude binary found: {resolved}",
-    )
-
-
-def check_api_key(config: PreflightConfig) -> PreflightResult:
-    """Verify the Anthropic API key is set."""
-    key = os.environ.get(config.api_key_env, "")
-    if not key:
-        return PreflightResult(
-            name="API key",
-            passed=False,
-            message=f"{config.api_key_env} is not set. Export it or add it to your secrets config.",
-        )
-    # Basic format validation — key should be non-trivial
-    if len(key) < 10:
-        return PreflightResult(
-            name="API key",
-            passed=False,
-            message=f"{config.api_key_env} appears invalid (too short).",
-        )
-    return PreflightResult(
-        name="API key",
-        passed=True,
-        message=f"{config.api_key_env} is set.",
     )
 
 
@@ -417,7 +393,6 @@ def run_preflight_checks(config: PreflightConfig) -> list[PreflightResult]:
 
     if config.mode == "cluster":
         results.extend(run_cluster_preflight_checks(config))
-        results.append(check_api_key(config))
         results.extend(check_ports(config))
         results.append(check_database(config))
         results.append(check_git())
@@ -426,7 +401,6 @@ def run_preflight_checks(config: PreflightConfig) -> list[PreflightResult]:
 
     # Mini mode (default)
     results.append(check_claude_binary(config))
-    results.append(check_api_key(config))
     results.extend(check_ports(config))
     results.append(check_workspace_dir(config))
     results.append(check_database(config))

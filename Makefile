@@ -64,8 +64,8 @@ copy-migrations:
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation
 # --------------------------------------------------------------------------
-build-cli:
-	uv run python -m cli.build \
+build-cli: build-web
+	uv run --extra cli python -m cli.build \
 		--name $(BINARY_NAME) \
 		--entry $(ENTRY_POINT) \
 		--output-dir $(OUTPUT_DIR)

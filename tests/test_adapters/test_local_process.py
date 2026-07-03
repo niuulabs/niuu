@@ -8,6 +8,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -15,6 +16,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
+import volundr.adapters.outbound.local_process as local_process_mod
 from niuu.mesh.ipc import skuld_mesh_addresses
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
@@ -921,6 +923,17 @@ class TestGitClone:
 class TestProcessSpawning:
     """Tests for Skuld process spawning."""
 
+    def test_resolve_skuld_command_from_source(self, manager: LocalProcessPodManager) -> None:
+        assert manager._resolve_skuld_command() == [sys.executable, "-m", "skuld"]
+
+    def test_resolve_skuld_command_from_nuitka_binary(
+        self, manager: LocalProcessPodManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(local_process_mod, "__compiled__", object(), raising=False)
+        monkeypatch.setattr(sys, "executable", "/tmp/niuu")
+
+        assert manager._resolve_skuld_command() == ["/tmp/niuu", "platform", "skuld"]
+
     async def test_spawn_skuld_returns_pid(
         self,
         manager: LocalProcessPodManager,
@@ -1725,9 +1738,9 @@ class TestProcessSpawning:
         assert remote_instance["path"] == str(flock_dir / "mimir" / "local" / "mimir-yggdrasil")
         assert Path(remote_instance["path"]).is_dir()
         assert mimir_cfg["write_routing"]["default"] == ["mimir-yggdrasil"]
-        assert {"prefix": "research/", "mounts": ["mimir-yggdrasil"]} in mimir_cfg[
-            "write_routing"
-        ]["rules"]
+        assert {"prefix": "research/", "mounts": ["mimir-yggdrasil"]} in mimir_cfg["write_routing"][
+            "rules"
+        ]
 
     async def test_start_flock_enriches_cluster_peers_with_persona_metadata(
         self,

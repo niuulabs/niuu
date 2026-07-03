@@ -113,16 +113,6 @@ class PodManagerConfig(BaseModel):
         return data
 
 
-class AnthropicConfig(BaseModel):
-    """Anthropic API configuration."""
-
-    api_key: str = Field(default="", description="Anthropic API key.")
-    api_key_env: str = Field(
-        default="ANTHROPIC_API_KEY",
-        description="Environment variable name for the API key (fallback).",
-    )
-
-
 class ServerConfig(BaseModel):
     """Server configuration — single port for all services."""
 
@@ -196,7 +186,6 @@ class CLISettings(BaseSettings):
         default="mini",
         description="Operating mode: 'mini' (local) or 'cluster'.",
     )
-    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)

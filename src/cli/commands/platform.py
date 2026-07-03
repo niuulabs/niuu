@@ -228,13 +228,7 @@ def _build_up_callback(
 
     def up(**kwargs: bool | None) -> None:
         """Start platform services."""
-        import os
-
         from niuu.app import DEFAULT_HOST_PROFILE, parse_enabled_mounts
-
-        # Set Anthropic API key from config if not already in env
-        if settings.anthropic.api_key:
-            os.environ.setdefault("ANTHROPIC_API_KEY", settings.anthropic.api_key)
 
         workspaces_dir = str(kwargs.pop("workspaces_dir", "") or "").strip()
         effective_settings = settings

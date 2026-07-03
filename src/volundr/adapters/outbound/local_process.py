@@ -1395,8 +1395,8 @@ class LocalProcessPodManager(PodManager):
         """
         import sys
 
-        # Check if we're running from a Nuitka-compiled binary
-        if getattr(sys, "frozen", False) or "__compiled__" in dir():
+        # Check if we're running from a Nuitka-compiled binary.
+        if getattr(sys, "frozen", False) or "__compiled__" in globals():
             return [sys.executable, "platform", "skuld"]
 
         # Running from source
