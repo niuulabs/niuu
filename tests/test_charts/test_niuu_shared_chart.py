@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).parent.parent.parent
 CHART_DIR = REPO_ROOT / "charts" / "niuu-shared"
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
@@ -20,8 +19,7 @@ def _migration_blocks(template: str) -> dict[str, str]:
         end = matches[index + 1].start() if index + 1 < len(matches) else template_end
         lines = template[start:end].splitlines()
         blocks[name] = (
-            "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip()
-            + "\n"
+            "\n".join(line[4:] if line.startswith("    ") else "" for line in lines).rstrip() + "\n"
         )
     return blocks
 
