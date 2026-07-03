@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
+import { LifecycleBadge, LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
 import { CliBadge, ConnectionTypeBadge, MiniBar } from './atoms';
 import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
@@ -14,18 +14,25 @@ import type { Session, SessionState } from '../domain/session';
 import type { VolundrLaunchSpec } from '../models/volundr.model';
 import './ForgePage.css';
 
-const INFLIGHT_STATES: SessionState[] = ['provisioning', 'requested', 'running', 'idle'];
+const INFLIGHT_STATES: SessionState[] = [
+  'provisioning',
+  'requested',
+  'running',
+  'idle',
+  'awaiting_input',
+];
 
 const SESSION_PRIORITY: Record<SessionState, number> = {
-  provisioning: 0,
-  requested: 1,
-  running: 2,
-  idle: 3,
-  ready: 4,
-  failed: 5,
-  terminating: 6,
-  terminated: 7,
-  archived: 8,
+  awaiting_input: 0,
+  provisioning: 1,
+  requested: 2,
+  running: 3,
+  idle: 4,
+  ready: 5,
+  failed: 6,
+  terminating: 7,
+  terminated: 8,
+  archived: 9,
 };
 
 const KIND_LABEL: Record<ClusterKind, string> = {
@@ -210,6 +217,7 @@ function sessionSecondaryParts(session: Session, clusterLabel: string) {
 
 function sessionDotState(session: Session) {
   if (session.state === 'failed') return 'failed';
+  if (session.state === 'awaiting_input') return 'attention';
   if (session.state === 'idle') return 'idle';
   if (session.state === 'running') return 'running';
   return 'processing';
@@ -486,6 +494,10 @@ export function ForgePage() {
     () => dashboardSessions.filter((session) => session.state === 'failed'),
     [dashboardSessions],
   );
+  const attentionSessions = useMemo(
+    () => dashboardSessions.filter((session) => session.state === 'awaiting_input'),
+    [dashboardSessions],
+  );
 
   const forgeClusters = useMemo(() => {
     const sessionsByCluster = new Map<string, number>();
@@ -711,6 +723,38 @@ export function ForgePage() {
               ))}
             </ol>
           </section>
+
+          {attentionSessions.length > 0 ? (
+            <section
+              className="vol-forge__panel vol-forge__panel--attention"
+              data-testid="attention-strip"
+            >
+              <header className="vol-forge__panel-head">
+                <div className="vol-forge__panel-title vol-forge__panel-title--attention">
+                  <h2>Needs your input</h2>
+                  <span>{attentionSessions.length}</span>
+                </div>
+              </header>
+
+              <div className="vol-forge__error-list">
+                {attentionSessions.map((session) => (
+                  <div key={session.id} className="vol-forge__error-row">
+                    <StateDot state="attention" pulse />
+                    <div className="vol-forge__error-body">
+                      <div className="vol-forge__error-title">
+                        <span>{session.name ?? session.id}</span>
+                        <span>{session.personaName}</span>
+                      </div>
+                      <div className="vol-forge__error-message">
+                        {session.preview ?? 'waiting for your response'}
+                      </div>
+                    </div>
+                    <LifecycleBadge state="awaiting_input" />
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           {erroredSessions.length > 0 ? (
             <section

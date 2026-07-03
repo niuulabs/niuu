@@ -121,7 +121,7 @@ broker:
   cliType: claude
   transport: sdk
   skipPermissions: false
-  agentTeams: false
+  agentTeams: true
 
 # Volundr API (for token usage reporting)
 volundr:

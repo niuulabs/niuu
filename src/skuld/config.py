@@ -210,6 +210,13 @@ class SkuldSessionConfig(BaseModel):
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
     model: str = Field(default="claude-opus-4-8")
+    reasoning_effort: str = Field(
+        default="",
+        description=(
+            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-5.6 Sol). "
+            "Empty lets the transport pick a model-appropriate default."
+        ),
+    )
     workspace_dir: str | None = Field(default=None)
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
@@ -221,6 +228,73 @@ class SkuldSessionConfig(BaseModel):
             "Native CLI session/thread id to resume on first start. Set by "
             "Volundr for sessions imported from an external harness."
         ),
+    )
+
+
+class ActivityHeartbeatConfig(BaseModel):
+    """Periodic re-report of the current activity state to Volundr.
+
+    Skuld reports activity purely on CLI frame transitions, so a long turn (a
+    slow tool, an extended thinking pass) or a session blocked on the user goes
+    silent: the UI cannot tell "still progressing" from "frozen", and Volundr's
+    liveness reaper (``session_liveness.stale_after_seconds``, default 600) can
+    falsely mark a genuinely-busy or input-blocked session as stopped. The
+    heartbeat re-reports the current state on an interval while the agent is busy
+    (active/tool_executing) or awaiting input, advancing ``last_active``.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "How often to re-report a busy/awaiting state. Keep comfortably "
+            "below Volundr's session liveness stale_after_seconds (default 600)."
+        ),
+    )
+
+
+class DeliveryConfig(BaseModel):
+    """Durable inbound-message delivery (SRD FR-5 / INV-7).
+
+    An inbound user message is accepted by the broker as ``pending`` and only
+    becomes authoritatively ``active`` once the transport consumes it. A transient
+    transport failure (a wedged input channel, a transport still warming up) is
+    retried with bounded backoff; on terminal failure the user turn flips to a
+    VISIBLE ``failed`` state (never left silently ``pending``). These knobs keep
+    every count/delay out of the business logic (no magic numbers).
+    """
+
+    max_attempts: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Total number of transport-delivery attempts for one inbound message "
+            "(the first try plus retries). 1 disables retry."
+        ),
+    )
+    attempt_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Per-attempt timeout for a single transport send/redirect. A wedged "
+            "send-lock that never returns is bounded by this and retried."
+        ),
+    )
+    initial_backoff_seconds: float = Field(
+        default=0.5,
+        ge=0,
+        description="Delay before the first retry after a transient failure.",
+    )
+    backoff_multiplier: float = Field(
+        default=2.0,
+        ge=1,
+        description="Multiplier applied to the backoff delay after each failed attempt.",
+    )
+    max_backoff_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        description="Upper bound on a single inter-attempt backoff delay.",
     )
 
 
@@ -289,13 +363,16 @@ class SkuldSettings(BaseSettings):
     )
 
     session: SkuldSessionConfig = Field(default_factory=SkuldSessionConfig)
-    cli_type: str = Field(default="claude")  # "claude" | "codex"
+    cli_type: str = Field(default="claude")  # "claude" | "codex" | "grok"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
     skip_permissions: bool = Field(default=False)
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
-    agent_teams: bool = Field(default=False)
+    # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
+    # tmux) so a session can spin up a team of agents. Only the tmux transport
+    # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
+    agent_teams: bool = Field(default=True)
     ask_user_question_enabled: bool = Field(
         default=False,
         description=(
@@ -305,6 +382,8 @@ class SkuldSettings(BaseSettings):
             "classic bypassPermissions behavior."
         ),
     )
+    activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
@@ -329,7 +408,15 @@ class SkuldSettings(BaseSettings):
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
     event_log_max_buffer: int = Field(default=50_000)
+    # Unified internal-visibility default for a freshly-connected live channel
+    # (SRD FR-7 / INV-10). The read paths thread the SAME configured default
+    # (``ReplayConfig.default_show_internal`` in volundr); a live ``WebSocketChannel``
+    # must read its default from ONE configured source too, not a hardcoded literal,
+    # so all three paths (live channel, replay tail, cold-read) move together.
+    # Default ``False`` (internal tool_use/tool_result HIDDEN), matching ReplayConfig.
+    default_show_internal: bool = Field(default=False)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -359,6 +446,10 @@ class SkuldSettings(BaseSettings):
 
         if self.cli_type == "opencode":
             self.transport_adapter = "skuld.transports.opencode.OpenCodeHttpTransport"
+            return self
+
+        if self.cli_type == "grok":
+            self.transport_adapter = "skuld.transports.grok.GrokACPTransport"
             return self
 
         if self.transport == "subprocess":

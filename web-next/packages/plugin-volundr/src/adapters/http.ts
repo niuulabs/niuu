@@ -130,6 +130,8 @@ type SessionPayload = {
   issue_tracker_url?: string | null;
   activityState?: VolundrSession['activityState'];
   activity_state?: VolundrSession['activityState'];
+  needsAttention?: boolean;
+  needs_attention?: boolean;
   ownerId?: string | null;
   owner_id?: string | null;
   tenantId?: string | null;
@@ -503,6 +505,10 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     archivedAt: toDate(session.archivedAt ?? session.archived_at),
     trackerIssue,
     activityState: session.activityState ?? session.activity_state ?? undefined,
+    needsAttention:
+      session.needsAttention ??
+      session.needs_attention ??
+      (session.activityState ?? session.activity_state) === 'awaiting_input',
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
@@ -1367,6 +1373,30 @@ export function buildVolundrHttpAdapter(
               sessionCache.delete(sessionId);
               publishSessions();
             }
+            return;
+          }
+          if (eventType === 'session_activity' || eventType === 'session_needs_input') {
+            // Live activity transitions (active/idle/tool_executing/awaiting_input)
+            // ride their own event, not session_updated — apply them to the cached
+            // session so a "needs you" badge flips immediately, not on the next poll.
+            const activity = payload as {
+              session_id?: string;
+              state?: VolundrSession['activityState'];
+            };
+            const sessionId = activity.session_id;
+            if (typeof sessionId !== 'string') return;
+            const existing = sessionCache.get(sessionId);
+            if (!existing) return;
+            const state =
+              eventType === 'session_needs_input'
+                ? 'awaiting_input'
+                : (activity.state ?? existing.activityState);
+            sessionCache.set(sessionId, {
+              ...existing,
+              activityState: state,
+              needsAttention: state === 'awaiting_input',
+            });
+            publishSessions();
             return;
           }
           if (eventType === 'stats_updated') {

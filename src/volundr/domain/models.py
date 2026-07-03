@@ -126,11 +126,43 @@ class SessionStatus(StrEnum):
 
 
 class SessionActivityState(StrEnum):
-    """Activity state of a running session (orthogonal to lifecycle status)."""
+    """Activity state of a running session (orthogonal to lifecycle status).
 
+    This is the "what is the agent doing right now" axis, distinct from the
+    lifecycle ``status`` (which only tracks whether the container is up):
+
+    - ``provisioning`` — the session is booting; the CLI REPL is not ready yet.
+      The first real frame (system/init) flips it to ``idle``.
+    - ``active`` / ``tool_executing`` — the agent is progressing (thinking,
+      streaming, or running a tool). Both mean "busy".
+    - ``idle`` — the turn finished; the session is waiting for the user's next
+      message but is NOT blocked on anything.
+    - ``stopped`` — the transport died (e.g. its tmux session vanished); the
+      session is no longer running and the last live state is final.
+    - ``awaiting_input`` — the session is BLOCKED on a human: an
+      ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
+      the "needs attention" state — the agent cannot make progress until the
+      user responds. ``activity_metadata`` carries the specifics via
+      ``kind`` (``question`` | ``confirmation`` | ``permission``), ``prompt``,
+      ``options``, and ``request_id``.
+    """
+
+    PROVISIONING = "provisioning"
     ACTIVE = "active"
     IDLE = "idle"
     TOOL_EXECUTING = "tool_executing"
+    AWAITING_INPUT = "awaiting_input"
+    STOPPED = "stopped"
+
+    @property
+    def is_busy(self) -> bool:
+        """True when the agent is actively progressing (not idle, not blocked)."""
+        return self in (SessionActivityState.ACTIVE, SessionActivityState.TOOL_EXECUTING)
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user."""
+        return self is SessionActivityState.AWAITING_INPUT
 
 
 class EventType(StrEnum):
@@ -148,6 +180,7 @@ class EventType(StrEnum):
     PR_CREATED = "pr_created"
     PR_MERGED = "pr_merged"
     SESSION_ACTIVITY = "session_activity"
+    SESSION_NEEDS_INPUT = "session_needs_input"
 
 
 class CommunicationPlatform(StrEnum):
@@ -231,6 +264,53 @@ class RealtimeEvent:
     type: EventType
     data: dict
     timestamp: datetime
+
+
+class DevicePlatform(StrEnum):
+    """Platform a registered push device belongs to."""
+
+    IOS = "ios"
+    ANDROID = "android"
+    WEB = "web"
+
+
+class DeviceToken(BaseModel):
+    """A user's registered device for push notifications.
+
+    Stored per-owner so a session that needs attention can fan a push out to
+    every device the owner has registered (the iOS app/widget, etc.).
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    owner_id: str = Field(description="User ID (IDP sub) the device belongs to")
+    platform: DevicePlatform = Field(description="Device platform")
+    token: str = Field(
+        min_length=1,
+        max_length=512,
+        description="APNs device token, FCM token, or web-push endpoint",
+    )
+    app_bundle_id: str | None = Field(
+        default=None,
+        description="APNs topic (bundle id) to target; falls back to the channel default",
+    )
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = {"frozen": False}
+
+
+@dataclass(frozen=True)
+class PushMessage:
+    """A user-facing push built from a session attention signal."""
+
+    owner_id: str
+    title: str
+    body: str
+    session_id: str
+    #: question | confirmation | permission
+    kind: str
+    urgency: float
+    request_id: str = ""
 
 
 class GitSource(BaseModel):
@@ -408,7 +488,18 @@ class Session(BaseModel):
     )
     activity_state: SessionActivityState | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing)",
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+        ),
+    )
+    activity_state_since: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp (UTC) when the session ENTERED its current activity_state. "
+            "Stamped only on a real state change (not on re-asserting the same "
+            "state), so clients can render an accurate 'active for Ns' elapsed."
+        ),
     )
     activity_metadata: dict = Field(
         default_factory=dict,
@@ -437,8 +528,27 @@ class Session(BaseModel):
             "session is restarted."
         ),
     )
+    session_definition: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Session definition (runtime type, e.g. skuldClaude / skuldGrok) the "
+            "session was launched with, persisted so restarts re-apply the same "
+            "transport instead of falling back to the platform default."
+        ),
+    )
 
     model_config = {"frozen": False}
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user (awaiting_input).
+
+        Surfaced directly so clients (web badges, the iOS widget) and the REST
+        list endpoint can filter "this session needs you" without re-deriving
+        the rule from ``activity_state``.
+        """
+        return self.activity_state is SessionActivityState.AWAITING_INPUT
 
     @property
     def repo(self) -> str:

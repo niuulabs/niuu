@@ -6,7 +6,13 @@ from uuid import UUID
 
 import asyncpg
 
-from volundr.domain.models import GitSource, LocalMountSource, Session, SessionStatus
+from volundr.domain.models import (
+    GitSource,
+    LocalMountSource,
+    Session,
+    SessionActivityState,
+    SessionStatus,
+)
 from volundr.domain.ports import SessionRepository
 
 
@@ -26,10 +32,11 @@ class PostgresSessionRepository(SessionRepository):
                  created_at, updated_at, last_active, message_count, tokens_used,
                  pod_name, error, tracker_issue_id, issue_tracker_url,
                  launch_spec_id, archived_at, owner_id, tenant_id, workload_type,
-                 origin, external_session_id, cli_session_id)
+                 origin, external_session_id, cli_session_id, session_definition,
+                 activity_state, activity_metadata, activity_state_since)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                    $22, $23, $24)
+                    $22, $23, $24, $25, $26, $27, $28)
             """,
             session.id,
             session.name,
@@ -55,6 +62,10 @@ class PostgresSessionRepository(SessionRepository):
             session.origin,
             session.external_session_id,
             session.cli_session_id,
+            session.session_definition,
+            session.activity_state.value if session.activity_state else None,
+            json.dumps(session.activity_metadata or {}),
+            session.activity_state_since,
         )
         return session
 
@@ -124,7 +135,9 @@ class PostgresSessionRepository(SessionRepository):
                 pod_name = $12, error = $13, tracker_issue_id = $14,
                 issue_tracker_url = $15, launch_spec_id = $16, archived_at = $17,
                 owner_id = $18, tenant_id = $19, workload_type = $20,
-                origin = $21, external_session_id = $22, cli_session_id = $23
+                origin = $21, external_session_id = $22, cli_session_id = $23,
+                session_definition = $24, activity_state = $25,
+                activity_metadata = $26, activity_state_since = $27
             WHERE id = $1
             """,
             session.id,
@@ -150,6 +163,10 @@ class PostgresSessionRepository(SessionRepository):
             session.origin,
             session.external_session_id,
             session.cli_session_id,
+            session.session_definition,
+            session.activity_state.value if session.activity_state else None,
+            json.dumps(session.activity_metadata or {}),
+            session.activity_state_since,
         )
         return session
 
@@ -179,6 +196,7 @@ class PostgresSessionRepository(SessionRepository):
         updated_at = row["updated_at"]
         last_active = row["last_active"]
         archived_at = row.get("archived_at")
+        activity_state_since = row.get("activity_state_since")
 
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=UTC)
@@ -188,8 +206,12 @@ class PostgresSessionRepository(SessionRepository):
             last_active = last_active.replace(tzinfo=UTC)
         if archived_at is not None and archived_at.tzinfo is None:
             archived_at = archived_at.replace(tzinfo=UTC)
+        if activity_state_since is not None and activity_state_since.tzinfo is None:
+            activity_state_since = activity_state_since.replace(tzinfo=UTC)
 
         source = self._parse_source(row.get("source"))
+        activity_state = self._parse_activity_state(row.get("activity_state"))
+        activity_metadata = self._parse_activity_metadata(row.get("activity_metadata"))
 
         return Session(
             id=row["id"],
@@ -216,7 +238,36 @@ class PostgresSessionRepository(SessionRepository):
             origin=row.get("origin") or "volundr",
             external_session_id=row.get("external_session_id"),
             cli_session_id=row.get("cli_session_id"),
+            session_definition=row.get("session_definition"),
+            activity_state=activity_state,
+            activity_state_since=activity_state_since,
+            activity_metadata=activity_metadata,
         )
+
+    @staticmethod
+    def _parse_activity_state(raw: str | None) -> SessionActivityState | None:
+        """Parse the activity_state column, tolerating unknown/legacy values."""
+        if not raw:
+            return None
+        try:
+            return SessionActivityState(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_activity_metadata(raw: str | dict | None) -> dict:
+        """Parse the activity_metadata JSONB column (asyncpg may return str or dict)."""
+        if raw is None:
+            return {}
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        if isinstance(raw, dict):
+            return raw
+        return {}
 
     @staticmethod
     def _parse_source(raw: str | dict | None) -> GitSource | LocalMountSource:

@@ -1132,6 +1132,41 @@ describe('buildServices', () => {
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
   });
 
+  it('maps an awaiting_input running session to the awaiting_input state', async () => {
+    const blocked = {
+      id: 'sess-blocked',
+      name: 'fix-auth',
+      source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+      status: 'running',
+      model: 'claude-sonnet',
+      lastActive: Date.parse('2026-04-24T12:30:00Z'),
+      messageCount: 1,
+      tokensUsed: 10,
+      activityState: 'awaiting_input',
+      needsAttention: true,
+    };
+    const liveVolundr = {
+      kind: 'volundr',
+      getSessions: vi.fn().mockResolvedValue([blocked]),
+      getSession: vi.fn().mockResolvedValue(blocked),
+      listArchivedSessions: vi.fn().mockResolvedValue([]),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => () => {}),
+    };
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
+
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: { forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' } },
+    } as any);
+
+    const sessionStore = services.sessionStore as any;
+    await expect(sessionStore.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: 'sess-blocked', state: 'awaiting_input' }),
+    ]);
+  });
+
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {
     buildServices({
       theme: 'ice',

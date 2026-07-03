@@ -27,6 +27,7 @@ from volundr.domain.models import (
     ClusterResourceInfo,
     CommunicationRoute,
     CredentialMapping,
+    DeviceToken,
     ExternalSessionRecord,
     IntegrationConnection,
     LaunchSpec,
@@ -37,6 +38,7 @@ from volundr.domain.models import (
     Principal,
     ProjectMapping,
     PromptScope,
+    PushMessage,
     PVCRef,
     RealtimeEvent,
     RoomParticipantInfo,
@@ -402,6 +404,55 @@ class EventBroadcaster(ABC):
         """
 
 
+class DeviceTokenRepository(ABC):
+    """Persistence port for per-user push device registrations."""
+
+    @abstractmethod
+    async def upsert(self, device: DeviceToken) -> DeviceToken:
+        """Register a device, or refresh it if the (owner, token) already exists."""
+
+    @abstractmethod
+    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
+        """Return every device registered by an owner."""
+
+    @abstractmethod
+    async def delete(self, owner_id: str, token: str) -> bool:
+        """Remove a device registration. Returns True if one was deleted."""
+
+
+class NotificationChannel(ABC):
+    """Outbound port for delivering a push to a user's devices.
+
+    Implementations: APNs (direct), an outbound webhook relay, or a logging
+    no-op. Selected via the dynamic-adapter config so adding a channel is
+    config-only.
+    """
+
+    @abstractmethod
+    async def send(self, message: PushMessage, devices: list[DeviceToken]) -> None:
+        """Deliver a push. ``devices`` is the owner's registered devices (may be
+        empty for relay channels that resolve recipients themselves)."""
+
+
+class AttentionNotifier(ABC):
+    """Port the session service calls when a session needs the user.
+
+    Decouples session logic from the push delivery mechanism: the session
+    service emits the intent, an adapter resolves devices and dispatches.
+    """
+
+    @abstractmethod
+    async def notify_needs_input(
+        self,
+        session: Session,
+        *,
+        kind: str,
+        prompt: str,
+        request_id: str,
+    ) -> None:
+        """Alert the session owner that the session is blocked awaiting them."""
+
+
 class LaunchSpecProvider(ABC):
     """Read port for system-scope launch specs (config-seeded, read-only)."""
 
@@ -554,6 +605,56 @@ class SessionEventLogRepository(ABC):
     @abstractmethod
     async def latest_seq(self, session_id: UUID) -> int:
         """Return the highest seq stored for a session, or 0 if none."""
+
+    async def detect_conflicts(self, entries: list[SessionLogEntry]) -> list[int]:
+        """Return the seqs that ALREADY have a stored row with a DISTINCT payload.
+
+        ``append`` is idempotent on ``(session_id, seq)`` (ON CONFLICT DO NOTHING),
+        so re-appending the SAME frame is a silent no-op (INV-3 idempotency). That
+        same swallow, however, would also hide a genuine bug: a *different* payload
+        re-using a seq another frame already owns. This method is the off-hot-path,
+        queryable detection signal for that case (INV-3c): it reads back the stored
+        rows for the candidate seqs and returns the seqs whose stored frame DIFFERS
+        from the candidate (by ``payload``/``kind``/``role``/``request_id``).
+
+        This is a CONCRETE default built on :meth:`read_after` so in-memory fakes
+        inherit it for free. It is never called from ``append``; callers opt in on a
+        cold/validation path. Returns an empty list when ``entries`` is empty.
+        """
+        if not entries:
+            return []
+
+        by_session: dict[UUID, dict[int, SessionLogEntry]] = {}
+        for entry in entries:
+            by_session.setdefault(entry.session_id, {})[entry.seq] = entry
+
+        conflicts: list[int] = []
+        for session_id, candidates in by_session.items():
+            min_seq = min(candidates) - 1
+            max_seq = max(candidates)
+            stored = await self.read_after(
+                session_id,
+                after_seq=min_seq,
+                limit=max_seq - min_seq,
+            )
+            for row in stored:
+                candidate = candidates.get(row.seq)
+                if candidate is None:
+                    continue
+                if _log_entries_conflict(candidate, row):
+                    conflicts.append(row.seq)
+        conflicts.sort()
+        return conflicts
+
+
+def _log_entries_conflict(candidate: SessionLogEntry, stored: SessionLogEntry) -> bool:
+    """True when two entries share a seq but carry materially different content."""
+    return (
+        candidate.payload != stored.payload
+        or candidate.kind != stored.kind
+        or candidate.role != stored.role
+        or candidate.request_id != stored.request_id
+    )
 
 
 class SessionSpanRepository(ABC):

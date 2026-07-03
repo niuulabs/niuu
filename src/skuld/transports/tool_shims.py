@@ -133,6 +133,67 @@ def _tracker_issue_script(base_url: str, timeout: float, pat_token: str) -> str:
     )
 
 
+# The `present-file` command — an ENGINE-AGNOSTIC (claude + codex) PATH shim that hands the user a
+# file in the Lexi app (in-app SendUserFile). It POSTs the resolved absolute path to the broker's
+# loopback endpoint (URL from FORGE_PRESENT_FILE_URL, injected by the transport); the broker stages
+# + emits the card. A pure-stdlib python3 script → no curl/jq dependency, no bash-quoting fragility.
+_PRESENT_FILE_SHIM = '''#!/usr/bin/env python3
+"""present-file <path> [--caption ...] [--title ...] — show a file to the user in Lexi."""
+import json, os, sys, urllib.request, urllib.error
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    path = caption = title = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--caption":
+            caption = args[i + 1] if i + 1 < len(args) else None; i += 2
+        elif a == "--title":
+            title = args[i + 1] if i + 1 < len(args) else None; i += 2
+        elif a.startswith("--caption="):
+            caption = a.split("=", 1)[1]; i += 1
+        elif a.startswith("--title="):
+            title = a.split("=", 1)[1]; i += 1
+        else:
+            path = a; i += 1
+    if not path:
+        print('usage: present-file <path> [--caption "..."] [--title "..."]', file=sys.stderr)
+        sys.exit(2)
+    url = os.environ.get("FORGE_PRESENT_FILE_URL")
+    if not url:
+        print("present-file: not available in this session", file=sys.stderr)
+        sys.exit(3)
+    payload = {"path": os.path.abspath(os.path.expanduser(path))}
+    if caption:
+        payload["caption"] = caption
+    if title:
+        payload["title"] = title
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            sys.stdout.write(r.read().decode()); sys.stdout.write("\\n")
+    except urllib.error.HTTPError as e:
+        sys.stderr.write(e.read().decode()); sys.stderr.write("\\n"); sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - surface any transport error to the agent
+        print("present-file:", e, file=sys.stderr); sys.exit(1)
+
+
+main()
+'''
+
+
+def _install_present_file_shim(bin_dir: Path) -> None:
+    """Write the engine-agnostic ``present-file`` PATH shim into ``bin_dir``."""
+    target = bin_dir / "present-file"
+    target.write_text(_PRESENT_FILE_SHIM, encoding="utf-8")
+    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def ensure_codex_tool_shims(
     workspace_dir: str,
     *,
@@ -157,6 +218,9 @@ def ensure_codex_tool_shims(
         encoding="utf-8",
     )
     tracker_target.chmod(tracker_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Engine-agnostic present-file command (available to claude AND codex tmux sessions).
+    _install_present_file_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {}
     if mount is not None:

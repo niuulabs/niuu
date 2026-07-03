@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from volundr.domain.models import LocalMountSource
+from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
@@ -21,6 +22,15 @@ if TYPE_CHECKING:
 
 class SessionArchiveNotAvailableError(RuntimeError):
     """Raised when a session archive cannot be resolved from workspace storage."""
+
+
+def _payload_has_turns(payload: Any) -> bool:
+    """True when a transcript payload carries at least one renderable turn.
+
+    BUG-2: an EMPTY archive/workspace result ({"turns": []}) must not pre-empt the
+    durable-log reducer for the tmux/crash sessions we need to rebuild.
+    """
+    return isinstance(payload, dict) and bool(payload.get("turns"))
 
 
 class SessionArchiveService:
@@ -51,6 +61,19 @@ class SessionArchiveService:
             f"No accessible workspace path for session {session_id}"
         )
 
+    async def latest_event_seq(self, session_id: UUID) -> int:
+        """Cheap durable-freshness signal: the MAX(seq) of the session's event log (0 when none).
+
+        A stable seq guarantees the durable transcript hasn't grown, so a cached turn count keyed
+        on it stays valid — lets the read path skip the expensive `get_transcript` rebuild when the
+        durable log is unchanged (see the FAULT-C reconciliation in the REST adapter)."""
+        if self._event_log_repository is None:
+            return 0
+        try:
+            return await self._event_log_repository.latest_seq(session_id)
+        except Exception:  # pragma: no cover - a freshness probe must never fail the read
+            return 0
+
     async def get_transcript(self, session_id: UUID) -> dict[str, Any]:
         """Return the persisted transcript payload for a session."""
         session_id_str = str(session_id)
@@ -61,11 +84,11 @@ class SessionArchiveService:
                 session_id=session_id_str,
                 workspace_dir=candidate,
             )
-            if archived is not None:
+            if _payload_has_turns(archived):
                 return archived
 
         archived = self._archive_store.load_transcript(session_id=session_id_str)
-        if archived is not None:
+        if _payload_has_turns(archived):
             return archived
 
         event_log_transcript = await self._load_event_log_transcript(session_id)
@@ -270,15 +293,22 @@ class SessionArchiveService:
         return session, candidates
 
     async def _load_event_log_transcript(self, session_id: UUID) -> dict[str, Any] | None:
-        """Build a stopped-session transcript from durable conversation turns."""
+        """Rebuild a stopped-session transcript from the durable event log.
+
+        BUG-2: the durable ``session_event_log`` holds the COMPLETE work (assistant /
+        content_block_delta / result / terminal_frame frames), not just finished
+        ``conversation.turn`` rows. A tmux session that crashes mid-turn never produces a
+        ``conversation.turn`` for its open work, so the old "conversation.turn-only" read
+        returned nothing. Page in the full ordered frame list and hand it to the pure
+        reducer (which mirrors the broker's live folding and surfaces interrupted turns).
+        """
         if self._event_log_repository is None:
             return None
 
-        turns: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
+        all_entries: list = []
         after_seq = 0
         limit = 5000
-
+        max_frames = 50_000  # hard ceiling — bounded read for huge sessions
         while True:
             entries = await self._event_log_repository.read_after(
                 session_id,
@@ -289,25 +319,15 @@ class SessionArchiveService:
                 break
             for entry in entries:
                 after_seq = max(after_seq, int(entry.seq))
-                if entry.kind != "conversation.turn":
-                    continue
-                payload = entry.payload if isinstance(entry.payload, dict) else {}
-                turn = payload.get("turn")
-                if not isinstance(turn, dict):
-                    continue
-                turn_id = str(turn.get("id") or "").strip()
-                if turn_id and turn_id in seen_ids:
-                    continue
-                if turn_id:
-                    seen_ids.add(turn_id)
-                turns.append(turn)
-            if len(entries) < limit:
+            all_entries.extend(entries)
+            if len(entries) < limit or len(all_entries) >= max_frames:
                 break
 
-        if not turns:
-            return None
+        result = rebuild_turns(all_entries)
+        if not result.turns:
+            return None  # preserve the existing None -> fall-through contract
         return {
-            "turns": turns,
+            "turns": result.turns,
             "is_active": False,
             "last_activity": "",
         }

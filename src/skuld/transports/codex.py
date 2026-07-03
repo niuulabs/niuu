@@ -140,7 +140,9 @@ class CodexSubprocessTransport(CLITransport):
         await _stop_process(self._process)
         self._process = None
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         self._last_result = None
         self._pending_text = []
         codex_cli = resolve_codex_cli()

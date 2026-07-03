@@ -27,6 +27,7 @@ import signal
 import socket
 import subprocess
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -457,6 +458,10 @@ class LocalProcessPodManager(PodManager):
         self._monitors: dict[str, asyncio.Task] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
         self._persona_registry: object | None = None  # Set via set_persona_registry()
+        # Notified (best-effort) when a managed broker process exits, so the
+        # SessionService can reconcile the DB row promptly instead of waiting for
+        # the periodic sweep. Set via set_death_callback().
+        self._death_callback: Callable[[str], Awaitable[None]] | None = None
 
         self._load_state()
         for info in self._processes.values():
@@ -476,6 +481,16 @@ class LocalProcessPodManager(PodManager):
     def set_persona_registry(self, registry: object) -> None:
         """Inject the persona registry used to materialize custom flock personas."""
         self._persona_registry = registry
+
+    def set_death_callback(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        """Inject an async callback notified when a managed broker process exits.
+
+        The callback receives the session id string and is expected to reconcile
+        the persisted Session row (pod-status authoritative) so the DB reflects
+        the broker's death promptly. Wiring it avoids relying solely on the
+        periodic reconcile sweep for locally-managed brokers.
+        """
+        self._death_callback = callback
 
     # ------------------------------------------------------------------
     # PodManager interface
@@ -1527,9 +1542,32 @@ class LocalProcessPodManager(PodManager):
                 if info.flock_base_port is not None:
                     self._allocated_flock_base_ports.discard(info.flock_base_port)
                 self._persist_state()
+                if self._skuld_registry is not None:
+                    unregister = getattr(self._skuld_registry, "unregister", None)
+                    if callable(unregister):
+                        unregister(session_id)
                 logger.info("Claude process exited pid=%d session=%s", pid, session_id)
+                await self._notify_death(session_id)
         except asyncio.CancelledError:
             return
+
+    async def _notify_death(self, session_id: str) -> None:
+        """Best-effort notify the session service that a broker process died.
+
+        Now that the process-state file reads STOPPED, the callback's pod-status
+        reconcile flips the DB row to match. Failures here must never tear down
+        the monitor task, so they are logged and swallowed.
+        """
+        if self._death_callback is None:
+            return
+        try:
+            await self._death_callback(session_id)
+        except Exception:
+            logger.warning(
+                "Death callback failed for session %s; periodic reconcile will catch it",
+                session_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Process lifecycle

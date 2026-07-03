@@ -8,9 +8,11 @@ Supports two transport modes (selected via config):
 import asyncio
 import base64
 import collections
+import contextlib
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -40,6 +42,20 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.transcript_reducer import (
+    PER_CONNECT_MARKER,
+    TurnAccumulator,
+    apply_assistant_blocks,
+    apply_result_content,
+    apply_text_delta,
+    apply_thinking_delta,
+    apply_tool_result_blocks,
+    assistant_turn_id,
+    build_assistant_turn,
+    result_metadata,
+    steering_state_from_frame,
+    steering_target_id,
+)
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
@@ -53,6 +69,7 @@ from skuld.channels import (
 )
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
 from skuld.room_bridge import RoomBridge
 from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (
@@ -1025,12 +1042,31 @@ class Broker:
         self._event_log_task: asyncio.Task[None] | None = None
         self._event_log_stopping = False
         self._activity_state: str = "idle"
+        # Wall-clock epoch seconds (UTC) of when the session ENTERED its current
+        # activity_state. Stamped only when the state actually CHANGES (see
+        # _set_activity_state) so re-asserting the same state — heartbeats, etc. —
+        # keeps elapsed accurate. Travels to Volundr as ISO8601 ("state_since") so
+        # clients can render a live "active for 12s" without re-deriving it.
+        self._activity_state_since: float = time.time()
         self._last_activity_report: float = 0.0
+        # Rich context for the CURRENT activity state (e.g. the pending question's
+        # kind/request_id/prompt for awaiting_input). Re-sent verbatim by the
+        # heartbeat so a heartbeat never strips the question detail or looks like
+        # a new attention request. Reset whenever a plain state report arrives.
+        self._activity_extra: dict[str, Any] = {}
+        # request_id -> kind for every pending human gate (question / permission).
+        # Non-empty == the session is blocked waiting on the user.
+        self._pending_attention: dict[str, str] = {}
+        self._activity_heartbeat_task: asyncio.Task[None] | None = None
         self._conversation_turns: list[ConversationTurn] = []
         self._pending_assistant_content: str = ""
         self._pending_assistant_parts: list[dict] = []
         self._pending_block_type: str = ""
         self._pending_reasoning_text: str = ""
+        # Durable-log seq of the LAST frame folded into the open assistant turn. Drives the
+        # SHARED reducer's deterministic turn-id (uuid5(session:seq:role)) so the live turn id
+        # equals the id a later log rebuild assigns to the same logical turn (SRD INV-4).
+        self._pending_assistant_last_seq: int = 0
         self._pending_explicit_human_messages: list[tuple[str, str]] = []
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
@@ -1067,6 +1103,30 @@ class Broker:
         self._trace_peer_tool_spans: dict[str, list[uuid.UUID]] = {}
         self._pending_permission_requests: dict[str, dict[str, Any]] = {}
         self._permission_auto_approval_tasks: dict[str, asyncio.Task[None]] = {}
+        # tmux-reconnect fix: ask_user_question frames are CLI events (not control_request
+        # RPCs), so they were broadcast live but NOT in the late-join replay set — a client
+        # reconnecting while the agent is blocked on a question saw a "dead"/frozen session.
+        # Track outstanding questions here so the reconnect replay re-surfaces the answerable
+        # card. Cleared on answer (browser ask_user_answer), in-terminal resolve
+        # (ask_user.resolved), and turn completion (result).
+        self._pending_ask_user_questions: dict[str, dict[str, Any]] = {}
+
+        # Msg ids whose transport delivery task is still in flight (mid-retry, not yet
+        # acked). A turn here is "pending" because it has NOT plausibly reached the
+        # agent yet, so the non-native pending->active backstop MUST exclude it: a
+        # transport frame for some OTHER turn must never flip a still-undelivered steer
+        # to "active" (a false "consumed"). On terminal delivery failure that turn ends
+        # "failed", never "active" (SRD §3.4 / INV-7). Populated when the deliver task
+        # starts, cleared in its finally.
+        self._delivering_msg_ids: set[str] = set()
+
+        # Live plan + running-agents surfacing (Claude tmux). The latest `plan`
+        # frame (Claude's TodoWrite task list) and the set of running agents
+        # (Task subagents via agent_update, teammate panes via terminal_pane_*),
+        # tracked here so a reconnecting client gets the current plan + fleet,
+        # and so GET /api/plan / GET /api/agents can answer from live state.
+        self._current_plan: dict[str, Any] | None = None
+        self._running_agents: dict[str, dict[str, Any]] = {}
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
@@ -1160,27 +1220,68 @@ class Broker:
             }
         )
 
-    def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
-        """Save any accumulated assistant content as a conversation turn."""
-        content = self._pending_assistant_content
-        # Save when there's text OR captured parts (tool_use/tool_result/reasoning)
-        # — a tool-only assistant turn (no prose) must still persist its tool cards.
-        if not content and not self._pending_assistant_parts:
-            return
+    def _serialize_in_progress_turn(self) -> dict | None:
+        """Reconstruct the in-flight assistant turn as a turn-shaped dict (or None when idle).
 
-        # Flush remaining reasoning
+        Reads the SAME volatile pending state the flush reads and emits ONE row shaped like
+        asdict(ConversationTurn) plus a trailing in_progress flag, appended to the `turns`
+        array on BOTH reconnect replay and REST GET. Stable sentinel id so clients dedup
+        across polls. visibility:'public' included so the row is shape-identical to asdict()
+        on the replay path (web normalizers that read visibility don't choke). Mutation-safe:
+        snapshots parts via list() and appends the reasoning tail only to the local copy, so
+        repeated polls never disturb the eventual real flush; once the turn flushes this
+        predicate goes False and it is served once as a real completed turn instead.
+        """
+        if not (
+            self._pending_assistant_content
+            or self._pending_assistant_parts
+            or self._pending_reasoning_text
+        ):
+            return None
+        parts: list[dict] = list(self._pending_assistant_parts)
         if self._pending_reasoning_text:
-            summary = self._pending_reasoning_text[-500:]
-            self._pending_assistant_parts.append({"type": "reasoning", "text": summary})
+            parts = [
+                *parts,
+                {"type": "reasoning", "text": self._pending_reasoning_text[-500:]},
+            ]
+        return {
+            "id": "in-progress",
+            "role": "assistant",
+            "content": self._pending_assistant_content,
+            "parts": parts,
+            "created_at": datetime.now(UTC).isoformat(),
+            "metadata": {"status": "in_progress"},
+            "visibility": "public",
+            "in_progress": True,
+        }
 
-        parts = self._pending_assistant_parts if self._pending_assistant_parts else []
+    def _pending_accumulator(self) -> TurnAccumulator:
+        """A SHARED-reducer accumulator view over the broker's volatile pending fields.
+
+        Routes the live (incremental) fold through the SAME state object the batch rebuild
+        uses, so a flush builds the turn via the one shared builder — identical id policy,
+        reasoning ordering, and metadata schema as a later log rebuild (SRD INV-4).
+        """
+        return TurnAccumulator(
+            content=self._pending_assistant_content,
+            parts=self._pending_assistant_parts,
+            reasoning=self._pending_reasoning_text,
+            last_seq=self._pending_assistant_last_seq,
+        )
+
+    def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
+        """Save any accumulated assistant content as a conversation turn via the shared reducer."""
+        acc = self._pending_accumulator()
+        turn = build_assistant_turn(self.session_id, acc, metadata=metadata)
+        if turn is None:
+            return
         self._append_turn(
             ConversationTurn(
-                id=str(uuid.uuid4()),
+                id=turn["id"],
                 role="assistant",
-                content=content,
-                parts=parts,
-                metadata=metadata or {},
+                content=turn["content"],
+                parts=turn["parts"],
+                metadata=turn["metadata"],
             )
         )
         self._pending_assistant_content = ""
@@ -1215,7 +1316,7 @@ class Broker:
             started_at=datetime.now(UTC),
             ended_at=datetime.now(UTC),
         )
-        await self._channels.broadcast(
+        await self._emit_broker_frame(
             {
                 "type": "user_confirmed",
                 "id": turn_id,
@@ -1548,6 +1649,7 @@ class Broker:
         return {
             "workspace_dir": self.workspace_dir,
             "model": self.model,
+            "reasoning_effort": self._settings.session.reasoning_effort,
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
             "skip_permissions": self._settings.skip_permissions,
@@ -1561,6 +1663,7 @@ class Broker:
             "mcp_servers": self._settings.mcp_servers,
             "resume_session_id": self._settings.session.resume_session_id,
             "ask_user_question_enabled": self._settings.ask_user_question_enabled,
+            "acp_prompt_timeout_s": self._settings.acp_prompt_timeout_s,
         }
 
     def _create_transport(self) -> CLITransport:
@@ -1609,7 +1712,7 @@ class Broker:
             # log so log-only replay opens with the operator's first message.
             self._enqueue_human_turn_event(prompt, turn_id)
             try:
-                await self._channels.broadcast(
+                await self._emit_broker_frame(
                     {"type": "user_confirmed", "id": turn_id, "content": prompt}
                 )
             except Exception:
@@ -1625,12 +1728,22 @@ class Broker:
         """Initialize the broker on startup."""
         logger.info("Broker starting for session %s", self.session_id)
         logger.info("Transport adapter: %s", self._settings.transport_adapter)
+        _rebuild_presented_registry()  # recover present-file cards across broker restarts
         await self._ensure_session_trace_started()
 
         if self.volundr_api_url:
             logger.info("Token usage reporting enabled: %s", self.volundr_api_url)
         else:
             logger.warning("SKULD__VOLUNDR_API_URL not set — token usage will not be reported")
+
+        # The session is booting — the CLI REPL is not ready yet. Surface
+        # ``provisioning`` so clients show "starting up" instead of a misleading
+        # ``idle``. The first ``system/init`` event (REPL ready) flips it to
+        # ``idle`` (see _handle_cli_event). Fire-and-forget so a slow/absent
+        # Volundr never blocks the lifespan from binding the HTTP listener.
+        self._set_activity_state("provisioning")
+        if self.volundr_api_url:
+            asyncio.create_task(self._report_activity_state("provisioning"))
 
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
@@ -1721,6 +1834,9 @@ class Broker:
         ):
             self._peer_watchdog_task = asyncio.create_task(self._peer_watchdog_loop())
 
+        if self._settings.activity_heartbeat.enabled and self.volundr_api_url:
+            self._activity_heartbeat_task = asyncio.create_task(self._activity_heartbeat_loop())
+
     async def shutdown(self) -> None:
         """Clean up on shutdown.
 
@@ -1738,6 +1854,11 @@ class Broker:
 
         # Drain and stop the durable event-log worker so the last turn persists
         await self._stop_event_log()
+
+        if self._activity_heartbeat_task is not None:
+            self._activity_heartbeat_task.cancel()
+            await asyncio.gather(self._activity_heartbeat_task, return_exceptions=True)
+            self._activity_heartbeat_task = None
 
         if self._peer_watchdog_task is not None:
             self._peer_watchdog_task.cancel()
@@ -2831,6 +2952,40 @@ class Broker:
 
         task.add_done_callback(_cleanup)
 
+    def _track_agent_update(self, data: dict[str, Any]) -> None:
+        """Fold an `agent_update` frame into the live running-agents set."""
+        agent = data.get("agent")
+        if not isinstance(agent, dict):
+            return
+        agent_id = str(agent.get("id") or "")
+        if not agent_id:
+            return
+        if data.get("action") == "stopped":
+            self._running_agents.pop(agent_id, None)
+            return
+        self._running_agents[agent_id] = dict(agent)
+
+    def _track_pane_agent(self, data: dict[str, Any], *, opened: bool) -> None:
+        """Treat a non-primary tmux pane as a teammate agent (agent-teams mode).
+
+        The primary pane (index 0) is the main Claude REPL, not a teammate.
+        """
+        pane_id = str(data.get("pane_id") or "")
+        if not pane_id:
+            return
+        if str(data.get("pane_index", "")) == "0":
+            return
+        if not opened:
+            self._running_agents.pop(pane_id, None)
+            return
+        self._running_agents[pane_id] = {
+            "id": pane_id,
+            "kind": "teammate",
+            "name": str(data.get("window_name") or f"pane {data.get('pane_index')}"),
+            "status": "running",
+            "current_command": str(data.get("current_command") or ""),
+        }
+
     async def _send_permission_control_response(
         self,
         request_id: str,
@@ -2847,7 +3002,8 @@ class Broker:
             request_id,
             cancel_auto_approval=not auto_approved,
         )
-        await self._channels.broadcast(
+        await self._exit_attention(request_id)
+        await self._emit_broker_frame(
             {
                 "type": "permission_resolved",
                 "request_id": request_id,
@@ -2863,10 +3019,18 @@ class Broker:
 
         decision = await self._evaluate_permission_auto_approval(initial_request)
         if not decision or decision.get("can_auto_approve") is not True:
+            # Policy won't auto-approve — a human must decide. Surface it as a
+            # needs-attention gate (auto-approvable requests never flip the
+            # session, so they don't spam the user with notifications).
+            await self._enter_attention(
+                request_id,
+                "permission",
+                prompt=self._attention_prompt_from_permission(initial_request),
+            )
             return
 
         delay_seconds = self._decision_delay_seconds(decision)
-        await self._channels.broadcast(
+        await self._emit_broker_frame(
             {
                 "type": "permission_auto_approval_scheduled",
                 "request_id": request_id,
@@ -2883,7 +3047,7 @@ class Broker:
         # additions win over a stale countdown.
         latest_decision = await self._evaluate_permission_auto_approval(latest_request)
         if not latest_decision or latest_decision.get("can_auto_approve") is not True:
-            await self._channels.broadcast(
+            await self._emit_broker_frame(
                 {
                     "type": "permission_auto_approval_cancelled",
                     "request_id": request_id,
@@ -2903,9 +3067,27 @@ class Broker:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
 
-        # Durably capture EVERY frame first — before any channel/broadcast logic —
-        # so agent output is never lost when no client is attached.
-        self._enqueue_event_log(data)
+        # Room-mode suppression decision, computed BEFORE the enqueue (INV-5): while
+        # an explicit human room response is pending, the raw user/assistant/
+        # content_block_delta/result transport echoes are dropped from the LIVE
+        # broadcast (the same content is surfaced as a room_message via
+        # _emit_broker_frame / broadcast_cli_message). A frame that is never
+        # broadcast must never be logged either, or it would resurface on
+        # cold-read/replay as a duplicate the live viewer never saw. So skip the
+        # durable enqueue for exactly those suppressed echoes. Normal (non-room)
+        # logging is unchanged: outside a pending explicit response the count is 0,
+        # so suppress is False and every frame is logged as before.
+        suppress_channel_broadcast = (
+            event_type in {"user", "assistant", "content_block_delta", "result"}
+            and self._pending_explicit_human_response_count > 0
+        )
+
+        # Durably capture EVERY broadcast frame first — before any channel/broadcast
+        # logic — so agent output is never lost when no client is attached. The lone
+        # exception is a room-suppressed echo (above): not broadcast ⇒ not logged,
+        # keeping the durable log == the live stream (INV-5).
+        if not suppress_channel_broadcast:
+            self._enqueue_event_log(data)
 
         if event_type == "remote_control":
             # A remote-control transport reporting its pairing URL. Surface it as
@@ -2917,16 +3099,106 @@ class Broker:
                 await self._surface_remote_control_url(url)
             return
 
+        if event_type == "transport_stopped":
+            # The transport died (e.g. its tmux session vanished). Surface a
+            # terminal ``stopped`` activity_state with a final report so clients
+            # stop showing the last live state frozen forever. Synthetic event —
+            # nothing downstream consumes it, so return after reporting.
+            await self._report_activity_state(
+                "stopped", extra_metadata={"reason": data.get("reason", "transport_died")}
+            )
+            return
+
         if event_type == "control_request":
             self._track_pending_permission_request(data)
+
+        if event_type == "ask_user_question":
+            # The agent is blocked on a human answer. Flip the session to
+            # awaiting_input so the platform (and any push fan-out) knows it
+            # needs the user — Skuld otherwise stays pinned at active here.
+            ask_request_id = str(data.get("request_id", ""))
+            # Track for reconnect replay: a client that joins WHILE the agent is
+            # blocked must still receive the answerable question (tmux-reconnect fix).
+            if ask_request_id:
+                self._pending_ask_user_questions[ask_request_id] = dict(data)
+            # Mark attention SYNCHRONOUSLY (before scheduling the report task) so
+            # the assistant tool_use frame that the tmux bridge emits right after
+            # this question cannot schedule an "active" report that clobbers the
+            # awaiting_input below — the assistant branch checks _pending_attention.
+            if ask_request_id:
+                self._pending_attention[ask_request_id] = "question"
+            asyncio.create_task(
+                self._enter_attention(
+                    ask_request_id,
+                    "question",
+                    prompt=self._attention_prompt_from_questions(data),
+                    options=data.get("questions"),
+                )
+            )
+
+        if event_type == "ask_user_resolved":
+            # (`event_type` is the frame's `type` field; the TTY bridge emits
+            # type="ask_user_resolved" / event_type="ask_user.resolved".)
+            # The question was answered out-of-band (an in-terminal keystroke via the
+            # tmux TTY bridge, or the turn ended) — clear server-side attention + the
+            # replay entry so the session leaves awaiting_input and a reconnecting
+            # client no longer sees a stale question card. Without this the broker's
+            # _pending_attention stayed set until the next `result`, pinning the
+            # session at awaiting_input.
+            resolved_request_id = str(data.get("request_id", ""))
+            if resolved_request_id:
+                self._pending_ask_user_questions.pop(resolved_request_id, None)
+                asyncio.create_task(self._exit_attention(resolved_request_id))
+
+        # Plan + running-agents surfacing: keep the latest plan and the live agent
+        # set so reconnects + GET /api/plan|agents can answer. The frames are still
+        # broadcast normally below for live consumers.
+        if event_type == "plan":
+            self._current_plan = dict(data)
+        elif event_type == "user_confirmed":
+            # A transport-originated user_confirmed (the browser path stamps its own turn
+            # directly and broadcasts via _emit_broker_frame, not here). Derive the turn's
+            # steering_state from the SAME shared policy the log rebuild uses, so the live
+            # in-memory turn == the rebuilt turn (INV-4). No-op if the turn isn't ours yet.
+            self._stamp_steering_state_from_frame(data)
+        elif event_type == "agent_update":
+            self._track_agent_update(data)
+        elif event_type == "terminal_pane_opened":
+            self._track_pane_agent(data, opened=True)
+        elif event_type == "terminal_pane_closed":
+            self._track_pane_agent(data, opened=False)
+        elif event_type in ("terminal_prompt_submitted", "user_consumed"):
+            # The agent consumed a (correlated) user prompt — flip that steering message from
+            # "pending" to "active" and tell live clients via user_active. tmux emits
+            # terminal_prompt_submitted (UserPromptSubmit hook); Codex emits user_consumed
+            # (turn/started). Both carry the msg_id; _activate_user_turn no-ops if it's absent.
+            await self._activate_user_turn(data)
+            # TURN START — converge clients to "active" immediately, not only when
+            # the first assistant token arrives (which can be seconds later). Skip
+            # while blocked on a human gate: the answer that unblocks the turn also
+            # arrives as a prompt-submit, and we must not clobber awaiting_input
+            # before _exit_attention runs.
+            if not self._pending_attention:
+                asyncio.create_task(self._report_activity_state("active"))
+        elif event_type in ("result", "error") or (
+            event_type == "assistant" and self._assistant_has_content(data)
+        ):
+            # Transport-agnostic FLOOR so no steer is ever stranded "pending" on a transport we
+            # don't precisely wire (grok/sdk/subprocess/opencode) or a Codex edge the FIFO missed:
+            # a NON-NATIVE transport that produced assistant content, finished a turn, or terminally
+            # errored has either consumed any still-pending steer or can no longer flip it — either
+            # way "pending forever" is the wrong state. tmux (native) is EXCLUDED — it owns the
+            # precise UserPromptSubmit signal AND streams assistant content for the IN-PROGRESS turn
+            # while a mid-turn steer is still queued, so this floor would otherwise flip it early.
+            caps = getattr(self._transport, "capabilities", None)
+            if getattr(caps, "steering_mode", "none") != "native":
+                await self._activate_pending_user_turns_backstop()
 
         tool_result_only_user_event = event_type == "user" and self._is_tool_result_only_user_event(
             data
         )
-        suppress_channel_broadcast = (
-            event_type in {"user", "assistant", "content_block_delta", "result"}
-            and self._pending_explicit_human_response_count > 0
-        )
+        # suppress_channel_broadcast was computed at the top (it also gates the
+        # durable enqueue so a never-broadcast room echo is never logged — INV-5).
         num_channels = self._channels.count
         logger.debug(
             "_handle_cli_event: forwarding to %d channel(s) suppress=%s",
@@ -2970,24 +3242,51 @@ class Broker:
                         self._pending_explicit_human_messages.pop(0)
                         user_content = ""
                 if user_content:
+                    # Match the SHARED reducer's user-turn id policy: the frame's carried
+                    # uuid when present (so live == rebuild), else the deterministic seq id.
+                    carried_uid = str(data.get("uuid") or "").strip()
+                    user_turn_id = carried_uid or assistant_turn_id(
+                        self.session_id, self._event_log_seq, "user"
+                    )
                     self._append_turn(
                         ConversationTurn(
-                            id=str(uuid.uuid4()),
+                            id=user_turn_id,
                             role="user",
                             content=user_content,
                         )
                     )
 
-        # When CLI sends system/init, broadcast available commands to browsers
+        # When CLI sends system/init, broadcast available commands to browsers.
+        # Alongside the bare name lists, include the rich catalog (names +
+        # descriptions + argument hints + source) so clients can render a
+        # proper `/` autocomplete menu without a follow-up fetch.
         if event_type == "system" and data.get("subtype") == "init":
+            # The CLI's system/init frame means the REPL is up and ready — leave
+            # ``provisioning`` for ``idle`` (the next real frame refines it). Only
+            # transition from provisioning so an init that arrives mid-turn
+            # (reconnect / re-init) never clobbers an active/awaiting state.
+            if self._activity_state == "provisioning":
+                asyncio.create_task(self._report_activity_state("idle"))
             slash_commands = data.get("slash_commands", [])
             skills = data.get("skills", [])
-            if slash_commands or skills:
-                await self._channels.broadcast(
+            commands: list[dict] = []
+            transport = self._transport
+            if transport is not None and transport.capabilities.slash_commands:
+                try:
+                    # Do NOT force a re-scrape at init: refresh=False returns the cached
+                    # catalog when one exists (reconnect / re-init) and only probes the
+                    # terminal on a truly fresh session — and even then the probe now
+                    # waits for the REPL prompt before typing, so it can't corrupt boot.
+                    commands = await transport.discover_slash_commands(refresh=False)
+                except Exception:
+                    logger.debug("slash-command discovery failed at init", exc_info=True)
+            if slash_commands or skills or commands:
+                await self._emit_broker_frame(
                     {
                         "type": "available_commands",
                         "slash_commands": slash_commands,
                         "skills": skills,
+                        "commands": commands,
                     }
                 )
 
@@ -3009,7 +3308,12 @@ class Broker:
                     attributes={"model": self.model},
                 )
             await self._start_assistant_tool_trace_spans(data)
-            asyncio.create_task(self._report_activity_state("active"))
+            # Don't report "active" while a human gate is pending: the tmux bridge
+            # emits the AskUserQuestion tool_use as an assistant frame right after
+            # surfacing the question, and an "active" report here would clobber the
+            # awaiting_input the session must hold while blocked on the human.
+            if not self._pending_attention:
+                asyncio.create_task(self._report_activity_state("active"))
             # Emit room activity for CLI participant so room UI shows "thinking"
             if self._room_bridge is not None and self._mesh_adapter is not None:
                 await self._room_bridge.broadcast_cli_activity(
@@ -3018,24 +3322,18 @@ class Broker:
         elif tool_result_only_user_event:
             await self._finish_assistant_tool_trace_spans_from_user_event(data)
             # Persist tool_result blocks onto the open assistant turn so the saved
-            # conversation carries tool OUTPUT (not just the call) for read-back.
+            # conversation carries tool OUTPUT (not just the call) for read-back — via the
+            # SHARED reducer transition (the same enrichment a later log rebuild applies).
             tr_msg = data.get("message", {})
             tr_blocks = tr_msg.get("content", []) if isinstance(tr_msg, dict) else []
-            for tr_block in tr_blocks or []:
-                if (
-                    isinstance(tr_block, dict)
-                    and tr_block.get("type") == "tool_result"
-                    and tr_block.get("tool_use_id")
-                ):
-                    self._pending_assistant_parts.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tr_block.get("tool_use_id"),
-                            "content": tr_block.get("content"),
-                            "is_error": bool(tr_block.get("is_error")),
-                        }
-                    )
+            apply_tool_result_blocks(self._pending_accumulator(), tr_blocks)
+            self._pending_assistant_last_seq = self._event_log_seq
         elif event_type == "result":
+            # A turn that reaches result is no longer blocked on the user; drop
+            # any stale pending gates so a later heartbeat can't resurrect
+            # awaiting_input.
+            self._pending_attention.clear()
+            self._pending_ask_user_questions.clear()
             asyncio.create_task(self._report_activity_state("idle"))
             if self._pending_explicit_human_response_count == 0:
                 asyncio.create_task(self._on_result_publish_mesh())
@@ -3046,57 +3344,32 @@ class Broker:
         # We also handle the HTTP streaming format (content_block_delta, result)
         # for backward compatibility.
         if event_type == "assistant":
-            # Extract content and ACCUMULATE parts across the messages of one turn
-            # (a tool_use message, then the final text), so the SAVED conversation
-            # turn carries tool calls + reasoning — not just text — and reloads with
-            # its tool cards. Parts are reset on flush, not per message.
+            # ACCUMULATE this assistant frame's blocks (text / thinking / tool_use) across the
+            # messages of one turn via the SHARED reducer transition — the SAME fold a later log
+            # rebuild applies — so the saved turn carries tool calls + reasoning and reloads
+            # byte-identically. Parts are reset on flush, not per message. The accumulator shares
+            # the parts list object, so block appends land directly on the pending state; only
+            # ``content`` (a str) is written back.
             message = data.get("message", {})
             content_blocks = message.get("content", [])
-            if isinstance(content_blocks, list) and content_blocks:
-                text_parts = []
-                for block in content_blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    btype = block.get("type")
-                    if btype == "text" and block.get("text"):
-                        text_parts.append(block["text"])
-                        self._pending_assistant_parts.append(
-                            {"type": "text", "text": block["text"]}
-                        )
-                    elif btype == "thinking" and block.get("thinking"):
-                        # Keep last 500 chars per reasoning block as a summary.
-                        self._pending_assistant_parts.append(
-                            {"type": "reasoning", "text": str(block["thinking"])[-500:]}
-                        )
-                    elif btype == "tool_use" and block.get("id"):
-                        self._pending_assistant_parts.append(
-                            {
-                                "type": "tool_use",
-                                "id": block.get("id"),
-                                "name": block.get("name"),
-                                "input": block.get("input") or {},
-                            }
-                        )
-                text_content = "\n".join(text_parts)
-                if text_content:
-                    self._pending_assistant_content = (
-                        f"{self._pending_assistant_content}\n{text_content}"
-                        if self._pending_assistant_content
-                        else text_content
-                    )
+            acc = self._pending_accumulator()
+            apply_assistant_blocks(acc, content_blocks)
+            self._pending_assistant_content = acc.content
+            self._pending_assistant_last_seq = self._event_log_seq
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
             delta = data.get("delta", {})
             delta_type = delta.get("type", "")
+            # SHARED reducer delta transitions (same fold a later log rebuild applies).
+            acc = self._pending_accumulator()
             if delta_type == "thinking_delta":
-                thinking = delta.get("thinking", "")
-                if thinking:
-                    self._pending_reasoning_text += thinking
+                apply_thinking_delta(acc, delta.get("thinking", ""))
+                self._pending_reasoning_text = acc.reasoning
             else:
-                text = delta.get("text", "")
-                if text:
-                    self._pending_assistant_content += text
+                apply_text_delta(acc, delta.get("text", ""))
+                self._pending_assistant_content = acc.content
+            self._pending_assistant_last_seq = self._event_log_seq
 
         # Accumulate artifacts from assistant tool_use events
         if event_type == "assistant":
@@ -3133,9 +3406,11 @@ class Broker:
                 self._flush_pending_assistant_turn(
                     metadata={"status": "error", "messageType": "error"}
                 )
+            # Deterministic id (uuid5(session:error_frame_seq:assistant)) so the live error
+            # turn id matches the id a log rebuild assigns to the same error frame (INV-4).
             self._append_turn(
                 ConversationTurn(
-                    id=str(uuid.uuid4()),
+                    id=assistant_turn_id(self.session_id, self._event_log_seq),
                     role="assistant",
                     content=visible_error,
                     parts=[{"type": "text", "text": visible_error}],
@@ -3158,23 +3433,18 @@ class Broker:
             asyncio.create_task(self._report_usage(data))
             explicit_room_reply = self._pending_explicit_human_response_count > 0
 
-            # Flush pending assistant turn (HTTP streaming format sends result)
-            if not self._pending_assistant_content:
-                # Try to extract from result event itself
-                self._pending_assistant_content = data.get("result", "")
-                if not self._pending_assistant_content:
-                    for block in data.get("content", []):
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            self._pending_assistant_content = block.get("text", "")
-                            break
-            # Build metadata from result event
-            model_usage_for_turn = data.get("modelUsage", {})
-            result_cost = None
-            result_model = None
-            for model_id, usage in model_usage_for_turn.items():
-                result_model = model_id
-                if usage.get("costUSD") is not None:
-                    result_cost = (result_cost or 0) + usage["costUSD"]
+            # Inject the result frame's text into the OPEN turn via the SHARED reducer policy —
+            # the SAME fold a later log rebuild applies — so a tool_use-only turn closed by a
+            # result with text surfaces that text identically on live and rebuild (INV-4/FR-3).
+            acc = self._pending_accumulator()
+            apply_result_content(acc, data)
+            self._pending_assistant_content = acc.content
+            # Build metadata from the result frame via the SHARED reducer so the live turn's
+            # {usage,cost,model,stop_reason} schema is byte-identical to a later log rebuild.
+            turn_metadata = result_metadata(data)
+            # The result frame closes the turn — stamp its seq so the deterministic turn id
+            # (uuid5(session:seq:role)) matches the id a log rebuild assigns to this turn.
+            self._pending_assistant_last_seq = self._event_log_seq
 
             # Capture content before flush clears it
             content = self._pending_assistant_content or data.get("result", "")
@@ -3183,13 +3453,7 @@ class Broker:
                 self._pending_assistant_parts = []
                 self._pending_reasoning_text = ""
             else:
-                self._flush_pending_assistant_turn(
-                    metadata={
-                        "usage": model_usage_for_turn,
-                        "cost": result_cost,
-                        "model": result_model,
-                    }
-                )
+                self._flush_pending_assistant_turn(metadata=turn_metadata)
 
             # Emit CLI turn as room_message so it shows participant color
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
@@ -3331,7 +3595,7 @@ class Broker:
             error_msg = f"{msg_type} not supported by this transport"
             logger.warning("_dispatch_browser_message: %s", _sanitize_log(error_msg))
             if sender_ws:
-                await sender_ws.send_json({"type": "error", "content": error_msg})
+                await self._send_broker_frame_to(sender_ws, {"type": "error", "content": error_msg})
             return
 
         match msg_type:
@@ -3359,6 +3623,12 @@ class Broker:
                     request_id=data.get("request_id", ""),
                     answers=data.get("answers", []),
                 )
+                # The human answered — the session is no longer blocked. Drop the
+                # replay entry too so a later reconnect doesn't re-surface an
+                # already-answered question.
+                answered_request_id = str(data.get("request_id", ""))
+                self._pending_ask_user_questions.pop(answered_request_id, None)
+                await self._exit_attention(answered_request_id)
 
             # Phase 3: interrupt current turn
             case "interrupt":
@@ -3457,12 +3727,13 @@ class Broker:
                     refresh=bool(data.get("refresh", True))
                 )
                 if sender_ws is not None:
-                    await sender_ws.send_json(
+                    await self._send_broker_frame_to(
+                        sender_ws,
                         {
                             "type": "slash_commands",
                             "commands": commands,
                             "count": len(commands),
-                        }
+                        },
                     )
 
             # Room: forward a directed message to a specific Ravn participant
@@ -3470,8 +3741,9 @@ class Broker:
                 if self._room_bridge is None:
                     logger.warning("directed_message received but room mode is disabled")
                     if sender_ws:
-                        await sender_ws.send_json(
-                            {"type": "error", "content": "Room mode is not enabled"}
+                        await self._send_broker_frame_to(
+                            sender_ws,
+                            {"type": "error", "content": "Room mode is not enabled"},
                         )
                     return
                 target = data.get("targetPeerId", "")
@@ -3489,7 +3761,9 @@ class Broker:
                     )
                 except LookupError as exc:
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
 
             case "resend_initial_prompt":
                 try:
@@ -3501,11 +3775,14 @@ class Broker:
                     )
                 except (ValueError, RuntimeError) as exc:
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": str(exc)})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
                     return
                 if sender_ws:
-                    await sender_ws.send_json(
-                        {"type": "room_prompt_resent", "message_id": message_id}
+                    await self._send_broker_frame_to(
+                        sender_ws,
+                        {"type": "room_prompt_resent", "message_id": message_id},
                     )
 
             # Default: treat as user message (backward compat with {"content": "..."})
@@ -3521,7 +3798,9 @@ class Broker:
                     )
                     logger.info("_dispatch_browser_message: %s", error_msg)
                     if sender_ws:
-                        await sender_ws.send_json({"type": "error", "content": error_msg})
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": error_msg}
+                        )
                     return
 
                 # Record user turn in conversation history
@@ -3540,6 +3819,12 @@ class Broker:
                         id=msg_id,
                         role="user",
                         content=content_str,
+                        # The message has been accepted but not yet consumed by the
+                        # agent. It rides as "pending" (the client renders it greyed /
+                        # italic) until the correlated UserPromptSubmit flips it to
+                        # "active". Survives reconnect + REST since metadata is
+                        # serialized with the turn.
+                        metadata={"steering_state": "pending"},
                     )
                 )
                 # Mirror the human turn into the durable event log so log-only
@@ -3561,38 +3846,31 @@ class Broker:
                 # Echo back to all browsers so the message is confirmed
                 # immediately (rendering as a user turn) — the actual transport
                 # delivery happens asynchronously below.
-                await self._channels.broadcast(
+                await self._emit_broker_frame(
                     {
                         "type": "user_confirmed",
                         "id": msg_id,
                         "content": content_str,
                         "request_id": request_id,
+                        "steering_state": "pending",
                     }
                 )
 
-                if (
-                    getattr(self._transport.capabilities, "steer", False) is True
-                    and getattr(self._transport, "is_turn_active", False) is True
-                ):
-                    asyncio.create_task(
-                        self._safe_transport_control(
-                            self._transport,
-                            "redirect",
-                            content=content_str,
-                        ),
-                        name=f"transport-redirect-{msg_id}",
-                    )
-                    return
-
-                # send_message holds a per-instance lock for the entire
-                # turn. Awaiting inline blocks the WS receive loop, so the
-                # user can't queue a follow-up while Claude is running.
-                # Fire-and-forget: the transport's lock still serialises
-                # invocations, so ordering is preserved; we just don't pin
-                # the WS handler waiting for a turn that may take minutes.
+                # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
+                # run for minutes (the transport serialises its own deliveries, so order
+                # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
+                # and observable — bounded retry on a transient failure, a VISIBLE failed
+                # turn on terminal failure — instead of being silently swallowed on a
+                # wedged input channel while the API says "sent". The redirect-vs-send
+                # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
+                # boundary that moves between accept and delivery routes correctly.
                 asyncio.create_task(
-                    self._safe_transport_send(self._transport, content_str),
-                    name=f"transport-send-{msg_id}",
+                    self._deliver_user_message_and_ack(
+                        content_str,
+                        request_id=request_id,
+                        msg_id=msg_id,
+                    ),
+                    name=f"transport-deliver-{msg_id}",
                 )
 
     async def _try_route_pending_help_reply(self, data: dict, content: str) -> bool:
@@ -3658,7 +3936,7 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_control failed in background task")
             try:
-                await self._channels.broadcast({"type": "error", "content": str(exc)})
+                await self._emit_broker_frame({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport control error", exc_info=True)
 
@@ -3694,11 +3972,12 @@ class Broker:
     async def _safe_transport_send(self, transport: object, message: str) -> None:
         """Wrap transport.send_message so background-task failures are surfaced.
 
-        Used by the fire-and-forget path in ``_dispatch_browser_message`` —
-        without this wrapper, a transport error would only show up as an
-        ``asyncio.create_task`` exception. Any error here is logged AND
-        broadcast to all currently connected channels so the user sees
-        something in the chat UI rather than a silent stall.
+        NOTE: currently UNUSED by the live inbound steering path — that goes through
+        ``_deliver_user_message_and_ack`` (which threads msg_id/request_id for the pending→active
+        flip). Retained for reflex tests / future call sites; if it is ever re-wired into the
+        steering path it must forward ``msg_id``/``request_id`` to keep the correlation intact.
+        Any error here is logged AND broadcast to all channels so the user sees something rather
+        than a silent stall.
         """
         try:
             outbound = await self._apply_retrieval_reflex(message)
@@ -3706,9 +3985,295 @@ class Broker:
         except Exception as exc:
             logger.exception("Transport send_message failed in background task")
             try:
-                await self._channels.broadcast({"type": "error", "content": str(exc)})
+                await self._emit_broker_frame({"type": "error", "content": str(exc)})
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
+
+    def _resolve_delivery_routing(self) -> bool:
+        """Decide redirect-vs-send for an inbound message AT DELIVERY TIME (INV-7).
+
+        Routing used to be snapshotted on the receive loop, but delivery runs later
+        in a separate task: the turn boundary can move (an idle session becomes busy,
+        or a turn ends) between accept and delivery, so a stale snapshot would steer
+        into a dead turn or start a spurious one. Recompute against the live transport
+        state instead. ``native`` transports always redirect (the CLI inserts queued
+        input itself); ``interrupt_resume`` transports only redirect while a turn is
+        genuinely in flight.
+        """
+        if not self._transport:
+            return False
+        caps = self._transport.capabilities
+        steer_capable = getattr(caps, "steer", False) is True
+        if not steer_capable:
+            return False
+        native_steering = getattr(caps, "steering_mode", "none") == "native"
+        turn_active = getattr(self._transport, "is_turn_active", False) is True
+        return native_steering or turn_active
+
+    async def _attempt_transport_delivery(
+        self, content: str, *, msg_id: str, request_id: str | None
+    ) -> None:
+        """One delivery attempt. Re-resolves routing so a moved turn boundary routes
+        correctly, then sends with a per-attempt timeout so a wedged input channel is
+        bounded (and therefore retryable) instead of hanging the delivery forever."""
+        timeout = self._settings.delivery.attempt_timeout_seconds
+        if self._resolve_delivery_routing():
+            # Carry the ids so a native transport (tmux) can correlate the eventual
+            # UserPromptSubmit back to this message and flip it active.
+            await asyncio.wait_for(
+                self._transport.send_control(
+                    "redirect", content=content, msg_id=msg_id, request_id=request_id
+                ),
+                timeout=timeout,
+            )
+            return
+        # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
+        # transport that CAN correlate a consumption signal (Codex turn/started) flips
+        # the bubble; transports that can't simply ignore the kwargs.
+        outbound = await self._apply_retrieval_reflex(content)
+        await asyncio.wait_for(
+            self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id),
+            timeout=timeout,
+        )
+
+    async def _deliver_user_message_and_ack(
+        self,
+        content: str,
+        *,
+        request_id: str | None,
+        msg_id: str,
+    ) -> None:
+        """Deliver a user message to the transport with BOUNDED RETRY and a durable,
+        observable outcome (SRD FR-5 / INV-7).
+
+        The inbound steering path used to fire-and-forget the transport call and never
+        confirm it reached the agent: after a WS crash/reconnect a wedged tmux input
+        channel silently swallowed the message while Volundr still returned HTTP 200
+        "sent", AND the user turn was left ``pending`` forever. This now:
+
+        * recomputes redirect-vs-send routing at delivery time (no stale snapshot);
+        * retries a transient send failure (wedged ``_send_lock``, transport warming)
+          up to ``delivery.max_attempts`` with exponential backoff;
+        * on success emits ``user_delivered`` (the pending->active flip is driven later
+          by the correlated consumption signal);
+        * on TERMINAL failure flips the user turn to a VISIBLE ``failed`` state
+          (persisted + broadcast) and emits ``user_delivery_failed`` — never leaving the
+          turn silently ``pending``.
+
+        A message that arrives while the agent is blocked on an AskUserQuestion is still
+        delivered, but flagged ``blocked_on_question`` so the client can tell the user to
+        answer the open question rather than assume the steer landed.
+        """
+        pending_q = len(self._pending_ask_user_questions)
+        if pending_q:
+            logger.warning(
+                "user message delivered while %d ask_user_question(s) pending "
+                "(request_id=%s) — a free-text steer may not start a turn until the "
+                "question is answered",
+                pending_q,
+                _sanitize_log(request_id),
+            )
+
+        cfg = self._settings.delivery
+        backoff = cfg.initial_backoff_seconds
+        last_error: Exception | None = None
+        # Mark the turn as in-flight so the non-native pending->active backstop EXCLUDES
+        # it: while we are still retrying, the agent could not have consumed this steer,
+        # so an unrelated transport frame must not flip it to "active". Cleared only once
+        # the outcome is decided (delivered ack emitted, or the turn marked failed) so the
+        # failure path stamps "failed" before the turn becomes backstop-eligible again.
+        self._delivering_msg_ids.add(msg_id)
+        try:
+            for attempt in range(1, cfg.max_attempts + 1):
+                try:
+                    await self._attempt_transport_delivery(
+                        content, msg_id=msg_id, request_id=request_id
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:  # noqa: BLE001 - any send failure is retryable/terminal
+                    last_error = exc
+                    logger.warning(
+                        "user message delivery attempt %d/%d failed (request_id=%s): %s",
+                        attempt,
+                        cfg.max_attempts,
+                        _sanitize_log(request_id),
+                        _sanitize_log(str(exc)),
+                    )
+                    if attempt >= cfg.max_attempts:
+                        break
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * cfg.backoff_multiplier, cfg.max_backoff_seconds)
+
+            if last_error is not None:
+                await self._fail_user_delivery(msg_id, request_id, last_error)
+                return
+        finally:
+            self._delivering_msg_ids.discard(msg_id)
+
+        await self._emit_delivery_ack(
+            request_id,
+            msg_id,
+            "blocked_on_question" if pending_q else "delivered",
+            pending_questions=pending_q,
+        )
+
+    async def _fail_user_delivery(
+        self, msg_id: str, request_id: str | None, error: Exception
+    ) -> None:
+        """Terminal delivery failure: flip the turn to a VISIBLE ``failed`` state and
+        surface it. The turn is NEVER left silently ``pending`` (INV-7)."""
+        logger.exception(
+            "user message delivery failed after retries (request_id=%s)",
+            _sanitize_log(request_id),
+            exc_info=error,
+        )
+        if self._mark_user_turn_failed(msg_id):
+            self._save_conversation_history()
+        await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(error))
+        try:
+            await self._emit_broker_frame({"type": "error", "content": str(error)})
+        except Exception:
+            logger.debug("Failed to broadcast delivery error", exc_info=True)
+
+    def _mark_user_turn_failed(self, msg_id: str) -> bool:
+        """Flip the in-memory user turn ``msg_id`` to steering_state=failed. Returns True
+        if it changed (so the caller can persist once). Does NOT persist or broadcast.
+
+        A turn already ``active`` (the agent consumed it before the retry loop gave up —
+        a benign race) is left active; only a still-undelivered turn flips to failed."""
+        for turn in self._conversation_turns:
+            if turn.id == msg_id and turn.role == "user":
+                if turn.metadata.get("steering_state") == "active":
+                    return False
+                if turn.metadata.get("steering_state") == "failed":
+                    return False
+                turn.metadata["steering_state"] = "failed"
+                return True
+        return False
+
+    async def _emit_delivery_ack(
+        self,
+        request_id: str | None,
+        msg_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        pending_questions: int = 0,
+    ) -> None:
+        """Broadcast a steering delivery ACK (BUG-3).
+
+        The HTTP ``/messages`` bridge waits for this to confirm the message actually
+        reached the agent; live UI clients can also use it to clear a "sending…" state or
+        warn the user to answer an open question first.
+        """
+        event: dict[str, Any] = {
+            "type": "user_delivery_failed" if status == "failed" else "user_delivered",
+            "status": status,
+            "id": msg_id,
+        }
+        if request_id:
+            event["request_id"] = request_id
+        if error:
+            event["error"] = error
+        if pending_questions:
+            event["pending_questions"] = pending_questions
+        try:
+            await self._emit_broker_frame(event)
+        except Exception:
+            logger.debug("Failed to broadcast delivery ack", exc_info=True)
+
+    async def _activate_user_turn(self, data: dict) -> None:
+        """Flip a steering message from "pending" to "active" once the agent has
+        actually consumed it.
+
+        ``user_delivered`` only means the text was typed into the pane; the message
+        then sits in the CLI's own input queue until it is inserted into the flow.
+        The (correlated) ``terminal_prompt_submitted`` — driven by Claude's
+        UserPromptSubmit hook — is the genuine "now in the conversation" signal. We
+        persist ``steering_state=active`` on the turn (so reconnect + REST reflect it)
+        and broadcast a ``user_active`` event keyed by ``id`` so a live client can flip
+        that specific bubble immediately, without waiting for the next REST poll.
+        """
+        msg_id = data.get("msg_id")
+        if not isinstance(msg_id, str) or not msg_id:
+            return
+        request_id = data.get("request_id")
+        if self._mark_user_turn_active(msg_id):
+            self._save_conversation_history()
+        await self._broadcast_user_active(msg_id, request_id)
+
+    def _stamp_steering_state_from_frame(self, data: dict) -> None:
+        """Stamp a user turn's steering_state from a logged steering-ACK frame, using the SAME
+        shared policy the log rebuild applies (INV-4). Idempotent and silent if the frame is not
+        a steering transition or no matching user turn exists yet."""
+        state = steering_state_from_frame(str(data.get("type", "")), data)
+        if state is None:
+            return
+        target = steering_target_id(str(data.get("type", "")), data)
+        if not target:
+            return
+        for turn in self._conversation_turns:
+            if turn.id == target and turn.role == "user":
+                if turn.metadata.get("steering_state") != state:
+                    turn.metadata["steering_state"] = state
+                return
+
+    def _mark_user_turn_active(self, msg_id: str) -> bool:
+        """Flip the in-memory user turn ``msg_id`` to steering_state=active. Returns True if it
+        changed (so the caller can persist once). Does NOT persist or broadcast."""
+        for turn in self._conversation_turns:
+            if turn.id == msg_id and turn.role == "user":
+                if turn.metadata.get("steering_state") != "active":
+                    turn.metadata["steering_state"] = "active"
+                    return True
+                return False
+        return False
+
+    async def _broadcast_user_active(self, msg_id: str, request_id: object = None) -> None:
+        """Tell live clients a steering message went active so they flip that specific bubble."""
+        event: dict[str, Any] = {"type": "user_active", "id": msg_id}
+        if isinstance(request_id, str) and request_id:
+            event["request_id"] = request_id
+        try:
+            await self._emit_broker_frame(event)
+        except Exception:
+            logger.debug("Failed to broadcast user_active", exc_info=True)
+
+    @staticmethod
+    def _assistant_has_content(data: dict) -> bool:
+        """True only when an assistant frame carries non-empty content. Codex's empty turn/started
+        assistant frame (content: []) must NOT trip the backstop — the precise user_consumed handles
+        that turn — so an empty frame is treated as no content."""
+        message = data.get("message")
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        return isinstance(content, list) and len(content) > 0
+
+    async def _activate_pending_user_turns_backstop(self) -> None:
+        """Flip every still-pending user turn the transport could plausibly have consumed to
+        active (the non-native floor). Persists once and broadcasts one user_active per flipped
+        turn. Idempotent: turns already active are skipped, so an overlap with a precise signal
+        sends no redundant work.
+
+        EXCLUDES turns whose delivery task is still in flight (``_delivering_msg_ids``): a steer
+        mid-retry has NOT reached the agent, so flipping it here would report a never-delivered
+        message as "active" (a false "consumed", SRD §3.4). Such a turn ends "failed" when its
+        delivery terminally fails — never "active"."""
+        flipped: list[str] = []
+        for turn in self._conversation_turns:
+            if turn.role != "user" or turn.metadata.get("steering_state") != "pending":
+                continue
+            if turn.id in self._delivering_msg_ids:
+                continue
+            turn.metadata["steering_state"] = "active"
+            flipped.append(turn.id)
+        if not flipped:
+            return
+        self._save_conversation_history()
+        for msg_id in flipped:
+            await self._broadcast_user_active(msg_id)
 
     async def handle_claude_hook(self, payload: dict[str, Any]) -> None:
         """Ingest a Claude Code hook payload into the normal event pipeline.
@@ -3855,7 +4420,7 @@ class Broker:
         thread_id = _non_empty_str(metadata_payload.get("thread_id"))
         if thread_id:
             event["threadId"] = thread_id
-        await self._channels.broadcast(event)
+        await self._emit_broker_frame(event)
         if self._room_bridge is not None and participant is not None:
             for room_id in participant.room_ids:
                 await self._room_bridge.record_huddle_message(
@@ -4412,12 +4977,94 @@ class Broker:
         # Dropping the oldest is the least-bad option vs OOM-killing the broker,
         # and is logged loudly so the loss is visible.
         overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
-        if overflow > 0:
-            del self._event_log_buffer[:overflow]
-            logger.warning(
-                "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
-                overflow,
-            )
+        if overflow <= 0:
+            return
+        dropped = self._event_log_buffer[:overflow]
+        # True hole size: a prior overflow's sentinel may itself be among the frames
+        # dropped this round. Counting it as a single frame would UNDER-report under
+        # sustained overflow (the hole it stood for vanishes). Fold its accumulated
+        # ``dropped`` count back in, and carry the earliest covered seq forward, so the
+        # surviving sentinel always reports the TRUE size/range of the cumulative gap.
+        true_dropped = 0
+        first_dropped_seq = dropped[0].get("first_seq", dropped[0]["seq"])
+        last_dropped_seq = dropped[-1].get("last_seq", dropped[-1]["seq"])
+        for entry in dropped:
+            payload = entry.get("payload")
+            if isinstance(payload, dict) and payload.get("type") == "log_gap":
+                true_dropped += int(payload.get("dropped", 0))
+                first_dropped_seq = min(first_dropped_seq, payload.get("first_seq", entry["seq"]))
+                last_dropped_seq = max(last_dropped_seq, payload.get("last_seq", entry["seq"]))
+                continue
+            true_dropped += 1
+            first_dropped_seq = min(first_dropped_seq, entry["seq"])
+            last_dropped_seq = max(last_dropped_seq, entry["seq"])
+        del self._event_log_buffer[:overflow]
+        logger.warning(
+            "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
+            true_dropped,
+        )
+        # INV-2 durability floor: never leave a SILENT hole. Replace the dropped
+        # frames with a single queryable sentinel so any reader can DETECT the
+        # gap (and its size/range) instead of inferring "not yet flushed". The
+        # sentinel rides at the front so it survives the very next flush.
+        self._event_log_buffer.insert(
+            0,
+            {
+                "seq": first_dropped_seq,
+                "kind": "log_gap",
+                "payload": {
+                    "type": "log_gap",
+                    "dropped": true_dropped,
+                    "first_seq": first_dropped_seq,
+                    "last_seq": last_dropped_seq,
+                    "reason": "buffer_overflow",
+                },
+                "request_id": None,
+                "ts": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def _emit_broker_frame(self, frame: dict) -> None:
+        """Single choke point for BROKER-ORIGINATED frames (FR-1 / INV-1).
+
+        Transport frames already funnel through ``_handle_cli_event`` (log first,
+        then broadcast). Broker-synthesized frames — errors, permission_*,
+        available_commands, the intermediary user_* events, etc. — must obey the
+        SAME superset invariant: every frame that reaches a live client is in the
+        durable log FIRST. Enqueue, then broadcast. The broadcast itself preserves
+        existing behavior (best-effort; failures are swallowed by the caller's
+        contract here so a dead socket never tears down broker logic).
+
+        Do NOT route ``_handle_cli_event`` transport frames through this — they are
+        already logged there and would be double-counted.
+        """
+        self._enqueue_event_log(frame)
+        await self._channels.broadcast(frame)
+
+    async def _send_broker_frame_to(self, sender_ws: Any, frame: dict) -> None:
+        """Log a broker-originated frame, then send it to ONE channel (FR-1).
+
+        Per-channel sends (e.g. an error echoed only to the sender) are still
+        live frames a client sees, so they too must be persisted to the durable
+        log first. Preserves the raw ``send_json`` semantics of the call site
+        (exceptions propagate exactly as before).
+        """
+        self._enqueue_event_log(frame)
+        await sender_ws.send_json(frame)
+
+    async def _safe_send_broker_frame_to(self, websocket: WebSocket, frame: dict) -> bool:
+        """Log a broker-originated frame, then safe-send it to ONE browser (FR-1).
+
+        The first-connect path uses ``_safe_browser_send_json`` so a client that
+        disconnected mid-handshake is handled gracefully (returns ``False`` to let
+        the caller bail out) instead of raising. Frames sent this way — the
+        ``system`` welcome and the ``capabilities`` catalog — are first-class
+        broker-originated frames a live client sees (not re-sends of logged state),
+        so they too must hit the durable log FIRST (INV-1). Enqueue, then safe-send;
+        the bool gate semantics of ``_safe_browser_send_json`` are preserved.
+        """
+        self._enqueue_event_log(frame)
+        return await self._safe_browser_send_json(websocket, frame)
 
     def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
         """Persist a HUMAN message to the durable event log as a user frame.
@@ -4523,14 +5170,42 @@ class Broker:
             return
         client = await self._get_http_client()
         path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        head = 0
         try:
             response = await client.get(path)
             if response.status_code < 300:
-                self._event_log_seq = int(response.json().get("latest_seq", 0))
+                head = int(response.json().get("latest_seq", 0))
         except Exception:
             logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        await self._resume_seq_from_head(head)
         self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
         logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    async def _resume_seq_from_head(self, head: int) -> None:
+        """Seed the seq counter from the backend head WITHOUT losing window frames.
+
+        The head fetch in ``_init_event_log`` is an ``await``, so the event loop is
+        free to run other tasks meanwhile — the *capture window*. Agent output can
+        be enqueued during it, taking provisional seqs ``1..W``. Naively assigning
+        ``_event_log_seq = head`` would leave those buffered frames carrying seqs
+        that overlap the backend's already-stored ``1..head``; the PK is
+        ``(session_id, seq)`` with ``ON CONFLICT DO NOTHING``, so they would be
+        silently swallowed on flush (INV-8c collision).
+
+        Re-base the whole run above the head: shift every already-buffered frame by
+        ``head`` so the window frames (provisional seqs ``1..W``) become
+        ``head+1 .. head+W`` (preserving their relative order), and continue the
+        counter from ``head+W``. If nothing was captured during the window this
+        collapses to the plain ``_event_log_seq = head`` resume.
+        """
+        async with self._event_log_lock:
+            if head <= 0:
+                # Fresh start (no prior durable state) — provisional seqs are
+                # already correct; nothing to re-base.
+                return
+            for entry in self._event_log_buffer:
+                entry["seq"] += head
+            self._event_log_seq += head
 
     async def _stop_event_log(self) -> None:
         """Drain remaining frames and stop the worker on shutdown."""
@@ -4860,18 +5535,55 @@ class Broker:
             model=self.model,
         )
 
+    def _set_activity_state(self, state: str, metadata: dict[str, Any] | None = None) -> None:
+        """Set the in-memory activity_state and stamp ``_activity_state_since``.
+
+        The canonical mutation point for ``self._activity_state``. The "since"
+        timestamp (wall-clock epoch seconds, UTC) is stamped ONLY when the state
+        actually CHANGES — re-asserting the same state (heartbeats, repeated
+        reports) must NOT reset it, so elapsed time stays accurate for clients.
+
+        ``metadata`` is accepted for symmetry/forward-compat; it is not stored
+        here (the rich per-state context lives in ``_activity_extra``, managed by
+        ``_report_activity_state``).
+        """
+        if state != self._activity_state:
+            self._activity_state = state
+            self._activity_state_since = time.time()
+
+    @staticmethod
+    def _state_since_iso(epoch_seconds: float) -> str:
+        """Render an internal epoch ``_activity_state_since`` as ISO8601 UTC.
+
+        Matches the wire convention used for Volundr datetimes (``.isoformat()``
+        on a tz-aware UTC datetime) so clients parse it the same way.
+        """
+        return datetime.fromtimestamp(epoch_seconds, tz=UTC).isoformat()
+
     async def _report_activity_state(
         self, state: str, *, extra_metadata: dict[str, Any] | None = None
     ) -> None:
         """Report activity state change to Volundr.
 
-        States: active, idle, tool_executing.
-        Debounces rapid transitions — only reports when state actually changes.
+        States: provisioning, active, idle, tool_executing, awaiting_input,
+        stopped. Debounces rapid transitions — only reports when the state
+        actually changes, unless extra_metadata is attached (used by the
+        heartbeat and by attention reports so they always land). The POST body
+        ALWAYS carries ``state`` and ``state_since`` so a transition (including
+        ``idle``) is never reported without its entered-at timestamp.
         """
         if state == self._activity_state and not extra_metadata:
             return
 
-        self._activity_state = state
+        # Remember the rich context of a "real" (non-heartbeat) report so the
+        # heartbeat can re-send it unchanged. A plain report (no extra) clears it.
+        if not (extra_metadata and extra_metadata.get("heartbeat")):
+            self._activity_extra = {
+                k: v for k, v in (extra_metadata or {}).items() if k != "heartbeat"
+            }
+
+        # Canonical setter: flips the in-memory state and stamps _since on change.
+        self._set_activity_state(state, extra_metadata)
         now = time.monotonic()
         self._last_activity_report = now
 
@@ -4896,7 +5608,11 @@ class Broker:
             client = await self._get_http_client()
             resp = await client.post(
                 f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
-                json={"state": state, "metadata": metadata},
+                json={
+                    "state": state,
+                    "state_since": self._state_since_iso(self._activity_state_since),
+                    "metadata": metadata,
+                },
             )
             logger.info(
                 "Activity report: state=%s status=%d url=%s",
@@ -4909,6 +5625,81 @@ class Broker:
                 "Failed to report activity state %s",
                 state,
                 exc_info=True,
+            )
+
+    async def _enter_attention(
+        self,
+        request_id: str,
+        kind: str,
+        *,
+        prompt: str = "",
+        options: list | None = None,
+    ) -> None:
+        """Mark the session blocked on the user and report awaiting_input.
+
+        ``kind`` is one of ``question`` | ``confirmation`` | ``permission``.
+        The metadata travels to Volundr, which (re-)emits the high-urgency
+        needs-input event a notification / push fan-out reacts to.
+        """
+        if request_id:
+            self._pending_attention[request_id] = kind
+        extra: dict[str, Any] = {"kind": kind, "request_id": request_id}
+        if prompt:
+            extra["prompt"] = prompt
+        if options is not None:
+            extra["options"] = options
+        await self._report_activity_state("awaiting_input", extra_metadata=extra)
+
+    async def _exit_attention(self, request_id: str) -> None:
+        """Clear one pending human gate; resume when nothing else is blocking.
+
+        Reports ``active`` once the last gate clears so the session leaves
+        awaiting_input immediately — the next CLI frame refines the state.
+        """
+        self._pending_attention.pop(request_id, None)
+        if self._pending_attention:
+            return
+        if self._activity_state == "awaiting_input":
+            await self._report_activity_state("active")
+
+    @staticmethod
+    def _attention_prompt_from_questions(data: dict) -> str:
+        """Best-effort human-readable prompt from an ask_user_question frame."""
+        questions = data.get("questions") or []
+        for q in questions:
+            if isinstance(q, dict):
+                text = q.get("question") or q.get("header") or q.get("prompt")
+                if text:
+                    return str(text)
+        return "The agent is asking a question"
+
+    @staticmethod
+    def _attention_prompt_from_permission(request: dict) -> str:
+        """Best-effort human-readable prompt from a permission control_request."""
+        tool = request.get("tool_name") or request.get("tool") or "a tool"
+        description = request.get("description") or request.get("command")
+        if description:
+            return f"Permission to run {tool}: {description}"
+        return f"Permission to run {tool}"
+
+    async def _activity_heartbeat_loop(self) -> None:
+        """Re-report the current activity state on an interval while busy/blocked.
+
+        Keeps the UI's "progressing" signal live during long turns and keeps
+        ``last_active`` fresh so Volundr's liveness reaper does not stop a
+        genuinely-busy or input-blocked session. Idle sessions are not
+        heartbeated (an idle session that goes stale is exactly what the reaper
+        is meant to catch).
+        """
+        interval = self._settings.activity_heartbeat.interval_seconds
+        while True:
+            await asyncio.sleep(interval)
+            state = self._activity_state
+            if state not in ("active", "tool_executing", "awaiting_input"):
+                continue
+            await self._report_activity_state(
+                state,
+                extra_metadata={**self._activity_extra, "heartbeat": True},
             )
 
     async def _generate_summary(self) -> dict:
@@ -5419,7 +6210,11 @@ class Broker:
         self._update_jwt_from_websocket(websocket)
 
         await websocket.accept()
-        channel = WebSocketChannel(websocket)
+        # Internal-visibility default comes from the ONE configured source (SRD
+        # FR-7 / INV-10) — NOT the hardcoded WebSocketChannel default — so the live
+        # channel, the replay tail, and the cold-read all read the same default and
+        # move together when it is flipped.
+        channel = WebSocketChannel(websocket, show_internal=self._settings.default_show_internal)
         self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
@@ -5427,10 +6222,9 @@ class Broker:
         try:
             if not self._transport:
                 logger.error("handle_websocket: transport not initialized")
-                await self._safe_browser_send_json(
-                    websocket,
-                    {"type": "error", "content": "Transport not initialized"},
-                )
+                _transport_err = {"type": "error", "content": "Transport not initialized"}
+                self._enqueue_event_log(_transport_err)
+                await self._safe_browser_send_json(websocket, _transport_err)
                 return
 
             # Lazy-start transport on first browser connection
@@ -5451,13 +6245,12 @@ class Broker:
                             e,
                             exc_info=True,
                         )
-                        await self._safe_browser_send_json(
-                            websocket,
-                            {
-                                "type": "error",
-                                "content": f"Transport start failed: {e}",
-                            },
-                        )
+                        _start_err = {
+                            "type": "error",
+                            "content": f"Transport start failed: {e}",
+                        }
+                        self._enqueue_event_log(_start_err)
+                        await self._safe_browser_send_json(websocket, _start_err)
                         return
             else:
                 logger.debug("handle_websocket: transport already alive")
@@ -5465,35 +6258,55 @@ class Broker:
             # Report session start to timeline (once, on first connection)
             asyncio.create_task(self._report_session_start())
 
-            # Send welcome message
-            if not await self._safe_browser_send_json(
+            # Send welcome message (broker-originated first-connect frame: log first).
+            # PER-CONNECT handshake: addressed to THIS socket only, not the canonical
+            # shared stream. Mark it so the RAW read paths drop HISTORICAL welcomes
+            # (a connecting client always gets its own) — the system kind is shared
+            # with genuine CLI system frames, so it can't be excluded by kind alone
+            # (SRD INV-5). The marker is inert on the wire.
+            if not await self._safe_send_broker_frame_to(
                 websocket,
-                {"type": "system", "content": f"Connected to session {self.session_id}"},
+                {
+                    "type": "system",
+                    "content": f"Connected to session {self.session_id}",
+                    PER_CONNECT_MARKER: True,
+                },
             ):
                 return
             logger.debug("handle_websocket: welcome message sent")
 
             # Send transport capabilities so the frontend knows which
-            # controls to render.
+            # controls to render. Broker-originated first-connect frame: log first.
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
                 caps["room_prompt_resend"] = self._room_bridge is not None
-                if not await self._safe_browser_send_json(websocket, caps):
+                if not await self._safe_send_broker_frame_to(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
 
             # Replay conversation history so late-joining browsers see
             # earlier messages (including the initial prompt)
-            if self._conversation_turns:
+            # Whole-truth unification: replay completed turns PLUS the in-flight turn so a
+            # reconnect mid-run reconstructs the FULL truth (not just new frames from now on).
+            in_progress_turn = self._serialize_in_progress_turn()
+            if self._conversation_turns or in_progress_turn is not None:
+                replay_turns = [asdict(t) for t in self._conversation_turns]
+                if in_progress_turn is not None:
+                    replay_turns.append(in_progress_turn)
                 logger.info(
-                    "Replaying %d conversation turns to new browser",
-                    len(self._conversation_turns),
+                    "Replaying %d conversation turn(s) to new browser",
+                    len(replay_turns),
                 )
                 if not await self._safe_browser_send_json(
                     websocket,
                     {
                         "type": "conversation_history",
-                        "turns": [asdict(t) for t in self._conversation_turns],
+                        "turns": replay_turns,
+                        # SRD FR-6: the durable-log head seq at reconnect time. The
+                        # client loads this state, then resumes the live tail from
+                        # head_seq+1 with no gap and no duplicate (the broker keeps
+                        # appending to the SAME monotonic seq it broadcasts from).
+                        "head_seq": self._event_log_seq,
                     },
                 ):
                     return
@@ -5518,9 +6331,73 @@ class Broker:
                     if not await self._safe_browser_send_json(websocket, permission_request):
                         return
 
+            # Same for ask_user_question: these are CLI events (not control_request
+            # RPCs), so they're not in the permission set above. Re-surface any
+            # outstanding question so a client reconnecting WHILE the agent is blocked
+            # gets the answerable card instead of a frozen/"dead" session — the core
+            # tmux-interactive reconnect bug.
+            if self._pending_ask_user_questions:
+                logger.info(
+                    "Replaying %d pending ask_user_question(s) to new browser",
+                    len(self._pending_ask_user_questions),
+                )
+                for ask_question in list(self._pending_ask_user_questions.values()):
+                    if not await self._safe_browser_send_json(websocket, ask_question):
+                        return
+
+            # Plan + running agents: a late-joining client should immediately know
+            # the current plan and the running fleet without waiting for the next
+            # change — same guarantee questions/permissions get above.
+            if self._current_plan is not None:
+                if not await self._safe_browser_send_json(websocket, self._current_plan):
+                    return
+            if self._running_agents:
+                logger.info(
+                    "Replaying %d running agent(s) to new browser",
+                    len(self._running_agents),
+                )
+                for agent in list(self._running_agents.values()):
+                    frame = {
+                        "type": "agent_update",
+                        "event_type": "claude.agent",
+                        "action": "started",
+                        "agent": agent,
+                        "metadata": {"source": "reconnect_replay"},
+                    }
+                    if not await self._safe_browser_send_json(websocket, frame):
+                        return
+
             # Handle messages from browser
             while True:
-                data = await websocket.receive_json()
+                # INV-7: a malformed / non-JSON inbound frame must NOT tear down the
+                # socket or drop every subsequent valid message. receive_json() is
+                # INSIDE the per-message try so a bad frame is logged + surfaced as an
+                # error frame and the loop CONTINUES. A genuine disconnect still raises
+                # WebSocketDisconnect (and the expected-disconnect classifier below),
+                # which we re-raise to exit the loop cleanly.
+                try:
+                    data = await websocket.receive_json()
+                except (ValueError, UnicodeDecodeError, TypeError) as e:
+                    # A genuinely MALFORMED inbound payload (non-JSON / wrong type):
+                    # log + surface an error frame and CONTINUE so one bad frame never
+                    # tears down the socket or drops the subsequent valid messages
+                    # (INV-7, second clause). ``json.JSONDecodeError`` is a ``ValueError``.
+                    # NOTE: this is deliberately NARROW — a transport-level failure
+                    # (WebSocketDisconnect, a connection RuntimeError, any other Exception)
+                    # is NOT a malformed frame and must propagate to tear the loop down,
+                    # so a permanently-failing receive can never spin forever.
+                    logger.warning(
+                        "handle_websocket: malformed inbound frame ignored: %s",
+                        _sanitize_log(str(e)),
+                    )
+                    _bad_frame_err = {
+                        "type": "error",
+                        "content": f"malformed message ignored: {e}",
+                    }
+                    self._enqueue_event_log(_bad_frame_err)
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json(_bad_frame_err)
+                    continue
                 logger.debug(
                     "handle_websocket: browser msg: %s",
                     _sanitize_log(json.dumps(data)[:500]),
@@ -5529,7 +6406,10 @@ class Broker:
                     await self._dispatch_browser_message(data, sender_ws=websocket)
                 except Exception as e:
                     logger.exception("Error processing browser message: %s", _sanitize_log(data))
-                    await websocket.send_json({"type": "error", "content": str(e)})
+                    _dispatch_err = {"type": "error", "content": str(e)}
+                    self._enqueue_event_log(_dispatch_err)
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json(_dispatch_err)
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
@@ -5539,7 +6419,9 @@ class Broker:
                 return
             logger.exception("WebSocket error")
             try:
-                await websocket.send_json({"type": "error", "content": str(e)})
+                _ws_err = {"type": "error", "content": str(e)}
+                self._enqueue_event_log(_ws_err)
+                await websocket.send_json(_ws_err)
             except Exception:
                 logger.debug("Failed to send error response to WebSocket", exc_info=True)
         finally:
@@ -5822,8 +6704,14 @@ async def get_aggregate_logs(
 
 
 @app.get("/api/conversation/history")
-async def get_conversation_history() -> dict:
-    """Return the full conversation history with activity state."""
+async def get_conversation_history(detail: str = "full") -> dict:
+    """Return the conversation history with activity state.
+
+    ``detail=shallow`` elides heavy ``tool_result`` content to lazy-load
+    placeholders (see ``conversation_shallow``); the client fetches an
+    individual result on demand via ``/api/conversation/tool-result/{id}``.
+    """
+    shallow = detail == SHALLOW_DETAIL
     is_active = (
         broker._transport is not None
         and broker._transport.is_alive
@@ -5850,11 +6738,90 @@ async def get_conversation_history() -> dict:
         # Always include visibility so clients can rely on it being present
         return d
 
+    # PERF PROFILE (server-side): the open latency the client sees is mostly here. Time the two
+    # phases SEPARATELY — the `asdict` BUILD (a deep copy of every turn incl. the heavy tool_result
+    # content) vs the shallow ELIDE — because `asdict` runs on the FULL payload BEFORE the elide
+    # shrinks it, so a shallow request still pays the full build/serialize cost. If build_ms
+    # dominates, the real fix is eliding BEFORE asdict (never materialize the heavy content), not
+    # the transfer size. `_prep` rides in the response so volundr + the client see the breakdown.
+    t_build = time.perf_counter()
+    turns = [_serialize_turn(t) for t in broker._conversation_turns]
+    # Whole-truth unification: append the in-flight turn so a first connect / other device sees
+    # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
+    in_progress_turn = broker._serialize_in_progress_turn()
+    if in_progress_turn is not None:
+        turns.append(in_progress_turn)
+    build_ms = (time.perf_counter() - t_build) * 1000.0
+
+    elide_ms = 0.0
+    if shallow:
+        t_elide = time.perf_counter()
+        turns = [elide_turn(d) for d in turns]
+        elide_ms = (time.perf_counter() - t_elide) * 1000.0
+
+    prep = {
+        "layer": "skuld",
+        "shallow": shallow,
+        "turns": len(turns),
+        "build_ms": round(build_ms, 1),
+        "elide_ms": round(elide_ms, 1),
+    }
+    logger.info(
+        "[perf] conversation prep shallow=%s turns=%d build=%.1fms elide=%.1fms",
+        shallow,
+        len(turns),
+        build_ms,
+        elide_ms,
+    )
     return {
-        "turns": [_serialize_turn(t) for t in broker._conversation_turns],
+        "turns": turns,
         "is_active": is_active,
         "last_activity": last_activity,
+        "_prep": prep,
+        # Seed the first paint after a reconnect with the authoritative activity
+        # state + when it was entered, so a client doesn't have to wait for the
+        # next SSE/activity report to know whether the session is active/idle/etc.
+        "activity_state": broker._activity_state,
+        "activity_state_since": broker._state_since_iso(broker._activity_state_since),
     }
+
+
+@app.get("/api/conversation/tool-result/{tool_use_id}")
+async def get_tool_result(tool_use_id: str) -> dict:
+    """Return one full tool_result block by its tool_use_id.
+
+    The lazy-load target for a shallow conversation: when a client expands an
+    elided tool_result placeholder it fetches the full content here. Scans the
+    completed turns and the in-flight turn for the matching block (the same
+    authoritative data the conversation endpoint serves). 404 when no such
+    tool_result exists in this session.
+    """
+
+    def _find(parts: list[dict]) -> dict | None:
+        for block in parts:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id") == tool_use_id
+            ):
+                return block
+        return None
+
+    sources = [turn.parts for turn in broker._conversation_turns]
+    in_progress = broker._serialize_in_progress_turn()
+    if in_progress is not None:
+        sources.append(in_progress.get("parts", []))
+
+    for parts in sources:
+        found = _find(parts)
+        if found is not None:
+            return {
+                "tool_use_id": tool_use_id,
+                "content": found.get("content", ""),
+                "is_error": bool(found.get("is_error", False)),
+            }
+
+    raise HTTPException(status_code=404, detail=f"tool_result not found: {tool_use_id}")
 
 
 # --- Capabilities API ---
@@ -5876,6 +6843,21 @@ async def get_capabilities() -> dict:
     payload = asdict(broker._transport.capabilities)
     payload["room_prompt_resend"] = broker._room_bridge is not None
     return payload
+
+
+@app.get("/api/plan")
+async def get_plan() -> dict:
+    """Claude's current plan/task list (from its TodoWrite tool), or empty if none."""
+    plan = broker._current_plan
+    if plan is None:
+        return {"tasks": [], "counts": {"total": 0}}
+    return {"tasks": plan.get("tasks", []), "counts": plan.get("counts", {})}
+
+
+@app.get("/api/agents")
+async def get_agents() -> dict:
+    """Agents/sub-processes running in this session: Task subagents + teammate panes."""
+    return {"agents": list(broker._running_agents.values())}
 
 
 @app.get("/api/slash-commands")
@@ -6103,6 +7085,144 @@ async def download_file(path: str, root: str = "workspace") -> FileResponse:
         path=target_real,
         filename=os.path.basename(target_real),
         media_type="application/octet-stream",
+    )
+
+
+# --------------------------------------------------------------------------- present-file
+#
+# The `present-file <path>` command (engine-agnostic PATH shim) lets a Forge agent hand the user ANY
+# file on the host — including /tmp scratchpad artifacts outside the workspace — that lands in the
+# Lexi app as a tappable card. The broker STAGES a copy under a broker-owned dir (outside the
+# workspace so the git tree stays clean, on the persistence mount so it survives restart), mints an
+# opaque file_id, and EMITS the file as a self-contained `conversation.turn` (durable through PASS-1
+# rebuild + live broadcast). The blob is served by opaque id (never by a client-supplied path), so
+# the workspace path-traversal guards are safely bypassed rather than relaxed. In-app analogue of
+# the harness SendUserFile tool.
+
+_PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
+_MAX_PRESENTED_FILE_BYTES = int(
+    os.environ.get("SKULD__MAX_PRESENTED_FILE_BYTES", str(50 * 1024 * 1024))
+)
+# file_id -> staged realpath. Rebuilt from the self-describing staging dir on startup.
+_presented_registry: dict[str, str] = {}
+
+
+def _presented_staging_dir() -> Path:
+    """Broker-owned staging root, OUTSIDE the workspace (keeps the git tree pristine) and on the
+    session home mount (survives broker restart)."""
+    return Path(broker._settings.home_path).resolve() / ".forge-presented"
+
+
+def _rebuild_presented_registry() -> None:
+    """Repopulate the file_id -> staged-path registry from the self-describing staging dir
+    ({staging}/{file_id}/{basename}) so present-file cards keep resolving after a broker restart."""
+    _presented_registry.clear()
+    root = _presented_staging_dir()
+    try:
+        if not root.is_dir():
+            return
+        for entry in root.iterdir():
+            if not entry.is_dir() or not _PRESENTED_ID_RE.match(entry.name):
+                continue
+            files = [f for f in entry.iterdir() if f.is_file()]
+            if files:
+                _presented_registry[entry.name] = str(files[0].resolve())
+    except OSError as exc:  # pragma: no cover - best-effort recovery
+        logger.warning("present-file: registry rebuild failed: %s", exc)
+
+
+@app.post("/api/present-file")
+async def present_file(body: dict) -> dict:
+    """Stage a host file, emit a durable present_file turn, and return its id/metadata.
+
+    Loopback, in-session agent only (the `present-file` shim curls this). Body:
+    ``{ "path": "<absolute host path>", "caption"?: str, "title"?: str }``.
+    """
+    raw_path = str((body or {}).get("path") or "").strip()
+    if not raw_path:
+        raise HTTPException(400, "path is required")
+    caption = str((body or {}).get("caption") or "").strip() or None
+    title = str((body or {}).get("title") or "").strip() or None
+
+    src = Path(raw_path).expanduser()
+    try:
+        src_real = src.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(404, "no such file") from None
+    if not src_real.is_file():
+        raise HTTPException(400, "not a regular file")
+    size = src_real.stat().st_size
+    if size > _MAX_PRESENTED_FILE_BYTES:
+        raise HTTPException(413, "file exceeds max_presented_file_bytes")
+
+    file_id = "pf_" + uuid.uuid4().hex
+    name = title or src_real.name
+    mime = mimetypes.guess_type(src_real.name)[0] or "application/octet-stream"
+
+    # Stage a COPY so a later /tmp GC or edit cannot change/lose what the user tapped.
+    dest_dir = _presented_staging_dir() / file_id
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src_real.name
+        shutil.copyfile(src_real, dest)
+    except OSError as exc:
+        logger.warning("present-file: staging copy failed: %s", exc)
+        raise HTTPException(500, "could not stage file") from None
+    _presented_registry[file_id] = str(dest.resolve())
+
+    await broker._emit_broker_frame(_build_present_file_turn(file_id, name, mime, size, caption))
+    logger.info("present-file: staged %s (%d bytes) as %s", name, size, file_id)
+    return {"file_id": file_id, "name": name, "size": size, "mime": mime}
+
+
+def _build_present_file_turn(
+    file_id: str, name: str, mime: str, size: int, caption: str | None
+) -> dict:
+    """A self-contained assistant `conversation.turn` carrying the file as a `present_file` tool_use
+    part (no inline bytes). PASS-1 authoritative → survives reconnect + the durable rebuild."""
+    tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
+    if caption:
+        tool_input["caption"] = caption
+    part = {"id": file_id, "name": "present_file", "type": "tool_use", "input": tool_input}
+    return {
+        "type": "conversation.turn",
+        "turn": {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "parts": [part],
+            "content": caption or name,
+            "metadata": {"cost": None, "model": None, "usage": {}, "present_file": True},
+            "thread_id": None,
+            "created_at": datetime.now(UTC).isoformat(),
+            "visibility": "public",
+            "participant_id": None,
+            "participant_meta": None,
+        },
+    }
+
+
+@app.get("/api/files/presented/{file_id}")
+async def download_presented_file(file_id: str) -> FileResponse:
+    """Serve a staged presented file by OPAQUE id (never a client path → traversal-safe)."""
+    if not _PRESENTED_ID_RE.match(file_id):
+        raise HTTPException(400, "invalid file_id")
+    path = _presented_registry.get(file_id)
+    if path is None:
+        # A restart may have dropped the in-memory entry before the lazy rebuild — try the dir.
+        candidate = _presented_staging_dir() / file_id
+        if candidate.is_dir():
+            files = [f for f in candidate.iterdir() if f.is_file()]
+            if files:
+                path = str(files[0].resolve())
+                _presented_registry[file_id] = path
+    if path is None:
+        raise HTTPException(404, "unknown file_id")
+    if not os.path.isfile(path):
+        raise HTTPException(410, "file no longer available")
+    return FileResponse(
+        path=path,
+        filename=os.path.basename(path),
+        media_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
     )
 
 

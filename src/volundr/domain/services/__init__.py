@@ -37,6 +37,7 @@ from .stats import StatsService
 from .tenant import TenantAlreadyExistsError, TenantNotFoundError, TenantService
 from .token import SessionNotRunningError, TokenService
 from .tracker import TrackerIssueNotFoundError, TrackerMappingNotFoundError, TrackerService
+from .transcript_rebuild import RebuildResult, rebuild_turns
 from .workspace import WorkspaceService
 
 __all__ = [
@@ -81,4 +82,7 @@ __all__ = [
     "FeatureModule",
     "UserFeaturePreference",
     "ProviderInfo",
+    "RebuildResult",
+    # Functions
+    "rebuild_turns",
 ]

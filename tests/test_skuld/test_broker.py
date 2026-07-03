@@ -17,6 +17,7 @@ from niuu.domain.models import SecretType
 from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
+    ConversationTurn,
     _log_buffer,
     _SendMessageRequest,
     _TokenRedactFilter,
@@ -528,6 +529,182 @@ class TestBroker:
         mock_channel.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_activate_user_turn_flips_pending_and_broadcasts(self, test_broker):
+        """A correlated terminal_prompt_submitted flips the steer pending->active and
+        broadcasts user_active so a live client can flip that specific bubble."""
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        # A pending steering turn, as the inbound dispatch path appends it.
+        test_broker._append_turn(
+            ConversationTurn(
+                id="m-1",
+                role="user",
+                content="refactor the parser",
+                metadata={"steering_state": "pending"},
+            )
+        )
+
+        # Claude consumed it: the transport's correlated terminal_prompt_submitted.
+        await test_broker._activate_user_turn(
+            {"type": "terminal_prompt_submitted", "msg_id": "m-1", "request_id": "r-1"}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-1")
+        assert turn.metadata["steering_state"] == "active", "the turn must flip to active"
+        assert any(
+            call.args[0].get("type") == "user_active"
+            and call.args[0].get("id") == "m-1"
+            and call.args[0].get("request_id") == "r-1"
+            for call in mock_channel.send_event.await_args_list
+        ), "a user_active event keyed by the msg id must be broadcast"
+
+    @pytest.mark.asyncio
+    async def test_activate_user_turn_ignores_uncorrelated_submit(self, test_broker):
+        """An uncorrelated prompt-submit (no msg_id) emits no user_active."""
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+
+        await test_broker._activate_user_turn({"type": "terminal_prompt_submitted"})
+
+        assert not any(
+            call.args[0].get("type") == "user_active"
+            for call in mock_channel.send_event.await_args_list
+        ), "an uncorrelated prompt-submit must not broadcast user_active"
+
+    @staticmethod
+    def _pending_user_turn(test_broker, msg_id):
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        test_broker._append_turn(
+            ConversationTurn(
+                id=msg_id, role="user", content="hi", metadata={"steering_state": "pending"}
+            )
+        )
+        return mock_channel
+
+    @pytest.mark.asyncio
+    async def test_user_consumed_event_flips_pending(self, test_broker):
+        """The broker routes a Codex `user_consumed` event to the SAME flip as tmux's
+        terminal_prompt_submitted — activate + broadcast user_active."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-1")
+
+        await test_broker._handle_cli_event(
+            {"type": "user_consumed", "msg_id": "m-1", "request_id": "r-1"}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-1")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-1"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_flips_pending_on_result_for_non_native(self, test_broker):
+        """A non-native transport that finishes a turn has consumed any still-pending steer."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-2")
+
+        await test_broker._handle_cli_event({"type": "result", "stop_reason": "end_turn"})
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-2")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-2"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_excluded_for_native_transport(self, test_broker):
+        """LOAD-BEARING: tmux (native) is NEVER flipped by the backstop — it owns the precise
+        UserPromptSubmit signal and streams assistant content for the in-progress turn while a
+        mid-turn steer is still queued, so the backstop would otherwise flip it early."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="native")
+        mock_channel = self._pending_user_turn(test_broker, "m-3")
+
+        await test_broker._handle_cli_event({"type": "result", "stop_reason": "end_turn"})
+        await test_broker._handle_cli_event(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+        )
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-3")
+        assert turn.metadata["steering_state"] == "pending"  # NOT flipped by the backstop
+        assert not any(
+            c.args[0].get("type") == "user_active" for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_empty_assistant_frame_does_not_flip(self, test_broker):
+        """Codex's empty turn/started assistant frame (content: []) must NOT trip the backstop;
+        a frame with real content does."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        self._pending_user_turn(test_broker, "m-4")
+
+        await test_broker._handle_cli_event({"type": "assistant", "message": {"content": []}})
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-4")
+        assert turn.metadata["steering_state"] == "pending"
+
+        await test_broker._handle_cli_event(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+        )
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-4")
+        assert turn.metadata["steering_state"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_backstop_flips_pending_on_error_for_non_native(self, test_broker):
+        """A terminal error on a non-native transport must not strand the steer pending forever."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = self._pending_user_turn(test_broker, "m-err")
+
+        await test_broker._handle_cli_event({"type": "error", "error": "boom"})
+
+        turn = next(t for t in test_broker._conversation_turns if t.id == "m-err")
+        assert turn.metadata["steering_state"] == "active"
+        assert any(
+            c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-err"
+            for c in mock_channel.send_event.await_args_list
+        )
+
+    def test_assistant_has_content(self):
+        assert Broker._assistant_has_content({"message": {"content": [{"type": "text"}]}}) is True
+        assert Broker._assistant_has_content({"message": {"content": []}}) is False
+        assert Broker._assistant_has_content({"message": {}}) is False
+        assert Broker._assistant_has_content({}) is False
+
+    @pytest.mark.asyncio
+    async def test_backstop_does_not_double_flip_already_active(self, test_broker):
+        """An already-active turn is left untouched (no redundant persist/broadcast churn)."""
+        test_broker._transport = AsyncMock()
+        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        mock_channel = AsyncMock()
+        mock_channel.channel_type = "browser"
+        mock_channel.is_open = True
+        test_broker._channels.add(mock_channel)
+        test_broker._append_turn(
+            ConversationTurn(
+                id="m-5", role="user", content="hi", metadata={"steering_state": "active"}
+            )
+        )
+
+        await test_broker._activate_pending_user_turns_backstop()
+
+        assert not any(
+            c.args[0].get("type") == "user_active" for c in mock_channel.send_event.await_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_handle_cli_event_forwards_to_channels(self, test_broker):
         mock_ch1 = AsyncMock()
         mock_ch1.channel_type = "browser"
@@ -556,6 +733,70 @@ class TestBroker:
         await test_broker._handle_cli_event(data)
 
         assert test_broker._pending_permission_requests["perm-1"] == data
+
+    @pytest.mark.asyncio
+    async def test_handle_cli_event_tracks_ask_user_question_for_replay(self, test_broker):
+        # tmux-reconnect fix: an ask_user_question is a CLI event (not a control_request
+        # RPC), so it must be tracked in its own pending set to be re-surfaced when a
+        # client reconnects WHILE the agent is blocked — otherwise the session looks dead.
+        data = {
+            "type": "ask_user_question",
+            "event_type": "ask_user_question",
+            "request_id": "tty-1-abc",
+            "questions": [{"question": "Proceed?", "options": ["Yes", "No"]}],
+        }
+
+        await test_broker._handle_cli_event(data)
+
+        assert test_broker._pending_ask_user_questions["tty-1-abc"] == data
+        # And it flips the session to awaiting_input (attention is entered async).
+        await asyncio.sleep(0)
+        assert "tty-1-abc" in test_broker._pending_attention
+
+    @pytest.mark.asyncio
+    async def test_handle_cli_event_resolved_clears_ask_user_question(self, test_broker):
+        question = {
+            "type": "ask_user_question",
+            "event_type": "ask_user_question",
+            "request_id": "tty-2",
+            "questions": [],
+        }
+        await test_broker._handle_cli_event(question)
+        assert "tty-2" in test_broker._pending_ask_user_questions
+
+        # An in-terminal keystroke (or turn end) emits ask_user.resolved via the TTY
+        # bridge → the broker drops the replay entry and clears server-side attention,
+        # so the session leaves awaiting_input instead of staying pinned.
+        resolved = {
+            "type": "ask_user_resolved",
+            "event_type": "ask_user.resolved",
+            "request_id": "tty-2",
+            "decision": "answered",
+        }
+        await test_broker._handle_cli_event(resolved)
+
+        assert "tty-2" not in test_broker._pending_ask_user_questions
+        await asyncio.sleep(0)
+        assert "tty-2" not in test_broker._pending_attention
+
+    @pytest.mark.asyncio
+    async def test_result_clears_pending_ask_user_questions(self, test_broker):
+        # A turn reaching `result` is no longer blocked — both the attention gates and
+        # the question replay-set must clear so a later reconnect/heartbeat can't
+        # resurrect a stale question card.
+        await test_broker._handle_cli_event(
+            {
+                "type": "ask_user_question",
+                "event_type": "ask_user_question",
+                "request_id": "tty-3",
+                "questions": [],
+            }
+        )
+        assert "tty-3" in test_broker._pending_ask_user_questions
+
+        await test_broker._handle_cli_event({"type": "result", "result": "done"})
+
+        assert test_broker._pending_ask_user_questions == {}
 
     @pytest.mark.asyncio
     async def test_handle_cli_event_auto_approves_allowed_permission(self, test_broker):
@@ -1521,6 +1762,18 @@ class TestBroker:
         assert transport.workspace_dir == str(tmp_path)
 
 
+async def _settle_delivery() -> None:
+    """Await the fire-and-forget ``transport-deliver-*`` task that dispatch schedules,
+    so assertions can observe the transport call + the delivery ack it emits (BUG-3)."""
+    tasks = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class TestDispatchBrowserMessage:
     """Tests for Broker._dispatch_browser_message (Phase 2/3/4)."""
 
@@ -1530,6 +1783,10 @@ class TestDispatchBrowserMessage:
             session={"id": "test-session", "workspace_dir": str(tmp_path)},
             transport="sdk",
             skip_permissions=False,
+            # Single attempt, zero backoff: the default dispatch tests assert one
+            # transport call / one terminal ack and must not pay retry latency. The
+            # dedicated INV-7 retry tests below build their own multi-attempt config.
+            delivery={"max_attempts": 1, "initial_backoff_seconds": 0.0},
         )
         b = Broker(settings=settings)
         b._transport = AsyncMock()
@@ -1538,19 +1795,57 @@ class TestDispatchBrowserMessage:
         return b
 
     @pytest.mark.asyncio
-    async def test_dispatch_user_message(self, test_broker):
+    async def test_send_message_msg_id_matches_pending_turn(self, test_broker):
+        """The msg_id threaded into send_message MUST equal the minted turn / user_confirmed id —
+        the whole flip depends on the consumption signal matching THAT id (the steer won't flip if
+        send_message's id ever diverges from the turn's id)."""
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
 
         await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-1"})
-        # send_message now runs in a background task so the WS handler
-        # doesn't block on the per-turn lock; pump the loop so the task runs.
-        await asyncio.sleep(0)
-        test_broker._transport.send_message.assert_called_once_with("hello")
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        await _settle_delivery()
+
+        confirmed = [
+            call.args[0]
+            for call in test_broker._channels.broadcast.await_args_list
+            if call.args[0].get("type") == "user_confirmed"
+        ]
+        assert confirmed, "a user_confirmed broadcast must be emitted"
+        msg_id = confirmed[0]["id"]
+        assert any(t.id == msg_id and t.role == "user" for t in test_broker._conversation_turns), (
+            "a pending user turn with that id must exist"
+        )
+        _, kwargs = test_broker._transport.send_message.await_args
+        assert kwargs.get("msg_id") == msg_id, "send_message must carry the SAME id"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message(self, test_broker):
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+
+        await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-1"})
+        # Delivery runs in a fire-and-forget task so the WS loop isn't pinned on a turn
+        # that may take minutes; await it before asserting (BUG-3).
+        await _settle_delivery()
+        test_broker._transport.send_message.assert_called_once_with(
+            "hello", msg_id=ANY, request_id="req-1"
+        )
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
                 "content": "hello",
+                "request_id": "req-1",
+                "steering_state": "pending",
+            }
+        )
+        # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
+        # message actually reached the agent (not just the broker socket).
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivered",
+                "status": "delivered",
+                "id": ANY,
                 "request_id": "req-1",
             }
         )
@@ -1558,6 +1853,7 @@ class TestDispatchBrowserMessage:
     @pytest.mark.asyncio
     async def test_dispatch_structured_user_message_normalizes_attachments(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
         image_data = "a" * 200000
 
         await test_broker._dispatch_browser_message(
@@ -1575,25 +1871,29 @@ class TestDispatchBrowserMessage:
                 ]
             }
         )
-        await asyncio.sleep(0)
+        await _settle_delivery()
 
         expected = (
             "Please review this screenshot\n\n"
             "[User attached 1 image attachment. This transport forwards text only.]"
         )
-        test_broker._transport.send_message.assert_called_once_with(expected)
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        test_broker._transport.send_message.assert_called_once_with(
+            expected, msg_id=ANY, request_id=None
+        )
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
                 "content": expected,
                 "request_id": None,
+                "steering_state": "pending",
             }
         )
 
     @pytest.mark.asyncio
     async def test_dispatch_attachment_only_message_uses_summary_text(self, test_broker):
         test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
 
         await test_broker._dispatch_browser_message(
             {
@@ -1609,16 +1909,66 @@ class TestDispatchBrowserMessage:
                 ]
             }
         )
-        await asyncio.sleep(0)
+        await _settle_delivery()
 
         expected = "[User attached 1 image attachment. This transport forwards text only.]"
-        test_broker._transport.send_message.assert_called_once_with(expected)
-        test_broker._channels.broadcast.assert_awaited_once_with(
+        test_broker._transport.send_message.assert_called_once_with(
+            expected, msg_id=ANY, request_id=None
+        )
+        test_broker._channels.broadcast.assert_any_await(
             {
                 "type": "user_confirmed",
                 "id": ANY,
                 "content": expected,
                 "request_id": None,
+                "steering_state": "pending",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_emits_failure_ack_on_delivery_error(self, test_broker):
+        # BUG-3: a wedged transport (e.g. a tmux input channel stuck after reconnect)
+        # must surface as user_delivery_failed — never a silent drop with a 200 "sent".
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        test_broker._transport.send_message = AsyncMock(
+            side_effect=RuntimeError("input channel busy")
+        )
+
+        await test_broker._dispatch_browser_message({"content": "hello", "request_id": "req-9"})
+        await _settle_delivery()
+
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivery_failed",
+                "status": "failed",
+                "id": ANY,
+                "request_id": "req-9",
+                "error": "input channel busy",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_user_message_flags_blocked_on_pending_question(self, test_broker):
+        # BUG-3: a free-text message that lands while the agent is blocked on an
+        # AskUserQuestion is still delivered, but flagged so the client can prompt the
+        # user to answer the open question instead of assuming the steer landed.
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        test_broker._pending_ask_user_questions = {"q1": {"type": "ask_user_question"}}
+
+        await test_broker._dispatch_browser_message(
+            {"content": "use postgres", "request_id": "req-7"}
+        )
+        await _settle_delivery()
+
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivered",
+                "status": "blocked_on_question",
+                "id": ANY,
+                "request_id": "req-7",
+                "pending_questions": 1,
             }
         )
 
@@ -1634,6 +1984,8 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="Prefer option B",
+            msg_id=ANY,
+            request_id=None,
         )
 
     @pytest.mark.asyncio
@@ -1647,8 +1999,31 @@ class TestDispatchBrowserMessage:
         test_broker._transport.send_control.assert_called_once_with(
             "redirect",
             content="change direction",
+            msg_id=ANY,
+            request_id=None,
         )
         test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_native_steering_redirects_even_when_idle(self, test_broker):
+        # A "native" transport (tmux interactive) lets the live CLI insert
+        # queued input itself, so EVERY message is delivered by steering — even
+        # when no turn is currently active — never a disruptive send/restart.
+        test_broker._transport.capabilities = TransportCapabilities(
+            steer=True, steering_mode="native"
+        )
+        test_broker._transport.is_turn_active = False
+
+        await test_broker._dispatch_browser_message({"content": "do the thing"})
+        await asyncio.sleep(0)
+
+        test_broker._transport.send_message.assert_not_called()
+        test_broker._transport.send_control.assert_called_once_with(
+            "redirect",
+            content="do the thing",
+            msg_id=ANY,
+            request_id=None,
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_structured_user_message_redirects_with_normalized_text(
@@ -1680,6 +2055,8 @@ class TestDispatchBrowserMessage:
                 "Switch to the new screenshot\n\n"
                 "[User attached 1 image attachment. This transport forwards text only.]"
             ),
+            msg_id=ANY,
+            request_id=None,
         )
         test_broker._transport.send_message.assert_not_called()
 
@@ -2108,6 +2485,106 @@ class TestDispatchBrowserMessage:
             }
         )
         test_broker._transport.send_control_response.assert_called_once()
+
+    # ---------------------------------------------------------------- INV-7
+    # Durable delivery: bounded retry, visible-failed turn, stale-snapshot fix.
+
+    def _retry_broker(self, tmp_path, *, max_attempts: int = 3):
+        settings = SkuldSettings(
+            session={"id": "test-session", "workspace_dir": str(tmp_path)},
+            transport="sdk",
+            delivery={
+                "max_attempts": max_attempts,
+                "initial_backoff_seconds": 0.0,
+                "max_backoff_seconds": 0.0,
+            },
+        )
+        b = Broker(settings=settings)
+        b._transport = AsyncMock()
+        b._transport.capabilities = TransportCapabilities()
+        b._transport.is_turn_active = False
+        b._channels.broadcast = AsyncMock()
+        b._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        b._save_conversation_history = MagicMock()
+        return b
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried_then_delivered(self, tmp_path):
+        """INV-7(a): a first transient send failure is RETRIED and ultimately
+        delivered — the transport receives it and the turn is NOT failed."""
+        b = self._retry_broker(tmp_path, max_attempts=3)
+        # Fail the first attempt, succeed the second.
+        b._transport.send_message = AsyncMock(side_effect=[RuntimeError("warming"), None])
+
+        await b._dispatch_browser_message({"content": "hello", "request_id": "r1"})
+        await _settle_delivery()
+
+        assert b._transport.send_message.await_count == 2, (
+            "delivery must retry the transient failure"
+        )
+        delivered = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivered"
+        ]
+        assert delivered, "a user_delivered ack must be emitted after the retry succeeds"
+        failed = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivery_failed"
+        ]
+        assert not failed, "a recovered delivery must NOT surface a failure"
+        # The pending turn is left pending (the consumption signal flips it active later),
+        # never failed.
+        turn = next(t for t in b._conversation_turns if t.role == "user")
+        assert turn.metadata.get("steering_state") != "failed"
+
+    @pytest.mark.asyncio
+    async def test_terminal_failure_marks_turn_failed_and_surfaces(self, tmp_path):
+        """INV-7(b): a delivery that fails on every attempt flips the user turn to a
+        VISIBLE 'failed' state and emits user_delivery_failed — never left 'pending'."""
+        b = self._retry_broker(tmp_path, max_attempts=3)
+        b._transport.send_message = AsyncMock(side_effect=RuntimeError("wedged forever"))
+
+        await b._dispatch_browser_message({"content": "hello", "request_id": "r2"})
+        await _settle_delivery()
+
+        assert b._transport.send_message.await_count == 3, "must exhaust the bounded retries"
+        failed = [
+            c.args[0]
+            for c in b._channels.broadcast.await_args_list
+            if c.args[0].get("type") == "user_delivery_failed"
+        ]
+        assert failed, "a terminal failure must surface user_delivery_failed"
+        assert failed[0]["error"] == "wedged forever"
+        turn = next(t for t in b._conversation_turns if t.role == "user")
+        assert turn.metadata.get("steering_state") == "failed", (
+            "the turn must flip to a visible failed state, never stay silently pending"
+        )
+        b._save_conversation_history.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_delivery_rechecks_turn_active_at_delivery_time(self, tmp_path):
+        """INV-7: routing (redirect vs send_message) is recomputed at DELIVERY time, not
+        snapshotted on the receive loop. A turn that becomes active AFTER accept but
+        BEFORE delivery must route via redirect."""
+        b = self._retry_broker(tmp_path, max_attempts=1)
+        b._transport.capabilities = TransportCapabilities(steer=True)
+        # Snapshot at accept time would be idle (send_message); the boundary moves so by
+        # delivery time the turn is active -> must redirect.
+        b._transport.is_turn_active = False
+
+        async def _flip_then_dispatch():
+            # Mark active before the delivery task actually runs.
+            b._transport.is_turn_active = True
+            await b._dispatch_browser_message({"content": "go", "request_id": "r3"})
+
+        await _flip_then_dispatch()
+        await _settle_delivery()
+
+        b._transport.send_control.assert_awaited_once()
+        assert b._transport.send_control.await_args.args[0] == "redirect"
+        b._transport.send_message.assert_not_called()
 
 
 class TestFastAPIEndpoints:
@@ -3205,6 +3682,10 @@ class TestHandleWebSocket:
         settings = SkuldSettings(
             session={"id": "ws-session", "workspace_dir": str(tmp_path)},
             transport="sdk",
+            # Zero-backoff delivery so the fire-and-forget retry task a dispatch schedules
+            # cannot leave a real-time-sleeping orphan that stalls the suite (the WS tests
+            # assert on the receive loop, not on delivery latency).
+            delivery={"initial_backoff_seconds": 0.0, "max_backoff_seconds": 0.0},
         )
         return Broker(settings=settings)
 
@@ -3242,7 +3723,7 @@ class TestHandleWebSocket:
         # Welcome message + no error
         calls = mock_ws.send_json.call_args_list
         assert any("Connected to session" in str(c) for c in calls)
-        mock_transport.send_message.assert_called_once_with("hello")
+        mock_transport.send_message.assert_called_once_with("hello", msg_id=ANY, request_id=None)
 
     @pytest.mark.asyncio
     async def test_handle_websocket_sends_capabilities(self, test_broker):
@@ -3274,6 +3755,35 @@ class TestHandleWebSocket:
         assert caps_idx > system_idx
 
     @pytest.mark.asyncio
+    async def test_reconnect_conversation_history_carries_head_seq_cursor(self, test_broker):
+        """SRD FR-6: the reconnect conversation_history frame carries the durable-log
+        HEAD seq so a client loads state then resumes the live tail from head+1."""
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+        # One completed turn + a non-trivial durable-log head.
+        test_broker._conversation_turns = [
+            ConversationTurn(id="u-1", role="user", content="do it"),
+            ConversationTurn(id="a-1", role="assistant", content="done"),
+        ]
+        test_broker._event_log_seq = 42
+
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
+
+        await test_broker.handle_websocket(mock_ws)
+
+        calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
+        history = [c for c in calls if c.get("type") == "conversation_history"]
+        assert len(history) == 1
+        frame = history[0]
+        # The cursor is present and equals the broker's durable-log head.
+        assert frame["head_seq"] == 42
+        # Turns are unchanged (cursor is ADDITIVE, not a turn rewrite).
+        assert [t["id"] for t in frame["turns"]] == ["u-1", "a-1"]
+
+    @pytest.mark.asyncio
     async def test_handle_websocket_replays_pending_permission_requests(self, test_broker):
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
@@ -3294,6 +3804,42 @@ class TestHandleWebSocket:
 
         calls = [c[0][0] for c in mock_ws.send_json.call_args_list]
         assert pending in calls
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_malformed_frame_does_not_drop_socket(self, test_broker):
+        """INV-7: a malformed / non-JSON inbound frame is logged + surfaced as an error
+        frame, and the receive loop CONTINUES — it must not tear down the socket or drop
+        the subsequent VALID message."""
+        mock_transport = AsyncMock()
+        mock_transport.is_alive = True
+        mock_transport.capabilities = TransportCapabilities()
+        test_broker._transport = mock_transport
+
+        mock_ws = AsyncMock()
+        # Bad frame (non-JSON) -> valid message -> disconnect. The valid message after
+        # the bad one MUST still be dispatched.
+        mock_ws.receive_json = AsyncMock(
+            side_effect=[
+                json.JSONDecodeError("Expecting value", "not json", 0),
+                {"content": "still here"},
+                WebSocketDisconnect(),
+            ]
+        )
+
+        await test_broker.handle_websocket(mock_ws)
+        await asyncio.sleep(0)
+
+        # The subsequent valid message was delivered to the transport (socket survived).
+        mock_transport.send_message.assert_called_once_with(
+            "still here", msg_id=ANY, request_id=None
+        )
+        # An error frame was surfaced for the malformed frame.
+        sent = [
+            c.args[0]
+            for c in mock_ws.send_json.call_args_list
+            if isinstance(c.args[0], dict) and c.args[0].get("type") == "error"
+        ]
+        assert any("malformed message ignored" in str(s.get("content")) for s in sent)
 
     @pytest.mark.asyncio
     async def test_handle_websocket_treats_not_connected_runtime_error_as_disconnect(
@@ -3391,10 +3937,11 @@ class TestHandleWebSocket:
 
         send_message now runs in a background task so the WS receive loop
         doesn't stall for the duration of a turn. The error is surfaced via
-        ``_safe_transport_send``: log the exception and broadcast an error
-        event to any still-open channels. Tests check the log; broadcasting
-        is best-effort because by the time the background task runs, the WS
-        the user typed from may already have disconnected.
+        ``_deliver_user_message_and_ack``: log the exception, ack the message
+        as ``failed``, and broadcast an error event to any still-open
+        channels. Tests check the log; broadcasting is best-effort because by
+        the time the background task runs, the WS the user typed from may
+        already have disconnected.
         """
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
@@ -3407,11 +3954,19 @@ class TestHandleWebSocket:
 
         with caplog.at_level("ERROR"):
             await test_broker.handle_websocket(mock_ws)
-            # Let the background send_message task run.
-            await asyncio.sleep(0)
+            # Drain the background delivery task to completion (bounded retry then
+            # terminal failure) so the failure is logged before we assert.
+            deliver_tasks = [
+                t
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and t.get_name().startswith("transport-deliver-")
+            ]
+            if deliver_tasks:
+                await asyncio.gather(*deliver_tasks, return_exceptions=True)
 
-        assert mock_transport.send_message.await_count == 1
-        assert "Transport send_message failed" in caplog.text
+        # The transport was attempted (every bounded-retry attempt raised CLI error).
+        assert mock_transport.send_message.await_count >= 1
+        assert "user message delivery failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_websocket_unexpected_exception(self, test_broker):
@@ -4671,6 +5226,108 @@ class TestBrokerRoomBridge:
         assert len(b._conversation_turns) == 2
         assert b._conversation_turns[-1].content == "Skuld sees coder, reviewer, and verifier."
         assert b._conversation_turns[-1].participant_id == "skuld-room"
+
+    @pytest.mark.asyncio
+    async def test_suppressed_room_echo_is_not_logged_so_read_paths_equal_live(self, tmp_path):
+        # M-6 / INV-5: in room mode the raw user/assistant/content_block_delta/result
+        # transport echoes are SUPPRESSED from the live broadcast while an explicit
+        # human response is pending (their content is surfaced as a room_message
+        # instead). A frame that is never broadcast must never be LOGGED either, or it
+        # resurfaces on cold-read/replay as a duplicate the live viewer never saw.
+        # This drives a real Broker with a real recording live channel and asserts
+        # the cold-read AND replay of the session == the live visible stream — no
+        # duplicated assistant/result content. Sibling of
+        # test_explicit_human_room_response_is_room_only (which asserts the live
+        # suppression); this one closes the loop to the durable read paths.
+        # Read-path helpers + fakes are reused by IMPORT from the roundtrip suite
+        # (one in-memory durable-log fake, one cold-read, one replay-as-live).
+        from skuld.channels import WebSocketChannel
+        from tests.test_adapters.test_rest_session_log import InMemoryLog
+        from tests.test_skuld.test_roundtrip_read_path_equality import (
+            _buffer_to_log_entries,
+            _cold_read,
+            _drain_background_tasks,
+            _FakeHttpClient,
+            _RecordingWebSocket,
+            _replay_after_zero,
+        )
+
+        session_id = uuid.uuid4()
+        b = Broker(
+            settings=SkuldSettings(
+                volundr_api_url="http://harness.invalid",
+                event_log_enabled=True,
+                session={"id": str(session_id), "workspace_dir": str(tmp_path)},
+                room={"enabled": True},
+            )
+        )
+
+        async def _get_client() -> _FakeHttpClient:
+            return _FakeHttpClient()
+
+        b._get_http_client = _get_client  # type: ignore[assignment]
+        transport = AsyncMock()
+        transport.is_alive = True
+        # Non-native steering: keeps the result/assistant backstop a pure no-op here.
+        transport.capabilities = TransportCapabilities(steering_mode="live")
+        b._transport = transport
+        b._mesh_adapter = MagicMock()
+        b._mesh_adapter.peer_id = "skuld-room"
+        assert b._room_bridge is not None
+        await b._room_bridge.register_mesh_peer(
+            "skuld-room", "Skuld", display_name="Skuld", participant_type="skuld"
+        )
+
+        # The REAL live broadcast gate records exactly what a connected browser sees.
+        live_ws = _RecordingWebSocket()
+        b._channels.add(WebSocketChannel(live_ws, show_internal=True))
+
+        # An explicit human room message arms suppression for the agent's reply.
+        await b.handle_human_room_message("Who is in this flock?", source="telegram")
+
+        # The agent replies: assistant text + a result. BOTH are suppressed echoes.
+        await b._handle_cli_event(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "coder, reviewer, verifier."}]},
+            }
+        )
+        await b._handle_cli_event(
+            {"type": "result", "result": "coder, reviewer, verifier.", "modelUsage": {}}
+        )
+        await _drain_background_tasks()
+
+        # The suppressed raw echoes never reached the live channel. The agent's
+        # words are surfaced ONLY as a room_message (a separate room surface), never
+        # as a raw assistant/result frame.
+        live_types = [f.get("type") for f in live_ws.frames]
+        assert "assistant" not in live_types
+        assert "result" not in live_types
+        assert "room_message" in live_types  # content WAS surfaced — just room-only
+
+        # Drain the durable buffer to the shared log and read it back two ways.
+        repo = InMemoryLog()
+        await repo.append(_buffer_to_log_entries(b, session_id))
+        cold = [row["payload"] for row in _cold_read(repo, session_id)]
+        replay = _replay_after_zero(repo, session_id)
+
+        # The durable log carries NO suppressed echo, so the read paths show none of
+        # the duplicated assistant/result content the live viewer never saw.
+        cold_types = [p.get("type") for p in cold]
+        assert "assistant" not in cold_types
+        assert "result" not in cold_types
+        # The two read paths agree frame-for-frame (one shared log, one gate).
+        assert cold == replay
+
+        # And the read-path stream equals the live stream restricted to the SESSION
+        # log surface (room_message/room_activity are a separate room surface that
+        # the session_event_log never carried, so they are excluded from BOTH sides
+        # of this equality — what remains is the suppressed-echo content, which is
+        # absent from both: no duplication leaked onto the read paths).
+        def _session_surface(frames: list[dict]) -> list[dict]:
+            return [f for f in frames if not str(f.get("type", "")).startswith("room_")]
+
+        assert _session_surface(live_ws.frames) == cold
 
     @pytest.mark.asyncio
     async def test_get_room_participants_returns_snapshot(self, room_settings):

@@ -1,0 +1,10 @@
+  Workflow: ship-feature
+
+  STEP   NAME              STATUS
+  ----   ---------------   -----------
+   1.    plan              done
+   2.    implement         done
+   3.    review            running
+   4.    merge             pending
+
+  press n for next step · /workflows to switch

@@ -110,3 +110,129 @@ def test_liveness_reaper_disabled_by_default():
     from volundr.config import SessionLivenessConfig
 
     assert SessionLivenessConfig().enabled is False
+
+
+def test_pod_status_reconcile_enabled_by_default():
+    """The pod-status-authoritative reconcile is safe (no false reap) so it is on."""
+    from volundr.config import SessionLivenessConfig
+
+    cfg = SessionLivenessConfig()
+    assert cfg.reconcile_enabled is True
+    assert cfg.reconcile_interval_seconds >= 5
+
+
+class TestReconcileActiveSessions:
+    """INV-9: a dead pod + RUNNING row => periodic reconcile flips status,
+    clears the endpoint, and stamps a queryable liveness error — and an
+    idle-but-alive session is never false-reaped (pod-status authoritative)."""
+
+    async def test_dead_pod_running_row_is_flipped_and_endpoint_cleared(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.RUNNING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def dead(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = dead  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.STOPPED
+        assert updated.chat_endpoint is None
+        assert updated.code_endpoint is None
+        assert (updated.error or "").startswith("liveness:")
+
+    async def test_failed_pod_sets_failed_with_liveness_error(self, service, repo, pod_manager):
+        session = _session(SessionStatus.RUNNING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def failed(_session):
+            return SessionStatus.FAILED
+
+        pod_manager.status = failed  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.FAILED
+        assert updated.chat_endpoint is None
+        assert (updated.error or "").startswith("liveness:")
+
+    async def test_idle_but_alive_session_is_not_false_reaped(self, service, repo, pod_manager):
+        # The pod manager (authority) still reports RUNNING even though the row
+        # has been quiet for an hour — the reconcile leaves it untouched.
+        old = datetime.now(UTC) - timedelta(seconds=3600)
+        session = _session(SessionStatus.RUNNING, old)
+        await repo.create(session)
+
+        async def alive(_session):
+            return SessionStatus.RUNNING
+
+        pod_manager.status = alive  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 0
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.RUNNING
+        assert updated.chat_endpoint is not None
+
+    async def test_mark_session_dead_reconciles_single_row(self, service, repo, pod_manager):
+        session = _session(SessionStatus.RUNNING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def dead(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = dead  # type: ignore[method-assign]
+
+        result = await service.mark_session_dead(session.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.STOPPED
+        assert result.chat_endpoint is None
+        assert (result.error or "").startswith("liveness:")
+
+    async def test_mark_session_dead_leaves_live_session_untouched(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.RUNNING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def alive(_session):
+            return SessionStatus.RUNNING
+
+        pod_manager.status = alive  # type: ignore[method-assign]
+
+        result = await service.mark_session_dead(session.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.RUNNING
+        assert result.chat_endpoint is not None
+
+    async def test_liveness_error_cleared_by_activity_heartbeat(self, service, repo, pod_manager):
+        # A reconciled-then-relaunched session must lose the stale liveness marker
+        # when the broker reports activity again.
+        session = _session(SessionStatus.RUNNING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def dead(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = dead  # type: ignore[method-assign]
+        await service.reconcile_active_sessions()
+        # Simulate a fresh broker by restoring RUNNING status before heartbeat.
+        reconciled = await repo.get(session.id)
+        revived = reconciled.model_copy(update={"status": SessionStatus.RUNNING})
+        await repo.update(revived)
+
+        updated = await service.update_activity(
+            session.id, SessionActivityState.ACTIVE, metadata={}
+        )
+
+        assert updated.error is None

@@ -27,6 +27,7 @@ from sleipnir.domain.catalog import (
     ting_saga_completed,
     ting_saga_created,
     volundr_session_failed,
+    volundr_session_needs_input,
     volundr_session_started,
 )
 from sleipnir.domain.events import SleipnirEvent
@@ -155,6 +156,25 @@ def test_volundr_session_failed_has_high_urgency():
     assert evt.urgency >= 0.7
     assert evt.domain == "infrastructure"
     assert "pod crash" in evt.summary
+
+
+def test_volundr_session_needs_input_high_urgency_and_payload():
+    evt = volundr_session_needs_input(
+        session_id="vsess-3",
+        session_name="fix-auth",
+        owner_id="user-abc",
+        kind="question",
+        prompt="Which database?",
+        request_id="askq-7",
+        source="volundr",
+    )
+    assert evt.event_type == registry.VOLUNDR_SESSION_NEEDS_INPUT
+    assert evt.urgency >= 0.8
+    assert evt.payload["kind"] == "question"
+    assert evt.payload["prompt"] == "Which database?"
+    assert evt.payload["request_id"] == "askq-7"
+    assert evt.correlation_id == "vsess-3"
+    assert "fix-auth" in evt.summary
 
 
 # ---------------------------------------------------------------------------

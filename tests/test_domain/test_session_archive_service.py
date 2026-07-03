@@ -339,6 +339,78 @@ async def test_session_archive_service_uses_durable_event_log_when_workspace_mis
 
 
 @pytest.mark.asyncio
+async def test_session_archive_service_rebuilds_tmux_crash_transcript(
+    session_repository,
+    archive_store,
+):
+    """BUG-2 load-bearing: a tmux session that crashed mid-turn (no conversation.turn for
+    its open work) rebuilds a non-empty transcript from the durable raw frames."""
+    session = Session(name="tmux-crash", model="claude-opus-4-8", status=SessionStatus.STOPPED)
+    await session_repository.create(session)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    session_service = SessionService(
+        repository=session_repository,
+        pod_manager=MockPodManager(),
+        validate_repos=False,
+    )
+    now = datetime.now(UTC)
+    event_log = InMemorySessionEventLog(
+        [
+            # seed human turn, double-logged (conversation.turn + raw user, same uuid)
+            SessionLogEntry(
+                session_id=session.id,
+                seq=1,
+                kind="conversation.turn",
+                payload={"turn": {"id": "u1", "role": "user", "content": "build it", "uuid": "U1"}},
+                ts=now,
+            ),
+            SessionLogEntry(
+                session_id=session.id,
+                seq=2,
+                kind="user",
+                payload={"uuid": "U1", "message": {"content": "build it"}},
+                ts=now,
+            ),
+            # crash mid-turn: streamed deltas, NO result, then a blocking question
+            SessionLogEntry(
+                session_id=session.id,
+                seq=3,
+                kind="content_block_delta",
+                payload={"delta": {"text": "working on it"}},
+                ts=now,
+            ),
+            SessionLogEntry(
+                session_id=session.id,
+                seq=4,
+                kind="ask_user_question",
+                payload={"request_id": "q1", "questions": []},
+                ts=now,
+            ),
+        ]
+    )
+    archive_service = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        archive_store,
+        event_log_repository=event_log,
+    )
+
+    transcript = await archive_service.get_transcript(session.id)
+
+    assert [t["role"] for t in transcript["turns"]] == ["user", "assistant"]  # seed deduped to ONE
+    asst = transcript["turns"][1]
+    assert asst["metadata"]["status"] == "interrupted"
+    assert "working on it" in asst["content"]
+
+
+@pytest.mark.asyncio
 async def test_session_archive_service_manifest_download_and_error_paths(
     storage,
     session_repository,
