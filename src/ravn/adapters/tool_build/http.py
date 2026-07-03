@@ -93,18 +93,31 @@ class HttpxJsonClient:
             headers.update(self._auth.headers())
         return headers
 
+    async def _resolve_headers(self) -> dict[str, str]:
+        """Resolve auth headers off the event loop.
+
+        ``HttpAuthPort.headers()`` is sync by contract and the workload-identity
+        adapter performs a blocking token exchange on cache miss — run it in a
+        worker thread so a refresh never stalls every other coroutine.
+        """
+        import asyncio  # noqa: PLC0415
+
+        return await asyncio.to_thread(self._headers)
+
     async def get(self, url: str) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(url, headers=self._headers())
+            resp = await client.get(url, headers=headers)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
     async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=json_body)
+            resp = await client.post(url, headers=headers, json=json_body)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
 

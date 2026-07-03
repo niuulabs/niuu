@@ -69,6 +69,25 @@ and nothing else:
     return _TOOL_BUILD_SYSTEM, initial
 
 
+def decode_canonical_document(value: Any) -> dict[str, Any] | None:
+    """Decode a canonical ``learned_tool.json`` payload from any retrieval surface.
+
+    The Forge file-download route may return a parsed JSON object or raw JSON
+    text; the Ting artifact endpoint returns a JSON string (or, defensively, an
+    already-parsed object). One decoder serves both backends so their
+    interpretation of the canonical artifact can never drift.
+    """
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def parse_tool_build_document(document: dict[str, Any], *, tool_name: str) -> ToolBuildResult:
     """Build a :class:`ToolBuildResult` from a parsed contract document.
 

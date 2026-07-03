@@ -23,6 +23,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ravn.valkyrie_evolution.tool_runtime import sandbox_env
+
 #: How long a single verification test run may take before it is killed.
 DEFAULT_VERIFY_TIMEOUT_SECONDS = 120
 
@@ -31,11 +33,6 @@ DEFAULT_PIP_TIMEOUT_SECONDS = 300
 
 #: How long ``python -m venv`` creation may take.
 DEFAULT_VENV_TIMEOUT_SECONDS = 120
-
-#: Environment variables an ephemeral-venv subprocess is allowed to inherit.
-#: Mirrors the tool_runtime sandbox: a verification run must never see the
-#: resident's ambient environment (bearer tokens, PATs, cloud credentials).
-_VERIFY_ENV_PASSTHROUGH = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
 
 #: "No module named 'X'" / "No module named X" — capture the dotted module path.
 _MISSING_MODULE_RE = re.compile(r"No module named ['\"]?([\w.]+)['\"]?")
@@ -66,10 +63,12 @@ def parse_missing_module(text: str) -> str | None:
 
 
 def _verify_env() -> dict[str, str]:
-    """Minimal, scrubbed environment for a verification subprocess."""
-    env = {key: os.environ[key] for key in _VERIFY_ENV_PASSTHROUGH if key in os.environ}
-    env.setdefault("PATH", os.defpath)
-    return env
+    """Scrubbed environment for a verification subprocess.
+
+    The ONE sandbox env policy lives in ``tool_runtime.sandbox_env`` —
+    verification and execution share it so the two boundaries never drift.
+    """
+    return sandbox_env()
 
 
 def _venv_python(venv_dir: Path) -> Path:

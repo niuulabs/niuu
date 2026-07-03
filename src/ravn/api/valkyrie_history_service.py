@@ -108,9 +108,16 @@ class ValkyrieHistoryService:
         store: ValkyrieHistoryStore,
         *,
         review_service: Any | None = None,
+        review_attention_tiers: frozenset[str] | None = None,
+        observational_actions: frozenset[str] | None = None,
     ) -> None:
         self._store = store
         self._review_service = review_service
+        # Inbox-escalation gates (ResidentEvolutionConfig.review_attention_tiers
+        # / observational_actions). None keeps the module-constant defaults —
+        # without these kwargs the config knobs cannot be turned at all.
+        self._review_attention_tiers = review_attention_tiers
+        self._observational_actions = observational_actions
 
     @property
     def store(self) -> ValkyrieHistoryStore:
@@ -133,7 +140,11 @@ class ValkyrieHistoryService:
 
     async def _ingest_decision(self, record: dict[str, Any]) -> None:
         await self._store.record_decision(record)
-        if not decision_requires_review(record):
+        if not decision_requires_review(
+            record,
+            attention_tiers=self._review_attention_tiers,
+            observational_actions=self._observational_actions,
+        ):
             return
         item = review_item_for_judgment(record)
         filed = await self._file_pending_review(item)

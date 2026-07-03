@@ -7,7 +7,6 @@ ravn never imports volundr — it drives the session over the Forge REST surface
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -15,6 +14,7 @@ from typing import Any
 from ravn.adapters.tool_build._contract import (
     CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
+    decode_canonical_document,
     parse_tool_build_document,
     parse_tool_build_response,
     poll_until,
@@ -232,15 +232,5 @@ def _chronicle_text(body: Any) -> str:
     return ""
 
 
-def _decode_canonical_body(body: Any) -> dict[str, Any] | None:
-    """Decode the canonical file body, which the download surface returns as
-    a parsed JSON object or as raw JSON text."""
-    if isinstance(body, dict):
-        return body
-    if not isinstance(body, str) or not body.strip():
-        return None
-    try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+#: The one canonical decoder lives in _contract so the backends cannot drift.
+_decode_canonical_body = decode_canonical_document

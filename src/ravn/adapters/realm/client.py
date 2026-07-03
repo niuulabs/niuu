@@ -64,6 +64,7 @@ _AUTH_KWARG_NAMES = (
     "workload_token_file",
     "workload_exchange_url",
     "workload_audiences",
+    "workload_scopes",
 )
 
 
@@ -143,6 +144,7 @@ class RealmClient:
         workload_token_file: str = "",
         workload_exchange_url: str = "",
         workload_audiences: list[str] | None = None,
+        workload_scopes: list[str] | None = None,
     ) -> None:
         if not base_url:
             msg = "RealmClient requires a base_url"
@@ -157,6 +159,7 @@ class RealmClient:
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,
+                workload_scopes=workload_scopes,
             )
         )
 

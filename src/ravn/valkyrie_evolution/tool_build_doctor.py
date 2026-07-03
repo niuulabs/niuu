@@ -192,8 +192,11 @@ def _hop3_auth(settings: Settings, backend: Any) -> HopResult:
             title="auth",
             status=status,
             reason=f"external_token_env {external_token_env} is {state}",
-            details={"mechanism": "external_token_env", "env_var": external_token_env,
-                     "env_set": is_set},
+            details={
+                "mechanism": "external_token_env",
+                "env_var": external_token_env,
+                "env_set": is_set,
+            },
         )
 
     return HopResult(
@@ -350,20 +353,11 @@ async def _list_ting_workflows(backend: Any) -> list[WorkflowCapability] | None:
     body = getattr(response, "body", None)
     if not isinstance(body, list):
         return None
+    # The one catalog mapper lives in the Ting backend — the doctor must see
+    # exactly the workflows (including metadata) the backend it diagnoses sees.
+    from ravn.adapters.tool_build.ting_workflow import _workflow_from_body  # noqa: PLC0415
+
     return [_workflow_from_body(item) for item in body if isinstance(item, dict)]
-
-
-def _workflow_from_body(body: dict[str, Any]) -> WorkflowCapability:
-    tags = body.get("tags")
-    if not isinstance(tags, list):
-        tags = []
-    return WorkflowCapability(
-        workflow_id=str(body.get("id") or ""),
-        name=str(body.get("name") or ""),
-        description=str(body.get("description") or ""),
-        version=str(body.get("version") or ""),
-        tags=[str(tag) for tag in tags if str(tag).strip()],
-    )
 
 
 # ---------------------------------------------------------------------------

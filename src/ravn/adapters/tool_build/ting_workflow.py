@@ -8,7 +8,6 @@ workload-authenticated HTTP boundary (ravn never imports ting).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -16,6 +15,7 @@ from typing import Any
 from ravn.adapters.tool_build._contract import (
     CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
+    decode_canonical_document,
     parse_tool_build_document,
     parse_tool_build_response,
     poll_until,
@@ -257,18 +257,8 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
         raise ToolBuildError(f"Ting build campaign {campaign_id} produced no retrievable artifact")
 
 
-def _decode_canonical_content(content: Any) -> dict[str, Any] | None:
-    """Decode the canonical artifact content, returned by the campaign artifact
-    endpoint as a JSON string (or, defensively, an already-parsed object)."""
-    if isinstance(content, dict):
-        return content
-    if not isinstance(content, str) or not content.strip():
-        return None
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+#: The one canonical decoder lives in _contract so the backends cannot drift.
+_decode_canonical_content = decode_canonical_document
 
 
 def _campaign_status(campaign: Any) -> str:

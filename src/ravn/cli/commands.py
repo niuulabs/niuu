@@ -223,6 +223,25 @@ class _RealmBuildConfig:
         self.workflow_selector = workflow_selector
 
 
+def _run_coro_blocking(coro: Awaitable[Any]) -> Any:
+    """Run a coroutine to completion from sync wiring code, loop-safe.
+
+    Uses ``asyncio.run`` when no loop is running (plain CLI). Inside a running
+    loop — the daemon's agent factory is called from the async drive loop — a
+    dedicated thread runs the coroutine on its own loop, because
+    ``asyncio.run`` would raise RuntimeError there and realm resolution would
+    silently degrade to static config.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # type: ignore[arg-type]
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()  # type: ignore[arg-type]
+
+
 def _realm_client_for(settings: Settings) -> Any:
     """Build a RealmClient from resident-evolution config, or None when unusable."""
     from ravn.adapters.realm import RealmClient, build_realm_client_kwargs  # noqa: PLC0415
@@ -262,7 +281,7 @@ def _resolve_realm_build_config(settings: Settings) -> _RealmBuildConfig:
         return static
 
     try:
-        grant = asyncio.run(client.resolve_build_grant(cfg.realm_slug))
+        grant = _run_coro_blocking(client.resolve_build_grant(cfg.realm_slug))
     except Exception as exc:  # noqa: BLE001 — realm outage must not brick the resident
         logger.warning(
             "realm %s build-grant resolution failed (%s); using static tool-build config",

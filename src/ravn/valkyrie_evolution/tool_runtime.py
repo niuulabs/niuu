@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,8 +40,32 @@ TOOL_VENV_REQUIREMENTS_STAMP = ".requirements.txt"
 #: Everything else — bearer tokens, PATs, cloud credentials, all of which live
 #: in the resident's ambient environment — is withheld. A learned tool that
 #: legitimately needs a credential receives it through reach-scoped injection
-#: (Phase 5), never by inheriting the whole process environment.
-_SANDBOX_ENV_PASSTHROUGH = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
+#: (Phase 5), never by inheriting the whole process environment. The TLS/proxy
+#: entries are non-secret transport config a corporate deployment needs for any
+#: outbound call (custom CA bundles, egress proxies) — withholding them breaks
+#: legitimate network-reach tools without protecting anything.
+#: This is the ONE sandbox env policy — verification (tool_verification) and
+#: execution import it from here so the two boundaries can never drift.
+SANDBOX_ENV_PASSTHROUGH = (
+    "PATH",
+    "SYSTEMROOT",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+#: Backward-compatible private alias (pre-consolidation name).
+_SANDBOX_ENV_PASSTHROUGH = SANDBOX_ENV_PASSTHROUGH
 
 _BOOTSTRAP = """
 import importlib.util
@@ -95,16 +120,21 @@ def tool_path_for_skill(tools_dir: str | Path, skill_name: str) -> Path:
     return Path(tools_dir) / f"{skill_name}.py"
 
 
-def _sandbox_env() -> dict[str, str]:
+def sandbox_env() -> dict[str, str]:
     """Minimal environment for a sandboxed tool run.
 
     A learned tool must never inherit the resident's ambient environment, where
     bearer tokens and credentials live. Pass only what a Python subprocess needs
-    to start and resolve executables.
+    to start, resolve executables, and (for network-reach tools) speak TLS
+    through corporate proxies/CA bundles.
     """
-    env = {key: os.environ[key] for key in _SANDBOX_ENV_PASSTHROUGH if key in os.environ}
+    env = {key: os.environ[key] for key in SANDBOX_ENV_PASSTHROUGH if key in os.environ}
     env.setdefault("PATH", os.defpath)
     return env
+
+
+#: Backward-compatible private alias (pre-consolidation name).
+_sandbox_env = sandbox_env
 
 
 def tool_venv_python(venv_dir: str | Path) -> Path:
@@ -138,30 +168,46 @@ def ensure_tool_venv(
     python = tool_venv_python(venv_dir)
     stamp_path = venv_dir / TOOL_VENV_REQUIREMENTS_STAMP
     desired_stamp = "\n".join(requirements)
-    if (
-        python.is_file()
-        and stamp_path.is_file()
-        and stamp_path.read_text(encoding="utf-8") == desired_stamp
-    ):
+
+    # Serialize the check→rmtree→rebuild critical section per venv: two
+    # concurrent runs of the same tool must not destroy each other's
+    # half-provisioned environment.
+    with _venv_provision_lock(venv_dir):
+        if (
+            python.is_file()
+            and stamp_path.is_file()
+            and stamp_path.read_text(encoding="utf-8") == desired_stamp
+        ):
+            return python
+
+        if venv_dir.exists():
+            # Requirements changed, or a previous provisioning attempt died before
+            # writing its stamp: rebuild from scratch for an exact environment.
+            shutil.rmtree(venv_dir)
+        venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        _create_tool_venv(venv_dir, timeout_seconds=venv_timeout_seconds)
+        if requirements:
+            _pip_install_tool_requirements(
+                venv_dir,
+                python,
+                requirements,
+                timeout_seconds=pip_timeout_seconds,
+            )
+        # The stamp is written last so a killed provisioning run never masquerades
+        # as a complete one.
+        stamp_path.write_text(desired_stamp, encoding="utf-8")
         return python
 
-    if venv_dir.exists():
-        # Requirements changed, or a previous provisioning attempt died before
-        # writing its stamp: rebuild from scratch for an exact environment.
-        shutil.rmtree(venv_dir)
-    venv_dir.parent.mkdir(parents=True, exist_ok=True)
-    _create_tool_venv(venv_dir, timeout_seconds=venv_timeout_seconds)
-    if requirements:
-        _pip_install_tool_requirements(
-            venv_dir,
-            python,
-            requirements,
-            timeout_seconds=pip_timeout_seconds,
-        )
-    # The stamp is written last so a killed provisioning run never masquerades
-    # as a complete one.
-    stamp_path.write_text(desired_stamp, encoding="utf-8")
-    return python
+
+_VENV_PROVISION_LOCKS: dict[str, threading.Lock] = {}
+_VENV_PROVISION_LOCKS_GUARD = threading.Lock()
+
+
+def _venv_provision_lock(venv_dir: Path) -> threading.Lock:
+    """One lock per venv directory, shared across threads in this process."""
+    key = str(venv_dir)
+    with _VENV_PROVISION_LOCKS_GUARD:
+        return _VENV_PROVISION_LOCKS.setdefault(key, threading.Lock())
 
 
 def _venv_dirname(tool_name: str) -> str:
