@@ -439,6 +439,164 @@ def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str
     }
 
 
+def _signal_severity(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    raw = str(payload.get("severity") or payload.get("level") or "").lower()
+    if raw in {"info", "notice", "warning", "critical"}:
+        return raw
+    urgency = _payload_float(event, "urgency")
+    if urgency >= 0.8:
+        return "critical"
+    if urgency >= 0.5:
+        return "warning"
+    if urgency >= 0.25:
+        return "notice"
+    return "info"
+
+
+def _signal_subject(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    subject = str(
+        payload.get("subject")
+        or payload.get("signal_id")
+        or payload.get("resource")
+        or payload.get("object")
+        or event.get("correlation_id")
+        or ""
+    )
+    if subject:
+        return subject
+    bits = [
+        str(payload.get("namespace") or "").strip(),
+        str(payload.get("kind") or "").strip(),
+        str(payload.get("reason") or "").strip(),
+    ]
+    return ":".join(bit for bit in bits if bit) or str(event.get("event_type") or "signal")
+
+
+def _signal_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(event.get("event_type") or "")
+    if not event_type.startswith("signal."):
+        return None
+    timestamp = _event_timestamp(event)
+    event_id = str(event.get("event_id") or event.get("id") or f"{event_type}:{timestamp}")
+    return {
+        "id": f"live-{event_id}",
+        "environmentId": _event_environment_id(event, payload),
+        "source": str(event.get("source") or event_type),
+        "subject": _signal_subject(event, payload),
+        "summary": str(event.get("summary") or payload.get("summary") or event_type),
+        "severity": _signal_severity(event, payload),
+        "status": "new",
+        "receivedAt": timestamp,
+        "assignedValkyrieId": _event_valkyrie_id(payload),
+        "labels": _as_string_list(payload.get("labels") or payload.get("label") or []),
+    }
+
+
+def _signals_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    signals = []
+    seen: set[str] = set()
+    for raw_event in events:
+        event = _event_dict(raw_event)
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        entry = _signal_entry(event, payload if isinstance(payload, dict) else {})
+        if entry is None or entry["id"] in seen:
+            continue
+        seen.add(entry["id"])
+        signals.append(entry)
+    return sorted(signals, key=lambda item: item.get("receivedAt", ""), reverse=True)[:60]
+
+
+def _court_decision_status(decision: str, payload: dict[str, Any]) -> str:
+    raw = decision.lower()
+    if raw in {"rejected", "reject", "denied", "deny", "blocked"}:
+        return "rejected"
+    if raw in {"pending", "open_huddle", "draft_for_review", "needs_review", "needs_approval"}:
+        return "pending"
+    if str(payload.get("escalation_path") or "").lower() == "review_queue":
+        return "pending"
+    if raw in {"record_only", "autonomous_action", "executed", "resolved", "ignored"}:
+        return "executed"
+    return "approved"
+
+
+def _court_decision_risk(payload: dict[str, Any]) -> str:
+    authority = str(
+        payload.get("action_authorization") or payload.get("authority_boundary") or ""
+    ).lower()
+    tier = str(payload.get("tier") or payload.get("attention_tier") or "").lower()
+    decision = str(payload.get("decision") or payload.get("outcome") or "").lower()
+    if "hard" in authority or "gate" in authority:
+        return "hard_gate"
+    if tier == "ambient" and decision in {"record_only", "ignored", "suppress"}:
+        return "low"
+    if tier in {"urgent", "critical", "high"} or "review" in decision or "escalate" in decision:
+        return "high"
+    if tier in {"present", "notice", "warning"} or authority in {"delegated", "human"}:
+        return "medium"
+    return "low"
+
+
+def _court_decision_entry(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[int, dict[str, Any]] | None:
+    event_type = str(event.get("event_type") or "")
+    priority = {
+        registry.ODIN_COURT_DECIDED: 1,
+        registry.ATTENTION_DECISION_MADE: 2,
+    }.get(event_type)
+    if priority is None:
+        return None
+    timestamp = _event_timestamp(event)
+    correlation_id = str(
+        event.get("correlation_id")
+        or payload.get("root_correlation_id")
+        or payload.get("court_id")
+        or event.get("event_id")
+        or timestamp
+    )
+    decision = str(payload.get("decision") or payload.get("outcome") or "decided")
+    title = str(event.get("summary") or payload.get("summary") or f"ODIN decision {decision}")
+    decided_by = _as_string_list(payload.get("decided_by") or payload.get("decidedBy") or [])
+    if not decided_by:
+        decided_by = [str(event.get("source") or "odin-court")]
+    return priority, {
+        "id": f"live-{correlation_id}",
+        "environmentId": _event_environment_id(event, payload),
+        "title": title,
+        "status": _court_decision_status(decision, payload),
+        "risk": _court_decision_risk(payload),
+        "decidedBy": decided_by,
+        "createdAt": timestamp,
+    }
+
+
+def _court_decisions_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, tuple[int, dict[str, Any]]] = {}
+    for raw_event in events:
+        event = _event_dict(raw_event)
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        projected = _court_decision_entry(event, payload if isinstance(payload, dict) else {})
+        if projected is None:
+            continue
+        priority, entry = projected
+        existing = by_id.get(entry["id"])
+        if (
+            existing is None
+            or priority > existing[0]
+            or (
+                priority == existing[0]
+                and entry.get("createdAt", "") > existing[1].get("createdAt", "")
+            )
+        ):
+            by_id[entry["id"]] = (priority, entry)
+    return sorted(
+        [entry for _, entry in by_id.values()],
+        key=lambda item: item.get("createdAt", ""),
+        reverse=True,
+    )[:60]
+
+
 def _structured_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("event_type") or "")
     level = str(payload.get("level") or payload.get("severity") or "info").lower()
@@ -999,6 +1157,42 @@ def _merge_runtime_entry(
     return merged
 
 
+def _telemetry_activity(
+    telemetry: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    activity_by_env: dict[str, str] = {}
+    activity_by_valkyrie: dict[str, dict[str, str]] = {}
+
+    for entry in telemetry.get("byEnvironment", []):
+        if not isinstance(entry, dict):
+            continue
+        env_id = str(entry.get("environmentId") or "")
+        observed_at = str(entry.get("lastObservedAt") or "")
+        if env_id and observed_at:
+            activity_by_env[env_id] = max(activity_by_env.get(env_id, ""), observed_at)
+
+    for entry in telemetry.get("recentEvents", []):
+        if not isinstance(entry, dict):
+            continue
+        observed_at = str(entry.get("observedAt") or "")
+        if not observed_at:
+            continue
+        env_id = str(entry.get("environmentId") or "")
+        if env_id:
+            activity_by_env[env_id] = max(activity_by_env.get(env_id, ""), observed_at)
+        valkyrie_id = str(entry.get("valkyrieId") or "")
+        if not valkyrie_id:
+            continue
+        existing = activity_by_valkyrie.get(valkyrie_id)
+        if existing is None or observed_at > existing.get("observedAt", ""):
+            activity_by_valkyrie[valkyrie_id] = {
+                "observedAt": observed_at,
+                "valkyrieName": str(entry.get("valkyrieName") or ""),
+            }
+
+    return activity_by_env, activity_by_valkyrie
+
+
 def _runtime_event_key(event: dict[str, Any]) -> str:
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     env_id = str(payload.get("environment_id") or payload.get("environmentId") or "unknown")
@@ -1458,6 +1652,7 @@ class _FanoutSleipnirPublisher:
 def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
     telemetry = dashboard.get("telemetry") if isinstance(dashboard.get("telemetry"), dict) else {}
     runtime = telemetry.get("runtime") if isinstance(telemetry.get("runtime"), list) else []
+    activity_by_env, activity_by_valkyrie = _telemetry_activity(telemetry)
     observed_by_id = {
         str(entry.get("valkyrieId") or ""): entry
         for entry in runtime
@@ -1474,11 +1669,16 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
     for environment in dashboard.get("environments", []):
         if not isinstance(environment, dict):
             continue
-        observed = observed_by_env.get(str(environment.get("id") or ""))
-        environment["identitySource"] = "observed" if observed else "configured"
-        if observed:
-            environment["lastSignalAt"] = str(
-                observed.get("observedAt") or environment.get("lastSignalAt") or ""
+        environment_id = str(environment.get("id") or "")
+        observed = observed_by_env.get(environment_id)
+        observed_at = str(observed.get("observedAt") or "") if observed else ""
+        activity_at = activity_by_env.get(environment_id, "")
+        last_seen_at = max(observed_at, activity_at)
+        environment["identitySource"] = "observed" if last_seen_at else "configured"
+        if last_seen_at:
+            environment["lastSignalAt"] = max(
+                str(environment.get("lastSignalAt") or ""),
+                last_seen_at,
             )
             environment["wakefulCount"] = max(_as_int(environment.get("wakefulCount"), 0), 1)
 
@@ -1489,19 +1689,28 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
         valkyrie_id = str(valkyrie.get("id") or "")
         known_valkyrie_ids.add(valkyrie_id)
         observed = observed_by_id.get(valkyrie_id)
-        if observed is None:
+        activity = activity_by_valkyrie.get(valkyrie_id)
+        if observed is None and activity is None:
             valkyrie["identitySource"] = "configured"
             continue
-        if observed.get("valkyrieName"):
+        if observed and observed.get("valkyrieName"):
             valkyrie["name"] = str(observed["valkyrieName"])
-        if observed.get("residentPersonality"):
+        elif activity and activity.get("valkyrieName"):
+            valkyrie["name"] = str(activity["valkyrieName"])
+        if observed and observed.get("residentPersonality"):
             valkyrie["specialty"] = str(observed["residentPersonality"])
         valkyrie["identitySource"] = "observed"
         valkyrie["status"] = "online"
-        valkyrie["lastObservedAt"] = str(observed.get("observedAt") or "")
-        if observed.get("wakefulness"):
+        observed_at = str(observed.get("observedAt") or "") if observed else ""
+        activity_at = str(activity.get("observedAt") or "") if activity else ""
+        valkyrie["lastObservedAt"] = max(
+            str(valkyrie.get("lastObservedAt") or ""),
+            observed_at,
+            activity_at,
+        )
+        if observed and observed.get("wakefulness"):
             valkyrie["wakefulness"] = str(observed["wakefulness"])
-        if observed.get("lastDreamAt"):
+        if observed and observed.get("lastDreamAt"):
             valkyrie["lastDreamAt"] = str(observed["lastDreamAt"])
 
     for valkyrie_id, observed in observed_by_id.items():
@@ -2731,6 +2940,26 @@ class ValkyrieDashboardProjection:
             telemetry_events,
             observed_at=observed_at,
         )
+        seeded_signals = [
+            entry
+            for entry in self._dashboard.get("signals", [])
+            if isinstance(entry, dict) and not str(entry.get("id") or "").startswith("live-")
+        ]
+        self._dashboard["signals"] = sorted(
+            [*_signals_from_events(telemetry_events), *seeded_signals],
+            key=lambda item: item.get("receivedAt", ""),
+            reverse=True,
+        )[:60]
+        seeded_decisions = [
+            entry
+            for entry in self._dashboard.get("courtDecisions", [])
+            if isinstance(entry, dict) and not str(entry.get("id") or "").startswith("live-")
+        ]
+        self._dashboard["courtDecisions"] = sorted(
+            [*_court_decisions_from_events(telemetry_events), *seeded_decisions],
+            key=lambda item: item.get("createdAt", ""),
+            reverse=True,
+        )[:60]
         self._sync_live_learnings()
         self._dashboard["updatedAt"] = observed_at
 

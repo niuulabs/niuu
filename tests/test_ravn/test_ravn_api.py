@@ -1218,6 +1218,99 @@ def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
     assert dashboard["telemetry"]["runtime"][0]["valkyrieName"] == "Runa"
 
 
+def test_valkyrie_dashboard_projects_activity_without_runtime_identity(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.signal_poll.completed",
+            source="ravn:valkyrie:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "valkyrie_id": "valkyrie-valhalla-k8s",
+                "valkyrie_name": "Sigrun",
+                "source_id": "kubernetes-events",
+                "collected_count": 3,
+                "published_count": 1,
+                "duplicate_count": 2,
+                "enqueued_task_count": 0,
+            },
+            summary="poll complete",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="signal.kubernetes.event",
+            source="adapter:kubernetes-events",
+            payload={
+                "environment_id": "valhalla",
+                "signal_id": "pod:worker:ImagePullBackOff",
+                "kind": "Pod",
+                "reason": "ImagePullBackOff",
+                "severity": "warning",
+            },
+            summary="Pod worker is failing image pull",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 2, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="odin.court.decided",
+            source="odin-court:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "court_id": "court-valhalla-1",
+                "decision": "record_only",
+                "authority_boundary": "human",
+            },
+            summary="ODIN court court-valhalla-1 decided: record_only",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+            correlation_id="corr-valhalla-1",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="attention.decision.made",
+            source="odin-court:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "root_correlation_id": "corr-valhalla-1",
+                "decision": "record_only",
+                "tier": "ambient",
+                "action_authorization": "human",
+                "escalation_path": "none",
+            },
+            summary="Attention decision record_only/ambient",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, 1, tzinfo=UTC),
+            correlation_id="corr-valhalla-1",
+        )
+    )
+
+    dashboard = projection.dashboard()
+    valkyrie = dashboard["valkyries"][0]
+    environment = dashboard["environments"][0]
+
+    assert valkyrie["identitySource"] == "observed"
+    assert valkyrie["lastObservedAt"] == "2026-06-04T20:01:00+00:00"
+    assert environment["identitySource"] == "observed"
+    assert environment["lastSignalAt"] == "2026-06-04T20:03:01+00:00"
+    assert dashboard["signals"][0]["summary"] == "Pod worker is failing image pull"
+    assert dashboard["signals"][0]["severity"] == "warning"
+    assert len(dashboard["courtDecisions"]) == 1
+    assert dashboard["courtDecisions"][0]["title"] == "Attention decision record_only/ambient"
+    assert dashboard["courtDecisions"][0]["status"] == "executed"
+    assert dashboard["courtDecisions"][0]["risk"] == "low"
+
+
 def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy():
     projection = ValkyrieDashboardProjection()
     projection.record_event(
