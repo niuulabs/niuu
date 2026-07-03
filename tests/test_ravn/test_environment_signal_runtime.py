@@ -406,6 +406,130 @@ async def test_runtime_start_publishes_configuration_telemetry() -> None:
     assert payload["nats_subject"] == "ravn.environment.valkyrie.runtime.started"
 
 
+@pytest.mark.asyncio
+async def test_charter_travels_in_runtime_telemetry_and_task_context() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
+    settings = _settings()
+    settings.environment.charter = (
+        "Keep the host healthy and quiet; escalate only real risk to Jozef."
+    )
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    await runtime.start()
+    await bus.flush()
+    await runtime.stop()
+    await runtime.collect_once()
+
+    assert telemetry[0].payload["charter"] == (
+        "Keep the host healthy and quiet; escalate only real risk to Jozef."
+    )
+    assert enqueued
+    assert "**Charter:** Keep the host healthy and quiet" in enqueued[0].initiative_context
+
+
+@pytest.mark.asyncio
+async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+    settings = _settings()
+    # The only configured signal is critical; raise the bar so nothing enqueues.
+    settings.environment.signal_task_severities = ["never"]
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert enqueued == []
+    task = runtime._triage_task(runtime._untriaged)
+    assert task.triggered_by == "signal:idle_triage"
+    assert task.title == "Idle triage: 1 routine signal(s)"
+    context = task.initiative_context
+    assert "# Idle triage" in context
+    assert "signal_task_severities" in context
+    assert "**critical**: 1" in context
+    assert "## Sample signals" in context
+    assert "(critical, host-events)" in context
+    assert "---outcome---" in context and "---end---" in context
+    assert "operational_state: watching" in context
+
+
+@pytest.mark.asyncio
+async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
+    import asyncio
+
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+    settings = _settings()
+    settings.environment.signal_task_severities = ["never"]
+    settings.environment.idle_triage_interval_seconds = 0.01
+    settings.environment.idle_triage_max_signals = 5
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    await runtime.collect_once()
+    await runtime.start()
+    for _ in range(200):
+        if enqueued:
+            break
+        await asyncio.sleep(0.01)
+    await runtime.stop()
+
+    triage_tasks = [task for task in enqueued if task.triggered_by == "signal:idle_triage"]
+    assert triage_tasks, "idle triage loop never enqueued a task"
+    assert runtime._untriaged == []
+
+
+def test_untriaged_buffer_is_capped() -> None:
+    settings = _settings()
+    settings.environment.idle_triage_max_signals = 3
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
+    for index in range(6):
+        runtime._untriaged.append(
+            {
+                "signal_ref": f"sig-{index}",
+                "signal_type": "host",
+                "severity": "info",
+                "source_id": "host-events",
+                "summary": f"signal {index}",
+            }
+        )
+    event = SleipnirEvent(
+        event_type="signal.host.event",
+        source="test",
+        payload={},
+        summary="s",
+        urgency=0.1,
+        domain="infrastructure",
+        timestamp=SleipnirEvent.now(),
+    )
+
+    class _Sig:
+        provider_event_id = "p"
+        dedupe_key = "d"
+        signal_type = "host"
+        severity = "info"
+        source_id = "host-events"
+
+    runtime._remember_untriaged(_Sig(), event)  # type: ignore[arg-type]
+
+    assert len(runtime._untriaged) == 3
+
+
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
     events.append(event)
 

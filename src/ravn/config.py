@@ -3058,6 +3058,14 @@ class EnvironmentConfig(BaseModel):
             "Optional lightweight resident guidance injected into autonomous Valkyrie tasks."
         ),
     )
+    charter: str = Field(
+        default="",
+        description=(
+            "The human seed for this resident: a few sentences describing what the "
+            "Valkyrie stewards and what 'better' means for its environment. Injected "
+            "into every autonomous task and surfaced on the dashboard."
+        ),
+    )
     flocks: list[str] = Field(
         default_factory=list,
         description="Existing flock names this Valkyrie participates in.",
@@ -3083,6 +3091,17 @@ class EnvironmentConfig(BaseModel):
     signal_task_severities: list[str] = Field(
         default_factory=lambda: ["warning", "critical"],
         description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+    )
+    idle_triage_interval_seconds: float = Field(
+        default=900.0,
+        description=(
+            "Seconds between idle triage judgments over signals that did not match "
+            "signal_task_severities. 0 disables idle triage."
+        ),
+    )
+    idle_triage_max_signals: int = Field(
+        default=200,
+        description="Maximum below-threshold signals summarized in one idle triage task.",
     )
     signal_subjects: list[str] = Field(
         default_factory=list,

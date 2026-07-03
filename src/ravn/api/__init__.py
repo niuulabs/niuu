@@ -85,6 +85,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Daily by default; 0 disables the periodic environment brief.
+DEFAULT_VALKYRIE_BRIEF_INTERVAL_SECONDS = 86_400.0
+
+
+def _env_seconds(name: str, default: float) -> float:
+    import os  # noqa: PLC0415
+
+    try:
+        return float(str(os.environ.get(name, "")).strip() or default)
+    except ValueError:
+        return default
+
 
 class TriggerCreateRequest(BaseModel):
     kind: str
@@ -646,12 +658,16 @@ def create_app(
 
     import contextlib  # noqa: PLC0415
 
+    from ravn.adapters.valkyrie_history import (  # noqa: PLC0415
+        build_valkyrie_history_store_from_env,
+    )
     from ravn.api.odin_reviews import (  # noqa: PLC0415
         build_review_queue_store_from_env,
         build_review_ttls_from_env,
         create_odin_review_router,
         review_sweep_interval_from_env,
     )
+    from ravn.api.valkyrie_history_service import ValkyrieHistoryService  # noqa: PLC0415
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
@@ -664,11 +680,20 @@ def create_app(
         ttl_seconds_by_kind=review_ttls,
         default_ttl_seconds=review_default_ttl,
     )
+    valkyrie_history = ValkyrieHistoryService(
+        build_valkyrie_history_store_from_env(),
+        review_service=odin_review_service,
+    )
     valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
         valkyrie_projection,
         review_ingest=odin_review_service.ingest_event,
+        history_ingest=valkyrie_history.ingest_event,
     )
     review_sweep_interval = review_sweep_interval_from_env()
+    brief_interval = _env_seconds(
+        "RAVN_VALKYRIE_BRIEF_INTERVAL_SECONDS",
+        DEFAULT_VALKYRIE_BRIEF_INTERVAL_SECONDS,
+    )
 
     async def _run_review_sweep() -> None:
         while True:
@@ -680,11 +705,32 @@ def create_app(
             except Exception:
                 logger.exception("odin review: expiry sweep failed")
 
+    async def _run_valkyrie_brief() -> None:
+        from datetime import timedelta  # noqa: PLC0415
+
+        while True:
+            await asyncio.sleep(brief_interval)
+            try:
+                filed = await valkyrie_history.file_morning_briefs(
+                    window=timedelta(seconds=brief_interval),
+                )
+                if filed:
+                    logger.info("valkyrie brief: filed %d environment brief(s)", filed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("valkyrie brief: filing failed")
+
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         review_sweep_task = asyncio.create_task(
             _run_review_sweep(),
             name="odin_review_sweep",
+        )
+        valkyrie_brief_task = (
+            asyncio.create_task(_run_valkyrie_brief(), name="valkyrie_brief")
+            if brief_interval > 0
+            else None
         )
         if valkyrie_telemetry is not None:
             try:
@@ -701,6 +747,10 @@ def create_app(
             review_sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 _ = await review_sweep_task
+            if valkyrie_brief_task is not None:
+                valkyrie_brief_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    _ = await valkyrie_brief_task
             if valkyrie_telemetry is not None:
                 await valkyrie_telemetry.stop()
             await valkyrie_learning_commands.stop()
@@ -712,6 +762,7 @@ def create_app(
             valkyrie_projection,
             review_command_publisher=valkyrie_learning_commands,
             review_service=odin_review_service,
+            history_service=valkyrie_history,
         )
     )
     app.include_router(

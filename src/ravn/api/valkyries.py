@@ -1216,6 +1216,8 @@ def _runtime_entry(
         "valkyrieId": _event_valkyrie_id(payload),
         "valkyrieName": _event_valkyrie_name(payload),
         "residentPersonality": str(payload.get("resident_personality") or ""),
+        "charter": str(payload.get("charter") or ""),
+        "signalTaskSeverities": _as_string_list(payload.get("signal_task_severities")),
         "sourceCount": payload.get("source_count", 0),
         "driveLoopEnabled": bool(payload.get("drive_loop_enabled")),
         "initiativeEnabled": bool(payload.get("initiative_enabled")),
@@ -1785,6 +1787,10 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
             valkyrie["name"] = str(activity["valkyrieName"])
         if observed and observed.get("residentPersonality"):
             valkyrie["specialty"] = str(observed["residentPersonality"])
+        if observed and observed.get("charter"):
+            valkyrie["charter"] = str(observed["charter"])
+        if observed and observed.get("signalTaskSeverities"):
+            valkyrie["signalTaskSeverities"] = _as_string_list(observed["signalTaskSeverities"])
         valkyrie["identitySource"] = "observed"
         valkyrie["status"] = "online"
         observed_at = str(observed.get("observedAt") or "") if observed else ""
@@ -1810,6 +1816,8 @@ def _merge_observed_runtime(dashboard: Dashboard) -> Dashboard:
                 "flockId": "",
                 "persona": "observed-valkyrie",
                 "specialty": str(observed.get("residentPersonality") or "observed resident"),
+                "charter": str(observed.get("charter") or ""),
+                "signalTaskSeverities": _as_string_list(observed.get("signalTaskSeverities")),
                 "wakefulness": str(observed.get("wakefulness") or "watching"),
                 "autonomyMode": "autonomous" if observed.get("driveLoopEnabled") else "guarded",
                 "status": "online",
@@ -2351,6 +2359,7 @@ def _configured_valkyrie_entries(
                 "toolCount": _as_int(_field(combined, "toolCount", "tool_count", default=0)),
                 "lastDreamAt": str(_field(combined, "lastDreamAt", "last_dream_at", default="")),
                 "lastActionAt": str(_field(combined, "lastActionAt", "last_action_at", default="")),
+                "charter": str(_field(combined, "charter", default="")),
                 "identitySource": "configured",
             },
         )
@@ -3157,9 +3166,11 @@ class ValkyrieTelemetrySubscription:
         startup_delay_seconds: float = 5.0,
         subscriber_start_timeout_seconds: float = 5.0,
         review_ingest: Any | None = None,
+        history_ingest: Any | None = None,
     ) -> None:
         self._projection = projection
         self._review_ingest = review_ingest
+        self._history_ingest = history_ingest
         self._subscribers = subscribers
         self._event_types = event_types
         self._subscriptions: list[tuple[str, Any]] = []
@@ -3218,6 +3229,14 @@ class ValkyrieTelemetrySubscription:
 
     async def _handle(self, event: SleipnirEvent) -> None:
         self._projection.record_event(event)
+        if self._history_ingest is not None:
+            try:
+                await self._history_ingest(event)
+            except Exception:
+                logger.exception(
+                    "valkyrie_dashboard: history ingest failed for %s",
+                    event.event_type,
+                )
         if self._review_ingest is None:
             return
         try:
@@ -3392,6 +3411,7 @@ def _command_stream_specs() -> list[dict[str, str]]:
 def build_nats_telemetry_subscription_from_env(
     projection: ValkyrieDashboardProjection,
     review_ingest: Any | None = None,
+    history_ingest: Any | None = None,
 ) -> ValkyrieTelemetrySubscription | None:
     """Build the optional dashboard telemetry NATS consumer from environment vars."""
     servers_raw = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
@@ -3478,6 +3498,7 @@ def build_nats_telemetry_subscription_from_env(
     return ValkyrieTelemetrySubscription(
         projection=projection,
         review_ingest=review_ingest,
+        history_ingest=history_ingest,
         subscribers=subscribers,
         retry_interval_seconds=retry_interval_seconds,
         startup_delay_seconds=startup_delay_seconds,
@@ -3638,11 +3659,20 @@ def create_valkyrie_router(
     review_command_publisher: OdinReviewCommandPublisher | None = None,
     room_client: ValkyrieRoomClient | None = None,
     review_service: Any | None = None,
+    history_service: Any | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/ravn/valkyrie", tags=["Ravn Valkyries"])
     store = projection or ValkyrieDashboardProjection()
     command_publisher = review_command_publisher or OdinReviewCommandPublisher()
     skuld_room = room_client or build_skuld_room_client_from_env()
+
+    def _require_history() -> Any:
+        if history_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Valkyrie history store is not configured on this API process",
+            )
+        return history_service
 
     async def _record_in_review_ledger(item: ReviewItem) -> None:
         """Operator-initiated decisions land in the same central ledger."""
@@ -3891,6 +3921,54 @@ def create_valkyrie_router(
         await _record_in_review_ledger(item)
         return store.dashboard()
 
+    @router.get("/decisions")
+    async def list_decisions(
+        environment_id: str = "",
+        valkyrie_id: str = "",
+        operational_state: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        history = _require_history()
+        rows, total = await history.store.list_decisions(
+            environment_id=environment_id,
+            valkyrie_id=valkyrie_id,
+            operational_state=operational_state,
+            limit=limit,
+            offset=offset,
+        )
+        return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+    @router.get("/decisions/{decision_id}")
+    async def get_decision(decision_id: str) -> dict[str, Any]:
+        history = _require_history()
+        detail = await history.decision_detail(decision_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Decision not found")
+        return detail
+
+    @router.get("/signals/history")
+    async def list_signal_history(
+        environment_id: str = "",
+        severity: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        history = _require_history()
+        rows, total = await history.store.list_signals(
+            environment_id=environment_id,
+            severity=severity,
+            limit=limit,
+            offset=offset,
+        )
+        return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+    @router.get("/learnings/stats/skills")
+    async def learning_skill_stats(environment_id: str = "") -> dict[str, Any]:
+        history = _require_history()
+        skills = await history.skill_stats(environment_id=environment_id)
+        return {"skills": skills}
+
     @router.get("/telemetry/events")
     async def list_telemetry_events(
         limit: int = 200,
@@ -3910,6 +3988,11 @@ def create_valkyrie_router(
     @router.post("/telemetry/events")
     async def record_telemetry_event(event: dict[str, Any], minimal: bool = False) -> Dashboard:
         store.record_event(event)
+        if history_service is not None:
+            try:
+                await history_service.ingest_event(event)
+            except Exception:
+                logger.exception("valkyrie telemetry: history ingest failed")
         if review_service is not None:
             try:
                 await review_service.ingest_event(event)

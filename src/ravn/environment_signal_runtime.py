@@ -113,6 +113,7 @@ class EnvironmentSignalRuntime:
         self._adapters: list[SignalAdapter] = []
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._tasks: list[asyncio.Task] = []
+        self._untriaged: list[dict[str, Any]] = []
 
     @property
     def source_count(self) -> int:
@@ -130,6 +131,14 @@ class EnvironmentSignalRuntime:
                 asyncio.create_task(
                     self._poll_loop(adapter),
                     name=f"environment_signal:{adapter.source_id}",
+                )
+            )
+        triage_interval = self._settings.environment.idle_triage_interval_seconds
+        if self._enqueue is not None and triage_interval > 0:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._idle_triage_loop(triage_interval),
+                    name=f"environment_triage:{self._environment.id}",
                 )
             )
 
@@ -224,6 +233,8 @@ class EnvironmentSignalRuntime:
                         )
                     )
                     enqueued_count += 1
+                else:
+                    self._remember_untriaged(signal, event)
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -242,6 +253,121 @@ class EnvironmentSignalRuntime:
             self._environment.id,
         )
         return len(events)
+
+    def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
+        self._untriaged.append(
+            {
+                "signal_ref": event.event_id or signal.provider_event_id or signal.dedupe_key,
+                "signal_type": signal.signal_type,
+                "severity": signal.severity,
+                "source_id": signal.source_id,
+                "summary": event.summary,
+            }
+        )
+        max_signals = self._settings.environment.idle_triage_max_signals
+        if len(self._untriaged) > max_signals:
+            self._untriaged = self._untriaged[-max_signals:]
+
+    async def _idle_triage_loop(self, interval: float) -> None:
+        """Periodically make the resident reason over below-threshold signals.
+
+        Without this, a quiet environment produces zero judgments and the
+        dashboard shows silence even though signals were seen — watching
+        should be an observable act, not an absence of records.
+        """
+        if self._enqueue is None:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            batch, self._untriaged = self._untriaged, []
+            if not batch:
+                continue
+            try:
+                await self._enqueue(self._triage_task(batch))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "environment_signals: idle triage enqueue failed: %s",
+                    exc,
+                )
+
+    def _triage_task(self, batch: list[dict[str, Any]]) -> AgentTask:
+        peer_id = self._settings.mesh.own_peer_id or "unknown"
+        severity_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for entry in batch:
+            severity_counts[entry["severity"]] = severity_counts.get(entry["severity"], 0) + 1
+            source_counts[entry["source_id"]] = source_counts.get(entry["source_id"], 0) + 1
+        sample_lines = "\n".join(
+            f"- `{entry['signal_type']}` ({entry['severity']}, {entry['source_id']}): "
+            f"{entry['summary']}"
+            for entry in batch[:15]
+        )
+        severity_lines = "\n".join(
+            f"- **{severity}**: {count}" for severity, count in sorted(severity_counts.items())
+        )
+        signal_refs = "\n".join(f"  - {entry['signal_ref']}" for entry in batch[:25])
+        outcome_template = (
+            "---outcome---\n"
+            "decision: watch\n"
+            f"environment_id: {self._environment.id}\n"
+            f"environment_type: {self._environment.type}\n"
+            f"valkyrie_id: {peer_id}\n"
+            "signal_refs:\n"
+            f"{signal_refs}\n"
+            "tier: ambient\n"
+            "confidence: 0.5\n"
+            "operational_state: watching\n"
+            "wakefulness: watching\n"
+            "rationale: concise summary of why the environment needs no action\n"
+            "evidence: []\n"
+            "recommended_action: none\n"
+            "action_authority: autonomous\n"
+            "action_capability: none\n"
+            "target_surfaces: []\n"
+            'expires_at: ""\n'
+            "dissent_refs: []\n"
+            "correlation_ids:\n"
+            f"  environment: {self._environment.id}\n"
+            "---end---"
+        )
+        charter_section = ""
+        charter = self._settings.environment.charter.strip()
+        if charter:
+            charter_section = f"\n## Charter\n\n{charter}\n"
+        context = (
+            f"# Idle triage — {len(batch)} routine signal(s)\n\n"
+            "None of the signals below crossed the task severity threshold "
+            f"(`signal_task_severities: {self._settings.environment.signal_task_severities}`). "
+            "Review the batch as a whole and confirm — or refute — that the "
+            "environment is healthy.\n"
+            f"{charter_section}\n"
+            "## Severity breakdown\n\n"
+            f"{severity_lines}\n\n"
+            "## Sample signals\n\n"
+            f"{sample_lines}\n\n"
+            "## Your task\n\n"
+            "Judge whether the aggregate pattern is routine or hides an emerging "
+            "problem (repeated warnings from one source, a drift in volume, a "
+            "new signal type). Say explicitly WHY nothing is actionable, or "
+            "escalate what is.\n\n"
+            "## Required outcome\n\n"
+            "Finish with exactly one `valkyrie.judgment.proposed` block:\n\n"
+            "```text\n"
+            f"{outcome_template}\n"
+            "```\n"
+        )
+        return AgentTask(
+            task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",
+            title=f"Idle triage: {len(batch)} routine signal(s)",
+            initiative_context=context,
+            triggered_by="signal:idle_triage",
+            output_mode=self._output_mode,
+            persona=self._persona,
+            priority=9,
+            root_correlation_id=f"idle-triage:{self._environment.id}",
+        )
 
     def _remember(self, signal: NormalizedSignal) -> bool:
         key = f"{signal.source_id}:{signal.provider_event_id or signal.dedupe_key}"
@@ -304,6 +430,9 @@ class EnvironmentSignalRuntime:
         ]
         if resident_personality:
             resident_lines.append(f"- **Personality:** {resident_personality}")
+        charter = self._settings.environment.charter.strip()
+        if charter:
+            resident_lines.append(f"- **Charter:** {charter}")
 
         # Markdown section the agent reads about what resident learning already found.
         learning_section = ""
@@ -477,6 +606,7 @@ class EnvironmentSignalRuntime:
             "valkyrie_id": self._settings.mesh.own_peer_id,
             "valkyrie_name": self._resident_name(),
             "resident_personality": self._resident_personality(),
+            "charter": self._settings.environment.charter.strip(),
             "environment_id": self._environment.id,
             "source_count": len(sources),
             "sources": sources,
@@ -510,11 +640,11 @@ class EnvironmentSignalRuntime:
         self,
         adapter: SignalAdapter,
         *,
-            collected: list[NormalizedSignal],
-            published_events: list[SleipnirEvent],
-            resident_results: list[dict[str, Any] | None],
-            enqueued_count: int,
-            duration_ms: int,
+        collected: list[NormalizedSignal],
+        published_events: list[SleipnirEvent],
+        resident_results: list[dict[str, Any] | None],
+        enqueued_count: int,
+        duration_ms: int,
     ) -> None:
         severity_counts: dict[str, int] = {}
         for signal in collected:

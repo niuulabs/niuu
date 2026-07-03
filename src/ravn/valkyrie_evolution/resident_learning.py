@@ -546,6 +546,9 @@ class ResidentLearningRuntime:
             return await self._apply_court_review(item)
         if kind in {ReviewKind.EVOLUTION_BUILD.value, ReviewKind.FLOCK_LEARNING.value}:
             return await self._apply_learning_review(item)
+        if kind == ReviewKind.MORNING_BRIEF.value:
+            # Briefs are informational; the operator verdict is the whole action.
+            return "applied", "brief acknowledged", None
         return "apply_failed", f"unknown review kind: {kind!r}", None
 
     async def _apply_autonomy_review(

@@ -12,6 +12,7 @@ The ``kind`` field is the only thing that varies between producers:
 * ``flock_learning``   — a peer learning held for adoption approval
 * ``court_escalation`` — an ODIN court draft-for-review action
 * ``autonomy_change``  — an operator-initiated autonomy mode change
+* ``morning_brief``    — a periodic resident digest awaiting acknowledgement
 
 Operator-initiated commands ride the same envelope as auto-decided items so
 every human intervention lands in one auditable ledger.
@@ -43,6 +44,7 @@ class ReviewKind(StrEnum):
     FLOCK_LEARNING = "flock_learning"
     COURT_ESCALATION = "court_escalation"
     AUTONOMY_CHANGE = "autonomy_change"
+    MORNING_BRIEF = "morning_brief"
 
 
 class ReviewStatus(StrEnum):
