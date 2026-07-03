@@ -430,6 +430,39 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert projection.logs()[0]["component"] == "drive_loop"
 
 
+def test_valkyrie_dashboard_projects_operational_state_from_live_judgments():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:noatun",
+            payload={
+                "environment_id": "noatun",
+                "valkyrie_id": "valkyrie-noatun-k8s",
+                "fields": {
+                    "operational_state": "investigating",
+                    "state_summary": "Volume attach failure needs pod and PVC evidence.",
+                    "desired_state": "Cluster storage attachments are healthy",
+                    "severity": "warning",
+                },
+            },
+            summary="judgment proposed",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+        )
+    )
+
+    state = projection.dashboard()["operationalStates"][0]
+
+    assert state["environmentId"] == "env-k8s-noatun"
+    assert state["name"] == "Investigating"
+    assert state["observed"] == "Volume attach failure needs pod and PVC evidence."
+    assert state["desired"] == "Cluster storage attachments are healthy"
+    assert state["drift"] == "minor"
+    assert state["maintainedBy"] == ["valkyrie-noatun-k8s"]
+
+
 def test_valkyrie_huddle_endpoints_call_skuld_room_client_before_projecting():
     class FakeRoomClient:
         def __init__(self) -> None:

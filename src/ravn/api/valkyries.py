@@ -506,6 +506,92 @@ def _signals_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(signals, key=lambda item: item.get("receivedAt", ""), reverse=True)[:60]
 
 
+def _state_drift(details: dict[str, Any], payload: dict[str, Any]) -> str:
+    state = str(
+        details.get("operational_state")
+        or details.get("operationalState")
+        or payload.get("operational_state")
+        or payload.get("operationalState")
+        or ""
+    ).lower()
+    severity = str(details.get("severity") or payload.get("severity") or "").lower()
+    if state in {"degraded", "remediating", "blocked"} or severity == "critical":
+        return "major"
+    if state in {"watching", "investigating", "dreaming"} or severity in {"warning", "notice"}:
+        return "minor"
+    return "none"
+
+
+def _operational_state_entry(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    event_type = str(event.get("event_type") or "")
+    if event_type not in {"valkyrie.state.updated", registry.VALKYRIE_JUDGMENT_PROPOSED}:
+        return None
+    details = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    if not details:
+        details = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+    if not details:
+        details = payload
+    environment_id = _event_environment_id(event, payload)
+    valkyrie_id = _event_valkyrie_id(payload)
+    operational_state = str(
+        details.get("operational_state")
+        or details.get("operationalState")
+        or payload.get("operational_state")
+        or payload.get("operationalState")
+        or details.get("decision")
+        or details.get("verdict")
+        or "watching"
+    )
+    observed = str(
+        details.get("state_summary")
+        or details.get("stateSummary")
+        or details.get("rationale")
+        or details.get("summary")
+        or payload.get("state_summary")
+        or payload.get("summary")
+        or event.get("summary")
+        or operational_state
+    )
+    desired = str(
+        details.get("desired_state")
+        or details.get("desiredState")
+        or payload.get("desired_state")
+        or payload.get("desiredState")
+        or "No unresolved drift requiring operator action"
+    )
+    return {
+        "id": f"live-state-{environment_id}",
+        "environmentId": environment_id,
+        "name": operational_state.replace("_", " ").strip().capitalize() or "Operational state",
+        "desired": desired,
+        "observed": observed,
+        "drift": _state_drift(details, payload),
+        "maintainedBy": [valkyrie_id] if valkyrie_id else [],
+        "updatedAt": _event_timestamp(event),
+    }
+
+
+def _operational_states_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_environment: dict[str, dict[str, Any]] = {}
+    for raw_event in events:
+        event = _event_dict(raw_event)
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        entry = _operational_state_entry(event, payload if isinstance(payload, dict) else {})
+        if entry is None:
+            continue
+        existing = by_environment.get(entry["environmentId"])
+        if existing is None or entry.get("updatedAt", "") >= existing.get("updatedAt", ""):
+            by_environment[entry["environmentId"]] = entry
+    return sorted(
+        by_environment.values(),
+        key=lambda item: item.get("updatedAt", ""),
+        reverse=True,
+    )[:60]
+
+
 def _court_decision_status(decision: str, payload: dict[str, Any]) -> str:
     raw = decision.lower()
     if raw in {"rejected", "reject", "denied", "deny", "blocked"}:
@@ -2958,6 +3044,16 @@ class ValkyrieDashboardProjection:
         self._dashboard["courtDecisions"] = sorted(
             [*_court_decisions_from_events(telemetry_events), *seeded_decisions],
             key=lambda item: item.get("createdAt", ""),
+            reverse=True,
+        )[:60]
+        seeded_states = [
+            entry
+            for entry in self._dashboard.get("operationalStates", [])
+            if isinstance(entry, dict) and not str(entry.get("id") or "").startswith("live-")
+        ]
+        self._dashboard["operationalStates"] = sorted(
+            [*_operational_states_from_events(telemetry_events), *seeded_states],
+            key=lambda item: item.get("updatedAt", ""),
             reverse=True,
         )[:60]
         self._sync_live_learnings()
