@@ -11,8 +11,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# No slashes, no "..", no absolute paths — only a flat fixture file name.
-_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Fixture slug is intentionally strict; callers may pass either:
+#   - "<slug>"
+#   - "<slug>.frames.json"
+# where slug is alnum/underscore/hyphen only.
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _normalize_fixture_base(name: str) -> str:
+    """Validate user-provided fixture name and return canonical file name."""
+    slug = name.removesuffix(".frames.json")
+    if not _SLUG_RE.fullmatch(slug):
+        raise ValueError("invalid fixture name")
+    return f"{slug}.frames.json"
 
 
 def default_fixtures_dir() -> Path:
@@ -24,20 +35,20 @@ def resolve_fixture(name: str, fixtures_dir: Path) -> Path:
     """Resolve a fixture ``name`` to a path inside ``fixtures_dir``.
 
     Accepts a bare slug (``"two-turn"``) or a full ``"<slug>.frames.json"``.
-    Rejects anything with slashes or ``..`` (whitelist), and re-checks after
+    Rejects anything outside the strict slug format, then re-checks after
     resolution that the path is still under ``fixtures_dir`` (defense in depth).
 
     Raises:
         ValueError: invalid name, or the path escapes ``fixtures_dir``.
         FileNotFoundError: no such fixture file.
     """
-    if not _NAME_RE.match(name):
-        raise ValueError("invalid fixture name")
-    base = name if name.endswith(".frames.json") else f"{name}.frames.json"
+    base = _normalize_fixture_base(name)
     root = fixtures_dir.resolve()
     path = (root / base).resolve()
-    if root != path and root not in path.parents:
-        raise ValueError("fixture escapes fixtures_dir")
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("fixture escapes fixtures_dir") from exc
     if not path.is_file():
         raise FileNotFoundError(name)
     return path
