@@ -320,6 +320,81 @@ describe('ValkyrieConsolePage', () => {
     expect(screen.queryByTestId('valkyrie-signal-browser')).not.toBeInTheDocument();
   });
 
+  it('says loudly when the backend has no decision history endpoints', async () => {
+    const user = userEvent.setup();
+    const service = createMockValkyrieService();
+    const oldBackend = {
+      ...service,
+      listDecisions: () => Promise.reject(new Error('404 Not Found')),
+      listSignalHistory: () => Promise.reject(new Error('404 Not Found')),
+    };
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ valkyrie: oldBackend }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const decisions = screen.getByTestId('valkyrie-decisions');
+    await waitFor(() => expect(decisions).toHaveTextContent('does not serve decision history yet'));
+
+    await user.click(screen.getByRole('button', { name: /browse observed signals/i }));
+    const browser = await screen.findByTestId('valkyrie-signal-browser');
+    await waitFor(() => expect(browser).toHaveTextContent('does not serve decision history yet'));
+  });
+
+  it('collapses repeated poll chatter in the timeline into one row', async () => {
+    const service = createMockValkyrieService();
+    const seed = createSeedValkyrieDashboard();
+    const pollSpam = Array.from({ length: 6 }, (_, index) => ({
+      id: `poll-${index}`,
+      eventType: 'valkyrie.signal_poll.completed',
+      kind: 'event' as const,
+      environmentId: 'env-k8s-valhalla',
+      summary: 'kubernetes-events poll collected 28 signal(s), published 0, enqueued 0',
+      observedAt: `2026-06-03T14:0${index}:00Z`,
+    }));
+    const judgment = {
+      id: 'judgment-1',
+      eventType: 'valkyrie.judgment.proposed',
+      kind: 'judgment' as const,
+      environmentId: 'env-k8s-valhalla',
+      summary: 'Idle triage: routine window',
+      observedAt: '2026-06-03T13:59:00Z',
+    };
+    const chatty = {
+      ...service,
+      getDashboard: async () => ({
+        ...seed,
+        telemetry: { ...seed.telemetry!, recentEvents: [...pollSpam, judgment] },
+      }),
+    };
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ valkyrie: chatty }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const timeline = screen.getByTestId('valkyrie-signal-timeline');
+    // Six identical polls collapse to one row with a repeat badge; the
+    // judgment stays visible instead of being pushed out.
+    expect(within(timeline).getAllByRole('listitem')).toHaveLength(2);
+    expect(timeline).toHaveTextContent('×6');
+    expect(timeline).toHaveTextContent('Idle triage: routine window');
+  });
+
+  it('counts observed signals from live poll telemetry when idle', async () => {
+    const service = createMockValkyrieService();
+    const seed = createSeedValkyrieDashboard();
+    seed.environments = seed.environments.map((entry) =>
+      entry.id === 'env-k8s-valhalla' ? { ...entry, signalCount: 0 } : entry,
+    );
+    const idle = {
+      ...service,
+      getDashboard: async () => seed,
+      listDecisions: async () => ({ items: [], total: 0, limit: 8, offset: 0 }),
+    };
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ valkyrie: idle }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const situation = screen.getByTestId('valkyrie-current-situation');
+    // env summary says 0, but byEnvironment telemetry collected 36 signals.
+    await waitFor(() => expect(situation).toHaveTextContent('36 signal(s) observed'));
+  });
+
   it('explains an idle environment instead of showing an empty situation', async () => {
     const service = createMockValkyrieService();
     const idle = {

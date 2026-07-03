@@ -1895,7 +1895,14 @@ def _aggregate_telemetry(
         entry = _environment_telemetry_entry(by_environment, env_id)
         entry["lastObservedAt"] = max(entry["lastObservedAt"], timestamp)
         totals["eventsObserved"] += 1
-        recent_events.append(_event_log_entry(event, payload))
+        # Routine cadence chatter has its own projections (recentPolls, the
+        # runtime presence merge). Letting it into the activity feed evicts
+        # the judgments and actions the timeline exists to show.
+        if event_type not in {
+            "valkyrie.signal_poll.completed",
+            "valkyrie.presence.heartbeat",
+        }:
+            recent_events.append(_event_log_entry(event, payload))
 
         def append_tool_need(*, capability: str, status: str) -> None:
             task_id = str(payload.get("task_id") or event.get("correlation_id") or "")
@@ -1926,6 +1933,21 @@ def _aggregate_telemetry(
             published = _payload_int(payload, "published_count")
             duplicates = _payload_int(payload, "duplicate_count")
             enqueued = _payload_int(payload, "enqueued_task_count")
+            # Polls are excluded from the activity feed, but they still prove
+            # the resident is alive — merge identity into the presence map so
+            # a poll-only resident never shows as configured/offline.
+            poll_valkyrie_id = _event_valkyrie_id(payload)
+            if poll_valkyrie_id:
+                poll_runtime_key = f"{env_id}:{poll_valkyrie_id}"
+                runtime_by_key[poll_runtime_key] = _merge_runtime_entry(
+                    runtime_by_key.get(poll_runtime_key),
+                    {
+                        "environmentId": env_id,
+                        "valkyrieId": poll_valkyrie_id,
+                        "valkyrieName": _event_valkyrie_name(payload),
+                        "observedAt": timestamp,
+                    },
+                )
             totals["pollsCompleted"] += 1
             totals["signalsCollected"] += collected
             totals["signalsPublished"] += published

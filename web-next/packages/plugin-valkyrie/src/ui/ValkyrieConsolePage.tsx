@@ -352,10 +352,22 @@ function Metric({ label, value, icon }: { label: string; value: string; icon?: R
   );
 }
 
+function HistoryUnavailable({ what }: { what: string }) {
+  return (
+    <p
+      data-testid="valkyrie-history-unavailable"
+      className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:text-xs niuu:text-critical"
+    >
+      {what} could not be loaded — this API backend does not serve decision history yet. Redeploy
+      the platform API with the current build to enable it.
+    </p>
+  );
+}
+
 function SignalBrowser({ environmentId }: { environmentId: string }) {
   const [severity, setSeverity] = useState('');
   const [offset, setOffset] = useState(0);
-  const { data, isLoading } = useSignalHistory({
+  const { data, isLoading, error } = useSignalHistory({
     environmentId,
     severity: severity || undefined,
     limit: SIGNAL_PAGE_SIZE,
@@ -390,6 +402,7 @@ function SignalBrowser({ environmentId }: { environmentId: string }) {
       </div>
       <div className="niuu:mt-3 niuu:flex niuu:flex-col niuu:gap-2">
         {isLoading ? <p className={`niuu:text-xs ${MUTED}`}>Loading signals...</p> : null}
+        {error ? <HistoryUnavailable what="Observed signals" /> : null}
         {(data?.items ?? []).map((signal) => (
           <div key={signal.signalId} className="niuu:rounded-md niuu:bg-bg-secondary niuu:p-2">
             <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
@@ -489,11 +502,37 @@ function SituationPanel({
   );
 }
 
+interface TimelineRow {
+  event: ValkyrieEventTelemetry;
+  repeats: number;
+}
+
+/**
+ * Collapse consecutive occurrences of the same routine event (poll ticks,
+ * heartbeats) into one row so cadence chatter cannot bury real activity.
+ */
+function collapseRepeats(events: ValkyrieEventTelemetry[]): TimelineRow[] {
+  const rows: TimelineRow[] = [];
+  for (const event of events) {
+    const last = rows[rows.length - 1];
+    if (last && last.event.eventType === event.eventType && last.event.summary === event.summary) {
+      last.repeats += 1;
+      continue;
+    }
+    rows.push({ event, repeats: 1 });
+  }
+  return rows;
+}
+
 function Timeline({ events }: { events: ValkyrieEventTelemetry[] }) {
   const [showAll, setShowAll] = useState(false);
   const [kindFilter, setKindFilter] = useState('');
   const kinds = useMemo(() => [...new Set(events.map((event) => event.kind))].sort(), [events]);
-  const filtered = kindFilter ? events.filter((event) => event.kind === kindFilter) : events;
+  const filtered = useMemo(
+    () =>
+      collapseRepeats(kindFilter ? events.filter((event) => event.kind === kindFilter) : events),
+    [events, kindFilter],
+  );
   const visible = showAll ? filtered : filtered.slice(0, TIMELINE_PREVIEW_COUNT);
 
   return (
@@ -522,7 +561,7 @@ function Timeline({ events }: { events: ValkyrieEventTelemetry[] }) {
         ) : null}
       </div>
       <ol className="niuu:mt-5 niuu:flex niuu:flex-col niuu:gap-4">
-        {visible.map((event) => (
+        {visible.map(({ event, repeats }) => (
           <li key={event.id} className="niuu:grid niuu:grid-cols-[28px_minmax(0,1fr)] niuu:gap-3">
             <span
               className={`niuu:mt-1 niuu:flex niuu:h-7 niuu:w-7 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border ${eventTone(
@@ -536,7 +575,12 @@ function Timeline({ events }: { events: ValkyrieEventTelemetry[] }) {
                 <span className="niuu:truncate niuu:font-mono niuu:text-xs niuu:text-brand">
                   {event.eventType}
                 </span>
-                <span className="niuu:shrink-0 niuu:text-xs niuu:text-text-muted">
+                <span className="niuu:flex niuu:shrink-0 niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-muted">
+                  {repeats > 1 ? (
+                    <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-[10px]">
+                      ×{repeats}
+                    </span>
+                  ) : null}
                   {timeAgo(event.observedAt)} ago
                 </span>
               </div>
@@ -743,7 +787,7 @@ function DecisionCard({
 
 function DecisionsPanel({ environmentId }: { environmentId: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { data, isLoading } = useDecisionList({ environmentId, limit: 8 });
+  const { data, isLoading, error } = useDecisionList({ environmentId, limit: 8 });
 
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-decisions">
@@ -756,6 +800,7 @@ function DecisionsPanel({ environmentId }: { environmentId: string }) {
       </div>
       <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-3">
         {isLoading ? <p className={`niuu:text-sm ${MUTED}`}>Loading decisions...</p> : null}
+        {error ? <HistoryUnavailable what="Decision history" /> : null}
         {(data?.items ?? []).map((decision) => (
           <DecisionCard
             key={decision.decisionId}
@@ -976,7 +1021,17 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
   const environmentSummary = dashboard.environments.find(
     (entry) => entry.id === selected.environmentId,
   );
-  const signalTotal = environmentSummary?.signalCount ?? environmentSignals.length;
+  // Live poll telemetry is the truth for "how much has this resident seen";
+  // the environment summary count is a configured value that can lag at 0.
+  const collectedSignals =
+    dashboard.telemetry?.byEnvironment?.find(
+      (entry) => entry.environmentId === selected.environmentId,
+    )?.signalsCollected ?? 0;
+  const signalTotal = Math.max(
+    environmentSummary?.signalCount ?? 0,
+    collectedSignals,
+    environmentSignals.length,
+  );
   const lastSeen = newestTimestamp([
     selected.lastObservedAt,
     selected.lastActionAt,

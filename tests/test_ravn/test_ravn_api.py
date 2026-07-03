@@ -430,6 +430,72 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert projection.logs()[0]["component"] == "drive_loop"
 
 
+def test_poll_and_heartbeat_chatter_stays_out_of_the_activity_feed():
+    """Cadence telemetry must not evict judgments from recentEvents.
+
+    Polls fire every few seconds per source; letting them into the capped
+    activity feed buries every real decision within minutes. They keep
+    their own projection (recentPolls + totals).
+    """
+    projection = ValkyrieDashboardProjection()
+    for index in range(3):
+        projection.record_event(
+            SleipnirEvent(
+                event_type="valkyrie.signal_poll.completed",
+                source="ravn:valkyrie:ymir",
+                payload={
+                    "environment_id": "ymir",
+                    "source_id": "kubernetes-events",
+                    "collected_count": 28,
+                    "published_count": 0,
+                    "duplicate_count": 28,
+                    "enqueued_task_count": 0,
+                },
+                summary="poll complete",
+                urgency=0.1,
+                domain="infrastructure",
+                timestamp=datetime(2026, 6, 4, 20, 0, index, tzinfo=UTC),
+            )
+        )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.presence.heartbeat",
+            source="ravn:valkyrie:ymir",
+            payload={"environment_id": "ymir", "valkyrie_id": "valkyrie-ymir-k8s"},
+            summary="heartbeat",
+            urgency=0.1,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, 30, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "fields": {"tier": "ambient", "operational_state": "watching"},
+            },
+            summary="idle triage judgment",
+            urgency=0.3,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+        )
+    )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    event_types = [entry["eventType"] for entry in telemetry["recentEvents"]]
+    assert "valkyrie.signal_poll.completed" not in event_types
+    assert "valkyrie.presence.heartbeat" not in event_types
+    assert "valkyrie.judgment.proposed" in event_types
+    # The cadence data is still fully accounted for elsewhere.
+    assert telemetry["totals"]["pollsCompleted"] == 3
+    assert telemetry["totals"]["signalsCollected"] == 84
+    assert len(telemetry["recentPolls"]) == 3
+
+
 def test_valkyrie_dashboard_projects_operational_state_from_live_judgments():
     projection = ValkyrieDashboardProjection()
     projection.record_event(
