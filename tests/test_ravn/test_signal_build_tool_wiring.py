@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
+from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
-from ravn.cli.commands import _attach_signal_build_tool, _build_tool_build_backend
+from ravn.cli.commands import (
+    _attach_signal_build_tool,
+    _build_tool_build_backend,
+    _resolve_realm_build_config,
+)
 from ravn.config import Settings
 
 
@@ -70,6 +76,103 @@ def test_build_tool_build_backend_injects_configured_workflow_selector() -> None
     assert backend is not None
     assert backend.name == "ting_workflow"
     assert backend._workflow_selector.tags == ["tool-builder"]
+
+
+def test_build_tool_build_backend_applies_realm_selector_override() -> None:
+    configured = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+            "tool_build_kwargs": {"base_url": "http://ting"},
+            "tool_builder_workflow": {"tags": ["static-only"]},
+        }
+    )
+
+    # A realm-resolved selector overrides the static tool_builder_workflow.
+    backend = _build_tool_build_backend(
+        configured, workflow_selector={"names": ["tool-builder"]}
+    )
+
+    assert backend is not None
+    assert backend._workflow_selector.names == ["tool-builder"]
+    assert backend._workflow_selector.tags == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_realm_build_config — realm grant resolution + fallbacks
+# ---------------------------------------------------------------------------
+
+
+def _realm_settings(**overrides: Any) -> Settings:
+    base = {
+        "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+        "tool_build_kwargs": {"base_url": "http://volundr"},
+    }
+    base.update(overrides)
+    return Settings(resident_evolution=base)
+
+
+def test_resolve_realm_build_config_falls_back_when_no_realm_slug() -> None:
+    settings = _realm_settings(autonomy_mode="guarded")
+
+    resolved = _resolve_realm_build_config(settings)
+
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_uses_grant_when_present() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="guarded")
+    grant = BuildGrant(level=5, limits={"workflow": "tool-builder"}, target="t")
+
+    async def _resolve(_slug: str) -> BuildGrant:
+        return grant
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _resolve
+        resolved = _resolve_realm_build_config(settings)
+
+    # level 5 -> yolo; workflow "tool-builder" -> names selector.
+    assert resolved.autonomy_mode == "yolo"
+    assert resolved.workflow_selector == {"names": ["tool-builder"]}
+
+
+def test_resolve_realm_build_config_falls_back_when_no_grant() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="autonomous")
+
+    async def _resolve(_slug: str) -> None:
+        return None
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _resolve
+        resolved = _resolve_realm_build_config(settings)
+
+    assert resolved.autonomy_mode == "autonomous"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_falls_back_on_realm_outage() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="guarded")
+
+    async def _boom(_slug: str) -> BuildGrant:
+        raise RuntimeError("realm unreachable")
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _boom
+        resolved = _resolve_realm_build_config(settings)
+
+    # A realm outage must not brick the resident: degrade to static config.
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_falls_back_without_base_url() -> None:
+    settings = Settings(resident_evolution={"realm_slug": "payments", "autonomy_mode": "guarded"})
+
+    resolved = _resolve_realm_build_config(settings)
+
+    # No realm_api_base_url and no tool_build base_url -> static config.
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
 
 
 def test_investigation_prompt_handles_missing_and_failing_providers(tmp_path) -> None:
