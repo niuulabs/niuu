@@ -89,6 +89,14 @@ class WorkloadExchangeRequest(BaseModel):
         default_factory=list,
         description="Optional target service audiences for the exchanged token.",
     )
+    scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional least-privilege build scopes. When present, the exchanged "
+            "token is minted as a Valkyrie build credential "
+            "(token_use=valkyrie_build) bounded to the known build scopes."
+        ),
+    )
 
 
 class WorkloadPrincipalResponse(BaseModel):
@@ -188,6 +196,7 @@ def create_pats_router(
             result = await service.exchange(
                 body.token,
                 audiences=_requested_workload_audiences(body),
+                scopes=list(body.scopes),
             )
         except WorkloadIdentityError as exc:
             raise HTTPException(

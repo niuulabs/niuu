@@ -20,6 +20,10 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import (
+    VALKYRIE_BUILD_TOKEN_USE,
+    bound_build_scopes,
+)
 from niuu.ports.workload_identity import WorkloadIdentityVerifier
 from niuu.utils import import_class, resolve_secret_kwargs
 
@@ -103,12 +107,14 @@ class WorkloadIdentityService:
         token: str,
         *,
         audiences: list[str] | None = None,
+        scopes: list[str] | None = None,
     ) -> WorkloadExchangeResult:
         if not self.enabled:
             raise WorkloadIdentityError("Workload identity exchange is disabled")
         if not token.strip():
             raise WorkloadIdentityError("Missing workload token")
 
+        build_scopes = bound_build_scopes(scopes)
         last_error: Exception | None = None
         for mapping in getattr(self._config, "mappings", []) or []:
             verifier_name = getattr(mapping, "verifier", "kubernetes")
@@ -122,7 +128,12 @@ class WorkloadIdentityService:
                 last_error = exc
                 continue
             if self._matches(mapping, claims):
-                return self._issue(mapping, claims, audiences=self._resolve_audiences(audiences))
+                return self._issue(
+                    mapping,
+                    claims,
+                    audiences=self._resolve_audiences(audiences),
+                    build_scopes=build_scopes,
+                )
 
         detail = f": {last_error}" if last_error else ""
         raise WorkloadIdentityError(f"No workload identity mapping matched{detail}")
@@ -162,6 +173,7 @@ class WorkloadIdentityService:
         claims: dict[str, Any],
         *,
         audiences: list[str],
+        build_scopes: list[str] | None = None,
     ) -> WorkloadExchangeResult:
         owner_id = str(getattr(mapping, "owner_id", "") or "").strip()
         if not owner_id:
@@ -197,6 +209,10 @@ class WorkloadIdentityService:
         metadata = dict(getattr(mapping, "metadata", {}) or {})
         for key, value in metadata.items():
             payload[f"workload_{key}"] = value
+
+        if build_scopes:
+            payload["token_use"] = VALKYRIE_BUILD_TOKEN_USE
+            payload["scopes"] = list(build_scopes)
 
         token = jwt.encode(
             payload,
