@@ -77,6 +77,26 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
     def name(self) -> str:
         return "ting_workflow"
 
+    @property
+    def base_url(self) -> str:
+        """Normalized base URL the backend talks to (read-only, for diagnostics)."""
+        return self._base_url
+
+    @property
+    def client(self) -> AsyncJsonHttpClient:
+        """The authenticated HTTP client (read-only, for diagnostics)."""
+        return self._client
+
+    @property
+    def workflow_id(self) -> str:
+        """Configured workflow id, or empty when discovery via selector is used."""
+        return self._workflow_id
+
+    @property
+    def workflow_selector(self) -> WorkflowSelector:
+        """Configured workflow selector (names/tags) used to discover the builder."""
+        return self._workflow_selector
+
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
         workflow_id = await self._resolve_workflow_id()
         if not workflow_id:

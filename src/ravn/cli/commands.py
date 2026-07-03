@@ -4913,6 +4913,56 @@ def evolve_main() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tool-build doctor CLI
+# ---------------------------------------------------------------------------
+
+tool_build_app = typer.Typer(
+    name="tool-build",
+    help="Diagnose the Valkyrie tool-build path (Ting/Forge).",
+    add_completion=False,
+)
+app.add_typer(tool_build_app, name="tool-build")
+
+
+def _render_doctor_report(report: Any) -> None:
+    """Print the doctor checklist as human-readable PASS/FAIL/SKIP lines."""
+    for hop in report.hops:
+        typer.echo(f"Hop {hop.number} — {hop.title}: {hop.status.value} — {hop.reason}")
+
+
+@tool_build_app.command("doctor")
+def tool_build_doctor(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the checklist as structured JSON."
+    ),
+) -> None:
+    """Diagnose the Valkyrie -> Ting/Forge tool-build path hop by hop.
+
+    Runs READ-ONLY probes only — it never launches an actual build. Each hop
+    reports PASS/FAIL/SKIP with a one-line reason so a misconfiguration
+    surfaces precisely instead of as a vague ToolBuildError inside a poll loop.
+
+    Exits non-zero when any hop fails.
+    """
+    from ravn.valkyrie_evolution.tool_build_doctor import diagnose_tool_build  # noqa: PLC0415
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    report = asyncio.run(diagnose_tool_build(settings))
+
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        _render_doctor_report(report)
+
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Mímir CLI
 # ---------------------------------------------------------------------------
 

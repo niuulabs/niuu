@@ -67,6 +67,16 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
     def name(self) -> str:
         return "forge_session"
 
+    @property
+    def base_url(self) -> str:
+        """Normalized base URL the backend talks to (read-only, for diagnostics)."""
+        return self._base_url
+
+    @property
+    def client(self) -> AsyncJsonHttpClient:
+        """The authenticated HTTP client (read-only, for diagnostics)."""
+        return self._client
+
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
         system_prompt, initial_prompt = build_prompts(request)
         session = await self._create_session(request, system_prompt, initial_prompt)
