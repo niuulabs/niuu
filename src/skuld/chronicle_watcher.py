@@ -6,6 +6,29 @@ and feeds parsed timeline events to the Volundr chronicles API.
 
 Designed to run as an asyncio task inside skuld's broker, sharing the same
 event loop and HTTP client pattern.
+
+DISPOSITION (SRD FR-10 — see ``docs/forge-chronicle-vs-event-log.md``):
+this watcher produces a DERIVED, NON-AUTHORITATIVE UI timeline aggregate.
+It is NOT a source of truth. The single source of truth for the transcript
+is ``session_event_log`` (folded by the shared reducer / transcript rebuild).
+
+Properties that follow from that disposition:
+
+  * **Claude-CLI-only.** ``EventMapper`` keys on Anthropic on-disk JSONL
+    shapes. For Codex / Grok / OpenCode (and any non-Claude transport) no
+    ``.jsonl`` is written, so the chronicle is LEGITIMATELY EMPTY. That is
+    expected, not a defect.
+  * **Lossy.** Only a curated subset of events is summarised onto the
+    timeline; it is a UI convenience view, not a complete record.
+  * **May drift.** Because it is a second, separately-tailed pipeline it can
+    lag or diverge from the canonical log; the canonical transcript never
+    reconciles against it.
+
+Consumers MUST NOT treat the chronicle as the transcript. The canonical
+transcript (durable log -> reduce / get_transcript) must NEVER depend on the
+chronicle. (A future option is to re-derive the chronicle from the canonical
+``_handle_cli_event`` stream so it covers every transport; that is noted in
+the doc but not done here.)
 """
 
 from __future__ import annotations

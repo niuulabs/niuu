@@ -17,13 +17,17 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import time
 import uuid
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from niuu.build_info import build_info
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_claude_mcp_config
@@ -33,6 +37,31 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 logger = logging.getLogger("skuld.transport")
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
+
+# Appended to Claude's system prompt for interactive (steerable) tmux sessions. The user can steer
+# this session at any time, so we ask Claude to keep its plan + in-progress work VISIBLE via
+# TodoWrite — that list is what surfaces in the client's live Plan/Agents dock and makes steering
+# legible (the user sees what's running and what's queued).
+# Toggle: SKULD__TMUX_STEERING_INSTRUCTIONS.
+_STEERING_TASK_INSTRUCTION = """\
+You are running as a long-lived, STEERABLE coding session: the user can send you new messages at \
+any time while you work, and they are inserted into your flow as you reach the next opportunity. \
+To keep that steering legible, keep your plan and in-progress work VISIBLE at all times:
+
+- Use the TodoWrite tool to maintain a live task list for any multi-step work. Add tasks as you \
+discover them, keep exactly one in_progress while you work it, and complete it before moving on. \
+This list is the user's window into what you are doing and what is queued — keep it current.
+- Decompose work into tasks that can run either serially or as parallel subagents (the Task tool). \
+Prefer subagents for independent, parallelizable work; keep dependent steps serial.
+- When a steering message arrives mid-task, fold it into the task list (a new task or an \
+adjustment) rather than silently dropping your current plan."""
+
+_PRESENT_FILE_INSTRUCTION = """\
+FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
+screenshot, chart, or build artifact), run `present-file <path> [--caption "…"] [--title "…"]`. It \
+surfaces the file in the user's app as a tappable card that opens in the file preview, and accepts \
+ANY path, including scratch files outside the workspace (e.g. /tmp). Use it for finished \
+deliverables the user would want to open — not for routine tool output or intermediate files."""
 
 _BUILT_IN_SLASH_COMMANDS = [
     {"name": "/agents", "description": "Manage agent teams and subagents"},
@@ -112,6 +141,11 @@ _OPTIONAL_HIGH_VOLUME_HOOK_EVENTS = [
 ]
 
 _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
+# A numbered selection row in an interactive Claude menu, e.g. " 1. Allow" or
+# "❯ 2. Allow & don't ask again". The single source of truth for menu parsing —
+# the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
+# parses menus exactly the way the shipped transport does.
+_MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
 
 
 @dataclass
@@ -153,6 +187,7 @@ class TmuxInteractiveTransport(CLITransport):
         initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         sdk_port: int | None = None,
+        resume_session_id: str = "",
         turn_idle_timeout_s: float | None = None,
         turn_no_output_timeout_s: float | None = None,
         turn_max_seconds: float | None = None,
@@ -170,6 +205,11 @@ class TmuxInteractiveTransport(CLITransport):
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._sdk_port = sdk_port
+        # Resume-aware restart: a restart is a FRESH tmux launching ``claude --resume <id>``
+        # (start() never resurrects the old tmux), so the fresh launch re-writes the CURRENT
+        # broker port into the hook settings — avoiding the stale-port fragility of reviving an
+        # old tmux. Empty -> a brand-new conversation. Wired from SkuldSessionConfig by the broker.
+        self._resume_session_id = (resume_session_id or "").strip() or None
 
         self._session_name = self._safe_name(f"skuld-{self._forge_session_id}")[:80]
         base_socket_dir = Path(
@@ -194,9 +234,55 @@ class TmuxInteractiveTransport(CLITransport):
         self._pane_poll_interval_s = self._float_env(
             "SKULD__TMUX_PANE_POLL_INTERVAL_SECONDS", pane_poll_interval_s, 1.0
         )
+        # E3 race fix: a structured answer can arrive BEFORE the on-screen menu has
+        # rendered. Bound-poll the live menu for up to this many seconds (in
+        # _pane_poll_interval_s steps, or a short fallback step) before pressing a
+        # key, so the chosen row's digit lands instead of the default first row.
+        self._menu_render_wait_s = self._float_env(
+            "SKULD__TMUX_MENU_RENDER_WAIT_SECONDS", None, 1.5
+        )
+        # Poll cadence while waiting for the menu to render (capped by the pane poll
+        # interval). Config-driven so there is no bare literal in the wait loop.
+        self._menu_poll_step_s = self._float_env("SKULD__TMUX_MENU_POLL_STEP_SECONDS", None, 0.1)
+        # Initial-prompt fix: the REPL isn't ready to accept input the instant the
+        # CLI is spawned — pasting the seed prompt into a still-booting Claude makes
+        # it land mid-startup (it was being parsed as a slash command). Wait for a
+        # readiness marker in the pane (bounded) before delivering the seed prompt.
+        self._repl_ready_timeout_s = self._float_env(
+            "SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", None, 12.0
+        )
+        marker_env = os.environ.get("SKULD__TMUX_REPL_READY_MARKER", "").strip()
+        self._repl_ready_markers = (
+            (marker_env,) if marker_env else ("? for shortcuts", "for shortcuts", "❯")
+        )
+        # BUG-3: hard ceiling on a single steering delivery (lock wait + paste). A prior
+        # delivery that wedged the send lock, or a hung tmux subprocess, must surface as a
+        # loud error the client can see — never a silent swallow of the user's message.
+        self._deliver_timeout_s = self._float_env("SKULD__TMUX_DELIVER_TIMEOUT_SECONDS", None, 15.0)
         self._frame_interval_s = self._float_env(
             "SKULD__TMUX_FRAME_INTERVAL_SECONDS", frame_interval_s, 0.12
         )
+        # Graceful teardown (Epic I): on stop() we SIGTERM the live ``claude`` pane process and
+        # wait up to this long for it to exit BEFORE the hard ``kill-session`` fallback. The
+        # graceful exit lets claude deregister its --remote-control session from claude.ai so a
+        # stopped session stops showing as "connected" on the phone (kill-session SIGHUPs it
+        # abruptly and it never deregisters).
+        self._graceful_term_timeout_s = self._float_env(
+            "SKULD__TMUX_GRACEFUL_TERM_TIMEOUT_SECONDS", None, 5.0
+        )
+        # Poll cadence while waiting for the SIGTERM'd pane process to exit.
+        self._graceful_term_poll_s = self._float_env(
+            "SKULD__TMUX_GRACEFUL_TERM_POLL_SECONDS", None, 0.1
+        )
+        # Stale-socket sweep (Epic I): orphaned ``{socket_dir}/*.sock`` files (and per-session
+        # dirs) whose tmux server is no longer live accumulate forever. Sweep at startup and at
+        # this interval. The interval gates a periodic re-sweep loop.
+        self._socket_sweep_interval_s = self._float_env(
+            "SKULD__TMUX_SOCKET_SWEEP_INTERVAL_SECONDS", None, 3600.0
+        )
+        self._socket_dir = base_socket_dir
+        self._runtime_root = Path(self.workspace_dir) / ".skuld" / "tmux-interactive"
+        self._sweep_task: asyncio.Task[None] | None = None
         self._emit_raw_terminal_output = self._bool_env("SKULD__TMUX_EMIT_RAW_OUTPUT", False)
         self._hook_events_enabled = self._bool_env(
             "SKULD__TMUX_HOOK_EVENTS_ENABLED",
@@ -206,17 +292,65 @@ class TmuxInteractiveTransport(CLITransport):
             "SKULD__TMUX_MESSAGE_DISPLAY_HOOK_ENABLED",
             False,
         )
+        # Remote Control (default ON): ALSO expose the live CLI on the host's claude.ai
+        # login so the same session can be driven / observed from the Anthropic apps
+        # (claude.ai/code + phone) IN PARALLEL with the Volundr/Lexi API — a stable second
+        # control plane while the native tmux path is hardened. Requires subscription auth:
+        # the API-key path can't register a session to the account (it blocks on the
+        # interactive "use this API key?" chooser), so force it off under
+        # SKULD__CLAUDE_AUTH=api_key. Toggle with SKULD__TMUX_REMOTE_CONTROL=0/1.
+        self._claude_auth_mode = (
+            os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
+        )
+        self._remote_control = (
+            self._bool_env("SKULD__TMUX_REMOTE_CONTROL", True)
+            and self._claude_auth_mode != "api_key"
+        )
+
+        # Append the steering/task-tracking guidance to Claude's system prompt (on by default) so a
+        # steerable session keeps a live TodoWrite plan the client can surface + steer against.
+        self._steering_instructions_enabled = self._bool_env(
+            "SKULD__TMUX_STEERING_INSTRUCTIONS", True
+        )
 
         self._alive = False
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        # Correlation FIFO of (msg_id, request_id, normalized_text) for each user
+        # message pasted into the pane but not yet seen consumed by Claude. A steered
+        # message lands in the CLI's own input queue and is inserted "at the right
+        # moment"; the UserPromptSubmit hook is the genuine "Claude took this prompt
+        # into its flow" signal. We pop the matching entry there and stamp its msg_id
+        # onto terminal_prompt_submitted so the client can flip THAT specific steering
+        # bubble from "pending" to "active". Bounded so an unmatched entry can't leak.
+        self._pending_prompt_correlations: deque[tuple[str | None, str | None, str]] = deque(
+            maxlen=32
+        )
+        # Agents in flight, keyed by a resolved id (tool_use_id for Task-tool
+        # subagents, subagent_id for SubagentStart, etc.). Lets the matching
+        # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
+        # Task and Subagent* signals for the same agent merge instead of duplicate.
+        self._hook_agents: dict[str, dict[str, Any]] = {}
+        # Ordered stack of in-flight Task-subagent ids (the Task tool_use_id). A Task tool
+        # BLOCKS its parent, so every NON-Task tool hook between a Task PreToolUse and that
+        # Task's PostToolUse belongs to the subagent on top. Push in
+        # _surface_agent_started_from_task, pop in _emit_tool_result_from_hook. Single-subagent
+        # is exact (LIFO top); parallel Task calls are a KNOWN GAP (flat hooks can't disambiguate).
+        self._active_subagent_stack: list[str] = []
         self._panes: dict[str, _PaneState] = {}
         self._tail_tasks: dict[str, asyncio.Task[None]] = {}
         self._frame_tasks: dict[str, asyncio.Task[None]] = {}
         self._last_frame_signature: dict[str, str] = {}
         self._pane_sequences: dict[str, int] = {}
         self._pane_watcher_task: asyncio.Task[None] | None = None
+        # CLI-mode questions bridge (2026-06-21): the interactive Claude CLI renders permission
+        # gates + AskUserQuestion menus in the TTY (not the SDK's structured ask_user_question).
+        # This map mirrors the SDK's `_pending_questions` (request_id -> pending prompt) so a remote
+        # client can answer structurally; we translate the choice back into pane keystrokes. Popped
+        # on answer; cleared when the turn finishes.
+        self._pending_tty_prompts: dict[str, dict[str, Any]] = {}
+        self._tty_question_seq = 0
         self._last_result: dict | None = None
         self._slash_commands_cache = self._normalize_slash_command_items(
             _BUILT_IN_SLASH_COMMANDS,
@@ -229,6 +363,9 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_stream_started = False
         self._turn_buffer: list[str] = []
         self._turn_last_clean_text = ""
+        # BUG-2: the prompt text delivered this turn, for a best-effort input-token estimate
+        # in the synthesized result frame (so completed tmux turns advance message_count).
+        self._turn_prompt_text = ""
         self._turn_done: asyncio.Event | None = None
         self._turn_watchdog_task: asyncio.Task[None] | None = None
 
@@ -238,6 +375,11 @@ class TmuxInteractiveTransport(CLITransport):
             interrupt=True,
             slash_commands=True,
             steer=True,
+            # The interactive CLI inserts queued input at the right moment, so a
+            # new message is delivered by typing it into the live pane — never by
+            # stopping and restarting the turn. The broker routes EVERY message
+            # (mid-turn or idle) through the steer path for native transports.
+            steering_mode="native",
             terminal_output=True,
             terminal_input=True,
             terminal_keys=True,
@@ -267,10 +409,32 @@ class TmuxInteractiveTransport(CLITransport):
         if self._initial_prompt and not self._initial_prompt_sent:
             self._initial_prompt_sent = True
             try:
+                await self._wait_for_repl_ready()
                 await self.send_message(self._initial_prompt)
             except Exception:
                 self._initial_prompt_sent = False
                 raise
+
+    async def _capture_pane_text(self, pane_id: str | None = None) -> str:
+        target = self._target_pane(pane_id)
+        try:
+            result = await self._run_tmux("capture-pane", "-t", target, "-p")
+        except Exception:  # pragma: no cover - capture is best-effort
+            return ""
+        return result.stdout or ""
+
+    def _repl_looks_ready(self, text: str) -> bool:
+        return any(marker and marker in text for marker in self._repl_ready_markers)
+
+    async def _wait_for_repl_ready(self) -> None:
+        """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
+        prompt isn't pasted into a still-booting REPL. Best-effort: returns after the
+        timeout even if no marker appears, so a marker change never wedges startup."""
+        deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
+        while time.monotonic() < deadline:
+            if self._repl_looks_ready(await self._capture_pane_text()):
+                return
+            await asyncio.sleep(self._menu_poll_step_s)
 
     async def _ensure_started(self) -> None:
         async with self._lifecycle_lock:
@@ -289,6 +453,11 @@ class TmuxInteractiveTransport(CLITransport):
                 self._pane_watcher_task = asyncio.create_task(
                     self._watch_panes(),
                     name=f"tmux-pane-watch-{self._session_name}",
+                )
+            if self._sweep_task is None or self._sweep_task.done():
+                self._sweep_task = asyncio.create_task(
+                    self._run_socket_sweep_loop(),
+                    name=f"tmux-socket-sweep-{self._session_name}",
                 )
             await self._emit_system_init()
 
@@ -320,36 +489,297 @@ class TmuxInteractiveTransport(CLITransport):
             self._panes.clear()
             if self._turn_done is not None:
                 self._turn_done.set()
+            if self._sweep_task is not None:
+                self._sweep_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await self._sweep_task
+                self._sweep_task = None
+            # Graceful term BEFORE the hard kill so claude can deregister its remote-control
+            # session from claude.ai (otherwise a stopped session lingers as "connected" on the
+            # phone). Best-effort: any failure falls straight through to kill-session.
+            await self._graceful_terminate_pane()
             await self._run_tmux("kill-session", "-t", self._session_name, check=False)
+            # On-disk cleanup AFTER the session is gone: unlink the socket file and remove the
+            # per-session runtime dir so neither leaks (731 stale sockets / ~10 leaked dirs in the
+            # field). Both are best-effort and tightly guarded to the expected paths.
+            self._cleanup_socket()
+            self._cleanup_runtime_dir()
 
-    async def send_message(self, content: str) -> None:
-        async with self._send_lock:
+    async def _graceful_terminate_pane(self) -> None:
+        """SIGTERM the live ``claude`` pane process and wait (bounded) for it to exit.
+
+        Only meaningful when remote-control was enabled (that is the session that must
+        deregister from claude.ai); when it wasn't, the abrupt kill-session is already clean, so
+        we skip the extra step. Fully defensive: if the pid can't be discovered or signalling
+        fails, we return and let the caller fall through to kill-session.
+        """
+        if not self._remote_control:
+            return
+        pid = await self._discover_pane_pid()
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        deadline = time.monotonic() + max(self._graceful_term_timeout_s, 0.0)
+        while time.monotonic() < deadline:
+            if not self._process_alive(pid):
+                return
+            await asyncio.sleep(max(self._graceful_term_poll_s, 0.0))
+
+    async def _discover_pane_pid(self) -> int | None:
+        """The pid of the ``claude`` process running in the session's pane, or None."""
+        try:
+            result = await self._run_tmux(
+                "list-panes", "-t", self._session_name, "-F", "#{pane_pid}", check=False
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            candidate = line.strip()
+            if candidate.isdigit():
+                return int(candidate)
+        return None
+
+    @staticmethod
+    def _process_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _cleanup_socket(self) -> None:
+        with suppress(OSError):
+            self._socket_path.unlink(missing_ok=True)
+
+    def _cleanup_runtime_dir(self) -> None:
+        """Remove the per-session runtime dir, guarded so we never rmtree something broader than
+        the expected ``<workspace>/.skuld/tmux-interactive/<session_name>`` path."""
+        runtime_dir = self._runtime_dir
+        expected = self._runtime_root / self._session_name
+        if runtime_dir != expected:
+            return
+        if runtime_dir.parent.name != "tmux-interactive":
+            return
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+    async def _run_socket_sweep_loop(self) -> None:
+        """Sweep orphaned sockets at startup, then re-sweep every interval.
+
+        Always runs against THIS transport's own socket dir / runtime root (never a broader
+        path), so a long-lived broker reaps the slow drip of stale sockets a crashed/killed
+        session leaves behind. Best-effort: a sweep failure never tears the session down.
+        """
+        try:
+            while True:
+                with suppress(Exception):
+                    await self.sweep_stale_sockets(
+                        self._socket_dir, runtime_root=self._runtime_root
+                    )
+                interval = max(self._socket_sweep_interval_s, 0.0)
+                if interval <= 0:
+                    return
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("Tmux socket sweep loop failed", exc_info=True)
+
+    async def sweep_stale_sockets(
+        self, socket_dir: Path, *, runtime_root: Path | None = None
+    ) -> list[Path]:
+        """Remove orphaned ``{socket_dir}/*.sock`` files whose tmux server is NOT live.
+
+        A socket is LIVE iff ``tmux -S <sock> has-session`` (run via _run_tmux against that
+        socket) succeeds; if it fails/errors the server is dead and the socket is unlinked.
+        Optionally removes per-session runtime dirs under ``runtime_root`` that have no live
+        socket. Pure with respect to its arguments: tests pass a TEMP dir so the real
+        ``/tmp/skuld-tmux-*`` is never touched.
+
+        Returns the list of paths removed (for assertions/observability).
+        """
+        removed: list[Path] = []
+        socket_dir = Path(socket_dir)
+        if not socket_dir.is_dir():
+            return removed
+        live_stems: set[str] = set()
+        for sock in sorted(socket_dir.glob("*.sock")):
+            if await self._socket_server_is_live(sock):
+                live_stems.add(sock.stem)
+                continue
+            with suppress(OSError):
+                sock.unlink(missing_ok=True)
+                removed.append(sock)
+        if runtime_root is None or not Path(runtime_root).is_dir():
+            return removed
+        for session_dir in sorted(Path(runtime_root).iterdir()):
+            if not session_dir.is_dir():
+                continue
+            if session_dir.name in live_stems:
+                continue
+            shutil.rmtree(session_dir, ignore_errors=True)
+            removed.append(session_dir)
+        return removed
+
+    async def _socket_server_is_live(self, socket_path: Path) -> bool:
+        """True iff a tmux server is answering on ``socket_path`` (``has-session`` succeeds)."""
+        cmd = [self._tmux_bin(), "-S", str(socket_path), "has-session"]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            returncode = await process.wait()
+        except Exception:
+            return False
+        return returncode == 0
+
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
+        """Deliver a user message by typing it into the live interactive CLI.
+
+        This is real steering: we never stop/restart the turn. The CLI queues
+        the keystrokes and inserts them at the right moment (mid-turn it steers
+        the running turn; idle it starts a fresh one). We do NOT block waiting
+        for the turn to finish — the response streams back asynchronously via
+        the pane tail / Claude hooks, and completion is detected by the
+        watchdog or the Stop hook.
+
+        ``msg_id``/``request_id`` (when supplied by the broker) are recorded so the
+        matching UserPromptSubmit hook can flip that message from pending to active.
+        """
+        await self._deliver_user_text(content, msg_id=msg_id, request_id=request_id)
+
+    async def _deliver_user_text(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
+        """Paste content into the pane and ensure a turn is being tracked.
+
+        The send lock is held only for the paste (to keep concurrent messages
+        ordered), NOT for the whole turn — so a follow-up message is never
+        blocked behind an in-flight turn the way a turn-scoped lock would do.
+
+        BUG-3: the lock acquisition AND the paste are bounded by
+        ``_deliver_timeout_s``. After a WS crash/reconnect a wedged prior delivery
+        (or a hung tmux subprocess) used to hold the lock forever, so every later
+        steering message blocked silently — the user typed and "nothing happened".
+        Now a stuck channel raises a clear error the broker turns into a
+        ``user_delivery_failed`` the client can render, instead of a silent drop.
+        """
+        preview = content.strip()[:80].replace("\n", "⏎")
+        logger.info(
+            "tmux deliver: %d chars (turn_active=%s, alive=%s, lock_held=%s): %r",
+            len(content),
+            self._turn_active,
+            self._alive,
+            self._send_lock.locked(),
+            preview,
+        )
+        try:
+            await asyncio.wait_for(self._send_lock.acquire(), timeout=self._deliver_timeout_s)
+        except TimeoutError as exc:
+            logger.error(
+                "tmux deliver: send lock held >%.0fs — a prior delivery is wedged; "
+                "message NOT delivered: %r",
+                self._deliver_timeout_s,
+                preview,
+            )
+            raise RuntimeError(
+                "steering message not delivered: the session input channel has been "
+                f"busy for >{self._deliver_timeout_s:.0f}s (prior delivery stuck)"
+            ) from exc
+        try:
             if not self.is_alive:
                 await self._ensure_started()
             if self._turn_active:
-                await self._finish_synthetic_turn(reason="superseded")
-            done = asyncio.Event()
-            self._turn_done = done
-            self._turn_active = True
-            self._turn_started_at = time.monotonic()
-            self._turn_last_output_at = None
-            self._turn_stream_started = False
-            self._turn_buffer = []
-            self._turn_last_clean_text = ""
-            self._turn_watchdog_task = asyncio.create_task(
-                self._watch_turn_completion(done),
-                name=f"tmux-turn-watch-{self._session_name}",
+                # Mid-turn steer: keep the SAME turn alive. Refresh the idle
+                # clock so the completion watchdog doesn't fire in the gap
+                # before the CLI echoes the steered input.
+                self._turn_last_output_at = time.monotonic()
+            else:
+                self._begin_turn()
+            # BUG-2: remember the prompt text for the result frame's input-token estimate
+            # (append across a mid-turn steer; _begin_turn reset it for a fresh turn).
+            self._turn_prompt_text += ("\n" if self._turn_prompt_text else "") + content
+            await asyncio.wait_for(
+                self._paste_text(content, enter=True), timeout=self._deliver_timeout_s
             )
-            try:
-                await self._paste_text(content, enter=True)
-                await done.wait()
-            finally:
-                if self._turn_watchdog_task is not None:
-                    self._turn_watchdog_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await self._turn_watchdog_task
-                    self._turn_watchdog_task = None
-                self._turn_done = None
+        except TimeoutError as exc:
+            logger.error(
+                "tmux deliver: paste into pane timed out after %.0fs: %r",
+                self._deliver_timeout_s,
+                preview,
+            )
+            raise RuntimeError(
+                f"steering message not delivered: tmux paste timed out after "
+                f"{self._deliver_timeout_s:.0f}s"
+            ) from exc
+        finally:
+            self._send_lock.release()
+        # Record the correlation only on a successful paste — the message is now in
+        # the CLI's input queue. The matching UserPromptSubmit hook pops this to stamp
+        # the originating msg_id onto the "Claude consumed it" signal.
+        self._pending_prompt_correlations.append(
+            (msg_id, request_id, self._normalize_prompt(content))
+        )
+        logger.info("tmux deliver: pasted %d chars into pane OK", len(content))
+
+    @staticmethod
+    def _normalize_prompt(text: str) -> str:
+        """Collapse whitespace so a delivered message matches the prompt Claude echoes
+        back via UserPromptSubmit (the REPL may reflow/trim it)."""
+        return " ".join(text.split())
+
+    def _match_prompt_correlation(self, prompt: str) -> tuple[str | None, str | None]:
+        """Pop the delivered-message correlation whose text matches this submitted
+        prompt and return its (msg_id, request_id). Returns (None, None) without
+        consuming anything when there's no match (a prompt we didn't originate, e.g.
+        a slash command typed directly in the pane), so ids are never mis-attributed."""
+        target = self._normalize_prompt(prompt)
+        if not target:
+            return None, None
+        for i, (msg_id, request_id, norm) in enumerate(self._pending_prompt_correlations):
+            if norm == target:
+                del self._pending_prompt_correlations[i]
+                return msg_id, request_id
+        return None, None
+
+    def _begin_turn(self) -> None:
+        """Start tracking a new turn so its output streams and completion fires.
+
+        Used by both a fresh message and the first message of an idle session.
+        Does NOT finish any prior turn — delivery is non-disruptive.
+        """
+        self._turn_done = asyncio.Event()
+        self._turn_active = True
+        self._turn_started_at = time.monotonic()
+        self._turn_last_output_at = None
+        self._turn_stream_started = False
+        self._turn_buffer = []
+        self._turn_last_clean_text = ""
+        self._turn_prompt_text = ""
+        # The watchdog captures the `_turn_done` Event it was started with. A fresh
+        # turn always gets a freshly-created Event (above), so we MUST bind a live
+        # watchdog to it — otherwise the new turn never closes. Cancel any prior
+        # watchdog: if it already finished (or signalled the previous turn but is
+        # still mid-sleep), reusing it would leave the new Event with no watcher.
+        prior = self._turn_watchdog_task
+        if prior is not None and not prior.done():
+            prior.cancel()
+        self._turn_watchdog_task = asyncio.create_task(
+            self._watch_turn_completion(self._turn_done),
+            name=f"tmux-turn-watch-{self._session_name}",
+        )
 
     async def interrupt(self) -> None:
         await self.send_control("interrupt")
@@ -362,6 +792,17 @@ class TmuxInteractiveTransport(CLITransport):
             await self._send_key("C-c", pane_id=self._coerce_str(kwargs.get("pane_id")))
             if self._turn_active:
                 await self._finish_synthetic_turn(reason="interrupted", is_error=True)
+            return
+
+        if subtype == "ask_user_answer":
+            # CLI-mode questions bridge: a remote client answered a TTY permission/question we
+            # surfaced as a structured `ask_user_question`. Translate the choice back into the pane
+            # (digit for the matched menu row; Escape to deny). See `_answer_tty_prompt`.
+            await self._answer_tty_prompt(
+                self._coerce_str(kwargs.get("request_id")),
+                kwargs.get("answers"),
+                pane_id=self._coerce_str(kwargs.get("pane_id")),
+            )
             return
 
         if subtype in {"terminal_input", "input"}:
@@ -412,7 +853,13 @@ class TmuxInteractiveTransport(CLITransport):
         if subtype in {"redirect", "steer"}:
             content = self._coerce_str(kwargs.get("content"))
             if content:
-                await self._paste_text(content, enter=True)
+                # Same native delivery as a regular message: type it into the
+                # live CLI and ensure the turn is tracked so the reply streams.
+                await self._deliver_user_text(
+                    content,
+                    msg_id=self._coerce_str(kwargs.get("msg_id")) or None,
+                    request_id=self._coerce_str(kwargs.get("request_id")) or None,
+                )
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
         """Discover slash commands from Claude Code's live `/` autocomplete menu."""
@@ -470,16 +917,23 @@ class TmuxInteractiveTransport(CLITransport):
         if event_name == "UserPromptSubmit":
             self._mark_semantic_turn_started()
             prompt = payload.get("prompt")
-            await self._emit(
-                {
-                    "type": "terminal_prompt_submitted",
-                    "event_type": "claude.prompt.submitted",
-                    "prompt": prompt if isinstance(prompt, str) else "",
-                    "claude_session_id": payload.get("session_id"),
-                    "transcript_path": payload.get("transcript_path"),
-                    "metadata": {"source": "claude_hook"},
-                }
-            )
+            prompt_str = prompt if isinstance(prompt, str) else ""
+            # Claude just took a user prompt into its flow. Correlate it back to the
+            # message we pasted so the client can flip THAT steering bubble to active.
+            msg_id, request_id = self._match_prompt_correlation(prompt_str)
+            event: dict[str, Any] = {
+                "type": "terminal_prompt_submitted",
+                "event_type": "claude.prompt.submitted",
+                "prompt": prompt_str,
+                "claude_session_id": payload.get("session_id"),
+                "transcript_path": payload.get("transcript_path"),
+                "metadata": {"source": "claude_hook"},
+            }
+            if msg_id:
+                event["msg_id"] = msg_id
+            if request_id:
+                event["request_id"] = request_id
+            await self._emit(event)
             return True
 
         if event_name == "PreToolUse":
@@ -496,6 +950,14 @@ class TmuxInteractiveTransport(CLITransport):
 
         if event_name == "PermissionRequest":
             await self._emit_permission_request_from_hook(payload)
+            return True
+
+        if event_name == "SubagentStart":
+            await self._surface_subagent_start(payload)
+            return True
+
+        if event_name == "SubagentStop":
+            await self._surface_subagent_stop(payload)
             return True
 
         if event_name == "Stop":
@@ -544,20 +1006,46 @@ class TmuxInteractiveTransport(CLITransport):
         if not tool_name:
             return
         tool_input = payload.get("tool_input")
+        # CLI-mode questions bridge: the AskUserQuestion tool renders its menu in the TTY. Surface
+        # it as a structured `ask_user_question` (its tool_input already carries the questions iOS
+        # parses) so a remote client can answer; the tool_use is still emitted below for history.
+        if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
+            await self._surface_tty_ask_user_question(tool_input)
         tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
+        # Parent attribution: a NON-Task tool firing while a Task subagent is in flight belongs
+        # to that subagent (stack top). The Task tool's OWN tool_use is a main-agent action ->
+        # parent stays None. Computed BEFORE the Task push below so a Task never self-references.
+        parent_id = (
+            self._coerce_str(payload.get("parent_tool_use_id"))
+            or self._coerce_str(payload.get("parentToolUseId"))
+            or None
+        )
+        if parent_id is None and tool_name != "Task" and self._active_subagent_stack:
+            parent_id = self._active_subagent_stack[-1]
+        # Plan surfacing: TodoWrite carries Claude's full task list each call.
+        if tool_name == "TodoWrite" and isinstance(tool_input, dict):
+            await self._surface_plan_from_todowrite(tool_input)
+        # Agents surfacing: the Task tool spawns a subagent. Register it by
+        # tool_use_id so the matching PostToolUse can mark it stopped.
+        if tool_name == "Task" and isinstance(tool_input, dict):
+            await self._surface_agent_started_from_task(tool_use_id, tool_input)
+        tool_use_block: dict[str, Any] = {
+            "type": "tool_use",
+            "id": tool_use_id,
+            "name": tool_name,
+            "input": tool_input if isinstance(tool_input, dict) else {},
+        }
+        # Subagent attribution — added ONLY when a Task subagent is in flight, so a main-agent
+        # tool frame stays byte-identical to before (absent keys decode as nil on iOS).
+        if parent_id is not None:
+            tool_use_block["parent_tool_use_id"] = parent_id
+            tool_use_block["agent_id"] = parent_id
         await self._emit(
             {
                 "type": "assistant",
                 "message": {
                     "model": self._model or "interactive",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": tool_use_id,
-                            "name": tool_name,
-                            "input": tool_input if isinstance(tool_input, dict) else {},
-                        }
-                    ],
+                    "content": [tool_use_block],
                 },
                 "metadata": {
                     "source": "claude_hook",
@@ -577,22 +1065,43 @@ class TmuxInteractiveTransport(CLITransport):
         tool_use_id = self._coerce_str(payload.get("tool_use_id"))
         if not tool_use_id:
             return
+        # Parent attribution: compute BEFORE popping so the Task's OWN result carries parent=None
+        # (a main-agent action) while a child result nests under the stack top.
+        is_task_result = tool_use_id in self._hook_agents
+        parent_id = (
+            self._coerce_str(payload.get("parent_tool_use_id"))
+            or self._coerce_str(payload.get("parentToolUseId"))
+            or None
+        )
+        if parent_id is None and not is_task_result and self._active_subagent_stack:
+            parent_id = self._active_subagent_stack[-1]
+        # Agents surfacing: a finished Task tool means its subagent stopped — pop it off the
+        # active-subagent stack so subsequent main-agent tools de-attribute. list.remove (not
+        # pop()) tolerates an out-of-LIFO-order Task completion.
+        if is_task_result:
+            await self._finish_agent(tool_use_id, is_error=is_error)
+            try:
+                self._active_subagent_stack.remove(tool_use_id)
+            except ValueError:
+                pass
         result = payload.get("tool_response")
         if result is None:
             result = payload.get("error", "")
+        tool_result_block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": self._stringify_hook_value(result),
+            "is_error": is_error,
+        }
+        # Subagent attribution — added ONLY when this result belongs to a Task subagent, so a
+        # main-agent result frame stays byte-identical to before.
+        if parent_id is not None:
+            tool_result_block["parent_tool_use_id"] = parent_id
+            tool_result_block["agent_id"] = parent_id
         await self._emit(
             {
                 "type": "user",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": self._stringify_hook_value(result),
-                            "is_error": is_error,
-                        }
-                    ]
-                },
+                "message": {"content": [tool_result_block]},
                 "metadata": {
                     "source": "claude_hook",
                     "hook_event_name": ("PostToolUseFailure" if is_error else "PostToolUse"),
@@ -616,6 +1125,390 @@ class TmuxInteractiveTransport(CLITransport):
                 "metadata": {"source": "claude_hook"},
             }
         )
+        # CLI-mode questions bridge: ALSO surface the gate as a structured `ask_user_question` so a
+        # remote client renders its answer card + the session flips to awaiting_input. The keystroke
+        # translation on answer happens in `_answer_tty_prompt`.
+        await self._surface_tty_permission(payload)
+
+    # ──────────────────────────── Plan + running-agents surfacing ────────────────────────────
+
+    @staticmethod
+    def _normalize_status(status: object) -> str:
+        text = str(status or "").strip().lower()
+        if text in {"pending", "in_progress", "completed"}:
+            return text
+        if text in {"done", "complete", "finished"}:
+            return "completed"
+        if text in {"running", "active", "doing"}:
+            return "in_progress"
+        return text or "pending"
+
+    async def _surface_plan_from_todowrite(self, tool_input: dict[str, Any]) -> None:
+        """Emit Claude's full task list (the TodoWrite plan) as a structured `plan`."""
+        raw = tool_input.get("todos")
+        if not isinstance(raw, list):
+            return
+        tasks: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            content = self._coerce_str(item.get("content"))
+            if not content:
+                continue
+            task = {"content": content, "status": self._normalize_status(item.get("status"))}
+            active_form = self._coerce_str(item.get("activeForm"))
+            if active_form:
+                task["activeForm"] = active_form
+            tasks.append(task)
+        counts = {"total": len(tasks)}
+        for status in ("pending", "in_progress", "completed"):
+            counts[status] = sum(1 for t in tasks if t["status"] == status)
+        await self._emit(
+            {
+                "type": "plan",
+                "event_type": "claude.plan",
+                "tasks": tasks,
+                "counts": counts,
+                "metadata": {"source": "claude_hook"},
+            }
+        )
+
+    @staticmethod
+    def _resolve_agent_id(payload: dict[str, Any]) -> str:
+        """Best-available stable id for an agent across signals. Preferring
+        tool_use_id lets a SubagentStart that carries the Task's tool_use_id merge
+        with the Task entry instead of double-counting the same subagent."""
+        for key in ("tool_use_id", "subagent_id", "agent_id", "id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
+    async def _start_agent(
+        self,
+        agent_id: str,
+        *,
+        kind: str,
+        name: str,
+        description: str = "",
+        model: str = "",
+    ) -> None:
+        """Upsert an in-flight agent and emit a `started` agent_update. Re-emitting
+        for a known id merges new fields (e.g. SubagentStart enriching a Task entry)
+        — the broker registry is keyed by id, so this never duplicates."""
+        if not agent_id:
+            return
+        agent = dict(self._hook_agents.get(agent_id, {}))
+        agent.update({"id": agent_id, "kind": kind, "name": name, "status": "running"})
+        if description:
+            agent["description"] = description
+        if model:
+            agent["model"] = model
+        agent.setdefault("started_at", datetime.now(UTC).isoformat())
+        self._hook_agents[agent_id] = agent
+        await self._emit_agent_update(agent, action="started")
+
+    async def _finish_agent(self, agent_id: str, *, is_error: bool) -> None:
+        agent = self._hook_agents.pop(agent_id, None)
+        if agent is None:
+            return
+        agent = {**agent, "status": "failed" if is_error else "done"}
+        await self._emit_agent_update(agent, action="stopped")
+
+    async def _surface_agent_started_from_task(
+        self, tool_use_id: str, tool_input: dict[str, Any]
+    ) -> None:
+        """A Task-tool call spawned a subagent."""
+        name = (
+            self._coerce_str(tool_input.get("subagent_type"))
+            or self._coerce_str(tool_input.get("description"))
+            or "subagent"
+        )
+        await self._start_agent(
+            tool_use_id,
+            kind="subagent",
+            name=name,
+            description=self._coerce_str(tool_input.get("description")),
+        )
+        # Push the Task tool_use_id so subsequent NON-Task hooks (which fire while this Task
+        # blocks its parent) attribute to this subagent. Popped in _emit_tool_result_from_hook.
+        if tool_use_id and tool_use_id not in self._active_subagent_stack:
+            self._active_subagent_stack.append(tool_use_id)
+
+    async def _surface_subagent_start(self, payload: dict[str, Any]) -> None:
+        """A SubagentStart hook — Claude's purpose-built subagent-lifecycle signal.
+
+        Real Claude (validated live) sends {agent_id, agent_type, cwd, session_id,
+        transcript_path}; the id is agent_id and the name is agent_type. Other field
+        spellings are accepted defensively for forward/backward compatibility.
+        """
+        agent_id = self._resolve_agent_id(payload)
+        name = (
+            self._coerce_str(payload.get("agent_type"))
+            or self._coerce_str(payload.get("subagent_name"))
+            or self._coerce_str(payload.get("subagent_type"))
+            or self._coerce_str(payload.get("name"))
+            or "subagent"
+        )
+        await self._start_agent(
+            agent_id,
+            kind="subagent",
+            name=name,
+            description=self._coerce_str(payload.get("task")),
+            model=self._coerce_str(payload.get("model")),
+        )
+
+    async def _surface_subagent_stop(self, payload: dict[str, Any]) -> None:
+        reason = self._coerce_str(payload.get("reason")).lower()
+        is_error = reason in {"failed", "error", "interrupted"} or bool(payload.get("error"))
+        await self._finish_agent(self._resolve_agent_id(payload), is_error=is_error)
+
+    async def _emit_agent_update(self, agent: dict[str, Any], *, action: str) -> None:
+        await self._emit(
+            {
+                "type": "agent_update",
+                "event_type": "claude.agent",
+                "action": action,
+                "agent": agent,
+                "metadata": {"source": "claude_hook"},
+            }
+        )
+
+    # ──────────────────────────── CLI-mode questions bridge ────────────────────────────
+    #
+    # The interactive Claude CLI handles permission gates + AskUserQuestion IN THE TTY (a numbered
+    # selection menu — see `_is_terminal_chrome_row`: "Do you want to proceed?" + "1. ./2. ./3. .").
+    # The SDK transport emits a structured, blocking `ask_user_question` (request_id + questions)
+    # the broker turns into `awaiting_input` and iOS answers via `ask_user_answer`. We give the tmux
+    # transport PARITY with no client change: surface the TTY prompt as the SAME structured frame,
+    # then on the structured answer translate the chosen option back into pane keystrokes.
+
+    def _next_tty_request_id(self) -> str:
+        self._tty_question_seq += 1
+        return f"tty-{self._tty_question_seq}-{uuid.uuid4().hex[:8]}"
+
+    async def _surface_tty_permission(self, payload: dict[str, Any]) -> None:
+        """Surface a Claude-CLI permission gate as a structured `ask_user_question`.
+
+        The on-screen rows aren't reliably available yet at hook time (they render a beat later), so
+        we offer Claude's stable 3-option shape (Allow / Allow & don't ask again / Deny) and resolve
+        the actual keystroke against the LIVE menu at answer time (`_answer_tty_prompt`) — race-free
+        (the menu is on screen while the human deliberates) and tolerant of 2-row menus.
+        """
+        tool_name = self._coerce_str(payload.get("tool_name")) or "this action"
+        tool_input = payload.get("tool_input")
+        detail = self._permission_detail(tool_name, tool_input)
+        request_id = self._next_tty_request_id()
+        question = {
+            "header": tool_name,
+            "question": detail or f"Allow {tool_name}?",
+            "options": [
+                {"label": "Allow"},
+                {"label": "Allow & don't ask again"},
+                {"label": "Deny"},
+            ],
+            "multiSelect": False,
+        }
+        self._pending_tty_prompts[request_id] = {"kind": "permission", "tool_name": tool_name}
+        await self._emit_ask_user_question(request_id, [question])
+
+    async def _surface_tty_ask_user_question(self, tool_input: dict[str, Any]) -> None:
+        """Surface the AskUserQuestion tool's TTY menu as a structured `ask_user_question`.
+
+        `tool_input.questions` is already in the shape iOS parses (header/question/options), so this
+        is a pass-through; the on-screen menu mirrors those options, which `_answer_tty_prompt`
+        matches by label at answer time.
+        """
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return
+        request_id = self._next_tty_request_id()
+        self._pending_tty_prompts[request_id] = {"kind": "question", "questions": questions}
+        await self._emit_ask_user_question(request_id, questions)
+
+    async def _emit_ask_user_question(self, request_id: str, questions: list) -> None:
+        # `event_type` makes the broker flip to awaiting_input (its event_type=="ask_user_question"
+        # branch); `type` is what the iOS client switches on (its frame arm). Carry both.
+        await self._emit(
+            {
+                "type": "ask_user_question",
+                "event_type": "ask_user_question",
+                "request_id": request_id,
+                "tool_use_id": request_id,
+                "questions": questions,
+                "metadata": {"source": "tmux_tty_bridge"},
+            }
+        )
+
+    @staticmethod
+    def _permission_detail(tool_name: str, tool_input: object) -> str:
+        """A short human prompt for a gate, e.g. 'Run `npm test`?' / 'Allow Edit on src/app.py?'."""
+        if not isinstance(tool_input, dict):
+            return f"Allow {tool_name}?"
+        if tool_name == "Bash":
+            cmd = str(tool_input.get("command") or "").strip()
+            return f"Run `{cmd}`?" if cmd else "Run this command?"
+        for key in ("file_path", "path", "url", "pattern"):
+            val = str(tool_input.get(key) or "").strip()
+            if val:
+                return f"Allow {tool_name} on {val}?"
+        return f"Allow {tool_name}?"
+
+    async def _answer_tty_prompt(
+        self, request_id: str | None, answers: object, *, pane_id: str | None = None
+    ) -> None:
+        """Translate a structured `ask_user_answer` into the keystroke that drives the TTY menu.
+
+        Robust by design: DENY is always `Escape` (cancels any menu shape); ALLOW/option selection
+        reads the LIVE numbered menu and presses the matched row's digit (race-free, and tolerant of
+        2- vs 3-row menus). For the AskUserQuestion tool we confirm the digit with Enter (its
+        select-list needs it); a permission gate acts on the digit alone.
+        """
+        pending = self._pending_tty_prompts.pop(request_id, None) if request_id else None
+        if pending is None:
+            # Stale/unknown id (e.g. answered in-terminal). If exactly one prompt is pending, answer
+            # that; otherwise no-op rather than guess.
+            if len(self._pending_tty_prompts) == 1:
+                request_id, pending = self._pending_tty_prompts.popitem()
+            else:
+                return
+
+        chosen = self._first_answer_text(answers)
+        kind = pending.get("kind")
+
+        if kind == "permission" and self._is_deny_answer(chosen):
+            await self._send_key("Escape", pane_id=pane_id)
+            await self._emit_ask_user_resolved(request_id, "deny")
+            return
+
+        rows = await self._capture_menu_rows_wait(pane_id=pane_id)
+        digit = self._match_menu_digit(chosen, rows)
+        if digit is None:
+            # No matching numbered row. The affirmative row is the highlighted default, so Enter
+            # accepts it; for a question fall back to the first option then confirm.
+            if kind == "permission":
+                await self._send_key("Enter", pane_id=pane_id)
+            else:
+                await self._send_key("1", pane_id=pane_id)
+                await self._send_key("Enter", pane_id=pane_id)
+        else:
+            await self._send_key(str(digit), pane_id=pane_id)
+            if kind == "question":
+                await self._send_key("Enter", pane_id=pane_id)
+        await self._emit_ask_user_resolved(request_id, chosen or "answered")
+
+    async def _capture_menu_rows_wait(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
+        """Capture the numbered menu, bound-polling until it renders (E3 race fix).
+
+        A structured answer can arrive before the on-screen menu has drawn. Poll the
+        live pane for up to ``_menu_render_wait_s`` (in short steps) and return as soon
+        as rows appear, so the chosen row's digit lands instead of the default first
+        row. Falls back to whatever is on screen (possibly empty) if it never renders.
+        """
+        deadline = time.monotonic() + max(self._menu_render_wait_s, 0.0)
+        step = (
+            min(self._pane_poll_interval_s, self._menu_poll_step_s)
+            if self._pane_poll_interval_s > 0
+            else self._menu_poll_step_s
+        )
+        while True:
+            rows = await self._capture_menu_rows(pane_id=pane_id)
+            if rows:
+                return rows
+            if time.monotonic() >= deadline:
+                return rows
+            await asyncio.sleep(step)
+
+    async def _capture_menu_rows(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
+        """Numbered option rows currently on screen, e.g. [(1,'Yes'), (2,'…ask'), (3,'No')]."""
+        target = self._target_pane(pane_id)
+        try:
+            result = await self._run_tmux("capture-pane", "-t", target, "-p", "-S", "-50")
+        except Exception:  # pragma: no cover - capture is best-effort
+            return []
+        out: list[tuple[int, str]] = []
+        seen: set[int] = set()
+        for line in result.stdout.splitlines():
+            match = _MENU_ROW_RE.match(line)
+            if match:
+                digit = int(match.group(1))
+                if digit not in seen:
+                    seen.add(digit)
+                    out.append((digit, match.group(2).strip()))
+        return sorted(out)
+
+    @staticmethod
+    def _match_menu_digit(chosen: str, rows: list[tuple[int, str]]) -> int | None:
+        """Map the chosen option label to its on-screen menu digit, or None if no clear match."""
+        low = chosen.strip().lower()
+        if not low or not rows:
+            return None
+        # 1a) EXACT label match over ALL rows first — a verbatim choice must win
+        # over any shorter substring row. Without this exact-first pass, choosing
+        # "Allow & don't ask again" would be captured by row "Allow" via the
+        # substring test below and silently downgraded to a one-time allow.
+        for digit, label in rows:
+            if low == label.lower():
+                return digit
+        # 1b) substring match (one label contains the other), in row order.
+        for digit, label in rows:
+            ll = label.lower()
+            if low in ll or ll in low:
+                return digit
+        # 2) "allow & don't ask again" / "always" → the persistent-allow row.
+        if "don't ask" in low or "always" in low:
+            for digit, label in rows:
+                if "don't ask" in label.lower() or "always" in label.lower():
+                    return digit
+        # 3) plain "allow"/"yes" → the first (affirmative) row.
+        if low.startswith(("allow", "yes")):
+            return rows[0][0]
+        # 4) "deny"/"no" → a row that reads as the negative.
+        if low.startswith(("deny", "no")):
+            for digit, label in rows:
+                if label.lower().startswith("no"):
+                    return digit
+        return None
+
+    @staticmethod
+    def _is_deny_answer(chosen: str) -> bool:
+        low = chosen.strip().lower()
+        return low.startswith(("deny", "no"))
+
+    @staticmethod
+    def _first_answer_text(answers: object) -> str:
+        if isinstance(answers, list) and answers:
+            first = answers[0]
+            if isinstance(first, dict):
+                ans = first.get("answer")
+                if isinstance(ans, list):
+                    return str(ans[0]) if ans else ""
+                return str(ans) if ans is not None else ""
+            return str(first)
+        if isinstance(answers, str):
+            return answers
+        return ""
+
+    async def _emit_ask_user_resolved(self, request_id: str | None, decision: str) -> None:
+        await self._emit(
+            {
+                "type": "ask_user_resolved",
+                "event_type": "ask_user.resolved",
+                "request_id": request_id or "",
+                "decision": decision,
+                "metadata": {"source": "tmux_tty_bridge"},
+            }
+        )
+
+    async def _clear_pending_tty_prompts(self, reason: str) -> None:
+        """Resolve + drop any unanswered TTY prompts (turn ended / answered in-terminal) so a remote
+        client dismisses its stale card instead of stranding it."""
+        if not self._pending_tty_prompts:
+            return
+        stale = list(self._pending_tty_prompts.keys())
+        self._pending_tty_prompts.clear()
+        for request_id in stale:
+            await self._emit_ask_user_resolved(request_id, reason)
 
     async def _finish_hook_turn(
         self,
@@ -641,11 +1534,23 @@ class TmuxInteractiveTransport(CLITransport):
             "result": content,
             "is_error": is_error,
             "stop_reason": reason,
-            "modelUsage": {},
+            # BUG-2: estimate usage for a completed hook turn so message_count advances;
+            # empty content keeps {} (no phantom +1).
+            "modelUsage": (
+                self._estimate_model_usage(
+                    in_chars=len(self._turn_prompt_text),
+                    out_chars=len(content),
+                )
+                if content
+                else {}
+            ),
             "metadata": {"source": "claude_hook"},
         }
         self._last_result = result
         await self._emit(result)
+        # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
+        # remote client dismisses its card rather than stranding it.
+        await self._clear_pending_tty_prompts("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
@@ -695,17 +1600,49 @@ class TmuxInteractiveTransport(CLITransport):
         cmd = ["claude"]
         if self._model:
             cmd.extend(["--model", self._model])
+        if self._resume_session_id:
+            # Resume-aware restart: a fresh tmux launching ``claude --resume <id>`` replays the
+            # prior conversation while re-writing the CURRENT broker port into the hook settings
+            # (start() never resurrects an old tmux, so there is no stale-port baking).
+            cmd.extend(["--resume", self._resume_session_id])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", _DEFAULT_PERMISSION_MODE])
+        if self._remote_control:
+            rc_name = self._remote_control_name()
+            cmd.extend(["--remote-control", rc_name])
+            logger.info(
+                "tmux: Remote Control enabled (name=%s) — session is also drivable from "
+                "claude.ai/code + phone in parallel with the Volundr API",
+                rc_name,
+            )
         if self._hook_events_enabled and self._sdk_port:
             cmd.extend(["--settings", str(self._hook_settings_path)])
-        if self._system_prompt:
-            cmd.extend(["--append-system-prompt", self._system_prompt])
+        appended_system_prompt = self._composed_system_prompt()
+        if appended_system_prompt:
+            cmd.extend(["--append-system-prompt", appended_system_prompt])
         if self._mcp_config:
             cmd.extend(["--mcp-config", self._mcp_config])
         if self._agent_teams:
             cmd.extend(["--teammate-mode", "tmux"])
         return cmd
+
+    def _composed_system_prompt(self) -> str:
+        """The text appended via --append-system-prompt: the steering/task-tracking guidance (when
+        enabled) followed by any session-supplied system prompt. Either part may be empty."""
+        parts: list[str] = []
+        if self._steering_instructions_enabled:
+            parts.append(_STEERING_TASK_INSTRUCTION)
+        # Always advertise the present-file capability so any Forge agent can hand the user a file.
+        parts.append(_PRESENT_FILE_INSTRUCTION)
+        if self._system_prompt:
+            parts.append(self._system_prompt)
+        return "\n\n".join(parts)
+
+    def _remote_control_name(self) -> str:
+        """Label shown in the claude.ai/code + phone session list. Prefer the friendly
+        Forge session name the broker exports; fall back to the session id."""
+        raw = os.environ.get("SKULD__SESSION__NAME", "").strip() or self._forge_session_id
+        return self._safe_name(raw)[:60]
 
     def _write_hook_settings(self) -> None:
         if not self._hook_events_enabled or not self._sdk_port:
@@ -736,6 +1673,10 @@ class TmuxInteractiveTransport(CLITransport):
             mcp_servers=self._raw_mcp_servers,
         )
         env.update(shim_env)
+        # The present-file shim POSTs here (broker app == sdk_port). Set for every engine so the
+        # `present-file` command works in both claude and codex tmux sessions.
+        if self._sdk_port:
+            env["FORGE_PRESENT_FILE_URL"] = f"http://127.0.0.1:{self._sdk_port}/api/present-file"
         return env
 
     async def _emit_system_init(self) -> None:
@@ -745,6 +1686,7 @@ class TmuxInteractiveTransport(CLITransport):
                 "subtype": "init",
                 "session_id": self._session_name,
                 "message": {"model": self._model or "interactive"},
+                "build": build_info(),
                 "slash_commands": list(_BUILT_IN_SLASH_COMMANDS),
                 "terminal": {
                     "transport": "tmux_interactive",
@@ -783,7 +1725,16 @@ class TmuxInteractiveTransport(CLITransport):
             check=False,
         )
         if result.returncode != 0:
+            # The tmux session is gone (panes can't be listed) — the CLI is dead.
+            # Emit a one-shot transport_stopped so the broker can report the
+            # ``stopped`` activity_state (clients otherwise see the last live
+            # state frozen forever). Guard on the True→False edge so the polling
+            # watcher fires it exactly once.
+            was_alive = self._alive
             self._alive = False
+            if was_alive and emit_events:
+                with suppress(Exception):
+                    await self._emit({"type": "transport_stopped", "reason": "tmux_session_gone"})
             return
 
         seen: set[str] = set()
@@ -1042,6 +1993,22 @@ class TmuxInteractiveTransport(CLITransport):
         except asyncio.CancelledError:
             raise
 
+    def _estimate_model_usage(self, *, in_chars: int, out_chars: int) -> dict:
+        """BUG-2: best-effort token estimate so a COMPLETED tmux turn advances
+        ``message_count`` via the broker's ``/usage`` path (which early-returns on an empty
+        ``modelUsage``). ``outputTokens`` is the load-bearing ``> 0`` value; ``inputTokens``
+        is best-effort and never gates the ``+1``. Mirrors the Grok transport's estimate."""
+        chars_per_token = 4
+        model_id = self._model or "interactive"
+        return {
+            model_id: {
+                "inputTokens": max(1, in_chars // chars_per_token),
+                "outputTokens": max(1, out_chars // chars_per_token),
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+            }
+        }
+
     async def _finish_synthetic_turn(self, *, reason: str, is_error: bool = False) -> None:
         if not self._turn_active:
             return
@@ -1060,11 +2027,23 @@ class TmuxInteractiveTransport(CLITransport):
             "result": content,
             "is_error": is_error,
             "stop_reason": reason,
-            "modelUsage": {},
+            # BUG-2: empty content -> {} keeps _report_usage's early-return (no phantom +1);
+            # real content -> estimated usage so a completed tmux turn advances message_count.
+            "modelUsage": (
+                self._estimate_model_usage(
+                    in_chars=len(self._turn_prompt_text),
+                    out_chars=len(content),
+                )
+                if content
+                else {}
+            ),
             "metadata": {"source": "tmux_interactive"},
         }
         self._last_result = result
         await self._emit(result)
+        # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
+        # remote client dismisses its card rather than stranding it.
+        await self._clear_pending_tty_prompts("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
@@ -1154,6 +2133,11 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
     async def _discover_slash_commands_from_terminal(self) -> list[dict]:
+        # Never type the discovery probe (Escape / C-u / "/" / many Down keys) into a
+        # still-booting Claude REPL — that corrupts the fresh session (garbled startup,
+        # swallowed initial messages). Wait (bounded, best-effort) for the input prompt
+        # to render first, exactly like the seed-prompt delivery does.
+        await self._wait_for_repl_ready()
         target = self._target_pane(None)
         captures: list[str] = []
         try:

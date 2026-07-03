@@ -55,14 +55,49 @@ class TestEnqueue:
         b._enqueue_event_log({"type": "assistant"})
         assert b._event_log_buffer == []
 
-    def test_overflow_drops_oldest(self, tmp_path):
+    def test_overflow_drops_oldest_and_inserts_gap_sentinel(self, tmp_path):
         b = _broker(tmp_path, event_log_max_buffer=3)
         for i in range(5):
             b._enqueue_event_log({"type": "content_block_delta", "i": i})
 
-        # only the newest 3 survive, but seq keeps climbing (never reused)
-        assert len(b._event_log_buffer) == 3
-        assert [e["seq"] for e in b._event_log_buffer] == [3, 4, 5]
+        # INV-2: a dropped-oldest window leaves a DETECTABLE sentinel, never a
+        # silent hole. The newest 3 survive; seq keeps climbing (never reused);
+        # a log_gap sentinel rides at the front recording what was dropped.
+        kinds = [e["kind"] for e in b._event_log_buffer]
+        assert kinds[0] == "log_gap"
+        gap = b._event_log_buffer[0]
+        assert gap["payload"]["dropped"] >= 1
+        assert gap["payload"]["reason"] == "buffer_overflow"
+        assert gap["payload"]["first_seq"] == gap["seq"]
+        # surviving real frames keep their monotonic seq (the sentinel + 3 real)
+        survivors = [e for e in b._event_log_buffer if e["kind"] != "log_gap"]
+        assert [e["seq"] for e in survivors] == [3, 4, 5]
+        assert gap["payload"]["first_seq"] == 1
+
+    def test_sustained_overflow_sentinel_reports_true_hole_size(self, tmp_path):
+        # M-4: under SUSTAINED overflow a prior sentinel is itself re-dropped. If it were
+        # counted as one frame the reported `dropped` would under-report the true hole — only
+        # the latest slice — so the gap silently shrinks. Folding its accumulated count back in
+        # keeps `dropped` == the full cumulative hole (== last_seq - first_seq + 1).
+        b = _broker(tmp_path, event_log_max_buffer=3)
+        n = 50
+        for i in range(n):
+            b._enqueue_event_log({"type": "content_block_delta", "i": i})
+
+        gaps = [e for e in b._event_log_buffer if e["kind"] == "log_gap"]
+        # exactly ONE sentinel survives (the prior one is always folded into the new one)
+        assert len(gaps) == 1
+        gap = gaps[0]
+        survivors = [e for e in b._event_log_buffer if e["kind"] != "log_gap"]
+        # the newest 3 real frames survive; everything older is one cumulative hole
+        assert [e["seq"] for e in survivors] == [n - 2, n - 1, n]
+        # the TRUE hole is the whole covered range, not just the most recent slice
+        assert gap["payload"]["first_seq"] == 1
+        assert gap["payload"]["last_seq"] == n - 3
+        true_hole = gap["payload"]["last_seq"] - gap["payload"]["first_seq"] + 1
+        assert gap["payload"]["dropped"] == true_hole
+        assert gap["payload"]["dropped"] == n - 3
+        assert gap["seq"] == gap["payload"]["first_seq"]
 
     def test_append_turn_mirrors_conversation_turn_to_event_log(self, tmp_path):
         b = _broker(tmp_path)

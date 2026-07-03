@@ -21,4 +21,3 @@ class WorkloadIdentityVerifier(ABC):
     @abstractmethod
     async def verify(self, token: str) -> dict[str, Any]:
         """Verify *token* and return trusted claims."""
-

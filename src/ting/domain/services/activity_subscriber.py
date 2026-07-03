@@ -588,8 +588,7 @@ class SessionActivitySubscriber:
         await self._workflow_campaign_repo.save_campaign(
             replace(
                 campaign,
-                active_stage_id=str(gate.get("node_id") or campaign.active_stage_id or "")
-                or None,
+                active_stage_id=str(gate.get("node_id") or campaign.active_stage_id or "") or None,
                 metadata=metadata,
                 updated_at=now,
                 last_activity_at=now,

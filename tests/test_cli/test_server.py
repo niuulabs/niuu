@@ -70,6 +70,135 @@ class TestSkuldPortRegistry:
         reg = SkuldPortRegistry(state_file=state_file)
         assert reg.get_port("sess-1") == 9100
 
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_invokes_hook(self) -> None:
+        reg = SkuldPortRegistry()
+        seen: list[str] = []
+
+        async def _hook(session_id: str) -> bool:
+            seen.append(session_id)
+            return True
+
+        reg.set_reconcile_hook(_hook)
+        confirmed = await reg.reconcile_dead("sess-9")
+        assert seen == ["sess-9"]
+        # The hook confirmed dead -> reconcile_dead propagates that verdict.
+        assert confirmed is True
+
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_reports_still_running(self) -> None:
+        # M-8: a pod-authoritative hook that reports the session is still RUNNING
+        # must yield confirmed_dead=False so the caller RETAINS the port.
+        reg = SkuldPortRegistry()
+
+        async def _hook(_session_id: str) -> bool:
+            return False
+
+        reg.set_reconcile_hook(_hook)
+        assert await reg.reconcile_dead("sess-9") is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_noop_without_hook(self) -> None:
+        reg = SkuldPortRegistry()
+        # No hook registered — silent no-op, never raise, and never claim the
+        # session is dead (can't confirm without the pod-authoritative hook).
+        assert await reg.reconcile_dead("sess-9") is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_dead_swallows_hook_errors(self) -> None:
+        reg = SkuldPortRegistry()
+
+        async def _boom(_session_id: str) -> bool:
+            raise RuntimeError("reconcile failed")
+
+        reg.set_reconcile_hook(_boom)
+        # A failing hook must not propagate into the proxy close path, and an
+        # unconfirmed reconcile must NOT drop the port (returns False).
+        assert await reg.reconcile_dead("sess-9") is False
+
+
+class TestSkuldWsProxyTransientBlip:
+    """M-8: a transient broker-leg blip on a still-RUNNING pod must NOT drop the
+    registered port, while a genuinely-dead pod still unregisters + closes 4410.
+
+    Drives the real ``/s/{id}/session`` WS proxy: the browser leg accepts (port is
+    registered), but ``ws_client.connect`` raises (the broker leg blips), so the
+    ``finally`` path runs with ``connected == False``. The pod-authoritative
+    reconcile hook decides whether the port is retained or dropped.
+    """
+
+    def _proxy_app(self, reg: SkuldPortRegistry):
+        from niuu.app import build_root_app
+
+        return build_root_app(
+            registry=PluginRegistry(),
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"skuld-proxy"},
+            skuld_registry=reg,
+        )
+
+    @staticmethod
+    def _blipping_connect(*_args, **_kwargs):
+        # Simulate a transient broker-leg connect failure (the async context
+        # manager raises before yielding), so the proxy never sets connected=True.
+        raise OSError("connection refused")
+
+    def test_transient_blip_on_running_pod_retains_port(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        reg = SkuldPortRegistry()
+        reg.register("sess-live", 9100)
+
+        # Pod-authoritative hook: the pod is still RUNNING -> NOT confirmed dead.
+        async def _still_running(_session_id: str) -> bool:
+            return False
+
+        reg.set_reconcile_hook(_still_running)
+
+        app = self._proxy_app(reg)
+        client = TestClient(app)
+
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=self._blipping_connect,
+        ):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/s/sess-live/session") as ws:
+                    ws.receive_text()
+
+        # Closed deterministically with 4410 so the browser can branch/retry...
+        assert exc.value.code == 4410
+        # ...but the live port is RETAINED so the very next connect can succeed.
+        assert reg.get_port("sess-live") == 9100
+
+    def test_genuinely_dead_pod_unregisters_and_closes_4410(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        reg = SkuldPortRegistry()
+        reg.register("sess-dead", 9200)
+
+        # Pod-authoritative hook: the pod is gone -> CONFIRMED dead.
+        async def _confirmed_dead(_session_id: str) -> bool:
+            return True
+
+        reg.set_reconcile_hook(_confirmed_dead)
+
+        app = self._proxy_app(reg)
+        client = TestClient(app)
+
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=self._blipping_connect,
+        ):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/s/sess-dead/session") as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 4410
+        # Genuinely dead -> the dead port is dropped from the registry.
+        assert reg.get_port("sess-dead") is None
+
 
 class TestPluginApiAppCreation:
     def test_plugin_api_base_url_uses_configured_host(self) -> None:
@@ -422,6 +551,69 @@ class TestRootServerBuildApp:
         resp = client.get("/s/nonexistent/health")
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Session not found"
+
+    def test_skuld_ws_proxy_dead_port_reconciles_and_closes_4410(self) -> None:
+        """INV-9: connecting to a session with no live port reconciles the row
+        and closes with the deterministic 'session gone' code (4410)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+
+        reconciled: list[str] = []
+
+        async def _hook(session_id: str) -> bool:
+            reconciled.append(session_id)
+            return True
+
+        server.skuld_registry.set_reconcile_hook(_hook)
+
+        with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
+            app = server._build_app()
+        client = TestClient(app)
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/s/dead-session/session"):
+                pass
+
+        assert exc.value.code == 4410
+        assert reconciled == ["dead-session"]
+
+    def test_skuld_ws_proxy_broker_connect_failure_reconciles_and_unregisters(self) -> None:
+        """INV-9: a registered-but-dead broker port self-heals — when the
+        pod-authoritative reconcile CONFIRMS death, the stale port is dropped and
+        the socket closes 4410."""
+        from starlette.websockets import WebSocketDisconnect
+
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+        server.skuld_registry.register("sess-dead", 9100)
+
+        reconciled: list[str] = []
+
+        async def _hook(session_id: str) -> bool:
+            reconciled.append(session_id)
+            return True  # pod is genuinely gone -> confirmed dead
+
+        server.skuld_registry.set_reconcile_hook(_hook)
+
+        with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
+            app = server._build_app()
+        client = TestClient(app)
+
+        # The broker leg never connects: ws_client.connect raises immediately.
+        # accept() already happened, so the close surfaces on the next receive.
+        with patch(
+            "websockets.asyncio.client.connect",
+            side_effect=OSError("connection refused"),
+        ):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/s/sess-dead/session") as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 4410
+        assert reconciled == ["sess-dead"]
+        assert server.skuld_registry.get_port("sess-dead") is None
 
     def test_skuld_http_proxy_forwards_request(self) -> None:
         registry = PluginRegistry()

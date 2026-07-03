@@ -92,4 +92,3 @@ def _decode(value: bytes) -> str:
 
 def _first_line(value: str) -> str:
     return next((line.strip() for line in value.splitlines() if line.strip()), "")[:240]
-

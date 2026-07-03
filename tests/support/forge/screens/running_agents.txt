@@ -1,0 +1,10 @@
+  Running agents
+
+  ID    AGENT             STATUS
+  ---   ---------------   -------
+  a1    general-purpose   running
+  a2    code-reviewer     idle
+  a3    test-writer       done
+  a4    backend-architect running
+
+  3 active · 1 idle · press r to refresh

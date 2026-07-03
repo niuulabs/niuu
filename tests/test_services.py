@@ -95,6 +95,30 @@ class TestSessionServiceBroadcaster:
         assert broadcaster.session_updated_events[2].status == SessionStatus.RUNNING
 
     @pytest.mark.asyncio
+    async def test_start_session_persists_and_reuses_definition(self, service, repository):
+        """Restart parity: the session definition is persisted on first start and
+        reused on later restarts, so the session keeps its transport (e.g. Grok ACP)
+        instead of falling back to the platform default."""
+        session = await service.create_session(
+            name="Grok",
+            model="grok-build",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        # First start with an explicit definition persists it on the session.
+        await service.start_session(session.id, definition="skuldGrok")
+        await asyncio.sleep(0.5)  # let background provisioning settle
+        stored = await repository.get(session.id)
+        assert stored.session_definition == "skuldGrok"
+
+        # Stop, then restart WITHOUT a definition — the stored one must be reused.
+        await service.stop_session(session.id)
+        await service.start_session(session.id)
+        await asyncio.sleep(0.1)
+        restored = await repository.get(session.id)
+        assert restored.session_definition == "skuldGrok"
+
+    @pytest.mark.asyncio
     async def test_stop_session_publishes_events(self, service, broadcaster):
         """Stopping a session publishes session_updated events."""
         session = await service.create_session(

@@ -1324,9 +1324,7 @@ summary: Plan is bounded and ready for human review.
         adapter.send_message.side_effect = [
             httpx.HTTPStatusError(
                 "session gateway not ready",
-                request=httpx.Request(
-                    "POST", "https://volundr.example/sessions/plan-1/messages"
-                ),
+                request=httpx.Request("POST", "https://volundr.example/sessions/plan-1/messages"),
                 response=httpx.Response(503),
             ),
             None,

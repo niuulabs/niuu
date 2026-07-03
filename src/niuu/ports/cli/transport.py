@@ -64,8 +64,17 @@ class CLITransport(ABC):
         """Shut down the transport and clean up."""
 
     @abstractmethod
-    async def send_message(self, content: str) -> None:
-        """Send a user message to the CLI."""
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
+        """Send a user message to the CLI.
+
+        ``msg_id``/``request_id`` (when supplied by the broker) let a transport correlate the
+        eventual "the agent consumed this message" signal back to the originating steer, so the
+        client can flip that message from pending → active. Keyword-only with defaults: transports
+        that don't emit such a signal simply ignore them, and existing ``send_message(content)``
+        call sites keep working unchanged.
+        """
 
     async def interrupt(self) -> None:
         """Cancel the in-flight turn, if any. Default no-op."""

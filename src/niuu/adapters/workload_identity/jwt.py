@@ -78,4 +78,3 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
         if self._client is None:
             raise ValueError("JwtWorkloadIdentityVerifier requires jwks_uri or static_jwks")
         return self._client.get_signing_key_from_jwt(token).key
-

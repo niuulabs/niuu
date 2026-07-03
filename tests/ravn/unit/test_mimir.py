@@ -218,12 +218,9 @@ def test_extract_source_ids_only_counts_footer_comment() -> None:
         "No source footer follows."
     )
     assert MarkdownMimirAdapter._extract_source_ids(content) == []
-    assert (
-        MarkdownMimirAdapter._extract_source_ids(
-            "# Synthesised Page\n\nUseful summary.\n\n<!-- sources: src_footer -->\n"
-        )
-        == ["src_footer"]
-    )
+    assert MarkdownMimirAdapter._extract_source_ids(
+        "# Synthesised Page\n\nUseful summary.\n\n<!-- sources: src_footer -->\n"
+    ) == ["src_footer"]
 
 
 @pytest.mark.asyncio

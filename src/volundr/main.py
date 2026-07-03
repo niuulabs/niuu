@@ -5,8 +5,12 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib.metadata import metadata
+from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
@@ -71,6 +75,7 @@ from volundr.adapters.outbound.postgres_communication_cursors import (
 from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
+from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
@@ -84,6 +89,7 @@ from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.catalog import build_catalog
+from volundr.domain.models import SessionStatus
 from volundr.domain.ports import SessionContributor
 from volundr.domain.services import (
     ChronicleService,
@@ -97,6 +103,7 @@ from volundr.domain.services import (
     TenantService,
     TokenService,
 )
+from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
@@ -428,6 +435,35 @@ async def _reconcile_liveness_loop(
             logger.exception("Liveness reconciliation iteration failed")
 
 
+async def _reconcile_active_loop(
+    session_service: SessionService,
+    *,
+    interval_seconds: int,
+) -> None:
+    """Periodically reconcile STARTING/RUNNING rows against pod_manager.status().
+
+    Pod-status authoritative (INV-9): a row is only corrected when the pod manager
+    reports the session is actually gone, so an idle-but-alive session is never
+    false-reaped. This is the always-on truth mechanism the heartbeat reaper
+    could not safely provide.
+    """
+    logger.info(
+        "Active-session reconcile loop started, interval=%ds",
+        interval_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            count = await session_service.reconcile_active_sessions()
+            if count:
+                logger.info("Reconcile: corrected %d divergent active session(s)", count)
+        except asyncio.CancelledError:
+            logger.info("Active-session reconcile loop cancelled")
+            break
+        except Exception:
+            logger.exception("Active-session reconcile iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -549,6 +585,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "storage": {"home_enabled": True},
     }
 
+    # Observability (FORGE tmux-reconnect bug): FastAPI returns 422 for request-body
+    # validation failures but logs NOTHING about what failed — which made the repeated
+    # tmux `/activity` 422s completely invisible server-side. Log the path + the exact
+    # validation errors + a bounded slice of the offending body so the next schema
+    # mismatch (on /activity, /log, or anything else) is self-documenting. Response
+    # shape is unchanged (still 422 + {"detail": [...]}).
+    @app.exception_handler(RequestValidationError)
+    async def _log_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        try:
+            raw_body = (await request.body())[:2000]
+            body_preview = raw_body.decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — best-effort diagnostics, never mask the 422
+            body_preview = "<unreadable>"
+        logger.warning(
+            "422 request validation: %s %s errors=%s body=%s",
+            request.method,
+            request.url.path,
+            exc.errors(),
+            body_preview,
+        )
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+
     # Bifrost is its own service/plugin. Volundr no longer co-hosts it; it consumes
     # the model catalog over HTTP from settings.bifrost.url for cost/pricing only.
 
@@ -585,6 +645,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Create adapters
             repository = PostgresSessionRepository(pool)
+            device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
@@ -596,6 +657,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pod_manager = _create_pod_manager(settings)
 
             # Inject Skuld port registry for mini mode proxy routing
+            skuld_reg = None
             try:
                 from cli.server import get_skuld_registry
 
@@ -638,6 +700,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
             )
+
+            # Push / attention notifier (optional — enabled via push.enabled).
+            # Fans a "session needs you" push out to the owner's devices when a
+            # session enters awaiting_input.
+            attention_notifier = None
+            if settings.push.enabled:
+                try:
+                    channel_cls = import_class(settings.push.adapter)
+                    channel_kwargs = resolve_secret_kwargs(
+                        settings.push.kwargs, settings.push.secret_kwargs_env
+                    )
+                    notification_channel = channel_cls(**channel_kwargs)
+                    attention_notifier = PushAttentionNotifier(
+                        device_repository,
+                        notification_channel,
+                        min_urgency=settings.push.min_urgency,
+                    )
+                    logger.info(
+                        "Push notifications enabled: adapter=%s",
+                        settings.push.adapter.rsplit(".", 1)[-1],
+                    )
+                except Exception:
+                    logger.exception("Failed to initialise push notifications")
+                    attention_notifier = None
 
             # Create services with broadcaster for real-time updates
             # Forge catalog (launch specs + session definitions), built via the
@@ -739,7 +825,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
                 session_communication_port=session_room_port,
+                attention_notifier=attention_notifier,
             )
+            # Local-process brokers notify the session service when they exit so
+            # the DB row is reconciled promptly (pod-status authoritative) rather
+            # than waiting for the periodic sweep.
+            if hasattr(pod_manager, "set_death_callback"):
+
+                async def _on_broker_death(session_id: str) -> None:
+                    try:
+                        await session_service.mark_session_dead(UUID(session_id))
+                    except ValueError:
+                        logger.warning("Broker death for non-UUID session id %s", session_id)
+
+                pod_manager.set_death_callback(_on_broker_death)
+
+            # The live WS proxy reconciles the row when it can't reach a pod, so a
+            # dead-session connect self-heals the stale RUNNING status (INV-9).
+            if skuld_reg is not None and hasattr(skuld_reg, "set_reconcile_hook"):
+
+                async def _on_proxy_dead(session_id: str) -> bool:
+                    # Pod-authoritative: report whether the reconcile CONFIRMS the
+                    # session is dead so the registry only drops the port for a
+                    # genuinely-gone pod, never on a transient broker-leg blip while
+                    # the pod is still RUNNING (M-8). A still-active row => retain.
+                    try:
+                        reconciled = await session_service.mark_session_dead(UUID(session_id))
+                    except ValueError:
+                        logger.warning("WS proxy reconcile for non-UUID session id %s", session_id)
+                        return False
+                    if reconciled is None:
+                        return True
+                    return reconciled.status in (SessionStatus.STOPPED, SessionStatus.FAILED)
+
+                skuld_reg.set_reconcile_hook(_on_proxy_dead)
+
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
@@ -808,6 +928,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chronicle_service=chronicle_service,
                 archive_service=archive_service,
                 external_session_service=external_session_service,
+                device_repository=device_repository,
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)
@@ -1028,8 +1149,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_event_log,
                 session_service=session_service,
                 prefix="/api/v1/forge",
+                default_show_internal=settings.replay.default_show_internal,
             )
             app.include_router(session_log_router)
+
+            # Replay-as-live: paced re-emit of recorded frames over a WebSocket,
+            # speaking the live-session frame protocol so existing clients
+            # (web SessionSocket, ?qa=stream, iOS) render a finished session live.
+            if settings.replay.enabled:
+                from volundr.adapters.inbound.ws_session_replay import (
+                    create_session_replay_router,
+                )
+
+                session_replay_router = create_session_replay_router(
+                    session_event_log,
+                    session_service=session_service,
+                    prefix="/api/v1/forge",
+                    config=settings.replay,
+                )
+                app.include_router(session_replay_router)
 
             trace_router = create_trace_router(
                 span_repository,
@@ -1082,6 +1220,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         stale_after_seconds=settings.session_liveness.stale_after_seconds,
                     )
                 )
+
+            # Pod-status-authoritative periodic reconcile (INV-9). Always-on by
+            # default and safe: it only corrects a row when pod_manager.status()
+            # says the session is actually gone, so it never false-reaps an
+            # idle-but-alive session the way the heartbeat reaper would.
+            reconcile_task: asyncio.Task | None = None
+            if settings.session_liveness.reconcile_enabled:
+                reconcile_task = asyncio.create_task(
+                    _reconcile_active_loop(
+                        session_service,
+                        interval_seconds=settings.session_liveness.reconcile_interval_seconds,
+                    )
+                )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1109,6 +1260,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     liveness_task.cancel()
                     try:
                         await liveness_task
+                    except asyncio.CancelledError:
+                        pass  # Expected: task cancellation during shutdown
+                if reconcile_task is not None:
+                    reconcile_task.cancel()
+                    try:
+                        await reconcile_task
                     except asyncio.CancelledError:
                         pass  # Expected: task cancellation during shutdown
                 await event_ingestion.close_all()

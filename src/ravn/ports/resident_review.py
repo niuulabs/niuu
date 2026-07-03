@@ -17,4 +17,3 @@ class ResidentVerificationPort(ABC):
     async def verify(self, check: ResidentVerificationCheck) -> ResidentVerificationEvidence:
         """Run one check and return concrete evidence."""
         raise NotImplementedError
-

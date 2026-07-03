@@ -87,9 +87,7 @@ class MimirResidentState(ResidentStatePort):
         return path
 
     async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
-        return await collect_pages(
-            self._mimir, f"{self._prefix}/policy", _parse_policy_observation
-        )
+        return await collect_pages(self._mimir, f"{self._prefix}/policy", _parse_policy_observation)
 
     async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
         stamp = decision.created_at.strftime("%Y%m%dT%H%M%SZ")
@@ -200,7 +198,5 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         if not base.exists():
             return []
         return sorted(
-            str(path.relative_to(self._root))
-            for path in base.rglob("*.md")
-            if path.is_file()
+            str(path.relative_to(self._root)) for path in base.rglob("*.md") if path.is_file()
         )

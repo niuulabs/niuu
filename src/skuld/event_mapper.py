@@ -4,6 +4,17 @@ Reads structured JSONL lines written by Claude Code to disk and extracts
 timeline-reportable events (file changes, git commits, terminal commands,
 token usage).  Reuses classification logic from the broker's SessionArtifacts
 but operates on the JSONL on-disk format rather than the SDK WebSocket stream.
+
+DISPOSITION (SRD FR-10 — see ``docs/forge-chronicle-vs-event-log.md``):
+the output of this mapper is a DERIVED, NON-AUTHORITATIVE, Claude-CLI-only UI
+timeline aggregate, NOT a source of truth. The single source of truth for the
+transcript is ``session_event_log`` (folded by the shared reducer).
+
+Because the patterns here key on Anthropic on-disk JSONL shapes, this mapper
+emits nothing for non-Claude transports (Codex / Grok / OpenCode), so the
+chronicle is LEGITIMATELY EMPTY for those — that is expected, not a defect.
+The mapping is intentionally lossy (a curated UI subset) and may drift from
+the canonical log. Consumers MUST NOT treat the chronicle as the transcript.
 """
 
 from __future__ import annotations

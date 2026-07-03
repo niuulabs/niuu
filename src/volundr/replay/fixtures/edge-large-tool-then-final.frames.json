@@ -1,0 +1,84 @@
+[
+  {
+    "session_id": "sess-edge-largebody",
+    "seq": 1,
+    "kind": "user",
+    "role": "user",
+    "request_id": "req-1",
+    "ts": "2026-06-18T16:20:00.000Z",
+    "payload": {
+      "type": "user",
+      "role": "user",
+      "message": {
+        "role": "user",
+        "content": "Run the full test suite and summarize the result."
+      }
+    }
+  },
+  {
+    "session_id": "sess-edge-largebody",
+    "seq": 2,
+    "kind": "assistant",
+    "role": "assistant",
+    "request_id": "req-1",
+    "ts": "2026-06-18T16:20:02.000Z",
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Running the full suite now — this takes a moment." },
+          { "type": "tool_use", "id": "e-bash", "name": "Bash", "input": { "command": "pnpm test" } }
+        ]
+      }
+    }
+  },
+  {
+    "session_id": "sess-edge-largebody",
+    "seq": 3,
+    "kind": "user",
+    "role": "user",
+    "request_id": "req-1",
+    "ts": "2026-06-18T16:20:43.000Z",
+    "payload": {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "e-bash",
+            "is_error": false,
+            "content": "$ vitest run\n\n RUN  v2.1.0 /home/lexi/repo\n\n ✓ src/auth/token.test.ts (12)\n ✓ src/auth/verify-token.test.ts (18)\n ✓ src/components/badge.test.tsx (7)\n ✓ src/components/card.test.tsx (9)\n ✓ src/components/transcript/transcript.test.tsx (21)\n ✓ src/components/transcript/tool-card-router.test.tsx (34)\n ✓ src/components/transcript/tool-card-coverage.test.tsx (44)\n ✓ src/stores/forge-chat.test.ts (16)\n ✓ src/stores/forge-chat-live.test.ts (22)\n ✓ src/stores/forge-chat-graft.test.ts (9)\n ✓ src/subapps/code/forge-activity-group.test.tsx (15)\n ✓ src/subapps/code/forge-tool-adapter.test.tsx (11)\n ✓ src/subapps/code/code-chat-panel.test.tsx (13)\n ✓ src/subapps/code/engine-badge.test.ts (10)\n ... 134 more files ...\n\n Test Files  148 passed (148)\n      Tests  248 passed (248)\n   Start at  16:20:02\n   Duration  41.0s (transform 3.1s, setup 6.4s, collect 9.0s, tests 18.2s)\n"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "session_id": "sess-edge-largebody",
+    "seq": 4,
+    "kind": "assistant",
+    "role": "assistant",
+    "request_id": "req-1",
+    "ts": "2026-06-18T16:20:45.000Z",
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "## Test summary\n\n**248 passed**, 0 failed across **148** files in 41s.\n\nThe suite is green — nothing to fix." }
+        ]
+      }
+    }
+  },
+  {
+    "session_id": "sess-edge-largebody",
+    "seq": 5,
+    "kind": "result",
+    "role": null,
+    "request_id": "req-1",
+    "ts": "2026-06-18T16:20:45.100Z",
+    "payload": { "type": "result", "subtype": "success" }
+  }
+]

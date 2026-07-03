@@ -214,6 +214,11 @@ VOLUNDR_SESSION_DELETED: str = "volundr.session.deleted"
 #: A session encountered an error.
 VOLUNDR_SESSION_ERROR: str = "volundr.session.error"
 
+#: A session is blocked waiting on the user (an AskUserQuestion, a confirmation,
+#: or a tool-permission prompt). High urgency — this is the trigger a push /
+#: notification fan-out subscribes to so the user is alerted they need to act.
+VOLUNDR_SESSION_NEEDS_INPUT: str = "volundr.session.needs_input"
+
 #: Aggregate stats were updated.
 VOLUNDR_STATS_UPDATED: str = "volundr.stats.updated"
 

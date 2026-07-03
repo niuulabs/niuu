@@ -38,6 +38,7 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
 from skuld.transports.mcp_config import build_sdk_mcp_servers
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -320,6 +321,11 @@ class SDKTransport(CLITransport):
         # _handle_ask_user_question / _on_can_use_tool.
         self._pending_questions: dict[str, asyncio.Future] = {}
         self._question_seq = 0
+        # Slash commands + skills advertised in the CLI's system/init event
+        # (bare names); rich catalog built lazily and cached.
+        self._slash_commands: list[str] = []
+        self._skills: list[str] = []
+        self._slash_command_catalog: list[dict] | None = None
 
     @property
     def capabilities(self) -> TransportCapabilities:
@@ -330,6 +336,8 @@ class SDKTransport(CLITransport):
             steering_mode="interrupt_resume",
             set_model=True,
             set_permission_mode=True,
+            slash_commands=True,
+            skills=True,
         )
 
     @property
@@ -377,7 +385,9 @@ class SDKTransport(CLITransport):
             logger.debug("Error stopping Claude SDK client", exc_info=True)
         self._client = None
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         """Send a user turn and emit SDK responses as stream-json dicts."""
         async with self._send_lock:
             if not self.is_alive:
@@ -573,6 +583,20 @@ class SDKTransport(CLITransport):
             self.resolve_question(str(request_id or ""), answers)
             return
 
+        if subtype == "slash_command":
+            command = str(kwargs.get("command") or "")
+            arguments = str(kwargs.get("arguments") or kwargs.get("args") or "")
+            text = compose_slash_command_text(command, arguments)
+            if text:
+                logger.info("Claude SDK transport: sending slash command %s", text)
+                # send_message self-connects and serializes on the send lock;
+                # run it detached so the WS dispatch loop isn't blocked.
+                asyncio.create_task(  # noqa: RUF006 — fire-and-forget; turn streams back
+                    self._safe_send_message(text),
+                    name="claude-slash-command",
+                )
+            return
+
         client = self._client
         if client is None:
             return
@@ -715,6 +739,9 @@ class SDKTransport(CLITransport):
             self._last_result = event
 
     def _capture_session_id(self, message: object) -> None:
+        if isinstance(message, SystemMessage) and message.data.get("subtype") == "init":
+            self._capture_init_commands(message.data)
+
         session_id = getattr(message, "session_id", None)
         if isinstance(session_id, str) and session_id:
             self._session_id = session_id
@@ -725,6 +752,38 @@ class SDKTransport(CLITransport):
         raw_session_id = message.data.get("session_id")
         if isinstance(raw_session_id, str) and raw_session_id:
             self._session_id = raw_session_id
+
+    def _capture_init_commands(self, data: dict) -> None:
+        """Record the slash_commands + skills the CLI advertised at startup."""
+        slash = data.get("slash_commands")
+        skills = data.get("skills")
+        if isinstance(slash, list):
+            self._slash_commands = [c for c in slash if isinstance(c, str)]
+        if isinstance(skills, list):
+            self._skills = [s for s in skills if isinstance(s, str)]
+        self._slash_command_catalog = None
+        logger.info(
+            "Claude SDK transport: captured %d slash commands, %d skills",
+            len(self._slash_commands),
+            len(self._skills),
+        )
+
+    async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
+        """Return the rich slash-command catalog (CLI-reported names enriched
+        with filesystem descriptions). Cached until init resets it or refresh."""
+        if refresh or self._slash_command_catalog is None:
+            self._slash_command_catalog = build_slash_command_catalog(
+                self._slash_commands,
+                self._skills,
+                self.workspace_dir,
+            )
+        return list(self._slash_command_catalog)
+
+    async def _safe_send_message(self, content: str) -> None:
+        try:
+            await self.send_message(content)
+        except Exception:
+            logger.warning("Background slash-command send failed", exc_info=True)
 
     def _consume_pending_steers(self) -> str | None:
         """Drain steering updates into the next continuation prompt."""

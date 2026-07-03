@@ -16,6 +16,8 @@ export type SessionState =
   | 'ready'
   | 'running'
   | 'idle'
+  // Blocked waiting on the user (an AskUserQuestion / confirmation / permission).
+  | 'awaiting_input'
   | 'terminating'
   | 'terminated'
   | 'archived'
@@ -91,8 +93,9 @@ const VALID_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   requested: ['provisioning', 'failed'],
   provisioning: ['ready', 'failed'],
   ready: ['running', 'terminating', 'failed'],
-  running: ['idle', 'terminating', 'failed'],
-  idle: ['running', 'terminating', 'failed'],
+  running: ['idle', 'awaiting_input', 'terminating', 'failed'],
+  idle: ['running', 'awaiting_input', 'terminating', 'failed'],
+  awaiting_input: ['running', 'idle', 'terminating', 'failed'],
   terminating: ['terminated', 'failed'],
   terminated: [],
   archived: [],

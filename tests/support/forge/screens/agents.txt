@@ -1,0 +1,11 @@
+  Agents
+
+  Select an agent to run:
+
+   1. general-purpose
+   2. Explore
+   3. code-reviewer
+   4. backend-architect
+   5. test-writer
+
+  ↑/↓ to navigate · Enter to select · Esc to close

@@ -72,4 +72,3 @@ def _load_letheo_session() -> Any:
             "Install/build Letheo before enabling this adapter."
         ) from exc
     return Session()
-

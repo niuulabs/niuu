@@ -85,6 +85,14 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode
 
+# Grok Build CLI (ACP stdio transport — Scaldy / Grok pipeline) is NOT pre-installed:
+# it is a large arch-specific binary distributed via the official xAI installer.
+# Provide it at deploy time via one of:
+#   - volumeMount the `grok` binary into PATH inside the pod, or
+#   - a custom image extending this one that runs the xAI grok installer, plus
+#   - XAI_API_KEY (and optional XAI_BASE_URL for the dev API) — see entrypoint.sh.
+# GrokACPTransport fails gracefully at start() if `grok` is missing from PATH.
+
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
     [ -n "$existing" ] && userdel -r "$existing" || true && \

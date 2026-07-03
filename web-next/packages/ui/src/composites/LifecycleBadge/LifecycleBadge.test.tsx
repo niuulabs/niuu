@@ -8,15 +8,25 @@ const ALL_STATES: LifecycleState[] = [
   'ready',
   'running',
   'idle',
+  'awaiting_input',
   'terminating',
   'terminated',
   'failed',
 ];
 
+// States whose displayed label equals the raw state value (awaiting_input
+// renders a friendly "needs you" label and is asserted separately).
+const RAW_LABEL_STATES = ALL_STATES.filter((s) => s !== 'awaiting_input');
+
 describe('LifecycleBadge', () => {
-  it.each(ALL_STATES)('renders the state label for "%s"', (state) => {
+  it.each(RAW_LABEL_STATES)('renders the state label for "%s"', (state) => {
     render(<LifecycleBadge state={state} />);
     expect(screen.getByText(state)).toBeInTheDocument();
+  });
+
+  it('renders a friendly label for awaiting_input', () => {
+    render(<LifecycleBadge state="awaiting_input" />);
+    expect(screen.getByText('needs you')).toBeInTheDocument();
   });
 
   it.each(ALL_STATES)('has the correct aria-label for "%s"', (state) => {
@@ -37,7 +47,7 @@ describe('LifecycleBadge', () => {
   });
 
   describe('pulsing states', () => {
-    const PULSING: LifecycleState[] = ['provisioning', 'running', 'terminating'];
+    const PULSING: LifecycleState[] = ['provisioning', 'running', 'awaiting_input', 'terminating'];
     const NON_PULSING: LifecycleState[] = ['ready', 'idle', 'terminated', 'failed'];
 
     it.each(PULSING)('"%s" has a pulsing dot', (state) => {
@@ -56,8 +66,8 @@ describe('LifecycleBadge', () => {
     expect(container.firstChild).toHaveClass('niuu-lifecycle-badge', 'extra');
   });
 
-  it('LIFECYCLE_META covers all 7 states', () => {
-    expect(Object.keys(LIFECYCLE_META)).toHaveLength(7);
+  it('LIFECYCLE_META covers all 8 states', () => {
+    expect(Object.keys(LIFECYCLE_META)).toHaveLength(8);
     for (const state of ALL_STATES) {
       expect(LIFECYCLE_META[state]).toBeTruthy();
     }

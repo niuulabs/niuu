@@ -9,6 +9,8 @@ import pytest
 
 from skuld.transports.codex_ws import (
     CodexWebSocketTransport,
+    _codex_effort_for_model,
+    _model_supports_ultra,
     _pick_free_port,
     _rpc_notification,
     _rpc_request,
@@ -731,9 +733,7 @@ class TestEventNormalization:
         assert t._context_compaction_turn_id == "compact-1"
         assert not _events_of_type(emit, "error")
         notices = [
-            event
-            for event in _emitted_events(emit)
-            if event.get("subtype") == "context_compaction"
+            event for event in _emitted_events(emit) if event.get("subtype") == "context_compaction"
         ]
         assert notices[0]["status"] == "started"
 
@@ -797,14 +797,14 @@ class TestEventNormalization:
         )
         await asyncio.sleep(0)
 
-        t.send_message.assert_awaited_once_with("continue the investigation")
+        t.send_message.assert_awaited_once_with(
+            "continue the investigation", record_correlation=False
+        )
         assert t._context_compaction_active is False
         assert t._pending_context_retry_prompt is None
         assert not _events_of_type(emit, "result")
         notices = [
-            event
-            for event in _emitted_events(emit)
-            if event.get("subtype") == "context_compaction"
+            event for event in _emitted_events(emit) if event.get("subtype") == "context_compaction"
         ]
         assert notices[0]["status"] == "completed"
 
@@ -1350,7 +1350,7 @@ class TestControl:
 
         await t.send_control("redirect", content="Start fresh")
 
-        send_message.assert_awaited_once_with("Start fresh")
+        send_message.assert_awaited_once_with("Start fresh", msg_id=None, request_id=None)
 
     @pytest.mark.asyncio
     async def test_redirect_normalizes_structured_content(self, tmp_path):
@@ -2893,3 +2893,208 @@ class TestResumeInitialPromptSkip:
         await t.start()
 
         t.send_message.assert_awaited_once_with("kick off")
+
+
+class TestSteeringCorrelation:
+    """Codex pending→active flip: send_message records a (msg_id, request_id) correlation that
+    turn/started pops to emit `user_consumed`, which the broker turns into the bubble flip."""
+
+    @pytest.mark.asyncio
+    async def test_send_message_records_correlation_and_turn_started_emits_user_consumed(
+        self, tmp_path
+    ):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock()
+        emit = _collect_emits(t)
+
+        await t.send_message("refactor the parser", msg_id="m-1", request_id="r-1")
+        assert t._pending_prompt_correlations == [("m-1", "r-1")]
+
+        await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
+
+        consumed = _events_of_type(emit, "user_consumed")
+        assert consumed, "turn/started must emit user_consumed for the correlated steer"
+        assert consumed[-1]["msg_id"] == "m-1"
+        assert consumed[-1]["request_id"] == "r-1"
+        assert t._pending_prompt_correlations == []  # popped
+
+    @pytest.mark.asyncio
+    async def test_turn_started_without_correlation_emits_no_user_consumed(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        emit = _collect_emits(t)
+
+        await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
+
+        assert _events_of_type(emit, "assistant")  # still announces the running message
+        assert _events_of_type(emit, "user_consumed") == []
+
+    @pytest.mark.asyncio
+    async def test_redirect_no_active_turn_threads_msg_id(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = None
+        send_message = AsyncMock()
+        t.send_message = send_message
+
+        await t.send_control("redirect", content="do X", msg_id="m-2", request_id="r-2")
+
+        send_message.assert_awaited_once_with("do X", msg_id="m-2", request_id="r-2")
+
+    @pytest.mark.asyncio
+    async def test_redirect_queued_correlations_align_and_flip_all(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._current_turn_id = "turn-5"
+        t._send_rpc = AsyncMock()
+        emit = _collect_emits(t)
+
+        await t.send_control("redirect", content="step one", msg_id="m-3", request_id="r-3")
+        await t.send_control("redirect", content="step two", msg_id="m-4", request_id="r-4")
+        # INVARIANT: _pending_redirects and _redirect_correlations stay length-aligned.
+        assert len(t._pending_redirects) == len(t._redirect_correlations) == 2
+        assert t._redirect_correlations == [("m-3", "r-3"), ("m-4", "r-4")]
+
+        # Replace send_message so the replacement turn doesn't recurse into a real turn/start.
+        send_message = AsyncMock()
+        t.send_message = send_message
+        await t._handle_server_message({"method": "turn/completed", "params": {}})
+        await asyncio.sleep(0)
+
+        # The replacement turn carries the FIRST correlation (its turn/started flips m-3); the
+        # coalesced rest (m-4) flip immediately. N queued steers ⇒ N flips.
+        send_message.assert_awaited_once()
+        _, kwargs = send_message.await_args
+        assert kwargs == {"msg_id": "m-3", "request_id": "r-3"}
+        consumed = _events_of_type(emit, "user_consumed")
+        assert [(e["msg_id"], e.get("request_id")) for e in consumed] == [("m-4", "r-4")]
+        assert t._redirect_correlations == []
+
+    @pytest.mark.asyncio
+    async def test_compaction_turn_started_does_not_consume_correlation(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._pending_prompt_correlations = [("m-5", "r-5")]
+        emit = _collect_emits(t)
+
+        # A context-compaction turn/started returns early (before the assistant emit) — it must NOT
+        # pop the user correlation, which belongs to the real turn being retried.
+        await t._handle_server_message(
+            {
+                "method": "turn/started",
+                "params": {"turn": {"id": "tc1", "items": [{"type": "contextCompaction"}]}},
+            }
+        )
+
+        assert _events_of_type(emit, "user_consumed") == []
+        assert t._pending_prompt_correlations == [("m-5", "r-5")]  # preserved
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_start_drops_correlation(self, tmp_path):
+        """A turn/start that raises must NOT leave an orphan correlation in the FIFO — otherwise a
+        LATER turn pops the stale leading entry and mis-attributes the flip (off-by-one)."""
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock(side_effect=RuntimeError("ws dropped"))
+
+        with pytest.raises(RuntimeError):
+            await t.send_message("will fail", msg_id="m-x", request_id="r-x")
+        assert t._pending_prompt_correlations == []  # orphan dropped
+
+        # A follow-up real turn pops ITS OWN correlation, not the failed one.
+        t._send_rpc = AsyncMock()
+        emit = _collect_emits(t)
+        await t.send_message("real", msg_id="m-y", request_id="r-y")
+        await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
+        consumed = _events_of_type(emit, "user_consumed")
+        assert consumed and consumed[-1]["msg_id"] == "m-y"
+
+    @pytest.mark.asyncio
+    async def test_compaction_retry_leaves_no_orphan_correlation(self, tmp_path):
+        """The context-compaction RETRY re-sends the same message and must NOT push a (None, None)
+        orphan: its turn/started reuses the ORIGINAL steer's still-queued correlation (flipping the
+        right bubble) and leaves the FIFO empty — no +1 slip for later steers."""
+        t = _make_transport(tmp_path)
+        t._thread_id = "thread-1"
+        t._send_rpc = AsyncMock()
+        # The original steer is still in flight (its turn/started hasn't fired — the context-window
+        # error hit first).
+        t._pending_prompt_correlations = [("m-1", "r-1")]
+
+        await t.send_message("retry of m-1", record_correlation=False)
+        assert t._pending_prompt_correlations == [("m-1", "r-1")]  # no orphan added
+
+        emit = _collect_emits(t)
+        await t._handle_server_message({"method": "turn/started", "params": {"turn": {"id": "t1"}}})
+        consumed = _events_of_type(emit, "user_consumed")
+        assert consumed and consumed[-1]["msg_id"] == "m-1"  # the original steer flips
+        assert t._pending_prompt_correlations == []  # no orphan left behind
+
+
+# ---------------------------------------------------------------------------
+# Reasoning effort (GPT-5.6 Sol Ultra)
+# ---------------------------------------------------------------------------
+
+
+async def _capture_thread_start_params(transport):
+    """Run the handshake with stubbed RPC and return the thread/start params."""
+    transport._ws = FakeWebSocket()
+    transport._alive = True
+    captured = []
+
+    async def fake_send_rpc(method, params=None):
+        captured.append((method, params))
+        if method == "initialize":
+            return {"userAgent": "codex"}
+        if method == "thread/start":
+            return {"thread": {"id": "t-eff"}}
+        return {}
+
+    transport._send_rpc = fake_send_rpc
+    transport._send_notification = AsyncMock()
+    _collect_emits(transport)
+    await transport._handshake()
+    return dict(captured[1][1])
+
+
+class TestReasoningEffort:
+    def test_effort_helpers_recognize_sol(self) -> None:
+        assert _model_supports_ultra("gpt-5.6-sol") is True
+        assert _model_supports_ultra("GPT-5.6-Sol") is True
+        assert _model_supports_ultra("gpt-5.5") is False
+        assert _codex_effort_for_model("gpt-5.6-sol") == "ultra"
+        assert _codex_effort_for_model("gpt-5.5") == "high"
+        assert _codex_effort_for_model("") == "high"
+
+    def test_sol_defaults_to_ultra(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol")
+        assert t._reasoning_effort == "ultra"
+
+    def test_non_sol_defaults_to_high(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.5")
+        assert t._reasoning_effort == "high"
+
+    def test_explicit_effort_overrides_default(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol", reasoning_effort="low")
+        assert t._reasoning_effort == "low"
+
+    @pytest.mark.asyncio
+    async def test_sol_handshake_sends_ultra_effort(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "ultra"
+
+    @pytest.mark.asyncio
+    async def test_ultra_clamped_to_high_on_non_sol_model(self, tmp_path) -> None:
+        # A stray `ultra` on a model whose Codex build lacks the tier must not
+        # reach the app-server as `ultra`.
+        t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="ultra")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_high_effort_maps_through(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="high")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "high"

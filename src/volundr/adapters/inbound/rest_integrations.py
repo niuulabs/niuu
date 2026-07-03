@@ -367,7 +367,7 @@ def _build_integrations_router(
 
         if not integration_type:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="integration_type is required when slug does not resolve to a definition",
             )
 
@@ -380,7 +380,7 @@ def _build_integrations_router(
                 )
             if definition is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="slug is required when creating inline integration credentials",
                 )
 
@@ -389,12 +389,12 @@ def _build_integrations_router(
             credential_metadata = data.credential.get("metadata") or {}
             if not credential_name:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="credential.name is required",
                 )
             if not isinstance(credential_data, dict) or not credential_data:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="credential.data must be a non-empty object",
                 )
 
@@ -404,7 +404,7 @@ def _build_integrations_router(
             )
             if credential_errors:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=credential_errors,
                 )
 
@@ -436,7 +436,7 @@ def _build_integrations_router(
 
         if not credential_name:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="credential_name or credential is required",
             )
 

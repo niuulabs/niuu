@@ -32,6 +32,7 @@ from volundr.domain.models import (
     TenantRole,
 )
 from volundr.domain.ports import (
+    AttentionNotifier,
     AuthorizationPort,
     ChronicleRepository,
     CommunicationRouteRepository,
@@ -128,6 +129,7 @@ class SessionService:
         sleipnir_publisher: object | None = None,
         communication_route_repository: CommunicationRouteRepository | None = None,
         session_communication_port: SessionCommunicationPort | None = None,
+        attention_notifier: AttentionNotifier | None = None,
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -141,6 +143,8 @@ class SessionService:
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
         self._activity_stop_tasks: set[asyncio.Task[None]] = set()
+        self._attention_notify_tasks: set[asyncio.Task[None]] = set()
+        self._attention_notifier = attention_notifier
         self._integration_repo = integration_repo
         self._storage = storage
         self._chronicle_repository = chronicle_repository
@@ -345,8 +349,14 @@ class SessionService:
         session_id: UUID,
         state: SessionActivityState,
         metadata: dict,
+        state_since: datetime | None = None,
     ) -> Session:
         """Update a session's activity state and broadcast an SSE event.
+
+        ``state_since`` is the broker-stamped UTC timestamp of when the session
+        entered ``state`` (None for older brokers that don't report it). It is
+        persisted and re-broadcast so clients can render an accurate elapsed
+        time without re-deriving it from event arrival.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -361,7 +371,16 @@ class SessionService:
         if cli_session_id and cli_session_id != session.cli_session_id:
             session.cli_session_id = cli_session_id
 
+        # Capture the prior attention context BEFORE we overwrite it, so we can
+        # tell a fresh "needs the user" transition from a repeated report.
+        previous_state = session.activity_state
+        previous_request_id = (session.activity_metadata or {}).get("request_id")
+
         session.activity_state = state
+        # The broker stamps state_since only on a real change; fall back to "now"
+        # when an older broker omits it so the field is never null for a live
+        # session that just transitioned.
+        session.activity_state_since = state_since or datetime.now(UTC)
         session.activity_metadata = metadata
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
@@ -373,6 +392,10 @@ class SessionService:
             session.error = None
         updated = await self._repository.update(session)
 
+        is_new_attention = self._is_new_attention_request(
+            state, previous_state, metadata, previous_request_id
+        )
+
         if self._broadcaster is not None:
             await self._broadcaster.publish(
                 RealtimeEvent(
@@ -380,15 +403,83 @@ class SessionService:
                     data={
                         "session_id": str(session_id),
                         "state": state.value,
+                        "activity_state_since": (
+                            updated.activity_state_since.isoformat()
+                            if updated.activity_state_since
+                            else None
+                        ),
                         "metadata": metadata,
                         "owner_id": session.owner_id or "",
                     },
                     timestamp=updated.updated_at,
                 )
             )
+            # A fresh "needs the user" transition (or a new pending request while
+            # already awaiting) fires a dedicated, high-urgency event. Unlike the
+            # routine activity event above, this one is forwarded to the platform
+            # bus so a notification / push fan-out can alert the owner.
+            if is_new_attention:
+                await self._broadcaster.publish(
+                    RealtimeEvent(
+                        type=EventType.SESSION_NEEDS_INPUT,
+                        data={
+                            "session_id": str(session_id),
+                            "session_name": updated.name,
+                            "owner_id": session.owner_id or "",
+                            "tenant_id": session.tenant_id or "",
+                            "kind": metadata.get("kind", "question"),
+                            "prompt": metadata.get("prompt", "") or "",
+                            "request_id": metadata.get("request_id", "") or "",
+                        },
+                        timestamp=updated.updated_at,
+                    )
+                )
+
+        # Fan a push out to the owner's devices off the activity hot-path (a slow
+        # APNs/webhook call must not delay Skuld's activity report response).
+        if is_new_attention and self._attention_notifier is not None:
+            self._schedule_attention_notify(updated, metadata)
+
         if self._should_auto_stop_after_activity(updated, state, metadata):
             self._schedule_activity_stop(updated.id)
         return updated
+
+    def _schedule_attention_notify(self, session: Session, metadata: dict) -> None:
+        """Dispatch a needs-input push in the background, tracking the task."""
+        task = asyncio.create_task(
+            self._attention_notifier.notify_needs_input(
+                session,
+                kind=metadata.get("kind", "question"),
+                prompt=metadata.get("prompt", "") or "",
+                request_id=metadata.get("request_id", "") or "",
+            ),
+            name=f"attention-notify-{session.id}",
+        )
+        self._attention_notify_tasks.add(task)
+        task.add_done_callback(self._attention_notify_tasks.discard)
+
+    @staticmethod
+    def _is_new_attention_request(
+        state: SessionActivityState,
+        previous_state: SessionActivityState | None,
+        metadata: dict,
+        previous_request_id: str | None,
+    ) -> bool:
+        """True when a report represents a NEW request for the user's attention.
+
+        Fires on the transition into ``awaiting_input``, and again if a new
+        pending request (different ``request_id``) arrives while the session is
+        still awaiting — so a second question is not swallowed. Re-reports of the
+        same pending request, and Skuld's periodic heartbeats, do not re-fire,
+        avoiding notification spam.
+        """
+        if state is not SessionActivityState.AWAITING_INPUT:
+            return False
+        if metadata.get("heartbeat"):
+            return False
+        if previous_state is not SessionActivityState.AWAITING_INPUT:
+            return True
+        return metadata.get("request_id") != previous_request_id
 
     async def reconcile_liveness(self, stale_after_seconds: int) -> int:
         """Mark running sessions with no recent activity heartbeat as stopped.
@@ -683,6 +774,11 @@ class SessionService:
         if not session.can_start():
             raise SessionStateError(session_id, "start", session.status)
 
+        # Restart parity: persist the definition the first time it is supplied and
+        # reuse the stored one on later restarts, so a session keeps its transport
+        # (e.g. Grok ACP) instead of falling back to the platform default.
+        definition = definition or session.session_definition
+
         # Set chat_endpoint eagerly — URL is deterministic from session ID
         host = _public_loopback_host()
         port = os.environ.get("NIUU_SERVER_PORT", "8080")
@@ -691,6 +787,7 @@ class SessionService:
         starting = session.model_copy(
             update={
                 "status": SessionStatus.STARTING,
+                "session_definition": definition,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
                 # A restart is an explicit "bring it back": stale failure
@@ -1207,18 +1304,51 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
-    async def reconcile_active_sessions(self) -> None:
+    @staticmethod
+    def _reconciled_session(session: Session, actual_status: SessionStatus) -> Session:
+        """Return the corrected session row for a pod-status divergence.
+
+        A RUNNING/STARTING row whose pod is gone is flipped to the pod manager's
+        verdict, its live-looking endpoints are cleared, and a queryable
+        ``liveness:`` error is stamped so the divergence is a loud, attributable
+        signal rather than a silent dead endpoint (INV-9). The ``liveness:``
+        prefix matches ``update_activity``'s clear-on-heartbeat rule, so a healthy
+        relaunch wipes the marker automatically.
+        """
+        if actual_status == SessionStatus.STOPPED:
+            return (
+                session.with_status(SessionStatus.STOPPED)
+                .with_cleared_endpoints()
+                .with_error("liveness: pod is no longer running — endpoint cleared")
+            )
+        if actual_status == SessionStatus.FAILED:
+            return (
+                session.with_status(SessionStatus.FAILED)
+                .with_cleared_endpoints()
+                .with_error("liveness: session runtime is no longer available")
+            )
+        return session.with_status(actual_status)
+
+    async def reconcile_active_sessions(self) -> int:
         """Reconcile stored STARTING/RUNNING sessions against the pod manager.
 
-        Local-process sessions can outlive the in-memory Skuld registry after a restart.
-        If the pod manager reports that a supposedly active session is actually stopped
-        or failed, update the persisted session record so browser clients stop trying to
-        attach to dead chat endpoints.
+        Local-process sessions can outlive the in-memory Skuld registry after a
+        restart. The pod manager is the authority on liveness — if it reports that
+        a supposedly active session is actually stopped or failed, the persisted
+        row is corrected (status flipped, endpoints cleared, queryable
+        ``liveness:`` error stamped) so clients stop dialing dead chat endpoints.
+
+        Because the verdict comes from ``pod_manager.status()`` and not a
+        heartbeat clock, an idle-but-alive session is never false-reaped — this is
+        the mechanism the disabled-by-default last_active reaper could not provide.
+
+        Returns the number of sessions reconciled.
         """
         active_sessions = [
             *await self._repository.list(status=SessionStatus.STARTING),
             *await self._repository.list(status=SessionStatus.RUNNING),
         ]
+        reconciled = 0
         for session in active_sessions:
             actual_status = await self._pod_manager.status(session)
             if actual_status == session.status:
@@ -1230,21 +1360,12 @@ class SessionService:
                 session.status.value,
                 actual_status.value,
             )
-
-            if actual_status == SessionStatus.STOPPED:
-                updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-            elif actual_status == SessionStatus.FAILED:
-                updated = (
-                    session.with_status(SessionStatus.FAILED)
-                    .with_cleared_endpoints()
-                    .with_error("Session runtime is no longer available")
-                )
-            else:
-                updated = session.with_status(actual_status)
-
+            updated = self._reconciled_session(session, actual_status)
             final = await self._repository.update(updated)
+            reconciled += 1
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
+        return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
         """Reconcile one active session against the pod manager and return it."""
@@ -1264,21 +1385,22 @@ class SessionService:
             session.status.value,
             actual_status.value,
         )
-        if actual_status == SessionStatus.STOPPED:
-            updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-        elif actual_status == SessionStatus.FAILED:
-            updated = (
-                session.with_status(SessionStatus.FAILED)
-                .with_cleared_endpoints()
-                .with_error("Session runtime is no longer available")
-            )
-        else:
-            updated = session.with_status(actual_status)
-
+        updated = self._reconciled_session(session, actual_status)
         final = await self._repository.update(updated)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         return final
+
+    async def mark_session_dead(self, session_id: UUID) -> Session | None:
+        """Force a single session to be reconciled against the pod manager NOW.
+
+        Invoked from out-of-band death signals (a local broker process exiting, a
+        WS proxy that can't reach the pod) so the row reflects reality promptly
+        instead of waiting for the next periodic sweep. Pod-status authoritative:
+        if the pod manager still reports the session live, the row is left
+        untouched (no false reap).
+        """
+        return await self.reconcile_session_if_active(session_id)
 
 
 def _communication_route_id(

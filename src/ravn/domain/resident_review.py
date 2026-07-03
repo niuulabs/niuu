@@ -80,4 +80,3 @@ class ResidentReviewReport:
     updated_objective_id: str = ""
     duplicate_skipped: bool = False
     final_suggested_next_action: str = ""
-

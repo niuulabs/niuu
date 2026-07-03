@@ -349,7 +349,7 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                         "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
                     ),
                     "skipPermissions": True,
-                    "agentTeams": False,
+                    "agentTeams": True,
                 },
             },
         ),
@@ -381,6 +381,21 @@ def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "broker": {
                     "cliType": "codex",
                     "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldGrok": SessionDefinitionConfig(
+            enabled=True,
+            display_name="xAI Grok Build",
+            description="xAI Grok Build — Agent Client Protocol (ACP) over stdio (Scaldy pipeline)",
+            labels=["session", "grok"],
+            default_model="grok-build",
+            compatible_providers=["xai"],
+            defaults={
+                "broker": {
+                    "cliType": "grok",
+                    "transportAdapter": "skuld.transports.grok.GrokACPTransport",
                     "agentTeams": False,
                 },
             },
@@ -607,24 +622,78 @@ class EventPipelineConfig(BaseModel):
 
 
 class SessionLivenessConfig(BaseModel):
-    """Liveness reconciliation for running sessions.
+    """Liveness reconciliation for running sessions (INV-9).
 
     A session whose broker has died can otherwise sit in ``running`` forever
     with a stale ``chat_endpoint`` (clients then open a socket to a tombstone and
-    see nothing). The reconciler marks running sessions that have gone silent —
-    no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
-    their endpoints, so the list reflects reality and clients stop dialing dead
-    brokers.
+    see nothing). Two complementary mechanisms keep the row truthful:
 
-    Disabled by default: brokers currently report activity only on STATE
-    CHANGES, so a quiet-but-alive session can go silent for long stretches and
-    would be falsely reaped. Enable with a generous stale_after_seconds (or
-    once periodic broker heartbeats land).
+    1. **Pod-status reconcile** (``reconcile_enabled``, ON by default). A periodic
+       loop probes ``pod_manager.status()`` for every STARTING/RUNNING session
+       and corrects the row when the pod is actually gone. Because it consults
+       the authoritative pod manager rather than a heartbeat clock, it never
+       false-reaps a quiet-but-alive session, so it is safe to enable by default.
+
+    2. **Heartbeat reaper** (``enabled``, OFF by default). The legacy reaper marks
+       running sessions that have gone silent — no activity heartbeat for
+       ``stale_after_seconds`` — as ``stopped``. Brokers currently report activity
+       only on STATE CHANGES, so a quiet-but-alive session can go silent for long
+       stretches and would be falsely reaped; this mechanism stays secondary and
+       off by default. Enable with a generous ``stale_after_seconds`` once
+       periodic broker heartbeats land.
     """
 
     enabled: bool = Field(default=False)
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
+    reconcile_enabled: bool = Field(
+        default=True,
+        description=(
+            "Periodically reconcile STARTING/RUNNING rows against pod_manager.status(). "
+            "Pod-status authoritative, so it never false-reaps idle-but-alive sessions."
+        ),
+    )
+    reconcile_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Interval between pod-status reconcile sweeps.",
+    )
+
+
+class ReplayConfig(BaseModel):
+    """Replay-as-live WebSocket: re-emit recorded ``session_event_log`` frames,
+    paced by the recorded ``ts`` deltas, so a live-session client renders a
+    finished session (or a checked-in fixture) as if it were streaming live.
+
+    The DB route is read-only and auth-gated (mirrors the already-served REST
+    ``GET .../log`` replay), so it defaults ON. The fixture route serves
+    synthetic data UNAUTHENTICATED and defaults OFF (enable only in dev/CI).
+    """
+
+    enabled: bool = Field(default=True)
+    fixtures_enabled: bool = Field(default=False)
+    default_speed: float = Field(default=1.0, gt=0)
+    max_gap_seconds: float = Field(default=2.0, ge=0)
+    # Unified read-path visibility default (SRD FR-7 / INV-10): internal
+    # tool_use/tool_result blocks are HIDDEN by default across ALL three read
+    # paths — live broadcast (``WebSocketChannel(show_internal=False)``), replay,
+    # and cold-read (``GET .../log``). One default, one toggle wire-message
+    # (``set_internal_visibility``), one ``filter_internal_blocks`` predicate, so
+    # the dropped set is identical everywhere. This was historically ``True`` for
+    # replay only, which diverged from the live default; it is now aligned to the
+    # live default. Flip to ``True`` only if a deployment wants internals shown by
+    # default on EVERY path (the toggle still works regardless).
+    default_show_internal: bool = Field(default=False)
+    page_size: int = Field(default=500, ge=1, le=5000)
+    fixtures_dir: str | None = Field(default=None)
+
+    def fixtures_dir_path(self) -> Path:
+        """Resolve the fixtures directory (defaults to the packaged dir)."""
+        if self.fixtures_dir:
+            return Path(self.fixtures_dir)
+        from volundr.replay.fixtures import default_fixtures_dir
+
+        return default_fixtures_dir()
 
 
 class SleipnirConfig(BaseModel):
@@ -652,6 +721,48 @@ class SleipnirConfig(BaseModel):
         description="Fully-qualified class path for the Sleipnir adapter.",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
+class PushNotificationConfig(BaseModel):
+    """Push / attention notification fan-out (optional).
+
+    When enabled, a session entering ``awaiting_input`` dispatches a push to the
+    owner's registered devices through the configured NotificationChannel
+    adapter. Off by default; the default adapter only logs.
+
+    Example YAML::
+
+        push:
+          enabled: true
+          adapter: "volundr.adapters.outbound.push_channels.ApnsNotificationChannel"
+          min_urgency: 0.8
+          kwargs:
+            team_id: "ABCDE12345"
+            key_id: "KEY1234567"
+            bundle_id: "com.niuu.forge"
+          secret_kwargs_env:
+            private_key: "APNS_PRIVATE_KEY"
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable push notifications for sessions that need attention.",
+    )
+    adapter: str = Field(
+        default="volundr.adapters.outbound.push_channels.LoggingNotificationChannel",
+        description="Fully-qualified NotificationChannel class path.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
+    min_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Drop pushes below this urgency.",
+    )
 
 
 class IdentityConfig(BaseModel):
@@ -1586,7 +1697,9 @@ class Settings(BaseSettings):
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
+    replay: ReplayConfig = Field(default_factory=ReplayConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
+    push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)

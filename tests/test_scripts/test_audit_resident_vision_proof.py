@@ -12,11 +12,7 @@ from scripts.audit_resident_vision_proof import (
 
 def test_audit_layer_reports_proved_when_required_artifacts_exist(tmp_path: Path) -> None:
     result_file = (
-        tmp_path
-        / "wiki"
-        / "resident"
-        / "delegation-results"
-        / "delegation-proof-session.md"
+        tmp_path / "wiki" / "resident" / "delegation-results" / "delegation-proof-session.md"
     )
     result_file.parent.mkdir(parents=True)
     result_file.write_text(
@@ -30,11 +26,7 @@ def test_audit_layer_reports_proved_when_required_artifacts_exist(tmp_path: Path
     )
     (tmp_path / "wiki" / "resident" / "delegation-reviews").mkdir()
     (
-        tmp_path
-        / "wiki"
-        / "resident"
-        / "delegation-reviews"
-        / "review-delegation-proof.md"
+        tmp_path / "wiki" / "resident" / "delegation-reviews" / "review-delegation-proof.md"
     ).write_text("# Review\n", encoding="utf-8")
 
     result = _audit_layer(
@@ -51,22 +43,10 @@ def test_audit_layer_reports_proved_when_required_artifacts_exist(tmp_path: Path
 
 
 def test_audit_layer_reports_missing_required_content(tmp_path: Path) -> None:
-    answer = (
-        tmp_path
-        / "resident"
-        / "continuation"
-        / "operator-answers"
-        / "latest.md"
-    )
+    answer = tmp_path / "resident" / "continuation" / "operator-answers" / "latest.md"
     answer.parent.mkdir(parents=True)
     answer.write_text("# Operator Answer\n\n- status: pending\n", encoding="utf-8")
-    marker = (
-        tmp_path
-        / "resident"
-        / "continuation"
-        / "operator-needed"
-        / "latest.md"
-    )
+    marker = tmp_path / "resident" / "continuation" / "operator-needed" / "latest.md"
     marker.parent.mkdir(parents=True)
     marker.write_text("# Operator Needed\n", encoding="utf-8")
 

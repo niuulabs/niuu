@@ -269,21 +269,12 @@ def _mcp_text_result(result: dict[str, Any]) -> str:
 def _normalize_write_mode(write_mode: str) -> str:
     mode = str(write_mode or "auto").strip().casefold().replace("-", "_")
     if mode not in {"auto", "put_page", "ingest", "capture"}:
-        raise ValueError(
-            "GBrain write_mode must be one of: auto, put_page, ingest, capture"
-        )
+        raise ValueError("GBrain write_mode must be one of: auto, put_page, ingest, capture")
     return mode
 
 
 def _gbrain_markdown(ref: str, title: str, content: str) -> str:
-    return (
-        "---\n"
-        "type: note\n"
-        "---\n"
-        f"# {title}\n\n"
-        f"Source ref: `{ref}`\n\n"
-        f"{content}"
-    )
+    return f"---\ntype: note\n---\n# {title}\n\nSource ref: `{ref}`\n\n{content}"
 
 
 def _slug_from_ref(ref: str) -> str:

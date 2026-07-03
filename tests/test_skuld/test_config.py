@@ -205,14 +205,15 @@ class TestSkuldSettings:
         assert s.approval_policy == "untrusted"
         assert s.sandbox == "workspace-write"
 
-    def test_agent_teams_default(self):
-        s = SkuldSettings()
-        assert s.agent_teams is False
-
-    def test_agent_teams_enabled(self, monkeypatch):
-        monkeypatch.setenv("SKULD__AGENT_TEAMS", "true")
+    def test_agent_teams_default_on(self):
+        # Default ON: Claude tmux sessions form a team of agents by default.
         s = SkuldSettings()
         assert s.agent_teams is True
+
+    def test_agent_teams_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("SKULD__AGENT_TEAMS", "false")
+        s = SkuldSettings()
+        assert s.agent_teams is False
 
     def test_session_prompt_defaults_empty(self):
         config = SkuldSessionConfig()

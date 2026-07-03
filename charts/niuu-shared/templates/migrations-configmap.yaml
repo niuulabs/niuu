@@ -268,4 +268,43 @@ data:
     DROP TABLE IF EXISTS valkyrie_signals;
     DROP TABLE IF EXISTS valkyrie_actions;
     DROP TABLE IF EXISTS valkyrie_decisions;
+
+  000050_session_definition.up.sql: |
+    -- Persist the session definition (runtime type, e.g. skuldClaude / skuldGrok) a
+    -- session was launched with, so restarts re-apply the same transport instead of
+    -- falling back to the platform default.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
+
+  000050_session_definition.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS session_definition;
+
+  000051_device_tokens.up.sql: |
+    -- Push device registrations for session attention notifications.
+    -- A session entering awaiting_input fans a push out to every device its owner
+    -- has registered (the iOS app/widget, etc.).
+    CREATE TABLE IF NOT EXISTS device_tokens (
+        id            UUID PRIMARY KEY,
+        owner_id      TEXT NOT NULL,
+        platform      TEXT NOT NULL,
+        token         TEXT NOT NULL,
+        app_bundle_id TEXT,
+        created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        UNIQUE (owner_id, token)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_device_tokens_owner ON device_tokens (owner_id);
+
+  000051_device_tokens.down.sql: |
+    DROP INDEX IF EXISTS idx_device_tokens_owner;
+    DROP TABLE IF EXISTS device_tokens;
+
+  000052_session_activity_state_since.up.sql: |
+    -- Timestamp (UTC) of when a session ENTERED its current activity_state. Stamped
+    -- by the Skuld broker only on a real state change, so clients can render an
+    -- accurate "active for Ns" elapsed without re-deriving it from event arrival.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS activity_state_since TIMESTAMPTZ;
+
+  000052_session_activity_state_since.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_state_since;
 {{- end }}
