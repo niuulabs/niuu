@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,13 @@ from typing import Any
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 DEFAULT_TOOL_OUTPUT_LIMIT_BYTES = 256 * 1024
+
+#: Environment variables a sandboxed tool subprocess is allowed to inherit.
+#: Everything else — bearer tokens, PATs, cloud credentials, all of which live
+#: in the resident's ambient environment — is withheld. A learned tool that
+#: legitimately needs a credential receives it through reach-scoped injection
+#: (Phase 5), never by inheriting the whole process environment.
+_SANDBOX_ENV_PASSTHROUGH = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
 
 _BOOTSTRAP = """
 import importlib.util
@@ -59,6 +67,18 @@ def tool_path_for_skill(tools_dir: str | Path, skill_name: str) -> Path:
     return Path(tools_dir) / f"{skill_name}.py"
 
 
+def _sandbox_env() -> dict[str, str]:
+    """Minimal environment for a sandboxed tool run.
+
+    A learned tool must never inherit the resident's ambient environment, where
+    bearer tokens and credentials live. Pass only what a Python subprocess needs
+    to start and resolve executables.
+    """
+    env = {key: os.environ[key] for key in _SANDBOX_ENV_PASSTHROUGH if key in os.environ}
+    env.setdefault("PATH", os.defpath)
+    return env
+
+
 async def run_tool(
     tool_path: str | Path,
     payload: dict[str, Any],
@@ -82,6 +102,7 @@ async def run_tool(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_sandbox_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(

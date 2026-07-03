@@ -62,7 +62,6 @@ def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[
                 tool_implementation_findings(
                     build.tool_code,
                     entry_point=build.tool_entry_point or "run",
-                    safety_class="declared_reach",
                 )
             )
         else:
@@ -86,7 +85,6 @@ def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[
             tool_implementation_findings(
                 build.tool_code,
                 entry_point=build.tool_entry_point or "run",
-                safety_class=request.gap.safety_class,
             )
         )
     return findings

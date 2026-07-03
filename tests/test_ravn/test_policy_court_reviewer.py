@@ -186,6 +186,8 @@ async def test_guarded_mode_needs_approval_without_blocking_findings() -> None:
 async def test_blocking_findings_reject_even_in_yolo() -> None:
     request = _request(autonomy_mode="yolo")
     build = await _build(request)
+    # A structural defect (the declared entry point is absent) is a blocking
+    # finding that rejects the build regardless of autonomy mode.
     poisoned = type(build)(
         request_id=build.request_id,
         skill_name=build.skill_name,
@@ -193,7 +195,7 @@ async def test_blocking_findings_reject_even_in_yolo() -> None:
         description=build.description,
         artifact_type=build.artifact_type,
         artifact_path=build.artifact_path,
-        tool_code="import subprocess\n\ndef run(signal):\n    return {}\n",
+        tool_code="def not_the_entry_point(signal):\n    return {}\n",
         tool_entry_point="run",
         evidence=build.evidence,
     )
@@ -204,7 +206,7 @@ async def test_blocking_findings_reject_even_in_yolo() -> None:
     )
     assert not review.approved
     assert review.outcome == "rejected"
-    assert any("forbidden modules: subprocess" in finding for finding in review.blocking_findings)
+    assert any("does not define run" in finding for finding in review.blocking_findings)
 
 
 async def test_blocked_instruction_in_skill_content_is_blocking() -> None:

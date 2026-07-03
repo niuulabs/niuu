@@ -307,58 +307,39 @@ def _validate_tool_code(artifact: LearnedToolArtifact) -> None:
     findings = tool_implementation_findings(
         artifact.tool_code,
         entry_point=artifact.manifest.entry_point,
-        safety_class="declared_reach",
     )
     if findings:
         raise LearnedToolError("; ".join(findings))
-
-
-# Imports a read-only probe may use. Everything else is rejected up front so
-# the build fails fast instead of failing review later.
-_READ_ONLY_ALLOWED_IMPORTS = frozenset(
-    {"json", "re", "math", "datetime", "collections", "itertools", "statistics"}
-)
 
 
 def tool_implementation_findings(
     tool_code: str,
     *,
     entry_point: str = "run",
-    safety_class: str = "read_only",
 ) -> list[str]:
-    """Structurally validate a tool implementation; return blocking findings."""
+    """Structurally validate a tool implementation; return blocking findings.
+
+    Structure only: the code parses and defines the declared entry point. A
+    tool's capability is gated by its ``declared_reach`` at review time and
+    enforced at the execution sandbox boundary — never by a Python-import
+    allowlist. Such an allowlist blocks an honest ``import httpx`` while a
+    determined tool reaches the same capability through ``__import__`` or
+    ``os.system``; a bypassable check is worse than none because it reads as
+    safety that is not actually there.
+    """
     try:
         tree = ast.parse(tool_code)
     except SyntaxError as exc:
         return [f"tool implementation has a syntax error: {exc}"]
 
-    findings: list[str] = []
     entry_points = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == entry_point
     ]
     if not entry_points:
-        findings.append(f"tool implementation does not define {entry_point}()")
-
-    if safety_class == "read_only":
-        blocked = sorted(_blocked_imports(tree))
-        if blocked:
-            findings.append(f"read-only tool imports forbidden modules: {', '.join(blocked)}")
-    return findings
-
-
-def _blocked_imports(tree: ast.AST) -> set[str]:
-    blocked: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names = [alias.name.split(".")[0] for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names = [(node.module or "").split(".")[0]]
-        else:
-            continue
-        blocked.update(name for name in names if name and name not in _READ_ONLY_ALLOWED_IMPORTS)
-    return blocked
+        return [f"tool implementation does not define {entry_point}()"]
+    return []
 
 
 def _filename_for_tool(tool_name: str) -> str:

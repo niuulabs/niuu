@@ -103,6 +103,23 @@ async def test_run_tool_missing_file_fails_loudly(tmp_path) -> None:
     assert "missing" in result.error
 
 
+async def test_run_tool_does_not_leak_resident_environment(tmp_path, monkeypatch) -> None:
+    # A learned tool must not inherit ambient secrets from the resident process.
+    monkeypatch.setenv("RAVN_VOLUNDR_PAT", "super-secret-token")
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="env_probe",
+        tool_code=(
+            "import os\n\n"
+            "def run(signal):\n"
+            "    return {'leaked': os.environ.get('RAVN_VOLUNDR_PAT', '')}\n"
+        ),
+    )
+    result = await run_tool(path, {})
+    assert result.ok
+    assert result.result == {"leaked": ""}
+
+
 def test_write_tool_rejects_empty_code(tmp_path) -> None:
     with pytest.raises(ValueError, match="empty"):
         write_tool(tools_dir=tmp_path, skill_name="empty", tool_code="   ")
@@ -215,29 +232,29 @@ def test_learned_tool_rejects_invalid_declared_reach(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_tool_implementation_findings_flags_forbidden_imports() -> None:
+def test_tool_implementation_findings_does_not_gate_imports() -> None:
+    # Structural validation no longer runs a Python-import allowlist: capability
+    # is gated by declared_reach at review and enforced at the sandbox boundary.
+    # A tool that shells out to acquire live evidence must pass structure checks.
     findings = tool_implementation_findings(
         "import subprocess\n\ndef run(signal):\n    return {}\n",
         entry_point="run",
-        safety_class="read_only",
     )
-    assert any("forbidden modules: subprocess" in finding for finding in findings)
+    assert findings == []
 
 
 def test_tool_implementation_findings_requires_the_entry_point() -> None:
     findings = tool_implementation_findings(
         "def probe(signal):\n    return {}\n",
         entry_point="run",
-        safety_class="read_only",
     )
     assert any("does not define run" in finding for finding in findings)
 
 
-def test_tool_implementation_findings_accepts_a_clean_read_only_tool() -> None:
+def test_tool_implementation_findings_accepts_a_clean_tool() -> None:
     findings = tool_implementation_findings(
         "import json\n\ndef run(signal):\n    return {'ok': True}\n",
         entry_point="run",
-        safety_class="read_only",
     )
     assert findings == []
 
