@@ -26,7 +26,7 @@ POSTGRES_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); 
 PGVECTOR_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); print(PGVECTOR_VERSION)")
 PGINSTALL_DIR    := build/pginstall
 
-.PHONY: build build-web build-postgres build-cli build-ravn copy-migrations clean lint test verify \
+.PHONY: build build-web build-postgres build-cli build-cli-bin build-ravn copy-migrations clean lint test verify \
        test-integration test-integration-volundr test-integration-ting test-integration-sleipnir \
        test-e2e test-e2e-ui test-all test-ravn
 
@@ -64,7 +64,11 @@ copy-migrations:
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation
 # --------------------------------------------------------------------------
-build-cli: build-web
+build-cli: build-web build-cli-bin
+
+# Compile only — CI calls this after downloading the prebuilt web-assets
+# artifact into web-next/apps/niuu/dist; the binary runners have no pnpm.
+build-cli-bin:
 	uv run --extra cli python -m cli.build \
 		--name $(BINARY_NAME) \
 		--entry $(ENTRY_POINT) \

@@ -496,7 +496,10 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: cli-web-dist
-          path: src/cli/web
+          path: web-next/apps/niuu/dist
+
+      - name: Verify CLI web assets
+        run: test -f web-next/apps/niuu/dist/index.html
 
       - name: Download embedded PostgreSQL bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -510,7 +513,7 @@ jobs:
           extras: "--python 3.12 --extra cli --extra dev"
 
       - name: Build
-        run: make copy-migrations build-cli
+        run: make copy-migrations build-cli-bin
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
