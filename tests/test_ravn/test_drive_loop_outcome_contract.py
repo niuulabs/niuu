@@ -486,6 +486,18 @@ correlation_ids:
         assert outcome["expires_at"] == "2026-06-04T20:30:00+00:00"
         json.dumps(outcome)
 
+    def test_resident_valkyrie_normalization_accepts_common_state_aliases(self) -> None:
+        outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {
+                "operational_state": "investigate",
+                "wakefulness": "watchful",
+            },
+        )
+
+        assert outcome["operational_state"] == "investigating"
+        assert outcome["wakefulness"] == "watching"
+
     def test_resident_valkyrie_normalization_coerces_loose_correlation_ids(self) -> None:
         list_outcome = normalize_valkyrie_outcome(
             registry.VALKYRIE_JUDGMENT_PROPOSED,

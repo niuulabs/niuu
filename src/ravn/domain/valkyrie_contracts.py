@@ -35,6 +35,12 @@ _ACTION_AUTHORITY_ALIASES = {
     "review": "human_review_required",
     "yolo": "yolo_allowed",
 }
+_OPERATIONAL_STATE_ALIASES = {
+    "investigate": "investigating",
+}
+_WAKEFULNESS_ALIASES = {
+    "watchful": "watching",
+}
 
 _JUDGMENT_REQUIRED_FIELDS = (
     "environment_id",
@@ -77,6 +83,17 @@ def normalize_valkyrie_outcome(event_type: str, fields: Mapping[str, Any]) -> di
     authority = str(normalized.get("action_authority", "") or "").strip()
     if authority:
         normalized["action_authority"] = _ACTION_AUTHORITY_ALIASES.get(authority, authority)
+
+    operational_state = str(normalized.get("operational_state", "") or "").strip()
+    if operational_state:
+        normalized["operational_state"] = _OPERATIONAL_STATE_ALIASES.get(
+            operational_state.lower(),
+            operational_state,
+        )
+
+    wakefulness = str(normalized.get("wakefulness", "") or "").strip()
+    if wakefulness:
+        normalized["wakefulness"] = _WAKEFULNESS_ALIASES.get(wakefulness.lower(), wakefulness)
 
     confidence = normalized.get("confidence")
     if isinstance(confidence, str):
