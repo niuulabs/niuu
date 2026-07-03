@@ -195,6 +195,13 @@ class SkuldSessionConfig(BaseModel):
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
     model: str = Field(default="claude-opus-4-8")
+    reasoning_effort: str = Field(
+        default="",
+        description=(
+            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-5.6 Sol). "
+            "Empty lets the transport pick a model-appropriate default."
+        ),
+    )
     workspace_dir: str | None = Field(default=None)
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")

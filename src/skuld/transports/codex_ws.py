@@ -89,6 +89,27 @@ _CODEX_APP_SERVER_SLASH_BY_NAME = {
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
 
+# Codex models whose app-server build accepts the `ultra` reasoning effort.
+# GPT-5.6 Sol introduces Ultra (subagent-parallel reasoning); every earlier
+# Codex model tops out at `high`, so `ultra` must be clamped for them.
+_ULTRA_EFFORT_MODELS = ("gpt-5.6-sol",)
+
+
+def _model_supports_ultra(model: str) -> bool:
+    """True when the model's Codex build accepts the `ultra` reasoning effort."""
+    return (model or "").strip().lower() in _ULTRA_EFFORT_MODELS
+
+
+def _codex_effort_for_model(model: str) -> str:
+    """Default reasoning effort to push a new Codex session to, by model.
+
+    GPT-5.6 Sol defaults to the new ``ultra`` effort; every other Codex model
+    keeps the ``high`` default (their app-server build has no ultra tier).
+    """
+    if _model_supports_ultra(model):
+        return "ultra"
+    return "high"
+
 
 def _rpc_request(method: str, params: dict | None = None) -> tuple[int, dict]:
     """Build a JSON-RPC 2.0 request and return (id, message)."""
@@ -185,9 +206,9 @@ class CodexWebSocketTransport(CLITransport):
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
-        # Default Codex to HIGH reasoning effort when none is specified — push new
-        # sessions to think hard by default (Codex has no `max` tier).
-        self._reasoning_effort = reasoning_effort or "high"
+        # Default reasoning effort by model when none is specified — GPT-5.6 Sol
+        # launches at the new `ultra` tier, every other Codex model at `high`.
+        self._reasoning_effort = reasoning_effort or _codex_effort_for_model(model)
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
@@ -495,8 +516,9 @@ class CodexWebSocketTransport(CLITransport):
             if self._model:
                 thread_params["model"] = self._model
             # Reasoning effort -> codex thread param. Codex accepts
-            # minimal/low/medium/high; map extra-high/xhigh/max to the highest
-            # supported value so an unknown alias can never break the session.
+            # minimal/low/medium/high, plus `ultra` on GPT-5.6 Sol. Map
+            # extra-high/xhigh/max to the highest classic tier so an unknown
+            # alias can never break the session.
             if self._reasoning_effort:
                 _eff = self._reasoning_effort.strip().lower()
                 _map = {
@@ -508,8 +530,14 @@ class CodexWebSocketTransport(CLITransport):
                     "extra_high": "high",
                     "xhigh": "high",
                     "max": "high",
+                    "ultra": "ultra",
                 }
-                thread_params["modelReasoningEffort"] = _map.get(_eff, "high")
+                mapped = _map.get(_eff, "high")
+                # `ultra` is GPT-5.6 Sol-only; clamp it to `high` on models whose
+                # app-server build would reject the tier.
+                if mapped == "ultra" and not _model_supports_ultra(self._model):
+                    mapped = "high"
+                thread_params["modelReasoningEffort"] = mapped
             thread_params.update(self._permission_thread_params())
             if self._system_prompt:
                 # baseInstructions = role/persona ("you are a service developer…")

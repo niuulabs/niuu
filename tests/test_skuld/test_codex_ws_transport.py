@@ -8,6 +8,8 @@ import pytest
 
 from skuld.transports.codex_ws import (
     CodexWebSocketTransport,
+    _codex_effort_for_model,
+    _model_supports_ultra,
     _pick_free_port,
     _rpc_notification,
     _rpc_request,
@@ -3002,3 +3004,71 @@ class TestSteeringCorrelation:
         consumed = _events_of_type(emit, "user_consumed")
         assert consumed and consumed[-1]["msg_id"] == "m-1"  # the original steer flips
         assert t._pending_prompt_correlations == []  # no orphan left behind
+
+
+# ---------------------------------------------------------------------------
+# Reasoning effort (GPT-5.6 Sol Ultra)
+# ---------------------------------------------------------------------------
+
+
+async def _capture_thread_start_params(transport):
+    """Run the handshake with stubbed RPC and return the thread/start params."""
+    transport._ws = FakeWebSocket()
+    transport._alive = True
+    captured = []
+
+    async def fake_send_rpc(method, params=None):
+        captured.append((method, params))
+        if method == "initialize":
+            return {"userAgent": "codex"}
+        if method == "thread/start":
+            return {"thread": {"id": "t-eff"}}
+        return {}
+
+    transport._send_rpc = fake_send_rpc
+    transport._send_notification = AsyncMock()
+    _collect_emits(transport)
+    await transport._handshake()
+    return dict(captured[1][1])
+
+
+class TestReasoningEffort:
+    def test_effort_helpers_recognize_sol(self) -> None:
+        assert _model_supports_ultra("gpt-5.6-sol") is True
+        assert _model_supports_ultra("GPT-5.6-Sol") is True
+        assert _model_supports_ultra("gpt-5.5") is False
+        assert _codex_effort_for_model("gpt-5.6-sol") == "ultra"
+        assert _codex_effort_for_model("gpt-5.5") == "high"
+        assert _codex_effort_for_model("") == "high"
+
+    def test_sol_defaults_to_ultra(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol")
+        assert t._reasoning_effort == "ultra"
+
+    def test_non_sol_defaults_to_high(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.5")
+        assert t._reasoning_effort == "high"
+
+    def test_explicit_effort_overrides_default(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol", reasoning_effort="low")
+        assert t._reasoning_effort == "low"
+
+    @pytest.mark.asyncio
+    async def test_sol_handshake_sends_ultra_effort(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.6-sol")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "ultra"
+
+    @pytest.mark.asyncio
+    async def test_ultra_clamped_to_high_on_non_sol_model(self, tmp_path) -> None:
+        # A stray `ultra` on a model whose Codex build lacks the tier must not
+        # reach the app-server as `ultra`.
+        t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="ultra")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_high_effort_maps_through(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="high")
+        params = await _capture_thread_start_params(t)
+        assert params["modelReasoningEffort"] == "high"

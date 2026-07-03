@@ -31,6 +31,12 @@ class TestModelsEndpoint:
         assert "claude-sonnet-4-6" in ids
         assert "claude-opus-4-6" in ids
 
+    def test_list_models_contains_gpt_5_6_sol(self, client: TestClient) -> None:
+        data = client.get("/api/v1/bifrost/v1/models").json()["data"]
+        by_id = {m["id"]: m for m in data}
+        assert "gpt-5.6-sol" in by_id
+        assert by_id["gpt-5.6-sol"]["owned_by"] == "openai"
+
     def test_list_models_has_object_field(self, client: TestClient) -> None:
         data = client.get("/api/v1/bifrost/v1/models").json()["data"]
         assert all(m.get("object") == "model" for m in data)
@@ -47,7 +53,7 @@ class TestModelsEndpoint:
         data = client.get("/api/v1/bifrost/v1/models").json()["data"]
         by_id = {entry["id"]: entry for entry in data}
         assert by_id["claude-sonnet-4-6"]["owned_by"] == "anthropic"
-        assert by_id["gpt-5.5"]["owned_by"] == "openai"
+        assert by_id["gpt-5.6-sol"]["owned_by"] == "openai"
 
 
 class TestModelsEndpointAliases:
@@ -118,7 +124,7 @@ class TestModelsEndpointAliases:
         ids = {entry["id"] for entry in data}
         assert "claude-sonnet-4-6" in ids
         assert "claude-opus-4-6" in ids
-        assert "gpt-5.5" in ids
+        assert "gpt-5.6-sol" in ids
 
 
 class TestModelsEndpointMultiProvider:
@@ -170,8 +176,8 @@ class TestModelsEndpointMultiProvider:
             body = client.get("/api/v1/bifrost/v1/models").json()
         assert body["object"] == "list"
         ids = {entry["id"] for entry in body["data"]}
-        assert "claude-sonnet-4-6" in ids
-        assert "gpt-5.5" in ids
+        assert "claude-sonnet-5" in ids
+        assert "gpt-5.6-sol" in ids
 
 
 class TestInternalCatalogEndpoints:
@@ -188,8 +194,8 @@ class TestInternalCatalogEndpoints:
         with TestClient(app) as client:
             data = client.get("/models").json()
         ids = {entry["id"] for entry in data}
-        assert "claude-sonnet-4-6" in ids
-        assert "gpt-5.5" in ids
+        assert "claude-sonnet-5" in ids
+        assert "gpt-5.6-sol" in ids
 
     def test_internal_catalog_providers_also_available_without_public_prefix(self) -> None:
         config = BifrostConfig(providers={})
@@ -206,8 +212,8 @@ class TestInternalCatalogEndpoints:
         with TestClient(app) as client:
             data = client.get("/api/v1/bifrost/models").json()
         ids = {entry["id"] for entry in data}
-        assert "claude-sonnet-4-6" in ids
-        assert "gpt-5.5" in ids
+        assert "claude-sonnet-5" in ids
+        assert "gpt-5.6-sol" in ids
 
     def test_settings_endpoint_exposes_canonical_service_schema(self) -> None:
         config = BifrostConfig(providers={})
