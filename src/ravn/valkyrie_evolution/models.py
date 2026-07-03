@@ -146,6 +146,10 @@ class LearnedToolArtifact:
     test_code: str = ""
     #: pip package requirement strings the tool needs ([] for stdlib-only).
     requirements: list[str] = field(default_factory=list)
+    #: artifact_id of the version this artifact replaces ("" for a first
+    #: build). Maintained automatically by the artifact writer so rollback can
+    #: walk back to the previous working version.
+    supersedes: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
@@ -167,6 +171,7 @@ class LearnedToolArtifact:
             provenance=dict(data.get("provenance") or {}),
             test_code=str(data.get("test_code") or ""),
             requirements=[str(item) for item in list(data.get("requirements") or [])],
+            supersedes=str(data.get("supersedes") or ""),
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
         )
 
@@ -183,6 +188,7 @@ class LearnedToolArtifact:
             "provenance": dict(self.provenance),
             "test_code": self.test_code,
             "requirements": list(self.requirements),
+            "supersedes": self.supersedes,
             "created_at": self.created_at,
         }
 

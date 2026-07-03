@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +22,18 @@ from typing import Any
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 DEFAULT_TOOL_OUTPUT_LIMIT_BYTES = 256 * 1024
+
+#: How long ``pip install`` of a learned tool's requirements into its
+#: dedicated venv may take before provisioning fails loudly.
+DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS = 300.0
+
+#: How long ``python -m venv`` creation of a per-tool venv may take.
+DEFAULT_TOOL_VENV_CREATE_TIMEOUT_SECONDS = 120.0
+
+#: Stamp file inside a per-tool venv recording the exact requirements it was
+#: provisioned with. A matching stamp makes re-provisioning a no-op; a
+#: mismatch rebuilds the venv from scratch.
+TOOL_VENV_REQUIREMENTS_STAMP = ".requirements.txt"
 
 #: Environment variables a sandboxed tool subprocess is allowed to inherit.
 #: Everything else — bearer tokens, PATs, cloud credentials, all of which live
@@ -41,6 +56,14 @@ json.dump(entry_point(payload), sys.stdout)
 """
 
 
+class ToolVenvError(RuntimeError):
+    """Raised when a learned tool's dedicated venv cannot be provisioned.
+
+    A tool that declares requirements must never silently run without them —
+    provisioning failures abort the run instead of degrading it.
+    """
+
+
 @dataclass(frozen=True)
 class ToolRunResult:
     """Outcome of one sandboxed tool execution."""
@@ -49,6 +72,11 @@ class ToolRunResult:
     result: dict[str, Any] = field(default_factory=dict)
     error: str = ""
     stderr: str = ""
+    #: How declared reach was enforced for this run: ``"enforced"`` when the
+    #: sandbox boundary applied it, ``"unavailable"`` when the backend could
+    #: not express it (recorded honestly, never faked), ``""`` when the
+    #: backend makes no reach claim at all (plain local subprocess).
+    enforcement: str = ""
 
 
 def write_tool(*, tools_dir: str | Path, skill_name: str, tool_code: str) -> Path:
@@ -79,6 +107,122 @@ def _sandbox_env() -> dict[str, str]:
     return env
 
 
+def tool_venv_python(venv_dir: str | Path) -> Path:
+    """Return the interpreter path inside a per-tool venv."""
+    directory = Path(venv_dir)
+    if os.name == "nt":
+        return directory / "Scripts" / "python.exe"
+    return directory / "bin" / "python"
+
+
+def ensure_tool_venv(
+    *,
+    venvs_dir: str | Path,
+    tool_name: str,
+    requirements: list[str],
+    pip_timeout_seconds: float = DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
+    venv_timeout_seconds: float = DEFAULT_TOOL_VENV_CREATE_TIMEOUT_SECONDS,
+) -> Path:
+    """Provision the dedicated venv for a learned tool; return its python.
+
+    Creates ``{venvs_dir}/{tool_name}`` once, pip-installs ``requirements``
+    into it, and records the exact requirement list in a
+    :data:`TOOL_VENV_REQUIREMENTS_STAMP` file. An unchanged requirement list
+    is a no-op; a changed one rebuilds the venv from scratch so the
+    environment always matches exactly what the tool declares.
+
+    Raises :class:`ToolVenvError` when venv creation or pip install fails —
+    the tool must never silently run without its dependencies.
+    """
+    venv_dir = Path(venvs_dir) / _venv_dirname(tool_name)
+    python = tool_venv_python(venv_dir)
+    stamp_path = venv_dir / TOOL_VENV_REQUIREMENTS_STAMP
+    desired_stamp = "\n".join(requirements)
+    if (
+        python.is_file()
+        and stamp_path.is_file()
+        and stamp_path.read_text(encoding="utf-8") == desired_stamp
+    ):
+        return python
+
+    if venv_dir.exists():
+        # Requirements changed, or a previous provisioning attempt died before
+        # writing its stamp: rebuild from scratch for an exact environment.
+        shutil.rmtree(venv_dir)
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    _create_tool_venv(venv_dir, timeout_seconds=venv_timeout_seconds)
+    if requirements:
+        _pip_install_tool_requirements(
+            venv_dir,
+            python,
+            requirements,
+            timeout_seconds=pip_timeout_seconds,
+        )
+    # The stamp is written last so a killed provisioning run never masquerades
+    # as a complete one.
+    stamp_path.write_text(desired_stamp, encoding="utf-8")
+    return python
+
+
+def _venv_dirname(tool_name: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", tool_name.strip())
+    if not name:
+        raise ToolVenvError("cannot provision a venv for an empty tool name")
+    return name
+
+
+def _create_tool_venv(venv_dir: Path, *, timeout_seconds: float) -> None:
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_sandbox_env(),
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolVenvError(
+            f"venv creation timed out after {timeout_seconds}s: {venv_dir}"
+        ) from exc
+    if completed.returncode != 0:
+        raise ToolVenvError(
+            f"venv creation failed for {venv_dir}:\n{completed.stdout}\n{completed.stderr}".strip()
+        )
+
+
+def _pip_install_tool_requirements(
+    venv_dir: Path,
+    python: Path,
+    requirements: list[str],
+    *,
+    timeout_seconds: float,
+) -> None:
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [str(python), "-m", "pip", "install", "--disable-pip-version-check", *requirements],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_sandbox_env(),
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        raise ToolVenvError(
+            f"pip install timed out after {timeout_seconds}s: {', '.join(requirements)}"
+        ) from exc
+    if completed.returncode != 0:
+        # Never leave a half-provisioned venv behind: without its stamp it
+        # would be rebuilt anyway, but a lingering directory invites debugging
+        # against an environment the tool will never actually run in.
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        raise ToolVenvError(
+            "pip install failed for "
+            f"{', '.join(requirements)}:\n{completed.stdout}\n{completed.stderr}".strip()
+        )
+
+
 async def run_tool(
     tool_path: str | Path,
     payload: dict[str, Any],
@@ -86,14 +230,21 @@ async def run_tool(
     entry_point: str = "run",
     timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     output_limit_bytes: int = DEFAULT_TOOL_OUTPUT_LIMIT_BYTES,
+    python_executable: str | Path | None = None,
 ) -> ToolRunResult:
-    """Execute a tool implementation in an isolated subprocess."""
+    """Execute a tool implementation in an isolated subprocess.
+
+    ``python_executable`` selects the interpreter (a per-tool venv's python
+    for tools with dependencies); the default is the resident's own
+    interpreter — exactly the historical behavior.
+    """
     path = Path(tool_path)
     if not path.is_file():
         return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
 
+    interpreter = str(python_executable) if python_executable is not None else sys.executable
     process = await asyncio.create_subprocess_exec(
-        sys.executable,
+        interpreter,
         "-I",
         "-c",
         _BOOTSTRAP,
