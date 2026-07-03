@@ -241,7 +241,9 @@ async def test_resolve_build_grant_returns_build_grant(service: RealmService) ->
     assert grant.limits == {"workflow": "tool-builder"}
 
 
-async def test_resolve_build_grant_picks_highest_level(service: RealmService) -> None:
+async def test_resolve_build_grant_picks_most_recent(service: RealmService) -> None:
+    # Append-only ledger: the latest grant is the operator's standing decision,
+    # even when it demotes the level — trust must be revocable.
     realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "build", level=1)
     await service.grant_trust(realm.id, "build", level=5)
@@ -250,7 +252,7 @@ async def test_resolve_build_grant_picks_highest_level(service: RealmService) ->
     grant = await service.resolve_build_grant("forge")
 
     assert grant is not None
-    assert grant.level == 5
+    assert grant.level == 2
 
 
 async def test_resolve_build_grant_by_realm_id(service: RealmService) -> None:

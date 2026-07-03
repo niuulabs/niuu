@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from ravn.adapters.tool_build.http import (
@@ -206,8 +207,12 @@ class RealmClient:
         ]
         if not build_grants:
             return None
-        highest = max(build_grants, key=_grant_level)
-        return _grant_from_body(highest, realm_slug=realm_slug)
+        # Grants are an append-only ledger: the MOST RECENT build grant is the
+        # operator's standing decision — including demotions (a level-2 grant
+        # after a level-4 one must actually lower autonomy). Level only breaks
+        # timestamp ties.
+        effective = max(build_grants, key=lambda g: (_grant_recency(g), _grant_level(g)))
+        return _grant_from_body(effective, realm_slug=realm_slug)
 
     async def record_capability(
         self,
@@ -262,6 +267,24 @@ def _grant_level(grant: dict[str, Any]) -> int:
     if isinstance(level, bool) or not isinstance(level, int):
         return -1
     return level
+
+
+def _grant_recency(grant: dict[str, Any]) -> datetime:
+    """Sort key: the grant's ``granted_at`` timestamp (oldest when absent/invalid)."""
+    raw = grant.get("granted_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return _OLDEST_GRANT
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return _OLDEST_GRANT
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+#: Fallback recency for grants without a parseable timestamp — always loses.
+_OLDEST_GRANT = datetime.min.replace(tzinfo=UTC)
 
 
 def _grant_from_body(grant: dict[str, Any], *, realm_slug: str) -> BuildGrant:

@@ -72,22 +72,66 @@ def _grants_path(slug: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_resolve_build_grant_picks_highest_level_build_grant() -> None:
+async def test_resolve_build_grant_picks_most_recent_build_grant() -> None:
+    # Grants are an append-only ledger: the latest build grant is the standing
+    # decision, even when it DEMOTES the trust level — trust must be revocable.
     body = [
         {"action_class": "read", "level": 9, "limits": {}, "target": "mimir"},
-        {"action_class": "build", "level": 2, "limits": {"workflow": "old"}, "target": "t2"},
         {
             "action_class": "build",
             "level": 5,
-            "limits": {"workflow": "tool-builder"},
+            "limits": {"workflow": "old-builder"},
             "target": "t5",
+            "granted_at": "2026-06-01T10:00:00+00:00",
+        },
+        {
+            "action_class": "build",
+            "level": 2,
+            "limits": {"workflow": "tool-builder"},
+            "target": "t2",
+            "granted_at": "2026-07-01T10:00:00Z",
         },
     ]
     client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
 
     grant = await client.resolve_build_grant("payments")
 
-    assert grant == BuildGrant(level=5, limits={"workflow": "tool-builder"}, target="t5")
+    assert grant == BuildGrant(level=2, limits={"workflow": "tool-builder"}, target="t2")
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_breaks_timestamp_ties_by_level() -> None:
+    stamp = "2026-07-01T10:00:00+00:00"
+    body = [
+        {"action_class": "build", "level": 1, "limits": {}, "target": "a", "granted_at": stamp},
+        {"action_class": "build", "level": 3, "limits": {}, "target": "b", "granted_at": stamp},
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.level == 3
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_treats_unstamped_grants_as_oldest() -> None:
+    body = [
+        {"action_class": "build", "level": 5, "limits": {}, "target": "unstamped"},
+        {
+            "action_class": "build",
+            "level": 2,
+            "limits": {},
+            "target": "stamped",
+            "granted_at": "2026-07-01T10:00:00+00:00",
+        },
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.target == "stamped"
 
 
 @pytest.mark.asyncio

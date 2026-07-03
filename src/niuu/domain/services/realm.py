@@ -137,10 +137,12 @@ class RealmService:
         """Resolve the effective ``build`` trust grant for a realm.
 
         Accepts a realm slug (or the Valkyrie id, which is the realm slug) or a
-        realm UUID. Returns the highest-``level`` ``build`` grant so P3/P4 can
-        decide which Ting workflow the Valkyrie may commission and at what
-        autonomy level. Returns ``None`` when the realm is unknown or has no
-        ``build`` grant.
+        realm UUID. Trust grants are an append-only ledger, so the MOST RECENT
+        ``build`` grant is the operator's standing decision — including
+        demotions: granting level 2 after a level-4 grant must actually lower
+        the Valkyrie's autonomy (highest-level-wins would make trust
+        irrevocable). Level is only the tie-break for identical timestamps.
+        Returns ``None`` when the realm is unknown or has no ``build`` grant.
         """
         realm = await self._repo.get_realm(realm_slug_or_valkyrie_id)
         if realm is None:
@@ -151,4 +153,4 @@ class RealmService:
         if not build_grants:
             return None
 
-        return max(build_grants, key=lambda g: g.level)
+        return max(build_grants, key=lambda g: (g.granted_at, g.level))
