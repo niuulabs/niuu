@@ -358,6 +358,47 @@ class TestResidentEvolutionConfig:
         assert c.tool_builder_workflow.tags == ["tool-builder"]
         assert c.tool_builder_workflow.require_all_tags is True
 
+    def test_self_evolution_policy_defaults_match_the_previous_constants(self) -> None:
+        # P5a: these defaults must reproduce the constants they replaced
+        # bit-for-bit, so a config-less deployment behaves identically.
+        from ravn.adapters.tools.build_tool import (  # noqa: PLC0415
+            DEFAULT_MAX_REPAIR_ATTEMPTS,
+            SELF_REGISTERED_TOOL_CONFIDENCE,
+        )
+
+        c = ResidentEvolutionConfig()
+        assert c.build_repair_attempts == DEFAULT_MAX_REPAIR_ATTEMPTS == 3
+        assert c.self_registered_tool_confidence == SELF_REGISTERED_TOOL_CONFIDENCE == 0.74
+        assert c.trust_level_autonomy_table.autonomous == 2
+        assert c.trust_level_autonomy_table.yolo == 4
+        assert c.review_attention_tiers == ["present", "urgent"]
+        assert c.observational_actions == ["", "none", "n/a", "watch", "observe"]
+
+    def test_self_evolution_policy_values_are_configurable(self) -> None:
+        c = ResidentEvolutionConfig(
+            build_repair_attempts=7,
+            self_registered_tool_confidence=0.9,
+            trust_level_autonomy_table={"autonomous": 3, "yolo": 6},
+            review_attention_tiers=["ambient", "present", "urgent"],
+            observational_actions=["", "none"],
+        )
+
+        assert c.build_repair_attempts == 7
+        assert c.self_registered_tool_confidence == 0.9
+        assert c.trust_level_autonomy_table.autonomous == 3
+        assert c.trust_level_autonomy_table.yolo == 6
+        assert c.review_attention_tiers == ["ambient", "present", "urgent"]
+        assert c.observational_actions == ["", "none"]
+
+    def test_trust_level_autonomy_table_rejects_yolo_below_autonomous(self) -> None:
+        with pytest.raises(ValueError, match="must be >= trust_level_autonomy_table.autonomous"):
+            ResidentEvolutionConfig(trust_level_autonomy_table={"autonomous": 4, "yolo": 2})
+
+    def test_trust_level_autonomy_table_allows_equal_thresholds(self) -> None:
+        # yolo == autonomous is valid: no level resolves to 'autonomous'.
+        c = ResidentEvolutionConfig(trust_level_autonomy_table={"autonomous": 3, "yolo": 3})
+        assert c.trust_level_autonomy_table.yolo == 3
+
 
 class TestSettings:
     def test_defaults(self) -> None:

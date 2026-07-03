@@ -38,11 +38,13 @@ from ravn.valkyrie_evolution.tool_verification import (
 
 #: Confidence a freshly self-registered learned tool travels to the flock
 #: with — matching what the resident install pipeline assigns its own builds.
+#: Default for the ``flock_confidence`` kwarg; deployments override it via
+#: ``ResidentEvolutionConfig.self_registered_tool_confidence``.
 SELF_REGISTERED_TOOL_CONFIDENCE = 0.74
 
 #: How many verify+repair rounds a commissioned/authored build gets before we
-#: give up and fail loudly. P5 will wire this to config; the constructor kwarg
-#: exposes the knob today.
+#: give up and fail loudly. Default for the ``max_repair_attempts`` kwarg;
+#: deployments override it via ``ResidentEvolutionConfig.build_repair_attempts``.
 DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 
 ToolRegistrar = Callable[[ToolPort], None]
@@ -72,6 +74,7 @@ class BuildTool(ToolPort):
         build_backend: Any | None = None,
         investigation_context: Callable[[], str] | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+        flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -93,6 +96,7 @@ class BuildTool(ToolPort):
         self._build_backend = build_backend
         self._investigation_context = investigation_context
         self._max_repair_attempts = max_repair_attempts
+        self._flock_confidence = flock_confidence
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -241,6 +245,7 @@ class BuildTool(ToolPort):
                 valkyrie_id=self._valkyrie_id,
                 flock_id=self._flock_id,
                 domain=self._domain,
+                confidence=self._flock_confidence,
             )
             review = await self._review(resident_artifact)
             if review.blocking_findings:
@@ -509,7 +514,7 @@ class BuildTool(ToolPort):
                 domain=self._domain,
                 environment_id=self._environment_id,
                 source_valkyrie_id=self._valkyrie_id,
-                confidence=SELF_REGISTERED_TOOL_CONFIDENCE,
+                confidence=self._flock_confidence,
                 redaction_status="redacted",
                 promotion_id=artifact.artifact_id,
                 tool_code=artifact.tool_code,
@@ -553,6 +558,7 @@ def attach_build_tool(
     build_backend: Any | None = None,
     investigation_context: Callable[[], str] | None = None,
     max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+    flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -576,6 +582,7 @@ def attach_build_tool(
         build_backend=build_backend,
         investigation_context=investigation_context,
         max_repair_attempts=max_repair_attempts,
+        flock_confidence=flock_confidence,
     )
     registrar(tool, replace=replace)
     return tool
@@ -590,6 +597,7 @@ def _resident_learning_artifact(
     valkyrie_id: str,
     flock_id: str,
     domain: str,
+    confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
 ) -> ResidentLearningArtifact:
     """Project a learned tool into the shared resident-artifact envelope.
 
@@ -604,7 +612,7 @@ def _resident_learning_artifact(
         content="",
         artifact_type=artifact.artifact_type,
         scope="environment",
-        confidence=SELF_REGISTERED_TOOL_CONFIDENCE,
+        confidence=confidence,
         source_environment_id=environment_id,
         source_valkyrie_id=valkyrie_id,
         promotion_id=artifact.artifact_id,

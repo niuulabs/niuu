@@ -103,9 +103,7 @@ async def test_resolve_build_grant_returns_none_for_empty_slug() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_build_grant_raises_on_non_list_body() -> None:
-    client = _client(
-        {_grants_path("payments"): HttpResponse(status_code=200, body={"grants": []})}
-    )
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body={"grants": []})})
 
     with pytest.raises(ValueError, match="non-list body"):
         await client.resolve_build_grant("payments")
@@ -202,6 +200,27 @@ def test_workflow_selector_from_grant_none_when_workflow_blank_or_wrong_type() -
 )
 def test_autonomy_mode_for_trust_level_table(level: int, expected: str) -> None:
     assert autonomy_mode_for_trust_level(level) == expected
+
+
+@pytest.mark.parametrize(
+    ("level", "expected"),
+    [
+        (2, "guarded"),
+        (3, "autonomous"),
+        (4, "autonomous"),
+        (5, "yolo"),
+    ],
+)
+def test_autonomy_mode_for_trust_level_honours_config_thresholds(level: int, expected: str) -> None:
+    # P5a: the rung table comes from ResidentEvolutionConfig; stricter
+    # thresholds shift the same level to a more guarded mode.
+    mode = autonomy_mode_for_trust_level(level, autonomous_threshold=3, yolo_threshold=5)
+    assert mode == expected
+
+
+def test_autonomy_mode_for_trust_level_rejects_inverted_thresholds() -> None:
+    with pytest.raises(ValueError, match="must be >= autonomous_threshold"):
+        autonomy_mode_for_trust_level(3, autonomous_threshold=4, yolo_threshold=2)
 
 
 # ---------------------------------------------------------------------------
