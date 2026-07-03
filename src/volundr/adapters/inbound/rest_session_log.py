@@ -251,11 +251,12 @@ def create_session_log_router(
         # collision LOUDLY instead of letting it vanish.
         conflicts = await log_repository.detect_conflicts(entries)
         if conflicts:
+            safe_session_id = str(session_id).replace("\r", "").replace("\n", "")
             logger.warning(
                 "session_event_log conflict: distinct payload re-used stored seq(s) "
                 "%s for session %s — original frame retained (ON CONFLICT DO NOTHING)",
                 conflicts,
-                session_id,
+                safe_session_id,
             )
             await _append_conflict_sentinel(
                 log_repository, session_id=session_id, conflicting_seqs=conflicts, ts=now
