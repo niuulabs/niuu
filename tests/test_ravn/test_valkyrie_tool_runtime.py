@@ -709,6 +709,83 @@ def test_ensure_tool_venv_rejects_empty_tool_name(tmp_path) -> None:
         ensure_tool_venv(venvs_dir=tmp_path, tool_name="   ", requirements=[])
 
 
+def test_provisioning_prefers_uv_with_shared_hardlink_cache(tmp_path, monkeypatch) -> None:
+    # With uv available, venvs are hardlinked views into ONE shared cache:
+    # N tools sharing a package cost one download and one copy on disk.
+    calls: list[list[str]] = []
+    envs: list[dict[str, str]] = []
+
+    def _run(argv: list[str], **kwargs: Any) -> SimpleNamespace:
+        argv = [str(part) for part in argv]
+        calls.append(argv)
+        envs.append(dict(kwargs.get("env") or {}))
+        if "venv" in argv:
+            python = tool_venv_python(Path(argv[-1]))
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("#!fake-python\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", _run)
+    monkeypatch.setattr(tool_runtime_mod, "_uv_executable", lambda: "/usr/local/bin/uv")
+
+    ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a==1.0"])
+
+    assert calls[0][:2] == ["/usr/local/bin/uv", "venv"]
+    assert calls[1][:4] == ["/usr/local/bin/uv", "pip", "install", "--python"]
+    expected_cache = str(tmp_path / tool_runtime_mod.TOOL_VENV_UV_CACHE_DIRNAME)
+    for env in envs:
+        assert env["UV_CACHE_DIR"] == expected_cache
+        assert env["UV_LINK_MODE"] == "hardlink"
+
+
+def test_provisioning_falls_back_to_pip_without_uv(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", _fake_provisioning_subprocess(calls))
+    monkeypatch.setattr(tool_runtime_mod, "_uv_executable", lambda: None)
+
+    ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a==1.0"])
+
+    assert calls[0][1:3] == ["-m", "venv"]
+    assert calls[1][1:4] == ["-m", "pip", "install"]
+
+
+def test_remove_tool_venv_deletes_and_reports(tmp_path) -> None:
+    venv_dir = tmp_path / "old_tool"
+    venv_dir.mkdir(parents=True)
+    (venv_dir / "x").write_text("x", encoding="utf-8")
+
+    assert tool_runtime_mod.remove_tool_venv(venvs_dir=tmp_path, tool_name="old_tool") is True
+    assert not venv_dir.exists()
+    assert tool_runtime_mod.remove_tool_venv(venvs_dir=tmp_path, tool_name="old_tool") is False
+
+
+def test_prune_orphaned_tool_venvs_keeps_live_tools_and_the_cache(tmp_path) -> None:
+    tools_dir = tmp_path / "tools"
+    venvs_dir = tmp_path / "venvs"
+    tools_dir.mkdir()
+    for name in ("alive", "orphan"):
+        (venvs_dir / name).mkdir(parents=True)
+    (venvs_dir / tool_runtime_mod.TOOL_VENV_UV_CACHE_DIRNAME).mkdir()
+    (tools_dir / "alive.py").write_text("def run(signal):\n    return {}\n", encoding="utf-8")
+
+    pruned = tool_runtime_mod.prune_orphaned_tool_venvs(venvs_dir=venvs_dir, tools_dir=tools_dir)
+
+    assert pruned == ["orphan"]
+    assert (venvs_dir / "alive").exists()
+    # The shared uv cache is the dedup substrate, never a per-tool artifact.
+    assert (venvs_dir / tool_runtime_mod.TOOL_VENV_UV_CACHE_DIRNAME).exists()
+    assert not (venvs_dir / "orphan").exists()
+
+
+def test_prune_orphaned_tool_venvs_missing_dir_is_a_noop(tmp_path) -> None:
+    assert (
+        tool_runtime_mod.prune_orphaned_tool_venvs(
+            venvs_dir=tmp_path / "nope", tools_dir=tmp_path
+        )
+        == []
+    )
+
+
 async def test_local_runner_refuses_requirements_without_venvs_dir(tmp_path) -> None:
     path = write_tool(
         tools_dir=tmp_path,

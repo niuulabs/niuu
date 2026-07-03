@@ -25,6 +25,7 @@ from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
     TOOL_VENV_REQUIREMENTS_STAMP,
+    TOOL_VENV_UV_CACHE_DIRNAME,
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
@@ -174,18 +175,23 @@ class LocalLearnedToolRunner:
 
 
 class ForgeSandboxLearnedToolRunner:
-    """Run learned tools inside the Forge/devrunner Docker sandbox.
+    """OPTIONAL containerized execution backend — only where Docker exists.
 
-    This is the Phase 2 execution path: generated code is still the same Python
-    module, but it runs in an ephemeral workspace-mounted devrunner container
-    instead of the resident process namespace.
+    Scope this honestly: this runner requires a Docker daemon, which a
+    Kubernetes pod does not (and should not) have, so it is NOT the production
+    security boundary — in-cluster residents use the local backend. It exists
+    for hosts/VMs that already run Docker, where it adds container isolation
+    and network scoping (network-reach tools run with
+    :data:`NETWORK_ALLOWED_DOCKER_NETWORK`, others with
+    :data:`NETWORK_DENIED_DOCKER_NETWORK`; an injected shell whose network
+    mode is unknowable records ``enforcement="unavailable"`` — never faked).
 
-    Phase 5b: declared reach is enforced at this boundary. A tool whose
-    manifest grants network reach runs in a container with
-    :data:`NETWORK_ALLOWED_DOCKER_NETWORK`; everything else runs with
-    :data:`NETWORK_DENIED_DOCKER_NETWORK`. When a caller injects a shell whose
-    network mode cannot be determined (or cannot be switched off), the run
-    result records ``enforcement="unavailable"`` instead of faking isolation.
+    The security boundaries that actually hold EVERYWHERE are upstream and
+    downstream of execution: review/policy gating on declared reach before a
+    tool is adopted, independent verification of its code, least-privilege
+    short-lived credentials so a misbehaving tool's blast radius is bounded,
+    the audit trail, and rollback. Hard runtime isolation in Kubernetes means
+    pod-per-run execution (a future runner adapter), not Docker-in-pod.
     """
 
     def __init__(
@@ -818,11 +824,22 @@ def _forge_venv_provision_command(*, venv_dir: Path, requirements: Sequence[str]
 
     The venv lives on the shared workspace mount so the network-scoped run
     container sees what the networked provisioning container installed.
+    Prefers uv (the devrunner image ships it) with a shared hardlink cache
+    beside the venvs, so tools sharing a package cost one copy on disk; falls
+    back to stock venv+pip when uv is absent.
     """
     venv = shlex.quote(str(venv_dir))
     python = shlex.quote(str(venv_dir / "bin" / "python"))
+    cache = shlex.quote(str(venv_dir.parent / TOOL_VENV_UV_CACHE_DIRNAME))
     install = " ".join(shlex.quote(req) for req in requirements)
     return (
-        f"rm -rf {venv} && python -m venv {venv} && "
-        f"{python} -m pip install --disable-pip-version-check {install}"
+        f"rm -rf {venv} && "
+        f"if command -v uv >/dev/null 2>&1; then "
+        f"uv venv {venv} && "
+        f"UV_CACHE_DIR={cache} UV_LINK_MODE=hardlink "
+        f"uv pip install --python {python} {install}; "
+        f"else "
+        f"python -m venv {venv} && "
+        f"{python} -m pip install --disable-pip-version-check {install}; "
+        f"fi"
     )

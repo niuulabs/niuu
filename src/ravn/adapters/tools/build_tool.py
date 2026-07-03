@@ -17,6 +17,7 @@ from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     ForgeSandboxLearnedToolRunner,
     LearnedToolError,
+    learned_tool_venvs_dir,
     load_learned_tool,
     manifest_safety_class,
     write_learned_tool,
@@ -268,6 +269,10 @@ class BuildTool(ToolPort):
                 tool_path=tool_path,
                 timeout_seconds=self._timeout_seconds,
                 runner=self._runner_for_backend(),
+                # Canonical venv home beside the learned-tools dir: a freshly
+                # built tool with requirements must be runnable on the local
+                # backend, not refuse for want of a venvs_dir.
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
             )
 
             if isinstance(canary_input, dict):

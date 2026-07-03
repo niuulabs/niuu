@@ -36,16 +36,24 @@ DEFAULT_TOOL_VENV_CREATE_TIMEOUT_SECONDS = 120.0
 #: mismatch rebuilds the venv from scratch.
 TOOL_VENV_REQUIREMENTS_STAMP = ".requirements.txt"
 
-#: Environment variables a sandboxed tool subprocess is allowed to inherit.
-#: Everything else — bearer tokens, PATs, cloud credentials, all of which live
-#: in the resident's ambient environment — is withheld. A learned tool that
-#: legitimately needs a credential receives it through reach-scoped injection
-#: (Phase 5), never by inheriting the whole process environment. The TLS/proxy
-#: entries are non-secret transport config a corporate deployment needs for any
-#: outbound call (custom CA bundles, egress proxies) — withholding them breaks
-#: legitimate network-reach tools without protecting anything.
-#: This is the ONE sandbox env policy — verification (tool_verification) and
-#: execution import it from here so the two boundaries can never drift.
+#: Environment variables a tool subprocess is allowed to inherit. Everything
+#: else — bearer tokens, PATs, cloud credentials in the resident's ambient
+#: environment — is withheld.
+#:
+#: Be honest about what this is: hygiene against ACCIDENTAL leakage (tool code
+#: that dumps os.environ into results, logs, or an HTTP call — a common LLM
+#: failure mode), proven by test to keep secrets out of the child env. It is
+#: NOT a wall against a deliberately malicious tool: the subprocess runs as
+#: the same user, so files (mounted token paths, state dirs) remain readable.
+#: Containment of a hostile tool comes from the layers around execution —
+#: review gating on declared reach, independent verification, least-privilege
+#: short-lived credentials, audit, rollback — and, for a hard runtime wall,
+#: pod-per-run isolation (future runner adapter).
+#:
+#: The TLS/proxy entries are non-secret transport config a corporate
+#: deployment needs for any outbound call. This is the ONE env policy —
+#: verification (tool_verification) and execution both import it so the two
+#: can never drift.
 SANDBOX_ENV_PASSTHROUGH = (
     "PATH",
     "SYSTEMROOT",
@@ -199,6 +207,42 @@ def ensure_tool_venv(
         return python
 
 
+def remove_tool_venv(*, venvs_dir: str | Path, tool_name: str) -> bool:
+    """Delete a tool's dedicated venv; True when something was removed.
+
+    Called when the tool leaves the resident (rollback, archive) so dependency
+    environments never outlive the tools they served.
+    """
+    venv_dir = Path(venvs_dir) / _venv_dirname(tool_name)
+    with _venv_provision_lock(venv_dir):
+        if not venv_dir.exists():
+            return False
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        return True
+
+
+def prune_orphaned_tool_venvs(*, venvs_dir: str | Path, tools_dir: str | Path) -> list[str]:
+    """Remove venvs whose learned tool no longer exists; return pruned names.
+
+    Bounded-growth guarantee for the state volume: a venv only lives as long
+    as ``{tools_dir}/{name}.py`` does. The shared uv cache directory is never
+    pruned — it is the deduplication substrate, not a per-tool artifact.
+    """
+    root = Path(venvs_dir)
+    if not root.is_dir():
+        return []
+    code_dir = Path(tools_dir)
+    pruned: list[str] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if (code_dir / f"{child.name}.py").exists():
+            continue
+        if remove_tool_venv(venvs_dir=root, tool_name=child.name):
+            pruned.append(child.name)
+    return pruned
+
+
 _VENV_PROVISION_LOCKS: dict[str, threading.Lock] = {}
 _VENV_PROVISION_LOCKS_GUARD = threading.Lock()
 
@@ -217,14 +261,36 @@ def _venv_dirname(tool_name: str) -> str:
     return name
 
 
+#: Shared uv cache beside the per-tool venvs. With uv, a venv is hardlinked
+#: views into this one cache, so N tools sharing a package cost one copy on
+#: disk and one download — the whole point of preferring uv over pip here.
+TOOL_VENV_UV_CACHE_DIRNAME = ".uv-cache"
+
+
+def _uv_executable() -> str | None:
+    """The uv binary when available (both runtime images ship it), else None."""
+    return shutil.which("uv")
+
+
+def _provision_env(venvs_dir: Path) -> dict[str, str]:
+    """Scrubbed env for venv provisioning, with the shared uv cache configured."""
+    env = sandbox_env()
+    env["UV_CACHE_DIR"] = str(venvs_dir / TOOL_VENV_UV_CACHE_DIRNAME)
+    # Hardlink from the cache (same filesystem) so venvs deduplicate packages.
+    env["UV_LINK_MODE"] = "hardlink"
+    return env
+
+
 def _create_tool_venv(venv_dir: Path, *, timeout_seconds: float) -> None:
+    uv = _uv_executable()
+    command = [uv, "venv", str(venv_dir)] if uv else [sys.executable, "-m", "venv", str(venv_dir)]
     try:
         completed = subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "venv", str(venv_dir)],
+            command,
             check=False,
             capture_output=True,
             text=True,
-            env=_sandbox_env(),
+            env=_provision_env(venv_dir.parent),
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
@@ -244,13 +310,25 @@ def _pip_install_tool_requirements(
     *,
     timeout_seconds: float,
 ) -> None:
+    uv = _uv_executable()
+    if uv:
+        command = [uv, "pip", "install", "--python", str(python), *requirements]
+    else:
+        command = [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            *requirements,
+        ]
     try:
         completed = subprocess.run(  # noqa: S603
-            [str(python), "-m", "pip", "install", "--disable-pip-version-check", *requirements],
+            command,
             check=False,
             capture_output=True,
             text=True,
-            env=_sandbox_env(),
+            env=_provision_env(venv_dir.parent),
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:

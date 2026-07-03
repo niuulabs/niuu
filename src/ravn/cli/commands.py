@@ -1170,9 +1170,11 @@ def _load_resident_learned_tools(
     from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
         ForgeSandboxLearnedToolRunner,
         learned_tool_storage,
+        learned_tool_venvs_dir,
         load_learned_tool,
         read_learned_tool_artifact,
     )
+    from ravn.valkyrie_evolution.tool_runtime import prune_orphaned_tool_venvs  # noqa: PLC0415
 
     state_dir = _resident_ravn_state_dir(workspace)
     backend = settings.resident_evolution.learned_tool_execution_backend
@@ -1186,6 +1188,13 @@ def _load_resident_learned_tools(
     )
 
     code_dir, artifacts_dir = learned_tool_storage(state_dir)
+    venvs_dir = learned_tool_venvs_dir(state_dir)
+    try:
+        pruned = prune_orphaned_tool_venvs(venvs_dir=venvs_dir, tools_dir=code_dir)
+        if pruned:
+            logger.info("Pruned %d orphaned learned-tool venv(s): %s", len(pruned), pruned)
+    except Exception as exc:  # noqa: BLE001 — venv GC must never block startup
+        logger.warning("Learned-tool venv sweep failed: %s", exc)
     if not artifacts_dir.exists():
         return []
     seen = {tool.name for tool in existing_tools}
@@ -1203,6 +1212,7 @@ def _load_resident_learned_tools(
                 tool_path=tool_path,
                 timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
                 runner=runner,
+                venvs_dir=venvs_dir,
             )
         except Exception as exc:
             logger.warning("Failed to load learned tool artifact %s: %s", artifact_file, exc)

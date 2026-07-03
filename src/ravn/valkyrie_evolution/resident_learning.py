@@ -29,6 +29,7 @@ from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     learned_tool_artifact_path,
     learned_tool_storage,
+    learned_tool_venvs_dir,
     manifest_review_boundaries,
     manifest_safety_class,
     read_learned_tool_artifact,
@@ -388,6 +389,7 @@ class ResidentLearningRuntime:
         )
 
         await self._skills.archive(skill_name)
+        self._prune_tool_venv(skill_name)
 
         try:
             restored_artifact_id, restore_detail = await self._attempt_restore_of_superseded(
@@ -476,6 +478,20 @@ class ResidentLearningRuntime:
             "consecutiveFailures": lifecycle.consecutive_failures,
             "restoredArtifactId": restored_artifact_id,
         }
+
+    def _prune_tool_venv(self, skill_name: str) -> None:
+        """Best-effort: a rolled-back tool's dependency venv leaves with it."""
+        if self._tools_dir is None:
+            return
+        from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv  # noqa: PLC0415
+
+        try:
+            remove_tool_venv(
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+                tool_name=skill_name,
+            )
+        except Exception as exc:  # noqa: BLE001 — venv GC must never break a rollback
+            logger.warning("venv prune failed for %s: %s", skill_name, exc)
 
     async def _attempt_restore_of_superseded(
         self,
