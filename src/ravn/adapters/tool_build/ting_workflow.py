@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 _DONE_STATUSES = frozenset({"completed", "complete", "failed", "error", "cancelled"})
 _FAILED_STATUSES = frozenset({"failed", "error", "cancelled"})
 
+#: The one scope this backend's launch endpoint enforces
+#: (ting POST /api/v1/ting/workflows/{id}/launch). Requested at the workload
+#: exchange so the build token is least-privilege.
+TING_BUILD_SCOPE = "ting:workflow:launch"
+
 
 class TingWorkflowToolBuildBackend(ToolBuildBackend):
     """Launch a Ting workflow campaign to build the tool, retrieve the artifact."""
@@ -68,6 +73,7 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,
+                workload_scopes=[TING_BUILD_SCOPE],
             )
         )
         self._base_url = base_url.rstrip("/")

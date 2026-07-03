@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = frozenset({"stopped", "archived", "completed", "failed", "error"})
 _FAILED_STATUSES = frozenset({"failed", "error"})
 
+#: The one scope this backend's launch endpoint enforces
+#: (volundr POST /api/v1/forge/sessions). Requested at the workload exchange so
+#: the build token is least-privilege.
+FORGE_BUILD_SCOPE = "forge:session:create"
+
 
 class ForgeSessionToolBuildBackend(ToolBuildBackend):
     """Open a Forge session, task it to build the tool, retrieve the artifact."""
@@ -60,6 +65,7 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,
+                workload_scopes=[FORGE_BUILD_SCOPE],
             )
         )
         self._base_url = base_url.rstrip("/")

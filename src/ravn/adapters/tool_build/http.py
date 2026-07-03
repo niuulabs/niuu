@@ -42,6 +42,7 @@ def client_from_workload_identity(
     workload_token_file: str = "",
     workload_exchange_url: str = "",
     workload_audiences: list[str] | None = None,
+    workload_scopes: list[str] | None = None,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> HttpxJsonClient:
@@ -50,6 +51,10 @@ def client_from_workload_identity(
     In-cluster Ravn/Valkyrie calls use projected workload identity by default.
     ``external_token_env`` is intentionally explicit for non-cluster callers
     that still need to bring an already-issued bearer token.
+
+    ``workload_scopes`` requests a least-privilege valkyrie_build token at the
+    exchange — a build backend passes exactly the scope its launch endpoint
+    enforces, so a leaked build token cannot do anything else.
     """
     if external_token_env:
         return HttpxJsonClient(
@@ -62,6 +67,7 @@ def client_from_workload_identity(
             token_file=workload_token_file,
             exchange_url=workload_exchange_url,
             audiences=workload_audiences,
+            scopes=workload_scopes,
             timeout_seconds=timeout_seconds,
             transport=transport,
         ),
