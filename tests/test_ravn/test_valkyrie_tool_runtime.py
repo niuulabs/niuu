@@ -3,17 +3,36 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+import ravn.adapters.tools.terminal_docker as terminal_docker
+import ravn.valkyrie_evolution.learned_tools as learned_tools_mod
+import ravn.valkyrie_evolution.tool_runtime as tool_runtime_mod
 from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewStatus, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
+    NETWORK_ALLOWED_DOCKER_NETWORK,
+    NETWORK_DENIED_DOCKER_NETWORK,
+    REACH_ENFORCEMENT_ENFORCED,
+    REACH_ENFORCEMENT_UNAVAILABLE,
+    ForgeSandboxLearnedToolRunner,
     LearnedToolError,
+    LocalLearnedToolRunner,
+    learned_tool_artifact_path,
     learned_tool_path,
+    learned_tool_venvs_dir,
     load_learned_tool,
+    reach_allows_network,
     read_learned_tool_artifact,
+    superseded_artifact_path,
     tool_implementation_findings,
     write_learned_tool,
     write_learned_tool_artifact,
@@ -29,7 +48,15 @@ from ravn.valkyrie_evolution.resident_learning import (
     ResidentLearningIdentity,
     ResidentLearningRuntime,
 )
-from ravn.valkyrie_evolution.tool_runtime import run_tool, tool_path_for_skill, write_tool
+from ravn.valkyrie_evolution.tool_runtime import (
+    ToolRunResult,
+    ToolVenvError,
+    ensure_tool_venv,
+    run_tool,
+    tool_path_for_skill,
+    tool_venv_python,
+    write_tool,
+)
 from sleipnir.adapters.in_process import InProcessBus
 from tests.ravn.fixtures.skills import probe_skill_content
 
@@ -584,3 +611,629 @@ async def test_healthy_proposed_tool_passes_canary_and_is_adopted(tmp_path) -> N
     decision = await peer.evaluate_and_apply(artifact)
     assert decision.action == "adopted"
     assert decision.canary_passed is True
+
+
+# ---------------------------------------------------------------------------
+# Per-tool dependency venvs (P6.1)
+# ---------------------------------------------------------------------------
+
+
+async def test_tool_runs_with_its_dedicated_venv_python(tmp_path) -> None:
+    """Happy path against a REAL venv: provision once, execute with its python."""
+    venvs_dir = learned_tool_venvs_dir(tmp_path)
+    python = ensure_tool_venv(venvs_dir=venvs_dir, tool_name="stdlib_probe", requirements=[])
+    assert python.is_file()
+    assert python == tool_venv_python(venvs_dir / "stdlib_probe")
+
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="stdlib_probe",
+        tool_code="import sys\n\ndef run(signal):\n    return {'executable': sys.executable}\n",
+    )
+    result = await run_tool(path, {}, python_executable=python)
+    assert result.ok
+    assert "stdlib_probe" in result.result["executable"]
+
+    # An unchanged requirement list is a no-op: the venv is not rebuilt.
+    marker = python.parent / "provisioned-once.marker"
+    marker.write_text("keep", encoding="utf-8")
+    again = ensure_tool_venv(venvs_dir=venvs_dir, tool_name="stdlib_probe", requirements=[])
+    assert again == python
+    assert marker.is_file()
+
+
+def test_ensure_tool_venv_pip_failure_is_loud(tmp_path) -> None:
+    """A nonexistent local-path requirement fails pip fast — and loudly."""
+    with pytest.raises(ToolVenvError, match="pip install"):
+        ensure_tool_venv(
+            venvs_dir=tmp_path / "venvs",
+            tool_name="broken_deps",
+            requirements=[str(tmp_path / "definitely-not-a-real-package")],
+        )
+    # No half-provisioned venv is left behind to masquerade as a working one.
+    assert not (tmp_path / "venvs" / "broken_deps").exists()
+
+
+def _fake_provisioning_subprocess(calls: list[list[str]], *, pip_returncode: int = 0) -> Any:
+    def _run(argv: list[str], **_: Any) -> SimpleNamespace:
+        argv = [str(part) for part in argv]
+        calls.append(argv)
+        if "venv" in argv:
+            python = tool_venv_python(Path(argv[-1]))
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("#!fake-python\n", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=pip_returncode, stdout="", stderr="no such package")
+
+    return _run
+
+
+def test_ensure_tool_venv_stamp_makes_reprovisioning_a_noop(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", _fake_provisioning_subprocess(calls))
+    python = ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a==1.0"])
+    assert python.is_file()
+    assert len(calls) == 2  # venv creation + pip install
+    assert "pkg-a==1.0" in calls[1]
+
+    same = ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a==1.0"])
+    assert same == python
+    assert len(calls) == 2  # stamp matched: no subprocess at all
+
+
+def test_ensure_tool_venv_rebuilds_when_requirements_change(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", _fake_provisioning_subprocess(calls))
+    ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a==1.0"])
+    ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-b==2.0"])
+    assert len(calls) == 4  # a changed list rebuilds: venv + pip again
+    assert "pkg-b==2.0" in calls[3]
+    stamp = tmp_path / "dep_tool" / tool_runtime_mod.TOOL_VENV_REQUIREMENTS_STAMP
+    assert stamp.read_text(encoding="utf-8") == "pkg-b==2.0"
+
+
+def test_ensure_tool_venv_mocked_pip_failure_raises_and_cleans_up(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        tool_runtime_mod.subprocess,
+        "run",
+        _fake_provisioning_subprocess(calls, pip_returncode=1),
+    )
+    with pytest.raises(ToolVenvError, match="no such package"):
+        ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a"])
+    assert not (tmp_path / "dep_tool").exists()
+
+
+def test_ensure_tool_venv_rejects_empty_tool_name(tmp_path) -> None:
+    with pytest.raises(ToolVenvError, match="empty tool name"):
+        ensure_tool_venv(venvs_dir=tmp_path, tool_name="   ", requirements=[])
+
+
+async def test_local_runner_refuses_requirements_without_venvs_dir(tmp_path) -> None:
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="needs_deps",
+        tool_code="def run(signal):\n    return {}\n",
+    )
+    runner = LocalLearnedToolRunner()
+    result = await runner.run(
+        path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx>=0.27"]
+    )
+    assert not result.ok
+    assert "venvs_dir" in result.error
+    assert "without its dependencies" in result.error
+
+
+async def test_local_runner_provisions_venv_and_runs_with_its_python(tmp_path, monkeypatch) -> None:
+    provisioned: list[dict[str, Any]] = []
+
+    def fake_ensure(**kwargs: Any) -> Path:
+        provisioned.append(kwargs)
+        return Path(sys.executable)
+
+    monkeypatch.setattr(learned_tools_mod, "ensure_tool_venv", fake_ensure)
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="needs_deps",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = LocalLearnedToolRunner(venvs_dir=tmp_path / "venvs")
+    result = await runner.run(
+        path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx>=0.27"]
+    )
+    assert result.ok
+    assert provisioned[0]["tool_name"] == "needs_deps"
+    assert provisioned[0]["requirements"] == ["httpx>=0.27"]
+    assert provisioned[0]["venvs_dir"] == tmp_path / "venvs"
+
+
+async def test_local_runner_venv_provisioning_failure_is_loud(tmp_path, monkeypatch) -> None:
+    def fake_ensure(**_: Any) -> Path:
+        raise ToolVenvError("pip install failed for httpx")
+
+    monkeypatch.setattr(learned_tools_mod, "ensure_tool_venv", fake_ensure)
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="needs_deps",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = LocalLearnedToolRunner(venvs_dir=tmp_path / "venvs")
+    result = await runner.run(
+        path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+    )
+    assert not result.ok
+    assert "provisioning failed" in result.error
+    assert "pip install failed" in result.error
+
+
+async def test_learned_tool_threads_requirements_and_reach_to_its_runner(tmp_path) -> None:
+    class _RecordingRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def run(
+            self,
+            tool_path: Path,
+            payload: dict[str, Any],
+            *,
+            entry_point: str,
+            timeout_seconds: float,
+            requirements: Any = (),
+            declared_reach: Any = (),
+        ) -> ToolRunResult:
+            self.calls.append(
+                {"requirements": list(requirements), "declared_reach": list(declared_reach)}
+            )
+            return ToolRunResult(ok=True, result={"ok": True})
+
+    artifact = replace(_learned_tool_artifact(), requirements=["httpx>=0.27"])
+    tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+    recorder = _RecordingRunner()
+    tool = load_learned_tool(artifact=artifact, tool_path=tool_path, runner=recorder)
+
+    result = await tool.execute({"query": "up"})
+
+    assert not result.is_error
+    assert recorder.calls[0]["requirements"] == ["httpx>=0.27"]
+    assert recorder.calls[0]["declared_reach"] == artifact.manifest.declared_reach
+
+
+async def test_learned_tool_surfaces_runner_failures_with_stderr(tmp_path) -> None:
+    class _FailingRunner:
+        async def run(self, tool_path: Path, payload: dict[str, Any], **_: Any) -> ToolRunResult:
+            return ToolRunResult(ok=False, error="venv exploded", stderr="trace: boom")
+
+    artifact = _learned_tool_artifact()
+    tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+    tool = load_learned_tool(artifact=artifact, tool_path=tool_path, runner=_FailingRunner())
+
+    result = await tool.execute({"query": "up"})
+
+    assert result.is_error
+    assert "venv exploded" in result.content
+    assert "trace: boom" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Reach-enforced execution (P5b)
+# ---------------------------------------------------------------------------
+
+
+def test_reach_allows_network_derivation() -> None:
+    network = [ToolReachGrant(kind="network", access="read")]
+    http_prefixed = [ToolReachGrant(kind="HTTP_GET", access="read")]
+    compute_only = [ToolReachGrant(kind="pure_compute", access="read")]
+    filesystem = [ToolReachGrant(kind="filesystem", access="read_write")]
+
+    assert reach_allows_network(network) is True
+    assert reach_allows_network(http_prefixed) is True
+    assert reach_allows_network(compute_only) is False
+    assert reach_allows_network(filesystem) is False
+    assert reach_allows_network([]) is False
+
+
+async def test_local_runner_is_honest_about_reach_and_warns_once(tmp_path, caplog) -> None:
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="no_net_probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = LocalLearnedToolRunner()
+    assert runner.enforces_reach is False
+
+    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
+        first = await runner.run(path, {}, entry_point="run", timeout_seconds=5.0)
+        second = await runner.run(path, {}, entry_point="run", timeout_seconds=5.0)
+    assert first.ok and second.ok
+    warnings = [rec for rec in caplog.records if "NOT enforced" in rec.message]
+    assert len(warnings) == 1  # one-time honesty warning, not a flood
+
+
+async def test_local_runner_does_not_warn_for_network_granting_tools(tmp_path, caplog) -> None:
+    path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="net_probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = LocalLearnedToolRunner()
+    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
+        result = await runner.run(
+            path,
+            {},
+            entry_point="run",
+            timeout_seconds=5.0,
+            declared_reach=[ToolReachGrant(kind="network", access="read")],
+        )
+    assert result.ok
+    assert not [rec for rec in caplog.records if "NOT enforced" in rec.message]
+
+
+class _FakeDockerShell:
+    """Stands in for DockerPersistentShell without touching docker."""
+
+    def __init__(
+        self,
+        *,
+        config: Any = None,
+        workspace_root: Any = None,
+        timeout_seconds: Any = None,
+    ) -> None:
+        if config is not None:
+            self._config = config
+        self.started = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def run(self, command: str) -> tuple[str, int]:
+        return '{"ok": true}', 0
+
+
+async def test_forge_runner_scopes_container_network_to_declared_reach(
+    tmp_path, monkeypatch
+) -> None:
+    created: list[_FakeDockerShell] = []
+
+    class _TrackingShell(_FakeDockerShell):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path)
+    assert runner.enforces_reach is True
+
+    isolated = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+    )
+    networked = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5.0,
+        declared_reach=[ToolReachGrant(kind="network", access="read")],
+    )
+    repeat = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+    )
+
+    assert isolated.ok and networked.ok and repeat.ok
+    assert isolated.enforcement == REACH_ENFORCEMENT_ENFORCED
+    assert networked.enforcement == REACH_ENFORCEMENT_ENFORCED
+    assert [shell._config.network for shell in created] == [
+        NETWORK_DENIED_DOCKER_NETWORK,
+        NETWORK_ALLOWED_DOCKER_NETWORK,
+    ]
+    assert all(shell.started for shell in created)
+    assert len(created) == 2  # shells are cached per network mode
+
+
+async def test_forge_runner_records_unavailable_enforcement_for_opaque_shell(
+    tmp_path, caplog
+) -> None:
+    shell = _FakeDockerShell()  # no _config: network mode is unknowable
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+    assert runner.enforces_reach is False
+
+    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
+        first = await runner.run(
+            tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+        )
+        second = await runner.run(
+            tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+        )
+    assert first.ok and second.ok
+    assert first.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    assert second.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    warnings = [rec for rec in caplog.records if "cannot express network isolation" in rec.message]
+    assert len(warnings) == 1
+
+
+async def test_forge_runner_injected_isolated_shell_counts_as_enforced(tmp_path) -> None:
+    shell = _FakeDockerShell(config=SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK))
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+    assert runner.enforces_reach is True
+
+    result = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+    )
+    assert result.ok
+    assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+
+
+async def test_forge_runner_injected_networked_shell_cannot_enforce_isolation(tmp_path) -> None:
+    shell = _FakeDockerShell(config=SimpleNamespace(network="bridge"))
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+
+    no_reach = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, declared_reach=[]
+    )
+    with_reach = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5.0,
+        declared_reach=[ToolReachGrant(kind="api", access="read")],
+    )
+    # A networked shell cannot deny reach the tool never declared…
+    assert no_reach.enforcement == REACH_ENFORCEMENT_UNAVAILABLE
+    # …but it satisfies a tool whose reach grants network access.
+    assert with_reach.enforcement == REACH_ENFORCEMENT_ENFORCED
+
+
+async def test_forge_runner_warns_once_about_unprovisioned_requirements(tmp_path, caplog) -> None:
+    shell = _FakeDockerShell(config=SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK))
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
+        await runner.run(
+            tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+        )
+        await runner.run(
+            tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+        )
+    warnings = [rec for rec in caplog.records if "per-tool dependencies" in rec.message]
+    assert len(warnings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Version chain (P6.3): supersedes linking + archive
+# ---------------------------------------------------------------------------
+
+
+def _versioned_artifact(artifact_id: str, version: int) -> LearnedToolArtifact:
+    return LearnedToolArtifact(
+        artifact_id=artifact_id,
+        manifest=_learned_tool_artifact().manifest,
+        tool_code=f"def run(input):\n    return {{'version': {version}}}\n",
+    )
+
+
+def test_second_artifact_write_links_and_archives_the_first(tmp_path) -> None:
+    v1 = _versioned_artifact("learned-tool:v1", 1)
+    v2 = _versioned_artifact("learned-tool:v2", 2)
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    path = write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v2)
+
+    current = read_learned_tool_artifact(path)
+    assert current.artifact_id == "learned-tool:v2"
+    assert current.supersedes == "learned-tool:v1"
+
+    archived_path = superseded_artifact_path(tmp_path, v1.manifest.name, "learned-tool:v1")
+    archived = read_learned_tool_artifact(archived_path)
+    assert archived.artifact_id == "learned-tool:v1"
+    assert archived.supersedes == ""
+    # The archive must never be picked up by the daemon's *.json glob.
+    assert archived_path.parent != Path(tmp_path)
+
+
+def test_rewriting_the_same_version_preserves_the_chain_link(tmp_path) -> None:
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=_versioned_artifact("id:v1", 1))
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=_versioned_artifact("id:v2", 2))
+    # A same-id rewrite (refreshed provenance) arrives without the link set.
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path, artifact=_versioned_artifact("id:v2", 2)
+    )
+    assert read_learned_tool_artifact(path).supersedes == "id:v1"
+
+
+def test_restoring_the_predecessor_does_not_create_a_cycle(tmp_path) -> None:
+    v1 = _versioned_artifact("learned-tool:v1", 1)
+    v2 = _versioned_artifact("learned-tool:v2", 2)
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v2)
+
+    # Rollback writes v1 back over v2: no v1 -> v2 link may appear.
+    path = write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    restored = read_learned_tool_artifact(path)
+    assert restored.artifact_id == "learned-tool:v1"
+    assert restored.supersedes == ""
+    # The rolled-back v2 is preserved in the archive for the audit trail.
+    assert superseded_artifact_path(tmp_path, v2.manifest.name, "learned-tool:v2").is_file()
+
+
+def test_corrupt_existing_envelope_fails_the_write_loudly(tmp_path) -> None:
+    v1 = _versioned_artifact("learned-tool:v1", 1)
+    path = learned_tool_artifact_path(tmp_path, v1.manifest.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(LearnedToolError, match="not valid"):
+        write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+
+
+def test_learned_tool_artifact_round_trips_supersedes_with_legacy_default() -> None:
+    artifact = replace(_learned_tool_artifact(), supersedes="learned-tool:v0")
+    assert LearnedToolArtifact.from_dict(artifact.to_dict()).supersedes == "learned-tool:v0"
+    # A pre-P6.3 envelope has no key on disk; the default is an empty chain.
+    legacy = artifact.to_dict()
+    del legacy["supersedes"]
+    assert LearnedToolArtifact.from_dict(legacy).supersedes == ""
+
+
+def test_same_id_rewrite_without_a_chain_stays_unlinked(tmp_path) -> None:
+    v1 = _versioned_artifact("learned-tool:v1", 1)
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    path = write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    assert read_learned_tool_artifact(path).supersedes == ""
+
+
+def test_caller_set_supersedes_is_honored_over_the_auto_link(tmp_path) -> None:
+    v1 = _versioned_artifact("learned-tool:v1", 1)
+    v2 = replace(_versioned_artifact("learned-tool:v2", 2), supersedes="custom:origin")
+    write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v1)
+    path = write_learned_tool_artifact(artifacts_dir=tmp_path, artifact=v2)
+    assert read_learned_tool_artifact(path).supersedes == "custom:origin"
+    # The previous version is still archived even when the caller owns the link.
+    assert superseded_artifact_path(tmp_path, v1.manifest.name, "learned-tool:v1").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Venv provisioning failure modes + forge sandbox run failure surfaces
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_tool_venv_creation_failure_is_loud(tmp_path, monkeypatch) -> None:
+    def broken_venv(argv: list[str], **_: Any) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="ensurepip exploded")
+
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", broken_venv)
+    with pytest.raises(ToolVenvError, match="venv creation failed"):
+        ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=[])
+
+
+def test_ensure_tool_venv_creation_timeout_is_loud(tmp_path, monkeypatch) -> None:
+    def hanging_venv(argv: list[str], **_: Any) -> SimpleNamespace:
+        raise tool_runtime_mod.subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", hanging_venv)
+    with pytest.raises(ToolVenvError, match="venv creation timed out"):
+        ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=[])
+
+
+def test_ensure_tool_venv_pip_timeout_is_loud_and_cleans_up(tmp_path, monkeypatch) -> None:
+    def fake_run(argv: list[str], **_: Any) -> SimpleNamespace:
+        argv = [str(part) for part in argv]
+        if "venv" in argv:
+            python = tool_venv_python(Path(argv[-1]))
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("#!fake-python\n", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise tool_runtime_mod.subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
+    monkeypatch.setattr(tool_runtime_mod.subprocess, "run", fake_run)
+    with pytest.raises(ToolVenvError, match="pip install timed out"):
+        ensure_tool_venv(venvs_dir=tmp_path, tool_name="dep_tool", requirements=["pkg-a"])
+    assert not (tmp_path / "dep_tool").exists()
+
+
+class _ScriptedShell(_FakeDockerShell):
+    """Fake docker shell whose run() output is scripted per test."""
+
+    def __init__(self, output: Any, exit_code: int = 0, raises: Exception | None = None) -> None:
+        super().__init__(config=SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK))
+        self._output = output
+        self._exit_code = exit_code
+        self._raises = raises
+
+    async def run(self, command: str) -> tuple[str, int]:
+        if self._raises is not None:
+            raise self._raises
+        return self._output, self._exit_code
+
+
+async def test_forge_runner_rejects_tool_paths_outside_the_workspace(tmp_path) -> None:
+    inside = tmp_path / "workspace"
+    inside.mkdir()
+    outside_tool = write_tool(
+        tools_dir=tmp_path / "elsewhere",
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(
+        workspace_root=inside, shell=_ScriptedShell('{"ok": true}')
+    )
+    result = await runner.run(outside_tool, {}, entry_point="run", timeout_seconds=5.0)
+    assert not result.ok
+    assert "inside workspace" in result.error
+
+
+async def test_forge_runner_surfaces_shell_failures_with_enforcement(tmp_path) -> None:
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {}\n",
+    )
+
+    async def run_case(shell: _ScriptedShell) -> Any:
+        runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+        return await runner.run(tool_path, {}, entry_point="run", timeout_seconds=5.0)
+
+    crashed = await run_case(_ScriptedShell("", raises=RuntimeError("container gone")))
+    assert not crashed.ok
+    assert "forge sandbox execution failed" in crashed.error
+
+    nonzero = await run_case(_ScriptedShell("traceback", exit_code=2))
+    assert not nonzero.ok
+    assert "status 2" in nonzero.error
+
+    not_json = await run_case(_ScriptedShell("definitely not json"))
+    assert not not_json.ok
+    assert "non-JSON" in not_json.error
+
+    not_object = await run_case(_ScriptedShell("[1, 2]"))
+    assert not not_object.ok
+    assert "JSON object" in not_object.error
+
+    # Every failure surface still reports the enforcement honestly.
+    for result in (crashed, nonzero, not_json, not_object):
+        assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+
+
+async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) -> None:
+    created: list[Any] = []
+
+    class _TrackingShell(_FakeDockerShell):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(terminal_docker, "DockerPersistentShell", _TrackingShell)
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    # A plain config object has no model_copy; it cannot be re-scoped per
+    # network mode, so the runner uses it as-is and reports its actual mode.
+    config = SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK, image="custom:image")
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, docker_config=config)
+
+    result = await runner.run(tool_path, {}, entry_point="run", timeout_seconds=5.0)
+
+    assert result.ok
+    assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+    assert created[0]._config is config
