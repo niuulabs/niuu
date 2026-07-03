@@ -133,9 +133,7 @@ class RealmService:
         )
         return saved
 
-    async def resolve_build_grant(
-        self, realm_slug_or_valkyrie_id: UUID | str
-    ) -> TrustGrant | None:
+    async def resolve_build_grant(self, realm_slug_or_valkyrie_id: UUID | str) -> TrustGrant | None:
         """Resolve the effective ``build`` trust grant for a realm.
 
         Accepts a realm slug (or the Valkyrie id, which is the realm slug) or a

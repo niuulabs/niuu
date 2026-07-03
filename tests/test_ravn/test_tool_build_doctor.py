@@ -129,18 +129,14 @@ async def test_ting_happy_path_all_pass() -> None:
         {"id": "wf-research", "name": "Research", "tags": ["research"]},
         {"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]},
     ]
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
     backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
     settings = _settings(
         adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
         selector={"tags": ["tool-builder"]},
     )
 
-    with patch(
-        "ravn.cli.commands._build_tool_build_backend", return_value=backend
-    ):
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
 
     statuses = _statuses(report)
@@ -156,9 +152,7 @@ async def test_ting_happy_path_all_pass() -> None:
 
 
 async def test_forge_happy_path_skips_workflow_hop() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/forge/health"): HttpResponse(200, {"status": "ok"})}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/forge/health"): HttpResponse(200, {"status": "ok"})})
     backend = _forge_backend(client)
     settings = _settings(adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend")
 
@@ -211,9 +205,7 @@ async def test_construct_returns_none_fails() -> None:
 
 async def test_auth_external_token_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TB_TOKEN", "secret-value")
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/forge/health"): HttpResponse(200, {})}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/forge/health"): HttpResponse(200, {})})
     backend = _forge_backend(client)
     settings = _settings(
         adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend",
@@ -233,9 +225,7 @@ async def test_auth_external_token_env_set(monkeypatch: pytest.MonkeyPatch) -> N
 
 async def test_auth_external_token_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TB_TOKEN_MISSING", raising=False)
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/forge/health"): HttpResponse(200, {})}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/forge/health"): HttpResponse(200, {})})
     backend = _forge_backend(client)
     settings = _settings(
         adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend",
@@ -286,9 +276,7 @@ async def test_reachability_connection_error_fails() -> None:
 
 
 async def test_ting_reachability_failure_skips_workflow_hop() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(500, "boom")}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(500, "boom")})
     backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
     settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
 
@@ -306,9 +294,7 @@ async def test_ting_reachability_failure_skips_workflow_hop() -> None:
 
 
 async def test_workflow_id_configured_directly_passes() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])})
     backend = _ting_backend(client, workflow_id="wf-explicit")
     settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
 
@@ -321,9 +307,7 @@ async def test_workflow_id_configured_directly_passes() -> None:
 
 
 async def test_workflow_no_selector_and_no_id_fails() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])})
     backend = _ting_backend(client)
     settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
 
@@ -337,9 +321,7 @@ async def test_workflow_no_selector_and_no_id_fails() -> None:
 
 async def test_workflow_zero_matches_fails() -> None:
     workflows = [{"id": "wf-research", "name": "Research", "tags": ["research"]}]
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
     backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
     settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
 
@@ -356,9 +338,7 @@ async def test_workflow_multiple_matches_fails() -> None:
         {"id": "wf-a", "name": "Builder A", "tags": ["tool-builder"]},
         {"id": "wf-b", "name": "Builder B", "tags": ["tool-builder"]},
     ]
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
     backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
     settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
 
@@ -388,9 +368,7 @@ async def test_workflow_discovery_non_list_body_fails() -> None:
 async def test_workflow_relist_non_200_fails() -> None:
     """Hop 4 lists workflows once; Hop 5 re-lists — a flapping endpoint FAILs."""
     workflows = [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
-    responses = iter(
-        [HttpResponse(200, workflows), HttpResponse(500, "flap")]
-    )
+    responses = iter([HttpResponse(200, workflows), HttpResponse(500, "flap")])
 
     class _FlappingClient(_FakeHttpClient):
         async def get(self, url: str) -> HttpResponse:
@@ -428,9 +406,7 @@ class _NoClientBackend:
 async def test_reachability_without_base_url_fails() -> None:
     settings = _settings(adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend")
 
-    with patch(
-        "ravn.cli.commands._build_tool_build_backend", return_value=_NoBaseUrlBackend()
-    ):
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=_NoBaseUrlBackend()):
         report = await diagnose_tool_build(settings)
 
     assert report.hops[3].status is HopStatus.FAIL
@@ -440,9 +416,7 @@ async def test_reachability_without_base_url_fails() -> None:
 async def test_reachability_without_client_fails() -> None:
     settings = _settings(adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend")
 
-    with patch(
-        "ravn.cli.commands._build_tool_build_backend", return_value=_NoClientBackend()
-    ):
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=_NoClientBackend()):
         report = await diagnose_tool_build(settings)
 
     assert report.hops[3].status is HopStatus.FAIL
@@ -463,9 +437,7 @@ def test_cli_no_adapter_all_skip_exit_zero() -> None:
 
 
 def test_cli_json_output_happy_path() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/forge/health"): HttpResponse(200, {"status": "ok"})}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/forge/health"): HttpResponse(200, {"status": "ok"})})
     backend = _forge_backend(client)
     settings = _settings(adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend")
 
@@ -483,9 +455,7 @@ def test_cli_json_output_happy_path() -> None:
 
 
 def test_cli_failure_exits_nonzero() -> None:
-    client = _FakeHttpClient(
-        {("GET", "/api/v1/forge/health"): HttpResponse(503, "down")}
-    )
+    client = _FakeHttpClient({("GET", "/api/v1/forge/health"): HttpResponse(503, "down")})
     backend = _forge_backend(client)
     settings = _settings(adapter="ravn.adapters.tool_build.ForgeSessionToolBuildBackend")
 

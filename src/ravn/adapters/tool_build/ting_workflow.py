@@ -218,6 +218,14 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
         body: dict[str, Any] = {
             "prompt": initial_prompt,
             "sessionName": f"tool-build-{request.name}",
+            # Attribution: which Valkyrie commissioned this campaign, and for
+            # what — surfaces in Ting's campaign records and audit trails.
+            "provenance": {
+                "builder": "ravn.tool_build",
+                "valkyrie_id": request.valkyrie_id,
+                "environment_id": request.environment_id,
+                "tool_name": request.name,
+            },
         }
         if self._repo:
             body["repo"] = self._repo

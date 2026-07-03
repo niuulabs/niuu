@@ -75,6 +75,7 @@ class _FakeHttpClient:
     def __init__(self, routes: dict[tuple[str, str], list[HttpResponse]]) -> None:
         self._routes = {key: list(values) for key, values in routes.items()}
         self.calls: list[tuple[str, str]] = []
+        self.post_bodies: list[dict] = []
 
     def _match(self, method: str, url: str) -> HttpResponse:
         for (route_method, suffix), responses in self._routes.items():
@@ -88,6 +89,7 @@ class _FakeHttpClient:
 
     async def post(self, url: str, json_body: dict) -> HttpResponse:
         self.calls.append(("POST", url))
+        self.post_bodies.append(json_body)
         return self._match("POST", url)
 
 
@@ -128,9 +130,7 @@ def test_parse_tool_build_document_rejects_non_object() -> None:
 
 def test_parse_tool_build_document_requires_manifest_and_code() -> None:
     with pytest.raises(ToolBuildError, match="missing a manifest object"):
-        parse_tool_build_document(
-            {"tool_code": "def run(input):\n    return {}\n"}, tool_name="x"
-        )
+        parse_tool_build_document({"tool_code": "def run(input):\n    return {}\n"}, tool_name="x")
     with pytest.raises(ToolBuildError, match="missing tool_code"):
         parse_tool_build_document({"manifest": {"name": "x"}}, tool_name="x")
 
@@ -241,9 +241,7 @@ async def test_forge_session_backend_decodes_raw_json_file_body() -> None:
             ("POST", "/api/v1/forge/sessions"): [HttpResponse(201, {"id": "sess-1"})],
             ("GET", "/api/v1/forge/sessions/sess-1"): [HttpResponse(200, {"status": "completed"})],
             # A non-JSON transport returns the file body as raw text.
-            ("GET", "path=learned_tool.json&root=workspace"): [
-                HttpResponse(200, _BUILT_CONTRACT)
-            ],
+            ("GET", "path=learned_tool.json&root=workspace"): [HttpResponse(200, _BUILT_CONTRACT)],
         }
     )
     backend = ForgeSessionToolBuildBackend(
@@ -342,6 +340,13 @@ async def test_ting_workflow_backend_prefers_canonical_artifact() -> None:
     assert result.build_evidence == {"retrieval": "canonical_file"}
     assert result.provenance["backend"] == "ting_workflow"
     assert result.provenance["ting_campaign_id"] == "camp-1"
+    # The launch body attributes the campaign to the commissioning Valkyrie.
+    launch_body = client.post_bodies[0]
+    provenance = launch_body["provenance"]
+    assert provenance["builder"] == "ravn.tool_build"
+    assert provenance["valkyrie_id"] == _request().valkyrie_id
+    assert provenance["environment_id"] == _request().environment_id
+    assert provenance["tool_name"] == _request().name
 
 
 async def test_ting_workflow_backend_falls_back_to_scrape() -> None:

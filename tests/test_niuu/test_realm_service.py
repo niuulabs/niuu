@@ -203,9 +203,7 @@ async def test_record_capability_upserts_by_name(service: RealmService) -> None:
     realm = await service.create_realm(slug="r", name="R")
     first = await service.record_capability(realm.id, "grep-tool", "tool", status="gap")
 
-    second = await service.record_capability(
-        realm.id, "grep-tool", "tool", status="building"
-    )
+    second = await service.record_capability(realm.id, "grep-tool", "tool", status="building")
 
     caps = await service.list_capabilities(realm.id)
     assert len(caps) == 1
@@ -233,9 +231,7 @@ async def test_list_capabilities_scoped_to_realm(service: RealmService) -> None:
 async def test_resolve_build_grant_returns_build_grant(service: RealmService) -> None:
     realm = await service.create_realm(slug="forge", name="Forge")
     await service.grant_trust(realm.id, "observe", level=1)
-    await service.grant_trust(
-        realm.id, "build", level=3, limits={"workflow": "tool-builder"}
-    )
+    await service.grant_trust(realm.id, "build", level=3, limits={"workflow": "tool-builder"})
 
     grant = await service.resolve_build_grant("forge")
 

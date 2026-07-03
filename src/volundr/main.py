@@ -1002,9 +1002,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # readable by ravn over HTTP (shared niuu postgres, no ravn-local db).
             realm_repository = PostgresRealmRepository(pool)
             app.state.realm_service = RealmService(realm_repository)
-            app.include_router(
-                create_realms_router(extract_principal, prefix="/api/v1/realms")
-            )
+            app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
 
             git_router = create_git_router(
                 git_workflow_service,

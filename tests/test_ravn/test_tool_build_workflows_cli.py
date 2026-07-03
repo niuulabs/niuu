@@ -117,9 +117,7 @@ def test_workflows_no_backend_configured_exits_nonzero() -> None:
 
 def test_workflows_reports_http_error() -> None:
     settings = _settings_with_selector()
-    client = _FakeHttpClient(
-        {"/api/v1/ting/workflows": HttpResponse(status_code=503, body="down")}
-    )
+    client = _FakeHttpClient({"/api/v1/ting/workflows": HttpResponse(status_code=503, body="down")})
     backend = _ting_backend(settings, client)
 
     with (
@@ -134,9 +132,7 @@ def test_workflows_reports_http_error() -> None:
 
 def test_workflows_empty_list_reports_none_discovered() -> None:
     settings = _settings_with_selector()
-    client = _FakeHttpClient(
-        {"/api/v1/ting/workflows": HttpResponse(status_code=200, body=[])}
-    )
+    client = _FakeHttpClient({"/api/v1/ting/workflows": HttpResponse(status_code=200, body=[])})
     backend = _ting_backend(settings, client)
 
     with (
@@ -176,9 +172,7 @@ def test_workflows_reports_discovery_exception() -> None:
 def test_workflows_config_option_sets_env(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("RAVN_CONFIG", raising=False)
     settings = _settings_with_selector()
-    client = _FakeHttpClient(
-        {"/api/v1/ting/workflows": HttpResponse(status_code=200, body=[])}
-    )
+    client = _FakeHttpClient({"/api/v1/ting/workflows": HttpResponse(status_code=200, body=[])})
     backend = _ting_backend(settings, client)
     cfg_path = tmp_path / "ravn.yaml"
     cfg_path.write_text("resident_evolution: {}\n")
