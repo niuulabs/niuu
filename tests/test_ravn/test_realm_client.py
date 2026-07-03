@@ -29,10 +29,15 @@ class _FakeHttpClient:
         routes: dict[str, HttpResponse] | None = None,
         *,
         raise_on_get: Exception | None = None,
+        post_routes: dict[str, HttpResponse] | None = None,
+        raise_on_post: Exception | None = None,
     ) -> None:
         self._routes = dict(routes or {})
         self._raise_on_get = raise_on_get
+        self._post_routes = dict(post_routes or {})
+        self._raise_on_post = raise_on_post
         self.calls: list[str] = []
+        self.post_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def get(self, url: str) -> HttpResponse:
         self.calls.append(url)
@@ -44,7 +49,13 @@ class _FakeHttpClient:
         raise AssertionError(f"no scripted response for GET {url}")
 
     async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
-        raise AssertionError("RealmClient must never POST — it is read-only")
+        self.post_calls.append((url, json_body))
+        if self._raise_on_post is not None:
+            raise self._raise_on_post
+        for suffix, response in self._post_routes.items():
+            if url.endswith(suffix):
+                return response
+        raise AssertionError(f"no scripted response for POST {url}")
 
 
 def _client(routes: dict[str, HttpResponse] | None = None, **kwargs: Any) -> RealmClient:
@@ -152,6 +163,97 @@ async def test_resolve_build_grant_defaults_missing_limits_to_empty() -> None:
 
     assert grant is not None
     assert grant.limits == {}
+
+
+# ---------------------------------------------------------------------------
+# record_capability
+# ---------------------------------------------------------------------------
+
+
+def _capabilities_path(slug: str) -> str:
+    return f"/api/v1/realms/{slug}/capabilities"
+
+
+@pytest.mark.asyncio
+async def test_record_capability_posts_exact_body_and_returns_true_on_2xx() -> None:
+    http = _FakeHttpClient(
+        post_routes={
+            _capabilities_path("payments"): HttpResponse(status_code=201, body={"id": "cap-1"})
+        }
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    recorded = await client.record_capability(
+        "payments",
+        name="parse_invoice",
+        status="present",
+        notes="learning lrn-1",
+    )
+
+    assert recorded is True
+    assert http.post_calls == [
+        (
+            "http://volundr/api/v1/realms/payments/capabilities",
+            {
+                "name": "parse_invoice",
+                "kind": "tool",
+                "status": "present",
+                "trust_level": 0,
+                "notes": "learning lrn-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_capability_ignores_malformed_2xx_body() -> None:
+    # Only success matters — a non-JSON/odd body on a 2xx must not raise.
+    http = _FakeHttpClient(
+        post_routes={_capabilities_path("payments"): HttpResponse(status_code=200, body="not-json")}
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("payments", name="t", status="gap") is True
+
+
+@pytest.mark.asyncio
+async def test_record_capability_returns_false_on_non_2xx() -> None:
+    http = _FakeHttpClient(
+        post_routes={
+            _capabilities_path("ghost"): HttpResponse(status_code=404, body={"error": "no"})
+        }
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("ghost", name="t", status="present") is False
+
+
+@pytest.mark.asyncio
+async def test_record_capability_returns_false_on_transport_error() -> None:
+    http = _FakeHttpClient(raise_on_post=ConnectionError("realm down"))
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("payments", name="t", status="present") is False
+
+
+@pytest.mark.asyncio
+async def test_record_capability_threads_kind_and_trust_level() -> None:
+    http = _FakeHttpClient(
+        post_routes={_capabilities_path("payments"): HttpResponse(status_code=201, body={})}
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    await client.record_capability(
+        "payments",
+        name="triage",
+        kind="skill",
+        status="gap",
+        trust_level=3,
+    )
+
+    _, body = http.post_calls[0]
+    assert body["kind"] == "skill"
+    assert body["trust_level"] == 3
 
 
 # ---------------------------------------------------------------------------

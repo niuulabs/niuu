@@ -1,9 +1,10 @@
-"""Realm governance client — resolve a Valkyrie's tool-build trust grant.
+"""Realm governance client — trust grants and the capability ledger.
 
 Phase 0.5 landed a realm governance API in niuu, mounted on the Volundr host
 (the same ``base_url`` Ravn already uses for Forge sessions). This client reads
-the realm's trust grants over the workload-authenticated HTTP boundary — Ravn
-never imports niuu/volundr, it only calls them.
+the realm's trust grants and records capability-ledger entries over the
+workload-authenticated HTTP boundary — Ravn never imports niuu/volundr, it
+only calls them.
 
 The "build" action-class grant with the highest ``level`` governs this
 Valkyrie's tool-building: ``grant.limits`` may hold a workflow selector
@@ -34,6 +35,9 @@ BUILD_ACTION_CLASS = "build"
 
 #: HTTP status that means the request succeeded.
 _HTTP_OK = 200
+
+#: HTTP status range (inclusive/exclusive) treated as success for writes.
+_HTTP_SUCCESS = range(200, 300)
 
 # ---------------------------------------------------------------------------
 # Trust-level -> autonomy-mode table (defaults)
@@ -204,6 +208,52 @@ class RealmClient:
             return None
         highest = max(build_grants, key=_grant_level)
         return _grant_from_body(highest, realm_slug=realm_slug)
+
+    async def record_capability(
+        self,
+        realm_slug: str,
+        *,
+        name: str,
+        kind: str = "tool",
+        status: str,
+        trust_level: int = 0,
+        notes: str = "",
+    ) -> bool:
+        """Upsert a capability in the realm's ledger; return True on success.
+
+        POSTs to the realm governance capabilities endpoint, which upserts on
+        ``(realm_id, name)``. Capability bookkeeping is advisory — a realm
+        outage must never break the signal path — so a non-2xx response or a
+        transport error returns ``False`` instead of raising; callers log the
+        WARNING. A malformed 2xx body is ignored: only success matters here.
+        """
+        url = f"{self._base_url}/api/v1/realms/{realm_slug}/capabilities"
+        body = {
+            "name": name,
+            "kind": kind,
+            "status": status,
+            "trust_level": trust_level,
+            "notes": notes,
+        }
+        try:
+            resp = await self._client.post(url, json_body=body)
+        except Exception as exc:  # noqa: BLE001 — advisory write; caller degrades with WARNING
+            logger.info(
+                "realm %s capability %r write failed in transport: %s",
+                realm_slug,
+                name,
+                exc,
+            )
+            return False
+        if resp.status_code not in _HTTP_SUCCESS:
+            logger.info(
+                "realm %s capability %r write returned HTTP %s",
+                realm_slug,
+                name,
+                resp.status_code,
+            )
+            return False
+        return True
 
 
 def _grant_level(grant: dict[str, Any]) -> int:
