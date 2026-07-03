@@ -1,8 +1,11 @@
 """Shared build contract: the prompt, the response parser, and polling.
 
-A commissioned build (Forge session or Ting workflow) is instructed to finish
-by emitting one JSON object — ``{"manifest": {...}, "tool_code": "..."}`` —
-which both backends parse here so the contract cannot drift between them.
+A commissioned build (Forge session or Ting workflow) is instructed to write
+one canonical file — ``learned_tool.json`` at the workspace root, holding
+``{"manifest", "tool_code", "test_code", "requirements"}`` — and to also emit
+that same JSON object in its final message as a fallback. Both backends parse
+the shape here (via :func:`parse_tool_build_document`) so the contract cannot
+drift between them.
 """
 
 from __future__ import annotations
@@ -15,11 +18,15 @@ from typing import Any
 
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest, ToolBuildResult
 
+#: The single canonical artifact file the builder writes at the workspace root.
+CANONICAL_ARTIFACT_FILENAME = "learned_tool.json"
+
 _TOOL_BUILD_SYSTEM = (
     "You are a resident Valkyrie's build agent. You develop one small, "
     "dependency-light Python tool that a resident agent will call as an "
-    "instrument during operational investigations. Build and verify the tool, "
-    "then deliver it as a single JSON object and nothing else."
+    "instrument during operational investigations. Build the tool, write a "
+    "test that exercises it, then deliver the canonical artifact file plus a "
+    "single JSON object and nothing else."
 )
 
 
@@ -42,17 +49,58 @@ Requirements:
 - Declared reach (what it is allowed to touch):
 {reach}
 - {request.signal_context or "No additional signal context."}
+- Also produce `test_code`: a self-contained pytest/asserts module that loads
+  the tool and exercises `{request.entry_point}` on representative input.
+- Also produce `requirements`: a list of pip package requirement strings the
+  tool needs at runtime (use [] when the tool is stdlib-only).
 
-Deliver exactly one JSON object and nothing else:
+Write the final artifact as a single canonical file named
+`{CANONICAL_ARTIFACT_FILENAME}` at the repo/workspace root, containing:
+{{"manifest": {{...}}, "tool_code": "...", "test_code": "...", "requirements": [...]}}
+
+Then, as a fallback, deliver that exact same JSON object as your final message
+and nothing else:
 {{"manifest": {{"name": "{request.name}", "description": "...",
   "input_schema": {{...}}, "required_permission": "{request.required_permission}",
   "declared_reach": [...], "entry_point": "{request.entry_point}"}},
- "tool_code": "def {request.entry_point}(input): ..."}}"""
+ "tool_code": "def {request.entry_point}(input): ...",
+ "test_code": "def test_{request.entry_point}(): ...",
+ "requirements": []}}"""
     return _TOOL_BUILD_SYSTEM, initial
 
 
+def parse_tool_build_document(document: dict[str, Any], *, tool_name: str) -> ToolBuildResult:
+    """Build a :class:`ToolBuildResult` from a parsed contract document.
+
+    Defined once so the canonical-file path and the scrape path produce the
+    same shape. ``test_code`` and ``requirements`` are optional (default ``""``
+    and ``[]``) so the parser stays backward compatible with older builders.
+    """
+    if not isinstance(document, dict):
+        raise ToolBuildError(f"build output for {tool_name!r} is not a JSON object")
+    manifest = document.get("manifest")
+    tool_code = str(document.get("tool_code") or "")
+    if not isinstance(manifest, dict) or not manifest:
+        raise ToolBuildError(f"build output for {tool_name!r} is missing a manifest object")
+    if not tool_code.strip():
+        raise ToolBuildError(f"build output for {tool_name!r} is missing tool_code")
+    manifest.setdefault("name", tool_name)
+    test_code = str(document.get("test_code") or "")
+    requirements = [
+        item.strip()
+        for item in list(document.get("requirements") or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    return ToolBuildResult(
+        manifest=manifest,
+        tool_code=tool_code,
+        test_code=test_code,
+        requirements=requirements,
+    )
+
+
 def parse_tool_build_response(content: str, *, tool_name: str) -> ToolBuildResult:
-    """Extract {manifest, tool_code} from a build agent's final output."""
+    """Extract the contract document from a build agent's final message text."""
     text = content.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     if fenced:
@@ -65,14 +113,7 @@ def parse_tool_build_response(content: str, *, tool_name: str) -> ToolBuildResul
         document = json.loads(text[start : end + 1])
     except json.JSONDecodeError as exc:
         raise ToolBuildError(f"build output for {tool_name!r} is not valid JSON: {exc}") from exc
-    manifest = document.get("manifest")
-    tool_code = str(document.get("tool_code") or "")
-    if not isinstance(manifest, dict) or not manifest:
-        raise ToolBuildError(f"build output for {tool_name!r} is missing a manifest object")
-    if not tool_code.strip():
-        raise ToolBuildError(f"build output for {tool_name!r} is missing tool_code")
-    manifest.setdefault("name", tool_name)
-    return ToolBuildResult(manifest=manifest, tool_code=tool_code)
+    return parse_tool_build_document(document, tool_name=tool_name)
 
 
 async def poll_until(
