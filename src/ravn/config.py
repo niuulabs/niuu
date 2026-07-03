@@ -2578,6 +2578,33 @@ class ResidentEvolutionConfig(BaseModel):
             "hardcoded workflow_id."
         ),
     )
+    realm_slug: str = Field(
+        default="",
+        description=(
+            "This Valkyrie's realm slug. When set, the resident resolves its "
+            "tool-build workflow and autonomy from the realm's 'build' trust "
+            "grant (via the niuu realm governance API on the Volundr host). "
+            "Empty keeps today's static tool_builder_workflow / autonomy_mode "
+            "behavior."
+        ),
+    )
+    realm_api_base_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the realm governance API (the Volundr host that also "
+            "serves Forge sessions). Empty derives it from "
+            "tool_build_kwargs['base_url']."
+        ),
+    )
+    realm_api_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Auth passthrough for realm API calls (external_token_env, "
+            "workload_token_file, workload_exchange_url, workload_audiences — "
+            "the same keys client_from_workload_identity accepts). Empty reuses "
+            "the tool_build_kwargs auth settings."
+        ),
+    )
 
 
 class ResidentInboxConfig(BaseModel):
