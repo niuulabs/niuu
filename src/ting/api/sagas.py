@@ -1768,7 +1768,7 @@ def create_sagas_router() -> APIRouter:
             repo_branches[repo_ref] = branch_name.strip() or default_branch
         if not repo_branches:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="At least one repository is required",
             )
 
