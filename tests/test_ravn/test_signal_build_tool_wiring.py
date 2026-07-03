@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
+import ravn.cli.commands as commands_mod
 from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.cli.commands import (
@@ -13,6 +16,14 @@ from ravn.cli.commands import (
     _resolve_realm_build_config,
 )
 from ravn.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _fresh_realm_client_cache():
+    """RealmClients are cached per auth config; tests must not share them."""
+    commands_mod._REALM_CLIENT_CACHE.clear()
+    yield
+    commands_mod._REALM_CLIENT_CACHE.clear()
 
 
 class _FakeAgent:

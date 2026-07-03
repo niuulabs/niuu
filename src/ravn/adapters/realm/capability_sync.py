@@ -20,17 +20,17 @@ from __future__ import annotations
 import logging
 
 from ravn.adapters.realm.client import RealmClient
+
+# Event names come FROM THE PUBLISHER so producer and consumer cannot drift.
+from ravn.valkyrie_evolution.resident_learning import (
+    EVOLUTION_ACTIVATED_EVENT,
+    EVOLUTION_ROLLED_BACK_EVENT,
+)
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirSubscriber, Subscription
 
 logger = logging.getLogger(__name__)
-
-#: Published by the resident install pipeline when an adopted skill is installed.
-EVOLUTION_ACTIVATED_EVENT = "valkyrie.evolution.activated"
-
-#: Published by the resident install pipeline when an installed skill is archived.
-EVOLUTION_ROLLED_BACK_EVENT = "valkyrie.evolution.rolled_back"
 
 #: Ledger status for a capability the resident currently has installed.
 CAPABILITY_PRESENT = "present"

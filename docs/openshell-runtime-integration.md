@@ -81,14 +81,19 @@ lines up with work already in flight:
 
 The user-facing framing "a new runtime" maps onto the **`PodManager` port**
 (`src/volundr/domain/ports.py:265` — `start/stop/status/wait_for_ready`),
-which already has exactly two implementations:
+which already has three implementations selected via the dynamic-adapter
+pattern:
 
 - mini mode → `volundr/adapters/outbound/local_process.py` (`LocalProcessPodManager`)
-- cluster mode → `volundr/adapters/outbound/direct_k8s_pod_manager.py` (`DirectK8sPodManager`)
+- cluster mode, direct → `volundr/adapters/outbound/direct_k8s_pod_manager.py`
+  (`DirectK8sPodManager`; `niuu platform up` cluster default, e.g. k3d)
+- cluster mode, GitOps → `volundr/adapters/outbound/flux.py` (`FluxPodManager`;
+  HelmRelease CRs reconciled by Flux — the production default in the volundr
+  Helm chart and `volundr/config.py`)
 
 ### Option A — `OpenShellPodManager` (recommended)
 
-A third `PodManager` adapter. Per session, it:
+A fourth `PodManager` adapter. Per session, it:
 
 1. renders a policy YAML from the session spec (workspace paths → filesystem
    policy; session scopes → network policies),
@@ -104,9 +109,9 @@ A third `PodManager` adapter. Per session, it:
 5. `stop()` → `openshell sandbox delete`.
 
 Skuld runs **inside** the sandbox and drives the agent CLI through the
-existing `CLITransport` adapters, completely unchanged. This is the
-DirectK8sPodManager topology (Skuld-in-pod) applied locally — architecture
-stays symmetric across all three runtimes:
+existing `CLITransport` adapters, completely unchanged. This is the cluster
+topology (Skuld-in-pod, as in DirectK8s/Flux) applied locally — architecture
+stays symmetric across all runtimes:
 
 ```
 niuu host :8080 ──ws──► forwarded port ──► [OpenShell sandbox]
@@ -141,6 +146,35 @@ transports assume streaming I/O with the CLI process; and it breaks
 symmetry with cluster mode. Only worth revisiting if sandbox-per-*tool-call*
 (rather than per-session) ever becomes a goal.
 
+### Teams / flocks — multi-process sessions
+
+Team sessions today are one Skuld broker + N `ravn daemon` persona processes
+per session (mini mode: local processes via `ravn flock init/start`,
+`local_process.py:856`; cluster mode: `ravn-*` containers composed into the
+session pod). OpenShell handles this:
+
+- **A sandbox is a container/VM, not a single-process jail.** The supervisor
+  launches the entrypoint as a restricted child, which may spawn children
+  (agent CLIs fork shells/git/npm constantly); `sandbox_pids_limit` is a
+  driver knob because many processes are expected. `sandbox exec` can start
+  more processes post-create; `service expose` supports multiple named ports
+  per sandbox.
+- **Model: team-in-one-sandbox.** Entrypoint = Skuld (or a flock bootstrap)
+  which starts the ravn daemons exactly as mini mode does. The mini-mode
+  *process* model maps to one sandbox better than the K8s multi-container
+  pod does — OpenShell has no multi-container composition.
+- **Caveat: policy, identity, resources are per-sandbox.** One
+  `run_as_user`, one CPU/memory envelope, one policy set shared by the team.
+  Network rules are per-*binary*, so `skuld`/`claude`/`ravn` get distinct
+  egress rules, but two personas running the same binary are
+  indistinguishable to the policy engine. This gives a hard wall around the
+  team, not between teammates.
+- **Later refinement: sandbox-per-member** (NVIDIA's own "sandbox per agent
+  and sub-agent" philosophy) with the workspace bind-mounted into each and
+  per-persona policies — relevant for Valkyries with differing scopes. Costs
+  real plumbing: ravn mesh traffic then crosses sandbox boundaries via
+  host-forwarded ports and the policy proxy. Not phase 1.
+
 ### Non-goal — replacing mini mode wholesale
 
 Mini mode's raw-process runtime stays the default. It is dependency-free
@@ -165,9 +199,13 @@ Manual validation on macOS + Linux; kills the proposal cheaply if any fail:
    `inference.local` → Bifrost) under an enforce-mode policy.
 4. Measure create→Ready latency and per-sandbox memory overhead vs
    `LocalProcessPodManager` at `max_concurrent` sessions.
-5. Probe the gateway's gRPC/HTTP API (it exists — CLI/TUI use it) to see if
+5. Flock viability: start a flock (Skuld + 2 ravn daemons) inside one
+   sandbox; confirm intra-sandbox **loopback** traffic (Skuld ↔ ravn mesh on
+   127.0.0.1) is not routed through the policy proxy, and that the pids
+   limit accommodates a full team.
+6. Probe the gateway's gRPC/HTTP API (it exists — CLI/TUI use it) to see if
    shelling out can be replaced later; check `compute_driver.proto`.
-6. macOS specifics: Docker Desktop vs `podman machine` vs libkrun MicroVM;
+7. macOS specifics: Docker Desktop vs `podman machine` vs libkrun MicroVM;
    bind-mount I/O throughput across the VM boundary.
 
 ### Phase 1 — `OpenShellPodManager` adapter
@@ -212,9 +250,12 @@ Manual validation on macOS + Linux; kills the proposal cheaply if any fail:
 ### Phase 5 — cluster mode convergence (later, separate decision)
 
 - OpenShell's Kubernetes driver (Helm chart, agent-sandbox `Sandbox` CRDs,
-  supervisor sideload) as an alternative to `DirectK8sPodManager`. Only
-  after the local runtime has proven out and OpenShell is past alpha —
-  this replaces a working production path and needs its own evaluation.
+  supervisor sideload) as an alternative to the cluster adapters. The bar
+  is highest here: production runs `FluxPodManager` (GitOps — HelmRelease
+  CRs reconciled by Flux), and OpenShell's gateway provisions sandboxes
+  imperatively, which cuts against that reconciliation model. Only after
+  the local runtime has proven out and OpenShell is past alpha — this
+  replaces a working production path and needs its own evaluation.
 
 ## Risks and open questions
 

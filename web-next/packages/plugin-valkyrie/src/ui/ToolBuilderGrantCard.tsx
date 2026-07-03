@@ -91,6 +91,9 @@ export function ToolBuilderGrantCard({ realm }: { realm: RealmSummary }) {
     );
   };
 
+  const grantMode = grant ? autonomyModeForLevel(grant.level) : null;
+  const selectedMode = autonomyModeForLevel(selectedLevel);
+
   return (
     <section
       data-testid="tool-builder-card"
@@ -98,12 +101,12 @@ export function ToolBuilderGrantCard({ realm }: { realm: RealmSummary }) {
     >
       <header className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
         <h3 className="niuu:text-xs niuu:font-medium niuu:text-text-primary">Tool Builder</h3>
-        {grant ? (
+        {grant && grantMode ? (
           <span
             data-testid="tool-builder-autonomy"
-            className={`niuu:text-xs ${autonomyClasses(autonomyModeForLevel(grant.level))}`}
+            className={`niuu:text-xs ${autonomyClasses(grantMode)}`}
           >
-            {autonomyModeForLevel(grant.level)} · level {grant.level}
+            {grantMode} · level {grant.level}
           </span>
         ) : (
           <span data-testid="tool-builder-ungranted" className={`niuu:text-xs ${MUTED}`}>
@@ -173,11 +176,8 @@ export function ToolBuilderGrantCard({ realm }: { realm: RealmSummary }) {
             </option>
           ))}
         </select>
-        <span
-          data-testid="tool-builder-level-hint"
-          className={autonomyClasses(autonomyModeForLevel(selectedLevel))}
-        >
-          {autonomyModeForLevel(selectedLevel)}
+        <span data-testid="tool-builder-level-hint" className={autonomyClasses(selectedMode)}>
+          {selectedMode}
         </span>
       </label>
       <p className={`niuu:text-xs ${MUTED}`}>0–1 guarded · 2–3 autonomous · 4–5 yolo</p>

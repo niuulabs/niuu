@@ -70,6 +70,12 @@ logger = logging.getLogger(__name__)
 
 LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored", "held"]
 
+#: Event types this module publishes on install/rollback. Consumers (the realm
+#: capability sync, dashboards) import these from the publisher so the
+#: producer/consumer contract cannot drift.
+EVOLUTION_ACTIVATED_EVENT = "valkyrie.evolution.activated"
+EVOLUTION_ROLLED_BACK_EVENT = "valkyrie.evolution.rolled_back"
+
 #: Consecutive implementation failures before a skill is auto-rolled-back.
 #: A regressed tool must fail repeatedly, never once — transient failures
 #: (timeouts, odd payloads) must not destroy adopted learning.
@@ -1262,7 +1268,7 @@ class ResidentLearningRuntime:
     ) -> None:
         await self._publisher.publish(
             SleipnirEvent(
-                event_type="valkyrie.evolution.activated",
+                event_type=EVOLUTION_ACTIVATED_EVENT,
                 source=self._source,
                 payload={
                     "environment_id": self.identity.environment_id,
@@ -1293,7 +1299,7 @@ class ResidentLearningRuntime:
     ) -> None:
         await self._publisher.publish(
             SleipnirEvent(
-                event_type="valkyrie.evolution.rolled_back",
+                event_type=EVOLUTION_ROLLED_BACK_EVENT,
                 source=self._source,
                 payload={
                     "environment_id": self.identity.environment_id,

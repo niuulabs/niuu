@@ -72,8 +72,6 @@ SANDBOX_ENV_PASSTHROUGH = (
     "https_proxy",
     "no_proxy",
 )
-#: Backward-compatible private alias (pre-consolidation name).
-_SANDBOX_ENV_PASSTHROUGH = SANDBOX_ENV_PASSTHROUGH
 
 _BOOTSTRAP = """
 import importlib.util
@@ -139,10 +137,6 @@ def sandbox_env() -> dict[str, str]:
     env = {key: os.environ[key] for key in SANDBOX_ENV_PASSTHROUGH if key in os.environ}
     env.setdefault("PATH", os.defpath)
     return env
-
-
-#: Backward-compatible private alias (pre-consolidation name).
-_sandbox_env = sandbox_env
 
 
 def tool_venv_python(venv_dir: str | Path) -> Path:
@@ -272,25 +266,44 @@ def _uv_executable() -> str | None:
     return shutil.which("uv")
 
 
-def _provision_env(venvs_dir: Path) -> dict[str, str]:
-    """Scrubbed env for venv provisioning, with the shared uv cache configured."""
+def provision_env(cache_root: Path) -> dict[str, str]:
+    """Scrubbed env for venv provisioning, with the shared uv cache configured.
+
+    The ONE provisioning environment — execution (per-tool venvs) and
+    verification (ephemeral venvs) both use it so uv caching and env hygiene
+    cannot drift between the two.
+    """
     env = sandbox_env()
-    env["UV_CACHE_DIR"] = str(venvs_dir / TOOL_VENV_UV_CACHE_DIRNAME)
+    env["UV_CACHE_DIR"] = str(cache_root / TOOL_VENV_UV_CACHE_DIRNAME)
     # Hardlink from the cache (same filesystem) so venvs deduplicate packages.
     env["UV_LINK_MODE"] = "hardlink"
     return env
 
 
-def _create_tool_venv(venv_dir: Path, *, timeout_seconds: float) -> None:
+def venv_create_argv(venv_dir: Path) -> list[str]:
+    """Command to create a venv: uv when available, stock venv otherwise."""
     uv = _uv_executable()
-    command = [uv, "venv", str(venv_dir)] if uv else [sys.executable, "-m", "venv", str(venv_dir)]
+    if uv:
+        return [uv, "venv", str(venv_dir)]
+    return [sys.executable, "-m", "venv", str(venv_dir)]
+
+
+def pip_install_argv(python: Path, requirements: list[str]) -> list[str]:
+    """Command to install requirements into a venv: uv-first, pip fallback."""
+    uv = _uv_executable()
+    if uv:
+        return [uv, "pip", "install", "--python", str(python), *requirements]
+    return [str(python), "-m", "pip", "install", "--disable-pip-version-check", *requirements]
+
+
+def _create_tool_venv(venv_dir: Path, *, timeout_seconds: float) -> None:
     try:
         completed = subprocess.run(  # noqa: S603
-            command,
+            venv_create_argv(venv_dir),
             check=False,
             capture_output=True,
             text=True,
-            env=_provision_env(venv_dir.parent),
+            env=provision_env(venv_dir.parent),
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
@@ -310,25 +323,13 @@ def _pip_install_tool_requirements(
     *,
     timeout_seconds: float,
 ) -> None:
-    uv = _uv_executable()
-    if uv:
-        command = [uv, "pip", "install", "--python", str(python), *requirements]
-    else:
-        command = [
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            *requirements,
-        ]
     try:
         completed = subprocess.run(  # noqa: S603
-            command,
+            pip_install_argv(python, requirements),
             check=False,
             capture_output=True,
             text=True,
-            env=_provision_env(venv_dir.parent),
+            env=provision_env(venv_dir.parent),
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
@@ -377,7 +378,7 @@ async def run_tool(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=_sandbox_env(),
+        env=sandbox_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(

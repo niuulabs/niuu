@@ -242,8 +242,16 @@ def _run_coro_blocking(coro: Awaitable[Any]) -> Any:
         return pool.submit(asyncio.run, coro).result()  # type: ignore[arg-type]
 
 
+#: RealmClients cached per (base_url + auth kwargs): the daemon's agent factory
+#: resolves realm config per task, and a fresh client per call would mean a
+#: fresh auth adapter — and a token exchange — per task. The auth adapter
+#: caches its token with expiry skew, so a reused client only re-exchanges on
+#: expiry. Bounded by the number of distinct configs in one process (~1).
+_REALM_CLIENT_CACHE: dict[tuple, Any] = {}
+
+
 def _realm_client_for(settings: Settings) -> Any:
-    """Build a RealmClient from resident-evolution config, or None when unusable."""
+    """The canonical RealmClient factory (cached), or None when unusable."""
     from ravn.adapters.realm import RealmClient, build_realm_client_kwargs  # noqa: PLC0415
 
     cfg = settings.resident_evolution
@@ -259,7 +267,12 @@ def _realm_client_for(settings: Settings) -> Any:
         realm_api_kwargs=cfg.realm_api_kwargs,
         tool_build_kwargs=cfg.tool_build_kwargs,
     )
-    return RealmClient(base_url=base_url, **auth_kwargs)
+    cache_key = (base_url, tuple(sorted((k, str(v)) for k, v in auth_kwargs.items())))
+    client = _REALM_CLIENT_CACHE.get(cache_key)
+    if client is None:
+        client = RealmClient(base_url=base_url, **auth_kwargs)
+        _REALM_CLIENT_CACHE[cache_key] = client
+    return client
 
 
 def _resolve_realm_build_config(settings: Settings) -> _RealmBuildConfig:

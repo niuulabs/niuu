@@ -14,16 +14,25 @@ keyword-only and free of build_tool internals.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ravn.valkyrie_evolution.tool_runtime import sandbox_env
+from ravn.valkyrie_evolution.tool_runtime import (
+    pip_install_argv,
+    provision_env,
+    sandbox_env,
+    tool_venv_python,
+    venv_create_argv,
+)
+
+#: Persistent uv cache for ephemeral verification venvs, under the system
+#: tempdir (same filesystem as the venvs, so hardlinks work). The venvs are
+#: throwaway; the cache is what makes attempt 2..N and the next verify cheap.
+_VERIFY_CACHE_ROOT = Path(tempfile.gettempdir()) / "ravn-verify"
 
 #: How long a single verification test run may take before it is killed.
 DEFAULT_VERIFY_TIMEOUT_SECONDS = 120
@@ -71,11 +80,8 @@ def _verify_env() -> dict[str, str]:
     return sandbox_env()
 
 
-def _venv_python(venv_dir: Path) -> Path:
-    """Return the interpreter path inside a freshly created venv."""
-    if os.name == "nt":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
+#: The one venv-interpreter path convention, shared with tool_runtime.
+_venv_python = tool_venv_python
 
 
 _TEST_RUNNER = """
@@ -198,14 +204,14 @@ def _run_verification(
 
 
 def _create_venv(venv_dir: Path, *, timeout_seconds: int) -> VerificationResult | None:
-    """Create the venv. Returns a failure result, or None on success."""
+    """Create the venv (uv-first, shared cache). Failure result, or None on success."""
     try:
         subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "venv", str(venv_dir)],
+            venv_create_argv(venv_dir),
             check=True,
             capture_output=True,
             text=True,
-            env=_verify_env(),
+            env=provision_env(_VERIFY_CACHE_ROOT),
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -228,14 +234,14 @@ def _pip_install(
     env: dict[str, str],
     timeout_seconds: int,
 ) -> VerificationResult | None:
-    """Install requirements into the venv. Returns a failure result, or None."""
+    """Install requirements into the venv (uv-first). Failure result, or None."""
     try:
         completed = subprocess.run(  # noqa: S603
-            [str(python), "-m", "pip", "install", "--disable-pip-version-check", *requirements],
+            pip_install_argv(python, requirements),
             check=False,
             capture_output=True,
             text=True,
-            env=env,
+            env={**env, **provision_env(_VERIFY_CACHE_ROOT)},
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
