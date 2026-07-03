@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import asdict
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,10 +31,19 @@ from ravn.valkyrie_evolution.resident_learning import (
     review_inputs,
     risk_class_for_safety,
 )
+from ravn.valkyrie_evolution.tool_verification import (
+    VerificationResult,
+    verify_learned_tool_in_ephemeral_venv,
+)
 
 #: Confidence a freshly self-registered learned tool travels to the flock
 #: with — matching what the resident install pipeline assigns its own builds.
 SELF_REGISTERED_TOOL_CONFIDENCE = 0.74
+
+#: How many verify+repair rounds a commissioned/authored build gets before we
+#: give up and fail loudly. P5 will wire this to config; the constructor kwarg
+#: exposes the knob today.
+DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 
 ToolRegistrar = Callable[[ToolPort], None]
 
@@ -61,6 +71,7 @@ class BuildTool(ToolPort):
         reviewer: Any | None = None,
         build_backend: Any | None = None,
         investigation_context: Callable[[], str] | None = None,
+        max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -81,6 +92,7 @@ class BuildTool(ToolPort):
         self._reviewer = reviewer or PolicyCourtReviewer(reviewer="odin:build-tool")
         self._build_backend = build_backend
         self._investigation_context = investigation_context
+        self._max_repair_attempts = max_repair_attempts
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -197,10 +209,23 @@ class BuildTool(ToolPort):
         try:
             input = await self._maybe_commission(input)
             artifact = _artifact_from_input(input)
+
+            # Never trust the builder's own "it works": independently verify the
+            # returned code in a throwaway venv, repairing on failure, BEFORE the
+            # review/install path ever sees it. A hard-failed verification is
+            # never installed.
+            artifact, verify_error = await self._verify_and_repair(input, artifact)
+
+            # Persist the artifact (with the recorded verification outcome) even
+            # when verification hard-failed, so the failure is auditable, then
+            # fail loudly without installing.
             artifact_path = write_learned_tool_artifact(
                 artifacts_dir=self._artifacts_dir,
                 artifact=artifact,
             )
+            if verify_error is not None:
+                return verify_error
+
             canary_input = input.get("canary_input")
             canary_sample = canary_input if isinstance(canary_input, dict) else {}
 
@@ -289,13 +314,24 @@ class BuildTool(ToolPort):
             raise LearnedToolError(
                 "build_request was given but no tool build backend is configured"
             )
+        return await self._commission_and_merge(input, signal_context_suffix="")
+
+    def _build_backend_request(self, input: dict, *, signal_context_suffix: str) -> Any:  # noqa: A002
+        """Build the ToolBuildRequest for an (initial or repair) commission."""
         from ravn.ports.tool_build_backend import ToolBuildRequest  # noqa: PLC0415
 
         manifest_in = input.get("manifest") if isinstance(input.get("manifest"), dict) else {}
-        request = ToolBuildRequest(
+        signal_context = str(input.get("signal_context") or "")
+        if signal_context_suffix:
+            signal_context = (
+                f"{signal_context}\n\n{signal_context_suffix}"
+                if signal_context
+                else signal_context_suffix
+            )
+        return ToolBuildRequest(
             name=str(manifest_in.get("name") or ""),
             description=str(manifest_in.get("description") or ""),
-            build_request=build_request,
+            build_request=str(input.get("build_request") or "").strip(),
             input_schema=dict(manifest_in.get("input_schema") or {"type": "object"}),
             required_permission=str(manifest_in.get("required_permission") or "tool:run"),
             declared_reach=list(manifest_in.get("declared_reach") or []),
@@ -303,8 +339,12 @@ class BuildTool(ToolPort):
             environment_id=self._environment_id,
             valkyrie_id=self._valkyrie_id,
             domain=self._domain,
-            signal_context=str(input.get("signal_context") or ""),
+            signal_context=signal_context,
         )
+
+    async def _commission_and_merge(self, input: dict, *, signal_context_suffix: str) -> dict:  # noqa: A002
+        """Commission the backend and merge its result back into the input."""
+        request = self._build_backend_request(input, signal_context_suffix=signal_context_suffix)
         result = await self._build_backend.build(request)
         merged = dict(input)
         merged["manifest"] = result.manifest
@@ -317,6 +357,89 @@ class BuildTool(ToolPort):
             provenance["build_evidence"] = dict(result.build_evidence)
         merged["provenance"] = provenance
         return merged
+
+    async def _verify_and_repair(
+        self,
+        input: dict,  # noqa: A002
+        artifact: LearnedToolArtifact,
+    ) -> tuple[LearnedToolArtifact, ToolResult | None]:
+        """Independently verify the built tool, repairing up to the bounded limit.
+
+        Control flow, in order:
+          1. Verify the current artifact in a throwaway venv.
+          2. On pass (or skip for empty test_code): record the outcome into
+             ``provenance["verification"]`` and return the artifact.
+          3. On failure, up to ``max_repair_attempts`` times:
+             (a) missing module not already declared -> append it to
+                 requirements, rebuild the artifact, re-verify (deterministic
+                 dependency heal, no LLM);
+             (b) else a build backend is configured -> re-commission with the
+                 failing logs appended to signal_context, rebuild, re-verify;
+             (c) else (inline tool, no backend) -> stop and return a clear error.
+          4. If still failing after the budget: return a clear error. Never
+             install a tool whose verification hard-failed.
+        """
+        attempts = 0
+        result = self._verify(artifact)
+        while not result.ok and attempts < self._max_repair_attempts:
+            attempts += 1
+            repaired, input = self._repair_dependency(input, artifact, result)
+            if repaired is not None:
+                artifact = repaired
+                result = self._verify(artifact)
+                continue
+            if self._build_backend is not None:
+                input = await self._commission_and_merge(
+                    input,
+                    signal_context_suffix=_repair_brief(result),
+                )
+                artifact = _artifact_from_input(input)
+                result = self._verify(artifact)
+                continue
+            # Inline tool, no backend, no deterministic dependency heal: stop.
+            break
+
+        artifact = _record_verification(artifact, result, attempts)
+        if not result.ok:
+            return artifact, ToolResult(
+                tool_call_id="",
+                content=(
+                    "build_tool aborted: independent verification failed after "
+                    f"{attempts} repair attempt(s); tool was NOT installed.\n"
+                    f"{result.logs}"
+                ),
+                is_error=True,
+            )
+        return artifact, None
+
+    def _verify(self, artifact: LearnedToolArtifact) -> VerificationResult:
+        return verify_learned_tool_in_ephemeral_venv(
+            tool_name=artifact.manifest.name,
+            tool_code=artifact.tool_code,
+            test_code=artifact.test_code,
+            requirements=list(artifact.requirements),
+            entry_point=artifact.manifest.entry_point,
+        )
+
+    def _repair_dependency(
+        self,
+        input: dict,  # noqa: A002
+        artifact: LearnedToolArtifact,
+        result: VerificationResult,
+    ) -> tuple[LearnedToolArtifact | None, dict]:
+        """Deterministically heal a missing dependency, if that's the failure.
+
+        Returns ``(rebuilt_artifact, updated_input)`` on a heal, or
+        ``(None, input)`` when the failure is not a fresh missing module.
+        """
+        missing = result.missing_module
+        if not missing or missing in artifact.requirements:
+            return None, input
+        requirements = [*artifact.requirements, missing]
+        updated_input = dict(input)
+        updated_input["requirements"] = list(requirements)
+        rebuilt = _artifact_with_requirements(artifact, requirements)
+        return rebuilt, updated_input
 
     async def _review(self, resident_artifact: ResidentLearningArtifact) -> ReviewResult:
         identity = ResidentLearningIdentity(
@@ -429,6 +552,7 @@ def attach_build_tool(
     sandbox_shell: Any | None = None,
     build_backend: Any | None = None,
     investigation_context: Callable[[], str] | None = None,
+    max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -451,6 +575,7 @@ def attach_build_tool(
         sandbox_shell=sandbox_shell,
         build_backend=build_backend,
         investigation_context=investigation_context,
+        max_repair_attempts=max_repair_attempts,
     )
     registrar(tool, replace=replace)
     return tool
@@ -492,6 +617,39 @@ def _resident_learning_artifact(
         learned_tool_manifest=artifact.manifest.to_dict(),
         canary_sample=dict(canary_input),
         correlation_id=artifact.artifact_id,
+    )
+
+
+def _artifact_with_requirements(
+    artifact: LearnedToolArtifact,
+    requirements: list[str],
+) -> LearnedToolArtifact:
+    """Rebuild an artifact with a healed requirements list."""
+    return dataclass_replace(artifact, requirements=list(requirements))
+
+
+def _record_verification(
+    artifact: LearnedToolArtifact,
+    result: VerificationResult,
+    attempts: int,
+) -> LearnedToolArtifact:
+    """Persist the verification outcome into provenance so review can see it."""
+    provenance = dict(artifact.provenance)
+    provenance["verification"] = {
+        "ok": result.ok,
+        "attempts": attempts,
+        "logs": result.logs,
+        "missing_module": result.missing_module,
+    }
+    return dataclass_replace(artifact, provenance=provenance)
+
+
+def _repair_brief(result: VerificationResult) -> str:
+    """The failing-verification brief appended to a re-commission's context."""
+    return (
+        "The previous build FAILED independent verification. Fix the tool and "
+        "its tests so the verification passes. Verification logs:\n"
+        f"{result.logs}"
     )
 
 

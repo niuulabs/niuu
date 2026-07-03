@@ -215,4 +215,10 @@ class ReviewResult:
     reviewer: str
     required_for_activation: bool
     findings: list[str] = field(default_factory=list)
+    #: Policy/authority blockers — these reject the build in any mode and are
+    #: what ``review_allows_install`` gates on.
     blocking_findings: list[str] = field(default_factory=list)
+    #: Correctness/quality observations (syntax, missing entry point). NOT
+    #: blocking on their own now that the verify+repair loop owns correctness;
+    #: surfaced to review so an operator still sees them.
+    structural_findings: list[str] = field(default_factory=list)
