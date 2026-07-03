@@ -73,13 +73,18 @@ class TestGatewayContributor:
         assert gateway_workload["enabled"] is True
         assert gateway_workload["issuer"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload"
         assert gateway_workload["audiences"] == ["volundr-api"]
-        assert gateway_workload["jwksUri"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks"
+        assert (
+            gateway_workload["jwksUri"]
+            == "https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks"
+        )
 
         envoy_workload = result.values["envoy"]["jwt"]["workload"]
         assert envoy_workload["enabled"] is True
         assert envoy_workload["issuer"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload"
         assert envoy_workload["audiences"] == ["volundr-api"]
-        assert envoy_workload["jwksUri"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks"
+        assert (
+            envoy_workload["jwksUri"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks"
+        )
         assert envoy_workload["jwksHost"] == "yggdrasil.niuu.world"
         assert envoy_workload["jwksPort"] == 443
         assert envoy_workload["jwksTls"] is True

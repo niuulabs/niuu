@@ -106,9 +106,7 @@ def _clean_map(value: Mapping[str, Any] | None) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
     return {
-        str(key): str(item)
-        for key, item in value.items()
-        if str(key).strip() and str(item).strip()
+        str(key): str(item) for key, item in value.items() if str(key).strip() and str(item).strip()
     }
 
 
@@ -382,9 +380,7 @@ class WardenSpecDiscoveryAdapter:
                     namespace=namespace,
                     status=(
                         "healthy"
-                        if str(
-                            getattr(getattr(warden, "runtime", None), "state", "")
-                        ).lower()
+                        if str(getattr(getattr(warden, "runtime", None), "state", "")).lower()
                         == "active"
                         else "unknown"
                     ),
@@ -421,9 +417,11 @@ class WardenSpecDiscoveryAdapter:
                 str(item)
                 for item in (
                     getattr(mimir_binding, "write_mount_names", None)
-                    or ([getattr(mimir_binding, "write_mount", "")]
+                    or (
+                        [getattr(mimir_binding, "write_mount", "")]
                         if getattr(mimir_binding, "write_mount", "")
-                        else [])
+                        else []
+                    )
                 )
                 if str(item).strip()
             ]
@@ -463,9 +461,7 @@ class StaticRelationshipDiscoveryAdapter:
                 continue
             source = str(item.get("sourceId") or item.get("source") or "").strip()
             target = str(item.get("targetId") or item.get("target") or "").strip()
-            relation_type = str(
-                item.get("relationType") or item.get("relation_type") or ""
-            ).strip()
+            relation_type = str(item.get("relationType") or item.get("relation_type") or "").strip()
             if not source or not target or not relation_type:
                 continue
             edge = _edge(
@@ -548,8 +544,7 @@ class VolundrSessionsDiscoveryAdapter:
             cluster = self._cluster or str(session.get("cluster") or "")
             namespace = self._namespace or "skuld"
             entity_id = (
-                f"runtime:{_slug(cluster or 'local')}:"
-                f"{_slug(namespace)}:skuld:{_slug(session_id)}"
+                f"runtime:{_slug(cluster or 'local')}:{_slug(namespace)}:skuld:{_slug(session_id)}"
             )
             endpoints = {
                 key: str(value)
@@ -671,9 +666,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                 continue
             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             values = (
-                item.get("spec", {}).get("values", {})
-                if isinstance(item.get("spec"), dict)
-                else {}
+                item.get("spec", {}).get("values", {}) if isinstance(item.get("spec"), dict) else {}
             )
             session_values = (
                 values.get("session", {}) if isinstance(values.get("session"), dict) else {}
@@ -730,10 +723,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
 
     def _path(self) -> str:
         namespace = quote(self._namespace, safe="")
-        return (
-            "/apis/helm.toolkit.fluxcd.io/v2/"
-            f"namespaces/{namespace}/helmreleases"
-        )
+        return f"/apis/helm.toolkit.fluxcd.io/v2/namespaces/{namespace}/helmreleases"
 
     def _include_helmrelease(self, item: dict[str, Any]) -> bool:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -743,9 +733,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
         if not _condition_status(item, "Ready"):
             return False
         values = (
-            item.get("spec", {}).get("values", {})
-            if isinstance(item.get("spec"), dict)
-            else {}
+            item.get("spec", {}).get("values", {}) if isinstance(item.get("spec"), dict) else {}
         )
         image = values.get("image", {}) if isinstance(values.get("image"), dict) else {}
         image_tag = str(image.get("tag") or "")
@@ -936,9 +924,7 @@ class KubernetesDiscoveryAdapter:
             return None
         cluster_label = labels.get("niuu.world/cluster") or ""
         cluster = (
-            self._cluster
-            if cluster_label.lower() in {"", "unknown"}
-            else cluster_label
+            self._cluster if cluster_label.lower() in {"", "unknown"} else cluster_label
         ) or "unknown"
         component = (
             labels.get("niuu.world/kind")
@@ -967,8 +953,7 @@ class KubernetesDiscoveryAdapter:
             logical_name = name
         display_name = display_name or logical_name
         entity_id = (
-            f"runtime:{_slug(cluster)}:{_slug(namespace)}:"
-            f"{_slug(type_id)}:{_slug(logical_name)}"
+            f"runtime:{_slug(cluster)}:{_slug(namespace)}:{_slug(type_id)}:{_slug(logical_name)}"
         )
         return DiscoveredEntity(
             id=entity_id,
@@ -1359,9 +1344,7 @@ def _ingress_relationship_edges(
         spec.get("defaultBackend") if isinstance(spec.get("defaultBackend"), dict) else {}
     )
     service = (
-        default_backend.get("service")
-        if isinstance(default_backend.get("service"), dict)
-        else {}
+        default_backend.get("service") if isinstance(default_backend.get("service"), dict) else {}
     )
     if service.get("name"):
         targets.append(str(service["name"]))
@@ -1442,9 +1425,7 @@ def _endpoints_for_k8s(
     if resource_kind == "ingress":
         rules = spec.get("rules") if isinstance(spec.get("rules"), list) else []
         hosts = [
-            str(rule.get("host"))
-            for rule in rules
-            if isinstance(rule, dict) and rule.get("host")
+            str(rule.get("host")) for rule in rules if isinstance(rule, dict) and rule.get("host")
         ]
         if hosts:
             endpoints["public"] = f"https://{hosts[0]}"

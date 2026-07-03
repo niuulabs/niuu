@@ -63,7 +63,9 @@ class TestK8sGatewayAdapter:
         assert config["issuer_url"] == "https://idp.example.com"
         assert config["audience"] == "volundr"
         assert config["jwks_uri"] == "https://idp.example.com/.well-known/jwks"
-        assert config["workload_issuer_url"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload"
+        assert (
+            config["workload_issuer_url"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload"
+        )
         assert config["workload_audience"] == "volundr-api"
         assert (
             config["workload_jwks_uri"]

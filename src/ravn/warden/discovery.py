@@ -56,10 +56,7 @@ def build_warden_discovery(
     if not adapters_config:
         return WardenSpecDiscoveryAdapter(store=store)
 
-    adapters = [
-        _build_adapter(adapter_config, store=store)
-        for adapter_config in adapters_config
-    ]
+    adapters = [_build_adapter(adapter_config, store=store) for adapter_config in adapters_config]
     return CompositeWardenDiscoveryAdapter([adapter for adapter in adapters if adapter is not None])
 
 

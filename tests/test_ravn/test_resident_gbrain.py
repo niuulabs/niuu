@@ -95,16 +95,18 @@ class _Result:
 
 def _turn() -> ResidentTurnRecord:
     return ResidentTurnRecord(
-        turn_index=1, prompt="p", response="r", outcome_fields={},
-        tool_names=(), usage=TokenUsage(input_tokens=1, output_tokens=1),
+        turn_index=1,
+        prompt="p",
+        response="r",
+        outcome_fields={},
+        tool_names=(),
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
 
 
 @pytest.mark.asyncio
 async def test_put_page_capture_and_mcp_recall(tmp_path) -> None:
-    adapter = _StubGBrain(
-        tmp_path, write_mode="put_page", mcp_url="https://b", api_token="tok"
-    )
+    adapter = _StubGBrain(tmp_path, write_mode="put_page", mcp_url="https://b", api_token="tok")
     await adapter.write_turn(_turn())
     assert adapter.put_pages  # projected via put_page
     recalled = await adapter.recall("topic", limit=5)

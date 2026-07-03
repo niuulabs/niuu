@@ -505,10 +505,7 @@ def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert any(node["id"] == "warden:mimir-shared-warden" for node in payload["nodes"])
-    assert any(
-        edge["id"] == "edge:warden:mimir-shared-warden:mimir"
-        for edge in payload["edges"]
-    )
+    assert any(edge["id"] == "edge:warden:mimir-shared-warden:mimir" for edge in payload["edges"])
 
 
 @respx.mock
@@ -554,9 +551,7 @@ def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert any(
-        node["id"] == "cluster-ymir"
-        and node["label"] == "ymir"
-        and node["namespace"] == "volundr"
+        node["id"] == "cluster-ymir" and node["label"] == "ymir" and node["namespace"] == "volundr"
         for node in payload["nodes"]
     )
     assert any(

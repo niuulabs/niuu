@@ -111,9 +111,12 @@ async def test_null_memory_is_noop(tmp_path) -> None:
     mem = NullResidentMemory()
     assert await mem.recall("m") == []
     assert await mem.write_turn(_turn()) == ""
-    assert await mem.write_policy_observation(
-        ResidentPolicyObservation(subject="s", observation="o", source="x")
-    ) == ""
+    assert (
+        await mem.write_policy_observation(
+            ResidentPolicyObservation(subject="s", observation="o", source="x")
+        )
+        == ""
+    )
     assert await mem.list_policy_observations() == []
     assert await mem.read_operator_needed() is None
     assert await mem.read_operator_answer() is None

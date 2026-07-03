@@ -63,9 +63,7 @@ class KubernetesWardenDiscoveryAdapter:
             items = getattr(response, "items", response if isinstance(response, list) else [])
 
         wardens = [
-            self._deployment_to_warden(item)
-            for item in items
-            if self._deployment_matches(item)
+            self._deployment_to_warden(item) for item in items if self._deployment_matches(item)
         ]
         return [warden for warden in wardens if warden is not None]
 
@@ -153,9 +151,9 @@ class KubernetesWardenDiscoveryAdapter:
 
         pod_template = getattr(getattr(deployment, "spec", None), "template", None)
         pod_labels = getattr(getattr(pod_template, "metadata", None), "labels", None) or {}
-        pod_annotations = getattr(
-            getattr(pod_template, "metadata", None), "annotations", None
-        ) or {}
+        pod_annotations = (
+            getattr(getattr(pod_template, "metadata", None), "annotations", None) or {}
+        )
         merged_labels = {**pod_labels, **labels}
         merged_annotations = {**pod_annotations, **annotations}
         env = self._pod_template_env(pod_template)
@@ -182,8 +180,7 @@ class KubernetesWardenDiscoveryAdapter:
             or "claude-sonnet-4-6",
             deployment="kubernetes",
             deployment_adapter=(
-                "ravn.adapters.warden_discovery.kubernetes."
-                "KubernetesWardenDiscoveryAdapter"
+                "ravn.adapters.warden_discovery.kubernetes.KubernetesWardenDiscoveryAdapter"
             ),
             deployment_kwargs={
                 "deployment_name": name,
@@ -243,10 +240,7 @@ class KubernetesWardenDiscoveryAdapter:
                 service_label=name,
                 observation=WardenObservation(
                     status=observed_status,
-                    detail=(
-                        f"{ready_replicas}/{replicas} ready replicas in namespace "
-                        f"{namespace}"
-                    ),
+                    detail=(f"{ready_replicas}/{replicas} ready replicas in namespace {namespace}"),
                     source="kubernetes",
                     checked_at=datetime.now(UTC),
                     fields=[

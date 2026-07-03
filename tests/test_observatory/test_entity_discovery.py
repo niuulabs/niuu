@@ -157,9 +157,7 @@ async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
 
 
 @pytest.mark.asyncio
-async def test_kubernetes_discovery_projects_declared_relationships(
-    tmp_path, monkeypatch
-) -> None:
+async def test_kubernetes_discovery_projects_declared_relationships(tmp_path, monkeypatch) -> None:
     service_account = tmp_path / "sa"
     service_account.mkdir()
     (service_account / "token").write_text("token", encoding="utf-8")
@@ -235,9 +233,7 @@ async def test_kubernetes_discovery_projects_declared_relationships(
 
 
 @pytest.mark.asyncio
-async def test_kubernetes_discovery_supports_generic_tagged_objects(
-    tmp_path, monkeypatch
-) -> None:
+async def test_kubernetes_discovery_supports_generic_tagged_objects(tmp_path, monkeypatch) -> None:
     service_account = tmp_path / "sa"
     service_account.mkdir()
     (service_account / "token").write_text("token", encoding="utf-8")
@@ -337,8 +333,7 @@ async def test_warden_spec_discovery_emits_semantic_relationships(tmp_path) -> N
 
     snapshot = topology_from_discovery(result)
     edges = {
-        (edge["sourceId"], edge["targetId"], edge["relationType"])
-        for edge in snapshot["edges"]
+        (edge["sourceId"], edge["targetId"], edge["relationType"]) for edge in snapshot["edges"]
     }
 
     assert (
@@ -468,8 +463,7 @@ async def test_static_relationship_adapter_resolves_cross_cluster_refs() -> None
     assert snapshot["edges"] == [
         {
             "id": (
-                "edge:observes:service-observatory-ymir-volundr:"
-                "service-observatory-noatun-volundr"
+                "edge:observes:service-observatory-ymir-volundr:service-observatory-noatun-volundr"
             ),
             "sourceId": "runtime:ymir:volundr:service:observatory",
             "targetId": "runtime:noatun:volundr:service:observatory",

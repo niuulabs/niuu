@@ -82,6 +82,7 @@ def help_needed_frame_to_room_notification(meta: ParticipantMeta, frame: dict) -
         notification["context"] = context
     return notification
 
+
 HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
     {"observer", "teacher", "approver", "debugger", "owner"}
 )

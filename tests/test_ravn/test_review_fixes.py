@@ -60,10 +60,7 @@ def test_classify_text_covers_every_rule_and_helpers() -> None:
         assert classify_text(text)[0] == expected.value, text
 
     # environment-signal payloads are treated as source evidence
-    assert (
-        classify_text("queue", payload={"kind": "signal.host"})[0]
-        == cls.SOURCE_EVIDENCE.value
-    )
+    assert classify_text("queue", payload={"kind": "signal.host"})[0] == cls.SOURCE_EVIDENCE.value
     assert _contains_url("visit https://example.com")
     keywords = _keywords("resident pricing strategy")
     assert "pricing" in keywords and "resident" not in keywords

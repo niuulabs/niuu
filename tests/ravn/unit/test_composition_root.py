@@ -574,10 +574,7 @@ class TestBuildTools:
 
         settings.environment.capability_sources = [
             CapabilitySourceConfig(
-                adapter=(
-                    "tests.test_ravn.test_workflow_tools."
-                    "FakeWorkflowCapabilitySource"
-                )
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
             )
         ]
 
@@ -608,10 +605,7 @@ class TestBuildTools:
 
         settings.environment.capability_sources = [
             CapabilitySourceConfig(
-                adapter=(
-                    "tests.test_ravn.test_workflow_tools."
-                    "FakeWorkflowCapabilitySource"
-                )
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
             )
         ]
         settings.tools.disabled = ["workflow_launch"]
@@ -645,10 +639,7 @@ class TestBuildTools:
         settings.environment.type = "k8s"
         settings.environment.capability_sources = [
             CapabilitySourceConfig(
-                adapter=(
-                    "tests.test_ravn.test_workflow_tools."
-                    "FakeWorkflowCapabilitySource"
-                )
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
             )
         ]
         persona = FilesystemPersonaAdapter().load("k8s-valkyrie")

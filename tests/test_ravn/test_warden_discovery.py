@@ -68,9 +68,7 @@ def test_warden_discovery_config_parses_adapter_json() -> None:
 
 
 def test_ravn_api_lists_discovered_wardens_and_blocks_lifecycle(tmp_path) -> None:
-    discovery = _StaticDiscovery(
-        [WardenSpec(id="mimir-shared-warden", name="Mimir Shared Warden")]
-    )
+    discovery = _StaticDiscovery([WardenSpec(id="mimir-shared-warden", name="Mimir Shared Warden")])
     client = TestClient(
         create_app(
             warden_store=WardenStore(tmp_path),

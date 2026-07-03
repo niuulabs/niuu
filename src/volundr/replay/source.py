@@ -26,8 +26,7 @@ from volundr.domain.ports import SessionEventLogRepository
 class ReplaySource(Protocol):
     """An async iterator of recorded frames with seq > ``after_seq``."""
 
-    def entries(self, *, after_seq: int = 0) -> AsyncIterator[SessionLogEntry]:
-        ...
+    def entries(self, *, after_seq: int = 0) -> AsyncIterator[SessionLogEntry]: ...
 
 
 class RepositoryReplaySource:

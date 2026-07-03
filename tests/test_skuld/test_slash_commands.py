@@ -76,9 +76,7 @@ class TestBuildCatalog:
         assert compact["source"] == "builtin"
 
     def test_sorted_and_deduped(self, isolated_home):
-        catalog = build_slash_command_catalog(
-            ["model", "clear", "clear", "compact"], [], None
-        )
+        catalog = build_slash_command_catalog(["model", "clear", "clear", "compact"], [], None)
         names = [c["name"] for c in catalog]
         assert names == ["/clear", "/compact", "/model"]
 
@@ -196,9 +194,7 @@ class TestTransportSlashCommands:
     async def test_send_control_composes_user_message(self, factory, tmp_path):
         transport = factory(str(tmp_path))
         transport.send_message = AsyncMock()
-        await transport.send_control(
-            "slash_command", command="compact", arguments="keep tests"
-        )
+        await transport.send_control("slash_command", command="compact", arguments="keep tests")
         # send runs as a detached background task — let it complete.
         pending = [t for t in asyncio.all_tasks() if t.get_name() == "claude-slash-command"]
         if pending:

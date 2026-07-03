@@ -283,10 +283,7 @@ async def test_runtime_exposes_workflow_sources_as_tools_without_policy_routing(
     settings = _settings()
     settings.environment.capability_sources = [
         CapabilitySourceConfig(
-            adapter=(
-                "tests.test_ravn.test_environment_signal_runtime."
-                "FakeWorkflowCapabilitySource"
-            )
+            adapter=("tests.test_ravn.test_environment_signal_runtime.FakeWorkflowCapabilitySource")
         )
     ]
     await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))

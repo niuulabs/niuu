@@ -2261,7 +2261,6 @@ async def _run_evolve(settings: Settings) -> None:
     else:
         typer.echo(evolution.as_diff())
 
-
     state.outcome_count_at_last_run = current_count
     state.last_run_at = datetime.now(UTC)
     save_state(state_path, state)
@@ -5053,7 +5052,6 @@ async def _run_mimir_ingest(
 
     content_hash = compute_content_hash(content)
     source_id = "src_" + content_hash[:16]
-
 
     source = MimirSource(
         source_id=source_id,
