@@ -1,6 +1,7 @@
 """Tests for the push NotificationChannel adapters."""
 
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlparse
 
 from volundr.adapters.outbound.push_channels import (
     ApnsNotificationChannel,
@@ -114,8 +115,10 @@ class TestApnsChannel:
 
         assert client.post.call_count == 2
         url = client.post.call_args_list[0][0][0]
-        assert url.endswith("/3/device/d1")
-        assert url.startswith("https://api.push.apple.com")
+        parsed = urlparse(url)
+        assert parsed.path.endswith("/3/device/d1")
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "api.push.apple.com"
         headers = client.post.call_args_list[0][1]["headers"]
         assert headers["authorization"].startswith("bearer ")
         assert headers["apns-topic"] == "com.niuu.forge"
@@ -130,7 +133,9 @@ class TestApnsChannel:
 
         await channel.send(_message(), [_ios_device("d1")])
 
-        assert client.post.call_args[0][0].startswith("https://api.sandbox.push.apple.com")
+        parsed = urlparse(client.post.call_args[0][0])
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "api.sandbox.push.apple.com"
 
     async def test_jwt_is_cached(self):
         client = MagicMock()
