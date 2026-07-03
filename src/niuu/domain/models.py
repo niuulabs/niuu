@@ -191,6 +191,67 @@ class PersonalAccessToken:
     last_used_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class Realm:
+    """A Valkyrie's domain — the governance root for its build capability.
+
+    A realm scopes trust grants and capabilities to one Valkyrie / Sleipnir
+    domain. It lives in the shared volundr/niuu postgres so ravn can read it
+    over HTTP without a ravn-local database.
+    """
+
+    id: UUID
+    slug: str
+    name: str
+    sleipnir_domain: str | None
+    owner_id: str | None
+    instance_id: str | None
+    created_at: datetime
+    updated_at: datetime
+    autonomy_profile: str = "balanced"
+
+
+@dataclass(frozen=True)
+class TrustGrant:
+    """An action a realm's Valkyrie is permitted, scoped by class and target.
+
+    ``action_class`` is one of observe|draft|build|test|deploy|mutate|spend.
+    The ``build`` grant carries ``limits`` such as ``{"workflow": "tool-builder"}``
+    that P3/P4 read to decide which Ting workflow may be commissioned and at what
+    autonomy ``level``.
+    """
+
+    id: UUID
+    realm_id: UUID
+    action_class: str
+    granted_at: datetime
+    target: str = "*"
+    level: int = 0
+    limits: dict = field(default_factory=dict)
+    granted_by: str | None = None
+
+
+@dataclass(frozen=True)
+class Capability:
+    """A tool/skill/persona/integration a realm has, is building, or lacks.
+
+    ``kind`` is one of tool|skill|managed_tool|persona|integration;
+    ``status`` is one of present|gap|building. A ``gap`` is what a Valkyrie may
+    commission a build to fill.
+    """
+
+    id: UUID
+    realm_id: UUID
+    name: str
+    kind: str
+    created_at: datetime
+    updated_at: datetime
+    status: str = "gap"
+    trust_level: int = 0
+    mimir_page_path: str | None = None
+    notes: str | None = None
+
+
 class CacheEntry:
     """Simple TTL cache entry."""
 
