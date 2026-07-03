@@ -183,6 +183,41 @@ def test_learned_tool_artifact_round_trips_manifest_and_reach(tmp_path) -> None:
     assert loaded.source_signal_ids == ["sig-1"]
 
 
+def test_learned_tool_artifact_round_trips_test_code_and_requirements() -> None:
+    manifest = _learned_tool_artifact().manifest
+    artifact = LearnedToolArtifact(
+        artifact_id="learned-tool:with-tests",
+        manifest=manifest,
+        tool_code="def run(input):\n    return {'ok': True}\n",
+        test_code="def test_run():\n    assert run({})['ok'] is True\n",
+        requirements=["httpx>=0.27", "prometheus-api-client"],
+        provenance={"backend": "forge_session"},
+    )
+
+    payload = artifact.to_dict()
+    assert payload["test_code"].startswith("def test_run")
+    assert payload["requirements"] == ["httpx>=0.27", "prometheus-api-client"]
+
+    restored = LearnedToolArtifact.from_dict(payload)
+    assert restored.test_code == artifact.test_code
+    assert restored.requirements == artifact.requirements
+
+
+def test_learned_tool_artifact_from_dict_defaults_missing_new_fields() -> None:
+    # An old artifact persisted before contract v2 has neither key on disk.
+    legacy = {
+        "artifact_id": "learned-tool:legacy",
+        "manifest": _learned_tool_artifact().manifest.to_dict(),
+        "tool_code": "def run(input):\n    return {}\n",
+    }
+    restored = LearnedToolArtifact.from_dict(legacy)
+    assert restored.test_code == ""
+    assert restored.requirements == []
+    # And the round trip re-emits the new fields with their empty defaults.
+    assert restored.to_dict()["test_code"] == ""
+    assert restored.to_dict()["requirements"] == []
+
+
 async def test_learned_tool_loads_as_agent_tool_port_and_executes(tmp_path) -> None:
     artifact = _learned_tool_artifact()
     tool_path = write_learned_tool(tools_dir=tmp_path, artifact=artifact)

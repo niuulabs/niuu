@@ -184,6 +184,9 @@ class TestRavnAgentToolUse:
                         "entry_point": "run",
                     },
                     tool_code="def run(input):\n    return {'built': True}\n",
+                    test_code="def test_run():\n    assert run({})['built'] is True\n",
+                    requirements=["httpx>=0.27"],
+                    build_evidence={"retrieval": "canonical_file"},
                     provenance={"backend": "fake", "session": "sess-9"},
                 )
 
@@ -214,6 +217,15 @@ class TestRavnAgentToolUse:
         registered = next(item for item in agent.tools if item.name == "commissioned_probe")
         run = await registered.execute({})
         assert json.loads(run.content) == {"built": True}
+
+        # Contract v2: the commissioned test_code + requirements + build_evidence
+        # merge into the persisted artifact rather than being discarded.
+        artifact_files = list((tmp_path / "artifacts").glob("*.json"))
+        assert len(artifact_files) == 1
+        persisted = json.loads(artifact_files[0].read_text(encoding="utf-8"))
+        assert persisted["test_code"].startswith("def test_run")
+        assert persisted["requirements"] == ["httpx>=0.27"]
+        assert persisted["provenance"]["build_evidence"] == {"retrieval": "canonical_file"}
 
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
         agent, _ = make_agent(make_simple_llm("unused"))

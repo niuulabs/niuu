@@ -142,6 +142,10 @@ class LearnedToolArtifact:
     source_gap_id: str = ""
     source_build_id: str = ""
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: Self-contained test module the builder produced (empty for inline tools).
+    test_code: str = ""
+    #: pip package requirement strings the tool needs ([] for stdlib-only).
+    requirements: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
@@ -161,6 +165,8 @@ class LearnedToolArtifact:
             source_gap_id=str(data.get("source_gap_id") or ""),
             source_build_id=str(data.get("source_build_id") or ""),
             provenance=dict(data.get("provenance") or {}),
+            test_code=str(data.get("test_code") or ""),
+            requirements=[str(item) for item in list(data.get("requirements") or [])],
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
         )
 
@@ -175,6 +181,8 @@ class LearnedToolArtifact:
             "source_gap_id": self.source_gap_id,
             "source_build_id": self.source_build_id,
             "provenance": dict(self.provenance),
+            "test_code": self.test_code,
+            "requirements": list(self.requirements),
             "created_at": self.created_at,
         }
 

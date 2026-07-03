@@ -144,6 +144,23 @@ class BuildTool(ToolPort):
                         "workflow instead of written inline."
                     ),
                 },
+                "test_code": {
+                    "type": "string",
+                    "description": (
+                        "Optional self-contained test module (pytest/asserts) that loads "
+                        "the tool and exercises the entry point. Commissioned builds "
+                        "populate this from the produced artifact."
+                    ),
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional pip package requirement strings the tool needs at "
+                        "runtime ([] for stdlib-only). Commissioned builds populate this "
+                        "from the produced artifact."
+                    ),
+                },
                 "signal_context": {
                     "type": "string",
                     "description": "Optional investigation context passed to the build backend.",
@@ -292,8 +309,12 @@ class BuildTool(ToolPort):
         merged = dict(input)
         merged["manifest"] = result.manifest
         merged["tool_code"] = result.tool_code
+        merged["test_code"] = result.test_code
+        merged["requirements"] = list(result.requirements)
         provenance = dict(input.get("provenance") or {})
         provenance.update(result.provenance)
+        if result.build_evidence:
+            provenance["build_evidence"] = dict(result.build_evidence)
         merged["provenance"] = provenance
         return merged
 
@@ -480,6 +501,11 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
         raise ValueError("manifest must be an object")
     manifest = LearnedToolManifest.from_dict(manifest_raw)
     tool_code = str(input.get("tool_code") or "")
+    test_code = str(input.get("test_code") or "")
+    requirements_raw = input.get("requirements")
+    if requirements_raw is not None and not isinstance(requirements_raw, list):
+        raise ValueError("requirements must be a list when provided")
+    requirements = [str(item) for item in (requirements_raw or []) if str(item)]
     provenance = input.get("provenance")
     if provenance is not None and not isinstance(provenance, dict):
         raise ValueError("provenance must be an object when provided")
@@ -490,6 +516,8 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
         artifact_id=artifact_id,
         manifest=manifest,
         tool_code=tool_code,
+        test_code=test_code,
+        requirements=requirements,
         provenance=dict(provenance or {}),
     )
 

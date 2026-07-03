@@ -8,11 +8,15 @@ workload-authenticated HTTP boundary (ravn never imports ting).
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ravn.adapters.tool_build._contract import (
+    CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
+    parse_tool_build_document,
     parse_tool_build_response,
     poll_until,
 )
@@ -28,6 +32,8 @@ from ravn.ports.tool_build_backend import (
     ToolBuildRequest,
     ToolBuildResult,
 )
+
+logger = logging.getLogger(__name__)
 
 _DONE_STATUSES = frozenset({"completed", "complete", "failed", "error", "cancelled"})
 _FAILED_STATUSES = frozenset({"failed", "error", "cancelled"})
@@ -103,11 +109,13 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
                 f"within {self._max_poll_attempts} polls (last status {status!r})"
             )
 
-        content = await self._artifact_content(campaign_id, final)
-        result = parse_tool_build_response(content, tool_name=request.name)
+        result, retrieval = await self._retrieve_artifact(campaign_id, final, request)
         return ToolBuildResult(
             manifest=result.manifest,
             tool_code=result.tool_code,
+            test_code=result.test_code,
+            requirements=result.requirements,
+            build_evidence={"retrieval": retrieval},
             provenance={
                 "backend": self.name,
                 "ting_campaign_id": campaign_id,
@@ -115,6 +123,49 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
                 "build_request": request.build_request,
             },
         )
+
+    async def _retrieve_artifact(
+        self,
+        campaign_id: str,
+        campaign: dict[str, Any],
+        request: ToolBuildRequest,
+    ) -> tuple[ToolBuildResult, str]:
+        """Prefer the canonical ``learned_tool.json`` artifact; fall back to scrape.
+
+        Fails loudly (raises :class:`ToolBuildError`) only when NEITHER the
+        canonical artifact nor the inline result/summary/output/artifacts scrape
+        yields a manifest + tool_code.
+        """
+        canonical = await self._get_canonical_artifact(campaign_id)
+        if canonical is not None:
+            return parse_tool_build_document(canonical, tool_name=request.name), "canonical_file"
+        logger.warning(
+            "Ting structured retrieval of %s for campaign %s was unavailable; "
+            "falling back to result/summary/output scrape",
+            CANONICAL_ARTIFACT_FILENAME,
+            campaign_id,
+        )
+        content = await self._artifact_content(campaign_id, campaign)
+        return parse_tool_build_response(content, tool_name=request.name), "chronicle_scrape"
+
+    async def _get_canonical_artifact(self, campaign_id: str) -> dict[str, Any] | None:
+        """Fetch and parse the canonical artifact exposed by the campaign.
+
+        Returns ``None`` (so the caller falls back to the scrape) when the
+        artifact is absent, unreachable, or not a JSON object.
+        """
+        url = (
+            f"{self._base_url}/api/v1/ting/research/campaigns/{campaign_id}"
+            f"/artifact?path={CANONICAL_ARTIFACT_FILENAME}"
+        )
+        try:
+            resp = await self._client.get(url)
+        except Exception:  # noqa: BLE001 — transport failure = fall back to scrape
+            return None
+        if resp.status_code != 200 or not isinstance(resp.body, dict):
+            return None
+        content = resp.body.get("content")
+        return _decode_canonical_content(content)
 
     async def _resolve_workflow_id(self) -> str:
         if self._workflow_id:
@@ -178,6 +229,20 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
                 if isinstance(content, str) and content.strip():
                     return content
         raise ToolBuildError(f"Ting build campaign {campaign_id} produced no retrievable artifact")
+
+
+def _decode_canonical_content(content: Any) -> dict[str, Any] | None:
+    """Decode the canonical artifact content, returned by the campaign artifact
+    endpoint as a JSON string (or, defensively, an already-parsed object)."""
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _campaign_status(campaign: Any) -> str:
