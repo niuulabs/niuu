@@ -44,7 +44,7 @@ export function SpecsNewPage() {
   const [showAllWorkflows, setShowAllWorkflows] = useState(false);
   const [selectedConnectionId, setSelectedConnectionId] = useState('');
 
-  const workflows = workflowsQuery.data ?? [];
+  const workflows = useMemo(() => workflowsQuery.data ?? [], [workflowsQuery.data]);
   const specWorkflows = useMemo(
     () => workflows.filter((workflow) => isSpecWorkflow(workflow.name, workflow.tags)),
     [workflows],

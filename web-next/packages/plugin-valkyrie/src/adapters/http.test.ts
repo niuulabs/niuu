@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildOdinReviewHttpAdapter, buildValkyrieHttpAdapter } from './http';
+import {
+  buildOdinReviewHttpAdapter,
+  buildRealmGovernanceHttpAdapter,
+  buildValkyrieHttpAdapter,
+} from './http';
 
 function makeClient() {
   return {
@@ -164,5 +168,56 @@ describe('buildOdinReviewHttpAdapter', () => {
 
     await adapter.getSummary();
     expect(client.get).toHaveBeenCalledWith('/reviews/summary');
+  });
+});
+
+describe('buildRealmGovernanceHttpAdapter', () => {
+  it('lists realms and trust grants from the shared realms API', async () => {
+    const realmsClient = makeClient();
+    const workflowsClient = makeClient();
+    realmsClient.get.mockResolvedValue([]);
+    const adapter = buildRealmGovernanceHttpAdapter(realmsClient, workflowsClient);
+
+    await adapter.listRealms();
+    expect(realmsClient.get).toHaveBeenCalledWith('/realms');
+
+    await adapter.listTrustGrants('asgard');
+    expect(realmsClient.get).toHaveBeenCalledWith('/realms/asgard/trust-grants');
+    expect(workflowsClient.get).not.toHaveBeenCalled();
+  });
+
+  it('posts the trust grant body untouched', async () => {
+    const realmsClient = makeClient();
+    const workflowsClient = makeClient();
+    realmsClient.post.mockResolvedValue({ id: 'grant-1' });
+    const adapter = buildRealmGovernanceHttpAdapter(realmsClient, workflowsClient);
+
+    await adapter.createTrustGrant('realm/with slash', {
+      action_class: 'build',
+      target: '*',
+      level: 3,
+      limits: { workflow: 'valkyrie-tool-forge' },
+      granted_by: 'human:operator',
+    });
+
+    expect(realmsClient.post).toHaveBeenCalledWith('/realms/realm%2Fwith%20slash/trust-grants', {
+      action_class: 'build',
+      target: '*',
+      level: 3,
+      limits: { workflow: 'valkyrie-tool-forge' },
+      granted_by: 'human:operator',
+    });
+  });
+
+  it('lists workflows from the Ting client', async () => {
+    const realmsClient = makeClient();
+    const workflowsClient = makeClient();
+    workflowsClient.get.mockResolvedValue([{ id: 'wf-1', tags: ['tool-builder'] }]);
+    const adapter = buildRealmGovernanceHttpAdapter(realmsClient, workflowsClient);
+
+    const workflows = await adapter.listWorkflows();
+    expect(workflowsClient.get).toHaveBeenCalledWith('/workflows');
+    expect(realmsClient.get).not.toHaveBeenCalled();
+    expect(workflows).toEqual([{ id: 'wf-1', tags: ['tool-builder'] }]);
   });
 });

@@ -733,6 +733,75 @@ export function reviewInvestigationPrompt(item: ReviewItem): string {
   return typeof prompt === 'string' ? prompt : '';
 }
 
+// ---------------------------------------------------------------------------
+// Realm governance — the trust grant that gates what a realm's Valkyrie
+// may build. Types mirror the backend REST casing exactly (snake_case),
+// served by /api/v1/realms and /api/v1/ting/workflows.
+// ---------------------------------------------------------------------------
+
+/** Realm as returned by GET /api/v1/realms. */
+export interface RealmSummary {
+  id: string;
+  slug: string;
+  name: string;
+  sleipnir_domain: string | null;
+  owner_id: string | null;
+  instance_id: string | null;
+  autonomy_profile: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Trust grant as returned by GET /api/v1/realms/{slug}/trust-grants. */
+export interface RealmTrustGrant {
+  id: string;
+  realm_id: string;
+  action_class: string;
+  target: string;
+  level: number;
+  limits: Record<string, unknown>;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+/** The subset of GET /api/v1/ting/workflows the picker reads. */
+export interface TingWorkflowSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  tags: string[];
+}
+
+export const BUILD_ACTION_CLASS = 'build';
+export const TOOL_BUILDER_TAG = 'tool-builder';
+export const TRUST_LEVELS = [0, 1, 2, 3, 4, 5] as const;
+
+/** Trust level → autonomy mode: <=1 guarded, 2–3 autonomous, >=4 yolo. */
+export function autonomyModeForLevel(level: number): AutonomyMode {
+  if (level >= 4) return 'yolo';
+  if (level >= 2) return 'autonomous';
+  return 'guarded';
+}
+
+/** The realm's effective build grant: the most recently granted `build` entry. */
+export function latestBuildGrant(grants: RealmTrustGrant[]): RealmTrustGrant | null {
+  const builds = grants
+    .filter((grant) => grant.action_class === BUILD_ACTION_CLASS)
+    .sort((a, b) => b.granted_at.localeCompare(a.granted_at));
+  return builds[0] ?? null;
+}
+
+/** Workflow name pinned in the grant's limits, empty when unset. */
+export function grantWorkflowName(grant: RealmTrustGrant | null): string {
+  const workflow = grant?.limits['workflow'];
+  return typeof workflow === 'string' ? workflow : '';
+}
+
+export function isToolBuilderWorkflow(workflow: TingWorkflowSummary): boolean {
+  return workflow.tags.includes(TOOL_BUILDER_TAG);
+}
+
 export function reviewEffectStatement(item: ReviewItem): string {
   switch (item.kind) {
     case 'evolution_build':

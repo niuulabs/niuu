@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  autonomyModeForLevel,
+  grantWorkflowName,
+  isToolBuilderWorkflow,
+  latestBuildGrant,
   normalizeReviewItem,
   normalizeValkyrieSignalEvent,
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
+  type RealmTrustGrant,
+  type TingWorkflowSummary,
 } from './domain';
 
 describe('normalizeValkyrieSignalEvent', () => {
@@ -167,3 +173,75 @@ function basePayload(): Record<string, unknown> {
     title: 'probe',
   };
 }
+
+describe('autonomyModeForLevel', () => {
+  it.each([
+    [0, 'guarded'],
+    [1, 'guarded'],
+    [2, 'autonomous'],
+    [3, 'autonomous'],
+    [4, 'yolo'],
+    [5, 'yolo'],
+  ] as const)('maps level %d to %s', (level, mode) => {
+    expect(autonomyModeForLevel(level)).toBe(mode);
+  });
+});
+
+function grant(overrides: Partial<RealmTrustGrant> = {}): RealmTrustGrant {
+  return {
+    id: 'grant-1',
+    realm_id: 'realm-asgard',
+    action_class: 'build',
+    target: '*',
+    level: 2,
+    limits: { workflow: 'valkyrie-tool-forge' },
+    granted_by: 'human:operator',
+    granted_at: '2026-06-02T10:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('latestBuildGrant', () => {
+  it('returns the most recent build grant and ignores other action classes', () => {
+    const older = grant({ id: 'grant-old', granted_at: '2026-05-01T00:00:00Z', level: 1 });
+    const newer = grant({ id: 'grant-new', granted_at: '2026-06-01T00:00:00Z', level: 3 });
+    const deploy = grant({
+      id: 'grant-deploy',
+      action_class: 'deploy',
+      granted_at: '2026-06-30T00:00:00Z',
+    });
+
+    expect(latestBuildGrant([older, deploy, newer])?.id).toBe('grant-new');
+  });
+
+  it('returns null when no build grant exists', () => {
+    expect(latestBuildGrant([])).toBeNull();
+    expect(latestBuildGrant([grant({ action_class: 'deploy' })])).toBeNull();
+  });
+});
+
+describe('grantWorkflowName', () => {
+  it('reads limits.workflow when it is a string', () => {
+    expect(grantWorkflowName(grant())).toBe('valkyrie-tool-forge');
+  });
+
+  it('returns empty for missing grants or non-string limits', () => {
+    expect(grantWorkflowName(null)).toBe('');
+    expect(grantWorkflowName(grant({ limits: {} }))).toBe('');
+    expect(grantWorkflowName(grant({ limits: { workflow: 7 } }))).toBe('');
+  });
+});
+
+describe('isToolBuilderWorkflow', () => {
+  it('detects the tool-builder tag', () => {
+    const workflow: TingWorkflowSummary = {
+      id: 'wf-1',
+      name: 'forge',
+      description: '',
+      version: '1',
+      tags: ['tool-builder'],
+    };
+    expect(isToolBuilderWorkflow(workflow)).toBe(true);
+    expect(isToolBuilderWorkflow({ ...workflow, tags: ['release'] })).toBe(false);
+  });
+});
