@@ -8,6 +8,7 @@ describe('valkyriePlugin', () => {
       { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
       { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
       { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
+      { id: 'realms', label: 'Realms', rune: 'ᚱ', path: '/valkyrie/realms' },
       { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
     ]);
   });
@@ -19,6 +20,7 @@ describe('valkyriePlugin', () => {
 
     expect(paths).toContain('/valkyrie');
     expect(paths).toContain('/valkyrie/fleet');
+    expect(paths).toContain('/valkyrie/realms');
     expect(paths).toContain('/valkyrie/inbox');
     expect(paths).toContain('/valkyrie/activity');
     for (const legacy of [

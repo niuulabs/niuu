@@ -103,3 +103,29 @@ test('legacy valkyrie routes redirect to console', async ({ page }) => {
   await expect(page).toHaveURL(/\/valkyrie$/);
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 });
+
+test('realms view exposes the tool-builder workflow picker', async ({ page }) => {
+  await page.goto('/valkyrie/realms');
+
+  await expect(page.getByTestId('realms-page')).toBeVisible({ timeout: 5000 });
+  const cards = page.getByTestId('realm-card');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first().getByTestId('tool-builder-autonomy')).toHaveText(
+    'autonomous · level 2',
+  );
+  await expect(cards.first().getByLabel(/Tool-builder workflow/)).toBeVisible();
+});
+
+test('operator can pin a builder workflow and raise the trust level', async ({ page }) => {
+  await page.goto('/valkyrie/realms');
+
+  const midgard = page.getByTestId('realm-card').filter({ hasText: 'Midgard' });
+  await expect(midgard.getByTestId('tool-builder-ungranted')).toBeVisible();
+
+  await midgard.getByLabel('Tool-builder workflow for Midgard').selectOption('valkyrie-tool-forge');
+  await midgard.getByLabel('Build trust level for Midgard').selectOption('4');
+  await expect(midgard.getByTestId('tool-builder-level-hint')).toHaveText('yolo');
+  await midgard.getByTestId('tool-builder-save').click();
+
+  await expect(midgard.getByTestId('tool-builder-autonomy')).toHaveText('yolo · level 4');
+});

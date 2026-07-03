@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   createMockOdinReviewService,
+  createMockRealmGovernanceService,
   createMockValkyrieService,
+  createSeedRealms,
   createSeedReviewItems,
+  createSeedToolWorkflows,
+  createSeedTrustGrants,
   createSeedValkyrieDashboard,
 } from './mock';
 
@@ -97,5 +101,66 @@ describe('createMockOdinReviewService', () => {
       summary.pendingTotal,
     );
     expect(summary.countsByStatus.pending).toBe(summary.pendingTotal);
+  });
+});
+
+describe('createMockRealmGovernanceService', () => {
+  it('serves the seeded realms, grants, and workflows', async () => {
+    const service = createMockRealmGovernanceService();
+
+    const realms = await service.listRealms();
+    expect(realms).toEqual(createSeedRealms());
+
+    const grants = await service.listTrustGrants('asgard');
+    expect(grants).toEqual(createSeedTrustGrants()['asgard']);
+
+    const workflows = await service.listWorkflows();
+    expect(workflows).toEqual(createSeedToolWorkflows());
+  });
+
+  it('creates a trust grant that later listings include', async () => {
+    const service = createMockRealmGovernanceService();
+
+    const created = await service.createTrustGrant('midgard', {
+      action_class: 'build',
+      target: '*',
+      level: 4,
+      limits: { workflow: 'valkyrie-tool-forge-fast' },
+      granted_by: 'human:operator',
+    });
+
+    expect(created).toMatchObject({
+      realm_id: 'realm-midgard',
+      action_class: 'build',
+      level: 4,
+      limits: { workflow: 'valkyrie-tool-forge-fast' },
+      granted_by: 'human:operator',
+    });
+
+    const grants = await service.listTrustGrants('midgard');
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.id).toBe(created.id);
+  });
+
+  it('defaults granted_by to null and rejects unknown realms', async () => {
+    const service = createMockRealmGovernanceService();
+
+    const created = await service.createTrustGrant('midgard', {
+      action_class: 'build',
+      target: '*',
+      level: 1,
+      limits: {},
+    });
+    expect(created.granted_by).toBeNull();
+
+    await expect(service.listTrustGrants('nowhere')).rejects.toThrow('Realm not found: nowhere');
+    await expect(
+      service.createTrustGrant('nowhere', {
+        action_class: 'build',
+        target: '*',
+        level: 0,
+        limits: {},
+      }),
+    ).rejects.toThrow('Realm not found: nowhere');
   });
 });

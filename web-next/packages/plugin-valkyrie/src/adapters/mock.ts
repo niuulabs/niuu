@@ -10,10 +10,13 @@ import type {
   JudgmentRecord,
   LearningRecord,
   OperationalState,
+  RealmSummary,
+  RealmTrustGrant,
   ReviewItem,
   ReviewSummary,
   SignalHistoryEntry,
   SkillUsageStat,
+  TingWorkflowSummary,
   ValkyrieDashboard,
   ValkyrieResident,
 } from '../domain';
@@ -21,10 +24,12 @@ import type {
   AutonomyUpdateRequest,
   DecisionListFilters,
   IOdinReviewService,
+  IRealmGovernanceService,
   IValkyrieService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
+  TrustGrantCreate,
 } from '../ports';
 
 const UPDATED_AT = '2026-06-03T14:10:00Z';
@@ -1260,6 +1265,146 @@ export function createMockOdinReviewService(
         pendingByRisk,
         countsByStatus,
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Realm governance mocks — realms, trust grants, and Ting builder workflows
+// ---------------------------------------------------------------------------
+
+export function createSeedRealms(): RealmSummary[] {
+  return [
+    {
+      id: 'realm-asgard',
+      slug: 'asgard',
+      name: 'Asgard',
+      sleipnir_domain: 'asgard.niuu',
+      owner_id: 'human:operator',
+      instance_id: 'instance-valhalla',
+      autonomy_profile: 'balanced',
+      created_at: '2026-05-01T09:00:00Z',
+      updated_at: '2026-06-03T12:00:00Z',
+    },
+    {
+      id: 'realm-midgard',
+      slug: 'midgard',
+      name: 'Midgard',
+      sleipnir_domain: null,
+      owner_id: null,
+      instance_id: null,
+      autonomy_profile: 'guarded',
+      created_at: '2026-05-10T09:00:00Z',
+      updated_at: '2026-06-01T08:00:00Z',
+    },
+  ];
+}
+
+export function createSeedTrustGrants(): Record<string, RealmTrustGrant[]> {
+  return {
+    asgard: [
+      {
+        id: 'grant-asgard-build',
+        realm_id: 'realm-asgard',
+        action_class: 'build',
+        target: '*',
+        level: 2,
+        limits: { workflow: 'valkyrie-tool-forge' },
+        granted_by: 'human:operator',
+        granted_at: '2026-06-02T10:00:00Z',
+      },
+      {
+        id: 'grant-asgard-deploy',
+        realm_id: 'realm-asgard',
+        action_class: 'deploy',
+        target: '*',
+        level: 1,
+        limits: {},
+        granted_by: 'human:operator',
+        granted_at: '2026-06-02T10:05:00Z',
+      },
+    ],
+    midgard: [],
+  };
+}
+
+export function createSeedToolWorkflows(): TingWorkflowSummary[] {
+  return [
+    {
+      id: 'wf-tool-forge',
+      name: 'valkyrie-tool-forge',
+      description: 'Guarded tool build with canary and review gates.',
+      version: '1.2.0',
+      tags: ['tool-builder', 'valkyrie'],
+    },
+    {
+      id: 'wf-tool-forge-fast',
+      name: 'valkyrie-tool-forge-fast',
+      description: 'Single-pass tool build for trusted realms.',
+      version: '0.4.0',
+      tags: ['tool-builder'],
+    },
+    {
+      id: 'wf-release-train',
+      name: 'release-train',
+      description: 'Weekly release pipeline — not a tool builder.',
+      version: '3.0.0',
+      tags: ['release'],
+    },
+  ];
+}
+
+export interface RealmGovernanceSeed {
+  realms?: RealmSummary[];
+  grants?: Record<string, RealmTrustGrant[]>;
+  workflows?: TingWorkflowSummary[];
+}
+
+export function createMockRealmGovernanceService(
+  seed: RealmGovernanceSeed = {},
+): IRealmGovernanceService {
+  const realms = (seed.realms ?? createSeedRealms()).map((realm) => ({ ...realm }));
+  const grants = new Map<string, RealmTrustGrant[]>(
+    Object.entries(seed.grants ?? createSeedTrustGrants()).map(([slug, entries]) => [
+      slug,
+      entries.map((entry) => ({ ...entry })),
+    ]),
+  );
+  const workflows = (seed.workflows ?? createSeedToolWorkflows()).map((workflow) => ({
+    ...workflow,
+  }));
+
+  function requireRealm(slug: string): RealmSummary {
+    const realm = realms.find((entry) => entry.slug === slug);
+    if (!realm) throw new Error(`Realm not found: ${slug}`);
+    return realm;
+  }
+
+  return {
+    async listRealms() {
+      return realms.map((realm) => ({ ...realm }));
+    },
+    async listTrustGrants(slug: string) {
+      requireRealm(slug);
+      return (grants.get(slug) ?? []).map((grant) => ({ ...grant }));
+    },
+    async createTrustGrant(slug: string, request: TrustGrantCreate) {
+      const realm = requireRealm(slug);
+      const grant: RealmTrustGrant = {
+        id: `grant-${slug}-${(grants.get(slug) ?? []).length + 1}`,
+        realm_id: realm.id,
+        action_class: request.action_class,
+        target: request.target,
+        level: request.level,
+        limits: { ...request.limits },
+        granted_by: request.granted_by ?? null,
+        granted_at: new Date().toISOString(),
+      };
+      grants.set(slug, [...(grants.get(slug) ?? []), grant]);
+      return { ...grant };
+    },
+    async listWorkflows() {
+      return workflows.map((workflow) => ({ ...workflow }));
     },
   };
 }

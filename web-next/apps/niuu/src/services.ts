@@ -66,8 +66,10 @@ import {
 } from '@niuulabs/plugin-volundr';
 import {
   buildOdinReviewHttpAdapter,
+  buildRealmGovernanceHttpAdapter,
   buildValkyrieHttpAdapter,
   createMockOdinReviewService,
+  createMockRealmGovernanceService,
   createMockValkyrieService,
 } from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
@@ -401,6 +403,38 @@ function resolveValkyrieServiceBase(
     : groupedBase;
 }
 
+/**
+ * Realm governance spans two backends: realms on the shared niuu host
+ * (`<sharedApiBase>/realms`) and workflows on Ting (`<tingBase>/workflows`).
+ * Live only when both are reachable.
+ */
+function resolveRealmGovernanceBases(
+  config: Pick<NiuuConfig, 'services'>,
+): { realmsBase: string; workflowsBase: string } | null {
+  const realmsBase = resolveSharedApiBase(config);
+  const workflowsBase = resolveTingServiceBase(config, 'ting.workflows');
+  if (!realmsBase || !workflowsBase) return null;
+  return { realmsBase, workflowsBase };
+}
+
+function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const bases = resolveRealmGovernanceBases(config);
+  if (!bases) {
+    return {
+      mode: 'mock',
+      transport: 'mock',
+      target: null,
+      source: 'mock',
+    };
+  }
+  return {
+    mode: 'live',
+    transport: 'http',
+    target: bases.realmsBase,
+    source: 'shared-api',
+  };
+}
+
 export function resolveSettingsServiceBase(
   config: Pick<NiuuConfig, 'services'>,
   providerId:
@@ -603,6 +637,7 @@ export function buildServiceBackendStatus(
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
     'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
+    'valkyrie.realms': resolveRealmGovernanceStatus(config),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
@@ -1293,6 +1328,13 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const valkyrieReviews = valkyrieReviewsBase
     ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
     : createMockOdinReviewService();
+  const realmGovernanceBases = resolveRealmGovernanceBases(config);
+  const valkyrieRealms = realmGovernanceBases
+    ? buildRealmGovernanceHttpAdapter(
+        createApiClient(realmGovernanceBases.realmsBase),
+        createApiClient(realmGovernanceBases.workflowsBase),
+      )
+    : createMockRealmGovernanceService();
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1381,5 +1423,6 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.events': observatoryEvents,
     valkyrie,
     'valkyrie.reviews': valkyrieReviews,
+    'valkyrie.realms': valkyrieRealms,
   };
 }

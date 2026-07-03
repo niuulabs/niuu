@@ -4,19 +4,24 @@ import {
   type DecisionDetail,
   type DecisionRecord,
   type HistoryPage,
+  type RealmSummary,
+  type RealmTrustGrant,
   type ReviewItem,
   type SignalHistoryEntry,
   type SkillUsageStat,
+  type TingWorkflowSummary,
   type ValkyrieDashboard,
 } from '../domain';
 import type {
   AutonomyUpdateRequest,
   DecisionListFilters,
   IOdinReviewService,
+  IRealmGovernanceService,
   IValkyrieService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
+  TrustGrantCreate,
 } from '../ports';
 
 function query(params: Record<string, string | number | undefined>): string {
@@ -110,6 +115,36 @@ export function buildOdinReviewHttpAdapter(client: ApiClient): IOdinReviewServic
     },
     getSummary() {
       return client.get('/reviews/summary');
+    },
+  };
+}
+
+/**
+ * Realm governance rides two backends: realms live on the shared niuu host
+ * (`<sharedApiBase>/realms`), workflows on Ting (`<tingBase>/workflows`).
+ * Pass one client scoped to each base.
+ */
+export function buildRealmGovernanceHttpAdapter(
+  realmsClient: ApiClient,
+  workflowsClient: ApiClient,
+): IRealmGovernanceService {
+  return {
+    listRealms() {
+      return realmsClient.get<RealmSummary[]>('/realms');
+    },
+    listTrustGrants(slug: string) {
+      return realmsClient.get<RealmTrustGrant[]>(
+        `/realms/${encodeURIComponent(slug)}/trust-grants`,
+      );
+    },
+    createTrustGrant(slug: string, request: TrustGrantCreate) {
+      return realmsClient.post<RealmTrustGrant>(
+        `/realms/${encodeURIComponent(slug)}/trust-grants`,
+        request,
+      );
+    },
+    listWorkflows() {
+      return workflowsClient.get<TingWorkflowSummary[]>('/workflows');
     },
   };
 }
