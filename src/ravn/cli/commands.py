@@ -170,6 +170,8 @@ def _attach_signal_build_tool(
                 settings, workflow_selector=realm_config.workflow_selector
             ),
             investigation_context=_investigation_context,
+            max_repair_attempts=settings.resident_evolution.build_repair_attempts,
+            flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -281,7 +283,12 @@ def _resolve_realm_build_config(settings: Settings) -> _RealmBuildConfig:
         workflow_selector_from_grant,
     )
 
-    autonomy_mode = autonomy_mode_for_trust_level(grant.level)
+    trust_table = cfg.trust_level_autonomy_table
+    autonomy_mode = autonomy_mode_for_trust_level(
+        grant.level,
+        autonomous_threshold=trust_table.autonomous,
+        yolo_threshold=trust_table.yolo,
+    )
     workflow_selector = workflow_selector_from_grant(grant)
     logger.info(
         "realm %s build grant resolved: level=%d autonomy_mode=%s workflow_selector=%s",
@@ -5134,9 +5141,7 @@ def tool_build_workflows(
 
     selector_dict = _effective_workflow_selector(settings)
     selector = (
-        WorkflowSelector(**selector_dict)
-        if selector_dict is not None
-        else WorkflowSelector()
+        WorkflowSelector(**selector_dict) if selector_dict is not None else WorkflowSelector()
     )
     rows = [
         {

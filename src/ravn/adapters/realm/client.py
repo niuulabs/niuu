@@ -9,10 +9,11 @@ The "build" action-class grant with the highest ``level`` governs this
 Valkyrie's tool-building: ``grant.limits`` may hold a workflow selector
 (``{"workflow": "tool-builder"}``) and ``grant.level`` is its autonomy rung.
 
-The trust-level -> autonomy-mode table lives here as documented constants.
-Phase 5 (P5) may move this table into config; until then it is the single
-authoritative mapping so ``ravn.config`` never carries the rungs as bare
-literals.
+The trust-level -> autonomy-mode table is config-driven (P5):
+``ResidentEvolutionConfig.trust_level_autonomy_table`` carries the thresholds
+and the composition root passes them to ``autonomy_mode_for_trust_level``. The
+defaults live here as documented constants so ``ravn.config`` and this mapping
+stay in lockstep.
 """
 
 from __future__ import annotations
@@ -35,27 +36,27 @@ BUILD_ACTION_CLASS = "build"
 _HTTP_OK = 200
 
 # ---------------------------------------------------------------------------
-# Trust-level -> autonomy-mode table
+# Trust-level -> autonomy-mode table (defaults)
 #
-# Explicit, documented rungs (no scattered literals). The three autonomy modes
-# mirror ``ResidentEvolutionConfig.autonomy_mode``:
+# The three autonomy modes mirror ``ResidentEvolutionConfig.autonomy_mode``:
 #   guarded    — records proposals only
 #   autonomous — applies low-risk private/Environment changes
 #   yolo       — evolves within delegated boundaries
 #
-# Rung boundaries (inclusive):
-#   level <= 1        -> guarded     (minimal trust: propose only)
-#   2 <= level <= 3   -> autonomous  (trusted for low-risk self-evolution)
-#   level >= 4        -> yolo        (fully delegated within boundaries)
+# Default rung boundaries (thresholds are inclusive lower bounds; override via
+# ``ResidentEvolutionConfig.trust_level_autonomy_table``):
+#   level <  2  -> guarded     (minimal trust: propose only)
+#   level >= 2  -> autonomous  (trusted for low-risk self-evolution)
+#   level >= 4  -> yolo        (fully delegated within boundaries)
 # ---------------------------------------------------------------------------
 _AUTONOMY_MODE_GUARDED = "guarded"
 _AUTONOMY_MODE_AUTONOMOUS = "autonomous"
 _AUTONOMY_MODE_YOLO = "yolo"
 
-#: Highest level that still maps to ``guarded``.
-_GUARDED_MAX_LEVEL = 1
-#: Highest level that maps to ``autonomous``; anything above is ``yolo``.
-_AUTONOMOUS_MAX_LEVEL = 3
+#: Default lowest level that maps to ``autonomous``.
+DEFAULT_AUTONOMOUS_TRUST_THRESHOLD = 2
+#: Default lowest level that maps to ``yolo``.
+DEFAULT_YOLO_TRUST_THRESHOLD = 4
 
 #: Auth kwargs forwarded verbatim to ``client_from_workload_identity``.
 _AUTH_KWARG_NAMES = (
@@ -75,17 +76,31 @@ class BuildGrant:
     target: str
 
 
-def autonomy_mode_for_trust_level(level: int) -> str:
+def autonomy_mode_for_trust_level(
+    level: int,
+    *,
+    autonomous_threshold: int = DEFAULT_AUTONOMOUS_TRUST_THRESHOLD,
+    yolo_threshold: int = DEFAULT_YOLO_TRUST_THRESHOLD,
+) -> str:
     """Map a realm trust level to a resident autonomy mode.
 
-    See the module-level table for the rung boundaries. P5 may move this table
-    into config; for now it is the single authoritative mapping.
+    Thresholds are inclusive lower bounds: ``level >= yolo_threshold`` is
+    ``yolo``, ``level >= autonomous_threshold`` is ``autonomous``, anything
+    below is ``guarded``. The composition root passes
+    ``ResidentEvolutionConfig.trust_level_autonomy_table`` here; the defaults
+    reproduce that table's defaults.
     """
-    if level <= _GUARDED_MAX_LEVEL:
-        return _AUTONOMY_MODE_GUARDED
-    if level <= _AUTONOMOUS_MAX_LEVEL:
+    if yolo_threshold < autonomous_threshold:
+        msg = (
+            f"yolo_threshold ({yolo_threshold}) must be >= "
+            f"autonomous_threshold ({autonomous_threshold})"
+        )
+        raise ValueError(msg)
+    if level >= yolo_threshold:
+        return _AUTONOMY_MODE_YOLO
+    if level >= autonomous_threshold:
         return _AUTONOMY_MODE_AUTONOMOUS
-    return _AUTONOMY_MODE_YOLO
+    return _AUTONOMY_MODE_GUARDED
 
 
 def workflow_selector_from_grant(grant: BuildGrant) -> dict[str, Any] | None:
