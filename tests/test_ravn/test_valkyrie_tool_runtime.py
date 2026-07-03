@@ -1001,23 +1001,89 @@ async def test_forge_runner_injected_networked_shell_cannot_enforce_isolation(tm
     assert with_reach.enforcement == REACH_ENFORCEMENT_ENFORCED
 
 
-async def test_forge_runner_warns_once_about_unprovisioned_requirements(tmp_path, caplog) -> None:
-    shell = _FakeDockerShell(config=SimpleNamespace(network=NETWORK_DENIED_DOCKER_NETWORK))
+class _RecordingDockerShell(_FakeDockerShell):
+    """Fake shell recording every command; pip commands can be scripted to fail."""
+
+    def __init__(self, *, pip_exit_code: int = 0, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.commands: list[str] = []
+        self._pip_exit_code = pip_exit_code
+
+    async def run(self, command: str) -> tuple[str, int]:
+        self.commands.append(command)
+        if "pip install" in command:
+            return ("pip output", self._pip_exit_code)
+        return ('{"ok": true}', 0)
+
+
+async def test_forge_runner_provisions_sandbox_venv_for_requirements(tmp_path) -> None:
+    shell = _RecordingDockerShell(config=SimpleNamespace(network=NETWORK_ALLOWED_DOCKER_NETWORK))
     tool_path = write_tool(
         tools_dir=tmp_path,
         skill_name="probe",
         tool_code="def run(signal):\n    return {'ok': True}\n",
     )
     runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
-    with caplog.at_level(logging.WARNING, logger="ravn.valkyrie_evolution.learned_tools"):
-        await runner.run(
-            tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
-        )
-        await runner.run(
-            tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
-        )
-    warnings = [rec for rec in caplog.records if "per-tool dependencies" in rec.message]
-    assert len(warnings) == 1
+
+    result = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+    )
+
+    assert result.ok
+    venv_dir = tmp_path / ".ravn" / "tool_venvs" / "probe"
+    provision, run_command = shell.commands
+    assert "pip install" in provision
+    assert "httpx" in provision
+    assert str(venv_dir) in provision
+    # The tool run uses the provisioned venv's interpreter.
+    assert run_command.startswith(str(venv_dir / "bin" / "python"))
+    # Stamp written last, on the shared mount, so the next run is a no-op.
+    stamp = venv_dir / ".requirements.txt"
+    assert stamp.read_text(encoding="utf-8") == "httpx"
+
+
+async def test_forge_runner_skips_provisioning_when_stamp_matches(tmp_path) -> None:
+    shell = _RecordingDockerShell(config=SimpleNamespace(network=NETWORK_ALLOWED_DOCKER_NETWORK))
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    venv_dir = tmp_path / ".ravn" / "tool_venvs" / "probe"
+    venv_dir.mkdir(parents=True)
+    (venv_dir / ".requirements.txt").write_text("httpx", encoding="utf-8")
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+
+    result = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["httpx"]
+    )
+
+    assert result.ok
+    assert len(shell.commands) == 1  # no pip re-run: stamp matched
+    assert shell.commands[0].startswith(str(venv_dir / "bin" / "python"))
+
+
+async def test_forge_runner_fails_loudly_when_provisioning_fails(tmp_path) -> None:
+    shell = _RecordingDockerShell(
+        config=SimpleNamespace(network=NETWORK_ALLOWED_DOCKER_NETWORK),
+        pip_exit_code=1,
+    )
+    tool_path = write_tool(
+        tools_dir=tmp_path,
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ForgeSandboxLearnedToolRunner(workspace_root=tmp_path, shell=shell)
+
+    result = await runner.run(
+        tool_path, {}, entry_point="run", timeout_seconds=5.0, requirements=["nope"]
+    )
+
+    assert not result.ok
+    assert "provisioning failed" in result.error
+    assert len(shell.commands) == 1  # the tool itself never ran
+    # No stamp: a failed provisioning must not masquerade as complete.
+    assert not (tmp_path / ".ravn" / "tool_venvs" / "probe" / ".requirements.txt").exists()
 
 
 # ---------------------------------------------------------------------------

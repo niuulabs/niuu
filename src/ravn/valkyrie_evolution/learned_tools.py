@@ -24,6 +24,7 @@ from ravn.valkyrie_evolution.models import (
 from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
+    TOOL_VENV_REQUIREMENTS_STAMP,
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
@@ -205,7 +206,9 @@ class ForgeSandboxLearnedToolRunner:
         #: tool and an isolated tool never share a container.
         self._shells: dict[str, Any] = {}
         self._reach_warned: set[str] = set()
-        self._requirements_warned: set[str] = set()
+        #: One provisioning lock per tool so concurrent runs of the same tool
+        #: cannot rebuild each other's in-container venv mid-install.
+        self._venv_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def enforces_reach(self) -> bool:
@@ -231,8 +234,24 @@ class ForgeSandboxLearnedToolRunner:
                     f"forge sandbox runner requires learned tool path inside workspace: {tool_path}"
                 ),
             )
+        python_executable = "python"
         if requirements:
-            self._warn_unprovisioned_requirements(tool_path)
+            provisioned, provision_error = await self._ensure_sandbox_venv(
+                tool_path,
+                requirements,
+                timeout_seconds=timeout_seconds,
+            )
+            if provisioned is None:
+                # A tool that declares requirements must never silently run
+                # without them — same posture as the local runner.
+                return ToolRunResult(
+                    ok=False,
+                    error=(
+                        f"forge sandbox venv provisioning failed for {tool_path.stem}: "
+                        f"{provision_error}"
+                    ),
+                )
+            python_executable = provisioned
 
         network_allowed = reach_allows_network(declared_reach)
         shell, enforcement = await self._shell_and_enforcement(
@@ -254,6 +273,7 @@ class ForgeSandboxLearnedToolRunner:
             tool_path=tool_path,
             entry_point=entry_point,
             payload_path=payload_path,
+            python_executable=python_executable,
         )
         try:
             output, exit_code = await shell.run(command)
@@ -343,17 +363,53 @@ class ForgeSandboxLearnedToolRunner:
             key,
         )
 
-    def _warn_unprovisioned_requirements(self, tool_path: Path) -> None:
-        key = tool_path.stem
-        if key in self._requirements_warned:
-            return
-        self._requirements_warned.add(key)
-        logger.warning(
-            "learned tool %s declares pip requirements, but the forge sandbox "
-            "backend does not provision per-tool dependencies yet; the run "
-            "relies on the devrunner image providing them",
-            key,
-        )
+    async def _ensure_sandbox_venv(
+        self,
+        tool_path: Path,
+        requirements: Sequence[str],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[str | None, str]:
+        """Provision the tool's venv inside the sandbox; return (python, error).
+
+        The venv lives at ``{workspace}/.ravn/tool_venvs/{tool}`` on the shared
+        workspace mount. Provisioning always runs through the NETWORKED shell —
+        pip needs egress — while the tool run itself stays on its reach-scoped
+        shell; the run container sees the venv through the mount. A stamp file
+        (same convention as the local runner) makes an unchanged requirement
+        list a no-op. Returns ``(None, error)`` when provisioning fails — a
+        tool must never silently run without its dependencies.
+        """
+        stem = tool_path.stem
+        venv_dir = self._workspace_root / ".ravn" / "tool_venvs" / stem
+        stamp_path = venv_dir / TOOL_VENV_REQUIREMENTS_STAMP
+        desired_stamp = "\n".join(requirements)
+        python = str(venv_dir / "bin" / "python")
+
+        lock = self._venv_locks.setdefault(stem, asyncio.Lock())
+        async with lock:
+            if stamp_path.is_file() and stamp_path.read_text(encoding="utf-8") == desired_stamp:
+                return python, ""
+
+            shell, _ = await self._shell_and_enforcement(
+                network_allowed=True,
+                timeout_seconds=timeout_seconds,
+            )
+            command = _forge_venv_provision_command(
+                venv_dir=venv_dir,
+                requirements=requirements,
+            )
+            try:
+                output, exit_code = await shell.run(command)
+            except Exception as exc:  # noqa: BLE001 — provisioning failure is the error result
+                return None, str(exc)
+            if exit_code != 0:
+                return None, str(output)
+            # The stamp is written last (host side, shared mount) so a killed
+            # provisioning run never masquerades as a complete one.
+            stamp_path.parent.mkdir(parents=True, exist_ok=True)
+            stamp_path.write_text(desired_stamp, encoding="utf-8")
+            return python, ""
 
 
 def _shell_network_mode(shell: Any) -> str | None:
@@ -744,9 +800,10 @@ def _forge_runner_command(
     tool_path: Path,
     entry_point: str,
     payload_path: Path,
+    python_executable: str = "python",
 ) -> str:
     parts = [
-        "python",
+        python_executable,
         "-I",
         str(runner_path),
         str(tool_path),
@@ -754,3 +811,18 @@ def _forge_runner_command(
         str(payload_path),
     ]
     return " ".join(shlex.quote(part) for part in parts)
+
+
+def _forge_venv_provision_command(*, venv_dir: Path, requirements: Sequence[str]) -> str:
+    """Shell command that (re)builds a per-tool venv inside the sandbox container.
+
+    The venv lives on the shared workspace mount so the network-scoped run
+    container sees what the networked provisioning container installed.
+    """
+    venv = shlex.quote(str(venv_dir))
+    python = shlex.quote(str(venv_dir / "bin" / "python"))
+    install = " ".join(shlex.quote(req) for req in requirements)
+    return (
+        f"rm -rf {venv} && python -m venv {venv} && "
+        f"{python} -m pip install --disable-pip-version-check {install}"
+    )
