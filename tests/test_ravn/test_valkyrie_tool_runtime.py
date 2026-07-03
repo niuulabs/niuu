@@ -779,9 +779,7 @@ def test_prune_orphaned_tool_venvs_keeps_live_tools_and_the_cache(tmp_path) -> N
 
 def test_prune_orphaned_tool_venvs_missing_dir_is_a_noop(tmp_path) -> None:
     assert (
-        tool_runtime_mod.prune_orphaned_tool_venvs(
-            venvs_dir=tmp_path / "nope", tools_dir=tmp_path
-        )
+        tool_runtime_mod.prune_orphaned_tool_venvs(venvs_dir=tmp_path / "nope", tools_dir=tmp_path)
         == []
     )
 
