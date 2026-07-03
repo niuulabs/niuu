@@ -3095,6 +3095,14 @@ async def _run_daemon(
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
 
+    realm_capability_sync = _build_realm_capability_sync(
+        settings,
+        subscriber=environment_signal_publisher,
+    )
+    if realm_capability_sync is not None:
+        await realm_capability_sync.start()
+        typer.echo("  Realm capability sync: subscribed")
+
     resident_wakefulness = _build_resident_wakefulness(
         settings,
         resident_learning_runtime=resident_learning_runtime,
@@ -3473,6 +3481,42 @@ def _build_resident_learning_runtime(
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
+    )
+
+
+def _build_realm_capability_sync(
+    settings: Settings,
+    *,
+    subscriber: Any | None,
+) -> Any | None:
+    """Build the realm capability-ledger writer for resident evolution events.
+
+    Returns None (zero behavior change) when no realm_slug is configured or a
+    realm client cannot be built; the realm ledger is advisory bookkeeping, so
+    an unusable realm config degrades with a WARNING instead of failing the
+    daemon.
+    """
+    cfg = settings.resident_evolution
+    if not cfg.realm_slug:
+        return None
+    if subscriber is None or not hasattr(subscriber, "subscribe"):
+        logger.warning(
+            "realm capability sync: realm_slug %r is set but no bus subscriber "
+            "is available; the capability ledger will not be updated",
+            cfg.realm_slug,
+        )
+        return None
+    client = _realm_client_for(settings)
+    if client is None:
+        return None
+
+    from ravn.adapters.realm import RealmCapabilitySync  # noqa: PLC0415
+
+    logger.info("realm capability sync: active for realm %s", cfg.realm_slug)
+    return RealmCapabilitySync(
+        client=client,
+        realm_slug=cfg.realm_slug,
+        subscriber=subscriber,
     )
 
 
