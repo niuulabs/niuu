@@ -77,11 +77,20 @@ export const valkyriePlugin = definePlugin({
 export {
   createMockOdinReviewService,
   createMockValkyrieService,
+  createSeedDecisions,
   createSeedReviewItems,
+  createSeedSignalHistory,
+  createSeedSkillStats,
   createSeedValkyrieDashboard,
 } from './adapters/mock';
 export { buildOdinReviewHttpAdapter, buildValkyrieHttpAdapter } from './adapters/http';
 export { useUpdateAutonomy, useValkyrieDashboard } from './application/useValkyrieDashboard';
+export {
+  useDecisionDetail,
+  useDecisionList,
+  useSignalHistory,
+  useSkillStats,
+} from './application/useValkyrieHistory';
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
 export {
   normalizeReviewItem,
@@ -91,23 +100,30 @@ export {
 } from './domain';
 export type {
   AutonomyMode,
+  DecisionDetail,
+  DecisionRecord,
   EnvironmentHealth,
   EnvironmentKind,
   EnvironmentSummary,
   FlockSummary,
+  HistoryPage,
   ReviewItem,
   ReviewKind,
   ReviewRiskClass,
   ReviewStatus,
   ReviewSummary,
+  SignalHistoryEntry,
+  SkillUsageStat,
   ValkyrieDashboard,
   ValkyrieResident,
   WakefulnessState,
 } from './domain';
 export type {
   AutonomyUpdateRequest,
+  DecisionListFilters,
   IOdinReviewService,
   IValkyrieService,
   ReviewDecisionRequest,
   ReviewListFilters,
+  SignalHistoryFilters,
 } from './ports';

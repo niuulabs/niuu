@@ -52,6 +52,49 @@ describe('buildValkyrieHttpAdapter', () => {
       participantId: 'human:jozef',
     });
   });
+
+  it('lists decisions with filters', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ items: [], total: 0, limit: 8, offset: 0 });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    await adapter.listDecisions({ environmentId: 'env-a', valkyrieId: 'v-1', limit: 8 });
+    expect(client.get).toHaveBeenCalledWith(
+      '/decisions?environment_id=env-a&valkyrie_id=v-1&limit=8',
+    );
+
+    await adapter.listDecisions();
+    expect(client.get).toHaveBeenCalledWith('/decisions');
+  });
+
+  it('fetches one decision and returns null on failure', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({ decision: { decisionId: 'd-1' }, lineage: {} });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    const detail = await adapter.getDecision('d-1');
+    expect(client.get).toHaveBeenCalledWith('/decisions/d-1');
+    expect(detail?.decision.decisionId).toBe('d-1');
+
+    client.get.mockRejectedValueOnce(new Error('404'));
+    expect(await adapter.getDecision('missing')).toBeNull();
+  });
+
+  it('lists signal history and skill stats', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({ items: [], total: 0, limit: 10, offset: 0 });
+    client.get.mockResolvedValueOnce({ skills: [{ skillName: 'probe' }] });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    await adapter.listSignalHistory({ environmentId: 'env-a', severity: 'warning', offset: 10 });
+    expect(client.get).toHaveBeenCalledWith(
+      '/signals/history?environment_id=env-a&severity=warning&offset=10',
+    );
+
+    const skills = await adapter.getSkillStats('env-a');
+    expect(client.get).toHaveBeenCalledWith('/learnings/stats/skills?environment_id=env-a');
+    expect(skills).toEqual([{ skillName: 'probe' }]);
+  });
 });
 
 describe('buildOdinReviewHttpAdapter', () => {

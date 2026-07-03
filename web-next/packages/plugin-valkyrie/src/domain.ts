@@ -37,6 +37,10 @@ export interface ValkyrieResident {
   flockId?: string;
   persona: string;
   specialty: string;
+  /** The human seed: what this resident stewards and what "better" means. */
+  charter?: string;
+  /** Signal severities that trigger an autonomous investigation task. */
+  signalTaskSeverities?: string[];
   wakefulness: WakefulnessState;
   autonomyMode: AutonomyMode;
   status: 'online' | 'busy' | 'blocked' | 'offline';
@@ -47,6 +51,91 @@ export interface ValkyrieResident {
   lastActionAt?: string;
   lastObservedAt?: string;
   identitySource?: 'configured' | 'observed';
+}
+
+// ---------------------------------------------------------------------------
+// Durable decision history — served by /decisions, /signals/history
+// ---------------------------------------------------------------------------
+
+export interface DecisionRecord {
+  decisionId: string;
+  environmentId: string;
+  valkyrieId: string;
+  operationalState: string;
+  tier: string;
+  wakefulness?: string;
+  confidence: number;
+  rationale: string;
+  recommendedAction: string;
+  actionAuthority: string;
+  actionCapability?: string;
+  signalRefs: string[];
+  evidence: Array<Record<string, unknown>>;
+  correlationId: string;
+  summary: string;
+  source?: string;
+  outcome: string;
+  outcomeDetail?: string;
+  outcomeAt?: string;
+  reviewItemId?: string;
+  decidedAt: string;
+}
+
+export interface SignalHistoryEntry {
+  signalId: string;
+  environmentId: string;
+  eventType: string;
+  source: string;
+  subject: string;
+  summary: string;
+  severity: string;
+  correlationId?: string;
+  receivedAt: string;
+}
+
+export interface ActionHistoryEntry {
+  actionId: string;
+  eventId: string;
+  eventType: string;
+  status: string;
+  environmentId: string;
+  valkyrieId: string;
+  capability: string;
+  actionAuthority: string;
+  outcome: string;
+  rationale: string;
+  dryRun: boolean;
+  correlationId: string;
+  summary: string;
+  observedAt: string;
+}
+
+export interface HistoryPage<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DecisionDetail {
+  decision: DecisionRecord;
+  lineage: {
+    signals: SignalHistoryEntry[];
+    actions: ActionHistoryEntry[];
+    review: Record<string, unknown> | null;
+  };
+}
+
+export interface SkillUsageStat {
+  skillName: string;
+  capability: string;
+  environmentId: string;
+  uses: number;
+  successes: number;
+  failures: number;
+  lastUsedAt: string;
+  lastOutcome: string;
+  rolledBackAt: string;
 }
 
 export interface EnvironmentSignal {
@@ -390,6 +479,8 @@ export interface ValkyrieRuntimeTelemetry {
   valkyrieId: string;
   valkyrieName?: string;
   residentPersonality?: string;
+  charter?: string;
+  signalTaskSeverities?: string[];
   sourceCount: number;
   driveLoopEnabled: boolean;
   initiativeEnabled: boolean;
@@ -495,7 +586,8 @@ export type ReviewKind =
   | 'skill_promotion'
   | 'flock_learning'
   | 'court_escalation'
-  | 'autonomy_change';
+  | 'autonomy_change'
+  | 'morning_brief';
 
 export type ReviewStatus =
   | 'pending'
@@ -547,6 +639,7 @@ const REVIEW_KINDS: readonly ReviewKind[] = [
   'flock_learning',
   'court_escalation',
   'autonomy_change',
+  'morning_brief',
 ];
 
 const REVIEW_STATUSES: readonly ReviewStatus[] = [
@@ -658,6 +751,8 @@ export function reviewEffectStatement(item: ReviewItem): string {
       return 'Approving will request execution of the drafted action with operator authority.';
     case 'autonomy_change':
       return `Approving will set ${item.valkyrieId} autonomy as requested.`;
+    case 'morning_brief':
+      return 'Approving marks this brief as read; no action is executed.';
     default:
       return 'Approving will apply the requested action on the target resident.';
   }

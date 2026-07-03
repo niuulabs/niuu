@@ -8,8 +8,43 @@ vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockRejectedValue(new Error('no highlight in test')),
 }));
 import { createMockOdinReviewService, createSeedReviewItems } from '../adapters/mock';
+import type { ReviewItem } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { InboxPage } from './InboxPage';
+
+function morningBriefItem(): ReviewItem {
+  return {
+    itemId: 'review:morning_brief:env-k8s-valhalla:2026-06-03',
+    kind: 'morning_brief',
+    requestedAction: 'acknowledge',
+    environmentId: 'env-k8s-valhalla',
+    valkyrieId: '',
+    title: 'Morning brief — env-k8s-valhalla',
+    summary: '37 signal(s) observed, 3 decision(s) taken in the last brief window.',
+    audience: 'environment',
+    flockId: '',
+    domain: '',
+    riskClass: 'low',
+    safetyClass: 'read_only',
+    urgency: 0.2,
+    requestedCapability: 'approve',
+    evidence: {
+      brief_markdown:
+        '# Morning brief — env-k8s-valhalla\n\nSignals observed: 37\nDecisions taken: 3',
+      decision_count: 3,
+      signal_count: 37,
+    },
+    status: 'pending',
+    requestedBy: 'ravn:valkyrie-brief',
+    requestedAt: '2026-06-03T06:00:00Z',
+    decidedBy: '',
+    decidedAt: '',
+    decisionReason: '',
+    resolvedAt: '',
+    applyOutcome: '',
+    applyDetail: '',
+  };
+}
 
 function renderInbox(services: Record<string, unknown> = {}) {
   return render(<InboxPage />, { wrapper: wrapWithValkyrie(services) });
@@ -101,6 +136,24 @@ describe('InboxPage', () => {
       expect(cards).toHaveLength(1);
       expect(cards[0]).toHaveTextContent('proven-disk-pressure-probe');
     });
+  });
+
+  it('renders a morning brief with its digest markdown and effect statement', async () => {
+    const user = userEvent.setup();
+    const withBrief = createMockOdinReviewService([...createSeedReviewItems(), morningBriefItem()]);
+    renderInbox({ 'valkyrie.reviews': withBrief });
+
+    const cards = await screen.findAllByTestId('review-card');
+    const briefCard = cards.find((card) => card.textContent?.includes('Morning brief'));
+    expect(briefCard).toBeDefined();
+    expect(briefCard).toHaveTextContent('brief');
+    await user.click(briefCard!);
+
+    expect(screen.getByTestId('review-lineage')).toHaveTextContent('daily digest');
+    expect(await screen.findByTestId('review-brief')).toHaveTextContent('Signals observed: 37');
+    expect(screen.getByTestId('review-decision')).toHaveTextContent(
+      'Approving marks this brief as read',
+    );
   });
 
   it('shows an empty state when nothing is pending', async () => {

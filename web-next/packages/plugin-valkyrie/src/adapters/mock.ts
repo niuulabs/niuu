@@ -1,6 +1,8 @@
 import type {
   ActionRecord,
   CourtDecision,
+  DecisionDetail,
+  DecisionRecord,
   EnvironmentSignal,
   EnvironmentSummary,
   FlockSummary,
@@ -10,15 +12,19 @@ import type {
   OperationalState,
   ReviewItem,
   ReviewSummary,
+  SignalHistoryEntry,
+  SkillUsageStat,
   ValkyrieDashboard,
   ValkyrieResident,
 } from '../domain';
 import type {
   AutonomyUpdateRequest,
+  DecisionListFilters,
   IOdinReviewService,
   IValkyrieService,
   ReviewDecisionRequest,
   ReviewListFilters,
+  SignalHistoryFilters,
 } from '../ports';
 
 const UPDATED_AT = '2026-06-03T14:10:00Z';
@@ -73,6 +79,10 @@ const valkyries: ValkyrieResident[] = [
     flockId: 'flock-k8s',
     persona: 'cluster-guardian',
     specialty: 'k8s event triage',
+    charter:
+      'Keep the Valhalla cluster healthy and boring: catch drift before users do, ' +
+      'and only interrupt Jozef for decisions that genuinely need him.',
+    signalTaskSeverities: ['warning', 'critical'],
     wakefulness: 'wakeful',
     autonomyMode: 'autonomous',
     status: 'busy',
@@ -766,8 +776,145 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
   };
 }
 
+export function createSeedDecisions(): DecisionRecord[] {
+  return [
+    {
+      decisionId: 'decision-imagepull-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'investigating',
+      tier: 'present',
+      wakefulness: 'wakeful',
+      confidence: 0.82,
+      rationale:
+        'ImagePullBackOff started right after the registry token refresh; the rollout ' +
+        'needs a refreshed pull secret before pods can converge.',
+      recommendedAction: 'refresh_pull_secret_and_restart',
+      actionAuthority: 'human_review_required',
+      actionCapability: 'k8s.rollout.restart',
+      signalRefs: ['sig-hist-imagepull'],
+      evidence: [{ event_id: 'sig-hist-imagepull', severity: 'warning' }],
+      correlationId: 'corr-imagepull',
+      summary: 'Registry token rollover broke image pulls for ravn-worker',
+      outcome: '',
+      reviewItemId: 'review:court_escalation:seed03',
+      decidedAt: '2026-06-03T14:08:20Z',
+    },
+    {
+      decisionId: 'decision-oom-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-runa',
+      operationalState: 'using_adopted_learning',
+      tier: 'ambient',
+      confidence: 0.86,
+      rationale: 'Installed learning skill k8s_memory_pressure_probe matches this OOM pattern.',
+      recommendedAction: 'inspect_with_adopted_learning',
+      actionAuthority: 'autonomous',
+      signalRefs: ['sig-hist-oom'],
+      evidence: [
+        {
+          skill_name: 'k8s_memory_pressure_probe',
+          capability_name: 'inspect.kubernetes.pod.oomkilled',
+        },
+      ],
+      correlationId: 'corr-oom',
+      summary: 'OOMKilled pattern handled with learned probe',
+      outcome: 'executed',
+      outcomeDetail: 'Probe confirmed memory pressure; capacity note filed.',
+      outcomeAt: '2026-06-03T14:03:10Z',
+      decidedAt: '2026-06-03T14:02:20Z',
+    },
+    {
+      decisionId: 'decision-triage-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'watching',
+      tier: 'ambient',
+      confidence: 0.66,
+      rationale:
+        '37 routine signals this window — probe flaps and image GC events. No source ' +
+        'shows a rising trend; nothing actionable.',
+      recommendedAction: 'none',
+      actionAuthority: 'autonomous',
+      signalRefs: ['sig-hist-imagepull', 'sig-hist-oom'],
+      evidence: [],
+      correlationId: 'idle-triage:env-k8s-valhalla',
+      summary: 'Idle triage: 37 routine signals',
+      outcome: '',
+      decidedAt: '2026-06-03T13:45:00Z',
+    },
+  ];
+}
+
+export function createSeedSignalHistory(): SignalHistoryEntry[] {
+  return [
+    {
+      signalId: 'sig-hist-imagepull',
+      environmentId: 'env-k8s-valhalla',
+      eventType: 'signal.kubernetes.event',
+      source: 'adapter:k8s-events',
+      subject: 'pod/ravn-worker-77',
+      summary: 'ImagePullBackOff after registry token refresh',
+      severity: 'warning',
+      correlationId: 'corr-imagepull',
+      receivedAt: '2026-06-03T14:08:00Z',
+    },
+    {
+      signalId: 'sig-hist-oom',
+      environmentId: 'env-k8s-valhalla',
+      eventType: 'signal.kubernetes.event',
+      source: 'adapter:k8s-events',
+      subject: 'deployment/sleipnir-api',
+      summary: 'OOMKilled pattern matches learned memory pressure case',
+      severity: 'critical',
+      correlationId: 'corr-oom',
+      receivedAt: '2026-06-03T14:02:00Z',
+    },
+    {
+      signalId: 'sig-hist-email',
+      environmentId: 'env-host-jozef',
+      eventType: 'signal.email.message',
+      source: 'adapter:gmail',
+      subject: 'Important contract review',
+      summary: 'External sender asks for review before Friday',
+      severity: 'notice',
+      receivedAt: '2026-06-03T13:55:00Z',
+    },
+  ];
+}
+
+export function createSeedSkillStats(): SkillUsageStat[] {
+  return [
+    {
+      skillName: 'k8s_memory_pressure_probe',
+      capability: 'inspect.kubernetes.pod.oomkilled',
+      environmentId: 'env-k8s-valhalla',
+      uses: 7,
+      successes: 6,
+      failures: 1,
+      lastUsedAt: '2026-06-03T14:02:20Z',
+      lastOutcome: 'using_adopted_learning',
+      rolledBackAt: '',
+    },
+    {
+      skillName: 'node_cordon_drain',
+      capability: 'k8s.node.cordon',
+      environmentId: 'env-k8s-valhalla',
+      uses: 3,
+      successes: 0,
+      failures: 3,
+      lastUsedAt: '2026-06-02T04:15:00Z',
+      lastOutcome: 'adopted_learning_regressed',
+      rolledBackAt: '2026-06-02T04:15:00Z',
+    },
+  ];
+}
+
 export function createMockValkyrieService(seed = createSeedValkyrieDashboard()): IValkyrieService {
   const dashboard: ValkyrieDashboard = seed;
+  const decisions = createSeedDecisions();
+  const signalHistory = createSeedSignalHistory();
+  const skillStats = createSeedSkillStats();
 
   return {
     async getDashboard() {
@@ -779,6 +926,63 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
         entry.id === request.valkyrieId ? { ...entry, autonomyMode: request.mode } : entry,
       );
       return dashboard;
+    },
+    async listDecisions(filters: DecisionListFilters = {}) {
+      let rows = decisions.filter(
+        (row) =>
+          (!filters.environmentId || row.environmentId === filters.environmentId) &&
+          (!filters.valkyrieId || row.valkyrieId === filters.valkyrieId) &&
+          (!filters.operationalState || row.operationalState === filters.operationalState),
+      );
+      rows = [...rows].sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
+      const offset = filters.offset ?? 0;
+      const limit = filters.limit ?? 50;
+      return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    },
+    async getDecision(decisionId: string): Promise<DecisionDetail | null> {
+      const decision = decisions.find((row) => row.decisionId === decisionId);
+      if (!decision) return null;
+      return {
+        decision,
+        lineage: {
+          signals: signalHistory.filter((signal) => decision.signalRefs.includes(signal.signalId)),
+          actions: decision.outcome
+            ? [
+                {
+                  actionId: `act-${decision.decisionId}`,
+                  eventId: `evt-act-${decision.decisionId}`,
+                  eventType: 'valkyrie.action.executed',
+                  status: decision.outcome,
+                  environmentId: decision.environmentId,
+                  valkyrieId: decision.valkyrieId,
+                  capability: decision.actionCapability ?? decision.recommendedAction,
+                  actionAuthority: decision.actionAuthority,
+                  outcome: decision.outcomeDetail ?? decision.outcome,
+                  rationale: decision.rationale,
+                  dryRun: false,
+                  correlationId: decision.correlationId,
+                  summary: decision.summary,
+                  observedAt: decision.outcomeAt ?? decision.decidedAt,
+                },
+              ]
+            : [],
+          review: null,
+        },
+      };
+    },
+    async listSignalHistory(filters: SignalHistoryFilters = {}) {
+      let rows = signalHistory.filter(
+        (row) =>
+          (!filters.environmentId || row.environmentId === filters.environmentId) &&
+          (!filters.severity || row.severity === filters.severity),
+      );
+      rows = [...rows].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+      const offset = filters.offset ?? 0;
+      const limit = filters.limit ?? 50;
+      return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    },
+    async getSkillStats(environmentId?: string) {
+      return skillStats.filter((row) => !environmentId || row.environmentId === environmentId);
     },
   };
 }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, Gavel, GraduationCap, Hammer, Shield, TrendingUp, X } from 'lucide-react';
+import { Check, Gavel, GraduationCap, Hammer, Shield, Sunrise, TrendingUp, X } from 'lucide-react';
 import { HighlightedCode, MarkdownContent, SegmentedFilter } from '@niuulabs/ui';
 import {
   reviewArtifactEvidence,
@@ -24,6 +24,7 @@ const KIND_ICONS: Record<ReviewKind, typeof Hammer> = {
   flock_learning: GraduationCap,
   court_escalation: Gavel,
   autonomy_change: Shield,
+  morning_brief: Sunrise,
 };
 
 const ARTIFACT_TAB_ORDER = ['ticket', 'skill', 'tool', 'canary', 'findings'] as const;
@@ -54,6 +55,7 @@ function LineageStrip({ item }: { item: ReviewItem }) {
       list.push(typeof tier === 'string' ? `court at ${tier}` : 'court');
     }
     if (item.kind === 'autonomy_change') list.push('operator command');
+    if (item.kind === 'morning_brief') list.push('daily digest');
     const review = item.evidence.review;
     if (typeof review === 'object' && review !== null) {
       const outcome = (review as Record<string, unknown>).outcome;
@@ -219,6 +221,20 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
   );
 }
 
+function BriefViewer({ item }: { item: ReviewItem }) {
+  if (item.kind !== 'morning_brief') return null;
+  const markdown = item.evidence.brief_markdown;
+  if (typeof markdown !== 'string' || !markdown) return null;
+  return (
+    <div
+      data-testid="review-brief"
+      className="niuu:max-h-[28rem] niuu:overflow-auto niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-4 niuu:py-3 niuu:text-text-primary"
+    >
+      <MarkdownContent content={markdown} />
+    </div>
+  );
+}
+
 function ReviewDetail({ item }: { item: ReviewItem }) {
   return (
     <section
@@ -239,6 +255,7 @@ function ReviewDetail({ item }: { item: ReviewItem }) {
         <p className="niuu:text-sm niuu:text-text-secondary">{item.summary}</p>
       ) : null}
       <LineageStrip item={item} />
+      <BriefViewer item={item} />
       <ArtifactViewer item={item} />
       <DecisionPanel item={item} />
     </section>

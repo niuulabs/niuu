@@ -54,6 +54,42 @@ test('console is the default valkyrie view', async ({ page }) => {
   await expect(page.getByTestId('valkyrie-signal-timeline')).toBeVisible();
 });
 
+test('console explains the charter, decisions, and pending reviews', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  await expect(page.getByTestId('valkyrie-charter')).toContainText('Keep the Valhalla cluster');
+  await expect(page.getByTestId('valkyrie-decisions')).toContainText(
+    'Handled with a learned skill',
+  );
+  await expect(page.getByTestId('valkyrie-pending-reviews')).toBeVisible();
+  await expect(page.getByTestId('valkyrie-learning')).toContainText('k8s_memory_pressure_probe');
+});
+
+test('console decision expands to show rationale and lineage', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-decisions')).toContainText(
+    'Handled with a learned skill',
+  );
+
+  await page
+    .getByTestId('valkyrie-decisions')
+    .getByRole('button', { name: /handled with a learned skill/i })
+    .click();
+
+  const detail = page.getByTestId('decision-detail-decision-oom-1');
+  await expect(detail).toContainText('Installed learning skill k8s_memory_pressure_probe');
+  await expect(detail).toContainText('triggered by');
+});
+
+test('console signal browser drills into observed signals', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  await page.getByRole('button', { name: /browse observed signals/i }).click();
+  await expect(page.getByTestId('valkyrie-signal-browser')).toContainText('pod/ravn-worker-77');
+});
+
 test('activity shows fleet telemetry', async ({ page }) => {
   await page.goto('/valkyrie/activity');
 

@@ -6,6 +6,7 @@ export const KIND_LABELS: Record<ReviewKind, string> = {
   flock_learning: 'learning',
   court_escalation: 'escalation',
   autonomy_change: 'autonomy',
+  morning_brief: 'brief',
 };
 
 export const STATUS_LABELS: Record<ReviewStatus, string> = {
