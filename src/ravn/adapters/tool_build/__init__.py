@@ -1,5 +1,10 @@
 """Build backends that commission learned-tool builds for resident valkyries."""
 
+from ravn.adapters.tool_build._contract import (
+    CANONICAL_ARTIFACT_FILENAME,
+    parse_tool_build_document,
+    parse_tool_build_response,
+)
 from ravn.adapters.tool_build.forge_session import ForgeSessionToolBuildBackend
 from ravn.adapters.tool_build.http import (
     AsyncJsonHttpClient,
@@ -9,9 +14,12 @@ from ravn.adapters.tool_build.http import (
 from ravn.adapters.tool_build.ting_workflow import TingWorkflowToolBuildBackend
 
 __all__ = [
+    "CANONICAL_ARTIFACT_FILENAME",
     "AsyncJsonHttpClient",
     "ForgeSessionToolBuildBackend",
     "HttpResponse",
     "HttpxJsonClient",
     "TingWorkflowToolBuildBackend",
+    "parse_tool_build_document",
+    "parse_tool_build_response",
 ]

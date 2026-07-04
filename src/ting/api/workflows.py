@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import require_build_scope
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
@@ -211,6 +212,7 @@ def create_workflows_router() -> APIRouter:
         bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        _build_scope: None = Depends(require_build_scope("ting:workflow:launch")),
     ) -> WorkflowLaunchResponse:
         workflow = await repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, principal):

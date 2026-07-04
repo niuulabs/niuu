@@ -1032,6 +1032,16 @@
       - id: capability-build
         kind: stage
         label: Build tool or skill
+        description: >-
+          Implement the capability and write the built artifact to a single
+          canonical file named learned_tool.json at the repo/workspace root.
+          That file MUST be a JSON object with keys: manifest (name,
+          description, input_schema, required_permission, declared_reach,
+          entry_point), tool_code (the Python implementation exposing the
+          entry point), test_code (a self-contained pytest/asserts module that
+          loads the tool and exercises the entry point), and requirements (a
+          list of pip package strings, [] for stdlib-only). Also emit that same
+          JSON object as the final message as a fallback.
         executionMode: sequential
         joinMode: any
         stageMembers:
@@ -1062,6 +1072,11 @@
       - id: capability-publish
         kind: stage
         label: Publish capability record
+        description: >-
+          Publish the capability record and confirm the canonical
+          learned_tool.json artifact (manifest, tool_code, test_code,
+          requirements) is present at the repo/workspace root so the commissioning
+          Valkyrie can retrieve it structurally rather than by scraping the summary.
         executionMode: sequential
         joinMode: any
         stageMembers:

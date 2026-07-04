@@ -179,6 +179,46 @@ def test_ambient_and_observational_judgments_never_reach_the_inbox() -> None:
     assert decision_requires_review(record)
 
 
+def test_decision_requires_review_honours_configured_attention_tiers() -> None:
+    """P5a: the attention-tier gate is configurable. An ambient judgment is
+    telemetry under the defaults but escalates when a deployment widens the
+    configured tiers."""
+    ambient = _judgment_event(authority="human_review_required")
+    ambient["payload"]["tier"] = "ambient"
+    record = decision_record_from_event(ambient)
+    assert record is not None
+
+    assert not decision_requires_review(record)
+    assert decision_requires_review(
+        record, attention_tiers=frozenset({"ambient", "present", "urgent"})
+    )
+
+
+def test_decision_requires_review_honours_configured_observational_actions() -> None:
+    """P5a: the observational-action gate is configurable. 'watch' is
+    observation under the defaults but escalates when a deployment narrows
+    the configured set."""
+    watching = _judgment_event(authority="human_review_required")
+    watching["payload"]["recommended_action"] = "watch"
+    record = decision_record_from_event(watching)
+    assert record is not None
+
+    assert not decision_requires_review(record)
+    assert decision_requires_review(record, observational_actions=frozenset({"", "none"}))
+
+
+def test_court_required_never_escalates_even_with_custom_gates() -> None:
+    """The authority gate is NOT configurable: court_required stays the ODIN
+    court's path regardless of any tier/action overrides."""
+    court = decision_record_from_event(_judgment_event(authority="court_required"))
+    assert court is not None
+    assert not decision_requires_review(
+        court,
+        attention_tiers=frozenset({"ambient", "present", "urgent"}),
+        observational_actions=frozenset(),
+    )
+
+
 def test_decision_record_ignores_other_events_and_missing_ids() -> None:
     assert decision_record_from_event({"event_type": "signal.k8s.event"}) is None
     event = _judgment_event()

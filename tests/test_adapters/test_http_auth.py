@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from niuu.adapters.outbound.http_auth import ClientCredentialsBearerTokenAuthAdapter
+from niuu.adapters.outbound.http_auth import (
+    ClientCredentialsBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
 
 
 def test_client_credentials_adapter_mints_and_caches_bearer_token() -> None:
@@ -65,3 +69,43 @@ def test_client_credentials_adapter_requires_secret(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="client secret"):
         adapter.headers()
+
+
+def test_workload_identity_adapter_requests_build_scopes(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    seen_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(200, json={"token": "scoped-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+        scopes=["forge:session:create"],
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer scoped-jwt"}
+    assert seen_bodies[0]["token"] == "proof-jwt"
+    assert seen_bodies[0]["scopes"] == ["forge:session:create"]
+
+
+def test_workload_identity_adapter_omits_scopes_when_not_requested(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    seen_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(200, json={"token": "plain-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer plain-jwt"}
+    assert "scopes" not in seen_bodies[0]

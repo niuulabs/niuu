@@ -184,6 +184,20 @@ class TestRavnAgentToolUse:
                         "entry_point": "run",
                     },
                     tool_code="def run(input):\n    return {'built': True}\n",
+                    # Executable under the Phase-2 verifier: the runner script
+                    # imports the tool module from the verify workspace cwd.
+                    test_code=(
+                        "def test_run():\n"
+                        "    import commissioned_probe\n"
+                        "    assert commissioned_probe.run({})['built'] is True\n"
+                        "\n"
+                        "test_run()\n"
+                    ),
+                    # Stdlib-only keeps verification hermetic (no pip network
+                    # I/O in a unit test); requirements merge/persist flow is
+                    # covered by the contract and deps-heal tests.
+                    requirements=[],
+                    build_evidence={"retrieval": "canonical_file"},
                     provenance={"backend": "fake", "session": "sess-9"},
                 )
 
@@ -214,6 +228,15 @@ class TestRavnAgentToolUse:
         registered = next(item for item in agent.tools if item.name == "commissioned_probe")
         run = await registered.execute({})
         assert json.loads(run.content) == {"built": True}
+
+        # Contract v2: the commissioned test_code + requirements + build_evidence
+        # merge into the persisted artifact rather than being discarded.
+        artifact_files = list((tmp_path / "artifacts").glob("*.json"))
+        assert len(artifact_files) == 1
+        persisted = json.loads(artifact_files[0].read_text(encoding="utf-8"))
+        assert persisted["test_code"].startswith("def test_run")
+        assert persisted["requirements"] == []
+        assert persisted["provenance"]["build_evidence"] == {"retrieval": "canonical_file"}
 
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
         agent, _ = make_agent(make_simple_llm("unused"))
@@ -333,6 +356,49 @@ class TestRavnAgentToolUse:
         assert payload["source_valkyrie_id"] == "valkyrie:k8s-a"
         assert payload["learned_tool_manifest"]["name"] == "diagnose_widget"
         assert payload["tool_code"].startswith("def run")
+        # P5a default preserved: without config the proposal travels at 0.74.
+        assert payload["confidence"] == pytest.approx(0.74)
+
+    async def test_build_tool_custom_flock_confidence_travels_with_proposal(self, tmp_path) -> None:
+        """P5a: a configured self_registered_tool_confidence reaches the flock
+        proposal event payload through the flock_confidence kwarg."""
+        bus = InProcessBus()
+        events: list[SleipnirEvent] = []
+        await bus.subscribe(
+            [registry.FLOCK_LEARNING_PROPOSED],
+            lambda event: _record(events, event),
+        )
+
+        agent, _ = make_agent(make_simple_llm("unused"))
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            publisher=bus,
+            environment_id="cluster-a",
+            valkyrie_id="valkyrie:k8s-a",
+            flock_id="flock:k8s-valkyries",
+            domain="k8s",
+            flock_confidence=0.9,
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "diagnose_widget",
+                    "description": "Summarize a widget identifier.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "widget:read",
+                    "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                },
+                "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "canary_input": {},
+            }
+        )
+        await bus.flush()
+
+        assert not result.is_error
+        assert len(events) == 1
+        assert events[0].payload["confidence"] == pytest.approx(0.9)
 
     async def test_build_tool_holds_mutating_tool_for_operator_review(self, tmp_path) -> None:
         bus = InProcessBus()
@@ -385,6 +451,8 @@ class TestRavnAgentToolUse:
         assert review["safety_class"] == "mutating"
         assert review["evidence"]["artifact"]["artifact_type"] == "agent_tool"
         assert review["evidence"]["artifact"]["canary_sample"] == {"name": "canary"}
+        # P5a default preserved: the resident artifact carries 0.74.
+        assert review["evidence"]["artifact"]["confidence"] == pytest.approx(0.74)
 
     async def test_held_review_carries_the_investigation_prompt(self, tmp_path) -> None:
         bus = InProcessBus()

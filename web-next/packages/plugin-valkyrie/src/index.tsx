@@ -3,6 +3,7 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
 import { FleetPage } from './ui/FleetPage';
 import { InboxPage } from './ui/InboxPage';
+import { RealmsPage } from './ui/RealmsPage';
 import { ValkyrieConsolePage } from './ui/ValkyrieConsolePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
 
@@ -39,6 +40,7 @@ export const valkyriePlugin = definePlugin({
     { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
     { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
     { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
+    { id: 'realms', label: 'Realms', rune: 'ᚱ', path: '/valkyrie/realms' },
     { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
@@ -51,6 +53,11 @@ export const valkyriePlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/valkyrie/fleet',
       component: () => <FleetPage />,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/valkyrie/realms',
+      component: () => <RealmsPage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -76,15 +83,29 @@ export const valkyriePlugin = definePlugin({
 
 export {
   createMockOdinReviewService,
+  createMockRealmGovernanceService,
   createMockValkyrieService,
   createSeedDecisions,
+  createSeedRealms,
   createSeedReviewItems,
   createSeedSignalHistory,
   createSeedSkillStats,
+  createSeedToolWorkflows,
+  createSeedTrustGrants,
   createSeedValkyrieDashboard,
 } from './adapters/mock';
-export { buildOdinReviewHttpAdapter, buildValkyrieHttpAdapter } from './adapters/http';
+export {
+  buildOdinReviewHttpAdapter,
+  buildRealmGovernanceHttpAdapter,
+  buildValkyrieHttpAdapter,
+} from './adapters/http';
 export { useUpdateAutonomy, useValkyrieDashboard } from './application/useValkyrieDashboard';
+export {
+  useCreateTrustGrant,
+  useRealms,
+  useRealmTrustGrants,
+  useToolWorkflows,
+} from './application/useRealmGovernance';
 export {
   useDecisionDetail,
   useDecisionList,
@@ -93,10 +114,17 @@ export {
 } from './application/useValkyrieHistory';
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
 export {
+  autonomyModeForLevel,
+  grantWorkflowName,
+  isToolBuilderWorkflow,
+  latestBuildGrant,
   normalizeReviewItem,
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
+  BUILD_ACTION_CLASS,
+  TOOL_BUILDER_TAG,
+  TRUST_LEVELS,
 } from './domain';
 export type {
   AutonomyMode,
@@ -107,6 +135,8 @@ export type {
   EnvironmentSummary,
   FlockSummary,
   HistoryPage,
+  RealmSummary,
+  RealmTrustGrant,
   ReviewItem,
   ReviewKind,
   ReviewRiskClass,
@@ -114,6 +144,7 @@ export type {
   ReviewSummary,
   SignalHistoryEntry,
   SkillUsageStat,
+  TingWorkflowSummary,
   ValkyrieDashboard,
   ValkyrieResident,
   WakefulnessState,
@@ -122,8 +153,10 @@ export type {
   AutonomyUpdateRequest,
   DecisionListFilters,
   IOdinReviewService,
+  IRealmGovernanceService,
   IValkyrieService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
+  TrustGrantCreate,
 } from './ports';

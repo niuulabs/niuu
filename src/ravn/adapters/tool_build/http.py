@@ -42,6 +42,7 @@ def client_from_workload_identity(
     workload_token_file: str = "",
     workload_exchange_url: str = "",
     workload_audiences: list[str] | None = None,
+    workload_scopes: list[str] | None = None,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> HttpxJsonClient:
@@ -50,6 +51,10 @@ def client_from_workload_identity(
     In-cluster Ravn/Valkyrie calls use projected workload identity by default.
     ``external_token_env`` is intentionally explicit for non-cluster callers
     that still need to bring an already-issued bearer token.
+
+    ``workload_scopes`` requests a least-privilege valkyrie_build token at the
+    exchange — a build backend passes exactly the scope its launch endpoint
+    enforces, so a leaked build token cannot do anything else.
     """
     if external_token_env:
         return HttpxJsonClient(
@@ -62,6 +67,7 @@ def client_from_workload_identity(
             token_file=workload_token_file,
             exchange_url=workload_exchange_url,
             audiences=workload_audiences,
+            scopes=workload_scopes,
             timeout_seconds=timeout_seconds,
             transport=transport,
         ),
@@ -87,18 +93,31 @@ class HttpxJsonClient:
             headers.update(self._auth.headers())
         return headers
 
+    async def _resolve_headers(self) -> dict[str, str]:
+        """Resolve auth headers off the event loop.
+
+        ``HttpAuthPort.headers()`` is sync by contract and the workload-identity
+        adapter performs a blocking token exchange on cache miss — run it in a
+        worker thread so a refresh never stalls every other coroutine.
+        """
+        import asyncio  # noqa: PLC0415
+
+        return await asyncio.to_thread(self._headers)
+
     async def get(self, url: str) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(url, headers=self._headers())
+            resp = await client.get(url, headers=headers)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
     async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=json_body)
+            resp = await client.post(url, headers=headers, json=json_body)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
 

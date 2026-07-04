@@ -183,7 +183,11 @@ async def test_guarded_mode_needs_approval_without_blocking_findings() -> None:
     assert any(finding.startswith("policy:") for finding in review.findings)
 
 
-async def test_blocking_findings_reject_even_in_yolo() -> None:
+async def test_structural_defect_is_surfaced_but_no_longer_blocks() -> None:
+    """A missing entry point is a *structural* defect. Since Phase 2 the
+    verify+repair loop owns correctness, so review surfaces it under
+    ``structural_findings`` (informational) rather than rejecting the build —
+    the missing-``run`` failure is caught downstream when verification runs."""
     request = _request(autonomy_mode="yolo")
     build = await _build(request)
     poisoned = type(build)(
@@ -193,7 +197,7 @@ async def test_blocking_findings_reject_even_in_yolo() -> None:
         description=build.description,
         artifact_type=build.artifact_type,
         artifact_path=build.artifact_path,
-        tool_code="import subprocess\n\ndef run(signal):\n    return {}\n",
+        tool_code="def not_the_entry_point(signal):\n    return {}\n",
         tool_entry_point="run",
         evidence=build.evidence,
     )
@@ -202,9 +206,11 @@ async def test_blocking_findings_reject_even_in_yolo() -> None:
         build=poisoned,
         autonomy_mode="yolo",
     )
-    assert not review.approved
-    assert review.outcome == "rejected"
-    assert any("forbidden modules: subprocess" in finding for finding in review.blocking_findings)
+    # Not a policy blocker: the structural finding does not reject the build.
+    assert not review.blocking_findings
+    assert any("does not define run" in finding for finding in review.structural_findings)
+    # It is still visible to an operator in the combined findings list.
+    assert any("does not define run" in finding for finding in review.findings)
 
 
 async def test_blocked_instruction_in_skill_content_is_blocking() -> None:

@@ -31,65 +31,97 @@ _BLOCKED_INSTRUCTIONS = (
 )
 
 
-def _structural_findings(request: EvolutionRequest, build: BuildResult) -> list[str]:
-    """Blocking structural findings for a built or adopted artifact."""
+def _review_findings(request: EvolutionRequest, build: BuildResult) -> tuple[list[str], list[str]]:
+    """Split review findings into ``(policy, structural)``.
+
+    POLICY/authority/metadata findings (missing manifest metadata, unexpected
+    artifact type, blocked prose instructions, missing capability marker) are
+    blocking — the reach/authority gate rejects the build in any mode. STRUCTURAL
+    findings (syntax, missing entry point) come from
+    :func:`tool_implementation_findings` and are NOT blocking on their own now
+    that the verify+repair loop owns correctness; they are surfaced to review as
+    informational only.
+    """
     from ravn.context.autonomy import unnegated_prose_mentions  # noqa: PLC0415
     from ravn.valkyrie_evolution.models import LearnedToolManifest  # noqa: PLC0415
 
-    findings: list[str] = []
+    policy: list[str] = []
+    structural: list[str] = []
     if build.artifact_type == "agent_tool":
         try:
             manifest = LearnedToolManifest.from_dict(
                 dict(build.evidence.get("learned_tool_manifest") or {})
             )
         except Exception as exc:  # noqa: BLE001
-            findings.append(f"invalid learned tool manifest: {exc}")
+            policy.append(f"invalid learned tool manifest: {exc}")
             manifest = None
         if manifest is not None:
             if not manifest.name:
-                findings.append("learned tool manifest is missing name")
+                policy.append("learned tool manifest is missing name")
             if not manifest.required_permission:
-                findings.append("learned tool manifest is missing required_permission")
+                policy.append("learned tool manifest is missing required_permission")
             if not manifest.input_schema:
-                findings.append("learned tool manifest is missing input_schema")
-        if build.has_tool_implementation:
-            # Agent tools gate capability through declared_reach (and the
-            # mutating-access boundaries), not a read-only Python-import
-            # allowlist: a tool that shells out to acquire live evidence is
-            # exactly what we want. Validate structure only — the same
-            # "declared_reach" contract the install path enforces.
-            findings.extend(
-                tool_implementation_findings(
-                    build.tool_code,
-                    entry_point=build.tool_entry_point or "run",
-                    safety_class="declared_reach",
-                )
+                policy.append("learned tool manifest is missing input_schema")
+        if not build.has_tool_implementation:
+            # No code at all is a metadata-level defect, not a correctness one —
+            # the verify loop needs code to run, so this stays blocking.
+            policy.append("learned tool is missing implementation")
+            return policy, structural
+        # Agent tools gate capability through declared_reach (and the
+        # mutating-access boundaries), not a read-only Python-import allowlist:
+        # a tool that shells out to acquire live evidence is exactly what we
+        # want. Validate structure only — correctness is re-checked by the
+        # verify+repair loop, so these findings are informational here.
+        structural.extend(
+            tool_implementation_findings(
+                build.tool_code,
+                entry_point=build.tool_entry_point or "run",
             )
-        else:
-            findings.append("learned tool is missing implementation")
-        return findings
+        )
+        return policy, structural
 
     if build.artifact_type != "ravn_skill_tool":
-        findings.append(f"unexpected artifact type: {build.artifact_type}")
+        policy.append(f"unexpected artifact type: {build.artifact_type}")
     capability_marker = f"capability: {request.gap.capability_name}"
     if capability_marker not in build.skill_content:
-        findings.append("missing capability marker")
+        policy.append("missing capability marker")
     lower = build.skill_content.lower()
     # Negation-aware: "never run kubectl delete" is a disclaimer, not an
     # instruction, and must not block an otherwise safe artifact.
     for blocked in sorted(unnegated_prose_mentions(lower, _BLOCKED_INSTRUCTIONS)):
-        findings.append(f"blocked operation mentioned: {blocked}")
+        policy.append(f"blocked operation mentioned: {blocked}")
     if unnegated_prose_mentions(lower, ("kubectl",)) and "kubernetes_inspect" not in lower:
-        findings.append("unavailable runtime dependency: kubectl; use kubernetes_inspect")
+        policy.append("unavailable runtime dependency: kubectl; use kubernetes_inspect")
     if build.has_tool_implementation:
-        findings.extend(
+        structural.extend(
             tool_implementation_findings(
                 build.tool_code,
                 entry_point=build.tool_entry_point or "run",
-                safety_class=request.gap.safety_class,
             )
         )
-    return findings
+    return policy, structural
+
+
+def _outcome(
+    blocking: list[str],
+    decision: Any,
+    autonomy_mode: str,
+) -> tuple[bool, str, str]:
+    """Resolve (approved, outcome, rationale) from policy blockers + decision.
+
+    Only policy/authority blockers reject; structural findings never do (the
+    verify+repair loop owns correctness).
+    """
+    if blocking:
+        return (
+            False,
+            "rejected",
+            "Artifact failed policy court review: " + "; ".join(blocking),
+        )
+    if decision.decision == "allow":
+        outcome = "yolo_approved" if autonomy_mode.lower() == "yolo" else "approved"
+        return True, outcome, decision.reason
+    return False, "needs_approval", decision.reason
 
 
 def _policy_mode(autonomy_mode: str) -> str:
@@ -164,7 +196,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
     ) -> ReviewResult:
         from ravn.context.autonomy import SelfImprovementProposal  # noqa: PLC0415
 
-        blocking = _structural_findings(request, build)
+        blocking, structural = _review_findings(request, build)
         proposal = SelfImprovementProposal(
             proposal_id=request.request_id,
             title=build.skill_name,
@@ -180,23 +212,11 @@ class PolicyCourtReviewer(EvolutionReviewPort):
         )
         decision = self._policy.decide(proposal)
 
-        findings = list(blocking)
+        findings = list(blocking) + list(structural)
         if decision.decision != "allow":
             findings.append(f"policy: {decision.reason}")
 
-        if blocking:
-            approved = False
-            outcome = "rejected"
-            rationale = "Artifact failed structural court review: " + "; ".join(blocking)
-        elif decision.decision == "allow":
-            approved = True
-            outcome = "yolo_approved" if autonomy_mode.lower() == "yolo" else "approved"
-            rationale = decision.reason
-        else:
-            approved = False
-            outcome = "needs_approval"
-            rationale = decision.reason
-
+        approved, outcome, rationale = _outcome(blocking, decision, autonomy_mode)
         review = ReviewResult(
             request_id=request.request_id,
             artifact_name=build.skill_name,
@@ -207,6 +227,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
             required_for_activation=autonomy_mode.lower() != "yolo",
             findings=findings,
             blocking_findings=list(blocking),
+            structural_findings=list(structural),
         )
         await self._record_audit(request, review)
         return review
@@ -237,6 +258,7 @@ class PolicyCourtReviewer(EvolutionReviewPort):
                         "artifact_name": review.artifact_name,
                         "findings": list(review.findings),
                         "blocking_findings": list(review.blocking_findings),
+                        "structural_findings": list(review.structural_findings),
                     }
                 ],
                 rationale=review.rationale,

@@ -1,0 +1,422 @@
+"""RealmClient: resolve a Valkyrie's tool-build trust grant over fake HTTP.
+
+Phase 3 — per-Valkyrie tool-build config from realm trust grants. Ravn reaches
+the realm governance API at the same Volundr base_url it uses for Forge
+sessions and never imports niuu/volundr.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from ravn.adapters.realm.client import (
+    BuildGrant,
+    RealmClient,
+    autonomy_mode_for_trust_level,
+    build_realm_client_kwargs,
+    workflow_selector_from_grant,
+)
+from ravn.adapters.tool_build.http import HttpResponse
+
+
+class _FakeHttpClient:
+    """Scripted AsyncJsonHttpClient: maps a url-suffix -> HttpResponse."""
+
+    def __init__(
+        self,
+        routes: dict[str, HttpResponse] | None = None,
+        *,
+        raise_on_get: Exception | None = None,
+        post_routes: dict[str, HttpResponse] | None = None,
+        raise_on_post: Exception | None = None,
+    ) -> None:
+        self._routes = dict(routes or {})
+        self._raise_on_get = raise_on_get
+        self._post_routes = dict(post_routes or {})
+        self._raise_on_post = raise_on_post
+        self.calls: list[str] = []
+        self.post_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def get(self, url: str) -> HttpResponse:
+        self.calls.append(url)
+        if self._raise_on_get is not None:
+            raise self._raise_on_get
+        for suffix, response in self._routes.items():
+            if url.endswith(suffix):
+                return response
+        raise AssertionError(f"no scripted response for GET {url}")
+
+    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
+        self.post_calls.append((url, json_body))
+        if self._raise_on_post is not None:
+            raise self._raise_on_post
+        for suffix, response in self._post_routes.items():
+            if url.endswith(suffix):
+                return response
+        raise AssertionError(f"no scripted response for POST {url}")
+
+
+def _client(routes: dict[str, HttpResponse] | None = None, **kwargs: Any) -> RealmClient:
+    return RealmClient(base_url="http://volundr", client=_FakeHttpClient(routes or {}), **kwargs)
+
+
+def _grants_path(slug: str) -> str:
+    return f"/api/v1/realms/{slug}/trust-grants"
+
+
+# ---------------------------------------------------------------------------
+# resolve_build_grant
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_picks_most_recent_build_grant() -> None:
+    # Grants are an append-only ledger: the latest build grant is the standing
+    # decision, even when it DEMOTES the trust level — trust must be revocable.
+    body = [
+        {"action_class": "read", "level": 9, "limits": {}, "target": "mimir"},
+        {
+            "action_class": "build",
+            "level": 5,
+            "limits": {"workflow": "old-builder"},
+            "target": "t5",
+            "granted_at": "2026-06-01T10:00:00+00:00",
+        },
+        {
+            "action_class": "build",
+            "level": 2,
+            "limits": {"workflow": "tool-builder"},
+            "target": "t2",
+            "granted_at": "2026-07-01T10:00:00Z",
+        },
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant == BuildGrant(level=2, limits={"workflow": "tool-builder"}, target="t2")
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_breaks_timestamp_ties_by_level() -> None:
+    stamp = "2026-07-01T10:00:00+00:00"
+    body = [
+        {"action_class": "build", "level": 1, "limits": {}, "target": "a", "granted_at": stamp},
+        {"action_class": "build", "level": 3, "limits": {}, "target": "b", "granted_at": stamp},
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.level == 3
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_treats_unstamped_grants_as_oldest() -> None:
+    body = [
+        {"action_class": "build", "level": 5, "limits": {}, "target": "unstamped"},
+        {
+            "action_class": "build",
+            "level": 2,
+            "limits": {},
+            "target": "stamped",
+            "granted_at": "2026-07-01T10:00:00+00:00",
+        },
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.target == "stamped"
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_returns_none_without_a_build_grant() -> None:
+    body = [{"action_class": "read", "level": 9, "limits": {}, "target": "mimir"}]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    assert await client.resolve_build_grant("payments") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_returns_none_for_unknown_realm_404() -> None:
+    client = _client({_grants_path("ghost"): HttpResponse(status_code=404, body={"error": "no"})})
+
+    assert await client.resolve_build_grant("ghost") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_returns_none_for_empty_slug() -> None:
+    client = _client({})
+
+    assert await client.resolve_build_grant("") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_raises_on_non_list_body() -> None:
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body={"grants": []})})
+
+    with pytest.raises(ValueError, match="non-list body"):
+        await client.resolve_build_grant("payments")
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_raises_when_build_grant_missing_level() -> None:
+    body = [{"action_class": "build", "limits": {}, "target": "t"}]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    with pytest.raises(ValueError, match="missing a numeric 'level'"):
+        await client.resolve_build_grant("payments")
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_raises_on_non_object_limits() -> None:
+    body = [{"action_class": "build", "level": 3, "limits": "nope", "target": "t"}]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    with pytest.raises(ValueError, match="non-object 'limits'"):
+        await client.resolve_build_grant("payments")
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_ignores_boolean_level_when_ranking() -> None:
+    # A JSON ``true`` must not be treated as level 1 — it is not a real level.
+    body = [
+        {"action_class": "build", "level": True, "limits": {}, "target": "bogus"},
+        {"action_class": "build", "level": 4, "limits": {}, "target": "real"},
+    ]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.target == "real"
+    assert grant.level == 4
+
+
+@pytest.mark.asyncio
+async def test_resolve_build_grant_defaults_missing_limits_to_empty() -> None:
+    body = [{"action_class": "build", "level": 2, "target": "t"}]
+    client = _client({_grants_path("payments"): HttpResponse(status_code=200, body=body)})
+
+    grant = await client.resolve_build_grant("payments")
+
+    assert grant is not None
+    assert grant.limits == {}
+
+
+# ---------------------------------------------------------------------------
+# record_capability
+# ---------------------------------------------------------------------------
+
+
+def _capabilities_path(slug: str) -> str:
+    return f"/api/v1/realms/{slug}/capabilities"
+
+
+@pytest.mark.asyncio
+async def test_record_capability_posts_exact_body_and_returns_true_on_2xx() -> None:
+    http = _FakeHttpClient(
+        post_routes={
+            _capabilities_path("payments"): HttpResponse(status_code=201, body={"id": "cap-1"})
+        }
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    recorded = await client.record_capability(
+        "payments",
+        name="parse_invoice",
+        status="present",
+        notes="learning lrn-1",
+    )
+
+    assert recorded is True
+    assert http.post_calls == [
+        (
+            "http://volundr/api/v1/realms/payments/capabilities",
+            {
+                "name": "parse_invoice",
+                "kind": "tool",
+                "status": "present",
+                "trust_level": 0,
+                "notes": "learning lrn-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_capability_ignores_malformed_2xx_body() -> None:
+    # Only success matters — a non-JSON/odd body on a 2xx must not raise.
+    http = _FakeHttpClient(
+        post_routes={_capabilities_path("payments"): HttpResponse(status_code=200, body="not-json")}
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("payments", name="t", status="gap") is True
+
+
+@pytest.mark.asyncio
+async def test_record_capability_returns_false_on_non_2xx() -> None:
+    http = _FakeHttpClient(
+        post_routes={
+            _capabilities_path("ghost"): HttpResponse(status_code=404, body={"error": "no"})
+        }
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("ghost", name="t", status="present") is False
+
+
+@pytest.mark.asyncio
+async def test_record_capability_returns_false_on_transport_error() -> None:
+    http = _FakeHttpClient(raise_on_post=ConnectionError("realm down"))
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    assert await client.record_capability("payments", name="t", status="present") is False
+
+
+@pytest.mark.asyncio
+async def test_record_capability_threads_kind_and_trust_level() -> None:
+    http = _FakeHttpClient(
+        post_routes={_capabilities_path("payments"): HttpResponse(status_code=201, body={})}
+    )
+    client = RealmClient(base_url="http://volundr", client=http)
+
+    await client.record_capability(
+        "payments",
+        name="triage",
+        kind="skill",
+        status="gap",
+        trust_level=3,
+    )
+
+    _, body = http.post_calls[0]
+    assert body["kind"] == "skill"
+    assert body["trust_level"] == 3
+
+
+# ---------------------------------------------------------------------------
+# workflow_selector_from_grant
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_selector_from_grant_returns_names_selector() -> None:
+    grant = BuildGrant(level=3, limits={"workflow": "tool-builder"}, target="t")
+
+    assert workflow_selector_from_grant(grant) == {"names": ["tool-builder"]}
+
+
+def test_workflow_selector_from_grant_strips_whitespace() -> None:
+    grant = BuildGrant(level=3, limits={"workflow": "  tool-builder  "}, target="t")
+
+    assert workflow_selector_from_grant(grant) == {"names": ["tool-builder"]}
+
+
+def test_workflow_selector_from_grant_none_when_no_workflow() -> None:
+    assert workflow_selector_from_grant(BuildGrant(level=3, limits={}, target="t")) is None
+
+
+def test_workflow_selector_from_grant_none_when_workflow_blank_or_wrong_type() -> None:
+    blank = BuildGrant(level=3, limits={"workflow": "  "}, target="t")
+    wrong_type = BuildGrant(level=3, limits={"workflow": 7}, target="t")
+    assert workflow_selector_from_grant(blank) is None
+    assert workflow_selector_from_grant(wrong_type) is None
+
+
+# ---------------------------------------------------------------------------
+# autonomy_mode_for_trust_level
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("level", "expected"),
+    [
+        (0, "guarded"),
+        (1, "guarded"),
+        (2, "autonomous"),
+        (3, "autonomous"),
+        (4, "yolo"),
+        (9, "yolo"),
+    ],
+)
+def test_autonomy_mode_for_trust_level_table(level: int, expected: str) -> None:
+    assert autonomy_mode_for_trust_level(level) == expected
+
+
+@pytest.mark.parametrize(
+    ("level", "expected"),
+    [
+        (2, "guarded"),
+        (3, "autonomous"),
+        (4, "autonomous"),
+        (5, "yolo"),
+    ],
+)
+def test_autonomy_mode_for_trust_level_honours_config_thresholds(level: int, expected: str) -> None:
+    # P5a: the rung table comes from ResidentEvolutionConfig; stricter
+    # thresholds shift the same level to a more guarded mode.
+    mode = autonomy_mode_for_trust_level(level, autonomous_threshold=3, yolo_threshold=5)
+    assert mode == expected
+
+
+def test_autonomy_mode_for_trust_level_rejects_inverted_thresholds() -> None:
+    with pytest.raises(ValueError, match="must be >= autonomous_threshold"):
+        autonomy_mode_for_trust_level(3, autonomous_threshold=4, yolo_threshold=2)
+
+
+# ---------------------------------------------------------------------------
+# build_realm_client_kwargs
+# ---------------------------------------------------------------------------
+
+
+def test_build_realm_client_kwargs_prefers_realm_kwargs() -> None:
+    result = build_realm_client_kwargs(
+        realm_api_kwargs={"external_token_env": "REALM_TOKEN", "base_url": "ignored"},
+        tool_build_kwargs={"external_token_env": "BUILD_TOKEN"},
+    )
+
+    assert result == {"external_token_env": "REALM_TOKEN"}
+
+
+def test_build_realm_client_kwargs_falls_back_to_tool_build_auth() -> None:
+    result = build_realm_client_kwargs(
+        realm_api_kwargs={},
+        tool_build_kwargs={
+            "base_url": "http://volundr",
+            "workload_token_file": "/var/run/token",
+            "workload_audiences": ["forge"],
+        },
+    )
+
+    assert result == {
+        "workload_token_file": "/var/run/token",
+        "workload_audiences": ["forge"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# constructor / error paths
+# ---------------------------------------------------------------------------
+
+
+def test_realm_client_requires_base_url() -> None:
+    with pytest.raises(ValueError, match="requires a base_url"):
+        RealmClient(base_url="")
+
+
+def test_realm_client_base_url_is_normalized() -> None:
+    client = RealmClient(base_url="http://volundr/", client=_FakeHttpClient())
+
+    assert client.base_url == "http://volundr"
+
+
+def test_realm_client_builds_default_client_from_workload_identity() -> None:
+    # No client passed: it must build a real HttpxJsonClient without raising.
+    client = RealmClient(base_url="http://volundr", external_token_env="REALM_TOKEN")
+
+    assert client.base_url == "http://volundr"

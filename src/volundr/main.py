@@ -15,8 +15,11 @@ from fastapi.responses import JSONResponse
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
+from niuu.adapters.inbound.rest_realms import create_realms_router
+from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.realm import RealmService
 from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
@@ -994,6 +997,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 settings.workload_identity
             )
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
+
+            # Realm governance — a Valkyrie's build capability, trust, and config
+            # readable by ravn over HTTP (shared niuu postgres, no ravn-local db).
+            realm_repository = PostgresRealmRepository(pool)
+            app.state.realm_service = RealmService(realm_repository)
+            app.include_router(create_realms_router(extract_principal, prefix="/api/v1/realms"))
 
             git_router = create_git_router(
                 git_workflow_service,

@@ -142,6 +142,14 @@ class LearnedToolArtifact:
     source_gap_id: str = ""
     source_build_id: str = ""
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: Self-contained test module the builder produced (empty for inline tools).
+    test_code: str = ""
+    #: pip package requirement strings the tool needs ([] for stdlib-only).
+    requirements: list[str] = field(default_factory=list)
+    #: artifact_id of the version this artifact replaces ("" for a first
+    #: build). Maintained automatically by the artifact writer so rollback can
+    #: walk back to the previous working version.
+    supersedes: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
@@ -161,6 +169,9 @@ class LearnedToolArtifact:
             source_gap_id=str(data.get("source_gap_id") or ""),
             source_build_id=str(data.get("source_build_id") or ""),
             provenance=dict(data.get("provenance") or {}),
+            test_code=str(data.get("test_code") or ""),
+            requirements=[str(item) for item in list(data.get("requirements") or [])],
+            supersedes=str(data.get("supersedes") or ""),
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
         )
 
@@ -175,6 +186,9 @@ class LearnedToolArtifact:
             "source_gap_id": self.source_gap_id,
             "source_build_id": self.source_build_id,
             "provenance": dict(self.provenance),
+            "test_code": self.test_code,
+            "requirements": list(self.requirements),
+            "supersedes": self.supersedes,
             "created_at": self.created_at,
         }
 
@@ -207,4 +221,10 @@ class ReviewResult:
     reviewer: str
     required_for_activation: bool
     findings: list[str] = field(default_factory=list)
+    #: Policy/authority blockers — these reject the build in any mode and are
+    #: what ``review_allows_install`` gates on.
     blocking_findings: list[str] = field(default_factory=list)
+    #: Correctness/quality observations (syntax, missing entry point). NOT
+    #: blocking on their own now that the verify+repair loop owns correctness;
+    #: surfaced to review so an operator still sees them.
+    structural_findings: list[str] = field(default_factory=list)

@@ -159,6 +159,123 @@ async def test_workload_identity_exchange_mints_requested_service_audiences() ->
 
 
 @pytest.mark.asyncio
+async def test_workload_identity_exchange_mints_scoped_build_token() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        scopes=["forge:session:create", "ting:workflow:launch"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["token_use"] == "valkyrie_build"
+    assert claims["scopes"] == ["forge:session:create", "ting:workflow:launch"]
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_drops_unknown_build_scopes() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        scopes=["forge:session:create", "forge:session:delete", "*"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["token_use"] == "valkyrie_build"
+    assert claims["scopes"] == ["forge:session:create"]
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_without_scopes_is_not_a_build_token() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(_workload_token(proof_key))
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert "token_use" not in claims
+    assert "scopes" not in claims
+
+
+@pytest.mark.asyncio
+async def test_workload_identity_exchange_all_unknown_scopes_yield_plain_token() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    result = await service.exchange(
+        _workload_token(proof_key),
+        scopes=["nope", "also-nope"],
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        result.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert "token_use" not in claims
+    assert "scopes" not in claims
+
+
+def test_workload_exchange_route_mints_scoped_build_token() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    app = FastAPI()
+    service = _service(proof_key)
+    app.state.workload_identity_service = service
+
+    async def forbidden_principal() -> Principal:
+        raise AssertionError("workload exchange must not call the user principal dependency")
+
+    app.include_router(create_pats_router(forbidden_principal))
+
+    response = TestClient(app).post(
+        "/api/v1/tokens/workload/exchange",
+        json={
+            "token": _workload_token(proof_key),
+            "scopes": ["forge:session:create", "forge:session:delete"],
+        },
+    )
+
+    assert response.status_code == 201
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        response.json()["token"],
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["token_use"] == "valkyrie_build"
+    assert claims["scopes"] == ["forge:session:create"]
+
+
+@pytest.mark.asyncio
 async def test_workload_identity_exchange_rejects_unconfigured_audience() -> None:
     proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     service = _service(proof_key)

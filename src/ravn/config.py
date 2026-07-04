@@ -2503,6 +2503,35 @@ class WorkflowSelectorConfig(BaseModel):
     )
 
 
+class TrustLevelAutonomyTable(BaseModel):
+    """Thresholds mapping a realm build-grant trust level to an autonomy mode.
+
+    A grant ``level >= yolo`` resolves to ``yolo``, ``level >= autonomous`` to
+    ``autonomous``, anything below to ``guarded``. Defaults mirror the rungs
+    that used to live as constants in ``ravn.adapters.realm.client``.
+    """
+
+    autonomous: int = Field(
+        default=2,
+        description="Lowest trust level that resolves to the 'autonomous' mode.",
+    )
+    yolo: int = Field(
+        default=4,
+        description="Lowest trust level that resolves to the 'yolo' mode.",
+    )
+
+    @model_validator(mode="after")
+    def _yolo_at_least_autonomous(self) -> TrustLevelAutonomyTable:
+        if self.yolo < self.autonomous:
+            msg = (
+                "trust_level_autonomy_table.yolo "
+                f"({self.yolo}) must be >= trust_level_autonomy_table.autonomous "
+                f"({self.autonomous})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2576,6 +2605,71 @@ class ResidentEvolutionConfig(BaseModel):
             "with a Ting workflow build backend, the backend discovers the "
             "matching workflow from the catalog instead of requiring a "
             "hardcoded workflow_id."
+        ),
+    )
+    realm_slug: str = Field(
+        default="",
+        description=(
+            "This Valkyrie's realm slug. When set, the resident resolves its "
+            "tool-build workflow and autonomy from the realm's 'build' trust "
+            "grant (via the niuu realm governance API on the Volundr host). "
+            "Empty keeps today's static tool_builder_workflow / autonomy_mode "
+            "behavior."
+        ),
+    )
+    realm_api_base_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the realm governance API (the Volundr host that also "
+            "serves Forge sessions). Empty derives it from "
+            "tool_build_kwargs['base_url']."
+        ),
+    )
+    realm_api_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Auth passthrough for realm API calls (external_token_env, "
+            "workload_token_file, workload_exchange_url, workload_audiences — "
+            "the same keys client_from_workload_identity accepts). Empty reuses "
+            "the tool_build_kwargs auth settings."
+        ),
+    )
+    build_repair_attempts: int = Field(
+        default=3,
+        description=(
+            "Maximum verify/repair attempts for a commissioned or inline-built "
+            "tool before the build aborts without installing."
+        ),
+    )
+    self_registered_tool_confidence: float = Field(
+        default=0.74,
+        description=(
+            "Confidence a self-built tool travels to the flock with — used for "
+            "both the flock learning proposal and the resident artifact."
+        ),
+    )
+    trust_level_autonomy_table: TrustLevelAutonomyTable = Field(
+        default_factory=TrustLevelAutonomyTable,
+        description=(
+            "Thresholds mapping a realm build-grant trust level to an autonomy "
+            "mode: level >= yolo -> yolo, >= autonomous -> autonomous, else "
+            "guarded."
+        ),
+    )
+    review_attention_tiers: list[str] = Field(
+        default_factory=lambda: ["present", "urgent"],
+        description=(
+            "Judgment attention tiers that mean 'a human should look at this'. "
+            "Judgments pitched below these tiers stay telemetry and never "
+            "reach the operator inbox."
+        ),
+    )
+    observational_actions: list[str] = Field(
+        default_factory=lambda: ["", "none", "n/a", "watch", "observe"],
+        description=(
+            "Recommended actions that describe observation, not an action to "
+            "approve — judgments recommending only these never reach the "
+            "operator inbox."
         ),
     )
 

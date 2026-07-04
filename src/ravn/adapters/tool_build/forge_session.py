@@ -7,11 +7,15 @@ ravn never imports volundr — it drives the session over the Forge REST surface
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ravn.adapters.tool_build._contract import (
+    CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
+    decode_canonical_document,
+    parse_tool_build_document,
     parse_tool_build_response,
     poll_until,
 )
@@ -23,8 +27,15 @@ from ravn.ports.tool_build_backend import (
     ToolBuildResult,
 )
 
+logger = logging.getLogger(__name__)
+
 _TERMINAL_STATUSES = frozenset({"stopped", "archived", "completed", "failed", "error"})
 _FAILED_STATUSES = frozenset({"failed", "error"})
+
+#: The one scope this backend's launch endpoint enforces
+#: (volundr POST /api/v1/forge/sessions). Requested at the workload exchange so
+#: the build token is least-privilege.
+FORGE_BUILD_SCOPE = "forge:session:create"
 
 
 class ForgeSessionToolBuildBackend(ToolBuildBackend):
@@ -54,6 +65,7 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,
+                workload_scopes=[FORGE_BUILD_SCOPE],
             )
         )
         self._base_url = base_url.rstrip("/")
@@ -66,6 +78,16 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
     @property
     def name(self) -> str:
         return "forge_session"
+
+    @property
+    def base_url(self) -> str:
+        """Normalized base URL the backend talks to (read-only, for diagnostics)."""
+        return self._base_url
+
+    @property
+    def client(self) -> AsyncJsonHttpClient:
+        """The authenticated HTTP client (read-only, for diagnostics)."""
+        return self._client
 
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
         system_prompt, initial_prompt = build_prompts(request)
@@ -90,17 +112,63 @@ class ForgeSessionToolBuildBackend(ToolBuildBackend):
                 f"within {self._max_poll_attempts} polls (last status {status!r})"
             )
 
-        chronicle = await self._get_chronicle(session_id)
-        result = parse_tool_build_response(chronicle, tool_name=request.name)
+        result, retrieval = await self._retrieve_artifact(session_id, request)
         return ToolBuildResult(
             manifest=result.manifest,
             tool_code=result.tool_code,
+            test_code=result.test_code,
+            requirements=result.requirements,
+            build_evidence={"retrieval": retrieval},
             provenance={
                 "backend": self.name,
                 "forge_session_id": session_id,
                 "build_request": request.build_request,
             },
         )
+
+    async def _retrieve_artifact(
+        self,
+        session_id: str,
+        request: ToolBuildRequest,
+    ) -> tuple[ToolBuildResult, str]:
+        """Prefer the canonical ``learned_tool.json`` file; fall back to the chronicle.
+
+        Fails loudly (raises :class:`ToolBuildError`) only when NEITHER path
+        yields a manifest + tool_code.
+        """
+        canonical = await self._get_canonical_file(session_id)
+        if canonical is not None:
+            return parse_tool_build_document(canonical, tool_name=request.name), "canonical_file"
+        logger.warning(
+            "Forge structured retrieval of %s for session %s was unavailable; "
+            "falling back to chronicle scrape",
+            CANONICAL_ARTIFACT_FILENAME,
+            session_id,
+        )
+        chronicle = await self._get_chronicle(session_id)
+        return parse_tool_build_response(chronicle, tool_name=request.name), "chronicle_scrape"
+
+    async def _get_canonical_file(self, session_id: str) -> dict[str, Any] | None:
+        """Fetch and parse the canonical artifact from the session workspace.
+
+        Returns ``None`` (so the caller can fall back to the chronicle) when the
+        file is absent, unreachable, or not a JSON object — never raises for a
+        missing file.
+        """
+        url = (
+            f"{self._base_url}/api/v1/forge/sessions/{session_id}/files/download"
+            f"?path={CANONICAL_ARTIFACT_FILENAME}&root=workspace"
+        )
+        try:
+            resp = await self._client.get(url)
+        except Exception:  # noqa: BLE001 — transport failure = fall back to chronicle
+            return None
+        if resp.status_code != 200:
+            return None
+        document = _decode_canonical_body(resp.body)
+        if not isinstance(document, dict) or not document:
+            return None
+        return document
 
     async def _create_session(
         self,
@@ -162,3 +230,7 @@ def _chronicle_text(body: Any) -> str:
             if isinstance(value, str) and value.strip():
                 return value
     return ""
+
+
+#: The one canonical decoder lives in _contract so the backends cannot drift.
+_decode_canonical_body = decode_canonical_document

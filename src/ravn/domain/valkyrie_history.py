@@ -190,17 +190,32 @@ def signal_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def decision_requires_review(record: dict[str, Any]) -> bool:
+def decision_requires_review(
+    record: dict[str, Any],
+    *,
+    attention_tiers: frozenset[str] | None = None,
+    observational_actions: frozenset[str] | None = None,
+) -> bool:
     """True when a stored decision must be routed to the operator inbox.
 
     Three things must hold: the authority demands a human, the judgment is
     pitched at an attention tier that asks for one, and it recommends an
     actual action rather than continued observation. Anything less is
     telemetry, not a decision awaiting approval.
+
+    ``attention_tiers`` and ``observational_actions`` default to the module
+    constants; deployments override them via
+    ``ResidentEvolutionConfig.review_attention_tiers`` /
+    ``ResidentEvolutionConfig.observational_actions``. The authority gate is
+    NOT configurable — ``court_required`` must never be centrally filed.
     """
+    tiers = attention_tiers if attention_tiers is not None else _REVIEW_ATTENTION_TIERS
+    observational = (
+        observational_actions if observational_actions is not None else _OBSERVATIONAL_ACTIONS
+    )
     if str(record.get("actionAuthority") or "") not in REVIEW_REQUIRED_AUTHORITIES:
         return False
-    if str(record.get("tier") or "").lower() not in _REVIEW_ATTENTION_TIERS:
+    if str(record.get("tier") or "").lower() not in tiers:
         return False
     recommended = str(record.get("recommendedAction") or "").strip().lower()
-    return recommended not in _OBSERVATIONAL_ACTIONS
+    return recommended not in observational

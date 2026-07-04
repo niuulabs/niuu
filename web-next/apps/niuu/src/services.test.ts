@@ -66,8 +66,14 @@ const observatoryMocks = vi.hoisted(() => ({
 const valkyrieMocks = vi.hoisted(() => ({
   createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
   createMockOdinReviewService: vi.fn(() => ({ kind: 'mock-valkyrie-reviews' })),
+  createMockRealmGovernanceService: vi.fn(() => ({ kind: 'mock-valkyrie-realms' })),
   buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
   buildOdinReviewHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-reviews', client })),
+  buildRealmGovernanceHttpAdapter: vi.fn((realmsClient, workflowsClient) => ({
+    kind: 'valkyrie-realms',
+    realmsClient,
+    workflowsClient,
+  })),
 }));
 
 const volundrMocks = vi.hoisted(() => ({
@@ -1730,6 +1736,35 @@ describe('buildServices', () => {
 
     expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
     expect(services['valkyrie.reviews']).toEqual({ kind: 'mock-valkyrie-reviews' });
+    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
+  });
+
+  it('wires realm governance to the shared API and Ting workflow bases', () => {
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+
+    expect(valkyrieMocks.buildRealmGovernanceHttpAdapter).toHaveBeenCalledWith(
+      { basePath: 'http://localhost:8080/api/v1' },
+      { basePath: 'http://localhost:8080/api/v1/ting' },
+    );
+    expect(services['valkyrie.realms']).toMatchObject({ kind: 'valkyrie-realms' });
+  });
+
+  it('keeps realm governance mocked without a Ting workflow base', () => {
+    const services = buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+      },
+    } as any);
+
+    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
   });
 
   it('lets a grouped Valkyrie base drive dashboard and review adapters', () => {

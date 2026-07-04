@@ -41,11 +41,20 @@ class ToolBuildRequest:
 
 @dataclass(frozen=True)
 class ToolBuildResult:
-    """The produced artifact: a learned-tool manifest + its Python code."""
+    """The produced artifact: a learned-tool manifest + its Python code.
+
+    ``test_code`` and ``requirements`` capture the tests and dependencies the
+    builder produced (empty when it produced none). ``build_evidence`` records
+    what verification the builder reported and how the artifact was retrieved
+    (e.g. ``{"retrieval": "canonical_file"}`` vs ``"chronicle_scrape"``).
+    """
 
     manifest: dict[str, Any]
     tool_code: str
     provenance: dict[str, Any] = field(default_factory=dict)
+    test_code: str = ""
+    requirements: list[str] = field(default_factory=list)
+    build_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolBuildBackend(ABC):

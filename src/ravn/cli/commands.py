@@ -152,21 +152,26 @@ def _attach_signal_build_tool(
             else None
         )
         code_dir, artifacts_dir = learned_tool_storage(state_dir)
+        realm_config = _resolve_realm_build_config(settings)
         attach_build_tool(
             agent,
             tools_dir=code_dir,
             artifacts_dir=artifacts_dir,
             publisher=publisher,
             review_requester=review_requester,
-            autonomy_mode=settings.resident_evolution.autonomy_mode,
+            autonomy_mode=realm_config.autonomy_mode,
             environment_id=settings.environment.id,
             valkyrie_id=valkyrie_id,
             flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
             domain=settings.environment.type,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
             workspace_root=workspace,
-            build_backend=_build_tool_build_backend(settings),
+            build_backend=_build_tool_build_backend(
+                settings, workflow_selector=realm_config.workflow_selector
+            ),
             investigation_context=_investigation_context,
+            max_repair_attempts=settings.resident_evolution.build_repair_attempts,
+            flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -175,17 +180,159 @@ def _attach_signal_build_tool(
     return agent
 
 
-def _build_tool_build_backend(settings: Settings) -> Any | None:
-    """Construct the configured tool build adapter, or None for inline authoring."""
+def _build_tool_build_backend(
+    settings: Settings,
+    *,
+    workflow_selector: dict[str, Any] | None = None,
+) -> Any | None:
+    """Construct the configured tool build adapter, or None for inline authoring.
+
+    ``workflow_selector``, when provided (resolved from a realm build grant),
+    overrides the static ``tool_builder_workflow`` config for this backend.
+    """
     cfg = settings.resident_evolution
     if not cfg.tool_build_adapter:
         return None
     cls = _import_class(cfg.tool_build_adapter)
     kwargs = dict(cfg.tool_build_kwargs)
-    selector = cfg.tool_builder_workflow
-    if (selector.names or selector.tags) and _constructor_accepts_kwarg(cls, "workflow_selector"):
-        kwargs.setdefault("workflow_selector", selector.model_dump())
+    selector_dict = workflow_selector
+    if selector_dict is None:
+        static_selector = cfg.tool_builder_workflow
+        if static_selector.names or static_selector.tags:
+            selector_dict = static_selector.model_dump()
+    if selector_dict and _constructor_accepts_kwarg(cls, "workflow_selector"):
+        kwargs["workflow_selector"] = selector_dict
     return cls(**kwargs)
+
+
+class _RealmBuildConfig:
+    """Effective tool-build config after realm-grant resolution.
+
+    ``workflow_selector`` is ``None`` when no realm grant pins a workflow (the
+    static ``tool_builder_workflow`` then applies); ``autonomy_mode`` always
+    carries the effective mode (realm-derived or the static default).
+    """
+
+    def __init__(
+        self,
+        *,
+        autonomy_mode: str,
+        workflow_selector: dict[str, Any] | None,
+    ) -> None:
+        self.autonomy_mode = autonomy_mode
+        self.workflow_selector = workflow_selector
+
+
+def _run_coro_blocking(coro: Awaitable[Any]) -> Any:
+    """Run a coroutine to completion from sync wiring code, loop-safe.
+
+    Uses ``asyncio.run`` when no loop is running (plain CLI). Inside a running
+    loop — the daemon's agent factory is called from the async drive loop — a
+    dedicated thread runs the coroutine on its own loop, because
+    ``asyncio.run`` would raise RuntimeError there and realm resolution would
+    silently degrade to static config.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # type: ignore[arg-type]
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()  # type: ignore[arg-type]
+
+
+#: RealmClients cached per (base_url + auth kwargs): the daemon's agent factory
+#: resolves realm config per task, and a fresh client per call would mean a
+#: fresh auth adapter — and a token exchange — per task. The auth adapter
+#: caches its token with expiry skew, so a reused client only re-exchanges on
+#: expiry. Bounded by the number of distinct configs in one process (~1).
+_REALM_CLIENT_CACHE: dict[tuple, Any] = {}
+
+
+def _realm_client_for(settings: Settings) -> Any:
+    """The canonical RealmClient factory (cached), or None when unusable."""
+    from ravn.adapters.realm import RealmClient, build_realm_client_kwargs  # noqa: PLC0415
+
+    cfg = settings.resident_evolution
+    base_url = cfg.realm_api_base_url or str(cfg.tool_build_kwargs.get("base_url") or "")
+    if not base_url:
+        logger.warning(
+            "realm_slug %r is set but no realm_api_base_url or "
+            "tool_build_kwargs['base_url'] is configured; using static tool-build config",
+            cfg.realm_slug,
+        )
+        return None
+    auth_kwargs = build_realm_client_kwargs(
+        realm_api_kwargs=cfg.realm_api_kwargs,
+        tool_build_kwargs=cfg.tool_build_kwargs,
+    )
+    cache_key = (base_url, tuple(sorted((k, str(v)) for k, v in auth_kwargs.items())))
+    client = _REALM_CLIENT_CACHE.get(cache_key)
+    if client is None:
+        client = RealmClient(base_url=base_url, **auth_kwargs)
+        _REALM_CLIENT_CACHE[cache_key] = client
+    return client
+
+
+def _resolve_realm_build_config(settings: Settings) -> _RealmBuildConfig:
+    """Resolve tool-build workflow + autonomy from the realm's build trust grant.
+
+    Falls back to static config when ``realm_slug`` is empty, when the realm is
+    unreachable (logs WARNING — a realm outage must not brick the resident), or
+    when the realm has no build grant. NEVER pretends a grant exists. Reaches
+    the realm API at the same Volundr base_url Ravn uses for Forge sessions.
+    """
+    cfg = settings.resident_evolution
+    static = _RealmBuildConfig(autonomy_mode=cfg.autonomy_mode, workflow_selector=None)
+    if not cfg.realm_slug:
+        logger.info("no realm_slug configured; using static tool-build config")
+        return static
+
+    client = _realm_client_for(settings)
+    if client is None:
+        return static
+
+    try:
+        grant = _run_coro_blocking(client.resolve_build_grant(cfg.realm_slug))
+    except Exception as exc:  # noqa: BLE001 — realm outage must not brick the resident
+        logger.warning(
+            "realm %s build-grant resolution failed (%s); using static tool-build config",
+            cfg.realm_slug,
+            exc,
+        )
+        return static
+
+    if grant is None:
+        logger.info(
+            "realm %s has no build grant; using static tool-build config",
+            cfg.realm_slug,
+        )
+        return static
+
+    from ravn.adapters.realm import (  # noqa: PLC0415
+        autonomy_mode_for_trust_level,
+        workflow_selector_from_grant,
+    )
+
+    trust_table = cfg.trust_level_autonomy_table
+    autonomy_mode = autonomy_mode_for_trust_level(
+        grant.level,
+        autonomous_threshold=trust_table.autonomous,
+        yolo_threshold=trust_table.yolo,
+    )
+    workflow_selector = workflow_selector_from_grant(grant)
+    logger.info(
+        "realm %s build grant resolved: level=%d autonomy_mode=%s workflow_selector=%s",
+        cfg.realm_slug,
+        grant.level,
+        autonomy_mode,
+        workflow_selector,
+    )
+    return _RealmBuildConfig(
+        autonomy_mode=autonomy_mode,
+        workflow_selector=workflow_selector,
+    )
 
 
 def _constructor_accepts_kwarg(cls: type, name: str) -> bool:
@@ -1036,9 +1183,11 @@ def _load_resident_learned_tools(
     from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
         ForgeSandboxLearnedToolRunner,
         learned_tool_storage,
+        learned_tool_venvs_dir,
         load_learned_tool,
         read_learned_tool_artifact,
     )
+    from ravn.valkyrie_evolution.tool_runtime import prune_orphaned_tool_venvs  # noqa: PLC0415
 
     state_dir = _resident_ravn_state_dir(workspace)
     backend = settings.resident_evolution.learned_tool_execution_backend
@@ -1052,6 +1201,13 @@ def _load_resident_learned_tools(
     )
 
     code_dir, artifacts_dir = learned_tool_storage(state_dir)
+    venvs_dir = learned_tool_venvs_dir(state_dir)
+    try:
+        pruned = prune_orphaned_tool_venvs(venvs_dir=venvs_dir, tools_dir=code_dir)
+        if pruned:
+            logger.info("Pruned %d orphaned learned-tool venv(s): %s", len(pruned), pruned)
+    except Exception as exc:  # noqa: BLE001 — venv GC must never block startup
+        logger.warning("Learned-tool venv sweep failed: %s", exc)
     if not artifacts_dir.exists():
         return []
     seen = {tool.name for tool in existing_tools}
@@ -1069,6 +1225,7 @@ def _load_resident_learned_tools(
                 tool_path=tool_path,
                 timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
                 runner=runner,
+                venvs_dir=venvs_dir,
             )
         except Exception as exc:
             logger.warning("Failed to load learned tool artifact %s: %s", artifact_file, exc)
@@ -2961,6 +3118,14 @@ async def _run_daemon(
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
 
+    realm_capability_sync = _build_realm_capability_sync(
+        settings,
+        subscriber=environment_signal_publisher,
+    )
+    if realm_capability_sync is not None:
+        await realm_capability_sync.start()
+        typer.echo("  Realm capability sync: subscribed")
+
     resident_wakefulness = _build_resident_wakefulness(
         settings,
         resident_learning_runtime=resident_learning_runtime,
@@ -3339,6 +3504,42 @@ def _build_resident_learning_runtime(
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
+    )
+
+
+def _build_realm_capability_sync(
+    settings: Settings,
+    *,
+    subscriber: Any | None,
+) -> Any | None:
+    """Build the realm capability-ledger writer for resident evolution events.
+
+    Returns None (zero behavior change) when no realm_slug is configured or a
+    realm client cannot be built; the realm ledger is advisory bookkeeping, so
+    an unusable realm config degrades with a WARNING instead of failing the
+    daemon.
+    """
+    cfg = settings.resident_evolution
+    if not cfg.realm_slug:
+        return None
+    if subscriber is None or not hasattr(subscriber, "subscribe"):
+        logger.warning(
+            "realm capability sync: realm_slug %r is set but no bus subscriber "
+            "is available; the capability ledger will not be updated",
+            cfg.realm_slug,
+        )
+        return None
+    client = _realm_client_for(settings)
+    if client is None:
+        return None
+
+    from ravn.adapters.realm import RealmCapabilitySync  # noqa: PLC0415
+
+    logger.info("realm capability sync: active for realm %s", cfg.realm_slug)
+    return RealmCapabilitySync(
+        client=client,
+        realm_slug=cfg.realm_slug,
+        subscriber=subscriber,
     )
 
 
@@ -4910,6 +5111,146 @@ def gateway_main() -> None:
 
 def evolve_main() -> None:
     evolve_app()
+
+
+# ---------------------------------------------------------------------------
+# Tool-build doctor CLI
+# ---------------------------------------------------------------------------
+
+tool_build_app = typer.Typer(
+    name="tool-build",
+    help="Diagnose the Valkyrie tool-build path (Ting/Forge).",
+    add_completion=False,
+)
+app.add_typer(tool_build_app, name="tool-build")
+
+
+def _render_doctor_report(report: Any) -> None:
+    """Print the doctor checklist as human-readable PASS/FAIL/SKIP lines."""
+    for hop in report.hops:
+        typer.echo(f"Hop {hop.number} — {hop.title}: {hop.status.value} — {hop.reason}")
+
+
+@tool_build_app.command("doctor")
+def tool_build_doctor(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the checklist as structured JSON."
+    ),
+) -> None:
+    """Diagnose the Valkyrie -> Ting/Forge tool-build path hop by hop.
+
+    Runs READ-ONLY probes only — it never launches an actual build. Each hop
+    reports PASS/FAIL/SKIP with a one-line reason so a misconfiguration
+    surfaces precisely instead of as a vague ToolBuildError inside a poll loop.
+
+    Exits non-zero when any hop fails.
+    """
+    from ravn.valkyrie_evolution.tool_build_doctor import diagnose_tool_build  # noqa: PLC0415
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    report = asyncio.run(diagnose_tool_build(settings))
+
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        _render_doctor_report(report)
+
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+_TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
+
+
+def _effective_workflow_selector(settings: Settings) -> dict[str, Any] | None:
+    """Effective tool-builder selector: realm grant overrides static config."""
+    realm_config = _resolve_realm_build_config(settings)
+    if realm_config.workflow_selector is not None:
+        return realm_config.workflow_selector
+    static = settings.resident_evolution.tool_builder_workflow
+    if static.names or static.tags:
+        return static.model_dump()
+    return None
+
+
+async def _discover_ting_workflows(backend: Any) -> tuple[list[Any], str]:
+    """List workflows via the backend's client. Returns (workflows, error)."""
+    from ravn.adapters.tool_build.ting_workflow import _workflow_from_body  # noqa: PLC0415
+
+    client = getattr(backend, "client", None)
+    base_url = getattr(backend, "base_url", "")
+    if client is None or not base_url:
+        return [], "configured backend exposes no client/base_url to query"
+    url = f"{base_url}{_TING_WORKFLOWS_PATH}"
+    resp = await client.get(url)
+    if resp.status_code != 200 or not isinstance(resp.body, list):
+        return [], f"GET {url} -> HTTP {resp.status_code} (expected a workflow list)"
+    workflows = [_workflow_from_body(item) for item in resp.body if isinstance(item, dict)]
+    return workflows, ""
+
+
+@tool_build_app.command("workflows")
+def tool_build_workflows(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    json_output: bool = typer.Option(False, "--json", help="Emit workflows as structured JSON."),
+) -> None:
+    """List Ting workflows and mark those matching the tool-build selector.
+
+    READ-ONLY inspection of the "configure from existing Ting workflows" UX.
+    The selector is the realm build grant's workflow (when a realm is
+    configured and grants one) or the static ``tool_builder_workflow``.
+    """
+    from ravn.domain.capability_catalog import WorkflowSelector  # noqa: PLC0415
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    backend = _build_tool_build_backend(settings)
+    if backend is None:
+        typer.echo("No tool-build backend configured (inline authoring).", err=True)
+        raise typer.Exit(1)
+
+    try:
+        workflows, error = asyncio.run(_discover_ting_workflows(backend))
+    except Exception as exc:  # noqa: BLE001 — inspection must never throw a traceback
+        typer.echo(f"Failed to list workflows: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if error:
+        typer.echo(error, err=True)
+        raise typer.Exit(1)
+
+    selector_dict = _effective_workflow_selector(settings)
+    selector = (
+        WorkflowSelector(**selector_dict) if selector_dict is not None else WorkflowSelector()
+    )
+    rows = [
+        {
+            "id": wf.workflow_id,
+            "name": wf.name,
+            "tags": list(wf.tags),
+            "matches_selector": selector.configured and selector.matches(wf),
+        }
+        for wf in workflows
+    ]
+
+    if json_output:
+        typer.echo(json.dumps({"selector": selector_dict, "workflows": rows}, indent=2))
+        return
+
+    if not rows:
+        typer.echo("No workflows discovered.")
+        return
+
+    for row in rows:
+        marker = "*" if row["matches_selector"] else " "
+        tags = ", ".join(row["tags"]) if row["tags"] else "-"
+        typer.echo(f"{marker} {row['name'] or row['id']}  id={row['id']}  tags={tags}")
 
 
 # ---------------------------------------------------------------------------

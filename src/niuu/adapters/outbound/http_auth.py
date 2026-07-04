@@ -52,6 +52,7 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
         exchange_url_env: str = "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
         audiences: Sequence[str] | None = None,
+        scopes: Sequence[str] | None = None,
         timeout_seconds: float = 10.0,
         refresh_skew_seconds: float = 30.0,
         transport: httpx.BaseTransport | None = None,
@@ -62,6 +63,9 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         self._token_file_env = token_file_env
         self._exchange_url_env = exchange_url_env
         self._audiences = list(audiences or ["volundr-api", "forge", "ting", "mimir", "guild"])
+        # Requested build scopes: when set, the exchanged token is minted as a
+        # least-privilege valkyrie_build token limited to these scopes.
+        self._scopes = list(scopes or [])
         self._timeout_seconds = timeout_seconds
         self._refresh_skew_seconds = refresh_skew_seconds
         self._transport = transport
@@ -90,11 +94,11 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         if not exchange_url:
             return ""
 
+        body: dict[str, object] = {"token": proof, "audiences": self._audiences}
+        if self._scopes:
+            body["scopes"] = self._scopes
         with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
-            response = client.post(
-                exchange_url,
-                json={"token": proof, "audiences": self._audiences},
-            )
+            response = client.post(exchange_url, json=body)
             response.raise_for_status()
             payload = response.json()
 
