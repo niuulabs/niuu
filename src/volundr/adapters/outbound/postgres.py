@@ -67,6 +67,7 @@ class PostgresSessionRepository(SessionRepository):
             session.activity_state.value if session.activity_state else None,
             json.dumps(session.activity_metadata or {}),
             session.activity_state_since,
+            json.dumps(session.workload_config or {}),
         )
         return session
 

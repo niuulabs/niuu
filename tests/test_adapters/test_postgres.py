@@ -463,3 +463,38 @@ class TestActivityStatePersistence:
 
         assert result.activity_state_since is not None
         assert result.activity_state_since.tzinfo is not None
+
+
+class TestSessionQueryArity:
+    """Placeholder count and argument count must match — mocked pools can't
+    catch an asyncpg InterfaceError, so this guards the arity statically."""
+
+    @staticmethod
+    def _execute_arg_counts(method_name: str) -> tuple[int, int]:
+        import ast
+        import inspect
+        import re
+
+        source = inspect.getsource(PostgresSessionRepository)
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == method_name:
+                for call in ast.walk(node):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "execute"
+                    ):
+                        sql = call.args[0]
+                        sql_text = ast.get_source_segment(source, sql) or ""
+                        placeholders = {int(m) for m in re.findall(r"\$(\d+)", sql_text)}
+                        return max(placeholders), len(call.args) - 1
+        raise AssertionError(f"no execute call found in {method_name}")
+
+    def test_create_arity(self):
+        placeholders, args = self._execute_arg_counts("create")
+        assert placeholders == args
+
+    def test_update_arity(self):
+        placeholders, args = self._execute_arg_counts("update")
+        assert placeholders == args
