@@ -3502,6 +3502,7 @@ def _build_resident_learning_runtime(
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
+        feedback_confidence_bump=settings.resident_evolution.feedback_confidence_bump,
         skill_inventory_interval_seconds=(
             settings.resident_evolution.skill_inventory_interval_seconds
         ),

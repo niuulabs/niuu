@@ -103,6 +103,13 @@ DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS = 500
 #: (and therefore the durable ledger) when adoption verification fails.
 DEFAULT_VERIFY_LOG_EVIDENCE_CHARS = 2000
 
+#: How much one useful/good_action operator feedback verdict raises the
+#: stored learning's confidence (clamped at 1.0).
+DEFAULT_FEEDBACK_CONFIDENCE_BUMP = 0.05
+
+#: Confidence ceiling for operator reinforcement.
+MAX_LEARNING_CONFIDENCE = 1.0
+
 _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill", "agent_tool"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
 _SUBSCRIBED_EVENT_TYPES = [
@@ -229,6 +236,7 @@ class ResidentLearningRuntime:
         tools_dir: str | Path | None = None,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
+        feedback_confidence_bump: float = DEFAULT_FEEDBACK_CONFIDENCE_BUMP,
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
         skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
@@ -243,6 +251,7 @@ class ResidentLearningRuntime:
         self._tools_dir = Path(tools_dir) if tools_dir else None
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
+        self._feedback_confidence_bump = feedback_confidence_bump
         self._learning_store = learning_store
         self._review_requester = review_requester
         self._skill_inventory_interval_seconds = skill_inventory_interval_seconds
@@ -1019,6 +1028,16 @@ class ResidentLearningRuntime:
             # Flock-broadcast commands reach every resident; the irrelevant
             # ones stay quiet instead of flooding the bus with rejections.
             return "ignored", reason, None
+        feedback = item.evidence.get("feedback")
+        feedback = dict(feedback) if isinstance(feedback, dict) else {}
+        if feedback:
+            # Whatever the lifecycle effect, the verdict lands in the stored
+            # learning so future dreams can weigh operator judgment.
+            self._record_operator_feedback(artifact, feedback)
+        if item.requested_action == "feedback":
+            return await self._apply_learning_feedback(artifact, feedback)
+        if item.requested_action == "revise":
+            return await self._apply_learning_revision(item, artifact)
         if item.status == ReviewStatus.REJECTED.value:
             decision = ResidentLearningDecision(
                 "rejected",
@@ -1064,6 +1083,166 @@ class ResidentLearningRuntime:
             kwargs["correlation_id"] = item.correlation_id or item.item_id
         kwargs["causation_id"] = item.causation_id or ""
         return ResidentLearningArtifact(**kwargs)
+
+    def _learning_record_for(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> FlockLearningRecord | None:
+        """The durable ledger record for one learning, created when absent."""
+        if self._learning_store is None:
+            return None
+        try:
+            return self._learning_store.get(artifact.learning_id)
+        except ValueError:
+            return FlockLearningRecord(
+                exchange_id=artifact.learning_id,
+                candidate=_candidate_from_artifact(artifact),
+            )
+
+    def _record_operator_feedback(
+        self,
+        artifact: ResidentLearningArtifact,
+        feedback: dict[str, Any],
+    ) -> None:
+        """Persist the operator verdict on the stored learning."""
+        record = self._learning_record_for(artifact)
+        if record is None:
+            logger.warning(
+                "resident_learning: no learning store configured; operator "
+                "feedback on %s is not durable",
+                artifact.learning_id,
+            )
+            return
+        record.operator_feedback = {
+            "verdict": str(feedback.get("verdict") or ""),
+            "reason": str(feedback.get("reason") or ""),
+            "operator_id": str(feedback.get("operatorId") or feedback.get("operator_id") or ""),
+            "recorded_at": str(
+                feedback.get("recordedAt")
+                or feedback.get("recorded_at")
+                or datetime.now(UTC).isoformat()
+            ),
+        }
+        self._learning_store.save(record)
+
+    async def _apply_learning_feedback(
+        self,
+        artifact: ResidentLearningArtifact,
+        feedback: dict[str, Any],
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        """Apply a pure feedback verdict: reinforcement or local rejection.
+
+        ``useful``/``good_action`` raise the stored learning's confidence by
+        the configured bump; ``bad_action`` on a not-yet-adopted learning is
+        a durable local rejection. Lifecycle-changing verdicts (rollback,
+        dismissal, tier moves) arrive as their existing dedicated commands.
+        """
+        verdict = str(feedback.get("verdict") or "")
+        if verdict in {"useful", "good_action"}:
+            record = self._learning_record_for(artifact)
+            if record is None:
+                return (
+                    "apply_failed",
+                    "no learning store configured; operator reinforcement cannot be applied",
+                    None,
+                )
+            reinforced = min(
+                record.candidate.confidence + self._feedback_confidence_bump,
+                MAX_LEARNING_CONFIDENCE,
+            )
+            record.candidate = replace(record.candidate, confidence=reinforced)
+            self._learning_store.save(record)
+            detail = f"operator feedback {verdict}: confidence reinforced to {reinforced:.2f}"
+            await self._publish_learning_update(artifact, record, rationale=detail)
+            return "applied", detail, None
+        if verdict == "bad_action":
+            decision = ResidentLearningDecision(
+                "rejected",
+                (f"operator feedback bad_action: {feedback.get('reason') or 'no reason given'}"),
+                relevant=True,
+            )
+            await self._publish_adoption(artifact, decision)
+            return "applied", decision.rationale, decision
+        return "applied", f"operator feedback {verdict or 'unknown'} recorded", None
+
+    async def _apply_learning_revision(
+        self,
+        item: ReviewItem,
+        artifact: ResidentLearningArtifact,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        """Apply an operator revision command.
+
+        Candidate revisions are edited in place with a revision marker;
+        revisions of adopted learnings arrive as superseding candidates that
+        re-enter the one review/canary install pipeline.
+        """
+        revision = item.evidence.get("revision")
+        revision = dict(revision) if isinstance(revision, dict) else {}
+        superseded_id = str(revision.get("superseded_id") or artifact.supersedes or "")
+        if superseded_id:
+            decision = await self.evaluate_and_apply(artifact)
+            outcome = "applied" if decision.action in {"adopted", "held"} else "apply_failed"
+            return outcome, decision.rationale, decision
+
+        record = self._learning_record_for(artifact)
+        if record is None:
+            return (
+                "apply_failed",
+                "no learning store configured; candidate revision cannot be applied",
+                None,
+            )
+        updates: dict[str, str] = {}
+        if str(revision.get("title") or "").strip():
+            updates["title"] = str(revision["title"])
+        if str(revision.get("summary") or "").strip():
+            updates["summary"] = str(revision["summary"])
+        if str(revision.get("content") or "").strip():
+            updates["content"] = str(revision["content"])
+        if not updates:
+            return "apply_failed", "revision command carried no edits", None
+        record.candidate = replace(record.candidate, **updates)
+        record.revision += 1
+        self._learning_store.save(record)
+        detail = f"revision {record.revision} applied to candidate {artifact.learning_id}"
+        await self._publish_learning_update(artifact, record, rationale=detail)
+        return "applied", detail, None
+
+    async def _publish_learning_update(
+        self,
+        artifact: ResidentLearningArtifact,
+        record: FlockLearningRecord,
+        *,
+        rationale: str,
+    ) -> None:
+        """Re-emit the learning update event so dashboard mirrors converge."""
+        event = learning_adoption_recorded(
+            environment_id=self.identity.environment_id,
+            learning_id=artifact.learning_id,
+            promotion_id=artifact.promotion_id or artifact.learning_id,
+            action="updated",
+            rationale=rationale,
+            source=self._source,
+            correlation_id=artifact.correlation_id or artifact.learning_id,
+            causation_id=artifact.causation_id,
+        )
+        event.payload.update(
+            {
+                "resident_valkyrie_id": self.identity.valkyrie_id,
+                "ack_kind": "resident_learning",
+                "artifact_type": artifact.artifact_type,
+                "scope": _normalise_scope(artifact.scope),
+                "title": record.candidate.title,
+                "summary_text": record.candidate.summary,
+                "confidence": record.candidate.confidence,
+                "repetition": record.repetition,
+                "revision": record.revision,
+                "feedback": dict(record.operator_feedback),
+                "additional_nats_subjects": [
+                    _flock_nats_subject(self.identity, "learning.adoption.recorded")
+                ],
+            }
+        )
+        await self._publisher.publish(event)
 
     async def evaluate_and_apply(
         self,
@@ -1753,6 +1932,8 @@ def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearnin
         metadata={
             "domain": artifact.domain,
             "artifact_type": artifact.artifact_type,
+            "scope": _normalise_scope(artifact.scope),
+            "supersedes": artifact.supersedes,
             "learned_tool_manifest": dict(artifact.learned_tool_manifest),
         },
     )

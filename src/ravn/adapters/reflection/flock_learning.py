@@ -130,6 +130,13 @@ class FlockLearningRecord:
     active_environment_ids: list[str] = field(default_factory=list)
     archived_at: str = ""
     rolled_back_at: str = ""
+    #: How many times this learning has been (re-)produced; duplicates by
+    #: fingerprint fold into the existing record instead of multiplying.
+    repetition: int = 1
+    #: Count of operator revisions applied to the candidate in place.
+    revision: int = 0
+    #: Last operator feedback verdict, kept so future dreams can see it.
+    operator_feedback: dict = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -147,6 +154,9 @@ class FlockLearningRecord:
             active_environment_ids=list(data.get("active_environment_ids") or []),
             archived_at=str(data.get("archived_at") or ""),
             rolled_back_at=str(data.get("rolled_back_at") or ""),
+            repetition=max(int(data.get("repetition") or 1), 1),
+            revision=int(data.get("revision") or 0),
+            operator_feedback=dict(data.get("operator_feedback") or {}),
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
             updated_at=str(data.get("updated_at") or datetime.now(UTC).isoformat()),
         )

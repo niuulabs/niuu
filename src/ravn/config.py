@@ -2570,6 +2570,15 @@ class ResidentEvolutionConfig(BaseModel):
             "auto-rolled-back (archived, regression published to the flock)."
         ),
     )
+    feedback_confidence_bump: float = Field(
+        default=0.05,
+        description=(
+            "How much one useful/good_action operator feedback verdict raises "
+            "the stored learning's confidence (clamped at 1.0). Feedback "
+            "arrives on the same odin.review.decided command channel as every "
+            "other operator learning decision."
+        ),
+    )
     skill_inventory_interval_seconds: float = Field(
         default=300.0,
         description=(
