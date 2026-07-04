@@ -178,6 +178,9 @@ function FeedbackSection({ learning }: { learning: LearningRecord }) {
   const sendFeedback = useSendLearningFeedback();
   const [pickingScope, setPickingScope] = useState(false);
   const adjacent = adjacentLearningScopes(learning.scope);
+  // The backend records the command-publish outcome per action; a verdict
+  // that never reached the resident must not read as delivered.
+  const undelivered = learning.commandDelivery?.published === false;
 
   const submit = (verdict: LearningFeedbackVerdict, targetScope?: LearningScope) => {
     setPickingScope(false);
@@ -250,6 +253,19 @@ function FeedbackSection({ learning }: { learning: LearningRecord }) {
           className="niuu:mt-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:text-xs niuu:text-critical"
         >
           {errorMessage(sendFeedback.error, 'Recording feedback failed')}
+        </p>
+      ) : null}
+      {undelivered ? (
+        <p
+          role="alert"
+          data-testid="learning-delivery-warning"
+          className="niuu:mt-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:text-xs niuu:text-critical"
+        >
+          Recorded on the dashboard but NOT delivered to the resident
+          {learning.commandDelivery?.message
+            ? ` — ${learning.commandDelivery.message.replace(/\.$/, '')}`
+            : ''}
+          .
         </p>
       ) : null}
     </div>

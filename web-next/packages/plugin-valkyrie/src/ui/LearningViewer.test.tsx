@@ -340,3 +340,47 @@ describe('learningCorrelation', () => {
     expect(learningCorrelation({})).toBe('');
   });
 });
+
+describe('LearningViewer delivery honesty', () => {
+  it('warns loudly when the last command never reached the resident', async () => {
+    const service = createMockValkyrieService();
+    const undelivered = {
+      ...service,
+      async getLearning(learningId: string) {
+        const learning = await service.getLearning(learningId);
+        if (!learning) return null;
+        return {
+          ...learning,
+          feedback: {
+            verdict: 'useful',
+            reason: '',
+            operatorId: 'human:operator',
+            recordedAt: '2026-07-04T21:00:00Z',
+          },
+          commandDelivery: {
+            published: false,
+            eventType: '',
+            eventId: '',
+            message: 'Sleipnir/NATS publish failed: no command targets configured',
+            observedAt: '2026-07-04T21:00:00Z',
+          },
+        };
+      },
+    };
+    render(<LearningViewer learningId="learn-k8s-oom-canary" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie({ valkyrie: undelivered }),
+    });
+
+    const warning = await screen.findByTestId('learning-delivery-warning');
+    expect(warning).toHaveTextContent('NOT delivered to the resident');
+    expect(warning).toHaveTextContent('no command targets configured');
+  });
+
+  it('shows no delivery warning when the command published', async () => {
+    render(<LearningViewer learningId="learn-k8s-oom-canary" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByRole('dialog');
+    expect(screen.queryByTestId('learning-delivery-warning')).toBeNull();
+  });
+});
