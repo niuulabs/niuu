@@ -57,7 +57,10 @@ allowed_tools:
     volundr_session,
     ting_saga,
     ting_workflow,
+    ting_plan,
+    ting_spec,
     tracker_issue,
+    session_join,
     todo_write,
     todo_read,
   ]

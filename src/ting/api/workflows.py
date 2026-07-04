@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -71,6 +72,17 @@ class WorkflowLaunchBody(BaseModel):
     model: str = Field(default="", max_length=255)
     definition: str | None = Field(default=None, max_length=255)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    gate_auto_forward_after: str | None = Field(
+        default=None,
+        max_length=32,
+        alias="gateAutoForwardAfter",
+        description=(
+            "Override every gate node's autoForwardAfter for this launch "
+            "(e.g. '24h'). An empty string disables auto-forward entirely — "
+            "chat-driven approvals must wait for the human instead of "
+            "sailing past them. Omit to keep the definition's values."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -282,6 +294,30 @@ def _launch_response(
     )
 
 
+def _apply_gate_auto_forward_override(
+    snapshot: dict[str, Any],
+    value: str,
+) -> dict[str, Any]:
+    """Return a snapshot copy with every gate node's autoForwardAfter overridden.
+
+    The snapshot shares the stored definition's graph object, so patching
+    happens on a deep copy — a per-launch override must never mutate the
+    workflow definition. An empty *value* removes autoForwardAfter (the gate
+    waits indefinitely for the human decision).
+    """
+    patched = copy.deepcopy(snapshot)
+    graph = patched.get("graph")
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    for node in nodes or []:
+        if not isinstance(node, dict) or node.get("kind") != "gate":
+            continue
+        if value:
+            node["autoForwardAfter"] = value
+        else:
+            node.pop("autoForwardAfter", None)
+    return patched
+
+
 async def launch_workflow_execution(
     *,
     request: Request,
@@ -292,6 +328,11 @@ async def launch_workflow_execution(
     bearer_token: str | None = None,
 ) -> WorkflowLaunchExecution:
     workflow_snapshot = build_workflow_snapshot(workflow)
+    if launch.gate_auto_forward_after is not None:
+        workflow_snapshot = _apply_gate_auto_forward_override(
+            workflow_snapshot,
+            launch.gate_auto_forward_after.strip(),
+        )
     launch_slug = _resolve_launch_slug(launch, workflow)
     session_name = _resolve_launch_session_name(launch, workflow, launch_slug)
     settings = request.app.state.settings
