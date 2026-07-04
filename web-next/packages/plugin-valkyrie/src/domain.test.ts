@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   autonomyModeForLevel,
+  decisionSkillName,
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
   normalizeReviewItem,
   normalizeValkyrieSignalEvent,
+  referencedSkillName,
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
@@ -243,5 +245,54 @@ describe('isToolBuilderWorkflow', () => {
     };
     expect(isToolBuilderWorkflow(workflow)).toBe(true);
     expect(isToolBuilderWorkflow({ ...workflow, tags: ['release'] })).toBe(false);
+  });
+});
+
+describe('decisionSkillName', () => {
+  it('reads the first string skill_name from the evidence entries', () => {
+    expect(
+      decisionSkillName({
+        evidence: [{ capability_name: 'inspect' }, { skill_name: 'oom_probe' }],
+      }),
+    ).toBe('oom_probe');
+  });
+
+  it('ignores empty or non-string skill_name values', () => {
+    expect(decisionSkillName({ evidence: [] })).toBe('');
+    expect(decisionSkillName({ evidence: [{ skill_name: '' }, { skill_name: 7 }] })).toBe('');
+  });
+});
+
+describe('referencedSkillName', () => {
+  it('prefers the explicit evidence skill_name even when unknown to the list', () => {
+    expect(
+      referencedSkillName(
+        { evidence: [{ skill_name: 'ghost_probe' }], summary: '', rationale: '' },
+        ['oom_probe'],
+      ),
+    ).toBe('ghost_probe');
+  });
+
+  it('falls back to a known skill name mentioned in the summary or rationale', () => {
+    const decision = {
+      evidence: [],
+      summary: "handled a signal with learned skill 'oom_probe' — no action needed",
+      rationale: '',
+    };
+    expect(referencedSkillName(decision, ['disk_probe', 'oom_probe'])).toBe('oom_probe');
+    expect(
+      referencedSkillName({ evidence: [], summary: '', rationale: 'ran disk_probe on the node' }, [
+        'disk_probe',
+      ]),
+    ).toBe('disk_probe');
+  });
+
+  it('returns empty when nothing references a skill', () => {
+    expect(
+      referencedSkillName({ evidence: [], summary: 'routine window', rationale: 'all quiet' }, [
+        'oom_probe',
+        '',
+      ]),
+    ).toBe('');
   });
 });

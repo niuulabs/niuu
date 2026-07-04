@@ -3,6 +3,8 @@ import type {
   DecisionDetail,
   DecisionRecord,
   HistoryPage,
+  LearnedSkillRecord,
+  LearnedSkillSummary,
   RealmSummary,
   RealmTrustGrant,
   ReviewItem,
@@ -44,6 +46,17 @@ export interface IValkyrieService {
   getDecision(decisionId: string): Promise<DecisionDetail | null>;
   listSignalHistory(filters?: SignalHistoryFilters): Promise<HistoryPage<SignalHistoryEntry>>;
   getSkillStats(environmentId?: string): Promise<SkillUsageStat[]>;
+}
+
+/**
+ * Learned skills adopted on an environment — the artifact behind a
+ * "handled with a learned skill" judgment. Served by
+ * GET /skills and GET /skills/{name} on the Valkyrie API base.
+ */
+export interface IValkyrieSkillsService {
+  listSkills(environmentId: string): Promise<LearnedSkillSummary[]>;
+  /** Full record including markdown, code, and tests; null when unknown (404). */
+  getSkill(environmentId: string, name: string): Promise<LearnedSkillRecord | null>;
 }
 
 export interface ReviewListFilters {

@@ -408,4 +408,99 @@ describe('ValkyrieConsolePage', () => {
     await waitFor(() => expect(situation).toHaveTextContent('none crossed the task threshold'));
     expect(situation).toHaveTextContent('warning or critical');
   });
+
+  it('lists the learned skills adopted on the environment', async () => {
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const panel = screen.getByTestId('valkyrie-learned-skills');
+    await waitFor(() =>
+      expect(
+        within(panel).getByTestId('learned-skill-k8s_memory_pressure_probe'),
+      ).toBeInTheDocument(),
+    );
+    expect(panel).toHaveTextContent('Read-only probe that inspects');
+    expect(panel).toHaveTextContent('adopted');
+    expect(within(panel).getByTestId('learned-skill-registry_token_refresh_check')).toBeVisible();
+  });
+
+  it('opens the skill viewer from the learned skills list', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const panel = screen.getByTestId('valkyrie-learned-skills');
+    await user.click(await within(panel).findByTestId('learned-skill-k8s_memory_pressure_probe'));
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog).toHaveTextContent('def run(signal: dict)'));
+    expect(dialog).toHaveTextContent('kubernetes>=29.0.0');
+  });
+
+  it('makes a learned-skill judgment reference clickable and opens the viewer', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // decision-oom-1 carries evidence skill_name: k8s_memory_pressure_probe
+    const strip = await screen.findByTestId('valkyrie-learned-activity');
+    await user.click(await within(strip).findByTestId('skill-link-k8s_memory_pressure_probe'));
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog).toHaveTextContent('Read-only probe that inspects'));
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('links the skill inside an expanded decision detail', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const decisions = screen.getByTestId('valkyrie-decisions');
+    await waitFor(() => expect(decisions).toHaveTextContent('Handled with a learned skill'));
+    await user.click(
+      within(decisions).getByRole('button', { name: /handled with a learned skill/i }),
+    );
+
+    const detail = await screen.findByTestId('decision-detail-decision-oom-1');
+    await user.click(within(detail).getByTestId('skill-link-k8s_memory_pressure_probe'));
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toHaveTextContent('def test_matches_oomkilled_pod'),
+    );
+  });
+
+  it('says loudly when the backend has no skills endpoint yet', async () => {
+    const broken = {
+      listSkills: () => Promise.reject(new Error('404 Not Found')),
+      getSkill: () => Promise.reject(new Error('404 Not Found')),
+    };
+    render(<ValkyrieConsolePage />, {
+      wrapper: wrapWithValkyrie({ 'valkyrie.skills': broken }),
+    });
+    await screen.findByTestId('valkyrie-console-page');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-skills-unavailable')).toHaveTextContent(
+        'does not serve the skills endpoint yet',
+      ),
+    );
+  });
+
+  it('shows an empty state when no skills are adopted', async () => {
+    const empty = {
+      listSkills: async () => [],
+      getSkill: async () => null,
+    };
+    render(<ValkyrieConsolePage />, {
+      wrapper: wrapWithValkyrie({ 'valkyrie.skills': empty }),
+    });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const panel = screen.getByTestId('valkyrie-learned-skills');
+    await waitFor(() =>
+      expect(panel).toHaveTextContent('No learned skills adopted on this environment yet'),
+    );
+  });
 });

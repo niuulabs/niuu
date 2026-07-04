@@ -5,6 +5,7 @@ import {
   createMockOdinReviewService,
   createMockRealmGovernanceService,
   createMockValkyrieService,
+  createMockValkyrieSkillsService,
 } from '../adapters/mock';
 
 export function wrapWithValkyrie(services: Record<string, unknown> = {}) {
@@ -17,6 +18,7 @@ export function wrapWithValkyrie(services: Record<string, unknown> = {}) {
             valkyrie: createMockValkyrieService(),
             'valkyrie.reviews': createMockOdinReviewService(),
             'valkyrie.realms': createMockRealmGovernanceService(),
+            'valkyrie.skills': createMockValkyrieSkillsService(),
             ...services,
           }}
         >

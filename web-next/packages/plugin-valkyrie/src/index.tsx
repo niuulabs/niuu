@@ -85,7 +85,9 @@ export {
   createMockOdinReviewService,
   createMockRealmGovernanceService,
   createMockValkyrieService,
+  createMockValkyrieSkillsService,
   createSeedDecisions,
+  createSeedLearnedSkills,
   createSeedRealms,
   createSeedReviewItems,
   createSeedSignalHistory,
@@ -98,6 +100,7 @@ export {
   buildOdinReviewHttpAdapter,
   buildRealmGovernanceHttpAdapter,
   buildValkyrieHttpAdapter,
+  buildValkyrieSkillsHttpAdapter,
 } from './adapters/http';
 export { useUpdateAutonomy, useValkyrieDashboard } from './application/useValkyrieDashboard';
 export {
@@ -112,13 +115,16 @@ export {
   useSignalHistory,
   useSkillStats,
 } from './application/useValkyrieHistory';
+export { useValkyrieSkill, useValkyrieSkills } from './application/useValkyrieSkills';
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
 export {
   autonomyModeForLevel,
+  decisionSkillName,
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
   normalizeReviewItem,
+  referencedSkillName,
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
@@ -135,6 +141,8 @@ export type {
   EnvironmentSummary,
   FlockSummary,
   HistoryPage,
+  LearnedSkillRecord,
+  LearnedSkillSummary,
   RealmSummary,
   RealmTrustGrant,
   ReviewItem,
@@ -155,6 +163,7 @@ export type {
   IOdinReviewService,
   IRealmGovernanceService,
   IValkyrieService,
+  IValkyrieSkillsService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,

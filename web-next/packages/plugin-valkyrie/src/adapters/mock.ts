@@ -8,6 +8,8 @@ import type {
   FlockSummary,
   HuddleSummary,
   JudgmentRecord,
+  LearnedSkillRecord,
+  LearnedSkillSummary,
   LearningRecord,
   OperationalState,
   RealmSummary,
@@ -26,6 +28,7 @@ import type {
   IOdinReviewService,
   IRealmGovernanceService,
   IValkyrieService,
+  IValkyrieSkillsService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
@@ -1405,6 +1408,95 @@ export function createMockRealmGovernanceService(
     },
     async listWorkflows() {
       return workflows.map((workflow) => ({ ...workflow }));
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Learned skills — the artifacts behind "handled with a learned skill"
+// judgments, matching GET /skills and GET /skills/{name}
+// ---------------------------------------------------------------------------
+
+const SEED_TEST_CODE = `def test_matches_oomkilled_pod():
+    signal = {
+        "event_type": "signal.kubernetes.event",
+        "payload": {"reason": "OOMKilled", "kind": "Pod", "namespace": "payments", "name": "api-1"},
+    }
+    result = run(signal)
+    assert result["matches"] is True
+    assert result["observed"]["namespace"] == "payments"
+
+
+def test_ignores_other_events():
+    assert run({"event_type": "signal.email.message", "payload": {}})["matches"] is False
+`;
+
+export function createSeedLearnedSkills(): LearnedSkillRecord[] {
+  return [
+    {
+      skillName: 'k8s_memory_pressure_probe',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-runa',
+      description:
+        'Read-only probe that inspects OOMKilled pods and correlates them with memory limits.',
+      learningId: 'learning-oom-probe',
+      adoptedAt: '2026-06-01T09:00:00Z',
+      hasCode: true,
+      content: SEED_SKILL_CONTENT,
+      toolCode: SEED_TOOL_CODE,
+      testCode: SEED_TEST_CODE,
+      requirements: ['kubernetes>=29.0.0'],
+      manifest: { capability: 'inspect.kubernetes.pod.oomkilled', safety_class: 'read_only' },
+    },
+    {
+      skillName: 'registry_token_refresh_check',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      description: 'Checks image pull-secret freshness after a registry token rollover.',
+      learningId: 'learning-registry-check',
+      adoptedAt: '2026-05-28T16:30:00Z',
+      hasCode: false,
+      content:
+        '# skill: registry-token-refresh-check\n\n## Overview\nVerify image pull secrets ' +
+        'still authenticate after a registry token rollover before pods retry.',
+      toolCode: '',
+      testCode: '',
+      requirements: [],
+      manifest: {},
+    },
+  ];
+}
+
+function toLearnedSkillSummary(record: LearnedSkillRecord): LearnedSkillSummary {
+  return {
+    skillName: record.skillName,
+    environmentId: record.environmentId,
+    valkyrieId: record.valkyrieId,
+    description: record.description,
+    learningId: record.learningId,
+    adoptedAt: record.adoptedAt,
+    hasCode: record.hasCode,
+  };
+}
+
+export function createMockValkyrieSkillsService(
+  seed: LearnedSkillRecord[] = createSeedLearnedSkills(),
+): IValkyrieSkillsService {
+  const skills = seed.map((record) => ({ ...record }));
+
+  return {
+    async listSkills(environmentId: string) {
+      return skills
+        .filter((record) => !environmentId || record.environmentId === environmentId)
+        .sort((a, b) => b.adoptedAt.localeCompare(a.adoptedAt))
+        .map(toLearnedSkillSummary);
+    },
+    async getSkill(environmentId: string, name: string) {
+      const found = skills.find(
+        (record) =>
+          record.skillName === name && (!environmentId || record.environmentId === environmentId),
+      );
+      return found ? { ...found } : null;
     },
   };
 }
