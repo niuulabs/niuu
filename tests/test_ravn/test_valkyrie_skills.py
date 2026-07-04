@@ -82,6 +82,29 @@ def test_skill_record_none_for_other_events_and_missing_name() -> None:
     assert skill_record_from_event({"event_type": "valkyrie.evolution.activated"}) is None
 
 
+def _inventory_event(**payload_overrides: Any) -> dict[str, Any]:
+    event = _activation_event(**payload_overrides)
+    event["event_id"] = "evt-inventory-1"
+    event["event_type"] = "valkyrie.evolution.skill_inventory"
+    event["payload"]["status"] = "present"
+    return event
+
+
+def test_skill_record_handles_inventory_event_and_canonicalizes_env() -> None:
+    record = skill_record_from_event(_inventory_event())
+
+    assert record is not None
+    # Same extraction as activation: the inventory snapshot carries the full
+    # enriched record so the dashboard can render the skill body.
+    assert record["skillName"] == _SKILL_NAME
+    assert record["environmentId"] == "env-k8s-valhalla"
+    assert record["content"] == f"# skill: {_SKILL_NAME}\n\nInspect pod events first.\n"
+    assert record["toolCode"] == _TOOL_CODE
+    assert record["testCode"] == _TEST_CODE
+    assert record["requirements"] == ["kubernetes==29.0.0"]
+    assert record["manifest"] == {"capability": "inspect.kubernetes.pod.oomkilled"}
+
+
 def test_skill_record_defaults_for_pre_enrichment_events() -> None:
     event = _activation_event()
     for key in (
@@ -136,6 +159,34 @@ async def test_mirror_keeps_latest_record_per_skill() -> None:
     assert record["content"] == "# skill v2\n"
     names = [item["skillName"] for item in mirror.list("env-k8s-valhalla")]
     assert names == ["valkyrie-drain-node", _SKILL_NAME]
+
+
+@pytest.mark.asyncio
+async def test_mirror_populated_by_inventory_event_and_served() -> None:
+    # The core fix: a resident that never re-adopts still lands in the mirror
+    # via the periodic inventory snapshot, so list/get serve the skill.
+    mirror = ValkyrieSkillMirror()
+    await mirror.ingest_event(_inventory_event())
+
+    record = mirror.get("env-k8s-valhalla", _SKILL_NAME)
+    assert record is not None
+    assert record["content"].startswith(f"# skill: {_SKILL_NAME}")
+    assert record["toolCode"] == _TOOL_CODE
+    names = [item["skillName"] for item in mirror.list("env-k8s-valhalla")]
+    assert names == [_SKILL_NAME]
+
+
+@pytest.mark.asyncio
+async def test_mirror_latest_wins_across_activation_and_inventory() -> None:
+    # Whichever record arrived most recently wins, regardless of which event
+    # type carried it — correct semantics for a live inventory.
+    mirror = ValkyrieSkillMirror()
+    await mirror.ingest_event(_activation_event(summary_text="from-activation"))
+    await mirror.ingest_event(_inventory_event(summary_text="from-inventory"))
+
+    record = mirror.get("env-k8s-valhalla", _SKILL_NAME)
+    assert record is not None
+    assert record["description"] == "from-inventory"
 
 
 @pytest.mark.asyncio

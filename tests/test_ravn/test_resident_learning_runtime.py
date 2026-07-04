@@ -21,6 +21,7 @@ from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.models import OperationalSignal
 from ravn.valkyrie_evolution.resident_learning import (
+    EVOLUTION_SKILL_INVENTORY_EVENT,
     ResidentLearningArtifact,
     ResidentLearningIdentity,
     ResidentLearningRuntime,
@@ -630,3 +631,84 @@ async def test_operator_rollback_command_archives_installed_skill(tmp_path) -> N
     )
 
     await peer.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_publishes_inventory_snapshot_and_stop_cancels_heartbeat(tmp_path) -> None:
+    # start() must snapshot the resident's live inventory once subscriptions
+    # are up so a REPLAY_SECONDS=0 dashboard sees existing skills; the heartbeat
+    # task tears down cleanly on stop().
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await _subscribe_recorder(bus, ["valkyrie.evolution.*"], events)
+    skills = _manager(tmp_path, "cluster-b")
+    await skills.create(
+        name="valkyrie-preexisting-skill",
+        content="# skill: valkyrie-preexisting-skill\n\nAlready here.\n",
+        description="Already here.",
+        scope="environment",
+        environment_id="cluster-b",
+    )
+    runtime = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-b",
+            valkyrie_id="valkyrie:k8s-b",
+            domain="k8s",
+            autonomy_mode="yolo",
+        ),
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "tools",
+        # A short interval proves the heartbeat is a live task we can cancel.
+        skill_inventory_interval_seconds=0.05,
+    )
+
+    await runtime.start()
+    await bus.flush()
+
+    inventory = [e for e in events if e.event_type == EVOLUTION_SKILL_INVENTORY_EVENT]
+    assert any(e.payload["skill_name"] == "valkyrie-preexisting-skill" for e in inventory)
+    assert runtime._inventory_task is not None
+
+    await runtime.stop()
+    assert runtime._inventory_task is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_heartbeat_still_snapshots_on_start(tmp_path) -> None:
+    # A zero interval disables the heartbeat task but the startup snapshot (and
+    # opportunistic refreshes) still fire.
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await _subscribe_recorder(bus, ["valkyrie.evolution.*"], events)
+    skills = _manager(tmp_path, "cluster-b")
+    await skills.create(
+        name="valkyrie-preexisting-skill",
+        content="# skill: valkyrie-preexisting-skill\n\nAlready here.\n",
+        description="Already here.",
+        scope="environment",
+        environment_id="cluster-b",
+    )
+    runtime = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="cluster-b",
+            valkyrie_id="valkyrie:k8s-b",
+            domain="k8s",
+            autonomy_mode="yolo",
+        ),
+        skills=skills,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "tools",
+        skill_inventory_interval_seconds=0,
+    )
+
+    await runtime.start()
+    await bus.flush()
+
+    inventory = [e for e in events if e.event_type == EVOLUTION_SKILL_INVENTORY_EVENT]
+    assert any(e.payload["skill_name"] == "valkyrie-preexisting-skill" for e in inventory)
+    assert runtime._inventory_task is None
+
+    await runtime.stop()

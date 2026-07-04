@@ -182,13 +182,24 @@ def create_realms_router(
         return service
 
     async def _require_realm(request: Request, slug: str) -> Realm:
-        realm = await _service(request).get_realm(slug)
+        realm = await _optional_realm(request, slug)
         if realm is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Realm not found: {slug}",
             )
         return realm
+
+    async def _optional_realm(request: Request, slug: str) -> Realm | None:
+        """Return the realm or None — for list endpoints of an absent parent.
+
+        Listing a sub-collection (trust grants, capabilities) of a realm that
+        does not exist is an empty list, not an error: the dashboard queries
+        these for many environments and only some have a realm, so a 404 per
+        realm-less environment is noise. Reading or mutating a specific realm
+        stays a real 404 via :func:`_require_realm`.
+        """
+        return await _service(request).get_realm(slug)
 
     @router.get("", response_model=list[RealmResponse])
     async def list_realms(request: Request) -> list[RealmResponse]:
@@ -217,8 +228,10 @@ def create_realms_router(
 
     @router.get("/{slug}/trust-grants", response_model=list[TrustGrantResponse])
     async def list_trust_grants(request: Request, slug: str) -> list[TrustGrantResponse]:
-        """List all trust grants for a realm."""
-        realm = await _require_realm(request, slug)
+        """List all trust grants for a realm (empty list when the realm is absent)."""
+        realm = await _optional_realm(request, slug)
+        if realm is None:
+            return []
         grants = await _service(request).list_trust_grants(realm.id)
         return [TrustGrantResponse.from_domain(grant) for grant in grants]
 
@@ -244,8 +257,10 @@ def create_realms_router(
 
     @router.get("/{slug}/capabilities", response_model=list[CapabilityResponse])
     async def list_capabilities(request: Request, slug: str) -> list[CapabilityResponse]:
-        """List all capabilities for a realm."""
-        realm = await _require_realm(request, slug)
+        """List all capabilities for a realm (empty list when the realm is absent)."""
+        realm = await _optional_realm(request, slug)
+        if realm is None:
+            return []
         capabilities = await _service(request).list_capabilities(realm.id)
         return [CapabilityResponse.from_domain(cap) for cap in capabilities]
 
