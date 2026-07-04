@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ravn.domain.valkyrie_history import canonical_environment_id
 from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -126,12 +127,8 @@ def _environment_id(record: dict[str, Any]) -> str:
 
 
 def _canonical_environment_id(value: Any) -> str:
-    raw_id = str(value or "").strip()
-    if not raw_id:
-        return "unknown"
-    if raw_id == "unknown" or raw_id.startswith("env-"):
-        return raw_id
-    return f"env-k8s-{_slug(raw_id)}"
+    # One canonicalization policy, defined beside the history records it keys.
+    return canonical_environment_id(value)
 
 
 def _valkyrie_id(record: dict[str, Any], environment_id: str) -> str:

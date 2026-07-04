@@ -90,6 +90,27 @@ def _float(value: Any) -> float:
     return 0.0
 
 
+def _env_slug(value: str) -> str:
+    return "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")
+
+
+def canonical_environment_id(value: Any) -> str:
+    """The ONE environment-id form history records and dashboard queries share.
+
+    Daemon events carry the resident's raw ``environment.id`` (e.g.
+    ``valhalla``) while the fleet registry and every dashboard query use the
+    canonical ``env-k8s-<slug>`` form. Records must be stored under the
+    canonical id or the UI queries an empty store while the data sits one key
+    away — exactly the bug this fixes.
+    """
+    raw_id = str(value or "").strip()
+    if not raw_id:
+        return "unknown"
+    if raw_id == "unknown" or raw_id.startswith("env-"):
+        return raw_id
+    return f"env-k8s-{_env_slug(raw_id)}"
+
+
 def decision_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     """Return a decision record for a judgment event; None for anything else."""
     if str(event.get("event_type") or "") != registry.VALKYRIE_JUDGMENT_PROPOSED:
@@ -102,8 +123,8 @@ def decision_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     evidence = details.get("evidence")
     return {
         "decisionId": event_id,
-        "environmentId": str(
-            details.get("environment_id") or payload.get("environment_id") or "unknown"
+        "environmentId": canonical_environment_id(
+            details.get("environment_id") or payload.get("environment_id")
         ),
         "valkyrieId": str(details.get("valkyrie_id") or payload.get("valkyrie_id") or ""),
         "operationalState": str(details.get("operational_state") or "watching"),
@@ -143,8 +164,8 @@ def action_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "eventId": event_id,
         "eventType": event_type,
         "status": _ACTION_STATUS_BY_EVENT[event_type],
-        "environmentId": str(
-            details.get("environment_id") or payload.get("environment_id") or "unknown"
+        "environmentId": canonical_environment_id(
+            details.get("environment_id") or payload.get("environment_id")
         ),
         "valkyrieId": str(details.get("valkyrie_id") or payload.get("valkyrie_id") or ""),
         "capability": str(details.get("capability") or ""),
@@ -179,7 +200,9 @@ def signal_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     )
     return {
         "signalId": event_id,
-        "environmentId": str(payload.get("environment_id") or event.get("tenant_id") or "unknown"),
+        "environmentId": canonical_environment_id(
+            payload.get("environment_id") or event.get("tenant_id")
+        ),
         "eventType": event_type,
         "source": str(event.get("source") or event_type),
         "subject": subject or event_type,

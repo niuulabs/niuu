@@ -22,6 +22,7 @@ from ravn.api.valkyrie_history_service import (
 from ravn.api.valkyries import ValkyrieDashboardProjection, create_valkyrie_router
 from ravn.domain.valkyrie_history import (
     action_record_from_event,
+    canonical_environment_id,
     decision_record_from_event,
     decision_requires_review,
     signal_record_from_event,
@@ -109,6 +110,28 @@ def _signal_event(
 # ---------------------------------------------------------------------------
 # Domain record extraction
 # ---------------------------------------------------------------------------
+
+
+def test_canonical_environment_id_bridges_daemon_and_dashboard_forms() -> None:
+    # The daemon stamps its raw environment.id ("valhalla"); the fleet registry
+    # and every dashboard query use env-k8s-<slug>. Records must land under the
+    # canonical key or the UI reads an empty store while data sits one key away.
+    assert canonical_environment_id("valhalla") == "env-k8s-valhalla"
+    assert canonical_environment_id("env-k8s-valhalla") == "env-k8s-valhalla"
+    assert canonical_environment_id("env-custom") == "env-custom"
+    assert canonical_environment_id("") == "unknown"
+    assert canonical_environment_id(None) == "unknown"
+    assert canonical_environment_id("Prod Cluster!") == "env-k8s-prod-cluster"
+
+
+def test_decision_record_canonicalizes_raw_daemon_environment_id() -> None:
+    event = _judgment_event()
+    event["payload"]["environment_id"] = "valhalla"
+
+    record = decision_record_from_event(event)
+
+    assert record is not None
+    assert record["environmentId"] == "env-k8s-valhalla"
 
 
 def test_decision_record_extracts_full_judgment_contract() -> None:
