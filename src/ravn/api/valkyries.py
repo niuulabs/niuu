@@ -56,6 +56,25 @@ class LearningDecisionRequest(BaseModel):
     canaryEnvironmentId: str = ""  # noqa: N815
 
 
+#: Operator feedback verdicts accepted by the learning feedback endpoint.
+LEARNING_FEEDBACK_VERDICTS = ("useful", "good_action", "bad_action", "dismissed", "wrong_tier")
+
+
+class LearningFeedbackRequest(BaseModel):
+    verdict: str
+    reason: str = ""
+    operatorId: str = "operator"  # noqa: N815
+    targetScope: str = ""  # noqa: N815
+
+
+class LearningReviseRequest(BaseModel):
+    title: str = ""
+    summary: str = ""
+    content: str = ""
+    reason: str = ""
+    operatorId: str = "operator"  # noqa: N815
+
+
 class AutonomyUpdateRequest(BaseModel):
     valkyrieId: str  # noqa: N815
     mode: str
@@ -849,6 +868,13 @@ def _learning_entry(
         "sourceEvidence": evidence,
         "dreamRationale": str(gap.get("reason") or payload.get("rationale") or ""),
         "odinReview": review_payload,
+        "feedback": (
+            dict(payload["feedback"]) if isinstance(payload.get("feedback"), dict) else None
+        ),
+        "repetition": _payload_int(payload, "repetition")
+        or _payload_int(details, "repetition")
+        or 1,
+        "supersedes": str(details.get("supersedes") or payload.get("supersedes") or ""),
         "history": [
             {
                 "eventType": event_type,
@@ -919,6 +945,7 @@ def _merge_learning_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any
             "artifactContent",
             "artifactPath",
             "dreamRationale",
+            "supersedes",
         )
         for key in fill_keys:
             if not existing.get(key) and entry.get(key):
@@ -930,6 +957,12 @@ def _merge_learning_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any
             existing["sourceSignalIds"] = entry["sourceSignalIds"]
         if not existing.get("sourceEvidence") and entry.get("sourceEvidence"):
             existing["sourceEvidence"] = entry["sourceEvidence"]
+        if not existing.get("feedback") and entry.get("feedback"):
+            existing["feedback"] = entry["feedback"]
+        existing["repetition"] = max(
+            _as_int(existing.get("repetition"), 1),
+            _as_int(entry.get("repetition"), 1),
+        )
 
         review = entry.get("odinReview")
         if isinstance(review, dict) and review.get("reviewer"):
@@ -1105,6 +1138,58 @@ def _decision_summary(action: str, request: LearningDecisionRequest | None) -> s
     return f"{action.replace('_', ' ')} by {request.operatorId if request else 'system'}: {reason}"
 
 
+def _decision_request_for_learning(
+    learning_id: str,
+    request: LearningFeedbackRequest | LearningReviseRequest,
+) -> LearningDecisionRequest:
+    """Adapt feedback/revise bodies to the shared learning-decision envelope."""
+    return LearningDecisionRequest(
+        learningId=learning_id,
+        reason=request.reason,
+        operatorId=request.operatorId,
+        targetScope=getattr(request, "targetScope", ""),
+    )
+
+
+def _learning_feedback_action(
+    verdict: str,
+    status: str,
+    *,
+    current_scope: str = "",
+    target_scope: str = "",
+) -> str:
+    """Map a feedback verdict onto the learning lifecycle action it triggers.
+
+    ``feedback`` is the no-lifecycle action: the verdict is recorded and
+    broadcast, and reinforcement happens resident-side. ``wrong_tier``
+    defaults to promote so an unsupported target scope surfaces the
+    promote path's 422.
+    """
+    if verdict == "dismissed":
+        return "reject"
+    if verdict == "bad_action":
+        return "rollback" if status in {"adopted", "canary"} else "reject"
+    if verdict != "wrong_tier":
+        return "feedback"
+    if target_scope not in LEARNING_SCOPES or current_scope not in LEARNING_SCOPES:
+        return "promote"
+    if LEARNING_SCOPES.index(target_scope) < LEARNING_SCOPES.index(current_scope):
+        return "demote"
+    return "promote"
+
+
+def _learning_edits(request: LearningReviseRequest) -> dict[str, str]:
+    """Map the non-empty revise fields onto learning record keys."""
+    edits: dict[str, str] = {}
+    if request.title.strip():
+        edits["title"] = request.title
+    if request.summary.strip():
+        edits["summary"] = request.summary
+    if request.content.strip():
+        edits["artifactContent"] = request.content
+    return edits
+
+
 def _capability_from_signal_payload(event_type: str, payload: dict[str, Any]) -> str:
     namespace = event_type.removeprefix("signal.").removesuffix(".event")
     if not namespace:
@@ -1145,12 +1230,17 @@ def _merge_learning_record(
         "dreamRationale",
         "evaluation",
         "summary",
+        "supersedes",
     ):
         if not incoming.get(key) and existing.get(key):
             merged[key] = existing[key]
-    for key in ("odinReview", "sourceEvidence"):
+    for key in ("odinReview", "sourceEvidence", "feedback"):
         if not incoming.get(key) and existing.get(key):
             merged[key] = existing[key]
+    merged["repetition"] = max(
+        _as_int(existing.get("repetition"), 1),
+        _as_int(incoming.get("repetition"), 1),
+    )
     merged["sourceSignalIds"] = list(
         dict.fromkeys(
             [
@@ -1209,6 +1299,9 @@ def _dashboard_learning_from_telemetry(entry: dict[str, Any]) -> dict[str, Any]:
         "commandDelivery": entry.get("commandDelivery")
         if isinstance(entry.get("commandDelivery"), dict)
         else {},
+        "feedback": entry.get("feedback") if isinstance(entry.get("feedback"), dict) else None,
+        "repetition": _as_int(entry.get("repetition"), 1) or 1,
+        "supersedes": str(entry.get("supersedes") or ""),
     }
 
 
@@ -1587,13 +1680,16 @@ def _review_item_for_learning_action(
     request: LearningDecisionRequest,
     *,
     operator_id: str,
+    feedback: dict[str, Any] | None = None,
+    revision: dict[str, Any] | None = None,
 ) -> ReviewItem:
     """Project a dashboard learning action onto the unified review envelope.
 
     The action vocabulary maps to one of two kinds: scope changes are
     ``skill_promotion`` items applied by the learning's source resident;
     everything else is a ``flock_learning`` item broadcast to the flock and
-    relevance-filtered by each resident.
+    relevance-filtered by each resident. Operator feedback and revision
+    payloads travel in the evidence so residents can record them locally.
     """
     raw_learning_id = _raw_learning_id(str(learning.get("id") or request.learningId))
     source_environment_id = str(
@@ -1626,6 +1722,7 @@ def _review_item_for_learning_action(
                 "from_scope": from_scope,
                 "to_scope": to_scope,
                 "confidence": _as_float(learning.get("confidence"), 0.0),
+                **({"feedback": feedback} if feedback else {}),
             },
             requested_by=operator_id,
             correlation_id=correlation_id,
@@ -1670,9 +1767,12 @@ def _review_item_for_learning_action(
                 "domain": str(learning.get("domain") or learning.get("domainScope") or ""),
                 "redaction_status": str(learning.get("redaction") or "redacted"),
                 "artifact_path": str(learning.get("artifactPath") or ""),
+                "supersedes": _raw_learning_id(str(learning.get("supersedes") or "")),
             },
             "ui_learning_id": str(learning.get("id") or request.learningId),
             "status_before": str(before.get("status") or ""),
+            **({"feedback": feedback} if feedback else {}),
+            **({"revision": revision} if revision else {}),
         },
         requested_by=operator_id,
         correlation_id=correlation_id,
@@ -2548,6 +2648,10 @@ class ValkyrieDashboardProjection:
         self._control_events: list[dict[str, Any]] = []
         self._runtime_events: dict[str, dict[str, Any]] = {}
         self._learning_decisions: dict[str, dict[str, Any]] = {}
+        #: Operator edits applied in place; re-applied after live re-ingest.
+        self._learning_revisions: dict[str, dict[str, str]] = {}
+        #: Superseding candidates authored by revise; survive live re-ingest.
+        self._authored_learnings: dict[str, dict[str, Any]] = {}
         self._seen_event_ids: set[str] = set()
 
     def dashboard(self) -> Dashboard:
@@ -2840,6 +2944,116 @@ class ValkyrieDashboardProjection:
         self._touch()
         return deepcopy(learning)
 
+    def record_learning_feedback(
+        self,
+        learning_id: str,
+        request: LearningFeedbackRequest,
+    ) -> dict[str, Any]:
+        """Attach one operator feedback verdict to a learning record."""
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        learning["feedback"] = {
+            "verdict": request.verdict,
+            "reason": request.reason,
+            "operatorId": request.operatorId,
+            "recordedAt": _now(),
+        }
+        decision_request = _decision_request_for_learning(learning_id, request)
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.feedback",
+            status=str(learning.get("status") or ""),
+            summary=f"Operator feedback: {request.verdict}",
+            request=decision_request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "feedback", decision_request)
+        self._touch()
+        return deepcopy(learning)
+
+    def revise_learning_in_place(
+        self,
+        learning_id: str,
+        request: LearningReviseRequest,
+    ) -> dict[str, Any]:
+        """Apply operator edits to a not-yet-active learning in place."""
+        self._refresh_live_report()
+        learning = self._require_learning(learning_id)
+        edits = _learning_edits(request)
+        learning.update(edits)
+        self._learning_revisions[learning_id] = {
+            **self._learning_revisions.get(learning_id, {}),
+            **edits,
+        }
+        decision_request = _decision_request_for_learning(learning_id, request)
+        self._append_learning_history(
+            learning,
+            event_type="valkyrie.learning.revised",
+            status=str(learning.get("status") or ""),
+            summary=f"Revised in place: {', '.join(sorted(edits))}",
+            request=decision_request,
+        )
+        self._remember_learning_decision(learning)
+        self._record_learning_control_event(learning, "revised", decision_request)
+        self._touch()
+        return deepcopy(learning)
+
+    def revise_learning_supersede(
+        self,
+        learning_id: str,
+        request: LearningReviseRequest,
+    ) -> dict[str, Any]:
+        """Author a superseding candidate for an active learning.
+
+        Active (adopted/canary) learnings are never mutated in place — the
+        revision becomes a new candidate that re-enters the review flow.
+        """
+        self._refresh_live_report()
+        old = self._require_learning(learning_id)
+        revision_number = 1 + sum(
+            1
+            for entry in self._dashboard.get("learnings", [])
+            if isinstance(entry, dict)
+            and str(entry.get("id") or "").startswith(f"{learning_id}:rev")
+        )
+        new_id = f"{learning_id}:rev{revision_number}"
+        candidate = deepcopy(old)
+        candidate.update(_learning_edits(request))
+        candidate.update(
+            {
+                "id": new_id,
+                "status": "candidate",
+                "active": False,
+                "supersedes": learning_id,
+                "feedback": None,
+                "canaryEnvironmentId": "",
+                "commandDelivery": {},
+                "createdAt": _now(),
+            }
+        )
+        decision_request = _decision_request_for_learning(new_id, request)
+        self._append_learning_history(
+            candidate,
+            event_type="valkyrie.learning.revised",
+            status="candidate",
+            summary=f"Supersedes {learning_id}",
+            request=decision_request,
+        )
+        self._dashboard["learnings"].insert(0, candidate)
+        self._authored_learnings[new_id] = candidate
+        old_request = _decision_request_for_learning(learning_id, request)
+        self._append_learning_history(
+            old,
+            event_type="valkyrie.learning.revised",
+            status=str(old.get("status") or ""),
+            summary=f"Superseded by {new_id}",
+            request=old_request,
+        )
+        self._remember_learning_decision(old)
+        self._record_learning_control_event(candidate, "revised", decision_request)
+        self._touch()
+        return deepcopy(candidate)
+
     def replay_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
         self._refresh_live_report()
         event_type = str(signal.get("event_type") or signal.get("eventType") or "")
@@ -2994,6 +3208,10 @@ class ValkyrieDashboardProjection:
                 if isinstance(learning.get("commandDelivery"), dict)
                 else {}
             ),
+            "feedback": (
+                learning.get("feedback") if isinstance(learning.get("feedback"), dict) else {}
+            ),
+            "supersedes": str(learning.get("supersedes") or ""),
             "decisionHistory": decision_history[-30:],
         }
 
@@ -3160,6 +3378,9 @@ class ValkyrieDashboardProjection:
             learning["id"] = f"live-{learning['id']}"
             existing = by_id.get(learning["id"])
             by_id[learning["id"]] = _merge_learning_record(existing, learning)
+            revision = self._learning_revisions.get(learning["id"])
+            if revision:
+                by_id[learning["id"]].update(revision)
             decision = self._learning_decisions.get(learning["id"])
             if decision:
                 for key in (
@@ -3172,8 +3393,9 @@ class ValkyrieDashboardProjection:
                     "canaryEnvironmentId",
                     "override",
                     "commandDelivery",
+                    "feedback",
                 ):
-                    if key in decision and decision[key] not in ("", []):
+                    if key in decision and decision[key] not in ("", [], {}):
                         by_id[learning["id"]][key] = decision[key]
                 decision_history = (
                     decision.get("decisionHistory")
@@ -3198,6 +3420,10 @@ class ValkyrieDashboardProjection:
                         *telemetry_history,
                         *decision_history,
                     ][-30:]
+        for learning_id, authored in self._authored_learnings.items():
+            # Superseding candidates are authored here, not observed in
+            # telemetry — keep the live records across re-ingest.
+            by_id[learning_id] = authored
         self._dashboard["learnings"] = sorted(
             by_id.values(),
             key=lambda entry: str(entry.get("createdAt") or ""),
@@ -3220,6 +3446,9 @@ class ValkyrieDashboardProjection:
         )
         if learning is None:
             raise HTTPException(status_code=404, detail="Learning not found")
+        learning.setdefault("feedback", None)
+        learning.setdefault("repetition", 1)
+        learning.setdefault("supersedes", "")
         return learning
 
 
@@ -3770,6 +3999,9 @@ def create_valkyrie_router(
         before: dict[str, Any],
         learning: dict[str, Any],
         request: LearningDecisionRequest,
+        *,
+        feedback: dict[str, Any] | None = None,
+        revision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         item = _review_item_for_learning_action(
             action,
@@ -3777,6 +4009,8 @@ def create_valkyrie_router(
             learning,
             request,
             operator_id=request.operatorId,
+            feedback=feedback,
+            revision=revision,
         )
         try:
             delivery, event = await command_publisher.publish_review_decision(item)
@@ -3944,6 +4178,90 @@ def create_valkyrie_router(
         before = store.learning(learning_id)
         learning = store.rollback_learning(learning_id, request)
         return await finish_learning_action("rollback", before, learning, request)
+
+    @router.post("/learnings/{learning_id}/feedback")
+    async def learning_feedback(
+        learning_id: str,
+        request: LearningFeedbackRequest,
+    ) -> dict[str, Any]:
+        if request.verdict not in LEARNING_FEEDBACK_VERDICTS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unknown feedback verdict {request.verdict!r}; "
+                    f"expected one of {', '.join(LEARNING_FEEDBACK_VERDICTS)}"
+                ),
+            )
+        if request.verdict == "wrong_tier" and not request.targetScope:
+            raise HTTPException(
+                status_code=422,
+                detail="wrong_tier feedback requires targetScope",
+            )
+        await _require_operator_capability(request.operatorId, "approve")
+        before = store.learning(learning_id)
+        decision_request = _decision_request_for_learning(learning_id, request)
+        action = _learning_feedback_action(
+            request.verdict,
+            str(before.get("status") or ""),
+            current_scope=str(before.get("scope") or before.get("currentScope") or "private"),
+            target_scope=request.targetScope,
+        )
+        # Lifecycle first: adjacency violations must 422 before feedback lands.
+        if action == "rollback":
+            store.rollback_learning(learning_id, decision_request)
+        elif action == "reject":
+            store.decide_learning(learning_id, "rejected", decision_request, action="reject")
+        elif action == "promote":
+            store.promote_learning(learning_id, decision_request)
+        elif action == "demote":
+            store.demote_learning(learning_id, decision_request)
+        learning = store.record_learning_feedback(learning_id, request)
+        feedback = dict(learning.get("feedback") or {})
+        return await finish_learning_action(
+            action,
+            before,
+            learning,
+            decision_request,
+            feedback=feedback,
+        )
+
+    @router.post("/learnings/{learning_id}/revise")
+    async def revise_learning(
+        learning_id: str,
+        request: LearningReviseRequest,
+    ) -> dict[str, Any]:
+        edits = _learning_edits(request)
+        if not edits:
+            raise HTTPException(
+                status_code=422,
+                detail="Revision needs at least one of title, summary, or content",
+            )
+        await _require_operator_capability(request.operatorId, "approve")
+        before = store.learning(learning_id)
+        supersede = str(before.get("status") or "") in {"adopted", "canary"}
+        if supersede:
+            learning = store.revise_learning_supersede(learning_id, request)
+            superseded_id = learning_id
+        else:
+            learning = store.revise_learning_in_place(learning_id, request)
+            superseded_id = ""
+        decision_request = _decision_request_for_learning(str(learning["id"]), request)
+        revision = {
+            "title": request.title,
+            "summary": request.summary,
+            "content": request.content,
+            "reason": request.reason,
+            "revision_id": _raw_learning_id(str(learning["id"])),
+            "superseded_id": _raw_learning_id(superseded_id) if superseded_id else "",
+        }
+        updated = await finish_learning_action(
+            "revise",
+            before,
+            learning,
+            decision_request,
+            revision=revision,
+        )
+        return {"learning": updated, "supersededId": superseded_id}
 
     @router.post("/proof/replay-signal")
     async def replay_signal(signal: dict[str, Any]) -> dict[str, Any]:
