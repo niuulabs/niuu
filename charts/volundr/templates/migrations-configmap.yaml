@@ -1404,4 +1404,10 @@ data:
     DROP INDEX IF EXISTS idx_trust_grants_realm_action;
     DROP TABLE IF EXISTS trust_grants;
     DROP TABLE IF EXISTS realms;
+  000054_sessions_workload_config.up.sql: |
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS workload_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+  000054_sessions_workload_config.down.sql: |
+    ALTER TABLE sessions
+        DROP COLUMN IF EXISTS workload_config;
 {{- end }}

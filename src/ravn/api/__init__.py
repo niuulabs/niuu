@@ -25,6 +25,7 @@ from niuu.settings_schema import (
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.runtime_data import (
     create_trigger as create_runtime_trigger,
 )
@@ -38,16 +39,10 @@ from ravn.api.runtime_data import (
     get_fleet_budget as get_runtime_fleet_budget,
 )
 from ravn.api.runtime_data import (
-    get_raven as get_runtime_raven,
-)
-from ravn.api.runtime_data import (
     get_session as get_runtime_session,
 )
 from ravn.api.runtime_data import (
     list_messages as list_runtime_messages,
-)
-from ravn.api.runtime_data import (
-    list_ravens as list_runtime_ravens,
 )
 from ravn.api.runtime_data import (
     list_sessions as list_runtime_sessions,
@@ -158,6 +153,7 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+    resident_directory = ResidentDirectory()
     store = warden_store or build_warden_store()
     if warden_discovery is None:
         loaded_settings = settings or Settings()
@@ -257,9 +253,10 @@ def create_app(
         return {"service": "ravn", "session_count": 0, "healthy": True}
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
-    async def settings_endpoint() -> SettingsProviderSchema:
+    async def settings_endpoint(request: Request) -> SettingsProviderSchema:
         sessions = list_runtime_sessions()
-        ravens = list_runtime_ravens()
+        auth_headers, auth_params = forward_auth(request)
+        ravens = await resident_directory.list_ravens(auth_headers, auth_params)
         triggers = list_runtime_triggers()
         fleet_budget = get_runtime_fleet_budget()
         return SettingsProviderSchema(
@@ -322,9 +319,10 @@ def create_app(
         return list_runtime_sessions()
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint() -> list[dict]:
-        """List the currently known ravn runtime instances."""
-        return list_runtime_ravens()
+    async def list_ravens_endpoint(request: Request) -> list[dict]:
+        """List the caller's resident ravns (live from the Forge sessions API)."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_ravens(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -577,9 +575,10 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str) -> dict:
-        """Return one ravn runtime instance."""
-        ravn = get_runtime_raven(ravn_id)
+    async def get_raven_endpoint(ravn_id: str, request: Request) -> dict:
+        """Return one resident ravn by its session id."""
+        auth_headers, auth_params = forward_auth(request)
+        ravn = await resident_directory.get_raven(ravn_id, auth_headers, auth_params)
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn

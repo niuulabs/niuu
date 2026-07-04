@@ -809,6 +809,10 @@ class SessionService:
                 "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
+                # Persist the workload config so workload identity (e.g. a
+                # resident's name/persona) survives restarts; keep the stored
+                # config when a restart doesn't resend it.
+                "workload_config": workload_config or session.workload_config or {},
             }
         )
         await self._repository.update(starting)
