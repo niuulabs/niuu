@@ -1,27 +1,28 @@
-import type {
-  ActionRecord,
-  CourtDecision,
-  DecisionDetail,
-  DecisionRecord,
-  EnvironmentSignal,
-  EnvironmentSummary,
-  FlockSummary,
-  HuddleMessage,
-  HuddleSummary,
-  JudgmentRecord,
-  LearnedSkillRecord,
-  LearnedSkillSummary,
-  LearningRecord,
-  OperationalState,
-  RealmSummary,
-  RealmTrustGrant,
-  ReviewItem,
-  ReviewSummary,
-  SignalHistoryEntry,
-  SkillUsageStat,
-  TingWorkflowSummary,
-  ValkyrieDashboard,
-  ValkyrieResident,
+import {
+  LEARNING_FEEDBACK_VERDICTS,
+  type ActionRecord,
+  type CourtDecision,
+  type DecisionDetail,
+  type DecisionRecord,
+  type EnvironmentSignal,
+  type EnvironmentSummary,
+  type FlockSummary,
+  type HuddleMessage,
+  type HuddleSummary,
+  type JudgmentRecord,
+  type LearnedSkillRecord,
+  type LearnedSkillSummary,
+  type LearningRecord,
+  type OperationalState,
+  type RealmSummary,
+  type RealmTrustGrant,
+  type ReviewItem,
+  type ReviewSummary,
+  type SignalHistoryEntry,
+  type SkillUsageStat,
+  type TingWorkflowSummary,
+  type ValkyrieDashboard,
+  type ValkyrieResident,
 } from '../domain';
 import type {
   AutonomyUpdateRequest,
@@ -32,6 +33,8 @@ import type {
   IRealmGovernanceService,
   IValkyrieService,
   IValkyrieSkillsService,
+  LearningFeedbackInput,
+  LearningRevisionInput,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
@@ -405,6 +408,7 @@ const learnings: LearningRecord[] = [
     sourceSignalIds: ['sig-k8s-oom-1', 'sig-k8s-oom-2', 'sig-k8s-oom-3'],
     sourceEvidence: { replayed: 3, predicted: 3 },
     dreamRationale: 'Repeated OOMKilled events preceded queue-depth drift.',
+    repetition: 3,
     odinReview: {
       outcome: 'approved',
       approved: true,
@@ -457,6 +461,12 @@ const learnings: LearningRecord[] = [
     redaction: 'none',
     promotedTool: 'printer_resin_pause',
     createdAt: '2026-06-01T22:00:00Z',
+    feedback: {
+      verdict: 'useful',
+      reason: 'Saved two prints in the first week.',
+      operatorId: 'human:operator',
+      recordedAt: '2026-06-02T08:00:00Z',
+    },
   },
   {
     id: 'learn-k8s-eviction-rollback',
@@ -1041,6 +1051,14 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
   const replaceHuddle = (next: HuddleSummary) => {
     dashboard.huddles = dashboard.huddles.map((entry) => (entry.id === next.id ? next : entry));
   };
+  const requireLearning = (learningId: string): LearningRecord => {
+    const learning = dashboard.learnings.find((entry) => entry.id === learningId);
+    if (!learning) throw new Error(`Learning ${learningId} not found`);
+    return learning;
+  };
+  const replaceLearning = (next: LearningRecord) => {
+    dashboard.learnings = dashboard.learnings.map((entry) => (entry.id === next.id ? next : entry));
+  };
 
   return {
     // A fresh top-level object per fetch so react-query sees mutations made
@@ -1166,6 +1184,82 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
     },
     async getSkillStats(environmentId?: string) {
       return skillStats.filter((row) => !environmentId || row.environmentId === environmentId);
+    },
+    async getLearning(learningId: string) {
+      const learning = dashboard.learnings.find((entry) => entry.id === learningId);
+      return learning ? { ...learning } : null;
+    },
+    async sendLearningFeedback(request: LearningFeedbackInput) {
+      const learning = requireLearning(request.learningId);
+      // Mirror the backend contract exactly, including its 422 detail strings.
+      if (!LEARNING_FEEDBACK_VERDICTS.some((entry) => entry.verdict === request.verdict)) {
+        throw new Error('Unsupported feedback verdict');
+      }
+      if (request.verdict === 'wrong_tier' && !request.targetScope) {
+        throw new Error('targetScope is required for wrong_tier feedback');
+      }
+      const next: LearningRecord = {
+        ...learning,
+        feedback: {
+          verdict: request.verdict,
+          reason: request.reason ?? '',
+          operatorId: request.operatorId,
+          recordedAt: new Date().toISOString(),
+        },
+        ...(request.verdict === 'wrong_tier' && request.targetScope
+          ? { targetScope: request.targetScope }
+          : {}),
+      };
+      replaceLearning(next);
+      return { ...next };
+    },
+    async reviseLearning(request: LearningRevisionInput) {
+      const learning = requireLearning(request.learningId);
+      const now = new Date().toISOString();
+      const revisedContent = {
+        title: request.title ?? learning.title,
+        summary: request.summary ?? learning.summary,
+        artifactContent: request.content ?? learning.artifactContent,
+      };
+      const revisionEvent = {
+        eventType: 'learning.revised',
+        summary: request.reason,
+        observedAt: now,
+        operatorId: request.operatorId,
+        reason: request.reason,
+      };
+      const installed = learning.status === 'adopted' || learning.status === 'canary';
+      if (!installed) {
+        // Candidates are editable in place — same record, updated content.
+        const next: LearningRecord = {
+          ...learning,
+          ...revisedContent,
+          history: [...(learning.history ?? []), { ...revisionEvent, status: learning.status }],
+        };
+        replaceLearning(next);
+        return { learning: { ...next }, supersededId: '' };
+      }
+      // Installed learnings are immutable: the revision becomes a NEW
+      // superseding candidate while the original stays installed until the
+      // candidate passes review.
+      const revision =
+        dashboard.learnings.filter((entry) => entry.supersedes === learning.id).length + 1;
+      const successor: LearningRecord = {
+        ...learning,
+        ...revisedContent,
+        id: `${learning.id}:rev${revision}`,
+        status: 'candidate',
+        supersedes: learning.id,
+        active: false,
+        createdAt: now,
+        repetition: 1,
+        feedback: null,
+        odinReview: undefined,
+        commandDelivery: undefined,
+        history: [{ ...revisionEvent, status: 'candidate' }],
+      };
+      dashboard.learnings = [successor, ...dashboard.learnings];
+      return { learning: { ...successor }, supersededId: learning.id };
     },
   };
 }

@@ -577,6 +577,14 @@ export interface HuddleSummary {
   lastActivityAt: string;
 }
 
+/** Operator feedback recorded on a learning — additive, null until given. */
+export interface LearningFeedback {
+  verdict: string;
+  reason: string;
+  operatorId: string;
+  recordedAt: string;
+}
+
 export interface LearningRecord {
   id: string;
   title: string;
@@ -627,6 +635,62 @@ export interface LearningRecord {
   };
   canaryEnvironmentId?: string;
   override?: boolean;
+  /** Operator feedback on this learning, null/absent while awaiting. */
+  feedback?: LearningFeedback | null;
+  /** How often this pattern was independently re-learned (default 1). */
+  repetition?: number;
+  /** Id of the learning this candidate supersedes, set on revisions. */
+  supersedes?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Learning feedback — the five operator verdicts and the scope ladder the
+// wrong_tier verdict may move a learning along.
+// ---------------------------------------------------------------------------
+
+export type LearningFeedbackVerdict =
+  | 'useful'
+  | 'good_action'
+  | 'bad_action'
+  | 'dismissed'
+  | 'wrong_tier';
+
+export const LEARNING_FEEDBACK_VERDICTS: ReadonlyArray<{
+  verdict: LearningFeedbackVerdict;
+  label: string;
+}> = [
+  { verdict: 'useful', label: 'Useful' },
+  { verdict: 'dismissed', label: 'Dismissed' },
+  { verdict: 'wrong_tier', label: 'Wrong tier' },
+  { verdict: 'bad_action', label: 'Bad action' },
+  { verdict: 'good_action', label: 'Good action' },
+];
+
+/** Human label for a feedback verdict ("wrong_tier" → "Wrong tier"). */
+export function learningFeedbackVerdictLabel(verdict: string): string {
+  const known = LEARNING_FEEDBACK_VERDICTS.find((entry) => entry.verdict === verdict);
+  if (known) return known.label;
+  return verdict.replace(/_/g, ' ');
+}
+
+/** Promotion ladder for learnings, narrowest to widest blast radius. */
+export const LEARNING_SCOPE_ORDER: readonly LearningScope[] = [
+  'private',
+  'environment',
+  'flock',
+  'domain',
+  'shared',
+];
+
+/**
+ * The scopes a wrong_tier verdict may move a learning to: only the direct
+ * promote/demote neighbours on the ordered ladder — a learning never jumps
+ * tiers on operator feedback alone.
+ */
+export function adjacentLearningScopes(scope: LearningScope): LearningScope[] {
+  const index = LEARNING_SCOPE_ORDER.indexOf(scope);
+  if (index < 0) return [];
+  return LEARNING_SCOPE_ORDER.filter((_, position) => Math.abs(position - index) === 1);
 }
 
 export interface FlockSummary {

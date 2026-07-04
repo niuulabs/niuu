@@ -100,6 +100,106 @@ describe('buildValkyrieHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/learnings/stats/skills?environment_id=env-a');
     expect(skills).toEqual([{ skillName: 'probe' }]);
   });
+
+  it('fetches one learning and returns null on failure (404)', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({ id: 'learn-1', title: 'probe pattern' });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    const learning = await adapter.getLearning('learn-1');
+    expect(client.get).toHaveBeenCalledWith('/learnings/learn-1');
+    expect(learning?.title).toBe('probe pattern');
+
+    client.get.mockRejectedValueOnce(new Error('404'));
+    expect(await adapter.getLearning('learn:missing')).toBeNull();
+  });
+
+  it('posts feedback without a targetScope for plain verdicts', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ id: 'learn-1', feedback: { verdict: 'useful' } });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    const updated = await adapter.sendLearningFeedback({
+      learningId: 'learn-1',
+      verdict: 'useful',
+      operatorId: 'human:operator',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn-1/feedback', {
+      verdict: 'useful',
+      reason: '',
+      operatorId: 'human:operator',
+    });
+    expect(updated.feedback?.verdict).toBe('useful');
+  });
+
+  it('posts wrong_tier feedback with the target scope and encodes the id', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ id: 'learn:a b' });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    await adapter.sendLearningFeedback({
+      learningId: 'learn:a b',
+      verdict: 'wrong_tier',
+      reason: 'belongs on the environment tier',
+      targetScope: 'environment',
+      operatorId: 'human:operator',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn%3Aa%20b/feedback', {
+      verdict: 'wrong_tier',
+      reason: 'belongs on the environment tier',
+      operatorId: 'human:operator',
+      targetScope: 'environment',
+    });
+  });
+
+  it('posts revisions with only the provided content fields', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      learning: { id: 'learn-1:rev1', supersedes: 'learn-1' },
+      supersededId: 'learn-1',
+    });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    const result = await adapter.reviseLearning({
+      learningId: 'learn-1',
+      summary: 'tightened summary',
+      reason: 'narrowed the trigger',
+      operatorId: 'human:operator',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn-1/revise', {
+      summary: 'tightened summary',
+      reason: 'narrowed the trigger',
+      operatorId: 'human:operator',
+    });
+    expect(result.supersededId).toBe('learn-1');
+    expect(result.learning.id).toBe('learn-1:rev1');
+  });
+
+  it('posts all three content fields when a full edit is submitted', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({ learning: { id: 'learn-1' }, supersededId: '' });
+    const adapter = buildValkyrieHttpAdapter(client);
+
+    await adapter.reviseLearning({
+      learningId: 'learn-1',
+      title: 't',
+      summary: 's',
+      content: 'c',
+      reason: 'r',
+      operatorId: 'human:operator',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/learnings/learn-1/revise', {
+      title: 't',
+      summary: 's',
+      content: 'c',
+      reason: 'r',
+      operatorId: 'human:operator',
+    });
+  });
 });
 
 describe('buildValkyrieSkillsHttpAdapter', () => {

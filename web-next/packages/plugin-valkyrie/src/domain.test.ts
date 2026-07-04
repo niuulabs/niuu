@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  adjacentLearningScopes,
   autonomyModeForLevel,
   collapseDecisionsByCorrelation,
+  learningFeedbackVerdictLabel,
   environmentKindLabel,
   filterRosterEntries,
   groupRosterEntries,
@@ -28,6 +30,8 @@ import {
   ACTIVITY_BAR_COUNT,
   ACTIVITY_BAR_MINUTES,
   ACTIVITY_STORY_LIMIT,
+  LEARNING_FEEDBACK_VERDICTS,
+  LEARNING_SCOPE_ORDER,
   LIST_LIMIT,
   type DecisionRecord,
   type EnvironmentSummary,
@@ -796,5 +800,54 @@ describe('openHuddleForEnvironment', () => {
         'env-a',
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('adjacentLearningScopes', () => {
+  it('walks the ladder private -> environment -> flock -> domain -> shared', () => {
+    expect(LEARNING_SCOPE_ORDER).toEqual(['private', 'environment', 'flock', 'domain', 'shared']);
+  });
+
+  it('returns only the direct promote neighbour at the bottom of the ladder', () => {
+    expect(adjacentLearningScopes('private')).toEqual(['environment']);
+  });
+
+  it('returns only the direct demote neighbour at the top of the ladder', () => {
+    expect(adjacentLearningScopes('shared')).toEqual(['domain']);
+  });
+
+  it('returns both neighbours for a mid-ladder scope, never a two-tier jump', () => {
+    expect(adjacentLearningScopes('flock')).toEqual(['environment', 'domain']);
+    expect(adjacentLearningScopes('environment')).toEqual(['private', 'flock']);
+    expect(adjacentLearningScopes('domain')).toEqual(['flock', 'shared']);
+  });
+
+  it('returns nothing for an unknown scope', () => {
+    expect(adjacentLearningScopes('galaxy' as never)).toEqual([]);
+  });
+});
+
+describe('learning feedback verdicts', () => {
+  it('offers exactly the five backend verdicts with UI labels', () => {
+    expect(LEARNING_FEEDBACK_VERDICTS.map((entry) => entry.verdict)).toEqual([
+      'useful',
+      'dismissed',
+      'wrong_tier',
+      'bad_action',
+      'good_action',
+    ]);
+    expect(LEARNING_FEEDBACK_VERDICTS.map((entry) => entry.label)).toEqual([
+      'Useful',
+      'Dismissed',
+      'Wrong tier',
+      'Bad action',
+      'Good action',
+    ]);
+  });
+
+  it('labels known verdicts and humanises unknown ones', () => {
+    expect(learningFeedbackVerdictLabel('wrong_tier')).toBe('Wrong tier');
+    expect(learningFeedbackVerdictLabel('useful')).toBe('Useful');
+    expect(learningFeedbackVerdictLabel('vetoed_by_odin')).toBe('vetoed by odin');
   });
 });
