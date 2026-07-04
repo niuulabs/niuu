@@ -1,7 +1,18 @@
 import { Drawer, DrawerContent, Meter } from '@niuulabs/ui';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { useLearning } from '../application/useLearnings';
-import { learningFeedbackVerdictLabel, type LearningRecord } from '../domain';
+import { useLearning, useSendLearningFeedback } from '../application/useLearnings';
+import {
+  adjacentLearningScopes,
+  learningFeedbackVerdictLabel,
+  LEARNING_FEEDBACK_VERDICTS,
+  type LearningFeedbackVerdict,
+  type LearningRecord,
+  type LearningScope,
+} from '../domain';
+import { errorMessage } from './copy';
+
+const OPERATOR_ID = 'human:operator';
 
 const SECTION_LABEL =
   'niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted';
@@ -147,6 +158,98 @@ function EvidenceAndLinks({ learning }: { learning: LearningRecord }) {
   );
 }
 
+const FEEDBACK_BUTTON =
+  'niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-tertiary ' +
+  'niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-primary ' +
+  'niuu:hover:border-brand/70 niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50';
+
+/**
+ * The five operator verdicts as a button grid. Wrong tier expands an inline
+ * picker limited to the scopes adjacent to the learning's current tier —
+ * the backend refuses anything else.
+ */
+function FeedbackSection({ learning }: { learning: LearningRecord }) {
+  const sendFeedback = useSendLearningFeedback();
+  const [pickingScope, setPickingScope] = useState(false);
+  const adjacent = adjacentLearningScopes(learning.scope);
+
+  const submit = (verdict: LearningFeedbackVerdict, targetScope?: LearningScope) => {
+    setPickingScope(false);
+    sendFeedback.mutate({
+      learningId: learning.id,
+      verdict,
+      operatorId: OPERATOR_ID,
+      ...(targetScope ? { targetScope } : {}),
+    });
+  };
+
+  return (
+    <div data-testid="learning-feedback">
+      <div className={SECTION_LABEL}>feedback</div>
+      <div className="niuu:mt-2 niuu:flex niuu:flex-wrap niuu:gap-2">
+        {LEARNING_FEEDBACK_VERDICTS.map(({ verdict, label }) => (
+          <button
+            key={verdict}
+            type="button"
+            data-testid={`learning-feedback-${verdict}`}
+            disabled={sendFeedback.isPending}
+            aria-pressed={
+              verdict === 'wrong_tier' ? pickingScope : learning.feedback?.verdict === verdict
+            }
+            onClick={() => {
+              if (verdict === 'wrong_tier') {
+                setPickingScope((value) => !value);
+                return;
+              }
+              submit(verdict);
+            }}
+            className={`${FEEDBACK_BUTTON} ${
+              learning.feedback?.verdict === verdict
+                ? 'niuu:border-brand niuu:bg-brand/10 niuu:text-brand'
+                : ''
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {pickingScope ? (
+        <div
+          data-testid="learning-wrongtier-picker"
+          className="niuu:mt-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:p-3"
+        >
+          <p className="niuu:text-xs niuu:text-text-muted">
+            Move this learning to an adjacent tier (currently {learning.scope}):
+          </p>
+          <div className="niuu:mt-2 niuu:flex niuu:flex-wrap niuu:gap-2">
+            {adjacent.map((scope) => (
+              <button
+                key={scope}
+                type="button"
+                data-testid={`learning-wrongtier-scope-${scope}`}
+                disabled={sendFeedback.isPending}
+                onClick={() => submit('wrong_tier', scope)}
+                className={FEEDBACK_BUTTON}
+              >
+                {scope}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {sendFeedback.isError ? (
+        <p
+          role="alert"
+          data-testid="learning-feedback-error"
+          className="niuu:mt-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:text-xs niuu:text-critical"
+        >
+          {errorMessage(sendFeedback.error, 'Recording feedback failed')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Right-hand drawer showing everything an operator needs to judge a learning:
  * lifecycle, structured payload, raw record, correlation, and evidence.
@@ -154,12 +257,16 @@ function EvidenceAndLinks({ learning }: { learning: LearningRecord }) {
 export function LearningViewer({
   learningId,
   onClose,
+  onNavigate,
 }: {
   learningId: string | null;
   onClose: () => void;
+  /** Switch the drawer to another record (e.g. a superseding candidate). */
+  onNavigate?: (learningId: string) => void;
 }) {
   const { data: learning, isLoading, error } = useLearning(learningId);
   const correlation = learning ? learningCorrelation(learning) : '';
+  void onNavigate; // wired by the edit flow
 
   return (
     <Drawer
@@ -232,6 +339,7 @@ export function LearningViewer({
                 </p>
               </div>
               <EvidenceAndLinks learning={learning} />
+              <FeedbackSection learning={learning} />
             </>
           ) : null}
         </div>

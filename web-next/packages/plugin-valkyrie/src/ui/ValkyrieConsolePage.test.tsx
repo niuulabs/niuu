@@ -264,6 +264,67 @@ describe('ValkyrieConsolePage', () => {
     );
   });
 
+  it('renders upgraded learning cards with lifecycle, confidence, and feedback chips', async () => {
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const panel = screen.getByTestId('valkyrie-learning');
+    const card = within(panel).getByTestId('learning-card-learn-k8s-oom-canary');
+    expect(card).toHaveTextContent('OOMKilled with rising queue depth');
+    expect(card).toHaveTextContent('canary');
+    expect(card).toHaveTextContent('flock');
+    expect(card).toHaveTextContent('81%');
+    expect(within(card).getByTestId('learning-repetition-learn-k8s-oom-canary')).toHaveTextContent(
+      '× 3 seen',
+    );
+    expect(within(card).getByTestId('learning-fb-learn-k8s-oom-canary')).toHaveTextContent(
+      'fb: awaiting',
+    );
+    expect(card).toHaveTextContent('valkyrie-valhalla-runa · env-k8s-valhalla');
+    expect(card).toHaveTextContent('3/3 replayed incidents');
+    expect(card).toHaveTextContent('open');
+
+    // No repetition chip for a once-seen learning.
+    const rollback = within(panel).getByTestId('learning-card-learn-k8s-eviction-rollback');
+    expect(
+      within(rollback).queryByTestId('learning-repetition-learn-k8s-eviction-rollback'),
+    ).toBeNull();
+    expect(rollback).toHaveTextContent('rolled back');
+  });
+
+  it('filters learning cards by scope chips with live counts', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const panel = screen.getByTestId('valkyrie-learning');
+    const filters = within(panel).getByTestId('learning-scope-filters');
+    // Sigrun's environment holds two flock-scoped learnings and nothing else.
+    expect(within(filters).getByTestId('learning-scope-filter-flock')).toHaveTextContent('flock 2');
+    expect(within(filters).getByTestId('learning-scope-filter-private')).toHaveTextContent(
+      'private 0',
+    );
+
+    await user.click(within(filters).getByTestId('learning-scope-filter-private'));
+    expect(within(panel).queryByTestId('learning-card-learn-k8s-oom-canary')).toBeNull();
+
+    // Toggling the same chip off restores the unfiltered list.
+    await user.click(within(filters).getByTestId('learning-scope-filter-private'));
+    expect(within(panel).getByTestId('learning-card-learn-k8s-oom-canary')).toBeInTheDocument();
+  });
+
+  it('opens the learning viewer from a learning card', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    await user.click(screen.getByTestId('learning-card-learn-k8s-oom-canary'));
+
+    const viewer = await screen.findByTestId('learning-viewer');
+    await waitFor(() => expect(viewer).toHaveTextContent('learn-k8s-oom-canary'));
+    expect(viewer).toHaveTextContent('structured payload');
+  });
+
   it('renders the investigation threshold from live severity config', async () => {
     render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
     await screen.findByTestId('valkyrie-console-page');

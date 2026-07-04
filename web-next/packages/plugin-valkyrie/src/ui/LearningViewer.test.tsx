@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { createMockValkyrieService } from '../adapters/mock';
@@ -98,6 +98,88 @@ describe('LearningViewer', () => {
     await screen.findByRole('dialog');
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LearningViewer feedback', () => {
+  it('records a Useful verdict and updates the feedback chip', async () => {
+    const user = userEvent.setup();
+    render(<LearningViewer learningId="learn-email-vendor-escalation" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie(),
+    });
+
+    await screen.findByTestId('learning-viewer-payload');
+    expect(screen.getByTestId('learning-viewer-feedback')).toHaveTextContent('awaiting');
+    expect(screen.getByTestId('learning-feedback-useful')).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(screen.getByTestId('learning-feedback-useful'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('learning-viewer-feedback')).toHaveTextContent('useful'),
+    );
+    expect(screen.getByTestId('learning-feedback-useful')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByTestId('learning-feedback-error')).toBeNull();
+  });
+
+  it('wrong tier expands a picker limited to adjacent scopes and submits the chosen one', async () => {
+    const user = userEvent.setup();
+    render(<LearningViewer learningId="learn-k8s-oom-canary" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-feedback-wrong_tier'));
+    const picker = screen.getByTestId('learning-wrongtier-picker');
+    // flock scope: only environment and domain are adjacent tiers.
+    expect(within(picker).getByTestId('learning-wrongtier-scope-environment')).toBeVisible();
+    expect(within(picker).getByTestId('learning-wrongtier-scope-domain')).toBeVisible();
+    expect(within(picker).queryByTestId('learning-wrongtier-scope-shared')).toBeNull();
+    expect(within(picker).queryByTestId('learning-wrongtier-scope-private')).toBeNull();
+
+    await user.click(within(picker).getByTestId('learning-wrongtier-scope-environment'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('learning-viewer-feedback')).toHaveTextContent('wrong tier'),
+    );
+    // The picker closes once the verdict is submitted.
+    expect(screen.queryByTestId('learning-wrongtier-picker')).toBeNull();
+  });
+
+  it('toggles the wrong-tier picker closed without submitting', async () => {
+    const user = userEvent.setup();
+    render(<LearningViewer learningId="learn-k8s-oom-canary" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-feedback-wrong_tier'));
+    expect(screen.getByTestId('learning-wrongtier-picker')).toBeVisible();
+    await user.click(screen.getByTestId('learning-feedback-wrong_tier'));
+    expect(screen.queryByTestId('learning-wrongtier-picker')).toBeNull();
+    expect(screen.getByTestId('learning-viewer-feedback')).toHaveTextContent('awaiting');
+  });
+
+  it('surfaces feedback failures with the API error detail', async () => {
+    const user = userEvent.setup();
+    const broken = {
+      ...createMockValkyrieService(),
+      sendLearningFeedback: () =>
+        Promise.reject(
+          Object.assign(new Error('422'), {
+            detail: 'feedback already recorded for this learning',
+          }),
+        ),
+    };
+    render(<LearningViewer learningId="learn-k8s-oom-canary" onClose={() => {}} />, {
+      wrapper: wrapWithValkyrie({ valkyrie: broken }),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-feedback-dismissed'));
+
+    const alert = await screen.findByTestId('learning-feedback-error');
+    expect(alert).toHaveTextContent('feedback already recorded for this learning');
+    expect(alert).toHaveAttribute('role', 'alert');
   });
 });
 
