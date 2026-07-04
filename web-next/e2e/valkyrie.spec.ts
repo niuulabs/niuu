@@ -223,6 +223,55 @@ test('a learned-skill judgment links to the skill viewer', async ({ page }) => {
   await expect(dialog).toContainText('def run(signal: dict)');
 });
 
+test('operator opens a learning from the panel and records Useful feedback', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  // The upgraded card carries lifecycle, confidence, repetition, and fb chips.
+  const card = page.getByTestId('learning-card-learn-k8s-oom-canary');
+  await expect(card).toContainText('OOMKilled with rising queue depth');
+  await expect(card.getByTestId('learning-fb-learn-k8s-oom-canary')).toHaveText('fb: awaiting');
+  await expect(card.getByTestId('learning-repetition-learn-k8s-oom-canary')).toHaveText('× 3 seen');
+  await card.click();
+
+  const viewer = page.getByTestId('learning-viewer');
+  await expect(viewer).toContainText('learn-k8s-oom-canary');
+  await expect(viewer.getByTestId('learning-viewer-feedback')).toContainText('awaiting');
+
+  await viewer.getByTestId('learning-feedback-useful').click();
+  await expect(viewer.getByTestId('learning-viewer-feedback')).toContainText('useful');
+
+  // Closing the drawer, the panel card's fb chip reflects the verdict.
+  await page.keyboard.press('Escape');
+  await expect(card.getByTestId('learning-fb-learn-k8s-oom-canary')).toHaveText('fb: useful');
+});
+
+test('operator edits a candidate learning and sees the revised summary', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  // Saga on env-host-jozef owns the candidate learning.
+  await page.getByRole('button', { name: /Saga/ }).click();
+  await page.getByTestId('learning-card-learn-email-vendor-escalation').click();
+
+  const viewer = page.getByTestId('learning-viewer');
+  await expect(viewer).toContainText('learn-email-vendor-escalation');
+
+  await viewer.getByTestId('learning-edit').click();
+  await viewer
+    .getByLabel('Learning summary')
+    .fill('Flag contract-deadline emails from unknown senders.');
+  await viewer.getByTestId('learning-edit-reason').fill('tighten the sender rule');
+  await viewer.getByTestId('learning-edit-save').click();
+
+  // A candidate is revised in place: same record, new summary, no supersede.
+  await expect(viewer).toContainText('Flag contract-deadline emails from unknown senders.');
+  await expect(viewer.getByTestId('learning-supersede-notice')).toHaveCount(0);
+  await expect(viewer.getByTestId('learning-viewer-header')).toContainText(
+    'learn-email-vendor-escalation',
+  );
+});
+
 test('the retired realms tab redirects to the console', async ({ page }) => {
   await page.goto('/valkyrie/realms');
 

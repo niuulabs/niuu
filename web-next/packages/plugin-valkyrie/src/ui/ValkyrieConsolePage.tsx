@@ -16,6 +16,7 @@ import {
   Users,
   Zap,
 } from 'lucide-react';
+import { Meter } from '@niuulabs/ui';
 import {
   autonomyModeForLevel,
   collapseDecisionsByCorrelation,
@@ -24,16 +25,20 @@ import {
   decisionSubject,
   environmentKindLabel,
   latestBuildGrant,
+  learningFeedbackVerdictLabel,
   openHuddleForEnvironment,
   realmSlugForEnvironment,
   referencedSkillName,
   valkyrieLastSeenAt,
+  LEARNING_SCOPE_ORDER,
   LIST_LIMIT,
   type AutonomyMode,
   type DecisionRecord,
   type GroupedDecision,
   type HuddleSummary,
   type LearnedSkillSummary,
+  type LearningRecord,
+  type LearningScope,
   type RealmTrustGrant,
   type ValkyrieDashboard,
   type ValkyrieEventTelemetry,
@@ -56,6 +61,7 @@ import {
 import { useReviewList } from '../application/useReviews';
 import { useValkyrieSkills } from '../application/useValkyrieSkills';
 import { healthClasses, Roster, wakefulnessIcon } from './Roster';
+import { LearningViewer } from './LearningViewer';
 import { SkillNameButton, SkillViewer } from './SkillViewer';
 import { ToolBuilderGrantCard, type RealmRef } from './ToolBuilderGrantCard';
 import { timeAgo } from './reviewFormat';
@@ -1174,21 +1180,90 @@ function PendingReviewsPanel({
   );
 }
 
+/** One upgraded learning card: lifecycle, confidence, feedback, provenance. */
+function LearningCard({
+  learning,
+  onOpen,
+}: {
+  learning: LearningRecord;
+  onOpen: (learningId: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`learning-card-${learning.id}`}
+      onClick={() => onOpen(learning.id)}
+      className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-transparent niuu:bg-bg-primary niuu:p-3 niuu:text-left niuu:hover:border-brand/70"
+    >
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+        <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">{learning.title}</span>
+        <span className="niuu:shrink-0 niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-[10px] niuu:text-brand">
+          {learning.status.replace(/_/g, ' ')}
+        </span>
+      </div>
+      <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{learning.summary}</p>
+      <div className="niuu:mt-2 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:text-[10px] niuu:text-text-secondary">
+        <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5">
+          {learning.scope}
+        </span>
+        <span className="niuu:flex niuu:items-center niuu:gap-1.5">
+          <Meter used={learning.confidence} limit={1} className="niuu:w-16" />
+          <span className="niuu:font-mono">{formatPercent(learning.confidence)}</span>
+        </span>
+        {learning.repetition != null && learning.repetition > 1 ? (
+          <span data-testid={`learning-repetition-${learning.id}`}>
+            × {learning.repetition} seen
+          </span>
+        ) : null}
+        <span
+          data-testid={`learning-fb-${learning.id}`}
+          className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5"
+        >
+          fb:{' '}
+          {learning.feedback
+            ? learningFeedbackVerdictLabel(learning.feedback.verdict).toLowerCase()
+            : 'awaiting'}
+        </span>
+      </div>
+      <p className="niuu:mt-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
+        {learning.sourceValkyrieId} · {learning.sourceEnvironmentId}
+      </p>
+      <p className="niuu:mt-1 niuu:text-[10px] niuu:text-text-muted">{learning.evaluation}</p>
+      <span
+        aria-hidden="true"
+        className="niuu:mt-1 niuu:inline-block niuu:text-[10px] niuu:text-brand"
+      >
+        open →
+      </span>
+    </button>
+  );
+}
+
 function LearningPanel({
   dashboard,
   valkyrie,
+  onOpenLearning,
 }: {
   dashboard: ValkyrieDashboard;
   valkyrie: ValkyrieResident;
+  onOpenLearning: (learningId: string) => void;
 }) {
   const { data: skillStats } = useSkillStats(valkyrie.environmentId);
-  const learnings = dashboard.learnings
-    .filter(
-      (learning) =>
-        learning.sourceEnvironmentId === valkyrie.environmentId ||
-        learning.sourceValkyrieId === valkyrie.id,
-    )
-    .slice(0, 4);
+  const [scopeFilter, setScopeFilter] = useState<LearningScope | null>(null);
+  const relevantLearnings = dashboard.learnings.filter(
+    (learning) =>
+      learning.sourceEnvironmentId === valkyrie.environmentId ||
+      learning.sourceValkyrieId === valkyrie.id,
+  );
+  const scopeCounts = new Map<LearningScope, number>();
+  for (const learning of relevantLearnings) {
+    scopeCounts.set(learning.scope, (scopeCounts.get(learning.scope) ?? 0) + 1);
+  }
+  const learnings = (
+    scopeFilter
+      ? relevantLearnings.filter((learning) => learning.scope === scopeFilter)
+      : relevantLearnings
+  ).slice(0, LIST_LIMIT);
   const toolNeeds = (dashboard.telemetry?.recentToolNeeds ?? [])
     .filter((need) => need.environmentId === valkyrie.environmentId)
     .slice(0, 4);
@@ -1206,6 +1281,33 @@ function LearningPanel({
         <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
           Learning & tools
         </h2>
+      </div>
+      <div
+        data-testid="learning-scope-filters"
+        className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5"
+      >
+        {LEARNING_SCOPE_ORDER.map((scope) => {
+          const active = scopeFilter === scope;
+          return (
+            <button
+              key={scope}
+              type="button"
+              data-testid={`learning-scope-filter-${scope}`}
+              aria-pressed={active}
+              onClick={() => setScopeFilter(active ? null : scope)}
+              className={`niuu:rounded-full niuu:border niuu:border-solid niuu:px-2 niuu:py-0.5 niuu:text-[10px] ${
+                active
+                  ? 'niuu:border-brand niuu:bg-brand/10 niuu:text-brand'
+                  : 'niuu:border-border niuu:bg-bg-primary niuu:text-text-secondary'
+              }`}
+            >
+              {scope}{' '}
+              <span className="niuu:font-mono niuu:text-text-muted">
+                {scopeCounts.get(scope) ?? 0}
+              </span>
+            </button>
+          );
+        })}
       </div>
       <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-3">
         {skills.map((skill) => (
@@ -1245,15 +1347,7 @@ function LearningPanel({
           </div>
         ))}
         {learnings.map((learning) => (
-          <div key={learning.id} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
-            <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
-              <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">
-                {learning.title}
-              </span>
-              <span className="niuu:text-xs niuu:text-brand">{learning.status}</span>
-            </div>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{learning.summary}</p>
-          </div>
+          <LearningCard key={learning.id} learning={learning} onOpen={onOpenLearning} />
         ))}
         {skills.length === 0 && toolNeeds.length === 0 && learnings.length === 0 ? (
           <p className={`niuu:text-sm ${MUTED}`}>No tool gaps or learning records.</p>
@@ -1379,6 +1473,7 @@ function LearnedSkillsPanel({
 function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
   const [selectedId, setSelectedId] = useState(() => dashboard.valkyries[0]?.id ?? '');
   const [viewedSkillName, setViewedSkillName] = useState<string | null>(null);
+  const [viewedLearningId, setViewedLearningId] = useState<string | null>(null);
   const selected =
     dashboard.valkyries.find((entry) => entry.id === selectedId) ?? dashboard.valkyries[0];
   const environmentEvents = useMemo(
@@ -1455,6 +1550,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
         onSelect={(valkyrieId) => {
           setSelectedId(valkyrieId);
           setViewedSkillName(null);
+          setViewedLearningId(null);
         }}
       />
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-5">
@@ -1544,7 +1640,11 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
                 error={skillsQuery.error}
                 onViewSkill={setViewedSkillName}
               />
-              <LearningPanel dashboard={dashboard} valkyrie={selected} />
+              <LearningPanel
+                dashboard={dashboard}
+                valkyrie={selected}
+                onOpenLearning={setViewedLearningId}
+              />
             </div>
           </div>
         </div>
@@ -1553,6 +1653,11 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
         environmentId={selected.environmentId}
         skillName={viewedSkillName}
         onClose={() => setViewedSkillName(null)}
+      />
+      <LearningViewer
+        learningId={viewedLearningId}
+        onClose={() => setViewedLearningId(null)}
+        onNavigate={setViewedLearningId}
       />
     </div>
   );

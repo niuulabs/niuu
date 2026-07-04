@@ -8,6 +8,7 @@ import {
   type HuddleSummary,
   type LearnedSkillRecord,
   type LearnedSkillSummary,
+  type LearningRecord,
   type RealmSummary,
   type RealmTrustGrant,
   type ReviewItem,
@@ -25,6 +26,9 @@ import type {
   IRealmGovernanceService,
   IValkyrieService,
   IValkyrieSkillsService,
+  LearningFeedbackInput,
+  LearningRevisionInput,
+  LearningRevisionResult,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
@@ -104,6 +108,38 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
         `/learnings/stats/skills${query({ environment_id: environmentId })}`,
       );
       return response.skills;
+    },
+    async getLearning(learningId: string) {
+      try {
+        return await client.get<LearningRecord>(`/learnings/${encodeURIComponent(learningId)}`);
+      } catch {
+        return null;
+      }
+    },
+    sendLearningFeedback(request: LearningFeedbackInput) {
+      return client.post<LearningRecord>(
+        `/learnings/${encodeURIComponent(request.learningId)}/feedback`,
+        {
+          verdict: request.verdict,
+          reason: request.reason ?? '',
+          operatorId: request.operatorId,
+          // Only wrong_tier carries a target scope; omit it otherwise so the
+          // backend's optional-field validation never sees an empty string.
+          ...(request.targetScope ? { targetScope: request.targetScope } : {}),
+        },
+      );
+    },
+    reviseLearning(request: LearningRevisionInput) {
+      return client.post<LearningRevisionResult>(
+        `/learnings/${encodeURIComponent(request.learningId)}/revise`,
+        {
+          ...(request.title !== undefined ? { title: request.title } : {}),
+          ...(request.summary !== undefined ? { summary: request.summary } : {}),
+          ...(request.content !== undefined ? { content: request.content } : {}),
+          reason: request.reason,
+          operatorId: request.operatorId,
+        },
+      );
     },
   };
 }

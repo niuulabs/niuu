@@ -108,8 +108,14 @@ export {
   useSkillStats,
 } from './application/useValkyrieHistory';
 export { useValkyrieSkill, useValkyrieSkills } from './application/useValkyrieSkills';
+export {
+  useLearning,
+  useReviseLearning,
+  useSendLearningFeedback,
+} from './application/useLearnings';
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
 export {
+  adjacentLearningScopes,
   autonomyModeForLevel,
   collapseDecisionsByCorrelation,
   decisionHasRealAction,
@@ -120,6 +126,7 @@ export {
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
+  learningFeedbackVerdictLabel,
   realmSlugForEnvironment,
   normalizeReviewItem,
   referencedSkillName,
@@ -128,6 +135,8 @@ export {
   reviewPolicyFindings,
   ACTIVITY_STORY_LIMIT,
   BUILD_ACTION_CLASS,
+  LEARNING_FEEDBACK_VERDICTS,
+  LEARNING_SCOPE_ORDER,
   LIST_LIMIT,
   TOOL_BUILDER_TAG,
   TRUST_LEVELS,
@@ -144,6 +153,11 @@ export type {
   HistoryPage,
   LearnedSkillRecord,
   LearnedSkillSummary,
+  LearningFeedback,
+  LearningFeedbackVerdict,
+  LearningRecord,
+  LearningScope,
+  LearningStatus,
   RealmSummary,
   RealmTrustGrant,
   ReviewItem,
@@ -165,6 +179,9 @@ export type {
   IRealmGovernanceService,
   IValkyrieService,
   IValkyrieSkillsService,
+  LearningFeedbackInput,
+  LearningRevisionInput,
+  LearningRevisionResult,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,

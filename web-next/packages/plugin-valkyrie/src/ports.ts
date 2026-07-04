@@ -7,6 +7,9 @@ import type {
   HuddleSummary,
   LearnedSkillRecord,
   LearnedSkillSummary,
+  LearningFeedbackVerdict,
+  LearningRecord,
+  LearningScope,
   RealmSummary,
   RealmTrustGrant,
   ReviewItem,
@@ -61,6 +64,43 @@ export interface HuddleMessageInput {
   authorId: string;
 }
 
+/**
+ * Body for POST /learnings/{id}/feedback. `targetScope` is required for the
+ * `wrong_tier` verdict (adjacent scope only) and ignored for the others.
+ */
+export interface LearningFeedbackInput {
+  learningId: string;
+  verdict: LearningFeedbackVerdict;
+  reason?: string;
+  operatorId: string;
+  targetScope?: LearningScope;
+}
+
+/**
+ * Body for POST /learnings/{id}/revise — at least one of title / summary /
+ * content must be present alongside the required reason.
+ */
+export interface LearningRevisionInput {
+  learningId: string;
+  title?: string;
+  summary?: string;
+  content?: string;
+  reason: string;
+  operatorId: string;
+}
+
+/**
+ * Result of a revision. For adopted/canary learnings `learning` is a NEW
+ * superseding candidate (`<old>:revN`, `supersedes` set) and `supersededId`
+ * names the original, which stays installed until the candidate passes
+ * review. For plain candidates the record is updated in place and
+ * `supersededId` is ''.
+ */
+export interface LearningRevisionResult {
+  learning: LearningRecord;
+  supersededId: string;
+}
+
 export interface IValkyrieService {
   getDashboard(): Promise<ValkyrieDashboard>;
   updateAutonomy(request: AutonomyUpdateRequest): Promise<ValkyrieDashboard>;
@@ -71,6 +111,10 @@ export interface IValkyrieService {
   getDecision(decisionId: string): Promise<DecisionDetail | null>;
   listSignalHistory(filters?: SignalHistoryFilters): Promise<HistoryPage<SignalHistoryEntry>>;
   getSkillStats(environmentId?: string): Promise<SkillUsageStat[]>;
+  /** Full learning record; null when unknown (404). */
+  getLearning(learningId: string): Promise<LearningRecord | null>;
+  sendLearningFeedback(request: LearningFeedbackInput): Promise<LearningRecord>;
+  reviseLearning(request: LearningRevisionInput): Promise<LearningRevisionResult>;
 }
 
 /**

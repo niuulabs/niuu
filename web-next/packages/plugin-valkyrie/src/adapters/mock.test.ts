@@ -36,6 +36,147 @@ describe('createMockValkyrieService', () => {
   });
 });
 
+describe('createMockValkyrieService learnings', () => {
+  it('serves one learning by id and null for unknown ids', async () => {
+    const service = createMockValkyrieService();
+    const learning = await service.getLearning('learn-k8s-oom-canary');
+    expect(learning?.title).toBe('OOMKilled with rising queue depth');
+    expect(learning?.repetition).toBe(3);
+    expect(await service.getLearning('learn-ghost')).toBeNull();
+  });
+
+  it('records feedback on the learning and surfaces it on the dashboard', async () => {
+    const service = createMockValkyrieService();
+
+    const updated = await service.sendLearningFeedback({
+      learningId: 'learn-email-vendor-escalation',
+      verdict: 'useful',
+      reason: 'Caught the contract email',
+      operatorId: 'human:operator',
+    });
+
+    expect(updated.feedback).toMatchObject({
+      verdict: 'useful',
+      reason: 'Caught the contract email',
+      operatorId: 'human:operator',
+    });
+    const dashboard = await service.getDashboard();
+    const onDashboard = dashboard.learnings.find(
+      (entry) => entry.id === 'learn-email-vendor-escalation',
+    );
+    expect(onDashboard?.feedback?.verdict).toBe('useful');
+  });
+
+  it('rejects unknown verdicts with the backend detail string', async () => {
+    const service = createMockValkyrieService();
+    await expect(
+      service.sendLearningFeedback({
+        learningId: 'learn-email-vendor-escalation',
+        verdict: 'amazing' as never,
+        operatorId: 'human:operator',
+      }),
+    ).rejects.toThrow('Unsupported feedback verdict');
+  });
+
+  it('requires a targetScope for wrong_tier and applies it when given', async () => {
+    const service = createMockValkyrieService();
+    await expect(
+      service.sendLearningFeedback({
+        learningId: 'learn-k8s-oom-canary',
+        verdict: 'wrong_tier',
+        operatorId: 'human:operator',
+      }),
+    ).rejects.toThrow('targetScope is required for wrong_tier feedback');
+
+    const updated = await service.sendLearningFeedback({
+      learningId: 'learn-k8s-oom-canary',
+      verdict: 'wrong_tier',
+      targetScope: 'environment',
+      operatorId: 'human:operator',
+    });
+    expect(updated.feedback?.verdict).toBe('wrong_tier');
+    expect(updated.targetScope).toBe('environment');
+  });
+
+  it('rejects feedback and revisions for unknown learnings', async () => {
+    const service = createMockValkyrieService();
+    await expect(
+      service.sendLearningFeedback({
+        learningId: 'learn-ghost',
+        verdict: 'useful',
+        operatorId: 'human:operator',
+      }),
+    ).rejects.toThrow('Learning learn-ghost not found');
+    await expect(
+      service.reviseLearning({
+        learningId: 'learn-ghost',
+        summary: 'x',
+        reason: 'y',
+        operatorId: 'human:operator',
+      }),
+    ).rejects.toThrow('Learning learn-ghost not found');
+  });
+
+  it('revises a candidate in place with an empty supersededId', async () => {
+    const service = createMockValkyrieService();
+
+    const result = await service.reviseLearning({
+      learningId: 'learn-email-vendor-escalation',
+      summary: 'Flag contract-deadline emails from unknown senders for review.',
+      reason: 'Tightened the sender condition',
+      operatorId: 'human:operator',
+    });
+
+    expect(result.supersededId).toBe('');
+    expect(result.learning.id).toBe('learn-email-vendor-escalation');
+    expect(result.learning.summary).toContain('unknown senders');
+    expect(result.learning.status).toBe('candidate');
+    expect(result.learning.history?.at(-1)).toMatchObject({
+      eventType: 'learning.revised',
+      operatorId: 'human:operator',
+      reason: 'Tightened the sender condition',
+    });
+    const dashboard = await service.getDashboard();
+    expect(
+      dashboard.learnings.find((entry) => entry.id === 'learn-email-vendor-escalation')?.summary,
+    ).toContain('unknown senders');
+  });
+
+  it('revising an installed learning creates a superseding candidate', async () => {
+    const service = createMockValkyrieService();
+
+    const result = await service.reviseLearning({
+      learningId: 'learn-k8s-oom-canary',
+      title: 'OOMKilled with rising queue depth (tightened)',
+      reason: 'Narrow the queue-depth window',
+      operatorId: 'human:operator',
+    });
+
+    expect(result.supersededId).toBe('learn-k8s-oom-canary');
+    expect(result.learning.id).toBe('learn-k8s-oom-canary:rev1');
+    expect(result.learning.status).toBe('candidate');
+    expect(result.learning.supersedes).toBe('learn-k8s-oom-canary');
+    expect(result.learning.feedback).toBeNull();
+
+    // The original stays installed; the candidate joins the dashboard.
+    const dashboard = await service.getDashboard();
+    const original = dashboard.learnings.find((entry) => entry.id === 'learn-k8s-oom-canary');
+    expect(original?.status).toBe('canary');
+    expect(
+      dashboard.learnings.find((entry) => entry.id === 'learn-k8s-oom-canary:rev1'),
+    ).toBeDefined();
+
+    // A second revision counts up, never reusing rev1.
+    const again = await service.reviseLearning({
+      learningId: 'learn-k8s-oom-canary',
+      summary: 'Second pass',
+      reason: 'More evidence',
+      operatorId: 'human:operator',
+    });
+    expect(again.learning.id).toBe('learn-k8s-oom-canary:rev2');
+  });
+});
+
 describe('createMockOdinReviewService', () => {
   it('lists newest-first with status and kind filters', async () => {
     const service = createMockOdinReviewService();
