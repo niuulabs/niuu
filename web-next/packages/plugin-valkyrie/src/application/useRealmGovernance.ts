@@ -18,6 +18,7 @@ export function useRealmTrustGrants(slug: string) {
   return useQuery({
     queryKey: [...REALMS_QUERY_KEY, slug, 'trust-grants'],
     queryFn: () => service.listTrustGrants(slug),
+    enabled: slug.length > 0,
   });
 }
 

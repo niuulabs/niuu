@@ -19,14 +19,14 @@ function realmBySlug(slug: string): RealmSummary {
 
 describe('ToolBuilderGrantCard', () => {
   it('shows the loading state first', () => {
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie(),
     });
     expect(screen.getByTestId('tool-builder-loading')).toBeInTheDocument();
   });
 
   it('renders the current grant with workflow, level, and autonomy badge', async () => {
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie(),
     });
 
@@ -35,19 +35,19 @@ describe('ToolBuilderGrantCard', () => {
       'autonomous · level 2',
     );
     expect(card).toHaveTextContent('valkyrie-tool-forge');
-    expect(within(card).getByLabelText('Tool-builder workflow for Asgard')).toHaveValue(
+    expect(within(card).getByLabelText('Tool-builder workflow for Valhalla')).toHaveValue(
       'valkyrie-tool-forge',
     );
-    expect(within(card).getByLabelText('Build trust level for Asgard')).toHaveValue('2');
+    expect(within(card).getByLabelText('Build trust level for Valhalla')).toHaveValue('2');
   });
 
   it('offers only tool-builder tagged workflows until the operator shows all', async () => {
     const user = userEvent.setup();
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie(),
     });
 
-    const select = await screen.findByLabelText('Tool-builder workflow for Asgard');
+    const select = await screen.findByLabelText('Tool-builder workflow for Valhalla');
     const builderNames = createSeedToolWorkflows()
       .filter((workflow) => workflow.tags.includes('tool-builder'))
       .map((workflow) => workflow.name);
@@ -72,18 +72,18 @@ describe('ToolBuilderGrantCard', () => {
     const user = userEvent.setup();
     const service = createMockRealmGovernanceService();
     const createSpy = vi.spyOn(service, 'createTrustGrant');
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie({ 'valkyrie.realms': service }),
     });
 
     await user.selectOptions(
-      await screen.findByLabelText('Tool-builder workflow for Asgard'),
+      await screen.findByLabelText('Tool-builder workflow for Valhalla'),
       'valkyrie-tool-forge-fast',
     );
-    await user.selectOptions(screen.getByLabelText('Build trust level for Asgard'), '4');
+    await user.selectOptions(screen.getByLabelText('Build trust level for Valhalla'), '4');
     await user.click(screen.getByTestId('tool-builder-save'));
 
-    expect(createSpy).toHaveBeenCalledWith('asgard', {
+    expect(createSpy).toHaveBeenCalledWith('valhalla', {
       action_class: 'build',
       target: '*',
       level: 4,
@@ -97,11 +97,11 @@ describe('ToolBuilderGrantCard', () => {
 
   it('maps trust levels to autonomy at the boundaries', async () => {
     const user = userEvent.setup();
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie(),
     });
 
-    const level = await screen.findByLabelText('Build trust level for Asgard');
+    const level = await screen.findByLabelText('Build trust level for Valhalla');
     await user.selectOptions(level, '1');
     expect(screen.getByTestId('tool-builder-level-hint')).toHaveTextContent('guarded');
     await user.selectOptions(level, '2');
@@ -111,7 +111,7 @@ describe('ToolBuilderGrantCard', () => {
   });
 
   it('invites the operator to grant build trust when none exists', async () => {
-    render(<ToolBuilderGrantCard realm={realmBySlug('midgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('host-jozef')} />, {
       wrapper: wrapWithValkyrie(),
     });
 
@@ -124,7 +124,7 @@ describe('ToolBuilderGrantCard', () => {
       ...createMockRealmGovernanceService(),
       listTrustGrants: () => Promise.reject(new Error('grants offline')),
     };
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie({ 'valkyrie.realms': broken }),
     });
 
@@ -135,11 +135,11 @@ describe('ToolBuilderGrantCard', () => {
     const user = userEvent.setup();
     const service = createMockRealmGovernanceService();
     service.createTrustGrant = () => Promise.reject(new Error('grant refused'));
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie({ 'valkyrie.realms': service }),
     });
 
-    await user.selectOptions(await screen.findByLabelText('Build trust level for Asgard'), '5');
+    await user.selectOptions(await screen.findByLabelText('Build trust level for Valhalla'), '5');
     await user.click(screen.getByTestId('tool-builder-save'));
 
     expect(await screen.findByTestId('tool-builder-save-error')).toHaveTextContent('grant refused');
@@ -148,19 +148,19 @@ describe('ToolBuilderGrantCard', () => {
 
   it('keeps a granted workflow selectable when it lost the tag', async () => {
     const grants = createSeedTrustGrants();
-    grants['asgard'] = [
+    grants['valhalla'] = [
       {
-        ...grants['asgard']![0]!,
+        ...grants['valhalla']![0]!,
         limits: { workflow: 'release-train' },
       },
     ];
-    render(<ToolBuilderGrantCard realm={realmBySlug('asgard')} />, {
+    render(<ToolBuilderGrantCard realm={realmBySlug('valhalla')} />, {
       wrapper: wrapWithValkyrie({
         'valkyrie.realms': createMockRealmGovernanceService({ grants }),
       }),
     });
 
-    const select = await screen.findByLabelText('Tool-builder workflow for Asgard');
+    const select = await screen.findByLabelText('Tool-builder workflow for Valhalla');
     expect(select).toHaveValue('release-train');
   });
 });

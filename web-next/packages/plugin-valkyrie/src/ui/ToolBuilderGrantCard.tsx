@@ -26,7 +26,14 @@ function autonomyClasses(mode: AutonomyMode): string {
   return 'niuu:text-text-secondary';
 }
 
-export function ToolBuilderGrantCard({ realm }: { realm: RealmSummary }) {
+/**
+ * The slug + display name the card needs. A full RealmSummary satisfies it,
+ * and so does a realm reference derived from an environment id
+ * (realmSlugForEnvironment) on the Valkyrie console.
+ */
+export type RealmRef = Pick<RealmSummary, 'slug' | 'name'>;
+
+export function ToolBuilderGrantCard({ realm }: { realm: RealmRef }) {
   const grantsQuery = useRealmTrustGrants(realm.slug);
   const workflowsQuery = useToolWorkflows();
   const createGrant = useCreateTrustGrant(realm.slug);
