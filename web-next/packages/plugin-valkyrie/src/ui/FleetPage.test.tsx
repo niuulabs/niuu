@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { createMockValkyrieService, createSeedValkyrieDashboard } from '../adapters/mock';
@@ -55,5 +55,21 @@ describe('FleetPage', () => {
     };
     render(<FleetPage />, { wrapper: wrapWithValkyrie({ valkyrie: empty }) });
     expect(await screen.findByTestId('fleet-empty')).toBeInTheDocument();
+  });
+
+  it('chips the effective build governance on realms with a build grant', async () => {
+    render(<FleetPage />, { wrapper: wrapWithValkyrie() });
+
+    const cards = await screen.findAllByTestId('fleet-card');
+    // Sigrun and Runa share env-k8s-valhalla → realm `valhalla`, grant level 2.
+    await waitFor(() => expect(screen.getAllByTestId('fleet-governance-chip')).toHaveLength(2));
+    expect(screen.getAllByTestId('fleet-governance-chip')[0]).toHaveTextContent(
+      'build autonomous · L2',
+    );
+
+    // Saga (realm host-jozef) has no build grant → no chip on her card.
+    const sagaCard = cards.find((card) => card.textContent?.includes('Saga'));
+    expect(sagaCard).toBeDefined();
+    expect(within(sagaCard!).queryByTestId('fleet-governance-chip')).toBeNull();
   });
 });

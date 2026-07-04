@@ -1,5 +1,5 @@
 import { renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createMockRealmGovernanceService,
   createSeedRealms,
@@ -22,7 +22,7 @@ describe('useRealmGovernance hooks', () => {
 
   it('lists a realm trust grants and the Ting workflows', async () => {
     const wrapper = wrapWithValkyrie();
-    const grants = renderHook(() => useRealmTrustGrants('asgard'), { wrapper });
+    const grants = renderHook(() => useRealmTrustGrants('valhalla'), { wrapper });
     const workflows = renderHook(() => useToolWorkflows(), { wrapper });
 
     await waitFor(() => expect(grants.result.current.isSuccess).toBe(true));
@@ -35,11 +35,11 @@ describe('useRealmGovernance hooks', () => {
   it('creates a grant and refreshes the realm grant list', async () => {
     const service = createMockRealmGovernanceService();
     const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
-    const grants = renderHook(() => useRealmTrustGrants('midgard'), { wrapper });
+    const grants = renderHook(() => useRealmTrustGrants('host-jozef'), { wrapper });
     await waitFor(() => expect(grants.result.current.isSuccess).toBe(true));
     expect(grants.result.current.data).toHaveLength(0);
 
-    const create = renderHook(() => useCreateTrustGrant('midgard'), { wrapper });
+    const create = renderHook(() => useCreateTrustGrant('host-jozef'), { wrapper });
     create.result.current.mutate({
       action_class: 'build',
       target: '*',
@@ -49,6 +49,17 @@ describe('useRealmGovernance hooks', () => {
 
     await waitFor(() => expect(create.result.current.isSuccess).toBe(true));
     await waitFor(() => expect(grants.result.current.data).toHaveLength(1));
+  });
+
+  it('never fetches grants for an empty slug (no selection yet)', () => {
+    const service = createMockRealmGovernanceService();
+    const listSpy = vi.spyOn(service, 'listTrustGrants');
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
+
+    const grants = renderHook(() => useRealmTrustGrants(''), { wrapper });
+
+    expect(grants.result.current.fetchStatus).toBe('idle');
+    expect(listSpy).not.toHaveBeenCalled();
   });
 
   it('surfaces load and save failures', async () => {
@@ -63,7 +74,7 @@ describe('useRealmGovernance hooks', () => {
     const realms = renderHook(() => useRealms(), { wrapper });
     await waitFor(() => expect(realms.result.current.isError).toBe(true));
 
-    const create = renderHook(() => useCreateTrustGrant('asgard'), { wrapper });
+    const create = renderHook(() => useCreateTrustGrant('valhalla'), { wrapper });
     create.result.current.mutate({ action_class: 'build', target: '*', level: 0, limits: {} });
     await waitFor(() => expect(create.result.current.isError).toBe(true));
   });

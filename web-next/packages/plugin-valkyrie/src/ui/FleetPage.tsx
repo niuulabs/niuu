@@ -1,6 +1,14 @@
 import { useMemo } from 'react';
 import { Activity, Moon, Radio, Wrench } from 'lucide-react';
-import type { AutonomyMode, ValkyrieResident, WakefulnessState } from '../domain';
+import {
+  autonomyModeForLevel,
+  latestBuildGrant,
+  realmSlugForEnvironment,
+  type AutonomyMode,
+  type ValkyrieResident,
+  type WakefulnessState,
+} from '../domain';
+import { useRealmTrustGrants } from '../application/useRealmGovernance';
 import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
 
 const PANEL =
@@ -22,6 +30,26 @@ function healthClasses(status: ValkyrieResident['status']): string {
   return 'niuu:text-state-ok';
 }
 
+/**
+ * Effective build governance from the realm's most recent `build` grant.
+ * Renders nothing while grants are unknown or when the realm has no grant —
+ * the console page is where governance failures surface loudly.
+ */
+function GovernanceChip({ environmentId }: { environmentId: string }) {
+  const grantsQuery = useRealmTrustGrants(realmSlugForEnvironment(environmentId));
+  const grant = grantsQuery.isSuccess ? latestBuildGrant(grantsQuery.data ?? []) : null;
+  if (!grant) return null;
+  return (
+    <span
+      data-testid="fleet-governance-chip"
+      title={`Effective build autonomy from the realm's build grant (level ${grant.level})`}
+      className="niuu:rounded-full niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-2 niuu:py-0.5 niuu:text-[10px] niuu:text-text-secondary"
+    >
+      build {autonomyModeForLevel(grant.level)} · L{grant.level}
+    </span>
+  );
+}
+
 function FleetCard({
   valkyrie,
   environmentName,
@@ -41,7 +69,12 @@ function FleetCard({
           <h2 className="niuu:text-sm niuu:text-text-primary">{valkyrie.name}</h2>
           <p className={`niuu:text-xs ${MUTED}`}>{environmentName}</p>
         </div>
-        <span className={`niuu:text-xs ${healthClasses(valkyrie.status)}`}>{valkyrie.status}</span>
+        <div className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-1">
+          <span className={`niuu:text-xs ${healthClasses(valkyrie.status)}`}>
+            {valkyrie.status}
+          </span>
+          <GovernanceChip environmentId={valkyrie.environmentId} />
+        </div>
       </header>
       <p className={`niuu:line-clamp-2 niuu:text-xs ${MUTED}`}>{valkyrie.specialty}</p>
       <div className={`niuu:flex niuu:items-center niuu:gap-3 niuu:text-xs ${MUTED}`}>

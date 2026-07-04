@@ -7,6 +7,7 @@ import {
   latestBuildGrant,
   normalizeReviewItem,
   normalizeValkyrieSignalEvent,
+  realmSlugForEnvironment,
   referencedSkillName,
   reviewArtifactEvidence,
   reviewEffectStatement,
@@ -175,6 +176,26 @@ function basePayload(): Record<string, unknown> {
     title: 'probe',
   };
 }
+
+describe('realmSlugForEnvironment', () => {
+  it.each([
+    ['env-k8s-valhalla', 'valhalla'],
+    ['env-host-jozef', 'host-jozef'],
+    ['env-printer-forge', 'printer-forge'],
+  ] as const)('strips the canonical prefix: %s → %s', (environmentId, slug) => {
+    expect(realmSlugForEnvironment(environmentId)).toBe(slug);
+  });
+
+  it('prefers the longer env-k8s- prefix over the bare env- prefix', () => {
+    expect(realmSlugForEnvironment('env-k8s-ymir')).not.toBe('k8s-ymir');
+    expect(realmSlugForEnvironment('env-k8s-ymir')).toBe('ymir');
+  });
+
+  it('returns ids without a canonical prefix unchanged', () => {
+    expect(realmSlugForEnvironment('valhalla')).toBe('valhalla');
+    expect(realmSlugForEnvironment('')).toBe('');
+  });
+});
 
 describe('autonomyModeForLevel', () => {
   it.each([

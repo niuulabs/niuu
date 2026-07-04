@@ -44,7 +44,7 @@ const environments: EnvironmentSummary[] = [
     kind: 'kubernetes',
     health: 'watch',
     flockId: 'flock-k8s',
-    topologyNodeIds: ['realm-asgard', 'cluster-valhalla', 'valkyrie-valhalla-sigrun'],
+    topologyNodeIds: ['realm-valhalla', 'cluster-valhalla', 'valkyrie-valhalla-sigrun'],
     signalCount: 24,
     unresolvedSignalCount: 3,
     wakefulCount: 2,
@@ -1276,13 +1276,15 @@ export function createMockOdinReviewService(
 // Realm governance mocks — realms, trust grants, and Ting builder workflows
 // ---------------------------------------------------------------------------
 
+// A realm's slug IS the environment's raw id (see realmSlugForEnvironment):
+// env-k8s-valhalla ↔ realm `valhalla`, env-host-jozef ↔ realm `host-jozef`.
 export function createSeedRealms(): RealmSummary[] {
   return [
     {
-      id: 'realm-asgard',
-      slug: 'asgard',
-      name: 'Asgard',
-      sleipnir_domain: 'asgard.niuu',
+      id: 'realm-valhalla',
+      slug: 'valhalla',
+      name: 'Valhalla',
+      sleipnir_domain: 'valhalla.niuu',
       owner_id: 'human:operator',
       instance_id: 'instance-valhalla',
       autonomy_profile: 'balanced',
@@ -1290,9 +1292,9 @@ export function createSeedRealms(): RealmSummary[] {
       updated_at: '2026-06-03T12:00:00Z',
     },
     {
-      id: 'realm-midgard',
-      slug: 'midgard',
-      name: 'Midgard',
+      id: 'realm-host-jozef',
+      slug: 'host-jozef',
+      name: 'Jozef host',
       sleipnir_domain: null,
       owner_id: null,
       instance_id: null,
@@ -1300,15 +1302,26 @@ export function createSeedRealms(): RealmSummary[] {
       created_at: '2026-05-10T09:00:00Z',
       updated_at: '2026-06-01T08:00:00Z',
     },
+    {
+      id: 'realm-printer-forge',
+      slug: 'printer-forge',
+      name: 'Printer forge',
+      sleipnir_domain: null,
+      owner_id: null,
+      instance_id: null,
+      autonomy_profile: 'guarded',
+      created_at: '2026-05-12T09:00:00Z',
+      updated_at: '2026-06-01T08:00:00Z',
+    },
   ];
 }
 
 export function createSeedTrustGrants(): Record<string, RealmTrustGrant[]> {
   return {
-    asgard: [
+    valhalla: [
       {
-        id: 'grant-asgard-build',
-        realm_id: 'realm-asgard',
+        id: 'grant-valhalla-build',
+        realm_id: 'realm-valhalla',
         action_class: 'build',
         target: '*',
         level: 2,
@@ -1317,8 +1330,8 @@ export function createSeedTrustGrants(): Record<string, RealmTrustGrant[]> {
         granted_at: '2026-06-02T10:00:00Z',
       },
       {
-        id: 'grant-asgard-deploy',
-        realm_id: 'realm-asgard',
+        id: 'grant-valhalla-deploy',
+        realm_id: 'realm-valhalla',
         action_class: 'deploy',
         target: '*',
         level: 1,
@@ -1327,7 +1340,8 @@ export function createSeedTrustGrants(): Record<string, RealmTrustGrant[]> {
         granted_at: '2026-06-02T10:05:00Z',
       },
     ],
-    midgard: [],
+    'host-jozef': [],
+    'printer-forge': [],
   };
 }
 

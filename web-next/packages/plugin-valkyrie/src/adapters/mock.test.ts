@@ -113,8 +113,8 @@ describe('createMockRealmGovernanceService', () => {
     const realms = await service.listRealms();
     expect(realms).toEqual(createSeedRealms());
 
-    const grants = await service.listTrustGrants('asgard');
-    expect(grants).toEqual(createSeedTrustGrants()['asgard']);
+    const grants = await service.listTrustGrants('valhalla');
+    expect(grants).toEqual(createSeedTrustGrants()['valhalla']);
 
     const workflows = await service.listWorkflows();
     expect(workflows).toEqual(createSeedToolWorkflows());
@@ -123,7 +123,7 @@ describe('createMockRealmGovernanceService', () => {
   it('creates a trust grant that later listings include', async () => {
     const service = createMockRealmGovernanceService();
 
-    const created = await service.createTrustGrant('midgard', {
+    const created = await service.createTrustGrant('host-jozef', {
       action_class: 'build',
       target: '*',
       level: 4,
@@ -132,14 +132,14 @@ describe('createMockRealmGovernanceService', () => {
     });
 
     expect(created).toMatchObject({
-      realm_id: 'realm-midgard',
+      realm_id: 'realm-host-jozef',
       action_class: 'build',
       level: 4,
       limits: { workflow: 'valkyrie-tool-forge-fast' },
       granted_by: 'human:operator',
     });
 
-    const grants = await service.listTrustGrants('midgard');
+    const grants = await service.listTrustGrants('host-jozef');
     expect(grants).toHaveLength(1);
     expect(grants[0]?.id).toBe(created.id);
   });
@@ -147,7 +147,7 @@ describe('createMockRealmGovernanceService', () => {
   it('defaults granted_by to null and rejects unknown realms', async () => {
     const service = createMockRealmGovernanceService();
 
-    const created = await service.createTrustGrant('midgard', {
+    const created = await service.createTrustGrant('host-jozef', {
       action_class: 'build',
       target: '*',
       level: 1,

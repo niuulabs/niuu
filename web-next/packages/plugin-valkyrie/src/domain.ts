@@ -824,6 +824,20 @@ export const BUILD_ACTION_CLASS = 'build';
 export const TOOL_BUILDER_TAG = 'tool-builder';
 export const TRUST_LEVELS = [0, 1, 2, 3, 4, 5] as const;
 
+const ENVIRONMENT_ID_PREFIXES = ['env-k8s-', 'env-'] as const;
+
+/**
+ * A realm's slug IS the environment's raw id: `env-k8s-valhalla` is realm
+ * `valhalla`, `env-host-jozef` is realm `host-jozef`. Strips the canonical
+ * `env-k8s-` (or `env-`) prefix; ids without one are already the slug.
+ */
+export function realmSlugForEnvironment(environmentId: string): string {
+  for (const prefix of ENVIRONMENT_ID_PREFIXES) {
+    if (environmentId.startsWith(prefix)) return environmentId.slice(prefix.length);
+  }
+  return environmentId;
+}
+
 /** Trust level → autonomy mode: <=1 guarded, 2–3 autonomous, >=4 yolo. */
 export function autonomyModeForLevel(level: number): AutonomyMode {
   if (level >= 4) return 'yolo';

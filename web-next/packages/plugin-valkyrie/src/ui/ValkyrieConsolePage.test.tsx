@@ -1,7 +1,11 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
-import { createMockValkyrieService, createSeedValkyrieDashboard } from '../adapters/mock';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createMockRealmGovernanceService,
+  createMockValkyrieService,
+  createSeedValkyrieDashboard,
+} from '../adapters/mock';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { ValkyrieConsolePage } from './ValkyrieConsolePage';
 
@@ -502,5 +506,117 @@ describe('ValkyrieConsolePage', () => {
     await waitFor(() =>
       expect(panel).toHaveTextContent('No learned skills adopted on this environment yet'),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Realm build governance — the realm's build grant lives on the console.
+  // -------------------------------------------------------------------------
+
+  it('shows the effective autonomy from the realm build grant, configured as secondary', async () => {
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // Sigrun on env-k8s-valhalla → realm `valhalla` whose build grant is level 2.
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
+        'Autonomous · effective (realm grant level 2)',
+      ),
+    );
+    expect(screen.getByTestId('valkyrie-configured-autonomy')).toHaveTextContent(
+      'configured autonomous',
+    );
+    expect(screen.getByTestId('valkyrie-autonomy-provenance')).toHaveTextContent(
+      'realm grant level 2 on valhalla',
+    );
+  });
+
+  it('lets the realm grant override a guarded configured mode', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // Runa is configured guarded but shares realm `valhalla`: the grant wins.
+    await user.click(screen.getByRole('button', { name: /Runa/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
+        'Autonomous · effective (realm grant level 2)',
+      ),
+    );
+    expect(screen.getByTestId('valkyrie-configured-autonomy')).toHaveTextContent(
+      'configured guarded',
+    );
+  });
+
+  it('falls back to the configured mode when the realm has no build grant', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // Saga lives on env-host-jozef → realm `host-jozef` with no grants.
+    await user.click(screen.getByRole('button', { name: /Saga/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
+        'Guarded · configured (no realm build grant)',
+      ),
+    );
+    expect(screen.queryByTestId('valkyrie-configured-autonomy')).toBeNull();
+    expect(screen.getByTestId('valkyrie-autonomy-provenance')).toHaveTextContent(
+      'No build grant on realm host-jozef yet',
+    );
+    expect(await screen.findByTestId('tool-builder-ungranted')).toBeInTheDocument();
+  });
+
+  it('renders the grant card in the authority panel and saving updates the badge', async () => {
+    const user = userEvent.setup();
+    const service = createMockRealmGovernanceService();
+    const createSpy = vi.spyOn(service, 'createTrustGrant');
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ 'valkyrie.realms': service }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const authority = screen.getByTestId('valkyrie-authority');
+    expect(authority).toHaveTextContent('realm build governance — valhalla');
+    const card = await within(authority).findByTestId('tool-builder-card');
+    // The card is addressed by the environment's display name.
+    await user.selectOptions(
+      within(card).getByLabelText('Build trust level for Valhalla k8s'),
+      '4',
+    );
+    await user.click(within(card).getByTestId('tool-builder-save'));
+
+    expect(createSpy).toHaveBeenCalledWith('valhalla', {
+      action_class: 'build',
+      target: '*',
+      level: 4,
+      limits: { workflow: 'valkyrie-tool-forge' },
+      granted_by: 'human:operator',
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
+        'Yolo · effective (realm grant level 4)',
+      ),
+    );
+  });
+
+  it('keeps the badge on the configured mode when realm governance is unavailable', async () => {
+    const broken = {
+      ...createMockRealmGovernanceService(),
+      listTrustGrants: () => Promise.reject(new Error('realms offline')),
+    };
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ 'valkyrie.realms': broken }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const authority = screen.getByTestId('valkyrie-authority');
+    await waitFor(() =>
+      expect(within(authority).getByTestId('tool-builder-error')).toHaveTextContent(
+        'realms offline',
+      ),
+    );
+    const badge = screen.getByTestId('valkyrie-effective-autonomy');
+    expect(badge).toHaveTextContent('Autonomous');
+    expect(badge).not.toHaveTextContent('effective');
+    expect(badge).not.toHaveTextContent('configured');
+    expect(screen.queryByTestId('valkyrie-autonomy-provenance')).toBeNull();
   });
 });

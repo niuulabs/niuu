@@ -17,17 +17,22 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  autonomyModeForLevel,
+  latestBuildGrant,
+  realmSlugForEnvironment,
   referencedSkillName,
   type AutonomyMode,
   type DecisionRecord,
   type EnvironmentHealth,
   type EnvironmentKind,
   type LearnedSkillSummary,
+  type RealmTrustGrant,
   type ValkyrieDashboard,
   type ValkyrieEventTelemetry,
   type ValkyrieResident,
   type WakefulnessState,
 } from '../domain';
+import { useRealmTrustGrants } from '../application/useRealmGovernance';
 import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
 import {
   useDecisionDetail,
@@ -38,6 +43,7 @@ import {
 import { useReviewList } from '../application/useReviews';
 import { useValkyrieSkills } from '../application/useValkyrieSkills';
 import { SkillNameButton, SkillViewer } from './SkillViewer';
+import { ToolBuilderGrantCard, type RealmRef } from './ToolBuilderGrantCard';
 import { timeAgo } from './reviewFormat';
 import {
   actionAuthorityCopy,
@@ -237,12 +243,28 @@ function Roster({
   );
 }
 
+/**
+ * How the realm's build grant shapes what a resident may actually do:
+ * the most recent `build` trust grant wins (level → mode); the statically
+ * configured mode is only the fallback when no grant exists. While the
+ * grant list is loading or failed (`grantsKnown` false) the page shows the
+ * configured mode without claiming it is effective.
+ */
+interface BuildGovernance {
+  realm: RealmRef;
+  buildGrant: RealmTrustGrant | null;
+  grantsKnown: boolean;
+  effectiveMode: AutonomyMode;
+}
+
 function Hero({
   dashboard,
   valkyrie,
+  governance,
 }: {
   dashboard: ValkyrieDashboard;
   valkyrie: ValkyrieResident;
+  governance: BuildGovernance;
 }) {
   const environment = dashboard.environments.find((entry) => entry.id === valkyrie.environmentId);
   const flock = dashboard.flocks.find(
@@ -250,6 +272,8 @@ function Hero({
   );
   const updateAutonomy = useUpdateAutonomy();
   const modeCopy = autonomyModeCopy(valkyrie.autonomyMode);
+  const { buildGrant, grantsKnown } = governance;
+  const effectiveCopy = autonomyModeCopy(governance.effectiveMode);
 
   return (
     <section className={`${PANEL} niuu:p-5`} data-testid="valkyrie-console-hero">
@@ -269,9 +293,25 @@ function Hero({
             </div>
           </div>
           <div className="niuu:mt-4 niuu:flex niuu:flex-wrap niuu:gap-2 niuu:text-xs">
-            <span className="niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:px-3 niuu:py-1 niuu:text-brand">
-              {modeCopy.label}
+            <span
+              data-testid="valkyrie-effective-autonomy"
+              className="niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:px-3 niuu:py-1 niuu:text-brand"
+            >
+              {effectiveCopy.label}
+              {buildGrant
+                ? ` · effective (realm grant level ${buildGrant.level})`
+                : grantsKnown
+                  ? ' · configured (no realm build grant)'
+                  : ''}
             </span>
+            {buildGrant ? (
+              <span
+                data-testid="valkyrie-configured-autonomy"
+                className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary"
+              >
+                configured {modeCopy.label.toLowerCase()}
+              </span>
+            ) : null}
             <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
               env {environment?.name ?? valkyrie.environmentId}
             </span>
@@ -337,7 +377,7 @@ function Hero({
           <Shield size={13} aria-hidden="true" />
           authority boundary
         </div>
-        <p className="niuu:mt-2 niuu:text-sm niuu:text-text-primary">{modeCopy.description}</p>
+        <p className="niuu:mt-2 niuu:text-sm niuu:text-text-primary">{effectiveCopy.description}</p>
       </div>
     </section>
   );
@@ -619,11 +659,15 @@ function Timeline({ events }: { events: ValkyrieEventTelemetry[] }) {
 function AuthorityPanel({
   valkyrie,
   severities,
+  governance,
 }: {
   valkyrie: ValkyrieResident;
   severities: string[] | undefined;
+  governance: BuildGovernance;
 }) {
   const modeCopy = autonomyModeCopy(valkyrie.autonomyMode);
+  const { realm, buildGrant, grantsKnown, effectiveMode } = governance;
+  const effectiveCopy = autonomyModeCopy(effectiveMode);
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-authority">
       <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -637,7 +681,7 @@ function AuthorityPanel({
           <div
             key={mode}
             className={`niuu:px-3 niuu:py-2 ${
-              mode === valkyrie.autonomyMode
+              mode === effectiveMode
                 ? 'niuu:bg-brand/25 niuu:text-text-primary'
                 : 'niuu:bg-bg-primary niuu:text-text-muted'
             }`}
@@ -646,8 +690,17 @@ function AuthorityPanel({
           </div>
         ))}
       </div>
+      {grantsKnown ? (
+        <p data-testid="valkyrie-autonomy-provenance" className={`niuu:mt-2 niuu:text-xs ${MUTED}`}>
+          {buildGrant
+            ? `${effectiveCopy.label} is the effective build autonomy — realm grant level ` +
+              `${buildGrant.level} on ${realm.slug}; configured mode is ${modeCopy.label.toLowerCase()}.`
+            : `No build grant on realm ${realm.slug} yet — the configured mode ` +
+              `${modeCopy.label.toLowerCase()} applies.`}
+        </p>
+      ) : null}
       <p className="niuu:mt-4 niuu:rounded-md niuu:bg-bg-primary niuu:p-3 niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
-        {modeCopy.description}
+        {effectiveCopy.description}
       </p>
       <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs">
         {['autonomous', 'court_required', 'human_review_required'].map((authority) => {
@@ -678,6 +731,16 @@ function AuthorityPanel({
             </span>
           ))}
         </div>
+      </div>
+      <div className="niuu:mt-4" data-testid="valkyrie-realm-governance">
+        <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
+          realm build governance — {realm.slug}
+        </div>
+        <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
+          The realm&apos;s build grant pins the Ting workflow this resident uses to build tools and
+          sets its effective build autonomy.
+        </p>
+        <ToolBuilderGrantCard realm={realm} />
       </div>
     </section>
   );
@@ -1123,10 +1186,16 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     Boolean(selected),
   );
   const skillsQuery = useValkyrieSkills(selected?.environmentId ?? '', Boolean(selected));
+  // A realm's slug IS the environment's raw id; its build grant governs
+  // what this resident may build, ahead of the configured autonomy mode.
+  const realmSlug = realmSlugForEnvironment(selected?.environmentId ?? '');
+  const grantsQuery = useRealmTrustGrants(realmSlug);
 
   if (!selected) return <EmptyConsole />;
 
   const skills = skillsQuery.data ?? [];
+  const grantsKnown = grantsQuery.isSuccess;
+  const buildGrant = grantsKnown ? latestBuildGrant(grantsQuery.data ?? []) : null;
 
   const severities = taskSeverities(selected, dashboard);
   const decisions = decisionsQuery.data?.items ?? [];
@@ -1149,6 +1218,12 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     selected.lastActionAt,
     dashboard.telemetry?.lastObservedAt,
   ]);
+  const governance: BuildGovernance = {
+    realm: { slug: realmSlug, name: environmentSummary?.name ?? realmSlug },
+    buildGrant,
+    grantsKnown,
+    effectiveMode: buildGrant ? autonomyModeForLevel(buildGrant.level) : selected.autonomyMode,
+  };
 
   return (
     <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:grid-cols-[320px_minmax(0,1fr)] niuu:bg-bg-primary">
@@ -1174,7 +1249,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
           </div>
         </div>
         <div className="niuu:flex niuu:flex-col niuu:gap-4">
-          <Hero dashboard={dashboard} valkyrie={selected} />
+          <Hero dashboard={dashboard} valkyrie={selected} governance={governance} />
           <div className="niuu:grid niuu:gap-4 niuu:xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)_360px]">
             <SituationPanel
               decision={decisions[0]}
@@ -1183,7 +1258,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
               environmentId={selected.environmentId}
             />
             <Timeline events={environmentEvents} />
-            <AuthorityPanel valkyrie={selected} severities={severities} />
+            <AuthorityPanel valkyrie={selected} severities={severities} governance={governance} />
           </div>
           <LearnedSkillStrip
             decisions={decisions}

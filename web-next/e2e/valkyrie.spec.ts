@@ -139,28 +139,58 @@ test('a learned-skill judgment links to the skill viewer', async ({ page }) => {
   await expect(dialog).toContainText('def run(signal: dict)');
 });
 
-test('realms view exposes the tool-builder workflow picker', async ({ page }) => {
+test('the retired realms tab redirects to the console', async ({ page }) => {
   await page.goto('/valkyrie/realms');
 
-  await expect(page.getByTestId('realms-page')).toBeVisible({ timeout: 5000 });
-  const cards = page.getByTestId('realm-card');
-  await expect(cards).toHaveCount(2);
-  await expect(cards.first().getByTestId('tool-builder-autonomy')).toHaveText(
-    'autonomous · level 2',
-  );
-  await expect(cards.first().getByLabel(/Tool-builder workflow/)).toBeVisible();
+  await expect(page).toHaveURL(/\/valkyrie$/);
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 });
 
-test('operator can pin a builder workflow and raise the trust level', async ({ page }) => {
-  await page.goto('/valkyrie/realms');
+test('console shows the effective build autonomy from the realm grant', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
-  const midgard = page.getByTestId('realm-card').filter({ hasText: 'Midgard' });
-  await expect(midgard.getByTestId('tool-builder-ungranted')).toBeVisible();
+  // Sigrun on env-k8s-valhalla → realm `valhalla` whose build grant is level 2.
+  await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
+    'Autonomous · effective (realm grant level 2)',
+  );
+  await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText(
+    'configured autonomous',
+  );
 
-  await midgard.getByLabel('Tool-builder workflow for Midgard').selectOption('valkyrie-tool-forge');
-  await midgard.getByLabel('Build trust level for Midgard').selectOption('4');
-  await expect(midgard.getByTestId('tool-builder-level-hint')).toHaveText('yolo');
-  await midgard.getByTestId('tool-builder-save').click();
+  // Runa is configured guarded but shares the realm: the grant wins.
+  await page.getByRole('button', { name: /Runa/ }).click();
+  await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
+    'Autonomous · effective (realm grant level 2)',
+  );
+  await expect(page.getByTestId('valkyrie-configured-autonomy')).toHaveText('configured guarded');
+  await expect(page.getByTestId('valkyrie-authority')).toContainText(
+    'realm build governance — valhalla',
+  );
+  await expect(page.getByTestId('tool-builder-autonomy')).toHaveText('autonomous · level 2');
+});
 
-  await expect(midgard.getByTestId('tool-builder-autonomy')).toHaveText('yolo · level 4');
+test('operator pins a builder workflow and raises the trust level from the console', async ({
+  page,
+}) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  // Saga lives on env-host-jozef → realm `host-jozef` with no build grant yet.
+  await page.getByRole('button', { name: /Saga/ }).click();
+  await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
+    'Guarded · configured (no realm build grant)',
+  );
+  const card = page.getByTestId('tool-builder-card');
+  await expect(card.getByTestId('tool-builder-ungranted')).toBeVisible();
+
+  await card.getByLabel('Tool-builder workflow for Jozef host').selectOption('valkyrie-tool-forge');
+  await card.getByLabel('Build trust level for Jozef host').selectOption('4');
+  await expect(card.getByTestId('tool-builder-level-hint')).toHaveText('yolo');
+  await card.getByTestId('tool-builder-save').click();
+
+  await expect(card.getByTestId('tool-builder-autonomy')).toHaveText('yolo · level 4');
+  await expect(page.getByTestId('valkyrie-effective-autonomy')).toHaveText(
+    'Yolo · effective (realm grant level 4)',
+  );
 });

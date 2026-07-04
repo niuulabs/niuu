@@ -3,7 +3,6 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
 import { FleetPage } from './ui/FleetPage';
 import { InboxPage } from './ui/InboxPage';
-import { RealmsPage } from './ui/RealmsPage';
 import { ValkyrieConsolePage } from './ui/ValkyrieConsolePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
 
@@ -14,6 +13,8 @@ const LEGACY_PATHS = [
   '/valkyrie/learning',
   '/valkyrie/huddles',
   '/valkyrie/autonomy',
+  // Realm governance moved onto the console's Authority & autonomy panel.
+  '/valkyrie/realms',
   '/valkyries',
   '/valkyries/topology',
   '/valkyries/lineage',
@@ -40,7 +41,6 @@ export const valkyriePlugin = definePlugin({
     { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
     { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
     { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
-    { id: 'realms', label: 'Realms', rune: 'ᚱ', path: '/valkyrie/realms' },
     { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
@@ -53,11 +53,6 @@ export const valkyriePlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/valkyrie/fleet',
       component: () => <FleetPage />,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/valkyrie/realms',
-      component: () => <RealmsPage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -123,6 +118,7 @@ export {
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
+  realmSlugForEnvironment,
   normalizeReviewItem,
   referencedSkillName,
   reviewArtifactEvidence,
