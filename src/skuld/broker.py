@@ -1574,6 +1574,21 @@ class Broker:
         """
         return bool(self._has_workflow_trigger() and self._settings.room.enabled)
 
+    def _room_default_target_peer_id(self) -> str:
+        """Peer that untargeted browser messages route to (resident sessions)."""
+        if self._room_bridge is None:
+            return ""
+        return self._settings.room.default_target_peer_id.strip()
+
+    def _is_room_routed_session(self) -> bool:
+        """True when browser traffic flows through the room, not a CLI transport.
+
+        Covers flock workflow sessions (mesh peers do the work) and resident
+        sessions (one long-lived ravn behind ``room.default_target_peer_id``).
+        Both must never lazy-start the broker's own CLI transport.
+        """
+        return self._is_room_only_workflow_session() or bool(self._room_default_target_peer_id())
+
     def _workflow_trigger_consumer_peer_ids(self, event_type: str) -> set[str]:
         """Return flock peer ids that subscribe to the workflow trigger event."""
         if self._room_bridge is None or not event_type:
@@ -3889,6 +3904,28 @@ class Broker:
             case _:
                 message = data.get("content", "")
                 if not message:
+                    return
+
+                # Resident sessions: untargeted messages route to the
+                # configured default participant as directed messages.
+                default_target = self._room_default_target_peer_id()
+                if default_target:
+                    try:
+                        await self.handle_directed_room_message(
+                            default_target,
+                            str(message),
+                            source="browser",
+                            metadata=(
+                                data.get("metadata")
+                                if isinstance(data.get("metadata"), dict)
+                                else None
+                            ),
+                        )
+                    except LookupError as exc:
+                        if sender_ws:
+                            await self._send_broker_frame_to(
+                                sender_ws, {"type": "error", "content": str(exc)}
+                            )
                     return
 
                 if self._is_room_only_workflow_session():
@@ -6386,9 +6423,9 @@ class Broker:
 
             # Lazy-start transport on first browser connection
             if not self._transport.is_alive:
-                if self._is_room_only_workflow_session():
+                if self._is_room_routed_session():
                     logger.info(
-                        "handle_websocket: workflow room session detected; "
+                        "handle_websocket: room-routed session detected; "
                         "skipping transport lazy-start"
                     )
                 else:

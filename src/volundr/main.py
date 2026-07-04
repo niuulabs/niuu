@@ -362,6 +362,17 @@ def _create_contributors(
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 
+    # Auto-wire ResidentContributor so resident workloads (long-lived
+    # flock-of-one chat sessions) spawn the same way flocks do.
+    from volundr.adapters.outbound.contributors.resident import ResidentContributor
+
+    if not _has_contributor("resident"):
+        resident_kwargs = dict(ports)
+        if settings.ravn_flock_image:
+            resident_kwargs["ravn_image"] = settings.ravn_flock_image
+        contributors.append(ResidentContributor(**resident_kwargs))
+        logger.info("Session contributor: resident (auto-wired)")
+
     if not _has_contributor("session_mcp"):
         contributors.append(SessionMCPContributor(**ports))
         logger.info("Session contributor: session_mcp (auto-wired)")
@@ -418,6 +429,7 @@ async def _reconcile_liveness_loop(
     *,
     interval_seconds: int,
     stale_after_seconds: int,
+    exempt_workload_types: list[str] | None = None,
 ) -> None:
     """Periodically mark running sessions whose broker has gone silent as stopped."""
     logger.info(
@@ -428,7 +440,10 @@ async def _reconcile_liveness_loop(
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            count = await session_service.reconcile_liveness(stale_after_seconds)
+            count = await session_service.reconcile_liveness(
+                stale_after_seconds,
+                exempt_workload_types=exempt_workload_types,
+            )
             if count:
                 logger.info("Liveness: reconciled %d stale running session(s)", count)
         except asyncio.CancelledError:
@@ -1227,6 +1242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         session_service,
                         interval_seconds=settings.session_liveness.check_interval_seconds,
                         stale_after_seconds=settings.session_liveness.stale_after_seconds,
+                        exempt_workload_types=settings.session_liveness.exempt_workload_types,
                     )
                 )
 

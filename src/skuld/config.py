@@ -146,6 +146,16 @@ class RoomConfig(BaseModel):
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    default_target_peer_id: str = Field(
+        default="",
+        description=(
+            "Room participant that untargeted browser messages route to as "
+            "directed messages. Set by Volundr for resident sessions (one "
+            "long-lived ravn behind the room) so any chat client works "
+            "without knowing the peer id. Empty keeps the classic behavior "
+            "(CLI transport, or an error in room-only workflow sessions)."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(

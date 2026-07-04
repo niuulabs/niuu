@@ -475,6 +475,7 @@ def _build_ravn_config(
     persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
     persona_source_http_base_url: str = "",
     workflow: dict[str, Any] | None = None,
+    extra_ravn_config: dict[str, Any] | None = None,
 ) -> str:
     """Generate the ravn daemon YAML config for a single flock node.
 
@@ -482,6 +483,11 @@ def _build_ravn_config(
     *global_llm* via :func:`niuu.domain.llm_merge.merge_llm`.  The resulting
     effective LLM config, system_prompt_extra, and iteration_budget are all
     embedded in the sidecar YAML so that ravn can apply them at runtime.
+
+    *extra_ravn_config* is deep-merged (dicts merge, scalars/lists replace)
+    on top of the generated config last — used by workload flavors like the
+    resident contributor to layer extra sections (skuld channel, environment
+    identity) without forking this builder.
     """
     pub, rep, _hs = _ports_for(index, base_port)
     gw = _ravn_gateway_port_for(index, base_port)
@@ -599,7 +605,21 @@ def _build_ravn_config(
     if workflow:
         config["workflow"] = workflow
 
+    if extra_ravn_config:
+        config = _deep_merge_config(config, extra_ravn_config)
+
     return yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
+
+
+def _deep_merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Merge *overlay* onto *base*: dicts merge recursively, everything else replaces."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _normalize_workflow_config(
@@ -837,6 +857,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
         persona_source_http_base_url: str = "",
         workflow: dict[str, Any] | None = None,
+        extra_ravn_config: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
         base_port = self._base_port
@@ -1033,6 +1054,7 @@ class RavnFlockContributor(SessionContributor):
                 persona_source_mount_path=persona_source_mount_path,
                 persona_source_http_base_url=persona_source_http_base_url,
                 workflow=workflow,
+                extra_ravn_config=extra_ravn_config,
             )
 
             # Per-sidecar emptyDir volume for the mounted config file

@@ -646,6 +646,14 @@ class SessionLivenessConfig(BaseModel):
     enabled: bool = Field(default=False)
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
+    exempt_workload_types: list[str] = Field(
+        default_factory=lambda: ["resident"],
+        description=(
+            "Workload types the heartbeat reaper never reaps. Residents are "
+            "long-lived chat agents that idle by design — a quiet resident is "
+            "not a dead one (pod-status reconcile still catches real death)."
+        ),
+    )
     reconcile_enabled: bool = Field(
         default=True,
         description=(

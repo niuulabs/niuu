@@ -481,7 +481,12 @@ class SessionService:
             return True
         return metadata.get("request_id") != previous_request_id
 
-    async def reconcile_liveness(self, stale_after_seconds: int) -> int:
+    async def reconcile_liveness(
+        self,
+        stale_after_seconds: int,
+        *,
+        exempt_workload_types: list[str] | None = None,
+    ) -> int:
         """Mark running sessions with no recent activity heartbeat as stopped.
 
         A session whose broker has died otherwise sits in ``running`` forever
@@ -489,12 +494,19 @@ class SessionService:
         and see nothing. Reconciling clears the endpoint and flips the status to
         ``stopped`` (resumable) so the list reflects reality.
 
+        Workload types in *exempt_workload_types* (e.g. residents — long-lived
+        chat agents that idle by design) are never heartbeat-reaped; the
+        pod-status reconcile loop remains their authoritative death check.
+
         Returns the number of sessions reconciled.
         """
+        exempt = set(exempt_workload_types or [])
         threshold = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         stale = await self._repository.list_stale_running(threshold)
         reconciled = 0
         for session in stale:
+            if session.workload_type in exempt:
+                continue
             stopped = session.model_copy(
                 update={
                     "status": SessionStatus.STOPPED,
