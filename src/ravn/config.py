@@ -2570,6 +2570,18 @@ class ResidentEvolutionConfig(BaseModel):
             "auto-rolled-back (archived, regression published to the flock)."
         ),
     )
+    skill_inventory_interval_seconds: float = Field(
+        default=300.0,
+        description=(
+            "How often the resident republishes its full learned-skill "
+            "inventory as valkyrie.evolution.skill_inventory events. The "
+            "dashboard's skill mirror runs with zero telemetry replay, so this "
+            "heartbeat (plus a snapshot at startup and after every adoption / "
+            "rollback) is what keeps the mirror populated with the skills a "
+            "resident actively uses. 0 disables the heartbeat (startup and "
+            "opportunistic snapshots still fire)."
+        ),
+    )
     learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
         default="local",
         description=(

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   autonomyModeForLevel,
+  collapseDecisionsByCorrelation,
+  decisionHasRealAction,
+  decisionHeadline,
+  decisionNeedsApproval,
   decisionSkillName,
+  decisionSubject,
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
@@ -12,6 +17,9 @@ import {
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
+  ACTIVITY_STORY_LIMIT,
+  LIST_LIMIT,
+  type DecisionRecord,
   type RealmTrustGrant,
   type TingWorkflowSummary,
 } from './domain';
@@ -315,5 +323,174 @@ describe('referencedSkillName', () => {
         '',
       ]),
     ).toBe('');
+  });
+});
+
+function makeDecision(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
+  return {
+    decisionId: 'decision-1',
+    environmentId: 'env-k8s-valhalla',
+    valkyrieId: 'valkyrie-valhalla-sigrun',
+    operationalState: 'watching',
+    tier: 'ambient',
+    confidence: 0.7,
+    rationale: 'routine',
+    recommendedAction: 'none',
+    actionAuthority: 'autonomous',
+    signalRefs: [],
+    evidence: [],
+    correlationId: 'corr-1',
+    summary: 'routine check',
+    outcome: '',
+    decidedAt: '2026-06-03T14:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('list caps', () => {
+  it('pins the shared list cap at 20 and the story cap at 30', () => {
+    expect(LIST_LIMIT).toBe(20);
+    expect(ACTIVITY_STORY_LIMIT).toBe(30);
+  });
+});
+
+describe('decisionHasRealAction', () => {
+  it.each(['', 'none', 'n/a', 'na', 'watch', 'observe', 'noop', ' None ', 'WATCH'])(
+    'treats %j as not a real action',
+    (action) => {
+      expect(decisionHasRealAction(makeDecision({ recommendedAction: action }))).toBe(false);
+    },
+  );
+
+  it('accepts a real capability as an action', () => {
+    expect(decisionHasRealAction(makeDecision({ recommendedAction: 'refresh_pull_secret' }))).toBe(
+      true,
+    );
+  });
+});
+
+describe('decisionNeedsApproval', () => {
+  const approvable = {
+    actionAuthority: 'human_review_required',
+    tier: 'present',
+    recommendedAction: 'restart_deployment',
+  };
+
+  it('is true only when authority, tier, and a real action all align', () => {
+    expect(decisionNeedsApproval(makeDecision(approvable))).toBe(true);
+    expect(decisionNeedsApproval(makeDecision({ ...approvable, tier: 'urgent' }))).toBe(true);
+    expect(decisionNeedsApproval(makeDecision({ ...approvable, tier: 'URGENT ' }))).toBe(true);
+  });
+
+  it('rejects autonomous and court authorities regardless of tier', () => {
+    expect(
+      decisionNeedsApproval(makeDecision({ ...approvable, actionAuthority: 'autonomous' })),
+    ).toBe(false);
+    expect(
+      decisionNeedsApproval(makeDecision({ ...approvable, actionAuthority: 'court_required' })),
+    ).toBe(false);
+  });
+
+  it('rejects ambient and observational tiers — they never reach the inbox', () => {
+    expect(decisionNeedsApproval(makeDecision({ ...approvable, tier: 'ambient' }))).toBe(false);
+    expect(decisionNeedsApproval(makeDecision({ ...approvable, tier: 'observational' }))).toBe(
+      false,
+    );
+    expect(decisionNeedsApproval(makeDecision({ ...approvable, tier: '' }))).toBe(false);
+  });
+
+  it.each(['', 'none', 'watch', 'observe', 'n/a'])(
+    'rejects non-action verdict %j even at an operator tier',
+    (action) => {
+      expect(
+        decisionNeedsApproval(makeDecision({ ...approvable, recommendedAction: action })),
+      ).toBe(false);
+    },
+  );
+});
+
+describe('decisionHeadline', () => {
+  it('uses the record summary and strips the redundant valkyrie/env prefix', () => {
+    expect(
+      decisionHeadline(
+        makeDecision({
+          summary:
+            'Valkyrie valkyrie-valhalla-sigrun in env-k8s-valhalla judged the rollout healthy',
+        }),
+        'Watching',
+      ),
+    ).toBe('judged the rollout healthy');
+    expect(
+      decisionHeadline(makeDecision({ summary: 'valkyrie: sigrun in prod noticed drift' }), 'X'),
+    ).toBe('noticed drift');
+  });
+
+  it('keeps summaries without the prefix untouched', () => {
+    expect(
+      decisionHeadline(makeDecision({ summary: 'Registry token rollover broke pulls' }), 'X'),
+    ).toBe('Registry token rollover broke pulls');
+  });
+
+  it('falls back to the label for empty or prefix-only summaries', () => {
+    expect(decisionHeadline(makeDecision({ summary: '' }), 'Watching')).toBe('Watching');
+    expect(decisionHeadline(makeDecision({ summary: '   ' }), 'Watching')).toBe('Watching');
+  });
+});
+
+describe('decisionSubject', () => {
+  it('prefers a resource name from the evidence', () => {
+    expect(
+      decisionSubject(makeDecision({ evidence: [{ other: 1 }, { subject: 'pv/media-primary' }] })),
+    ).toBe('pv/media-primary');
+    expect(decisionSubject(makeDecision({ evidence: [{ pod: 'ravn-worker-77' }] }))).toBe(
+      'ravn-worker-77',
+    );
+  });
+
+  it('derives a readable subject from the correlation id otherwise', () => {
+    expect(decisionSubject(makeDecision({ correlationId: 'corr-imagepull' }))).toBe('imagepull');
+    expect(decisionSubject(makeDecision({ correlationId: 'idle-triage:env-k8s-valhalla' }))).toBe(
+      'env-k8s-valhalla',
+    );
+    expect(decisionSubject(makeDecision({ correlationId: '' }))).toBe('');
+  });
+});
+
+describe('collapseDecisionsByCorrelation', () => {
+  it('collapses consecutive decisions sharing a correlation into one row, newest wins', () => {
+    const rows = collapseDecisionsByCorrelation([
+      makeDecision({ decisionId: 'd3', correlationId: 'corr-pv', decidedAt: '14:10' }),
+      makeDecision({ decisionId: 'd2', correlationId: 'corr-pv', decidedAt: '14:05' }),
+      makeDecision({ decisionId: 'd1', correlationId: 'corr-pv', decidedAt: '14:00' }),
+      makeDecision({ decisionId: 'x1', correlationId: 'corr-other', decidedAt: '13:00' }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ count: 3 });
+    // Newest-first input → the newest decision of the run is the one rendered.
+    expect(rows[0]?.decision.decisionId).toBe('d3');
+    expect(rows[0]?.decision.decidedAt).toBe('14:10');
+    expect(rows[1]).toMatchObject({ count: 1 });
+  });
+
+  it('starts a fresh group when the correlation recurs after another decision', () => {
+    const rows = collapseDecisionsByCorrelation([
+      makeDecision({ decisionId: 'a1', correlationId: 'corr-a' }),
+      makeDecision({ decisionId: 'b1', correlationId: 'corr-b' }),
+      makeDecision({ decisionId: 'a2', correlationId: 'corr-a' }),
+    ]);
+    expect(rows.map((row) => row.decision.decisionId)).toEqual(['a1', 'b1', 'a2']);
+    expect(rows.every((row) => row.count === 1)).toBe(true);
+  });
+
+  it('never groups decisions without a correlation id', () => {
+    const rows = collapseDecisionsByCorrelation([
+      makeDecision({ decisionId: 'n1', correlationId: '' }),
+      makeDecision({ decisionId: 'n2', correlationId: '' }),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('returns an empty list for no decisions', () => {
+    expect(collapseDecisionsByCorrelation([])).toEqual([]);
   });
 });

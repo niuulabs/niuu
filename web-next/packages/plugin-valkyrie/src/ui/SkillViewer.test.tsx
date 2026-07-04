@@ -57,15 +57,17 @@ describe('SkillViewer', () => {
     expect(screen.getByRole('dialog')).not.toHaveTextContent('requirements');
   });
 
-  it('says when a skill is unknown instead of showing an empty drawer (404)', async () => {
+  it('explains a rolled-back skill calmly instead of showing an empty drawer (404)', async () => {
     render(
       <SkillViewer environmentId="env-k8s-valhalla" skillName="ghost_probe" onClose={() => {}} />,
       { wrapper: wrapWithValkyrie() },
     );
 
-    expect(await screen.findByTestId('skill-viewer-missing')).toHaveTextContent(
-      'not installed on env-k8s-valhalla',
-    );
+    const missing = await screen.findByTestId('skill-viewer-missing');
+    expect(missing).toHaveTextContent('no longer installed on env-k8s-valhalla');
+    expect(missing).toHaveTextContent('rolled back or retired');
+    // A missing skill is an expected state, not an error.
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('surfaces load failures', async () => {

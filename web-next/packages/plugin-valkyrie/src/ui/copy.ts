@@ -6,7 +6,12 @@
  * raw values — every string crosses through this module first.
  */
 
-import type { AutonomyMode } from '../domain';
+import {
+  decisionHasRealAction,
+  decisionNeedsApproval,
+  type AutonomyMode,
+  type DecisionRecord,
+} from '../domain';
 
 interface TermCopy {
   label: string;
@@ -138,6 +143,32 @@ export function operationalStateCopy(state: string): TermCopy {
 
 export function actionAuthorityCopy(authority: string): TermCopy {
   return ACTION_AUTHORITY_COPY[authority] ?? fallbackCopy(authority);
+}
+
+/**
+ * The truthful status for a decision row. Only a judgment that actually
+ * reaches the review inbox (see `decisionNeedsApproval`) reads as "Needs your
+ * approval"; ambient/observational/autonomous decisions get a neutral status
+ * ("Observation only" / "Acted autonomously" / the raw authority copy) so we
+ * never mislabel background work as waiting on the operator.
+ */
+export function decisionStatusCopy(
+  decision: Pick<DecisionRecord, 'actionAuthority' | 'tier' | 'recommendedAction'>,
+): TermCopy {
+  if (decisionNeedsApproval(decision)) {
+    return ACTION_AUTHORITY_COPY.human_review_required!;
+  }
+  if (!decisionHasRealAction(decision)) {
+    // No real action was proposed — whatever the authority says, the resident
+    // only recorded what it saw.
+    return ACTION_AUTHORITY_COPY.observe_only!;
+  }
+  if (decision.actionAuthority === 'human_review_required') {
+    // Authority says review, but the tier gate means it never surfaces to the
+    // inbox — it is observational, not pending.
+    return ACTION_AUTHORITY_COPY.observe_only!;
+  }
+  return actionAuthorityCopy(decision.actionAuthority);
 }
 
 export function autonomyModeCopy(mode: AutonomyMode): TermCopy {

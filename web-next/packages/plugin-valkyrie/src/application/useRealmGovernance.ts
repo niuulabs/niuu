@@ -13,12 +13,17 @@ export function useRealms() {
   });
 }
 
-export function useRealmTrustGrants(slug: string) {
+/**
+ * Trust grants for a realm. Pass `enabled: false` when the caller already knows
+ * the realm does not exist (see `useRealms`) so we never fire a request that
+ * would 404 for an environment with no realm configured.
+ */
+export function useRealmTrustGrants(slug: string, enabled = true) {
   const service = useService<IRealmGovernanceService>('valkyrie.realms');
   return useQuery({
     queryKey: [...REALMS_QUERY_KEY, slug, 'trust-grants'],
     queryFn: () => service.listTrustGrants(slug),
-    enabled: slug.length > 0,
+    enabled: enabled && slug.length > 0,
   });
 }
 

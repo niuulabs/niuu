@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import ravn.valkyrie_evolution.resident_learning as resident_learning_mod
@@ -22,6 +23,8 @@ from ravn.valkyrie_evolution.models import (
     ToolReachGrant,
 )
 from ravn.valkyrie_evolution.resident_learning import (
+    EVOLUTION_SKILL_INVENTORY_EVENT,
+    SKILL_INVENTORY_STATUS_PRESENT,
     ResidentLearningArtifact,
     ResidentLearningIdentity,
     ResidentLearningRuntime,
@@ -500,3 +503,267 @@ async def test_restore_is_a_noop_without_a_tools_dir(tmp_path) -> None:
         subscriber=bus,
     )
     assert await runtime._attempt_restore_of_superseded(SKILL, _signal()) == ("", "")
+
+
+# ---------------------------------------------------------------------------
+# Skill inventory snapshots (the dashboard reads the full live inventory)
+# ---------------------------------------------------------------------------
+
+
+def _inventory_events(recorder: _RecordingPublisher) -> list[Any]:
+    return [e for e in recorder.events if e.event_type == EVOLUTION_SKILL_INVENTORY_EVENT]
+
+
+async def test_publish_skill_inventory_emits_one_event_per_learned_tool(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+
+    published = await runtime.publish_skill_inventory()
+
+    events = _inventory_events(recorder)
+    assert published == 1
+    assert len(events) == 1
+    payload = events[0].payload
+    # The enriched fields carry real content, not just the name.
+    assert payload["skill_name"] == SKILL
+    assert payload["status"] == SKILL_INVENTORY_STATUS_PRESENT
+    assert payload["environment_id"] == "cluster-b"
+    assert payload["valkyrie_id"] == "valkyrie:k8s-b"
+    assert "def run(input)" in payload["tool_code"]
+    assert payload["learned_tool_manifest"]["name"] == SKILL
+    assert payload["skill_content"]  # non-empty synthesized skill body
+
+
+async def test_publish_skill_inventory_includes_managed_skills(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    # A plain managed skill installed on the resident (no learned-tool envelope).
+    await runtime.skills.create(
+        name="valkyrie-drain-node",
+        content="# skill: valkyrie-drain-node\n\nDrain a node safely.\n",
+        description="Drain a node safely.",
+        scope="environment",
+        environment_id="cluster-b",
+    )
+
+    published = await runtime.publish_skill_inventory()
+
+    events = _inventory_events(recorder)
+    names = {e.payload["skill_name"] for e in events}
+    assert "valkyrie-drain-node" in names
+    assert published == len(events)
+    drain = next(e for e in events if e.payload["skill_name"] == "valkyrie-drain-node")
+    assert drain.payload["skill_content"].startswith("# skill: valkyrie-drain-node")
+    assert drain.payload["summary_text"] == "Drain a node safely."
+
+
+async def test_publish_skill_inventory_skips_a_bad_artifact(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # A good artifact and a corrupt one side by side: the good one survives.
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+    (artifacts_dir / "broken.json").write_text("{ not valid json", encoding="utf-8")
+
+    published = await runtime.publish_skill_inventory()
+
+    names = {e.payload["skill_name"] for e in _inventory_events(recorder)}
+    assert names == {SKILL}
+    assert published == 1
+
+
+async def test_publish_skill_inventory_empty_when_nothing_installed(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+
+    published = await runtime.publish_skill_inventory()
+
+    assert published == 0
+    assert _inventory_events(recorder) == []
+
+
+async def test_adoption_refreshes_the_inventory_snapshot(tmp_path) -> None:
+    # Opportunistic refresh: adopting a skill immediately republishes inventory
+    # so the dashboard sees it without waiting for the heartbeat.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+
+    decision = await runtime.evaluate_and_apply(_artifact())
+    assert decision.action == "adopted"
+
+    events = _inventory_events(recorder)
+    assert any(e.payload["skill_name"] == SKILL for e in events)
+
+
+async def test_rollback_refreshes_the_inventory_snapshot(tmp_path) -> None:
+    # The other opportunistic trigger: an operator retraction republishes the
+    # inventory so the dashboard drops the archived skill promptly.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    assert (await runtime.evaluate_and_apply(_artifact())).action == "adopted"
+    recorder.events.clear()
+
+    retracted = await runtime.retract(_artifact(command_action="rollback", operator_command=True))
+
+    assert retracted.action == "rolled_back"
+    # A snapshot fired after the retraction; the archived skill is absent.
+    names = {e.payload["skill_name"] for e in _inventory_events(recorder)}
+    assert SKILL not in names
+
+
+async def test_inventory_managed_skill_carries_co_installed_tool_code(tmp_path) -> None:
+    # A managed skill with a tool implementation on disk carries that code in
+    # its inventory record so the dashboard can render it.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    assert (await runtime.evaluate_and_apply(_artifact())).action == "adopted"
+    assert tool_path_for_skill(tmp_path / "tools", SKILL).is_file()
+    recorder.events.clear()
+
+    await runtime.publish_skill_inventory()
+
+    event = next(e for e in _inventory_events(recorder) if e.payload["skill_name"] == SKILL)
+    assert "def run(signal)" in event.payload["tool_code"]
+
+
+async def test_inventory_survives_a_failing_publisher(tmp_path) -> None:
+    # A broken bus fails per-skill in logs; the snapshot reports zero published
+    # instead of raising into the caller.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+
+    async def _broken_publish(event: Any) -> None:
+        raise RuntimeError("bus down")
+
+    recorder.publish = _broken_publish  # type: ignore[method-assign]
+
+    published = await runtime.publish_skill_inventory()
+
+    assert published == 0
+
+
+async def test_inventory_survives_a_failing_skill_registry(tmp_path) -> None:
+    # A registry that cannot enumerate must not abort the learned-tool half of
+    # the snapshot (fail loudly per-source in logs, keep going).
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+
+    async def _broken_list(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("registry down")
+
+    runtime._skills.list_skills = _broken_list  # type: ignore[method-assign]
+
+    published = await runtime.publish_skill_inventory()
+
+    names = {e.payload["skill_name"] for e in _inventory_events(recorder)}
+    assert names == {SKILL}
+    assert published == 1
+
+
+async def test_inventory_dedupes_names_and_skips_unreadable_pieces(tmp_path) -> None:
+    # One record per skill name: a duplicate envelope, a managed skill shadowing
+    # a learned tool, a nameless registry row, and an unreadable tool file are
+    # all handled without aborting the snapshot.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+    # A second envelope file carrying the same manifest name → first-loop dedupe.
+    envelope = learned_tool_artifact_path(artifacts_dir, SKILL)
+    (artifacts_dir / "aa_duplicate.json").write_text(
+        envelope.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # A managed skill with the same name as the learned tool → second-loop
+    # dedupe; a nameless row is skipped; a tool path that is not a regular
+    # file yields an empty tool_code instead of failing.
+    other = "valkyrie-drain-node"
+    tool_path = tool_path_for_skill(tmp_path / "tools", other)
+    tool_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_path.mkdir()  # a directory, not a file: no tool code to carry
+
+    async def _rows(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {"skill": {"name": SKILL, "content": "shadowed", "description": ""}, "metadata": {}},
+            {"skill": {"name": ""}, "metadata": {}},
+            {"skill": {"name": other, "content": "# skill\n", "description": ""}, "metadata": {}},
+        ]
+
+    runtime._skills.list_skills = _rows  # type: ignore[method-assign]
+
+    published = await runtime.publish_skill_inventory()
+
+    events = _inventory_events(recorder)
+    names = [e.payload["skill_name"] for e in events]
+    assert published == 2
+    assert sorted(names) == sorted([SKILL, other])
+    learned = next(e for e in events if e.payload["skill_name"] == SKILL)
+    # The learned-tool record won over the shadowing managed skill.
+    assert learned.payload["skill_content"] != "shadowed"
+    unreadable = next(e for e in events if e.payload["skill_name"] == other)
+    assert unreadable.payload["tool_code"] == ""
+
+
+async def test_opportunistic_refresh_swallows_snapshot_failures(tmp_path) -> None:
+    # _refresh_skill_inventory is best-effort: a snapshot crash must never
+    # break the adoption/rollback that already succeeded.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, _recorder = _restoring_runtime(tmp_path, store)
+
+    async def _boom() -> int:
+        raise RuntimeError("snapshot exploded")
+
+    runtime.publish_skill_inventory = _boom  # type: ignore[method-assign]
+
+    await runtime._refresh_skill_inventory()  # must not raise
+
+
+async def test_heartbeat_loop_republishes_and_survives_a_failure(tmp_path) -> None:
+    # The heartbeat republishes on its cadence and a failing tick is logged,
+    # never fatal — the next tick still fires.
+    store = FlockLearningStore(tmp_path / "flock_learning.json")
+    runtime, recorder = _restoring_runtime(tmp_path, store)
+    _code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir, artifact=_versioned_learned_artifact("learned-tool:v2", 2)
+    )
+    runtime._skill_inventory_interval_seconds = 0.01
+    calls: list[int] = []
+    real_publish = runtime.publish_skill_inventory
+
+    async def _flaky_publish() -> int:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("first tick fails")
+        return await real_publish()
+
+    runtime.publish_skill_inventory = _flaky_publish  # type: ignore[method-assign]
+    task = asyncio.create_task(runtime._run_inventory_loop())
+    try:
+        while len(calls) < 2:
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert len(calls) >= 2
+    assert any(e.payload["skill_name"] == SKILL for e in _inventory_events(recorder))

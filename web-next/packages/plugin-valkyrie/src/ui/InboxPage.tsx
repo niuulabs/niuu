@@ -6,6 +6,7 @@ import {
   reviewEffectStatement,
   reviewInvestigationPrompt,
   reviewPolicyFindings,
+  LIST_LIMIT,
   type ReviewItem,
   type ReviewKind,
 } from '../domain';
@@ -298,10 +299,19 @@ export function InboxPage() {
   const [kindFilter, setKindFilter] = useState<ReviewKind | ''>('');
   const [selectedId, setSelectedId] = useState<string>('');
   const { data: summary } = useReviewSummary();
-  const { data, isLoading, error } = useReviewList({ status: 'pending', kind: kindFilter });
+  // Only ever fetch the newest window; the endpoint honours `limit`.
+  const { data, isLoading, error } = useReviewList({
+    status: 'pending',
+    kind: kindFilter,
+    limit: LIST_LIMIT,
+  });
 
   const items = useMemo(() => sortByUrgency(data ?? []), [data]);
   const selected = items.find((item) => item.itemId === selectedId) ?? items[0];
+  // The true pending count comes from the summary; when it exceeds what we
+  // render, say so rather than implying the list is complete.
+  const pendingTotal = summary?.pendingTotal ?? items.length;
+  const cappedByLimit = !kindFilter && pendingTotal > items.length && items.length >= LIST_LIMIT;
 
   if (isLoading) {
     return (
@@ -362,6 +372,11 @@ export function InboxPage() {
       ) : (
         <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:gap-3">
           <aside className="niuu:flex niuu:w-72 niuu:shrink-0 niuu:flex-col niuu:gap-2 niuu:overflow-auto">
+            {cappedByLimit ? (
+              <p data-testid="inbox-list-capped" className={`niuu:px-1 niuu:text-xs ${MUTED}`}>
+                latest {LIST_LIMIT} · {pendingTotal} total
+              </p>
+            ) : null}
             {items.map((item) => (
               <QueueCard
                 key={item.itemId}

@@ -909,6 +909,35 @@ export function createSeedDecisions(): DecisionRecord[] {
       outcomeAt: '2026-06-03T14:03:10Z',
       decidedAt: '2026-06-03T14:02:20Z',
     },
+    // The same PersistentVolume re-judged every few minutes: three ambient
+    // judgments sharing one correlationId. The console must collapse them
+    // into a single ×3 row and must NOT claim they await the operator —
+    // `watch` is not a real action, so the inbox gate never fires.
+    ...[
+      { decisionId: 'decision-pv-3', decidedAt: '2026-06-03T13:58:00Z' },
+      { decisionId: 'decision-pv-2', decidedAt: '2026-06-03T13:54:00Z' },
+      { decisionId: 'decision-pv-1', decidedAt: '2026-06-03T13:50:00Z' },
+    ].map(({ decisionId, decidedAt }) => ({
+      decisionId,
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'watching',
+      tier: 'ambient',
+      confidence: 0.71,
+      rationale:
+        'The claim is Bound and the backing disk reports healthy; re-checking on the ' +
+        'ambient cadence until the capacity alert clears.',
+      recommendedAction: 'watch',
+      actionAuthority: 'human_review_required',
+      signalRefs: [],
+      evidence: [{ subject: 'pv/media-primary' }],
+      correlationId: 'corr-pv-media',
+      summary:
+        'Valkyrie valkyrie-valhalla-sigrun in env-k8s-valhalla judged PersistentVolume ' +
+        'media-primary healthy; capacity holding at 78%',
+      outcome: '',
+      decidedAt,
+    })),
     {
       decisionId: 'decision-triage-1',
       environmentId: 'env-k8s-valhalla',

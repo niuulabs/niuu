@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Moon } from 'lucide-react';
-import type { ReviewStatus, ValkyrieEventTelemetry } from '../domain';
+import { ACTIVITY_STORY_LIMIT, type ReviewStatus, type ValkyrieEventTelemetry } from '../domain';
 import {
   DEFAULT_STORY_FILTERS,
   actionStatus,
@@ -199,7 +199,12 @@ export function ActivityPage() {
       ),
     [dashboard.data?.telemetry?.recentEvents],
   );
-  const stories = useMemo(() => groupActivityStories(telemetryEvents), [telemetryEvents]);
+  // groupActivityStories returns newest-first; keep only the newest window so
+  // a long telemetry tail cannot render an unbounded list of stories.
+  const stories = useMemo(
+    () => groupActivityStories(telemetryEvents).slice(0, ACTIVITY_STORY_LIMIT),
+    [telemetryEvents],
+  );
   const visibleStories = useMemo(() => filterActivityStories(stories, filters), [stories, filters]);
   const settled = useMemo(
     () =>

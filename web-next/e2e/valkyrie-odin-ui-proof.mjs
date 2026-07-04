@@ -35,10 +35,11 @@ try {
   await page.screenshot({ path: `${outDir}/odin-activity.png`, fullPage: true });
   console.log('ui-proof: settled ledger captured');
 
-  await page.goto(`${baseUrl}/valkyrie/fleet`, { waitUntil: 'networkidle' });
-  await page.getByTestId('fleet-page').waitFor({ timeout: 30_000 });
-  await page.screenshot({ path: `${outDir}/odin-fleet.png`, fullPage: true });
-  console.log('ui-proof: fleet captured');
+  // The fleet page is retired; the console is the resident view now.
+  await page.goto(`${baseUrl}/valkyrie`, { waitUntil: 'networkidle' });
+  await page.getByTestId('valkyrie-console-page').waitFor({ timeout: 30_000 });
+  await page.screenshot({ path: `${outDir}/odin-console.png`, fullPage: true });
+  console.log('ui-proof: console captured');
 } finally {
   await browser.close();
 }
