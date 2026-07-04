@@ -90,10 +90,57 @@ test('console signal browser drills into observed signals', async ({ page }) => 
   await expect(page.getByTestId('valkyrie-signal-browser')).toContainText('pod/ravn-worker-77');
 });
 
-test('activity shows fleet telemetry', async ({ page }) => {
+test('activity groups events into stories and hides routine triage by default', async ({
+  page,
+}) => {
   await page.goto('/valkyrie/activity');
 
   await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+  const investigation = page
+    .getByTestId('story-investigation')
+    .filter({ hasText: 'Registry token rollover broke image pulls' });
+  await expect(investigation).toBeVisible();
+  // The ambient idle-triage story stays hidden until the operator opts in.
+  await expect(page.getByTestId('story-triage')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'show routine' }).click();
+  await expect(page.getByTestId('story-triage')).toContainText(
+    'Triaged 6 routine signals — nothing needed',
+  );
+
+  // The investigation expands into its causal thread: signal → judgment →
+  // court decision → action, with the action's lifecycle visible.
+  await investigation.getByRole('button', { name: /registry token rollover/i }).click();
+  const thread = page.getByTestId('story-thread');
+  await expect(thread).toContainText('Pod ravn-worker-77 stuck in ImagePullBackOff');
+  await expect(thread).toContainText('ODIN approved refresh_pull_secret_and_restart');
+  await expect(thread).toContainText('Refreshed the registry pull secret');
+  await expect(thread.getByTestId('story-action-status')).toHaveText('completed');
+});
+
+test('an activity judgment links to the learned skill it used', async ({ page }) => {
+  await page.goto('/valkyrie/activity');
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+
+  await page
+    .getByTestId('story-investigation')
+    .filter({ hasText: 'Registry token rollover broke image pulls' })
+    .getByRole('button', { name: /registry token rollover/i })
+    .click();
+  await page.getByTestId('skill-link-registry_token_refresh_check').click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('pull-secret freshness');
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+});
+
+test('activity debug view keeps the raw event tail', async ({ page }) => {
+  await page.goto('/valkyrie/activity');
+  await expect(page.getByTestId('activity-page')).toBeVisible({ timeout: 5000 });
+
+  await page.getByRole('button', { name: 'debug view' }).click();
+  await expect(page.getByTestId('activity-debug-list')).toBeVisible();
   await expect(page.getByTestId('activity-row').first()).toBeVisible();
 });
 

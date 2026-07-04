@@ -496,6 +496,80 @@ def test_poll_and_heartbeat_chatter_stays_out_of_the_activity_feed():
     assert len(telemetry["recentPolls"]) == 3
 
 
+def test_recent_events_carry_correlation_causation_and_tier():
+    """The activity page groups events into causal stories.
+
+    That requires each recentEvents entry to pass through the Sleipnir
+    correlation_id/causation_id envelope fields and the judgment tier, so
+    the UI can chain signal -> judgment -> action and collapse ambient
+    triage without re-deriving any of it client-side.
+    """
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="signal.kubernetes.event",
+            source="ravn:valkyrie:ymir",
+            payload={"environment_id": "ymir", "reason": "ImagePullBackOff"},
+            summary="pod stuck in ImagePullBackOff",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, tzinfo=UTC),
+            event_id="evt-signal-1",
+            correlation_id="corr-imagepull",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "fields": {"tier": "Ambient", "operational_state": "watching"},
+            },
+            summary="Triaged 3 routine signals — nothing needed",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+            event_id="evt-judgment-1",
+            correlation_id="corr-imagepull",
+            causation_id="evt-signal-1",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.action.completed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "tier": "present",
+            },
+            summary="restarted the rollout",
+            urgency=0.5,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 2, tzinfo=UTC),
+            event_id="evt-action-1",
+            correlation_id="corr-imagepull",
+            causation_id="evt-judgment-1",
+        )
+    )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    by_id = {entry["id"]: entry for entry in telemetry["recentEvents"]}
+    assert by_id["evt-signal-1"]["correlationId"] == "corr-imagepull"
+    assert by_id["evt-signal-1"]["causationId"] == ""
+    assert by_id["evt-signal-1"]["tier"] == ""
+    assert by_id["evt-judgment-1"]["correlationId"] == "corr-imagepull"
+    assert by_id["evt-judgment-1"]["causationId"] == "evt-signal-1"
+    # Tier is read from the judgment's nested fields dict and normalized.
+    assert by_id["evt-judgment-1"]["tier"] == "ambient"
+    assert by_id["evt-action-1"]["causationId"] == "evt-judgment-1"
+    # Top-level payload tier still passes through for action events.
+    assert by_id["evt-action-1"]["tier"] == "present"
+
+
 def test_valkyrie_dashboard_projects_operational_state_from_live_judgments():
     projection = ValkyrieDashboardProjection()
     projection.record_event(

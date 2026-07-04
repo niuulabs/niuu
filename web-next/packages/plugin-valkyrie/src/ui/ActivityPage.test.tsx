@@ -1,5 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
+import type { ValkyrieEventTelemetry } from '../domain';
 import {
   createMockOdinReviewService,
   createMockValkyrieService,
@@ -9,29 +11,222 @@ import {
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { ActivityPage } from './ActivityPage';
 
+function serviceWithEvents(events: ValkyrieEventTelemetry[]) {
+  const dashboard = createSeedValkyrieDashboard();
+  dashboard.telemetry = { ...dashboard.telemetry!, recentEvents: events };
+  return createMockValkyrieService(dashboard);
+}
+
 describe('ActivityPage', () => {
   it('shows the loading state first', () => {
     render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
     expect(screen.getByTestId('activity-loading')).toBeInTheDocument();
   });
 
-  it('lists live telemetry from all valkyries first', async () => {
+  it('groups telemetry into stories and hides routine triage by default', async () => {
     render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
 
-    const rows = await screen.findAllByTestId('activity-row');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0]).toHaveTextContent('valkyrie.action.proposed');
-    expect(rows.some((row) => row.textContent?.includes('env-k8s-valhalla'))).toBe(true);
-    expect(rows.some((row) => row.textContent?.includes('env-k8s-ymir'))).toBe(true);
+    const stories = await screen.findAllByTestId('story-investigation');
+    expect(stories.length).toBeGreaterThan(0);
+    expect(stories[0]).toHaveTextContent('Registry token rollover broke image pulls');
+    // The ambient idle-triage story stays hidden until opted in.
+    expect(screen.queryByTestId('story-triage')).toBeNull();
+    expect(screen.queryByText('Triaged 6 routine signals — nothing needed')).toBeNull();
   });
 
-  it('falls back to settled decisions when telemetry is empty', async () => {
-    const dashboard = createSeedValkyrieDashboard();
-    dashboard.telemetry = { ...dashboard.telemetry!, recentEvents: [] };
+  it('reveals collapsed idle-triage lines behind the show-routine toggle', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
+    await screen.findAllByTestId('story-investigation');
+
+    await user.click(screen.getByRole('button', { name: 'show routine' }));
+
+    const triage = screen.getByTestId('story-triage');
+    expect(triage).toHaveTextContent('Triaged 6 routine signals — nothing needed');
+    expect(triage).toHaveTextContent('env-k8s-ymir');
+    // A collapsed line, not an expandable thread.
+    expect(within(triage).queryByRole('button')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'show routine' }));
+    expect(screen.queryByTestId('story-triage')).toBeNull();
+  });
+
+  it('expands an investigation into its causal thread with action status', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
+    await screen.findAllByTestId('story-investigation');
+
+    await user.click(
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
+    );
+
+    const thread = screen.getByTestId('story-thread');
+    const rows = within(thread).getAllByTestId('story-event');
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Pod ravn-worker-77 stuck in ImagePullBackOff'),
+      expect.stringContaining('Registry token rollover broke image pulls'),
+      expect.stringContaining('ODIN approved refresh_pull_secret_and_restart'),
+      expect.stringContaining('Refreshed the registry pull secret'),
+    ]);
+    expect(within(thread).getByTestId('story-action-status')).toHaveTextContent('completed');
+
+    await user.click(
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
+    );
+    expect(screen.queryByTestId('story-thread')).toBeNull();
+  });
+
+  it('marks failed actions in the thread', async () => {
+    const user = userEvent.setup();
+    const events: ValkyrieEventTelemetry[] = [
+      {
+        id: 'evt-failed-action',
+        eventType: 'valkyrie.action.failed',
+        kind: 'action',
+        environmentId: 'env-k8s-valhalla',
+        summary: 'Rollout restart did not converge',
+        observedAt: '2026-06-03T14:05:00Z',
+        correlationId: 'corr-failed',
+      },
+    ];
     render(<ActivityPage />, {
-      wrapper: wrapWithValkyrie({ valkyrie: createMockValkyrieService(dashboard) }),
+      wrapper: wrapWithValkyrie({ valkyrie: serviceWithEvents(events) }),
+    });
+    await screen.findAllByTestId('story-investigation');
+
+    await user.click(screen.getByRole('button', { name: /rollout restart did not converge/i }));
+
+    expect(screen.getByTestId('story-action-status')).toHaveTextContent('failed');
+  });
+
+  it('opens the skill viewer from a judgment skill reference', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
+    await screen.findAllByTestId('story-investigation');
+
+    await user.click(
+      screen.getByRole('button', { name: /registry token rollover broke image pulls/i }),
+    );
+    await user.click(await screen.findByTestId('skill-link-registry_token_refresh_check'));
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog).toHaveTextContent('pull-secret freshness'));
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('filters stories by environment', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
+    await screen.findAllByTestId('story-investigation');
+
+    await user.click(screen.getByRole('button', { name: 'show routine' }));
+    expect(screen.getByTestId('story-triage')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Filter by environment'), ['env-k8s-valhalla']);
+    // The ymir-only triage story disappears; valhalla investigations stay.
+    expect(screen.queryByTestId('story-triage')).toBeNull();
+    expect(screen.getAllByTestId('story-investigation').length).toBeGreaterThan(0);
+
+    await user.selectOptions(screen.getByLabelText('Filter by environment'), ['']);
+    expect(screen.getByTestId('story-triage')).toBeInTheDocument();
+  });
+
+  it('keeps only stories with actions when actions-only is toggled', async () => {
+    const user = userEvent.setup();
+    const events: ValkyrieEventTelemetry[] = [
+      {
+        id: 'evt-signal-only',
+        eventType: 'signal.kubernetes.event',
+        kind: 'signal',
+        environmentId: 'env-k8s-valhalla',
+        summary: 'Disk pressure rising on node worker-3',
+        observedAt: '2026-06-03T14:04:00Z',
+        correlationId: 'corr-disk',
+      },
+      {
+        id: 'evt-with-action',
+        eventType: 'valkyrie.action.completed',
+        kind: 'action',
+        environmentId: 'env-k8s-valhalla',
+        summary: 'Compacted the journal to free disk space',
+        observedAt: '2026-06-03T14:05:00Z',
+        correlationId: 'corr-journal',
+      },
+    ];
+    render(<ActivityPage />, {
+      wrapper: wrapWithValkyrie({ valkyrie: serviceWithEvents(events) }),
+    });
+    await screen.findAllByTestId('story-investigation');
+    expect(screen.getAllByTestId('story-investigation')).toHaveLength(2);
+
+    await user.click(screen.getByRole('button', { name: 'actions only' }));
+
+    const stories = screen.getAllByTestId('story-investigation');
+    expect(stories).toHaveLength(1);
+    expect(stories[0]).toHaveTextContent('Compacted the journal');
+  });
+
+  it('switches to the raw debug list and back', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, { wrapper: wrapWithValkyrie() });
+    await screen.findAllByTestId('story-investigation');
+    expect(screen.queryByTestId('activity-debug-list')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'debug view' }));
+
+    const debugList = screen.getByTestId('activity-debug-list');
+    const rows = within(debugList).getAllByTestId('activity-row');
+    expect(rows.length).toBeGreaterThan(0);
+    // Raw events keep their event types and correlation ids visible…
+    expect(debugList).toHaveTextContent('valkyrie.judgment.proposed');
+    expect(debugList).toHaveTextContent('corr corr-imagepull');
+    // …and settled reviews still ride along.
+    expect(debugList).toHaveTextContent('decided by human:operator');
+
+    await user.click(screen.getByRole('button', { name: 'debug view' }));
+    expect(screen.queryByTestId('activity-debug-list')).toBeNull();
+    expect(screen.getAllByTestId('story-investigation').length).toBeGreaterThan(0);
+  });
+
+  it('explains when filters hide every story', async () => {
+    const user = userEvent.setup();
+    const events: ValkyrieEventTelemetry[] = [
+      {
+        id: 'evt-idle-only',
+        eventType: 'valkyrie.judgment.proposed',
+        kind: 'judgment',
+        environmentId: 'env-k8s-ymir',
+        summary: 'Triaged 3 routine signals — nothing needed',
+        observedAt: '2026-06-03T14:04:00Z',
+        correlationId: 'corr-idle-only',
+        tier: 'ambient',
+      },
+    ];
+    render(<ActivityPage />, {
+      wrapper: wrapWithValkyrie({ valkyrie: serviceWithEvents(events) }),
     });
 
+    const filteredEmpty = await screen.findByTestId('activity-filtered-empty');
+    expect(filteredEmpty).toHaveTextContent('1 story is hidden by the current filters.');
+
+    await user.click(screen.getByRole('button', { name: 'show routine' }));
+    expect(screen.getByTestId('story-triage')).toBeInTheDocument();
+  });
+
+  it('points settled-decision-only activity at the debug view', async () => {
+    const user = userEvent.setup();
+    render(<ActivityPage />, {
+      wrapper: wrapWithValkyrie({ valkyrie: serviceWithEvents([]) }),
+    });
+
+    const filteredEmpty = await screen.findByTestId('activity-filtered-empty');
+    expect(filteredEmpty).toHaveTextContent(
+      'No stories yet — settled decisions live in the debug view.',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'debug view' }));
     const rows = await screen.findAllByTestId('activity-row');
     expect(rows[0]).toHaveTextContent('decided by human:operator');
     expect(rows.some((row) => row.textContent?.includes('autonomy'))).toBe(true);
@@ -41,11 +236,9 @@ describe('ActivityPage', () => {
     const empty = createMockOdinReviewService(
       createSeedReviewItems().filter((item) => item.status === 'pending'),
     );
-    const dashboard = createSeedValkyrieDashboard();
-    dashboard.telemetry = { ...dashboard.telemetry!, recentEvents: [] };
     render(<ActivityPage />, {
       wrapper: wrapWithValkyrie({
-        valkyrie: createMockValkyrieService(dashboard),
+        valkyrie: serviceWithEvents([]),
         'valkyrie.reviews': empty,
       }),
     });
