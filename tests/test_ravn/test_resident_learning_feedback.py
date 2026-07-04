@@ -294,6 +294,80 @@ async def test_revise_command_edits_candidate_in_place(tmp_path) -> None:
     await runtime.stop()
 
 
+def _dream_artifact(learning_id: str, *, title_variant: str = "") -> ResidentLearningArtifact:
+    return ResidentLearningArtifact(
+        learning_id=learning_id,
+        title=title_variant or "valkyrie-inspect-kubernetes-pod-oomkilled",
+        summary="Use pod events and node pressure before restarting OOMKilled pods.",
+        content=_skill_content(),
+        artifact_type="ravn_skill_tool",
+        scope="flock",
+        confidence=0.5,
+        source_environment_id="cluster-a",
+        source_valkyrie_id="valkyrie:k8s-a",
+        promotion_id=learning_id,
+        flock_id="k8s-valkyries",
+        domain="k8s",
+        redaction_status="redacted",
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_dream_adoption_folds_into_existing_record(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock.json")
+    runtime, bus, events = await _runtime(tmp_path, store=store, bump=0.2)
+
+    first = await runtime.evaluate_and_apply(_dream_artifact("learn-dream-1"))
+    second = await runtime.evaluate_and_apply(
+        _dream_artifact(
+            "learn-dream-2",
+            title_variant="  Valkyrie-Inspect-Kubernetes-Pod-OOMKilled ",
+        )
+    )
+    await bus.flush()
+
+    assert first.action == "adopted"
+    assert second.action == "adopted"
+    # One record, not two: the duplicate folded and counted a repetition.
+    assert len(store.list()) == 1
+    record = store.get("learn-dream-1")
+    assert record.repetition == 2
+    with pytest.raises(ValueError, match="learn-dream-2"):
+        store.get("learn-dream-2")
+    repeat_ack = next(
+        event
+        for event in events
+        if event.event_type == registry.LEARNING_ADOPTION_RECORDED
+        and event.payload.get("learning_id") == "learn-dream-2"
+    )
+    assert repeat_ack.payload["repetition"] == 2
+
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_rejected_learning_does_not_absorb_new_dream_duplicates(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock.json")
+    store.save(
+        FlockLearningRecord(
+            exchange_id="learn-declined",
+            candidate=_candidate(learning_id="learn-declined"),
+            status="rejected",
+        )
+    )
+    runtime, bus, _events = await _runtime(tmp_path, store=store, bump=0.2)
+
+    decision = await runtime.evaluate_and_apply(_dream_artifact("learn-dream-fresh"))
+    await bus.flush()
+
+    assert decision.action == "adopted"
+    fresh = store.get("learn-dream-fresh")
+    assert fresh.repetition == 1
+    assert store.get("learn-declined").status == "rejected"
+
+    await runtime.stop()
+
+
 @pytest.mark.asyncio
 async def test_revise_command_on_adopted_supersedes_through_install_flow(tmp_path) -> None:
     store = FlockLearningStore(tmp_path / "flock.json")

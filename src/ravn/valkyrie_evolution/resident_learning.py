@@ -1839,19 +1839,32 @@ class ResidentLearningRuntime:
         self,
         artifact: ResidentLearningArtifact,
         decision: ResidentLearningDecision,
-    ) -> None:
-        """Record the decision in the durable flock-learning ledger."""
+    ) -> FlockLearningRecord | None:
+        """Record the decision in the durable flock-learning ledger.
+
+        A learning re-produced under a fresh id (a repeated dream) folds
+        into the existing non-rejected record by fingerprint: repetition
+        counts up instead of duplicate records piling up.
+        """
         if self._learning_store is None:
-            return
+            return None
         if decision.action not in {"adopted", "rejected", "rolled_back"}:
-            return
+            return None
         if decision.action == "rejected" and not decision.relevant:
             # Irrelevant learnings (wrong flock/domain) stay out of the ledger;
             # they were never candidates for this environment.
-            return
+            return None
         try:
             record = self._learning_store.get(artifact.learning_id)
         except ValueError:
+            # Only adoptions fold: a rejection folded onto the fingerprint
+            # match would silently decline the original adopted learning.
+            record = (
+                self._learning_store.fold_duplicate(_candidate_from_artifact(artifact))
+                if decision.action == "adopted"
+                else None
+            )
+        if record is None:
             record = FlockLearningRecord(
                 exchange_id=artifact.learning_id,
                 candidate=_candidate_from_artifact(artifact),
@@ -1874,14 +1887,14 @@ class ResidentLearningRuntime:
                 for environment_id in record.active_environment_ids
                 if environment_id != self.identity.environment_id
             ]
-        self._learning_store.save(record)
+        return self._learning_store.save(record)
 
     async def _publish_adoption(
         self,
         artifact: ResidentLearningArtifact,
         decision: ResidentLearningDecision,
     ) -> None:
-        self._persist_learning_decision(artifact, decision)
+        record = self._persist_learning_decision(artifact, decision)
         event = learning_adoption_recorded(
             environment_id=self.identity.environment_id,
             learning_id=artifact.learning_id,
@@ -1906,6 +1919,7 @@ class ResidentLearningRuntime:
                 "source_environment_id": artifact.source_environment_id,
                 "source_valkyrie_id": artifact.source_valkyrie_id,
                 "command_action": artifact.command_action,
+                "repetition": record.repetition if record is not None else 1,
                 "additional_nats_subjects": [
                     _flock_nats_subject(self.identity, "learning.adoption.recorded")
                 ],

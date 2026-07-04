@@ -142,6 +142,53 @@ async def test_two_k8s_environments_canary_and_adopt_over_sleipnir(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_propose_folds_repeated_learning_by_fingerprint(tmp_path) -> None:
+    bus = InProcessBus()
+    events: list[SleipnirEvent] = []
+    await bus.subscribe(["flock.learning.*"], lambda event: _record(events, event))
+    store = FlockLearningStore(tmp_path / "flock.json")
+    exchange = FlockLearningExchange(store=store, publisher=bus)
+
+    first = await exchange.propose(_candidate(source_episode_ids=["ep-1"]))
+    folded = await exchange.propose(
+        _candidate(
+            learning_id="learn-k8s-oom-repeat",
+            title="  OOM Restart   Watch ",
+            confidence=0.91,
+            source_episode_ids=["ep-9"],
+        )
+    )
+    await bus.flush()
+
+    assert folded.exchange_id == first.exchange_id
+    assert folded.repetition == 2
+    assert folded.candidate.confidence == 0.91
+    assert folded.candidate.source_episode_ids == ["ep-1", "ep-9"]
+    assert len(store.list()) == 1
+    assert [event.event_type for event in events] == ["flock.learning.proposed"] * 2
+    assert events[-1].payload["repetition"] == 2
+
+
+@pytest.mark.asyncio
+async def test_propose_does_not_fold_into_rejected_learning(tmp_path) -> None:
+    store = FlockLearningStore(tmp_path / "flock.json")
+    exchange = FlockLearningExchange(store=store)
+    peer = _peer_environment()
+    first = await exchange.propose(_candidate())
+    await exchange.reject(
+        first.exchange_id,
+        environment_id=peer.id,
+        rationale="Not applicable here.",
+    )
+
+    fresh = await exchange.propose(_candidate(learning_id="learn-k8s-oom-repeat"))
+
+    assert fresh.exchange_id != first.exchange_id
+    assert fresh.repetition == 1
+    assert len(store.list()) == 2
+
+
+@pytest.mark.asyncio
 async def test_negative_transfer_rejection_stops_ready_to_apply_loop(tmp_path) -> None:
     exchange = FlockLearningExchange(store=FlockLearningStore(tmp_path / "flock.json"))
     peer = _peer_environment()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -44,6 +44,17 @@ FLOCK_LEARNING_EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: Statuses a re-produced duplicate never folds into: the earlier learning was
+#: declined here, so the new production deserves its own record and review.
+FOLD_EXCLUDED_STATUSES: frozenset[str] = frozenset(
+    {"rejected", "blocked", "rolled_back", "archived"}
+)
+
+
+def learning_fingerprint(title: str, scope: str) -> str:
+    """Duplicate-detection key: normalized lowercase title plus scope."""
+    return f"{' '.join(title.lower().split())}::{scope.strip().lower()}"
+
 
 @dataclass(frozen=True)
 class FlockLearningCandidate:
@@ -67,6 +78,11 @@ class FlockLearningCandidate:
     rollback_status: str = ""
     tags: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+
+    @property
+    def fingerprint(self) -> str:
+        """Duplicate-detection key for repetition folding."""
+        return learning_fingerprint(self.title, str(self.metadata.get("scope") or "flock"))
 
     @classmethod
     def from_promotion(
@@ -204,6 +220,52 @@ class FlockLearningStore:
             records = [record for record in records if record.status == status]
         return sorted(records, key=lambda record: record.created_at)
 
+    def find_active_by_fingerprint(self, fingerprint: str) -> FlockLearningRecord | None:
+        """The non-declined record matching a duplicate-detection key, if any."""
+        for record in self.list():
+            if record.status in FOLD_EXCLUDED_STATUSES:
+                continue
+            if record.candidate.fingerprint == fingerprint:
+                return record
+        return None
+
+    def fold_duplicate(self, candidate: FlockLearningCandidate) -> FlockLearningRecord | None:
+        """Fold a re-produced learning into its active fingerprint match.
+
+        A dream that re-produces an existing non-rejected learning must not
+        multiply records: the match's ``repetition`` is incremented, evidence
+        is merged, and the timestamp refreshes. Returns None when there is
+        nothing to fold into. Superseding revisions never fold — they are a
+        deliberate new version of the learning they replace.
+        """
+        if str(candidate.metadata.get("supersedes") or ""):
+            return None
+        existing = self.find_active_by_fingerprint(candidate.fingerprint)
+        if existing is None:
+            return None
+        existing.repetition += 1
+        updates: dict = {
+            "confidence": max(existing.candidate.confidence, candidate.confidence),
+            "source_episode_ids": list(
+                dict.fromkeys(
+                    [
+                        *existing.candidate.source_episode_ids,
+                        *candidate.source_episode_ids,
+                    ]
+                )
+            ),
+            "evaluation_results": {
+                **existing.candidate.evaluation_results,
+                **candidate.evaluation_results,
+            },
+        }
+        if not existing.candidate.content and candidate.content:
+            updates["content"] = candidate.content
+        if not existing.candidate.summary and candidate.summary:
+            updates["summary"] = candidate.summary
+        existing.candidate = replace(existing.candidate, **updates)
+        return self.save(existing)
+
     def ready_for_peer(self, *, flock_id: str, environment_id: str) -> list[FlockLearningRecord]:
         """Return records a peer can still canary/adopt."""
         ready: list[FlockLearningRecord] = []
@@ -251,21 +313,40 @@ class FlockLearningExchange:
         self._source = source
 
     async def propose(self, candidate: FlockLearningCandidate) -> FlockLearningRecord:
-        status: FlockLearningStatus = "candidate"
-        event_type = "flock.learning.proposed"
-        reason = ""
         if candidate.redaction_status not in {"redacted", "safe", "none"}:
-            status = "blocked"
-            event_type = "flock.learning.rejected"
-            reason = "learning must be redacted before Flock exchange"
+            blocked = self._store.save(
+                FlockLearningRecord(
+                    exchange_id=str(uuid4()),
+                    candidate=candidate,
+                    status="blocked",
+                )
+            )
+            await self._emit(
+                "flock.learning.rejected",
+                blocked,
+                reason="learning must be redacted before Flock exchange",
+            )
+            return blocked
+
+        folded = self._store.fold_duplicate(candidate)
+        if folded is not None:
+            # A re-produced duplicate reinforces the existing record instead
+            # of multiplying it; the update re-emits so mirrors converge.
+            await self._emit(
+                "flock.learning.proposed",
+                folded,
+                reason=f"duplicate folded; repetition {folded.repetition}",
+            )
+            return folded
+
         record = self._store.save(
             FlockLearningRecord(
                 exchange_id=str(uuid4()),
                 candidate=candidate,
-                status=status,
+                status="candidate",
             )
         )
-        await self._emit(event_type, record, reason=reason)
+        await self._emit("flock.learning.proposed", record)
         return record
 
     async def start_canary(
@@ -505,6 +586,7 @@ class FlockLearningExchange:
                 "promotion_id": record.candidate.promotion_id,
                 "artifact_path": record.candidate.promoted_path or record.candidate.source_path,
                 "tags": list(record.candidate.tags),
+                "repetition": record.repetition,
                 "reason": reason,
                 "rationale": rationale,
                 "local_override_path": local_override_path,
