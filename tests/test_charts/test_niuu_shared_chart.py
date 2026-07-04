@@ -31,5 +31,20 @@ def test_embeds_valkyrie_history_migration_in_shared_db() -> None:
     for filename in (
         "000049_valkyrie_history.up.sql",
         "000049_valkyrie_history.down.sql",
+        "000053_realms_trust_capabilities.up.sql",
+        "000053_realms_trust_capabilities.down.sql",
     ):
         assert blocks[filename] == (MIGRATIONS_DIR / filename).read_text().rstrip() + "\n"
+
+
+def test_shared_db_does_not_embed_volundr_session_migrations() -> None:
+    template = (CHART_DIR / "templates" / "migrations-configmap.yaml").read_text()
+    blocks = _migration_blocks(template)
+
+    assert "000050_session_definition.up.sql" not in blocks
+    assert "000050_session_definition.down.sql" not in blocks
+    assert "000052_session_activity_state_since.up.sql" not in blocks
+    assert "000052_session_activity_state_since.down.sql" not in blocks
+
+    for block in blocks.values():
+        assert "ALTER TABLE sessions" not in block
