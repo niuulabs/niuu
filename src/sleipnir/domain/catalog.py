@@ -1101,6 +1101,52 @@ def valkyrie_state_updated(
     )
 
 
+#: Recommended actions that describe observation, not something to approve.
+_OBSERVATIONAL_JUDGMENT_ACTIONS = frozenset({"", "none", "n/a", "watch", "observe"})
+
+
+def judgment_summary(
+    *,
+    valkyrie_id: str,
+    environment_id: str = "",
+    attention_tier: str = "ambient",
+    recommended_action: str = "",
+    evidence: list[dict] | None = None,
+) -> str:
+    """A human sentence for a judgment, not a ``tier/action`` code.
+
+    Operators read these on dashboards and in the inbox; "used learned skill
+    'x' — no action needed" beats "ambient/inspect_with_adopted_learning".
+    The learned-skill name is pulled from evidence when present so the most
+    interesting fact — WHICH skill handled the signal — is front and center.
+    """
+    who = valkyrie_id or "unknown"
+    where = f" in {environment_id}" if environment_id else ""
+    action = str(recommended_action or "").strip()
+    observational = action.lower() in _OBSERVATIONAL_JUDGMENT_ACTIONS
+    skill = next(
+        (
+            str(entry.get("skill_name"))
+            for entry in evidence or []
+            if isinstance(entry, dict) and entry.get("skill_name")
+        ),
+        "",
+    )
+    if skill and observational:
+        return (
+            f"Valkyrie {who}{where} handled a signal with learned skill "
+            f"'{skill}' — no action needed ({attention_tier})"
+        )
+    if skill:
+        return (
+            f"Valkyrie {who}{where} used learned skill '{skill}' and "
+            f"recommends: {action} ({attention_tier})"
+        )
+    if observational:
+        return f"Valkyrie {who}{where} judged nothing needs action ({attention_tier})"
+    return f"Valkyrie {who}{where} recommends: {action} ({attention_tier})"
+
+
 def valkyrie_judgment_recorded(
     *,
     environment_id: str,
@@ -1132,7 +1178,13 @@ def valkyrie_judgment_recorded(
         event_type=registry.VALKYRIE_JUDGMENT_RECORDED,
         source=source,
         payload=payload,
-        summary=f"Valkyrie {valkyrie_id} judgment: {attention_tier}/{recommended_action}",
+        summary=judgment_summary(
+            valkyrie_id=valkyrie_id,
+            environment_id=environment_id,
+            attention_tier=attention_tier,
+            recommended_action=recommended_action,
+            evidence=evidence,
+        ),
         urgency=urgency,
         domain="infrastructure",
         timestamp=datetime.now(UTC),
@@ -1187,7 +1239,13 @@ def valkyrie_judgment_proposed(
         event_type=registry.VALKYRIE_JUDGMENT_PROPOSED,
         source=source,
         payload=payload,
-        summary=f"Valkyrie {valkyrie_id} proposed judgment: {attention_tier}/{recommended_action}",
+        summary=judgment_summary(
+            valkyrie_id=valkyrie_id,
+            environment_id=environment_id,
+            attention_tier=attention_tier,
+            recommended_action=recommended_action,
+            evidence=evidence,
+        ),
         urgency=urgency,
         domain="infrastructure",
         timestamp=datetime.now(UTC),

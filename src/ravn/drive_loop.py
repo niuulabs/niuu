@@ -2365,10 +2365,17 @@ class DriveLoop:
         if event_type == VALKYRIE_JUDGMENT_REJECTED:
             return f"Valkyrie {valkyrie_id or 'unknown'} judgment rejected"
         if event_type.startswith("valkyrie.judgment."):
-            tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
-            action = str(payload.get("recommended_action") or "observe")
-            return (
-                f"Valkyrie {valkyrie_id or 'unknown'} judgment in {environment_id}: {tier}/{action}"
+            from sleipnir.domain.catalog import judgment_summary  # noqa: PLC0415
+
+            evidence = payload.get("evidence")
+            return judgment_summary(
+                valkyrie_id=valkyrie_id,
+                environment_id=environment_id,
+                attention_tier=str(
+                    payload.get("tier") or payload.get("attention_tier") or "ambient"
+                ),
+                recommended_action=str(payload.get("recommended_action") or ""),
+                evidence=evidence if isinstance(evidence, list) else None,
             )
         if event_type.startswith("valkyrie.action."):
             capability = str(
