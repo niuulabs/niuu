@@ -878,6 +878,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 skuld_reg.set_reconcile_hook(_on_proxy_dead)
 
+            # Enforce session ownership at the WS proxy (the browser's
+            # termination point). The broker's ws_auth is defense-in-depth for
+            # direct/flock connections; the proxy dials it from loopback, so
+            # this is the check that actually covers proxied browser traffic.
+            if skuld_reg is not None and hasattr(skuld_reg, "set_ownership_guard"):
+
+                async def _may_attach(
+                    session_id: str,
+                    user_id: str | None,
+                    tenant_id: str | None,
+                    roles: tuple[str, ...],
+                ) -> bool:
+                    try:
+                        session = await repository.get(UUID(session_id))
+                    except ValueError:
+                        return False
+                    if session is None or not session.owner_id:
+                        # Unknown or unowned (legacy/dev) session: not the
+                        # proxy's job to invent a policy — stay permissive.
+                        return True
+                    if session.tenant_id and tenant_id and session.tenant_id != tenant_id:
+                        return False
+                    if "volundr:admin" in roles:
+                        return True
+                    return user_id == session.owner_id
+
+                skuld_reg.set_ownership_guard(_may_attach)
+
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster

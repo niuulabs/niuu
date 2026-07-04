@@ -71,6 +71,16 @@ class SkuldPortRegistry:
         # genuinely RUNNING (False) — a transient broker-leg blip on a live pod
         # must NOT drop the port (M-8).
         self._reconcile_hook: Callable[[str], Awaitable[bool]] | None = None
+        # Optional async guard invoked before proxying a browser WebSocket, so
+        # the proxy (where the browser terminates) enforces session ownership.
+        # The broker's own ws_auth check cannot cover the proxied path: the
+        # proxy dials the broker from loopback, so identity resolution there
+        # only works when Envoy x-auth-* headers are forwarded. The guard
+        # receives the resolved caller identity and the session id and returns
+        # True when the caller may attach. Set by the composition root.
+        self._ownership_guard: (
+            Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]] | None
+        ) = None
 
     def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
         """Inject the session-row reconcile callback used on a dead-pod proxy.
@@ -79,6 +89,34 @@ class SkuldPortRegistry:
         session is dead (STOPPED/FAILED) and ``False`` when it is still RUNNING.
         """
         self._reconcile_hook = hook
+
+    def set_ownership_guard(
+        self,
+        guard: Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]],
+    ) -> None:
+        """Inject the per-connection session-ownership check for the WS proxy.
+
+        ``guard(session_id, user_id, tenant_id, roles) -> bool`` returns True
+        when the caller owns (or may administer) the session.
+        """
+        self._ownership_guard = guard
+
+    async def may_attach(
+        self,
+        session_id: str,
+        user_id: str | None,
+        tenant_id: str | None,
+        roles: tuple[str, ...],
+    ) -> bool:
+        """Return True when the caller may attach to *session_id*'s chat.
+
+        Fail-closed only when a guard is configured; with no guard (pure
+        local dev without a session store) the proxy stays permissive so the
+        existing single-user flow is unaffected.
+        """
+        if self._ownership_guard is None:
+            return True
+        return await self._ownership_guard(session_id, user_id, tenant_id, roles)
 
     async def reconcile_dead(self, session_id: str) -> bool:
         """Reconcile a session whose pod the proxy could not reach (best effort).
@@ -138,6 +176,39 @@ class SkuldPortRegistry:
 
 
 _skuld_registry: SkuldPortRegistry | None = None
+
+
+def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """Resolve caller identity from a browser WebSocket for the proxy guard.
+
+    Mirrors Volundr's ``extract_principal`` resolution order: Envoy
+    ``x-auth-*`` headers first, then developer query parameters. Returns
+    ``(user_id, tenant_id, roles)``; user_id is None when no identity is
+    present (the guard decides whether that is allowed).
+    """
+    headers = {k.lower(): v for k, v in websocket.headers.items()}
+
+    def _roles(raw: str) -> tuple[str, ...]:
+        return tuple(r.strip() for r in raw.split(",") if r.strip())
+
+    forwarded = headers.get("x-auth-user-id", "").strip()
+    if forwarded:
+        return (
+            forwarded,
+            headers.get("x-auth-tenant", "").strip() or None,
+            _roles(headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    params = websocket.query_params
+    dev_user = str(params.get("devUserId") or "").strip()
+    if dev_user:
+        return (
+            dev_user,
+            str(params.get("devTenantId") or "").strip() or None,
+            _roles(str(params.get("devRoles") or "volundr:developer")),
+        )
+
+    return (None, None, ())
 
 
 def get_skuld_registry() -> SkuldPortRegistry | None:
@@ -690,6 +761,15 @@ def build_root_app(
             session_id: str,
         ) -> None:
             """Proxy browser WebSocket to the Skuld subprocess."""
+            # Ownership check first — the browser terminates here, so this is
+            # the enforcement point that covers dev (query-param identity) and
+            # Envoy (x-auth-* header) alike. A denied caller must never reach
+            # the broker leg.
+            user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+            if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
+                await websocket.close(code=1008, reason="Not authorized for this session")
+                return
+
             port = skuld_reg.get_port(session_id)
             if port is None:
                 # No live port — the broker is gone. Reconcile the row so a stale
