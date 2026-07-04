@@ -770,10 +770,15 @@ describe('hero actions', () => {
     await waitFor(() => expect(button).toHaveTextContent('Join huddle'));
   });
 
-  it('sends a direct message to the resident through the huddle', async () => {
+  it('sends a direct message to the resident after joining the huddle', async () => {
     const user = userEvent.setup();
     render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
     await screen.findByTestId('valkyrie-console-page');
+
+    // Messaging mirrors the backend contract: join the huddle first.
+    expect(screen.getByTestId('valkyrie-direct-message')).toBeDisabled();
+    await user.click(screen.getByTestId('valkyrie-join-huddle'));
+    await waitFor(() => expect(screen.getByTestId('valkyrie-direct-message')).toBeEnabled());
 
     await user.click(screen.getByTestId('valkyrie-direct-message'));
     const composer = await screen.findByTestId('valkyrie-dm-composer');

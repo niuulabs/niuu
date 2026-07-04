@@ -1089,6 +1089,10 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
     },
     async sendHuddleMessage(request: HuddleMessageInput) {
       const huddle = requireHuddle(request.huddleId);
+      // Mirror the backend contract exactly: messages need a joined author.
+      if (!huddle.joined || !huddle.joinedParticipantId) {
+        throw new Error('Join huddle before sending messages');
+      }
       const message: HuddleMessage = {
         id: `message-${huddle.messages.length + 1}`,
         huddleId: huddle.id,

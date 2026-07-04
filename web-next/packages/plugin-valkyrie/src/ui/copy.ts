@@ -186,6 +186,19 @@ export function autonomyModeHint(mode: AutonomyMode): string {
   return AUTONOMY_MODE_HINT[mode];
 }
 
+/**
+ * The most useful message an error carries: the API error `detail` when
+ * present (ApiClientError), else the Error message, else the fallback.
+ */
+export function errorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'detail' in error) {
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail) return detail;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 export function severityCopy(severity: string): TermCopy {
   return SEVERITY_COPY[severity] ?? fallbackCopy(severity);
 }

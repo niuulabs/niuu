@@ -65,6 +65,7 @@ import {
   autonomyModeHint,
   decisionStatusCopy,
   describeIdleSituation,
+  errorMessage,
   isLearnedSkillState,
   operationalStateCopy,
   outcomeCopy,
@@ -188,9 +189,16 @@ function HeroActions({
   const huddleTitle = huddle
     ? huddle.title
     : 'No open huddle for this environment right now';
+  // The backend requires a joined participant before it accepts messages.
+  const messageTitle = !huddle
+    ? huddleTitle
+    : joined
+      ? `Message ${valkyrie.name} in ${huddle.title}`
+      : `Join ${huddle.title} first`;
+  const huddleError = joinHuddle.error ?? leaveHuddle.error;
 
   return (
-    <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+    <div className="niuu:flex niuu:max-w-md niuu:flex-wrap niuu:items-center niuu:justify-end niuu:gap-2">
       <button
         type="button"
         data-testid="valkyrie-join-huddle"
@@ -217,8 +225,8 @@ function HeroActions({
       <button
         type="button"
         data-testid="valkyrie-direct-message"
-        title={huddle ? `Message ${valkyrie.name} in ${huddle.title}` : huddleTitle}
-        disabled={!huddle}
+        title={messageTitle}
+        disabled={!huddle || !joined}
         aria-expanded={composing}
         onClick={onCompose}
         className={HERO_BUTTON}
@@ -236,6 +244,15 @@ function HeroActions({
         <Settings2 size={13} aria-hidden="true" />
         Change autonomy
       </button>
+      {huddleError ? (
+        <p
+          role="alert"
+          data-testid="valkyrie-huddle-error"
+          className="niuu:w-full niuu:text-right niuu:text-xs niuu:text-critical"
+        >
+          {errorMessage(huddleError, 'Huddle action failed')}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -301,7 +318,7 @@ function DirectMessageComposer({
         ) : null}
         {sendMessage.isError ? (
           <span role="alert" className="niuu:text-xs niuu:text-critical">
-            {sendMessage.error instanceof Error ? sendMessage.error.message : 'Sending failed'}
+            {errorMessage(sendMessage.error, 'Sending failed')}
           </span>
         ) : null}
       </div>
@@ -432,7 +449,7 @@ function Hero({
           </p>
         </div>
       ) : null}
-      {composing && huddle ? (
+      {composing && huddle?.joined ? (
         <DirectMessageComposer
           valkyrie={valkyrie}
           huddle={huddle}
