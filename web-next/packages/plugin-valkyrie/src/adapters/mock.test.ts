@@ -3,6 +3,8 @@ import {
   createMockOdinReviewService,
   createMockRealmGovernanceService,
   createMockValkyrieService,
+  createMockValkyrieSkillsService,
+  createSeedLearnedSkills,
   createSeedRealms,
   createSeedReviewItems,
   createSeedToolWorkflows,
@@ -162,5 +164,39 @@ describe('createMockRealmGovernanceService', () => {
         limits: {},
       }),
     ).rejects.toThrow('Realm not found: nowhere');
+  });
+});
+
+describe('createMockValkyrieSkillsService', () => {
+  it('lists newest-adopted-first summaries without the code payload', async () => {
+    const service = createMockValkyrieSkillsService();
+
+    const skills = await service.listSkills('env-k8s-valhalla');
+
+    expect(skills.map((skill) => skill.skillName)).toEqual([
+      'k8s_memory_pressure_probe',
+      'registry_token_refresh_check',
+    ]);
+    expect(skills[0]).not.toHaveProperty('toolCode');
+    expect(skills[0]?.hasCode).toBe(true);
+  });
+
+  it('filters the list by environment', async () => {
+    const service = createMockValkyrieSkillsService();
+    expect(await service.listSkills('env-elsewhere')).toHaveLength(0);
+    expect(await service.listSkills('')).toHaveLength(createSeedLearnedSkills().length);
+  });
+
+  it('serves the full record for one skill and null for unknown names', async () => {
+    const service = createMockValkyrieSkillsService();
+
+    const skill = await service.getSkill('env-k8s-valhalla', 'k8s_memory_pressure_probe');
+    expect(skill?.toolCode).toContain('def run(signal: dict)');
+    expect(skill?.testCode).toContain('def test_matches_oomkilled_pod');
+    expect(skill?.requirements).toEqual(['kubernetes>=29.0.0']);
+    expect(skill?.manifest).toMatchObject({ safety_class: 'read_only' });
+
+    expect(await service.getSkill('env-k8s-valhalla', 'ghost_probe')).toBeNull();
+    expect(await service.getSkill('env-elsewhere', 'k8s_memory_pressure_probe')).toBeNull();
   });
 });

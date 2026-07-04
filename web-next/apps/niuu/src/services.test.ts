@@ -67,8 +67,10 @@ const valkyrieMocks = vi.hoisted(() => ({
   createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
   createMockOdinReviewService: vi.fn(() => ({ kind: 'mock-valkyrie-reviews' })),
   createMockRealmGovernanceService: vi.fn(() => ({ kind: 'mock-valkyrie-realms' })),
+  createMockValkyrieSkillsService: vi.fn(() => ({ kind: 'mock-valkyrie-skills' })),
   buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
   buildOdinReviewHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-reviews', client })),
+  buildValkyrieSkillsHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-skills', client })),
   buildRealmGovernanceHttpAdapter: vi.fn((realmsClient, workflowsClient) => ({
     kind: 'valkyrie-realms',
     realmsClient,
@@ -1737,6 +1739,7 @@ describe('buildServices', () => {
     expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
     expect(services['valkyrie.reviews']).toEqual({ kind: 'mock-valkyrie-reviews' });
     expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
+    expect(services['valkyrie.skills']).toEqual({ kind: 'mock-valkyrie-skills' });
   });
 
   it('wires realm governance to the shared API and Ting workflow bases', () => {
@@ -1767,7 +1770,7 @@ describe('buildServices', () => {
     expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
   });
 
-  it('lets a grouped Valkyrie base drive dashboard and review adapters', () => {
+  it('lets a grouped Valkyrie base drive dashboard, review, and skills adapters', () => {
     buildServices({
       theme: 'ice',
       plugins: {},
@@ -1786,6 +1789,28 @@ describe('buildServices', () => {
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/ravn/odin',
     );
+    // Learned skills ride the same dashboard base (`<valkyrieBase>/skills`).
+    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie',
+    });
+  });
+
+  it('prefers an explicit Valkyrie skills override over the grouped base', () => {
+    buildServices({
+      theme: 'ice',
+      plugins: {},
+      services: {
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
+        'valkyrie.skills': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
+        },
+      },
+    } as any);
+
+    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
+    });
   });
 
   it('prefers explicit Valkyrie review queue overrides over the grouped base', () => {

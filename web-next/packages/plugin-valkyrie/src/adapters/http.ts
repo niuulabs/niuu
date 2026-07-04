@@ -4,6 +4,8 @@ import {
   type DecisionDetail,
   type DecisionRecord,
   type HistoryPage,
+  type LearnedSkillRecord,
+  type LearnedSkillSummary,
   type RealmSummary,
   type RealmTrustGrant,
   type ReviewItem,
@@ -18,6 +20,7 @@ import type {
   IOdinReviewService,
   IRealmGovernanceService,
   IValkyrieService,
+  IValkyrieSkillsService,
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
@@ -74,6 +77,32 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
         `/learnings/stats/skills${query({ environment_id: environmentId })}`,
       );
       return response.skills;
+    },
+  };
+}
+
+/**
+ * Learned skills live beside the dashboard API on the same Valkyrie base
+ * (`<valkyrieBase>/skills`). Backend contract:
+ * GET /skills?environment_id=… → { items, total }
+ * GET /skills/{name}?environment_id=… → full record, 404 when unknown.
+ */
+export function buildValkyrieSkillsHttpAdapter(client: ApiClient): IValkyrieSkillsService {
+  return {
+    async listSkills(environmentId: string) {
+      const response = await client.get<{ items: LearnedSkillSummary[]; total: number }>(
+        `/skills${query({ environment_id: environmentId })}`,
+      );
+      return response.items;
+    },
+    async getSkill(environmentId: string, name: string) {
+      try {
+        return await client.get<LearnedSkillRecord>(
+          `/skills/${encodeURIComponent(name)}${query({ environment_id: environmentId })}`,
+        );
+      } catch {
+        return null;
+      }
     },
   };
 }

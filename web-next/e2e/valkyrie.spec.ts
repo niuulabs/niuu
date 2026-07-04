@@ -104,6 +104,41 @@ test('legacy valkyrie routes redirect to console', async ({ page }) => {
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 });
 
+test('operator can open a learned skill from the console and read its code', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  const panel = page.getByTestId('valkyrie-learned-skills');
+  await expect(panel).toContainText('Learned skills');
+  await expect(panel).toContainText('k8s_memory_pressure_probe');
+  await expect(panel).toContainText('Read-only probe that inspects');
+
+  await panel.getByTestId('learned-skill-k8s_memory_pressure_probe').click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('k8s_memory_pressure_probe');
+  await expect(dialog).toContainText('kubernetes>=29.0.0');
+  await expect(dialog).toContainText('def run(signal: dict)');
+  await expect(dialog).toContainText('def test_matches_oomkilled_pod');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+});
+
+test('a learned-skill judgment links to the skill viewer', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-learned-activity')).toBeVisible({ timeout: 5000 });
+
+  await page
+    .getByTestId('valkyrie-learned-activity')
+    .getByTestId('skill-link-k8s_memory_pressure_probe')
+    .click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Read-only probe that inspects');
+  await expect(dialog).toContainText('def run(signal: dict)');
+});
+
 test('realms view exposes the tool-builder workflow picker', async ({ page }) => {
   await page.goto('/valkyrie/realms');
 

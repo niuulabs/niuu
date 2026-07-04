@@ -138,6 +138,53 @@ export interface SkillUsageStat {
   rolledBackAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Learned skills — the installed artifacts behind "handled with a learned
+// skill" judgments, served by /skills (see IValkyrieSkillsService).
+// ---------------------------------------------------------------------------
+
+export interface LearnedSkillSummary {
+  skillName: string;
+  environmentId: string;
+  valkyrieId: string;
+  description: string;
+  learningId: string;
+  adoptedAt: string;
+  hasCode: boolean;
+}
+
+export interface LearnedSkillRecord extends LearnedSkillSummary {
+  content: string;
+  toolCode: string;
+  testCode: string;
+  requirements: string[];
+  manifest: Record<string, unknown>;
+}
+
+/** Skill name pinned in a decision's evidence, empty when absent. */
+export function decisionSkillName(decision: Pick<DecisionRecord, 'evidence'>): string {
+  for (const entry of decision.evidence) {
+    const name = entry['skill_name'];
+    if (typeof name === 'string' && name) return name;
+  }
+  return '';
+}
+
+/**
+ * The learned skill a decision references: the explicit evidence `skill_name`
+ * wins; otherwise the first known skill name mentioned in the summary or
+ * rationale text ("handled a signal with learned skill 'X'").
+ */
+export function referencedSkillName(
+  decision: Pick<DecisionRecord, 'evidence' | 'summary' | 'rationale'>,
+  knownSkillNames: readonly string[],
+): string {
+  const explicit = decisionSkillName(decision);
+  if (explicit) return explicit;
+  const haystack = `${decision.summary} ${decision.rationale}`;
+  return knownSkillNames.find((name) => name && haystack.includes(name)) ?? '';
+}
+
 export interface EnvironmentSignal {
   id: string;
   environmentId: string;

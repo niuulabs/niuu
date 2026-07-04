@@ -68,9 +68,11 @@ import {
   buildOdinReviewHttpAdapter,
   buildRealmGovernanceHttpAdapter,
   buildValkyrieHttpAdapter,
+  buildValkyrieSkillsHttpAdapter,
   createMockOdinReviewService,
   createMockRealmGovernanceService,
   createMockValkyrieService,
+  createMockValkyrieSkillsService,
 } from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
 import {
@@ -390,14 +392,15 @@ function resolveObservatoryServiceBase(
 
 function resolveValkyrieServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'valkyrie' | 'valkyrie.reviews',
+  serviceKey: 'valkyrie' | 'valkyrie.reviews' | 'valkyrie.skills',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (explicitBase) return explicitBase;
 
   const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
   if (!groupedBase) return null;
-  // The review queue lives beside the dashboard API under /ravn/odin.
+  // The review queue lives beside the dashboard API under /ravn/odin;
+  // learned skills ride the dashboard base (`<valkyrieBase>/skills`).
   return serviceKey === 'valkyrie.reviews'
     ? groupedBase.replace(/\/valkyrie\/?$/, '/odin')
     : groupedBase;
@@ -637,6 +640,7 @@ export function buildServiceBackendStatus(
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
     'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
+    'valkyrie.skills': resolveDirectServiceStatus(config, 'http', 'valkyrie.skills', 'valkyrie'),
     'valkyrie.realms': resolveRealmGovernanceStatus(config),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
@@ -1328,6 +1332,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const valkyrieReviews = valkyrieReviewsBase
     ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
     : createMockOdinReviewService();
+  const valkyrieSkillsBase = resolveValkyrieServiceBase(config, 'valkyrie.skills');
+  const valkyrieSkills = valkyrieSkillsBase
+    ? buildValkyrieSkillsHttpAdapter(createApiClient(valkyrieSkillsBase))
+    : createMockValkyrieSkillsService();
   const realmGovernanceBases = resolveRealmGovernanceBases(config);
   const valkyrieRealms = realmGovernanceBases
     ? buildRealmGovernanceHttpAdapter(
@@ -1423,6 +1431,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.events': observatoryEvents,
     valkyrie,
     'valkyrie.reviews': valkyrieReviews,
+    'valkyrie.skills': valkyrieSkills,
     'valkyrie.realms': valkyrieRealms,
   };
 }

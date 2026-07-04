@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitBranch,
+  GraduationCap,
   Inbox,
   MessageSquare,
   Moon,
@@ -15,15 +16,17 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react';
-import type {
-  AutonomyMode,
-  DecisionRecord,
-  EnvironmentHealth,
-  EnvironmentKind,
-  ValkyrieDashboard,
-  ValkyrieEventTelemetry,
-  ValkyrieResident,
-  WakefulnessState,
+import {
+  referencedSkillName,
+  type AutonomyMode,
+  type DecisionRecord,
+  type EnvironmentHealth,
+  type EnvironmentKind,
+  type LearnedSkillSummary,
+  type ValkyrieDashboard,
+  type ValkyrieEventTelemetry,
+  type ValkyrieResident,
+  type WakefulnessState,
 } from '../domain';
 import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
 import {
@@ -33,6 +36,8 @@ import {
   useSkillStats,
 } from '../application/useValkyrieHistory';
 import { useReviewList } from '../application/useReviews';
+import { useValkyrieSkills } from '../application/useValkyrieSkills';
+import { SkillNameButton, SkillViewer } from './SkillViewer';
 import { timeAgo } from './reviewFormat';
 import {
   actionAuthorityCopy,
@@ -682,10 +687,14 @@ function DecisionCard({
   decision,
   expanded,
   onToggle,
+  skillName,
+  onViewSkill,
 }: {
   decision: DecisionRecord;
   expanded: boolean;
   onToggle: () => void;
+  skillName?: string;
+  onViewSkill?: (name: string) => void;
 }) {
   const stateCopy = operationalStateCopy(decision.operationalState);
   const authority = actionAuthorityCopy(decision.actionAuthority);
@@ -739,6 +748,11 @@ function DecisionCard({
           <p className="niuu:text-sm niuu:leading-6 niuu:text-text-secondary">
             {decision.rationale}
           </p>
+          {skillName && onViewSkill ? (
+            <p className="niuu:mt-2 niuu:text-text-muted">
+              learned skill: <SkillNameButton name={skillName} onOpen={onViewSkill} />
+            </p>
+          ) : null}
           {decision.outcomeDetail ? (
             <p className="niuu:mt-2 niuu:text-text-muted">Result: {decision.outcomeDetail}</p>
           ) : null}
@@ -785,9 +799,18 @@ function DecisionCard({
   );
 }
 
-function DecisionsPanel({ environmentId }: { environmentId: string }) {
+function DecisionsPanel({
+  environmentId,
+  skills,
+  onViewSkill,
+}: {
+  environmentId: string;
+  skills: LearnedSkillSummary[];
+  onViewSkill: (name: string) => void;
+}) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { data, isLoading, error } = useDecisionList({ environmentId, limit: 8 });
+  const skillNames = skills.map((skill) => skill.skillName);
 
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-decisions">
@@ -809,6 +832,8 @@ function DecisionsPanel({ environmentId }: { environmentId: string }) {
             onToggle={() =>
               setExpandedId(expandedId === decision.decisionId ? null : decision.decisionId)
             }
+            skillName={referencedSkillName(decision, skillNames)}
+            onViewSkill={onViewSkill}
           />
         ))}
         {data && data.items.length === 0 ? (
@@ -961,9 +986,18 @@ function LearningPanel({
   );
 }
 
-function LearnedSkillStrip({ decisions }: { decisions: DecisionRecord[] }) {
+function LearnedSkillStrip({
+  decisions,
+  skills,
+  onViewSkill,
+}: {
+  decisions: DecisionRecord[];
+  skills: LearnedSkillSummary[];
+  onViewSkill: (name: string) => void;
+}) {
   const learned = decisions.filter((decision) => isLearnedSkillState(decision.operationalState));
   if (learned.length === 0) return null;
+  const skillNames = skills.map((skill) => skill.skillName);
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-learned-activity">
       <div className="niuu:flex niuu:items-center niuu:gap-2">
@@ -973,19 +1007,93 @@ function LearnedSkillStrip({ decisions }: { decisions: DecisionRecord[] }) {
         </h2>
       </div>
       <div className="niuu:mt-4 niuu:grid niuu:gap-3 niuu:md:grid-cols-2">
-        {learned.slice(0, 4).map((decision) => (
-          <div key={decision.decisionId} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+        {learned.slice(0, 4).map((decision) => {
+          const skillName = referencedSkillName(decision, skillNames);
+          return (
+            <div key={decision.decisionId} className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+                <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                  {operationalStateCopy(decision.operationalState).label}
+                </span>
+                <span className="niuu:text-xs niuu:text-text-muted">
+                  {timeAgo(decision.decidedAt)} ago
+                </span>
+              </div>
+              <p className="niuu:mt-1 niuu:text-xs niuu:text-text-secondary">
+                {decision.rationale}
+              </p>
+              {skillName ? (
+                <p className="niuu:mt-2">
+                  <SkillNameButton name={skillName} onOpen={onViewSkill} />
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function LearnedSkillsPanel({
+  skills,
+  isLoading,
+  error,
+  onViewSkill,
+}: {
+  skills: LearnedSkillSummary[];
+  isLoading: boolean;
+  error: unknown;
+  onViewSkill: (name: string) => void;
+}) {
+  return (
+    <section className={PANEL_PAD} data-testid="valkyrie-learned-skills">
+      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+        <div className="niuu:flex niuu:items-center niuu:gap-2">
+          <GraduationCap size={15} className="niuu:text-brand" aria-hidden="true" />
+          <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
+            Learned skills
+          </h2>
+        </div>
+        {skills.length > 0 ? (
+          <span className={`niuu:text-xs ${MUTED}`}>{skills.length}</span>
+        ) : null}
+      </div>
+      <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-2">
+        {isLoading ? <p className={`niuu:text-sm ${MUTED}`}>Loading learned skills...</p> : null}
+        {error ? (
+          <p
+            data-testid="valkyrie-skills-unavailable"
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-critical-bo niuu:bg-critical-bg niuu:p-2 niuu:text-xs niuu:text-critical"
+          >
+            Learned skills could not be loaded — this API backend does not serve the skills endpoint
+            yet. Redeploy the platform API with the current build to enable it.
+          </p>
+        ) : null}
+        {skills.map((skill) => (
+          <button
+            key={skill.skillName}
+            type="button"
+            data-testid={`learned-skill-${skill.skillName}`}
+            onClick={() => onViewSkill(skill.skillName)}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-transparent niuu:bg-bg-primary niuu:p-3 niuu:text-left niuu:hover:border-brand/70"
+          >
             <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
-              <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                {operationalStateCopy(decision.operationalState).label}
+              <span className="niuu:truncate niuu:font-mono niuu:text-sm niuu:text-brand">
+                {skill.skillName}
               </span>
-              <span className="niuu:text-xs niuu:text-text-muted">
-                {timeAgo(decision.decidedAt)} ago
+              <span className="niuu:shrink-0 niuu:text-[10px] niuu:text-text-muted">
+                adopted {timeAgo(skill.adoptedAt)} ago
               </span>
             </div>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-secondary">{decision.rationale}</p>
-          </div>
+            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{skill.description}</p>
+          </button>
         ))}
+        {!isLoading && !error && skills.length === 0 ? (
+          <p className={`niuu:text-sm ${MUTED}`}>
+            No learned skills adopted on this environment yet.
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -993,6 +1101,7 @@ function LearnedSkillStrip({ decisions }: { decisions: DecisionRecord[] }) {
 
 function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
   const [selectedId, setSelectedId] = useState(() => dashboard.valkyries[0]?.id ?? '');
+  const [viewedSkillName, setViewedSkillName] = useState<string | null>(null);
   const selected =
     dashboard.valkyries.find((entry) => entry.id === selectedId) ?? dashboard.valkyries[0];
   const environmentEvents = useMemo(
@@ -1013,8 +1122,11 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     { environmentId: selected?.environmentId ?? '', limit: 8 },
     Boolean(selected),
   );
+  const skillsQuery = useValkyrieSkills(selected?.environmentId ?? '', Boolean(selected));
 
   if (!selected) return <EmptyConsole />;
+
+  const skills = skillsQuery.data ?? [];
 
   const severities = taskSeverities(selected, dashboard);
   const decisions = decisionsQuery.data?.items ?? [];
@@ -1040,7 +1152,14 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
 
   return (
     <div className="niuu:grid niuu:h-full niuu:min-h-0 niuu:grid-cols-[320px_minmax(0,1fr)] niuu:bg-bg-primary">
-      <Roster dashboard={dashboard} selectedId={selected.id} onSelect={setSelectedId} />
+      <Roster
+        dashboard={dashboard}
+        selectedId={selected.id}
+        onSelect={(valkyrieId) => {
+          setSelectedId(valkyrieId);
+          setViewedSkillName(null);
+        }}
+      />
       <main className="niuu:min-h-0 niuu:overflow-auto niuu:p-5">
         <div className="niuu:mb-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-xs niuu:text-text-muted">
           <div className="niuu:font-mono">
@@ -1066,7 +1185,11 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
             <Timeline events={environmentEvents} />
             <AuthorityPanel valkyrie={selected} severities={severities} />
           </div>
-          <LearnedSkillStrip decisions={decisions} />
+          <LearnedSkillStrip
+            decisions={decisions}
+            skills={skills}
+            onViewSkill={setViewedSkillName}
+          />
           <div className="niuu:grid niuu:gap-4 niuu:xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <section className={PANEL_PAD}>
@@ -1107,18 +1230,33 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
                     ))}
                 </div>
               </section>
-              <DecisionsPanel environmentId={selected.environmentId} />
+              <DecisionsPanel
+                environmentId={selected.environmentId}
+                skills={skills}
+                onViewSkill={setViewedSkillName}
+              />
             </div>
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <PendingReviewsPanel
                 environmentId={selected.environmentId}
                 valkyrieId={selected.id}
               />
+              <LearnedSkillsPanel
+                skills={skills}
+                isLoading={skillsQuery.isLoading}
+                error={skillsQuery.error}
+                onViewSkill={setViewedSkillName}
+              />
               <LearningPanel dashboard={dashboard} valkyrie={selected} />
             </div>
           </div>
         </div>
       </main>
+      <SkillViewer
+        environmentId={selected.environmentId}
+        skillName={viewedSkillName}
+        onClose={() => setViewedSkillName(null)}
+      />
     </div>
   );
 }

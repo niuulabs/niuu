@@ -3,6 +3,7 @@ import {
   buildOdinReviewHttpAdapter,
   buildRealmGovernanceHttpAdapter,
   buildValkyrieHttpAdapter,
+  buildValkyrieSkillsHttpAdapter,
 } from './http';
 
 function makeClient() {
@@ -98,6 +99,45 @@ describe('buildValkyrieHttpAdapter', () => {
     const skills = await adapter.getSkillStats('env-a');
     expect(client.get).toHaveBeenCalledWith('/learnings/stats/skills?environment_id=env-a');
     expect(skills).toEqual([{ skillName: 'probe' }]);
+  });
+});
+
+describe('buildValkyrieSkillsHttpAdapter', () => {
+  it('lists learned skills for an environment and unwraps items', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      items: [{ skillName: 'oom_probe', environmentId: 'env-a', hasCode: true }],
+      total: 1,
+    });
+    const adapter = buildValkyrieSkillsHttpAdapter(client);
+
+    const skills = await adapter.listSkills('env-a');
+
+    expect(client.get).toHaveBeenCalledWith('/skills?environment_id=env-a');
+    expect(skills).toEqual([{ skillName: 'oom_probe', environmentId: 'env-a', hasCode: true }]);
+  });
+
+  it('fetches one skill with the environment pinned in the query', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      skillName: 'oom probe',
+      toolCode: 'def run(signal): ...',
+      requirements: ['kubernetes>=29.0.0'],
+    });
+    const adapter = buildValkyrieSkillsHttpAdapter(client);
+
+    const skill = await adapter.getSkill('env-a', 'oom probe');
+
+    expect(client.get).toHaveBeenCalledWith('/skills/oom%20probe?environment_id=env-a');
+    expect(skill?.toolCode).toBe('def run(signal): ...');
+  });
+
+  it('returns null when the skill is unknown (404)', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new Error('404 Not Found'));
+    const adapter = buildValkyrieSkillsHttpAdapter(client);
+
+    expect(await adapter.getSkill('env-a', 'ghost')).toBeNull();
   });
 });
 
