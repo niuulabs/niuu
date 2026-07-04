@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createMockRealmGovernanceService,
   createMockValkyrieService,
+  createSeedRealms,
   createSeedValkyrieDashboard,
 } from '../adapters/mock';
+import { LIST_LIMIT } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { ValkyrieConsolePage } from './ValkyrieConsolePage';
 
@@ -82,24 +84,105 @@ describe('ValkyrieConsolePage', () => {
     expect(browser).not.toHaveTextContent('pod/ravn-worker-77');
   });
 
-  it('lists stored decisions with rationale, outcome, and lineage on expand', async () => {
+  it('lists stored decisions with their own summary sentences, outcome, and lineage on expand', async () => {
     const user = userEvent.setup();
     render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
     await screen.findByTestId('valkyrie-console-page');
 
     const decisions = screen.getByTestId('valkyrie-decisions');
-    await waitFor(() => expect(decisions).toHaveTextContent('Handled with a learned skill'));
-    expect(decisions).toHaveTextContent('awaiting review');
+    // Each row leads with the record's own readable sentence, not a canned label.
+    await waitFor(() =>
+      expect(decisions).toHaveTextContent('OOMKilled pattern handled with learned probe'),
+    );
+    expect(decisions).toHaveTextContent('Registry token rollover broke image pulls');
+    // The imagepull decision genuinely awaits the operator (present tier +
+    // human_review_required + a real action).
+    expect(within(decisions).getByTestId('decision-needs-approval')).toHaveTextContent(
+      'Needs your approval',
+    );
     expect(decisions).toHaveTextContent('Action executed');
 
     await user.click(
-      within(decisions).getByRole('button', { name: /handled with a learned skill/i }),
+      within(decisions).getByRole('button', {
+        name: /oomkilled pattern handled with learned probe/i,
+      }),
     );
     const detail = await screen.findByTestId('decision-detail-decision-oom-1');
     expect(detail).toHaveTextContent('Installed learning skill k8s_memory_pressure_probe');
     await waitFor(() => expect(detail).toHaveTextContent('triggered by'));
     expect(detail).toHaveTextContent('OOMKilled pattern matches learned memory pressure case');
     expect(detail).toHaveTextContent('resulting actions');
+  });
+
+  it('collapses re-judged decisions into one row and never mislabels ambient ones', async () => {
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const decisions = screen.getByTestId('valkyrie-decisions');
+    // The three PV re-judgments share a correlationId → one row, ×3 badge,
+    // latest timestamp, redundant "Valkyrie <id> in <env>" prefix stripped.
+    await waitFor(() =>
+      expect(within(decisions).getByTestId('decision-repeat-count')).toHaveTextContent('×3'),
+    );
+    expect(decisions).toHaveTextContent(
+      'judged PersistentVolume media-primary healthy; capacity holding at 78%',
+    );
+    expect(decisions).not.toHaveTextContent('Valkyrie valkyrie-valhalla-sigrun in');
+    // 6 stored decisions collapse to 4 visible rows.
+    expect(within(decisions).getAllByTestId('decision-card')).toHaveLength(4);
+
+    // The PV judgments are ambient with `watch` (not a real action): despite
+    // their human_review_required authority they must NOT claim approval.
+    const pvRow = within(decisions)
+      .getAllByTestId('decision-card')
+      .find((card) => card.textContent?.includes('PersistentVolume'));
+    expect(pvRow).toBeDefined();
+    expect(within(pvRow!).queryByTestId('decision-needs-approval')).toBeNull();
+    expect(within(pvRow!).getByTestId('decision-status')).toHaveTextContent('Observation only');
+    // Subtitle carries tier, confidence, and the evidence subject.
+    expect(pvRow).toHaveTextContent('ambient');
+    expect(pvRow).toHaveTextContent('71% confidence');
+    expect(pvRow).toHaveTextContent('pv/media-primary');
+  });
+
+  it('caps the decisions fetch at LIST_LIMIT and says so when there are more', async () => {
+    const service = createMockValkyrieService();
+    const many = Array.from({ length: 25 }, (_, index) => ({
+      decisionId: `decision-bulk-${index}`,
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'watching',
+      tier: 'ambient',
+      confidence: 0.6,
+      rationale: 'routine',
+      recommendedAction: 'none',
+      actionAuthority: 'autonomous',
+      signalRefs: [],
+      evidence: [],
+      correlationId: `corr-bulk-${index}`,
+      summary: `routine check ${index}`,
+      outcome: '',
+      decidedAt: `2026-06-03T13:${String(10 + index)}:00Z`,
+    }));
+    const listDecisions = vi.fn(async (filters: { limit?: number } = {}) => {
+      const limit = filters.limit ?? 50;
+      return { items: many.slice(0, limit), total: many.length, limit, offset: 0 };
+    });
+    const busy = { ...service, listDecisions };
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ valkyrie: busy }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const decisions = screen.getByTestId('valkyrie-decisions');
+    await waitFor(() =>
+      expect(within(decisions).getByTestId('decisions-total')).toHaveTextContent(
+        `latest ${LIST_LIMIT} · 25 total`,
+      ),
+    );
+    // Every fetch asked for at most the cap.
+    for (const call of listDecisions.mock.calls) {
+      expect(call[0]?.limit).toBe(LIST_LIMIT);
+    }
+    expect(within(decisions).getAllByTestId('decision-card')).toHaveLength(LIST_LIMIT);
   });
 
   it('shows pending reviews for the selected environment with an inbox link', async () => {
@@ -278,7 +361,8 @@ describe('ValkyrieConsolePage', () => {
 
     const decisions = screen.getByTestId('valkyrie-decisions');
     await waitFor(() => expect(decisions).toHaveTextContent('Action failed'));
-    expect(decisions).toHaveTextContent('Incident');
+    // The headline is the record's own sentence, not the canned state label.
+    expect(decisions).toHaveTextContent('restart failed');
   });
 
   it('pages the signal browser when history exceeds one page', async () => {
@@ -463,9 +547,13 @@ describe('ValkyrieConsolePage', () => {
     await screen.findByTestId('valkyrie-console-page');
 
     const decisions = screen.getByTestId('valkyrie-decisions');
-    await waitFor(() => expect(decisions).toHaveTextContent('Handled with a learned skill'));
+    await waitFor(() =>
+      expect(decisions).toHaveTextContent('OOMKilled pattern handled with learned probe'),
+    );
     await user.click(
-      within(decisions).getByRole('button', { name: /handled with a learned skill/i }),
+      within(decisions).getByRole('button', {
+        name: /oomkilled pattern handled with learned probe/i,
+      }),
     );
 
     const detail = await screen.findByTestId('decision-detail-decision-oom-1');
@@ -566,6 +654,35 @@ describe('ValkyrieConsolePage', () => {
       'No build grant on realm host-jozef yet',
     );
     expect(await screen.findByTestId('tool-builder-ungranted')).toBeInTheDocument();
+  });
+
+  it('never fetches trust grants for an environment without a realm', async () => {
+    const user = userEvent.setup();
+    const service = createMockRealmGovernanceService({
+      // Only valhalla exists as a realm; host-jozef and printer-forge do not.
+      realms: createSeedRealms().filter((realm) => realm.slug === 'valhalla'),
+    });
+    const grantsSpy = vi.spyOn(service, 'listTrustGrants');
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ 'valkyrie.realms': service }) });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // Sigrun's realm exists → the grants request fires exactly for valhalla.
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent(
+        'effective (realm grant level 2)',
+      ),
+    );
+
+    // Saga's environment has no realm → no request, and the panel says why.
+    await user.click(screen.getByRole('button', { name: /Saga/ }));
+    expect(await screen.findByTestId('valkyrie-realm-unconfigured')).toHaveTextContent(
+      'No realm is configured for host-jozef',
+    );
+    expect(screen.queryByTestId('tool-builder-card')).toBeNull();
+    // The badge stays on the configured mode without claiming effectiveness.
+    expect(screen.getByTestId('valkyrie-effective-autonomy')).toHaveTextContent('Guarded');
+    expect(grantsSpy).toHaveBeenCalledWith('valhalla');
+    expect(grantsSpy).not.toHaveBeenCalledWith('host-jozef');
   });
 
   it('renders the grant card in the authority panel and saving updates the badge', async () => {

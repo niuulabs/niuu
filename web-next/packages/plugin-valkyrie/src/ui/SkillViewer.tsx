@@ -71,8 +71,9 @@ export function SkillViewer({
           ) : null}
           {!isLoading && !error && !skill ? (
             <p data-testid="skill-viewer-missing" className="niuu:text-text-muted">
-              This skill is not installed on {environmentId} — it may have been rolled back or
-              renamed.
+              This skill is no longer installed on {environmentId}. It was referenced in a past
+              judgment but has since been rolled back or retired, so its code is not available to
+              view.
             </p>
           ) : null}
           {skill ? (

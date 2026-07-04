@@ -37,13 +37,13 @@ test('rejecting without a reason is refused', async ({ page }) => {
   await expect(page.getByTestId('inbox-pending-count')).toHaveText('3 pending');
 });
 
-test('fleet view exposes autonomy control per resident', async ({ page }) => {
+test('the retired fleet tab redirects to the console', async ({ page }) => {
   await page.goto('/valkyrie/fleet');
 
-  await expect(page.getByTestId('fleet-page')).toBeVisible({ timeout: 5000 });
-  const cards = page.getByTestId('fleet-card');
-  await expect(cards.first()).toBeVisible();
-  await expect(cards.first().getByRole('combobox')).toBeVisible();
+  await expect(page).toHaveURL(/\/valkyrie$/);
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+  // No Fleet tab remains in the subnav.
+  await expect(page.getByRole('link', { name: 'Fleet' })).toHaveCount(0);
 });
 
 test('console is the default valkyrie view', async ({ page }) => {
@@ -59,27 +59,64 @@ test('console explains the charter, decisions, and pending reviews', async ({ pa
   await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
 
   await expect(page.getByTestId('valkyrie-charter')).toContainText('Keep the Valhalla cluster');
+  // Decision rows lead with the record's own readable sentence.
   await expect(page.getByTestId('valkyrie-decisions')).toContainText(
-    'Handled with a learned skill',
+    'OOMKilled pattern handled with learned probe',
   );
   await expect(page.getByTestId('valkyrie-pending-reviews')).toBeVisible();
   await expect(page.getByTestId('valkyrie-learning')).toContainText('k8s_memory_pressure_probe');
 });
 
-test('console decision expands to show rationale and lineage', async ({ page }) => {
+test('console collapses re-judged decisions and never fakes approval', async ({ page }) => {
+  await page.goto('/valkyrie');
+  const decisions = page.getByTestId('valkyrie-decisions');
+  await expect(decisions).toContainText('OOMKilled pattern handled with learned probe');
+
+  // The list stays within the cap and reports the true total.
+  await expect(decisions.getByTestId('decisions-total')).toHaveText('6 total');
+
+  // Three ambient PV re-judgments (same correlationId) collapse to one ×3 row
+  // with a real sentence, the redundant "Valkyrie … in …" prefix stripped.
+  await expect(decisions.getByTestId('decision-repeat-count')).toHaveText('×3');
+  const pvRow = decisions
+    .getByTestId('decision-card')
+    .filter({ hasText: 'judged PersistentVolume media-primary healthy' });
+  await expect(pvRow).toHaveCount(1);
+  await expect(pvRow).not.toContainText('Valkyrie valkyrie-valhalla-sigrun in');
+  // Ambient + watch-only: this never reaches the inbox, so it must not claim
+  // to need the operator despite its human_review_required authority.
+  await expect(pvRow).not.toContainText('Needs your approval');
+  await expect(pvRow.getByTestId('decision-status')).toHaveText('Observation only');
+
+  // The imagepull decision genuinely awaits the operator and says so.
+  const pendingRow = decisions
+    .getByTestId('decision-card')
+    .filter({ hasText: 'Registry token rollover broke image pulls' });
+  await expect(pendingRow.getByTestId('decision-needs-approval')).toHaveText('Needs your approval');
+});
+
+test('console decision expands to rationale, lineage, and its skill viewer', async ({ page }) => {
   await page.goto('/valkyrie');
   await expect(page.getByTestId('valkyrie-decisions')).toContainText(
-    'Handled with a learned skill',
+    'OOMKilled pattern handled with learned probe',
   );
 
   await page
     .getByTestId('valkyrie-decisions')
-    .getByRole('button', { name: /handled with a learned skill/i })
+    .getByRole('button', { name: /oomkilled pattern handled with learned probe/i })
     .click();
 
   const detail = page.getByTestId('decision-detail-decision-oom-1');
   await expect(detail).toContainText('Installed learning skill k8s_memory_pressure_probe');
   await expect(detail).toContainText('triggered by');
+
+  // The skill named by the decision opens the skill viewer with its code.
+  await detail.getByTestId('skill-link-k8s_memory_pressure_probe').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Read-only probe that inspects');
+  await expect(dialog).toContainText('def run(signal: dict)');
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
 });
 
 test('console signal browser drills into observed signals', async ({ page }) => {

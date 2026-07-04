@@ -185,6 +185,124 @@ export function referencedSkillName(
   return knownSkillNames.find((name) => name && haystack.includes(name)) ?? '';
 }
 
+/**
+ * The newest N items is what a human ever needs at a glance. Every list panel
+ * (decisions, learning & tools, inbox) fetches or slices to this cap and shows
+ * a "latest 20 · N total" line when there are more.
+ */
+export const LIST_LIMIT = 20;
+
+/** Activity stories are heavier than rows; cap the tail a bit higher. */
+export const ACTIVITY_STORY_LIMIT = 30;
+
+/**
+ * Tiers that reach the operator. `ambient`/`observational` judgments are
+ * background noise the resident records but never asks about.
+ */
+const OPERATOR_TIERS = new Set(['present', 'urgent']);
+
+/**
+ * Recommended-action values that are NOT a real action: an empty/observational
+ * verdict never needs approval no matter the authority or tier.
+ */
+const NON_ACTIONS = new Set(['', 'none', 'n/a', 'na', 'watch', 'observe', 'noop']);
+
+/** True when the decision's recommendedAction names a real, executable action. */
+export function decisionHasRealAction(
+  decision: Pick<DecisionRecord, 'recommendedAction'>,
+): boolean {
+  return !NON_ACTIONS.has((decision.recommendedAction ?? '').trim().toLowerCase());
+}
+
+/**
+ * Mirror of the backend inbox gate: a judgment only truly awaits the operator
+ * when it would land in the review inbox. That needs all three:
+ *   - actionAuthority === 'human_review_required'
+ *   - tier is present or urgent (ambient/observational never surfaces)
+ *   - recommendedAction is a real action (not '', none, watch, observe…)
+ *
+ * Everything else is observational or autonomous and must NOT read as
+ * "needs your approval".
+ */
+export function decisionNeedsApproval(
+  decision: Pick<DecisionRecord, 'actionAuthority' | 'tier' | 'recommendedAction'>,
+): boolean {
+  if (decision.actionAuthority !== 'human_review_required') return false;
+  if (!OPERATOR_TIERS.has((decision.tier ?? '').trim().toLowerCase())) return false;
+  return decisionHasRealAction(decision);
+}
+
+const REDUNDANT_PREFIX = /^valkyrie[\s:]+\S+\s+in\s+\S+\s+/i;
+
+/**
+ * The row headline: the record's own `summary` sentence, stripped of any
+ * redundant leading "Valkyrie <id> in <env> " prefix (the page already shows
+ * whose decision it is). Empty summary falls back to the caller-supplied
+ * label (the copy.ts operational-state label).
+ */
+export function decisionHeadline(
+  decision: Pick<DecisionRecord, 'summary'>,
+  fallbackLabel: string,
+): string {
+  const summary = decision.summary?.trim() ?? '';
+  if (!summary) return fallbackLabel;
+  return summary.replace(REDUNDANT_PREFIX, '').trim() || fallbackLabel;
+}
+
+/**
+ * A short subject for the decision row: the resource name from evidence
+ * (subject/target/resource/pod/deployment) when present, else a readable
+ * form of the correlationId (dropping an `idle-triage:`/`corr-` prefix).
+ */
+export function decisionSubject(
+  decision: Pick<DecisionRecord, 'evidence' | 'correlationId'>,
+): string {
+  const keys = ['subject', 'resource', 'target', 'pod', 'deployment', 'object', 'name'];
+  for (const entry of decision.evidence) {
+    for (const key of keys) {
+      const value = entry[key];
+      if (typeof value === 'string' && value) return value;
+    }
+  }
+  const correlation = decision.correlationId ?? '';
+  if (!correlation) return '';
+  const withoutIdle = correlation.replace(/^idle-triage:/, '');
+  return withoutIdle.replace(/^corr-/, '');
+}
+
+export interface GroupedDecision {
+  /** The newest decision in the group — what the row renders. */
+  decision: DecisionRecord;
+  /** How many near-identical decisions collapsed into this row (>=1). */
+  count: number;
+}
+
+/**
+ * Collapse consecutive decisions sharing a correlationId into one row — the
+ * same subject re-judged every few minutes should read as a single situation
+ * with a "×N" badge, not N near-duplicate rows. Input is assumed newest-first
+ * (as the API returns it); the newest decision in each run wins and its
+ * timestamp is the one shown. A correlationId that recurs after an unrelated
+ * decision starts a fresh group, so genuinely distinct situations stay split.
+ */
+export function collapseDecisionsByCorrelation(
+  decisions: readonly DecisionRecord[],
+): GroupedDecision[] {
+  const groups: GroupedDecision[] = [];
+  for (const decision of decisions) {
+    const last = groups[groups.length - 1];
+    const correlation = decision.correlationId || '';
+    if (last && correlation && last.decision.correlationId === correlation) {
+      last.count += 1;
+      // Newest-first input means the first of a run is already the latest;
+      // keep it and only bump the count for the rest.
+      continue;
+    }
+    groups.push({ decision, count: 1 });
+  }
+  return groups;
+}
+
 export interface EnvironmentSignal {
   id: string;
   environmentId: string;

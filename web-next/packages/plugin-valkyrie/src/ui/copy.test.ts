@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   actionAuthorityCopy,
   autonomyModeCopy,
+  decisionStatusCopy,
   describeIdleSituation,
   isLearnedSkillState,
   operationalStateCopy,
@@ -39,6 +40,55 @@ describe('actionAuthorityCopy', () => {
     expect(actionAuthorityCopy('human_review_required').label).toBe('Needs your approval');
     expect(actionAuthorityCopy('court_required').label).toBe('Needs court approval');
     expect(actionAuthorityCopy('autonomous').description).toContain('no human');
+  });
+});
+
+describe('decisionStatusCopy', () => {
+  it('claims approval only for judgments that truly reach the inbox', () => {
+    expect(
+      decisionStatusCopy({
+        actionAuthority: 'human_review_required',
+        tier: 'present',
+        recommendedAction: 'restart_deployment',
+      }).label,
+    ).toBe('Needs your approval');
+  });
+
+  it('reads ambient review-authority judgments as observation, not pending', () => {
+    expect(
+      decisionStatusCopy({
+        actionAuthority: 'human_review_required',
+        tier: 'ambient',
+        recommendedAction: 'restart_deployment',
+      }).label,
+    ).toBe('Observation only');
+  });
+
+  it('reads non-action verdicts as observation regardless of authority', () => {
+    expect(
+      decisionStatusCopy({
+        actionAuthority: 'autonomous',
+        tier: 'ambient',
+        recommendedAction: 'none',
+      }).label,
+    ).toBe('Observation only');
+    expect(
+      decisionStatusCopy({
+        actionAuthority: 'human_review_required',
+        tier: 'urgent',
+        recommendedAction: 'watch',
+      }).label,
+    ).toBe('Observation only');
+  });
+
+  it('keeps the plain authority copy for real autonomous actions', () => {
+    expect(
+      decisionStatusCopy({
+        actionAuthority: 'autonomous',
+        tier: 'ambient',
+        recommendedAction: 'inspect_with_adopted_learning',
+      }).label,
+    ).toBe('Acted autonomously');
   });
 });
 

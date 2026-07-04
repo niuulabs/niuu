@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import type { ValkyrieEventTelemetry } from '../domain';
+import { ACTIVITY_STORY_LIMIT, type ValkyrieEventTelemetry } from '../domain';
 import {
   createMockOdinReviewService,
   createMockValkyrieService,
@@ -166,6 +166,27 @@ describe('ActivityPage', () => {
     const stories = screen.getAllByTestId('story-investigation');
     expect(stories).toHaveLength(1);
     expect(stories[0]).toHaveTextContent('Compacted the journal');
+  });
+
+  it('caps the story list at ACTIVITY_STORY_LIMIT newest stories', async () => {
+    const events: ValkyrieEventTelemetry[] = Array.from({ length: 40 }, (_, index) => ({
+      id: `evt-flood-${index}`,
+      eventType: 'signal.kubernetes.event',
+      kind: 'signal' as const,
+      environmentId: 'env-k8s-valhalla',
+      summary: `Signal flood ${index}`,
+      observedAt: `2026-06-03T13:${String(10 + index).padStart(2, '0')}:00Z`,
+      correlationId: `corr-flood-${index}`,
+    }));
+    render(<ActivityPage />, {
+      wrapper: wrapWithValkyrie({ valkyrie: serviceWithEvents(events) }),
+    });
+
+    const stories = await screen.findAllByTestId('story-investigation');
+    expect(stories).toHaveLength(ACTIVITY_STORY_LIMIT);
+    // The newest stories survive the cap, the oldest fall off.
+    expect(stories[0]).toHaveTextContent('Signal flood 39');
+    expect(screen.queryByText('Signal flood 0')).toBeNull();
   });
 
   it('switches to the raw debug list and back', async () => {

@@ -15,7 +15,8 @@ describe('useValkyrieHistory hooks', () => {
       { wrapper: wrapWithValkyrie() },
     );
     await waitFor(() => expect(result.current.data).toBeDefined());
-    expect(result.current.data!.total).toBe(3);
+    // 6 seed decisions live on env-k8s-valhalla (incl. the 3 PV re-judgments).
+    expect(result.current.data!.total).toBe(6);
     expect(result.current.data!.items[0]!.environmentId).toBe('env-k8s-valhalla');
   });
 

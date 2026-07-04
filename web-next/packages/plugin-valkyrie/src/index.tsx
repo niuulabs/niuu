@@ -1,7 +1,6 @@
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ActivityPage } from './ui/ActivityPage';
-import { FleetPage } from './ui/FleetPage';
 import { InboxPage } from './ui/InboxPage';
 import { ValkyrieConsolePage } from './ui/ValkyrieConsolePage';
 import { ValkyrieTopbar } from './ui/ValkyrieTopbar';
@@ -15,7 +14,11 @@ const LEGACY_PATHS = [
   '/valkyrie/autonomy',
   // Realm governance moved onto the console's Authority & autonomy panel.
   '/valkyrie/realms',
+  // The fleet view is retired: per-resident autonomy lives on the console,
+  // and the topbar picks the resident. The path redirects to the console.
+  '/valkyrie/fleet',
   '/valkyries',
+  '/valkyries/fleet',
   '/valkyries/topology',
   '/valkyries/lineage',
   '/valkyries/learning',
@@ -40,7 +43,6 @@ export const valkyriePlugin = definePlugin({
   tabs: [
     { id: 'console', label: 'Console', rune: 'ᛒ', path: '/valkyrie' },
     { id: 'activity', label: 'Activity', rune: '↔', path: '/valkyrie/activity' },
-    { id: 'fleet', label: 'Fleet', rune: 'ᛗ', path: '/valkyrie/fleet' },
     { id: 'inbox', label: 'Inbox', rune: '◇', path: '/valkyrie/inbox' },
   ],
   routes: (rootRoute) => [
@@ -48,11 +50,6 @@ export const valkyriePlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/valkyrie',
       component: () => <ValkyrieConsolePage />,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/valkyrie/fleet',
-      component: () => <FleetPage />,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -114,7 +111,12 @@ export { useValkyrieSkill, useValkyrieSkills } from './application/useValkyrieSk
 export { useDecideReview, useReviewList, useReviewSummary } from './application/useReviews';
 export {
   autonomyModeForLevel,
+  collapseDecisionsByCorrelation,
+  decisionHasRealAction,
+  decisionHeadline,
+  decisionNeedsApproval,
   decisionSkillName,
+  decisionSubject,
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
@@ -124,7 +126,9 @@ export {
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
+  ACTIVITY_STORY_LIMIT,
   BUILD_ACTION_CLASS,
+  LIST_LIMIT,
   TOOL_BUILDER_TAG,
   TRUST_LEVELS,
 } from './domain';
@@ -136,6 +140,7 @@ export type {
   EnvironmentKind,
   EnvironmentSummary,
   FlockSummary,
+  GroupedDecision,
   HistoryPage,
   LearnedSkillRecord,
   LearnedSkillSummary,

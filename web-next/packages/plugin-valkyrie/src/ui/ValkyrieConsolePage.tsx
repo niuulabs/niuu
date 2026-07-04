@@ -18,13 +18,19 @@ import {
 } from 'lucide-react';
 import {
   autonomyModeForLevel,
+  collapseDecisionsByCorrelation,
+  decisionHeadline,
+  decisionNeedsApproval,
+  decisionSubject,
   latestBuildGrant,
   realmSlugForEnvironment,
   referencedSkillName,
+  LIST_LIMIT,
   type AutonomyMode,
   type DecisionRecord,
   type EnvironmentHealth,
   type EnvironmentKind,
+  type GroupedDecision,
   type LearnedSkillSummary,
   type RealmTrustGrant,
   type ValkyrieDashboard,
@@ -32,7 +38,7 @@ import {
   type ValkyrieResident,
   type WakefulnessState,
 } from '../domain';
-import { useRealmTrustGrants } from '../application/useRealmGovernance';
+import { useRealms, useRealmTrustGrants } from '../application/useRealmGovernance';
 import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
 import {
   useDecisionDetail,
@@ -48,6 +54,7 @@ import { timeAgo } from './reviewFormat';
 import {
   actionAuthorityCopy,
   autonomyModeCopy,
+  decisionStatusCopy,
   describeIdleSituation,
   isLearnedSkillState,
   operationalStateCopy,
@@ -252,6 +259,8 @@ function Roster({
  */
 interface BuildGovernance {
   realm: RealmRef;
+  /** Whether a realm actually exists for this environment's slug. */
+  realmExists: boolean;
   buildGrant: RealmTrustGrant | null;
   grantsKnown: boolean;
   effectiveMode: AutonomyMode;
@@ -522,7 +531,7 @@ function SituationPanel({
           <p className={`niuu:mt-2 niuu:text-xs ${MUTED}`}>
             Decided {timeAgo(decision.decidedAt)} ago with {formatPercent(decision.confidence)}{' '}
             confidence, based on {decision.signalRefs.length} signal(s).{' '}
-            {actionAuthorityCopy(decision.actionAuthority).description}
+            {decisionStatusCopy(decision).description}
           </p>
         </div>
       ) : (
@@ -666,7 +675,7 @@ function AuthorityPanel({
   governance: BuildGovernance;
 }) {
   const modeCopy = autonomyModeCopy(valkyrie.autonomyMode);
-  const { realm, buildGrant, grantsKnown, effectiveMode } = governance;
+  const { realm, realmExists, buildGrant, grantsKnown, effectiveMode } = governance;
   const effectiveCopy = autonomyModeCopy(effectiveMode);
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-authority">
@@ -736,11 +745,23 @@ function AuthorityPanel({
         <div className="niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
           realm build governance — {realm.slug}
         </div>
-        <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
-          The realm&apos;s build grant pins the Ting workflow this resident uses to build tools and
-          sets its effective build autonomy.
-        </p>
-        <ToolBuilderGrantCard realm={realm} />
+        {realmExists ? (
+          <>
+            <p className={`niuu:mt-1 niuu:text-xs ${MUTED}`}>
+              The realm&apos;s build grant pins the Ting workflow this resident uses to build tools
+              and sets its effective build autonomy.
+            </p>
+            <ToolBuilderGrantCard realm={realm} />
+          </>
+        ) : (
+          <p
+            data-testid="valkyrie-realm-unconfigured"
+            className={`niuu:mt-1 niuu:text-xs ${MUTED}`}
+          >
+            No realm is configured for {realm.slug}, so there is no build governance to set. The
+            configured autonomy mode applies until a realm is created.
+          </p>
+        )}
       </div>
     </section>
   );
@@ -748,24 +769,31 @@ function AuthorityPanel({
 
 function DecisionCard({
   decision,
+  count,
   expanded,
   onToggle,
   skillName,
   onViewSkill,
 }: {
   decision: DecisionRecord;
+  count: number;
   expanded: boolean;
   onToggle: () => void;
   skillName?: string;
   onViewSkill?: (name: string) => void;
 }) {
   const stateCopy = operationalStateCopy(decision.operationalState);
-  const authority = actionAuthorityCopy(decision.actionAuthority);
+  const status = decisionStatusCopy(decision);
   const outcome = outcomeCopy(decision.outcome);
   const detail = useDecisionDetail(expanded ? decision.decisionId : null);
+  // Truthful headline from the record's own sentence, redundant prefix
+  // stripped; the copy.ts state label is the fallback for an empty summary.
+  const headline = decisionHeadline(decision, stateCopy.label);
+  const subject = decisionSubject(decision);
+  const needsApproval = decisionNeedsApproval(decision);
 
   return (
-    <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3">
+    <div className="niuu:rounded-md niuu:bg-bg-primary niuu:p-3" data-testid="decision-card">
       <button
         type="button"
         onClick={onToggle}
@@ -773,15 +801,38 @@ function DecisionCard({
         className="niuu:flex niuu:w-full niuu:items-start niuu:justify-between niuu:gap-3 niuu:text-left"
       >
         <span className="niuu:min-w-0">
-          <span className="niuu:block niuu:truncate niuu:text-sm niuu:font-medium niuu:text-text-primary">
-            {stateCopy.label}
-            {decision.recommendedAction && decision.recommendedAction !== 'none'
-              ? ` · ${decision.recommendedAction.replace(/_/g, ' ')}`
-              : ''}
+          <span className="niuu:flex niuu:items-center niuu:gap-2">
+            <span className="niuu:min-w-0 niuu:truncate niuu:text-sm niuu:font-medium niuu:text-text-primary">
+              {headline}
+            </span>
+            {count > 1 ? (
+              <span
+                data-testid="decision-repeat-count"
+                title={`${count} near-identical decisions for this subject`}
+                className="niuu:shrink-0 niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-[10px] niuu:text-text-muted"
+              >
+                ×{count}
+              </span>
+            ) : null}
           </span>
-          <span className="niuu:mt-1 niuu:block niuu:text-xs niuu:text-text-muted">
-            {timeAgo(decision.decidedAt)} ago · {formatPercent(decision.confidence)} confidence ·{' '}
-            {authority.label}
+          <span className="niuu:mt-1 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-x-1.5 niuu:text-xs niuu:text-text-muted">
+            <span>{timeAgo(decision.decidedAt)} ago</span>
+            {decision.tier ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-1.5 niuu:py-0.5 niuu:text-[10px]">
+                  {decision.tier}
+                </span>
+              </>
+            ) : null}
+            <span aria-hidden="true">·</span>
+            <span>{formatPercent(decision.confidence)} confidence</span>
+            {subject ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="niuu:truncate niuu:font-mono">{subject}</span>
+              </>
+            ) : null}
           </span>
         </span>
         <span className="niuu:flex niuu:shrink-0 niuu:flex-col niuu:items-end niuu:gap-1 niuu:text-[10px]">
@@ -795,12 +846,21 @@ function DecisionCard({
             >
               {outcome.label}
             </span>
-          ) : null}
-          {!decision.outcome && decision.reviewItemId ? (
-            <span className="niuu:rounded-full niuu:bg-brand/15 niuu:px-2 niuu:py-0.5 niuu:text-brand">
-              awaiting review
+          ) : needsApproval ? (
+            <span
+              data-testid="decision-needs-approval"
+              className="niuu:rounded-full niuu:bg-brand/15 niuu:px-2 niuu:py-0.5 niuu:text-brand"
+            >
+              {status.label}
             </span>
-          ) : null}
+          ) : (
+            <span
+              data-testid="decision-status"
+              className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-text-muted"
+            >
+              {status.label}
+            </span>
+          )}
         </span>
       </button>
       {expanded ? (
@@ -872,8 +932,18 @@ function DecisionsPanel({
   onViewSkill: (name: string) => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { data, isLoading, error } = useDecisionList({ environmentId, limit: 8 });
+  // Fetch only the newest window — the decisions endpoint honours `limit`.
+  const { data, isLoading, error } = useDecisionList({
+    environmentId,
+    limit: LIST_LIMIT,
+  });
   const skillNames = skills.map((skill) => skill.skillName);
+  // Collapse repeats (same subject re-judged) into one row with a ×N badge.
+  const groups: GroupedDecision[] = useMemo(
+    () => collapseDecisionsByCorrelation(data?.items ?? []),
+    [data?.items],
+  );
+  const total = data?.total ?? 0;
 
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-decisions">
@@ -882,15 +952,20 @@ function DecisionsPanel({
           <MessageSquare size={15} className="niuu:text-brand" aria-hidden="true" />
           <h2 className="niuu:text-base niuu:font-semibold niuu:text-text-primary">Decisions</h2>
         </div>
-        {data ? <span className={`niuu:text-xs ${MUTED}`}>{data.total} total</span> : null}
+        {data ? (
+          <span data-testid="decisions-total" className={`niuu:text-xs ${MUTED}`}>
+            {total > LIST_LIMIT ? `latest ${LIST_LIMIT} · ${total} total` : `${total} total`}
+          </span>
+        ) : null}
       </div>
       <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-3">
         {isLoading ? <p className={`niuu:text-sm ${MUTED}`}>Loading decisions...</p> : null}
         {error ? <HistoryUnavailable what="Decision history" /> : null}
-        {(data?.items ?? []).map((decision) => (
+        {groups.map(({ decision, count }) => (
           <DecisionCard
             key={decision.decisionId}
             decision={decision}
+            count={count}
             expanded={expandedId === decision.decisionId}
             onToggle={() =>
               setExpandedId(expandedId === decision.decisionId ? null : decision.decisionId)
@@ -973,7 +1048,7 @@ function LearningPanel({
   dashboard: ValkyrieDashboard;
   valkyrie: ValkyrieResident;
 }) {
-  const { data: skills } = useSkillStats(valkyrie.environmentId);
+  const { data: skillStats } = useSkillStats(valkyrie.environmentId);
   const learnings = dashboard.learnings
     .filter(
       (learning) =>
@@ -981,9 +1056,15 @@ function LearningPanel({
         learning.sourceValkyrieId === valkyrie.id,
     )
     .slice(0, 4);
-  const toolNeeds = dashboard.telemetry?.recentToolNeeds
-    ?.filter((need) => need.environmentId === valkyrie.environmentId)
+  const toolNeeds = (dashboard.telemetry?.recentToolNeeds ?? [])
+    .filter((need) => need.environmentId === valkyrie.environmentId)
     .slice(0, 4);
+  // The strip is three sources stacked; keep the whole strip to the newest
+  // LIST_LIMIT items so a busy environment cannot render an unbounded wall.
+  const skills = (skillStats ?? []).slice(
+    0,
+    Math.max(0, LIST_LIMIT - learnings.length - toolNeeds.length),
+  );
 
   return (
     <section className={PANEL_PAD} data-testid="valkyrie-learning">
@@ -994,7 +1075,7 @@ function LearningPanel({
         </h2>
       </div>
       <div className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-3">
-        {(skills ?? []).map((skill) => (
+        {skills.map((skill) => (
           <div
             key={skill.skillName}
             data-testid={`skill-stat-${skill.skillName}`}
@@ -1021,7 +1102,7 @@ function LearningPanel({
             </p>
           </div>
         ))}
-        {(toolNeeds ?? []).map((need) => (
+        {toolNeeds.map((need) => (
           <div
             key={need.id}
             className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border niuu:bg-bg-primary niuu:p-3"
@@ -1041,7 +1122,7 @@ function LearningPanel({
             <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{learning.summary}</p>
           </div>
         ))}
-        {(skills?.length ?? 0) === 0 && (toolNeeds?.length ?? 0) === 0 && learnings.length === 0 ? (
+        {skills.length === 0 && toolNeeds.length === 0 && learnings.length === 0 ? (
           <p className={`niuu:text-sm ${MUTED}`}>No tool gaps or learning records.</p>
         ) : null}
       </div>
@@ -1182,19 +1263,26 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     [dashboard.signals, selected],
   );
   const decisionsQuery = useDecisionList(
-    { environmentId: selected?.environmentId ?? '', limit: 8 },
+    { environmentId: selected?.environmentId ?? '', limit: LIST_LIMIT },
     Boolean(selected),
   );
   const skillsQuery = useValkyrieSkills(selected?.environmentId ?? '', Boolean(selected));
   // A realm's slug IS the environment's raw id; its build grant governs
   // what this resident may build, ahead of the configured autonomy mode.
   const realmSlug = realmSlugForEnvironment(selected?.environmentId ?? '');
-  const grantsQuery = useRealmTrustGrants(realmSlug);
+  // Fetch the realm list once and only ask for trust grants when this env's
+  // slug is a real realm — otherwise the grants request 404s for every
+  // environment that has no realm configured. While realms are still loading
+  // we hold the grants request; a failed realms list means "unknown", so we
+  // also hold rather than spam.
+  const realmsQuery = useRealms();
+  const realmExists = (realmsQuery.data ?? []).some((realm) => realm.slug === realmSlug);
+  const grantsQuery = useRealmTrustGrants(realmSlug, realmExists);
 
   if (!selected) return <EmptyConsole />;
 
   const skills = skillsQuery.data ?? [];
-  const grantsKnown = grantsQuery.isSuccess;
+  const grantsKnown = realmExists && grantsQuery.isSuccess;
   const buildGrant = grantsKnown ? latestBuildGrant(grantsQuery.data ?? []) : null;
 
   const severities = taskSeverities(selected, dashboard);
@@ -1220,6 +1308,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
   ]);
   const governance: BuildGovernance = {
     realm: { slug: realmSlug, name: environmentSummary?.name ?? realmSlug },
+    realmExists,
     buildGrant,
     grantsKnown,
     effectiveMode: buildGrant ? autonomyModeForLevel(buildGrant.level) : selected.autonomyMode,

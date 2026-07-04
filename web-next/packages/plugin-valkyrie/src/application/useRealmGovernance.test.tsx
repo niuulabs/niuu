@@ -62,6 +62,23 @@ describe('useRealmGovernance hooks', () => {
     expect(listSpy).not.toHaveBeenCalled();
   });
 
+  it('stays idle when the caller knows the realm does not exist', async () => {
+    const service = createMockRealmGovernanceService();
+    const listSpy = vi.spyOn(service, 'listTrustGrants');
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
+
+    // enabled=false — the slug is plausible but the realm list says it's absent.
+    const gated = renderHook(() => useRealmTrustGrants('ghost-realm', false), { wrapper });
+    expect(gated.result.current.fetchStatus).toBe('idle');
+    expect(listSpy).not.toHaveBeenCalled();
+
+    // The same hook with enabled=true fires as before.
+    const open = renderHook(() => useRealmTrustGrants('valhalla', true), { wrapper });
+    await waitFor(() => expect(open.result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledWith('valhalla');
+    expect(listSpy).not.toHaveBeenCalledWith('ghost-realm');
+  });
+
   it('surfaces load and save failures', async () => {
     const broken = {
       listRealms: () => Promise.reject(new Error('realms offline')),

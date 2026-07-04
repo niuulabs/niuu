@@ -8,7 +8,7 @@ vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockRejectedValue(new Error('no highlight in test')),
 }));
 import { createMockOdinReviewService, createSeedReviewItems } from '../adapters/mock';
-import type { ReviewItem } from '../domain';
+import { LIST_LIMIT, type ReviewItem } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { InboxPage } from './InboxPage';
 
@@ -173,5 +173,31 @@ describe('InboxPage', () => {
     };
     renderInbox({ 'valkyrie.reviews': broken });
     expect(await screen.findByTestId('inbox-error')).toHaveTextContent('queue offline');
+  });
+
+  it('fetches at most LIST_LIMIT items and says how many more are pending', async () => {
+    const base = createSeedReviewItems()[0]!;
+    const many = Array.from({ length: 25 }, (_, index) => ({
+      ...base,
+      itemId: `review:bulk:${index}`,
+      title: `Bulk review ${index}`,
+      status: 'pending' as const,
+      requestedAt: `2026-06-03T${String(10 + Math.floor(index / 10))}:${String(
+        10 + (index % 10),
+      )}:00Z`,
+    }));
+    const service = createMockOdinReviewService(many);
+    const listSpy = vi.spyOn(service, 'listReviews');
+    renderInbox({ 'valkyrie.reviews': service });
+
+    const cards = await screen.findAllByTestId('review-card');
+    expect(cards).toHaveLength(LIST_LIMIT);
+    expect(screen.getByTestId('inbox-pending-count')).toHaveTextContent('25 pending');
+    expect(screen.getByTestId('inbox-list-capped')).toHaveTextContent(
+      `latest ${LIST_LIMIT} · 25 total`,
+    );
+    for (const call of listSpy.mock.calls) {
+      expect(call[0]?.limit).toBe(LIST_LIMIT);
+    }
   });
 });
