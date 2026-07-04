@@ -1,9 +1,22 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { createMockValkyrieService } from '../adapters/mock';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { learningCorrelation, learningEyebrow, LearningViewer } from './LearningViewer';
+
+/** The console's wiring in miniature: the viewer can switch its own record. */
+function ViewerHarness({ initialLearningId }: { initialLearningId: string }) {
+  const [learningId, setLearningId] = useState<string | null>(initialLearningId);
+  return (
+    <LearningViewer
+      learningId={learningId}
+      onClose={() => setLearningId(null)}
+      onNavigate={setLearningId}
+    />
+  );
+}
 
 describe('LearningViewer', () => {
   it('renders nothing while no learning is selected', () => {
@@ -180,6 +193,121 @@ describe('LearningViewer feedback', () => {
     const alert = await screen.findByTestId('learning-feedback-error');
     expect(alert).toHaveTextContent('feedback already recorded for this learning');
     expect(alert).toHaveAttribute('role', 'alert');
+  });
+});
+
+describe('LearningViewer edit mode', () => {
+  it('edits a candidate in place: no supersede notice, revised text shown', async () => {
+    const user = userEvent.setup();
+    render(<ViewerHarness initialLearningId="learn-email-vendor-escalation" />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-edit'));
+    const summaryInput = screen.getByLabelText('Learning summary');
+    await user.clear(summaryInput);
+    await user.type(summaryInput, 'Flag contract-deadline emails from unknown senders.');
+    await user.type(screen.getByTestId('learning-edit-reason'), 'tighten the sender rule');
+    await user.click(screen.getByTestId('learning-edit-save'));
+
+    // Same record, updated in place — the drawer shows the revised summary.
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toHaveTextContent(
+        'Flag contract-deadline emails from unknown senders.',
+      ),
+    );
+    expect(screen.getByTestId('learning-viewer-header')).toHaveTextContent(
+      'learn-email-vendor-escalation',
+    );
+    expect(screen.queryByTestId('learning-supersede-notice')).toBeNull();
+    // The form closed back into the edit affordance.
+    expect(screen.queryByTestId('learning-edit-form')).toBeNull();
+    expect(screen.getByTestId('learning-edit')).toBeVisible();
+  });
+
+  it('refuses to save without a reason', async () => {
+    const user = userEvent.setup();
+    render(<ViewerHarness initialLearningId="learn-email-vendor-escalation" />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-edit'));
+    expect(screen.getByTestId('learning-edit-save')).toBeDisabled();
+    await user.type(screen.getByTestId('learning-edit-reason'), '  ');
+    expect(screen.getByTestId('learning-edit-save')).toBeDisabled();
+    await user.type(screen.getByTestId('learning-edit-reason'), 'now with a reason');
+    expect(screen.getByTestId('learning-edit-save')).toBeEnabled();
+  });
+
+  it('cancel closes the form and discards pending edits', async () => {
+    const user = userEvent.setup();
+    render(<ViewerHarness initialLearningId="learn-email-vendor-escalation" />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-edit'));
+    await user.type(screen.getByLabelText('Learning title'), ' scribbles');
+    await user.click(screen.getByTestId('learning-edit-cancel'));
+    expect(screen.queryByTestId('learning-edit-form')).toBeNull();
+
+    // Reopening starts from the stored record again.
+    await user.click(screen.getByTestId('learning-edit'));
+    expect(screen.getByLabelText('Learning title')).toHaveValue('Vendor deadline language');
+  });
+
+  it('revising an installed learning shows the supersede notice and switches records', async () => {
+    const user = userEvent.setup();
+    render(<ViewerHarness initialLearningId="learn-k8s-oom-canary" />, {
+      wrapper: wrapWithValkyrie(),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-edit'));
+    await user.type(screen.getByTestId('learning-edit-reason'), 'narrow the queue-depth window');
+    await user.click(screen.getByTestId('learning-edit-save'));
+
+    const noticeText =
+      'Created superseding candidate learn-k8s-oom-canary:rev1 — the original stays ' +
+      'installed until it passes review';
+    await waitFor(() =>
+      expect(screen.getByTestId('learning-supersede-notice')).toHaveTextContent(noticeText),
+    );
+    // The drawer switched to the new candidate record.
+    await waitFor(() =>
+      expect(screen.getByTestId('learning-viewer-header')).toHaveTextContent(
+        'learn-k8s-oom-canary:rev1',
+      ),
+    );
+    expect(screen.getByTestId('learning-viewer-status')).toHaveTextContent('candidate');
+  });
+
+  it('surfaces revision failures with the API error detail', async () => {
+    const user = userEvent.setup();
+    const broken = {
+      ...createMockValkyrieService(),
+      reviseLearning: () =>
+        Promise.reject(
+          Object.assign(new Error('422'), {
+            detail: 'at least one of title, summary, or content is required',
+          }),
+        ),
+    };
+    render(<ViewerHarness initialLearningId="learn-k8s-oom-canary" />, {
+      wrapper: wrapWithValkyrie({ valkyrie: broken }),
+    });
+    await screen.findByTestId('learning-viewer-payload');
+
+    await user.click(screen.getByTestId('learning-edit'));
+    await user.type(screen.getByTestId('learning-edit-reason'), 'why not');
+    await user.click(screen.getByTestId('learning-edit-save'));
+
+    const alert = await screen.findByTestId('learning-edit-error');
+    expect(alert).toHaveTextContent('at least one of title, summary, or content is required');
+    // The form stays open so the operator can retry.
+    expect(screen.getByTestId('learning-edit-form')).toBeVisible();
   });
 });
 
