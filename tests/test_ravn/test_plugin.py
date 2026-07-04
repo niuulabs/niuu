@@ -340,10 +340,36 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
 
     client = TestClient(app)
 
-    ravens = client.get("/api/v1/ravn/ravens")
+    # /ravens is real resident discovery now — it proxies the Forge sessions
+    # API with the caller's auth forwarded.
+    import httpx
+    import respx
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "status": "running",
+                        "model": "claude-opus-4-8",
+                        "chat_endpoint": "ws://host/s/1/session",
+                        "workload_type": "resident",
+                        "resident": {
+                            "name": "Muninn",
+                            "persona": "product-steward",
+                            "peer_id": "flock-product-steward",
+                        },
+                    }
+                ],
+            )
+        )
+        ravens = client.get("/api/v1/ravn/ravens")
     assert ravens.status_code == 200
     assert isinstance(ravens.json(), list)
-    assert ravens.json()[0]["persona_name"]
+    assert ravens.json()[0]["persona_name"] == "product-steward"
+    assert ravens.json()[0]["kind"] == "resident"
 
     sessions = client.get("/api/v1/ravn/sessions")
     assert sessions.status_code == 200

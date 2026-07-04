@@ -68,7 +68,16 @@ def test_ravn_sessions_available(client: TestClient) -> None:
 
 
 def test_ravn_settings_available(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/settings")
+    import httpx
+    import respx
+
+    # The fleet-member count comes from real resident discovery now, which
+    # proxies the Forge sessions API.
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        resp = client.get("/api/v1/ravn/settings")
     assert resp.status_code == 200
     data = resp.json()
     assert data["title"] == "Ravn"
