@@ -367,6 +367,42 @@ describe('buildRavnRavenAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/ravens/${rawRavn.id}`);
     expect(result.personaName).toBe('coder');
   });
+
+  it('maps resident wire fields to camelCase', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawRavn,
+      resident_name: 'huginn',
+      peer_id: 'peer-huginn-01',
+      kind: 'resident',
+      chat_endpoint: 'wss://skuld.example/s/abc/session',
+      session_id: '33333333-3333-4333-8333-333333333333',
+    });
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.residentName).toBe('huginn');
+    expect(result.peerId).toBe('peer-huginn-01');
+    expect(result.kind).toBe('resident');
+    expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+    expect(result.sessionId).toBe('33333333-3333-4333-8333-333333333333');
+  });
+
+  it('maps a null chat_endpoint through unchanged', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ ...rawRavn, kind: 'resident', chat_endpoint: null });
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.chatEndpoint).toBeNull();
+  });
+
+  it('leaves resident fields undefined when absent from the wire record', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawRavn);
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.residentName).toBeUndefined();
+    expect(result.peerId).toBeUndefined();
+    expect(result.kind).toBeUndefined();
+    expect(result.chatEndpoint).toBeUndefined();
+    expect(result.sessionId).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

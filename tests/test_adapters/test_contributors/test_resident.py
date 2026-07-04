@@ -90,9 +90,7 @@ class TestResidentOutput:
         c = ResidentContributor()
         result = await c.contribute(session, _ctx({"persona": "product-steward"}))
         containers = [
-            ct
-            for ct in result.pod_spec.extra_containers
-            if ct.get("name", "").startswith("ravn-")
+            ct for ct in result.pod_spec.extra_containers if ct.get("name", "").startswith("ravn-")
         ]
         assert [ct["name"] for ct in containers] == ["ravn-product-steward"]
 
@@ -208,9 +206,5 @@ class TestResidentRavnConfig:
         )
         cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "product-steward"))
         assert cfg["mimir"]["enabled"] is True
-        assert cfg["sleipnir"]["webhook"]["publish_urls"] == [
-            "http://volundr:8000/sleipnir/events"
-        ]
-        assert result.values["sleipnir"]["publishUrls"] == [
-            "http://volundr:8000/sleipnir/events"
-        ]
+        assert cfg["sleipnir"]["webhook"]["publish_urls"] == ["http://volundr:8000/sleipnir/events"]
+        assert result.values["sleipnir"]["publishUrls"] == ["http://volundr:8000/sleipnir/events"]

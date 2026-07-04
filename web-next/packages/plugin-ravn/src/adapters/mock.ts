@@ -617,6 +617,11 @@ const SEED_RAVENS: Ravn[] = [
     mcpServers: ['filesystem', 'git', 'bash'],
     gatewayChannels: ['slack-dev', 'github-webhook'],
     eventSubscriptions: ['code.requested', 'bug.fix.requested', 'code.changed'],
+    residentName: 'sindri',
+    peerId: 'peer-sindri-01',
+    kind: 'resident',
+    chatEndpoint: null,
+    sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
   },
   {
     id: 'b7e2c9d1-3a4f-4b8e-a1c6-5d7f8e9a0b2c',

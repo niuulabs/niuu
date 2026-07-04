@@ -7,7 +7,18 @@ export { compressImage } from './utils/compressImage';
 export { buildCommandList } from './utils/slashCommands';
 export type { SlashCommand } from './utils/slashCommands';
 
+/* Transport */
+export { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './transport';
+
 /* Hooks */
+export { useWebSocket } from './hooks/useWebSocket';
+export {
+  useSkuldChat,
+  transformTurns,
+  participantsFromTurns,
+  meshEventsFromTurns,
+} from './hooks/useSkuldChat';
+export type { ConversationTurn } from './hooks/useSkuldChat';
 export { useFileAttachments } from './hooks/useFileAttachments';
 export type { FileAttachment } from './hooks/useFileAttachments';
 export { useSlashMenu } from './hooks/useSlashMenu';

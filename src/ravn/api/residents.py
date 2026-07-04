@@ -53,9 +53,7 @@ _STATUS_MAP = {
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
     """Extract forwardable auth headers and dev-identity query params."""
     headers = {
-        name: value
-        for name in _AUTH_HEADERS
-        if (value := request.headers.get(name, "").strip())
+        name: value for name in _AUTH_HEADERS if (value := request.headers.get(name, "").strip())
     }
     params = {
         name: value

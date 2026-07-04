@@ -115,9 +115,7 @@ class TestRelayDelivery:
         assert metadata["payload"] == {"campaign": "x"}
 
     async def test_unsubscribed_event_type_ignored(self):
-        relay, subscriber, _room, send_directed, notify = _relay(
-            subscribes_to=("plan.completed",)
-        )
+        relay, subscriber, _room, send_directed, notify = _relay(subscribes_to=("plan.completed",))
         await relay.start()
         await subscriber.handler(_event("research.completed"))
         send_directed.assert_not_awaited()
@@ -134,17 +132,13 @@ class TestRelayDelivery:
     async def test_provenance_mismatch_ignored(self):
         relay, subscriber, _room, send_directed, notify = _relay()
         await relay.start()
-        await subscriber.handler(
-            _event("research.completed", {"resident_peer_id": "someone-else"})
-        )
+        await subscriber.handler(_event("research.completed", {"resident_peer_id": "someone-else"}))
         send_directed.assert_not_awaited()
 
     async def test_provenance_match_delivered(self):
         relay, subscriber, _room, send_directed, notify = _relay()
         await relay.start()
-        await subscriber.handler(
-            _event("research.completed", {"resident_peer_id": _RESIDENT})
-        )
+        await subscriber.handler(_event("research.completed", {"resident_peer_id": _RESIDENT}))
         send_directed.assert_awaited_once()
 
     async def test_resident_absent_drops_quietly(self):
@@ -165,8 +159,6 @@ class TestRelayDelivery:
     async def test_payload_truncated_in_message(self):
         relay, subscriber, _room, send_directed, notify = _relay()
         await relay.start()
-        await subscriber.handler(
-            _event("research.completed", {"blob": "x" * 5000})
-        )
+        await subscriber.handler(_event("research.completed", {"blob": "x" * 5000}))
         _target, content, _metadata = send_directed.await_args.args
         assert "…(truncated)" in content

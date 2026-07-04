@@ -235,9 +235,7 @@ def build_session_join_manager(settings: Any) -> SessionJoinManager:
     )
     persona = getattr(settings, "persona", "") or "ravn"
     display_name = (
-        settings.skuld.display_name
-        or getattr(settings.environment, "resident_name", "")
-        or persona
+        settings.skuld.display_name or getattr(settings.environment, "resident_name", "") or persona
     )
     return SessionJoinManager(
         peer_id=peer_id,

@@ -1,5 +1,14 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { LiveBadge, MountChip, PersonaAvatar, StateDot, relTime } from '@niuulabs/ui';
+import {
+  LiveBadge,
+  MountChip,
+  PersonaAvatar,
+  SessionChat,
+  StateDot,
+  normalizeSessionUrl,
+  relTime,
+  useSkuldChat,
+} from '@niuulabs/ui';
 import type { BudgetState } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import type { Message, MessageKind } from '../domain/message';
@@ -14,7 +23,7 @@ import './RavnDetail.css';
 
 const TAB_STORAGE_KEY = 'ravn.detail.tab';
 
-type TabId = 'overview' | 'triggers' | 'activity' | 'sessions' | 'connectivity';
+type TabId = 'overview' | 'chat' | 'triggers' | 'activity' | 'sessions' | 'connectivity';
 
 const KIND_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'all', label: 'all' },
@@ -434,6 +443,41 @@ function SessionsSection({ sessions }: SessionsSectionProps) {
   );
 }
 
+interface ChatSectionProps {
+  chatEndpoint: string;
+  sessionName: string;
+}
+
+function ChatSection({ chatEndpoint, sessionName }: ChatSectionProps) {
+  const chat = useSkuldChat(chatEndpoint);
+
+  return (
+    <div className="rv-chat-body" data-testid="chat-section-body">
+      <SessionChat
+        className="rv-chat-session"
+        showToolbar={false}
+        messages={chat.messages}
+        streamingContent={chat.streamingContent}
+        streamingParts={chat.streamingParts}
+        streamingModel={chat.streamingModel}
+        connected={chat.connected}
+        historyLoaded={chat.historyLoaded}
+        participants={chat.participants}
+        meshEvents={chat.meshEvents}
+        agentEvents={chat.agentEvents}
+        pendingPermissions={chat.pendingPermissions}
+        availableCommands={chat.availableCommands}
+        capabilities={chat.capabilities}
+        chatEndpoint={chatEndpoint}
+        sessionName={sessionName}
+        onSend={chat.sendMessage}
+        onStop={chat.sendInterrupt}
+        onPermissionRespond={chat.respondToPermission}
+      />
+    </div>
+  );
+}
+
 interface ConnectivitySectionProps {
   ravn: Ravn;
 }
@@ -546,13 +590,20 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
 
   const openSessionId = ravnSessions.find((session) => session.status === 'running')?.id;
 
+  const chatEndpoint = normalizeSessionUrl(ravn.chatEndpoint ?? null);
+
   const tabs: Array<{ id: TabId; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
+    ...(chatEndpoint ? [{ id: 'chat' as const, label: 'Chat' }] : []),
     { id: 'triggers', label: 'Triggers', count: ravnTriggers.length },
     { id: 'activity', label: 'Activity', count: activityMessages.length },
     { id: 'sessions', label: 'Sessions', count: ravnSessions.length },
     { id: 'connectivity', label: 'Connectivity' },
   ];
+
+  // A stored tab can point at a section this ravn doesn't have (e.g. "chat"
+  // persisted from a resident, then a persona ravn is opened).
+  const resolvedTab: TabId = tabs.some((tab) => tab.id === activeTab) ? activeTab : 'overview';
 
   const subtitle = detailSubtitle(ravn);
 
@@ -617,12 +668,12 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
             key={tab.id}
             type="button"
             role="tab"
-            aria-selected={activeTab === tab.id}
+            aria-selected={resolvedTab === tab.id}
             onClick={() => {
               saveStorage(TAB_STORAGE_KEY, tab.id);
               setActiveTab(tab.id);
             }}
-            className={`rv-sectab${activeTab === tab.id ? ' rv-sectab--active' : ''}`}
+            className={`rv-sectab${resolvedTab === tab.id ? ' rv-sectab--active' : ''}`}
             data-testid={`sectab-${tab.id}`}
           >
             {tab.label}
@@ -634,19 +685,25 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
       </nav>
 
       <div className="rv-detail__content">
-        {activeTab === 'overview' && (
+        {resolvedTab === 'overview' && (
           <OverviewSection ravn={ravn} budget={budget} sessions={ravnSessions} />
         )}
-        {activeTab === 'triggers' && <TriggersSection triggers={ravnTriggers} />}
-        {activeTab === 'activity' && (
+        {resolvedTab === 'chat' && chatEndpoint && (
+          <ChatSection
+            chatEndpoint={chatEndpoint}
+            sessionName={ravn.residentName ?? ravn.personaName}
+          />
+        )}
+        {resolvedTab === 'triggers' && <TriggersSection triggers={ravnTriggers} />}
+        {resolvedTab === 'activity' && (
           <ActivitySection
             messages={activityMessages}
             isActive={ravn.status === 'active'}
             isLoading={activityLoading}
           />
         )}
-        {activeTab === 'sessions' && <SessionsSection sessions={ravnSessions} />}
-        {activeTab === 'connectivity' && <ConnectivitySection ravn={ravn} />}
+        {resolvedTab === 'sessions' && <SessionsSection sessions={ravnSessions} />}
+        {resolvedTab === 'connectivity' && <ConnectivitySection ravn={ravn} />}
       </div>
     </div>
   );

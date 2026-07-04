@@ -196,9 +196,7 @@ class SkuldChannel(ChannelPort):
                     # present the platform identity token on the handshake.
                     token = await self._auth_token_provider()
                     if token:
-                        connect_kwargs["additional_headers"] = {
-                            "Authorization": f"Bearer {token}"
-                        }
+                        connect_kwargs["additional_headers"] = {"Authorization": f"Bearer {token}"}
                 self._ws = await websockets.connect(self._broker_url, **connect_kwargs)
                 logger.info(
                     "SkuldChannel connected to %s (session=%s).",

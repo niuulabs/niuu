@@ -11,6 +11,43 @@ import {
 } from '../adapters/mock';
 import type { Ravn } from '../domain/ravn';
 
+const useSkuldChatMock = vi.hoisted(() => vi.fn());
+
+// Replace only the Skuld chat hook — jsdom has no WebSocket, and the chat tab
+// must render without opening a live connection. Everything else stays real.
+vi.mock('@niuulabs/ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@niuulabs/ui')>();
+  return { ...actual, useSkuldChat: useSkuldChatMock };
+});
+
+function makeChatState(overrides: Record<string, unknown> = {}) {
+  return {
+    messages: [],
+    streamingContent: undefined,
+    streamingParts: undefined,
+    streamingModel: undefined,
+    connected: true,
+    historyLoaded: true,
+    participants: new Map(),
+    meshEvents: [],
+    agentEvents: new Map(),
+    pendingPermissions: [],
+    availableCommands: [],
+    capabilities: {},
+    sendMessage: vi.fn(),
+    sendDirectedMessages: vi.fn(),
+    sendResendPrompt: vi.fn(),
+    respondToPermission: vi.fn(),
+    sendInterrupt: vi.fn(),
+    sendSetModel: vi.fn(),
+    sendSetThinkingTokens: vi.fn(),
+    sendRewindFiles: vi.fn(),
+    sendSetInternalVisibility: vi.fn(),
+    clearMessages: vi.fn(),
+    ...overrides,
+  };
+}
+
 const SAMPLE_RAVN: Ravn = {
   id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
   personaName: 'sindri',
@@ -42,6 +79,19 @@ const SAMPLE_RAVN_MINIMAL: Ravn = {
   createdAt: '2026-04-14T18:00:00Z',
 };
 
+const RESIDENT_CHAT_ENDPOINT = 'wss://skuld.example/s/resident-1/session';
+
+const SAMPLE_RESIDENT: Ravn = {
+  ...SAMPLE_RAVN,
+  id: 'aa11bb22-cc33-4d44-8e55-ff6677889900',
+  personaName: 'huginn',
+  residentName: 'Huginn',
+  peerId: 'peer-huginn-01',
+  kind: 'resident',
+  chatEndpoint: RESIDENT_CHAT_ENDPOINT,
+  sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
+};
+
 function makeServices(overrides?: Record<string, unknown>) {
   return {
     'ravn.ravens': createMockRavenStream(),
@@ -65,6 +115,8 @@ function wrap(services = makeServices()) {
 
 beforeEach(() => {
   localStorage.clear();
+  useSkuldChatMock.mockReset();
+  useSkuldChatMock.mockImplementation(() => makeChatState());
 });
 
 // ── Core rendering ───────────────────────────────────────────────────────────
@@ -524,5 +576,77 @@ describe('RavnDetail — Connectivity tab', () => {
     fireEvent.click(screen.getByTestId('sectab-connectivity'));
     const emptyTexts = screen.queryAllByText('None configured');
     expect(emptyTexts.length).toBe(3);
+  });
+});
+
+// ── Chat tab (resident ravens) ───────────────────────────────────────────────
+
+describe('RavnDetail — Chat tab', () => {
+  it('shows the chat tab when the ravn has a chatEndpoint', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    expect(screen.getByTestId('sectab-chat')).toBeInTheDocument();
+  });
+
+  it('hides the chat tab when the ravn has no chatEndpoint', () => {
+    render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
+    expect(screen.queryByTestId('sectab-chat')).not.toBeInTheDocument();
+  });
+
+  it('hides the chat tab when chatEndpoint is null', () => {
+    render(<RavnDetail ravn={{ ...SAMPLE_RESIDENT, chatEndpoint: null }} />, { wrapper: wrap() });
+    expect(screen.queryByTestId('sectab-chat')).not.toBeInTheDocument();
+  });
+
+  it('renders SessionChat driven by useSkuldChat when the chat tab is active', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    fireEvent.click(screen.getByTestId('sectab-chat'));
+    expect(screen.getByTestId('chat-section-body')).toBeInTheDocument();
+    expect(screen.getByTestId('session-chat')).toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledWith(RESIDENT_CHAT_ENDPOINT);
+  });
+
+  it('renders chat messages returned by the hook', () => {
+    useSkuldChatMock.mockImplementation(() =>
+      makeChatState({
+        messages: [
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: 'Greetings from the resident.',
+            createdAt: new Date('2026-07-01T10:00:00Z'),
+            status: 'done',
+          },
+        ],
+      }),
+    );
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    fireEvent.click(screen.getByTestId('sectab-chat'));
+    expect(screen.getByText('Greetings from the resident.')).toBeInTheDocument();
+  });
+
+  it('does not call useSkuldChat while another tab is active', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    expect(useSkuldChatMock).not.toHaveBeenCalled();
+  });
+
+  it('marks the chat tab selected after clicking it', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    const chatTab = screen.getByTestId('sectab-chat');
+    fireEvent.click(chatTab);
+    expect(chatTab).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('falls back to overview when a stored "chat" tab is not available', () => {
+    localStorage.setItem('ravn.detail.tab', '"chat"');
+    render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
+    expect(screen.getByTestId('sectab-overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('section-body-overview')).toBeInTheDocument();
+  });
+
+  it('restores the chat tab from storage for a resident ravn', () => {
+    localStorage.setItem('ravn.detail.tab', '"chat"');
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    expect(screen.getByTestId('sectab-chat')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('chat-section-body')).toBeInTheDocument();
   });
 });

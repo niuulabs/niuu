@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
-import { extractOutcomeBlock } from '@niuulabs/ui';
+import { extractOutcomeBlock } from '../components/OutcomeCard';
 import type {
   AgentInternalEvent,
   AttachmentMeta,
@@ -13,11 +13,11 @@ import type {
   PermissionRequest,
   RoomParticipant,
   SessionCapabilities,
-  SlashCommand,
-} from '@niuulabs/ui';
-import type { FileAttachment } from '@niuulabs/ui';
+} from '../types';
+import type { SlashCommand } from '../utils/slashCommands';
+import type { FileAttachment } from './useFileAttachments';
 import { useWebSocket } from './useWebSocket';
-import { wsUrlToHttpBase } from '../liveSessionTransport';
+import { wsUrlToHttpBase } from '../transport';
 
 const HISTORY_RETRY_DELAY_MS = 1000;
 

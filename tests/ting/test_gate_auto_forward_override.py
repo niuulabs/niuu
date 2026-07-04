@@ -45,9 +45,7 @@ class TestGateAutoForwardOverride:
 
 class TestLaunchBodyField:
     def test_alias_round_trip(self):
-        body = WorkflowLaunchBody.model_validate(
-            {"prompt": "go", "gateAutoForwardAfter": ""}
-        )
+        body = WorkflowLaunchBody.model_validate({"prompt": "go", "gateAutoForwardAfter": ""})
         assert body.gate_auto_forward_after == ""
 
     def test_default_is_none(self):

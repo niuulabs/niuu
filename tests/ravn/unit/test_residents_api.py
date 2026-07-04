@@ -118,9 +118,7 @@ class TestListRavens:
 
     @respx.mock
     async def test_upstream_error_propagates(self):
-        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
-            return_value=httpx.Response(500)
-        )
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(return_value=httpx.Response(500))
         directory = ResidentDirectory(base_url=_BASE)
         with pytest.raises(httpx.HTTPStatusError):
             await directory.list_ravens({}, {})
@@ -149,8 +147,6 @@ class TestGetRaven:
 
     @respx.mock
     async def test_get_missing_returns_none(self):
-        respx.get(f"{_BASE}/api/v1/forge/sessions/nope").mock(
-            return_value=httpx.Response(404)
-        )
+        respx.get(f"{_BASE}/api/v1/forge/sessions/nope").mock(return_value=httpx.Response(404))
         directory = ResidentDirectory(base_url=_BASE)
         assert await directory.get_raven("nope", {}, {}) is None
