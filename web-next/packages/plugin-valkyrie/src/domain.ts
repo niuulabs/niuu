@@ -303,6 +303,188 @@ export function collapseDecisionsByCorrelation(
   return groups;
 }
 
+// ---------------------------------------------------------------------------
+// Roster sidebar — grouping, filtering, and per-resident activity
+// ---------------------------------------------------------------------------
+
+export type RosterGroupMode = 'kind' | 'environment' | 'flock';
+
+export const ROSTER_GROUP_MODES: readonly RosterGroupMode[] = ['kind', 'environment', 'flock'];
+
+export const ROSTER_GROUP_MODE_LABELS: Record<RosterGroupMode, string> = {
+  kind: 'by env type',
+  environment: 'by environment',
+  flock: 'by flock',
+};
+
+const ENVIRONMENT_KIND_LABELS: Record<EnvironmentKind, string> = {
+  kubernetes: 'Kubernetes',
+  host: 'Inbox / Host',
+  printer: 'Printer / Pi Cell',
+  generic: 'Other',
+};
+
+export function environmentKindLabel(kind: EnvironmentKind): string {
+  return ENVIRONMENT_KIND_LABELS[kind];
+}
+
+/** A roster row: the resident joined to its environment and flock. */
+export interface RosterEntry {
+  valkyrie: ValkyrieResident;
+  environment?: EnvironmentSummary;
+  flock?: FlockSummary;
+}
+
+export function rosterEntries(
+  dashboard: Pick<ValkyrieDashboard, 'valkyries' | 'environments' | 'flocks'>,
+): RosterEntry[] {
+  return dashboard.valkyries.map((valkyrie) => {
+    const environment = dashboard.environments.find(
+      (entry) => entry.id === valkyrie.environmentId,
+    );
+    const flockId = valkyrie.flockId ?? environment?.flockId;
+    const flock = dashboard.flocks.find(
+      (entry) => entry.id === flockId || entry.valkyrieIds.includes(valkyrie.id),
+    );
+    return { valkyrie, environment, flock };
+  });
+}
+
+/** Case-insensitive match on resident name, specialty, environment, or flock. */
+export function filterRosterEntries(
+  entries: readonly RosterEntry[],
+  query: string,
+): RosterEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...entries];
+  return entries.filter(({ valkyrie, environment, flock }) =>
+    [
+      valkyrie.name,
+      valkyrie.specialty,
+      valkyrie.environmentId,
+      environment?.name,
+      flock?.name,
+    ].some((value) => value?.toLowerCase().includes(needle)),
+  );
+}
+
+export interface RosterGroup {
+  key: string;
+  label: string;
+  /** Environment kind driving the group icon, when the group maps to one. */
+  kind?: EnvironmentKind;
+  entries: RosterEntry[];
+}
+
+const KIND_ORDER: readonly EnvironmentKind[] = ['kubernetes', 'host', 'printer', 'generic'];
+
+/**
+ * Group roster entries for the sidebar. `kind` groups by environment type in
+ * a fixed order (the default view); `environment` and `flock` keep dashboard
+ * order. Residents whose flock is unknown land in a "No flock" group rather
+ * than disappearing.
+ */
+export function groupRosterEntries(
+  entries: readonly RosterEntry[],
+  mode: RosterGroupMode,
+): RosterGroup[] {
+  const groups = new Map<string, RosterGroup>();
+  const push = (key: string, label: string, entry: RosterEntry, kind?: EnvironmentKind) => {
+    const existing = groups.get(key);
+    if (existing) {
+      existing.entries.push(entry);
+      return;
+    }
+    groups.set(key, { key, label, kind, entries: [entry] });
+  };
+  for (const entry of entries) {
+    if (mode === 'flock') {
+      push(entry.flock?.id ?? 'no-flock', entry.flock?.name ?? 'No flock', entry);
+      continue;
+    }
+    if (mode === 'environment') {
+      const environmentId = entry.environment?.id ?? entry.valkyrie.environmentId;
+      const label = entry.environment?.name ?? entry.valkyrie.environmentId;
+      push(environmentId, label, entry, entry.environment?.kind);
+      continue;
+    }
+    const kind = entry.environment?.kind ?? 'generic';
+    push(kind, environmentKindLabel(kind), entry, kind);
+  }
+  const ordered = [...groups.values()];
+  if (mode === 'kind') {
+    ordered.sort(
+      (a, b) =>
+        KIND_ORDER.indexOf(a.kind ?? 'generic') - KIND_ORDER.indexOf(b.kind ?? 'generic'),
+    );
+  }
+  return ordered;
+}
+
+/** The roster activity strip: this many windows of this many minutes each. */
+export const ACTIVITY_BAR_COUNT = 4;
+export const ACTIVITY_BAR_MINUTES = 15;
+
+/** The resident's freshest timestamp: observed, acted, or dreamt. */
+export function valkyrieLastSeenAt(
+  valkyrie: Pick<ValkyrieResident, 'lastObservedAt' | 'lastActionAt' | 'lastDreamAt'>,
+): string | undefined {
+  return [valkyrie.lastObservedAt, valkyrie.lastActionAt, valkyrie.lastDreamAt]
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => b.localeCompare(a))[0];
+}
+
+/**
+ * The reference instant for the activity strip — the dashboard's own freshest
+ * timestamp (snapshot time, telemetry watermark, or newest event). Using data
+ * time instead of wall-clock time keeps rendering pure and the bars stable
+ * between dashboard refreshes.
+ */
+export function rosterReferenceTime(dashboard: {
+  updatedAt: string;
+  telemetry?: {
+    lastObservedAt?: string;
+    recentEvents?: readonly Pick<ValkyrieEventTelemetry, 'observedAt'>[];
+  };
+}): number {
+  const candidates = [
+    dashboard.updatedAt,
+    dashboard.telemetry?.lastObservedAt,
+    ...(dashboard.telemetry?.recentEvents ?? []).map((event) => event.observedAt),
+  ];
+  return candidates.reduce((max, value) => {
+    const parsed = value ? Date.parse(value) : Number.NaN;
+    return Number.isNaN(parsed) ? max : Math.max(max, parsed);
+  }, 0);
+}
+
+/**
+ * Telemetry events credited to a resident, bucketed into ACTIVITY_BAR_COUNT
+ * windows of ACTIVITY_BAR_MINUTES each, newest window first. An event counts
+ * when it names the valkyrie, or names no valkyrie but happened in its
+ * environment — an event attributed to a sibling resident never counts.
+ */
+export function rosterActivityBars(
+  events: readonly Pick<ValkyrieEventTelemetry, 'environmentId' | 'valkyrieId' | 'observedAt'>[],
+  valkyrie: Pick<ValkyrieResident, 'id' | 'environmentId'>,
+  now: number,
+): number[] {
+  const buckets = new Array<number>(ACTIVITY_BAR_COUNT).fill(0);
+  const bucketMs = ACTIVITY_BAR_MINUTES * 60_000;
+  for (const event of events) {
+    const mine = event.valkyrieId
+      ? event.valkyrieId === valkyrie.id
+      : event.environmentId === valkyrie.environmentId;
+    if (!mine) continue;
+    const age = now - Date.parse(event.observedAt);
+    if (Number.isNaN(age) || age < 0) continue;
+    const bucket = Math.floor(age / bucketMs);
+    if (bucket >= ACTIVITY_BAR_COUNT) continue;
+    buckets[bucket] = (buckets[bucket] ?? 0) + 1;
+  }
+  return buckets;
+}
+
 export interface EnvironmentSignal {
   id: string;
   environmentId: string;

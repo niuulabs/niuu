@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   autonomyModeForLevel,
   collapseDecisionsByCorrelation,
+  environmentKindLabel,
+  filterRosterEntries,
+  groupRosterEntries,
+  rosterActivityBars,
+  rosterEntries,
+  rosterReferenceTime,
+  valkyrieLastSeenAt,
   decisionHasRealAction,
   decisionHeadline,
   decisionNeedsApproval,
@@ -17,11 +24,17 @@ import {
   reviewArtifactEvidence,
   reviewEffectStatement,
   reviewPolicyFindings,
+  ACTIVITY_BAR_COUNT,
+  ACTIVITY_BAR_MINUTES,
   ACTIVITY_STORY_LIMIT,
   LIST_LIMIT,
   type DecisionRecord,
+  type EnvironmentSummary,
+  type FlockSummary,
   type RealmTrustGrant,
+  type RosterEntry,
   type TingWorkflowSummary,
+  type ValkyrieResident,
 } from './domain';
 
 describe('normalizeValkyrieSignalEvent', () => {
@@ -492,5 +505,255 @@ describe('collapseDecisionsByCorrelation', () => {
 
   it('returns an empty list for no decisions', () => {
     expect(collapseDecisionsByCorrelation([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Roster sidebar helpers
+// ---------------------------------------------------------------------------
+
+function makeValkyrie(overrides: Partial<ValkyrieResident> = {}): ValkyrieResident {
+  return {
+    id: 'valkyrie-a',
+    name: 'Sigrun',
+    environmentId: 'env-k8s-valhalla',
+    persona: 'cluster-guardian',
+    specialty: 'k8s event triage',
+    wakefulness: 'wakeful',
+    autonomyMode: 'autonomous',
+    status: 'online',
+    confidence: 0.8,
+    inboxSubjects: [],
+    toolCount: 1,
+    ...overrides,
+  };
+}
+
+function makeEnvironment(overrides: Partial<EnvironmentSummary> = {}): EnvironmentSummary {
+  return {
+    id: 'env-k8s-valhalla',
+    name: 'Valhalla k8s',
+    kind: 'kubernetes',
+    health: 'watch',
+    topologyNodeIds: [],
+    signalCount: 0,
+    unresolvedSignalCount: 0,
+    wakefulCount: 0,
+    dreamingCount: 0,
+    lastSignalAt: '2026-07-04T10:00:00Z',
+    ...overrides,
+  };
+}
+
+function makeFlock(overrides: Partial<FlockSummary> = {}): FlockSummary {
+  return {
+    id: 'flock-k8s',
+    name: 'Kubernetes Valkyries',
+    domain: 'kubernetes',
+    natsSubject: 'flock.k8s.>',
+    environmentIds: [],
+    valkyrieIds: [],
+    learningIds: [],
+    health: 'healthy',
+    lastExchangeAt: '2026-07-04T10:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('environmentKindLabel', () => {
+  it('names every environment kind', () => {
+    expect(environmentKindLabel('kubernetes')).toBe('Kubernetes');
+    expect(environmentKindLabel('host')).toBe('Inbox / Host');
+    expect(environmentKindLabel('printer')).toBe('Printer / Pi Cell');
+    expect(environmentKindLabel('generic')).toBe('Other');
+  });
+});
+
+describe('rosterEntries', () => {
+  it('joins each valkyrie to its environment and flock', () => {
+    const valkyrie = makeValkyrie({ flockId: 'flock-k8s' });
+    const entries = rosterEntries({
+      valkyries: [valkyrie],
+      environments: [makeEnvironment()],
+      flocks: [makeFlock()],
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.environment?.name).toBe('Valhalla k8s');
+    expect(entries[0]?.flock?.name).toBe('Kubernetes Valkyries');
+  });
+
+  it('falls back to flock membership and tolerates unknown environments', () => {
+    const valkyrie = makeValkyrie({ environmentId: 'env-ghost' });
+    const entries = rosterEntries({
+      valkyries: [valkyrie],
+      environments: [],
+      flocks: [makeFlock({ valkyrieIds: ['valkyrie-a'] })],
+    });
+    expect(entries[0]?.environment).toBeUndefined();
+    expect(entries[0]?.flock?.id).toBe('flock-k8s');
+  });
+});
+
+describe('filterRosterEntries', () => {
+  const entries: RosterEntry[] = [
+    {
+      valkyrie: makeValkyrie(),
+      environment: makeEnvironment(),
+      flock: makeFlock(),
+    },
+    {
+      valkyrie: makeValkyrie({ id: 'valkyrie-b', name: 'Saga', environmentId: 'env-host-jozef', specialty: 'email importance' }),
+      environment: makeEnvironment({ id: 'env-host-jozef', name: 'Jozef host', kind: 'host' }),
+      flock: makeFlock({ id: 'flock-personal', name: 'Personal Sentinels' }),
+    },
+  ];
+
+  it('returns everything for a blank query', () => {
+    expect(filterRosterEntries(entries, '  ')).toHaveLength(2);
+  });
+
+  it('matches name, specialty, environment, and flock case-insensitively', () => {
+    expect(filterRosterEntries(entries, 'SAGA')).toHaveLength(1);
+    expect(filterRosterEntries(entries, 'email')).toHaveLength(1);
+    expect(filterRosterEntries(entries, 'valhalla')).toHaveLength(1);
+    expect(filterRosterEntries(entries, 'sentinels')[0]?.valkyrie.name).toBe('Saga');
+    expect(filterRosterEntries(entries, 'nothing-matches')).toHaveLength(0);
+  });
+});
+
+describe('groupRosterEntries', () => {
+  const entries: RosterEntry[] = [
+    {
+      valkyrie: makeValkyrie({ id: 'v-printer', environmentId: 'env-printer' }),
+      environment: makeEnvironment({ id: 'env-printer', name: 'Printer forge', kind: 'printer' }),
+      flock: makeFlock({ id: 'flock-printers', name: 'Printer Cell' }),
+    },
+    {
+      valkyrie: makeValkyrie(),
+      environment: makeEnvironment(),
+      flock: makeFlock(),
+    },
+    {
+      valkyrie: makeValkyrie({ id: 'valkyrie-b', name: 'Runa' }),
+      environment: makeEnvironment(),
+      flock: undefined,
+    },
+  ];
+
+  it('groups by environment kind in fixed order by default', () => {
+    const groups = groupRosterEntries(entries, 'kind');
+    expect(groups.map((group) => group.label)).toEqual(['Kubernetes', 'Printer / Pi Cell']);
+    expect(groups[0]?.entries).toHaveLength(2);
+    expect(groups[1]?.entries).toHaveLength(1);
+  });
+
+  it('groups unknown environments under Other in kind mode', () => {
+    const groups = groupRosterEntries(
+      [{ valkyrie: makeValkyrie({ environmentId: 'env-ghost' }) }],
+      'kind',
+    );
+    expect(groups.map((group) => group.label)).toEqual(['Other']);
+  });
+
+  it('groups by environment name, falling back to the raw id', () => {
+    const groups = groupRosterEntries(
+      [...entries, { valkyrie: makeValkyrie({ id: 'v-ghost', environmentId: 'env-ghost' }) }],
+      'environment',
+    );
+    expect(groups.map((group) => group.label)).toEqual([
+      'Printer forge',
+      'Valhalla k8s',
+      'env-ghost',
+    ]);
+  });
+
+  it('groups by flock with a No flock bucket', () => {
+    const groups = groupRosterEntries(entries, 'flock');
+    expect(groups.map((group) => group.label)).toEqual([
+      'Printer Cell',
+      'Kubernetes Valkyries',
+      'No flock',
+    ]);
+    expect(groups[2]?.entries[0]?.valkyrie.name).toBe('Runa');
+  });
+});
+
+describe('rosterActivityBars', () => {
+  const now = Date.parse('2026-07-04T12:00:00Z');
+  const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+  const valkyrie = { id: 'valkyrie-a', environmentId: 'env-k8s-valhalla' };
+
+  it('buckets credited events into windows, newest first', () => {
+    const bars = rosterActivityBars(
+      [
+        { environmentId: 'env-k8s-valhalla', valkyrieId: 'valkyrie-a', observedAt: minutesAgo(1) },
+        { environmentId: 'env-k8s-valhalla', observedAt: minutesAgo(2) },
+        {
+          environmentId: 'env-k8s-valhalla',
+          valkyrieId: 'valkyrie-a',
+          observedAt: minutesAgo(ACTIVITY_BAR_MINUTES + 1),
+        },
+      ],
+      valkyrie,
+      now,
+    );
+    expect(bars).toHaveLength(ACTIVITY_BAR_COUNT);
+    expect(bars[0]).toBe(2);
+    expect(bars[1]).toBe(1);
+    expect(bars[2]).toBe(0);
+  });
+
+  it('never credits sibling residents, stale, future, or unparseable events', () => {
+    const bars = rosterActivityBars(
+      [
+        { environmentId: 'env-k8s-valhalla', valkyrieId: 'valkyrie-b', observedAt: minutesAgo(1) },
+        { environmentId: 'env-other', observedAt: minutesAgo(1) },
+        {
+          environmentId: 'env-k8s-valhalla',
+          observedAt: minutesAgo(ACTIVITY_BAR_COUNT * ACTIVITY_BAR_MINUTES + 1),
+        },
+        { environmentId: 'env-k8s-valhalla', observedAt: minutesAgo(-5) },
+        { environmentId: 'env-k8s-valhalla', observedAt: 'not-a-date' },
+      ],
+      valkyrie,
+      now,
+    );
+    expect(bars.every((count) => count === 0)).toBe(true);
+  });
+});
+
+describe('rosterReferenceTime', () => {
+  it('takes the freshest of snapshot time, telemetry watermark, and events', () => {
+    const time = rosterReferenceTime({
+      updatedAt: '2026-07-04T10:00:00Z',
+      telemetry: {
+        lastObservedAt: '2026-07-04T11:00:00Z',
+        recentEvents: [{ observedAt: '2026-07-04T12:00:00Z' }],
+      },
+    });
+    expect(time).toBe(Date.parse('2026-07-04T12:00:00Z'));
+  });
+
+  it('ignores unparseable timestamps and missing telemetry', () => {
+    expect(rosterReferenceTime({ updatedAt: 'not-a-date', telemetry: undefined })).toBe(0);
+    expect(rosterReferenceTime({ updatedAt: '2026-07-04T10:00:00Z', telemetry: undefined })).toBe(
+      Date.parse('2026-07-04T10:00:00Z'),
+    );
+  });
+});
+
+describe('valkyrieLastSeenAt', () => {
+  it('returns the freshest of observed, action, and dream timestamps', () => {
+    expect(
+      valkyrieLastSeenAt({
+        lastObservedAt: '2026-07-04T10:00:00Z',
+        lastActionAt: '2026-07-04T11:00:00Z',
+        lastDreamAt: '2026-07-04T09:00:00Z',
+      }),
+    ).toBe('2026-07-04T11:00:00Z');
+  });
+
+  it('is undefined when the resident has no timestamps at all', () => {
+    expect(valkyrieLastSeenAt({})).toBeUndefined();
   });
 });

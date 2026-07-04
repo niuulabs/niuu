@@ -6,12 +6,9 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
-  GitBranch,
   GraduationCap,
   Inbox,
   MessageSquare,
-  Moon,
-  Radio,
   Shield,
   Sparkles,
   Zap,
@@ -25,18 +22,16 @@ import {
   latestBuildGrant,
   realmSlugForEnvironment,
   referencedSkillName,
+  valkyrieLastSeenAt,
   LIST_LIMIT,
   type AutonomyMode,
   type DecisionRecord,
-  type EnvironmentHealth,
-  type EnvironmentKind,
   type GroupedDecision,
   type LearnedSkillSummary,
   type RealmTrustGrant,
   type ValkyrieDashboard,
   type ValkyrieEventTelemetry,
   type ValkyrieResident,
-  type WakefulnessState,
 } from '../domain';
 import { useRealms, useRealmTrustGrants } from '../application/useRealmGovernance';
 import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
@@ -48,6 +43,7 @@ import {
 } from '../application/useValkyrieHistory';
 import { useReviewList } from '../application/useReviews';
 import { useValkyrieSkills } from '../application/useValkyrieSkills';
+import { Roster, wakefulnessIcon } from './Roster';
 import { SkillNameButton, SkillViewer } from './SkillViewer';
 import { ToolBuilderGrantCard, type RealmRef } from './ToolBuilderGrantCard';
 import { timeAgo } from './reviewFormat';
@@ -71,33 +67,6 @@ const MUTED = 'niuu:text-text-muted';
 const AUTONOMY_MODES: AutonomyMode[] = ['guarded', 'autonomous', 'yolo'];
 const TIMELINE_PREVIEW_COUNT = 7;
 const SIGNAL_PAGE_SIZE = 10;
-
-function healthClasses(health: EnvironmentHealth | ValkyrieResident['status']): string {
-  if (health === 'critical' || health === 'blocked') return 'niuu:text-critical';
-  if (health === 'degraded' || health === 'busy') return 'niuu:text-state-warn';
-  if (health === 'watch' || health === 'online') return 'niuu:text-brand';
-  return 'niuu:text-text-muted';
-}
-
-function healthDotClasses(health: EnvironmentHealth | ValkyrieResident['status']): string {
-  if (health === 'critical' || health === 'blocked') return 'niuu:bg-critical';
-  if (health === 'degraded' || health === 'busy') return 'niuu:bg-state-warn';
-  if (health === 'watch' || health === 'online') return 'niuu:bg-brand';
-  return 'niuu:bg-text-muted';
-}
-
-function kindIcon(kind: EnvironmentKind) {
-  if (kind === 'kubernetes') return <GitBranch size={14} aria-hidden="true" />;
-  if (kind === 'host') return <Activity size={14} aria-hidden="true" />;
-  if (kind === 'printer') return <Radio size={14} aria-hidden="true" />;
-  return <Shield size={14} aria-hidden="true" />;
-}
-
-function wakefulnessIcon(state: WakefulnessState) {
-  if (state === 'dreaming') return <Moon size={13} aria-hidden="true" />;
-  if (state === 'wakeful') return <Zap size={13} aria-hidden="true" />;
-  return <Radio size={13} aria-hidden="true" />;
-}
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
@@ -156,100 +125,6 @@ function EmptyConsole() {
   );
 }
 
-function groupByEnvironment(dashboard: ValkyrieDashboard) {
-  return dashboard.environments.map((environment) => ({
-    environment,
-    valkyries: dashboard.valkyries.filter((valkyrie) => valkyrie.environmentId === environment.id),
-  }));
-}
-
-function Roster({
-  dashboard,
-  selectedId,
-  onSelect,
-}: {
-  dashboard: ValkyrieDashboard;
-  selectedId: string;
-  onSelect: (valkyrieId: string) => void;
-}) {
-  return (
-    <aside
-      data-testid="valkyrie-roster"
-      className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:border-r niuu:border-border niuu:bg-bg-secondary"
-    >
-      <div className="niuu:border-b niuu:border-border niuu:p-4">
-        <div className="niuu:flex niuu:items-center niuu:justify-between">
-          <h2 className="niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-[0.16em] niuu:text-text-muted">
-            Roster
-          </h2>
-          <span className="niuu:text-xs niuu:text-text-muted">{dashboard.valkyries.length}</span>
-        </div>
-      </div>
-      <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-auto niuu:p-3">
-        {groupByEnvironment(dashboard).map(({ environment, valkyries }) => (
-          <section key={environment.id} className="niuu:mb-4">
-            <div className="niuu:mb-2 niuu:flex niuu:items-center niuu:justify-between niuu:gap-2 niuu:px-1">
-              <div
-                className={`niuu:flex niuu:items-center niuu:gap-2 niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] ${healthClasses(
-                  environment.health,
-                )}`}
-              >
-                {kindIcon(environment.kind)}
-                <span className="niuu:truncate">{environment.name}</span>
-              </div>
-              <span className="niuu:text-[11px] niuu:text-text-muted">{valkyries.length}</span>
-            </div>
-            <div className="niuu:flex niuu:flex-col niuu:gap-2">
-              {valkyries.map((valkyrie) => {
-                const selected = selectedId === valkyrie.id;
-                return (
-                  <button
-                    key={valkyrie.id}
-                    type="button"
-                    onClick={() => onSelect(valkyrie.id)}
-                    aria-pressed={selected}
-                    className={`niuu:flex niuu:w-full niuu:items-center niuu:gap-3 niuu:rounded-md niuu:border niuu:border-solid niuu:p-3 niuu:text-left ${
-                      selected
-                        ? 'niuu:border-brand niuu:bg-brand/12'
-                        : 'niuu:border-border niuu:bg-bg-primary niuu:hover:border-brand/70'
-                    }`}
-                  >
-                    <span
-                      className={`niuu:flex niuu:h-8 niuu:w-8 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-border ${healthClasses(
-                        valkyrie.status,
-                      )}`}
-                    >
-                      ᛒ
-                    </span>
-                    <span className="niuu:min-w-0 niuu:flex-1">
-                      <span className="niuu:block niuu:truncate niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                        {valkyrie.name}
-                      </span>
-                      <span className="niuu:block niuu:truncate niuu:text-xs niuu:text-text-muted">
-                        {valkyrie.wakefulness} · {valkyrie.status}
-                      </span>
-                    </span>
-                    <span className="niuu:flex niuu:flex-col niuu:items-end niuu:gap-1">
-                      <span
-                        className={`niuu:h-2 niuu:w-2 niuu:rounded-full ${healthDotClasses(
-                          valkyrie.status,
-                        )}`}
-                      />
-                      <span className="niuu:text-[10px] niuu:text-text-muted">
-                        {valkyrie.lastObservedAt ? `${timeAgo(valkyrie.lastObservedAt)} ago` : ''}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
 /**
  * How the realm's build grant shapes what a resident may actually do:
  * the most recent `build` trust grant wins (level → mode); the statically
@@ -283,6 +158,7 @@ function Hero({
   const modeCopy = autonomyModeCopy(valkyrie.autonomyMode);
   const { buildGrant, grantsKnown } = governance;
   const effectiveCopy = autonomyModeCopy(governance.effectiveMode);
+  const heroLastSeen = valkyrieLastSeenAt(valkyrie);
 
   return (
     <section className={`${PANEL} niuu:p-5`} data-testid="valkyrie-console-hero">
@@ -376,10 +252,7 @@ function Hero({
         />
         <Metric label="health" value={environment?.health ?? valkyrie.status} />
         <Metric label="confidence" value={formatPercent(valkyrie.confidence)} />
-        <Metric
-          label="last seen"
-          value={valkyrie.lastObservedAt ? `${timeAgo(valkyrie.lastObservedAt)} ago` : 'unknown'}
-        />
+        <Metric label="last seen" value={heroLastSeen ? `${timeAgo(heroLastSeen)} ago` : 'unknown'} />
       </div>
       <div className="niuu:mt-4 niuu:rounded-md niuu:border niuu:border-brand/60 niuu:bg-brand/10 niuu:p-3">
         <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand">
