@@ -1,12 +1,17 @@
 """Dashboard-side mirror of learned skills installed by resident Valkyries.
 
 A judgment only ever references a learned skill by NAME while the skill body
-lives on the resident's disk. The ``valkyrie.evolution.activated`` event now
-carries the full artifact (markdown content, tool code, tests, requirements),
-so this module keeps the latest activated version per environment and serves
-it to the dashboard — letting an operator open "handled with learned skill X"
-and actually read X. Like :class:`ValkyrieDashboardProjection`, the mirror is
-in-memory and rebuilds from the telemetry stream replay after a restart.
+lives on the resident's disk. Two events carry the full artifact (markdown
+content, tool code, tests, requirements): ``valkyrie.evolution.activated``
+fires once at ADOPTION time, and ``valkyrie.evolution.skill_inventory`` is a
+snapshot the resident republishes on startup and a heartbeat for every skill
+it currently carries. Activation alone is not enough — it is rare and
+historical, so a dashboard that starts with REPLAY_SECONDS=0 would never see a
+skill actively referenced in judgments. The inventory snapshot fixes that: the
+mirror keeps the latest record per (environment, skill) from either event and
+serves it to the dashboard so an operator can open "handled with learned skill
+X" and actually read X. Like :class:`ValkyrieDashboardProjection`, the mirror
+is in-memory and rebuilds from the telemetry stream after a restart.
 """
 
 from __future__ import annotations
@@ -17,8 +22,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from ravn.domain.valkyrie_history import canonical_environment_id
-from ravn.valkyrie_evolution.resident_learning import EVOLUTION_ACTIVATED_EVENT
+from ravn.valkyrie_evolution.resident_learning import (
+    EVOLUTION_ACTIVATED_EVENT,
+    EVOLUTION_SKILL_INVENTORY_EVENT,
+)
 from sleipnir.domain.events import SleipnirEvent
+
+#: Event types that carry a full learned-skill record the mirror ingests: the
+#: adoption-time activation and the periodic live-inventory snapshot.
+_SKILL_RECORD_EVENT_TYPES = frozenset({EVOLUTION_ACTIVATED_EVENT, EVOLUTION_SKILL_INVENTORY_EVENT})
 
 #: Full-record keys withheld from list summaries — the list endpoint answers
 #: "which skills does this environment have", not "show me the code".
@@ -46,8 +58,14 @@ def _timestamp(event: dict[str, Any]) -> str:
 
 
 def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a learned-skill record for an activation event; None otherwise."""
-    if str(event.get("event_type") or "") != EVOLUTION_ACTIVATED_EVENT:
+    """Return a learned-skill record for an activation/inventory event; None otherwise.
+
+    Both ``valkyrie.evolution.activated`` and ``valkyrie.evolution.skill_inventory``
+    carry the same enriched record shape, so the extraction is identical — the
+    mirror's latest-wins-per-(env, skill) then keeps whichever arrived most
+    recently, which is the correct semantics for a live inventory.
+    """
+    if str(event.get("event_type") or "") not in _SKILL_RECORD_EVENT_TYPES:
         return None
     payload = _payload(event)
     skill_name = str(payload.get("skill_name") or "").strip()

@@ -76,6 +76,21 @@ LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored", "held"
 EVOLUTION_ACTIVATED_EVENT = "valkyrie.evolution.activated"
 EVOLUTION_ROLLED_BACK_EVENT = "valkyrie.evolution.rolled_back"
 
+#: Snapshot event: one per currently-installed learned skill, republished on
+#: startup and a heartbeat. Activation events fire once at ADOPTION time (rare,
+#: historical), so a dashboard that starts with REPLAY_SECONDS=0 never sees the
+#: skills a resident already carries. This event carries the same enriched
+#: record shape the mirror already consumes plus a ``status`` field, so the
+#: dashboard's skill mirror reflects the resident's live INVENTORY, not just
+#: lifecycle transitions.
+EVOLUTION_SKILL_INVENTORY_EVENT = "valkyrie.evolution.skill_inventory"
+
+#: ``status`` value carried by a skill-inventory event for an installed skill.
+SKILL_INVENTORY_STATUS_PRESENT = "present"
+
+#: How often the resident republishes its full skill inventory (seconds).
+DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS = 300.0
+
 #: Consecutive implementation failures before a skill is auto-rolled-back.
 #: A regressed tool must fail repeatedly, never once — transient failures
 #: (timeouts, odd payloads) must not destroy adopted learning.
@@ -216,6 +231,7 @@ class ResidentLearningRuntime:
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
+        skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -229,7 +245,9 @@ class ResidentLearningRuntime:
         self._rollback_consecutive_failures = rollback_consecutive_failures
         self._learning_store = learning_store
         self._review_requester = review_requester
+        self._skill_inventory_interval_seconds = skill_inventory_interval_seconds
         self._subscription: Subscription | None = None
+        self._inventory_task: asyncio.Task[None] | None = None
         self._decisions: list[ResidentLearningDecision] = []
 
     @property
@@ -264,12 +282,220 @@ class ResidentLearningRuntime:
                     reannounced,
                     self.identity.valkyrie_id,
                 )
+        # Snapshot the resident's live inventory once subscriptions are up so a
+        # freshly-restarted dashboard (REPLAY_SECONDS=0) sees every skill the
+        # resident already carries, then keep it fresh on a heartbeat.
+        await self.publish_skill_inventory()
+        if self._inventory_task is None and self._skill_inventory_interval_seconds > 0:
+            self._inventory_task = asyncio.create_task(
+                self._run_inventory_loop(),
+                name="resident_skill_inventory",
+            )
 
     async def stop(self) -> None:
+        if self._inventory_task is not None:
+            self._inventory_task.cancel()
+            try:
+                await self._inventory_task
+            except asyncio.CancelledError:
+                # Expected after requesting cancellation of the heartbeat loop.
+                pass
+            self._inventory_task = None
         if self._subscription is None:
             return
         await self._subscription.unsubscribe()
         self._subscription = None
+
+    async def _run_inventory_loop(self) -> None:
+        """Republish the full skill inventory on the configured heartbeat.
+
+        Guarded like the wakefulness loop: a single bad snapshot must never
+        crash the daemon — it is logged and the next tick tries again.
+        """
+        while True:
+            await asyncio.sleep(self._skill_inventory_interval_seconds)
+            try:
+                await self.publish_skill_inventory()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "resident_learning: skill inventory heartbeat failed for %s",
+                    self.identity.valkyrie_id,
+                )
+
+    async def publish_skill_inventory(self) -> int:
+        """Publish one inventory event per currently-installed learned skill.
+
+        Enumerates learned-tool artifact envelopes on disk and managed skills
+        in the resident registry, builds a full enriched record for each, and
+        publishes an :data:`EVOLUTION_SKILL_INVENTORY_EVENT` so the dashboard
+        mirror reflects the resident's live inventory. A single bad skill is
+        logged and skipped — it must never abort the whole snapshot. Returns
+        the number of inventory events published.
+        """
+        published = 0
+        seen: set[str] = set()
+        for record in self._iter_learned_tool_inventory():
+            name = record["skill_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            if await self._publish_skill_inventory_record(record):
+                published += 1
+        for record in await self._iter_managed_skill_inventory():
+            name = record["skill_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            if await self._publish_skill_inventory_record(record):
+                published += 1
+        return published
+
+    async def _refresh_skill_inventory(self) -> None:
+        """Opportunistically republish the inventory; never raise into a caller.
+
+        Adoption/rollback flows call this so the dashboard reflects the change
+        immediately — but a snapshot failure must never break the install or
+        rollback that already succeeded.
+        """
+        try:
+            await self.publish_skill_inventory()
+        except Exception:  # noqa: BLE001 — inventory refresh is best-effort
+            logger.exception(
+                "resident_learning: opportunistic skill inventory refresh failed for %s",
+                self.identity.valkyrie_id,
+            )
+
+    def _iter_learned_tool_inventory(self) -> list[dict[str, Any]]:
+        """Full records for every installed learned-tool artifact envelope."""
+        if self._tools_dir is None:
+            return []
+        _code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        if not artifacts_dir.is_dir():
+            return []
+        records: list[dict[str, Any]] = []
+        for artifact_file in sorted(artifacts_dir.glob("*.json")):
+            try:
+                artifact = read_learned_tool_artifact(artifact_file)
+            except Exception:  # noqa: BLE001 — one bad envelope must not abort the snapshot
+                logger.exception(
+                    "resident_learning: skipping unreadable learned-tool artifact %s",
+                    artifact_file,
+                )
+                continue
+            manifest = artifact.manifest
+            records.append(
+                {
+                    "skill_name": manifest.name,
+                    "skill_content": _agent_tool_content(
+                        ResidentLearningArtifact(
+                            learning_id=artifact.artifact_id,
+                            title=manifest.name,
+                            summary=manifest.description,
+                            content="",
+                            artifact_type="agent_tool",
+                            scope="environment",
+                            confidence=0.0,
+                            source_valkyrie_id=self.identity.valkyrie_id,
+                        ),
+                        manifest,
+                        manifest_safety_class(manifest),
+                    ),
+                    "learned_tool_manifest": manifest.to_dict(),
+                    "tool_code": artifact.tool_code,
+                    "test_code": artifact.test_code,
+                    "requirements": list(artifact.requirements),
+                    "summary_text": manifest.description,
+                    "learning_id": artifact.artifact_id,
+                }
+            )
+        return records
+
+    async def _iter_managed_skill_inventory(self) -> list[dict[str, Any]]:
+        """Full records for installed managed skills (markdown + optional tool)."""
+        try:
+            rows = await self._skills.list_skills()
+        except Exception:  # noqa: BLE001 — the registry must not abort the snapshot
+            logger.exception(
+                "resident_learning: could not enumerate managed skills for %s",
+                self.identity.valkyrie_id,
+            )
+            return []
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            skill = row.get("skill") if isinstance(row, dict) else None
+            skill = skill if isinstance(skill, dict) else {}
+            name = str(skill.get("name") or "").strip()
+            if not name:
+                continue
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            metadata = metadata if isinstance(metadata, dict) else {}
+            records.append(
+                {
+                    "skill_name": name,
+                    "skill_content": str(skill.get("content") or ""),
+                    "learned_tool_manifest": {},
+                    "tool_code": self._skill_tool_code(name),
+                    "test_code": "",
+                    "requirements": [],
+                    "summary_text": str(skill.get("description") or ""),
+                    "learning_id": str(metadata.get("skill_id") or ""),
+                }
+            )
+        return records
+
+    def _skill_tool_code(self, skill_name: str) -> str:
+        """Read the co-installed tool implementation for a managed skill, if any."""
+        if self._tools_dir is None:
+            return ""
+        tool_path = tool_path_for_skill(self._tools_dir, skill_name)
+        if not tool_path.is_file():
+            return ""
+        try:
+            return tool_path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "resident_learning: could not read tool implementation for skill %s",
+                skill_name,
+            )
+            return ""
+
+    async def _publish_skill_inventory_record(self, record: dict[str, Any]) -> bool:
+        """Publish one inventory event; log and swallow a per-skill failure."""
+        try:
+            await self._publisher.publish(
+                SleipnirEvent(
+                    event_type=EVOLUTION_SKILL_INVENTORY_EVENT,
+                    source=self._source,
+                    payload={
+                        "environment_id": self.identity.environment_id,
+                        "valkyrie_id": self.identity.valkyrie_id,
+                        "skill_name": record["skill_name"],
+                        "status": SKILL_INVENTORY_STATUS_PRESENT,
+                        "learning_id": record.get("learning_id") or "",
+                        "skill_content": record.get("skill_content") or "",
+                        "learned_tool_manifest": dict(record.get("learned_tool_manifest") or {}),
+                        "tool_code": record.get("tool_code") or "",
+                        "test_code": record.get("test_code") or "",
+                        "requirements": list(record.get("requirements") or []),
+                        "summary_text": record.get("summary_text") or "",
+                    },
+                    summary=(
+                        f"{self.identity.valkyrie_id} has installed skill {record['skill_name']}"
+                    ),
+                    urgency=0.1,
+                    domain="infrastructure",
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:  # noqa: BLE001 — one skill must not abort the whole snapshot
+            logger.exception(
+                "resident_learning: failed to publish inventory for skill %s",
+                record.get("skill_name"),
+            )
+            return False
+        return True
 
     def _evolution_dedupe_key(self, capability: str) -> str:
         return f"{ReviewKind.EVOLUTION_BUILD.value}:{self.identity.environment_id}:{capability}"
@@ -444,6 +670,8 @@ class ResidentLearningRuntime:
         self._decisions.append(decision)
         await self._publish_retraction(artifact, decision)
         await self._publish_adoption(artifact, decision)
+        # The archived skill is gone from disk — refresh so the dashboard drops it.
+        await self._refresh_skill_inventory()
         judgment = valkyrie_judgment_proposed(
             environment_id=self.identity.environment_id,
             valkyrie_id=self.identity.valkyrie_id,
@@ -982,6 +1210,8 @@ class ResidentLearningRuntime:
         )
         await self._publish_activation(artifact, skill_name, review)
         await self._publish_adoption(artifact, decision)
+        # Refresh the dashboard's inventory the moment a new skill lands.
+        await self._refresh_skill_inventory()
         if self_built and artifact.flock_id:
             await self._publish_flock_learning_proposal(artifact, build, review)
         return decision
@@ -1134,6 +1364,8 @@ class ResidentLearningRuntime:
             )
             await self._publish_retraction(artifact, decision)
             await self._publish_adoption(artifact, decision)
+            # The archived skill is gone from disk — refresh so the dashboard drops it.
+            await self._refresh_skill_inventory()
             return decision
 
         decision = ResidentLearningDecision(

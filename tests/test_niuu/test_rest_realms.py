@@ -146,9 +146,18 @@ def test_create_and_list_trust_grants(client_with_realm) -> None:
     assert len(listed.json()) == 1
 
 
-def test_trust_grants_unknown_realm_404(client_with_realm) -> None:
+def test_list_trust_grants_unknown_realm_returns_empty(client_with_realm) -> None:
+    # Listing a sub-collection of an absent parent is [] (200), not a 404 — the
+    # dashboard queries this for many environments and only some have a realm.
     client, _ = client_with_realm
-    assert client.get("/api/v1/realms/ghost/trust-grants").status_code == 404
+    resp = client.get("/api/v1/realms/ghost/trust-grants")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_grant_trust_unknown_realm_still_404(client_with_realm) -> None:
+    # Creating a grant under an absent realm is a real error and stays a 404.
+    client, _ = client_with_realm
     assert (
         client.post(
             "/api/v1/realms/ghost/trust-grants",
@@ -203,9 +212,16 @@ def test_capability_upsert_by_name(client_with_realm) -> None:
     assert listed.json()[0]["status"] == "present"
 
 
-def test_capabilities_unknown_realm_404(client_with_realm) -> None:
+def test_list_capabilities_unknown_realm_returns_empty(client_with_realm) -> None:
+    # Symmetry with trust-grants: listing capabilities of an absent realm is [].
     client, _ = client_with_realm
-    assert client.get("/api/v1/realms/ghost/capabilities").status_code == 404
+    resp = client.get("/api/v1/realms/ghost/capabilities")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_record_capability_unknown_realm_still_404(client_with_realm) -> None:
+    client, _ = client_with_realm
     assert (
         client.post(
             "/api/v1/realms/ghost/capabilities",

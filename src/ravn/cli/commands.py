@@ -3502,6 +3502,9 @@ def _build_resident_learning_runtime(
         tools_dir=local_ravn_dir / "tools",
         tool_timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
         rollback_consecutive_failures=settings.resident_evolution.rollback_consecutive_failures,
+        skill_inventory_interval_seconds=(
+            settings.resident_evolution.skill_inventory_interval_seconds
+        ),
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
     )
