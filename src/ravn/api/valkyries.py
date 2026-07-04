@@ -2452,6 +2452,42 @@ def _configured_flock_entries(
     return sorted(flocks.values(), key=lambda entry: entry["id"])
 
 
+def _configured_huddle_entries(
+    environments: list[dict[str, Any]],
+    valkyries: list[dict[str, Any]],
+    updated_at: str,
+) -> list[dict[str, Any]]:
+    """One standing operator huddle per environment.
+
+    Every environment has a resident room (Environment.room_id); mirroring it
+    here as an always-open huddle lets operators join and message the resident
+    through the existing huddle routes without a huddle-opening event having
+    fired first. No targetFlockId: these are environment rooms, so joining
+    them never requires flock scope.
+    """
+    resident_by_environment = {entry["environmentId"]: entry for entry in valkyries}
+    huddles: list[dict[str, Any]] = []
+    for environment in environments:
+        resident = resident_by_environment.get(environment["id"])
+        huddles.append(
+            {
+                "id": f"huddle-{environment['id']}",
+                "environmentId": environment["id"],
+                "targetFlockId": "",
+                "title": f"{environment['name']} huddle",
+                "status": "open",
+                "participantIds": [resident["id"]] if resident else [],
+                "joined": False,
+                "joinedParticipantId": "",
+                "joinedDisplayName": "",
+                "joinedAction": "",
+                "messages": [],
+                "lastActivityAt": updated_at,
+            }
+        )
+    return huddles
+
+
 def _initial_dashboard() -> Dashboard:
     records = _configured_environment_records()
     environments = _configured_environment_entries(records)
@@ -2468,7 +2504,7 @@ def _initial_dashboard() -> Dashboard:
         "judgments": [],
         "courtDecisions": [],
         "actions": [],
-        "huddles": [],
+        "huddles": _configured_huddle_entries(environments, valkyries, updated_at),
         "learnings": [],
         "liveReport": _live_report(updated_at, environments=environments),
         "telemetry": _empty_telemetry(updated_at),
@@ -3806,6 +3842,17 @@ def create_valkyrie_router(
             raise HTTPException(status_code=422, detail="Huddle id mismatch")
         huddle = store.huddle_for_room(huddle_id)
         _resolve_huddle_message_author(huddle, request)
+        directed_to = [target for target in request.directedTo if str(target).strip()]
+        if directed_to and skuld_room is None:
+            # A directed message that never leaves this projection would be a
+            # silent failure — refuse instead of pretending it was delivered.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Skuld room bridge is not configured; the direct message "
+                    "cannot reach the resident"
+                ),
+            )
         if skuld_room is not None:
             await skuld_room.send_huddle_message(huddle, request)
         return store.send_huddle_message(request)

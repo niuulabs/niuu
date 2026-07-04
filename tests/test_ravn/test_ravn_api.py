@@ -2557,3 +2557,129 @@ def test_missing_warden_mutation_endpoints_return_404(tmp_path, path: str, metho
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Warden not found"
+
+
+def test_every_configured_environment_gets_a_standing_open_huddle(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+
+    huddles = projection.dashboard()["huddles"]
+
+    assert len(huddles) == 1
+    huddle = huddles[0]
+    assert huddle["id"] == "huddle-env-k8s-valhalla"
+    assert huddle["environmentId"] == "env-k8s-valhalla"
+    assert huddle["title"] == "Valhalla k8s huddle"
+    assert huddle["status"] == "open"
+    # The resident sits in its own room; no flock scope on environment rooms.
+    assert huddle["participantIds"] == ["valkyrie-valhalla-k8s"]
+    assert huddle["targetFlockId"] == ""
+    assert huddle["joined"] is False
+
+
+def test_operator_can_join_and_message_the_standing_environment_huddle(monkeypatch):
+    class FakeRoomClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def join_huddle(self, huddle: dict, request: HuddleJoinRequest) -> dict:
+            self.calls.append("join")
+            return {"status": "joined"}
+
+        async def send_huddle_message(self, huddle: dict, request: HuddleSendRequest) -> dict:
+            self.calls.append("message")
+            return {"status": "sent"}
+
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=FakeRoomClient()))
+    client = TestClient(app)
+
+    joined = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/join",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "participantId": "human:operator",
+            "displayName": "Operator",
+            "action": "observe",
+        },
+    )
+    sent = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Status update please.",
+            "directedTo": ["valkyrie-valhalla-k8s"],
+            "authorId": "human:operator",
+        },
+    )
+
+    assert joined.status_code == 200
+    assert joined.json()["joined"] is True
+    assert sent.status_code == 200
+    assert sent.json()["body"] == "Status update please."
+
+
+def test_directed_huddle_message_without_room_bridge_fails_loudly(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_SKULD_ROOM_URL", raising=False)
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    # Joined while the bridge was up; the bridge is gone at send time.
+    projection.join_huddle(
+        HuddleJoinRequest(
+            huddleId="huddle-env-k8s-valhalla",
+            participantId="human:operator",
+            displayName="Operator",
+            action="observe",
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Status update please.",
+            "directedTo": ["valkyrie-valhalla-k8s"],
+            "authorId": "human:operator",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "cannot reach the resident" in response.json()["detail"]
+    # Nothing was recorded — a refused DM must not look delivered.
+    assert projection.dashboard()["huddles"][0]["messages"] == []
+
+
+def test_undirected_huddle_message_without_room_bridge_still_records(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_SKULD_ROOM_URL", raising=False)
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.join_huddle(
+        HuddleJoinRequest(
+            huddleId="huddle-env-k8s-valhalla",
+            participantId="human:operator",
+            displayName="Operator",
+            action="observe",
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Room note for whoever reads the transcript.",
+            "authorId": "human:operator",
+        },
+    )
+
+    assert response.status_code == 200
+    assert projection.dashboard()["huddles"][0]["messages"][0]["body"] == (
+        "Room note for whoever reads the transcript."
+    )
