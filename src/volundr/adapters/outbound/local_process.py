@@ -967,6 +967,12 @@ class LocalProcessPodManager(PodManager):
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
+        # Session ownership — the broker enforces these on inbound WebSocket
+        # connections (skuld.config.WsAuthConfig).
+        if session.owner_id:
+            env["SKULD__SESSION__OWNER_ID"] = session.owner_id
+        if session.tenant_id:
+            env["SKULD__SESSION__TENANT_ID"] = session.tenant_id
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)

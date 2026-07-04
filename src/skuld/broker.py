@@ -962,6 +962,106 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     return query_token
 
 
+@dataclass(frozen=True)
+class WsPrincipal:
+    """Identity resolved from an inbound WebSocket connection."""
+
+    user_id: str
+    tenant_id: str = ""
+    roles: tuple[str, ...] = ()
+
+
+def _split_roles(raw: str) -> tuple[str, ...]:
+    return tuple(role.strip() for role in raw.split(",") if role.strip())
+
+
+def _ws_query_param(websocket: WebSocket, name: str) -> str:
+    """Read a query parameter defensively (mirrors _extract_token_from_websocket)."""
+    query_get = getattr(websocket.query_params, "get", None)
+    if not callable(query_get):
+        return ""
+    value = query_get(name)
+    if inspect.iscoroutine(value):
+        value.close()
+        return ""
+    if inspect.isawaitable(value):
+        return ""
+    return str(value or "").strip()
+
+
+def _claims_to_ws_principal(claims: dict) -> WsPrincipal | None:
+    """Build a WsPrincipal from decoded JWT claims (best effort).
+
+    PATs carry only ``sub``; OIDC tokens may carry tenant/role claims in a
+    few shapes. Absent claims stay empty and only restrict what the
+    authorization check can enforce (an empty tenant skips tenant scoping).
+    """
+    user_id = str(claims.get("sub") or "").strip()
+    if not user_id:
+        return None
+    tenant = str(claims.get("tenant") or claims.get("tenant_id") or "").strip()
+    roles_claim = claims.get("roles")
+    roles: tuple[str, ...] = ()
+    if isinstance(roles_claim, list):
+        roles = tuple(str(role) for role in roles_claim)
+    elif isinstance(roles_claim, str):
+        roles = _split_roles(roles_claim)
+    else:
+        realm_access = claims.get("realm_access")
+        if isinstance(realm_access, dict) and isinstance(realm_access.get("roles"), list):
+            roles = tuple(str(role) for role in realm_access["roles"])
+    return WsPrincipal(user_id=user_id, tenant_id=tenant, roles=roles)
+
+
+def _resolve_ws_principal(websocket: WebSocket) -> WsPrincipal | None:
+    """Resolve the caller identity of a WebSocket connection.
+
+    Mirrors Volundr's ``extract_principal`` resolution order:
+    1. Envoy-injected ``x-auth-*`` headers (trusted sidecar)
+    2. Developer identity query parameters (``devUserId`` etc.)
+    3. Decoded bearer-token claims (Authorization header, subprotocol, or
+       ``access_token`` query parameter)
+
+    Signature validation is Envoy's job — this resolves identity for the
+    broker's authorization check only.
+    """
+    header_items = websocket.headers.items()
+    if inspect.iscoroutine(header_items):
+        header_items.close()
+        header_items = ()
+    elif inspect.isawaitable(header_items):
+        header_items = ()
+    headers = {k.lower(): v for k, v in header_items}
+
+    forwarded_user_id = headers.get("x-auth-user-id", "").strip()
+    if forwarded_user_id:
+        return WsPrincipal(
+            user_id=forwarded_user_id,
+            tenant_id=headers.get("x-auth-tenant", "").strip(),
+            roles=_split_roles(headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    dev_user_id = _ws_query_param(websocket, "devUserId")
+    if dev_user_id:
+        return WsPrincipal(
+            user_id=dev_user_id,
+            tenant_id=_ws_query_param(websocket, "devTenantId"),
+            roles=_split_roles(_ws_query_param(websocket, "devRoles") or "volundr:developer"),
+        )
+
+    token = _extract_token_from_websocket(websocket)
+    if token:
+        return _claims_to_ws_principal(_decode_jwt_claims(token))
+    return None
+
+
+def _is_loopback_ws_client(websocket: WebSocket) -> bool:
+    """True when the WebSocket peer connected from a loopback address."""
+    client = getattr(websocket, "client", None)
+    host = getattr(client, "host", None)
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
 CONVERSATION_HISTORY_DIR = ".skuld"
 CONVERSATION_HISTORY_FILE = "conversation.json"
 
@@ -6165,6 +6265,57 @@ class Broker:
         topic_name = " ".join(topic_name.split())
         return topic_name[:128] or "Volundr session"
 
+    def _authorize_websocket(self, websocket: WebSocket, *, endpoint: str) -> bool:
+        """Enforce session ownership on an inbound WebSocket connection.
+
+        Authorization only — token signatures are validated upstream (Envoy /
+        API gateway). The verdict mirrors Volundr's
+        ``SimpleRoleAuthorizationAdapter``: tenant scoping first, admin
+        bypass, then owner match. Sessions without an ``owner_id`` (legacy or
+        unauthenticated dev sessions) are not restricted. Unauthenticated
+        loopback peers (the in-pod CLI, flock ravn daemons) are trusted when
+        ``ws_auth.allow_loopback`` is set — they share the pod trust boundary.
+        """
+        cfg = self._settings.ws_auth
+        if not cfg.enforce_ownership:
+            return True
+
+        owner_id = (self._settings.session.owner_id or "").strip()
+        if not owner_id:
+            return True
+
+        principal = _resolve_ws_principal(websocket)
+        if principal is None:
+            if cfg.allow_loopback and _is_loopback_ws_client(websocket):
+                return True
+            logger.warning(
+                "%s: rejecting unauthenticated WebSocket (session owner enforced)",
+                endpoint,
+            )
+            return False
+
+        session_tenant = (self._settings.session.tenant_id or "").strip()
+        if session_tenant and principal.tenant_id and principal.tenant_id != session_tenant:
+            logger.warning(
+                "%s: rejecting cross-tenant WebSocket (user=%s)",
+                endpoint,
+                _sanitize_log(principal.user_id),
+            )
+            return False
+
+        if any(role in principal.roles for role in cfg.admin_roles):
+            return True
+
+        if principal.user_id == owner_id:
+            return True
+
+        logger.warning(
+            "%s: rejecting WebSocket from non-owner (user=%s)",
+            endpoint,
+            _sanitize_log(principal.user_id),
+        )
+        return False
+
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
 
@@ -6206,6 +6357,12 @@ class Broker:
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Handle a browser WebSocket connection at /session."""
+        # Ownership check first — a rejected caller must not overwrite the
+        # broker's stored JWT or reach any session frames.
+        if not self._authorize_websocket(websocket, endpoint="handle_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
         # Extract JWT before accepting — headers are available pre-accept
         self._update_jwt_from_websocket(websocket)
 
@@ -6441,6 +6598,10 @@ class Broker:
             type(self._transport).__name__ if self._transport else None,
         )
 
+        if not self._authorize_websocket(websocket, endpoint="handle_cli_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
         if not self._transport or not self._transport.capabilities.cli_websocket:
             logger.warning(
                 "CLI WebSocket received but transport %s does not support SDK WebSocket protocol",
@@ -6479,6 +6640,10 @@ class Broker:
                 _sanitize_log(peer_id),
             )
             await websocket.close(code=1008, reason="Room mode is not enabled")
+            return
+
+        if not self._authorize_websocket(websocket, endpoint="handle_ravn_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
         await websocket.accept()

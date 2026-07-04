@@ -209,6 +209,22 @@ class SkuldSessionConfig(BaseModel):
 
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
+    owner_id: str = Field(
+        default="",
+        description=(
+            "User ID (IDP sub) that owns this session. Set by Volundr at "
+            "spawn time; when non-empty, inbound WebSocket connections must "
+            "present a matching identity (see WsAuthConfig)."
+        ),
+    )
+    tenant_id: str = Field(
+        default="",
+        description=(
+            "Tenant the session belongs to. Set by Volundr at spawn time; "
+            "cross-tenant WebSocket connections are rejected when both sides "
+            "declare a tenant."
+        ),
+    )
     model: str = Field(default="claude-opus-4-8")
     reasoning_effort: str = Field(
         default="",
@@ -227,6 +243,41 @@ class SkuldSessionConfig(BaseModel):
         description=(
             "Native CLI session/thread id to resume on first start. Set by "
             "Volundr for sessions imported from an external harness."
+        ),
+    )
+
+
+class WsAuthConfig(BaseModel):
+    """Ownership enforcement for inbound WebSocket connections.
+
+    The broker does not validate token signatures — that is Envoy's / the API
+    gateway's job (see ``.claude/rules/architecture.md``: delegate to standard
+    OIDC flows). What the broker enforces is AUTHORIZATION: the connecting
+    identity must own this session. Identity is resolved the same way
+    Volundr's ``extract_principal`` does — Envoy ``x-auth-*`` headers first,
+    developer query parameters second, decoded bearer claims last — and the
+    verdict mirrors ``SimpleRoleAuthorizationAdapter``: tenant scoping, admin
+    bypass, then owner match. Sessions with no ``session.owner_id`` (legacy
+    and unauthenticated dev sessions) are not restricted.
+    """
+
+    enforce_ownership: bool = Field(
+        default=True,
+        description=(
+            "Reject WebSocket connections whose identity does not match the "
+            "session owner. Only applies when session.owner_id is set."
+        ),
+    )
+    admin_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:admin"],
+        description="Roles that may attach to any session within the tenant.",
+    )
+    allow_loopback: bool = Field(
+        default=True,
+        description=(
+            "Accept unauthenticated connections from loopback addresses. "
+            "In-pod peers (the CLI attaching via --sdk-url, flock ravn "
+            "daemons) share the pod trust boundary and carry no user token."
         ),
     )
 
@@ -384,6 +435,7 @@ class SkuldSettings(BaseSettings):
     )
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
