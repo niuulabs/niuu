@@ -257,6 +257,36 @@ class SkuldSessionConfig(BaseModel):
     )
 
 
+class ResidentRelayConfig(BaseModel):
+    """Platform event relay for resident sessions.
+
+    When the broker hosts a resident (``room.default_target_peer_id`` set),
+    Sleipnir events matching *event_patterns* are checked against the
+    resident's register-frame ``subscribes_to`` declaration. Each match is
+    delivered as a directed message (the resident takes a turn and reports
+    into the room) plus a ``room_notification`` so the operator sees the
+    wake-up even when detached.
+    """
+
+    enabled: bool = Field(default=True)
+    event_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "research.*",
+            "spec.*",
+            "plan.*",
+            "delivery.*",
+            "ravn.task.*",
+            "volundr.session.*",
+            "volundr.chronicle.*",
+        ],
+        description=(
+            "Sleipnir event-type patterns the relay subscribes to. Events "
+            "are still filtered by the resident's subscribes_to declaration "
+            "before delivery — patterns just bound the subscription."
+        ),
+    )
+
+
 class WsAuthConfig(BaseModel):
     """Ownership enforcement for inbound WebSocket connections.
 
@@ -446,6 +476,7 @@ class SkuldSettings(BaseSettings):
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
+    resident_relay: ResidentRelayConfig = Field(default_factory=ResidentRelayConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

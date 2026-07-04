@@ -70,6 +70,7 @@ from skuld.channels import (
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
+from skuld.resident_relay import ResidentRelay
 from skuld.room_bridge import RoomBridge
 from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (
@@ -1234,6 +1235,7 @@ class Broker:
         # Room mesh bridge — translates ravn.mesh.* Sleipnir events to room wire events.
         # Active when both mesh.enabled and room.enabled are True.
         self._room_mesh_bridge: RoomMeshBridge | None = None
+        self._resident_relay: ResidentRelay | None = None
 
         # Room bridge — only active when room.enabled is True
         self._room_bridge: RoomBridge | None = (
@@ -1556,6 +1558,34 @@ class Broker:
                     )
                     await self._room_mesh_bridge.start()
                     logger.info("RoomMeshBridge started (session_id=%s)", self.session_id)
+
+                    # Resident sessions: relay platform events (research/spec/
+                    # plan completions, gates) to the resident so the chat
+                    # resumes itself when its launched work lands.
+                    resident_peer = self._room_default_target_peer_id()
+                    if resident_peer and self._settings.resident_relay.enabled:
+
+                        async def _relay_directed(
+                            target: str,
+                            content: str,
+                            metadata: dict,
+                        ) -> str:
+                            return await self.handle_directed_room_message(
+                                target,
+                                content,
+                                source="sleipnir",
+                                metadata=metadata,
+                            )
+
+                        self._resident_relay = ResidentRelay(
+                            sleipnir_subscriber,
+                            self._room_bridge,
+                            resident_peer_id=resident_peer,
+                            patterns=self._settings.resident_relay.event_patterns,
+                            send_directed=_relay_directed,
+                            broadcast_notification=self._emit_broker_frame,
+                        )
+                        await self._resident_relay.start()
 
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
@@ -2039,7 +2069,11 @@ class Broker:
         await self._report_chronicle()
         await self._write_workspace_archive()
 
-        # Stop room mesh bridge before mesh adapter
+        # Stop resident relay and room mesh bridge before mesh adapter
+        if self._resident_relay is not None:
+            await self._resident_relay.stop()
+            self._resident_relay = None
+
         if self._room_mesh_bridge is not None:
             await self._room_mesh_bridge.stop()
             self._room_mesh_bridge = None
