@@ -292,3 +292,139 @@ def test_dashboard_learnings_carry_repetition_from_telemetry():
     assert learning["repetition"] == 3
     assert learning["supersedes"] == ""
     assert learning["feedback"] is None
+
+
+def _revise(client: TestClient, learning_id: str, **fields):
+    return client.post(
+        f"/api/v1/ravn/valkyrie/learnings/{learning_id}/revise",
+        json={"operatorId": "test-operator", **fields},
+    )
+
+
+def test_revise_requires_at_least_one_field():
+    client, _projection, _publisher = _learning_client()
+    learning = _seed_learning(client)
+
+    response = _revise(client, learning["id"], reason="nothing to change")
+
+    assert response.status_code == 422
+    assert "title" in response.json()["detail"]
+
+
+def test_revise_unknown_learning_returns_404():
+    client, _projection, _publisher = _learning_client()
+
+    response = _revise(client, "missing-learning", title="New title")
+
+    assert response.status_code == 404
+
+
+def test_revise_candidate_applies_edits_in_place():
+    client, projection, publisher = _learning_client()
+    learning = _seed_learning(client)
+    assert learning["status"] == "candidate"
+
+    response = _revise(
+        client,
+        learning["id"],
+        title="Sharper resin-low triage",
+        content="# revised skill body",
+        reason="tightened the procedure",
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["supersededId"] == ""
+    revised = body["learning"]
+    assert revised["id"] == learning["id"]
+    assert revised["title"] == "Sharper resin-low triage"
+    assert revised["artifactContent"] == "# revised skill body"
+    assert revised["summary"] == learning["summary"]
+    assert revised["status"] == "candidate"
+    assert any(entry["eventType"] == "valkyrie.learning.revised" for entry in revised["history"])
+    assert revised["commandDelivery"]["published"] is True
+    command = publisher.events[-1]
+    assert command.payload["requested_action"] == "revise"
+    assert command.payload["evidence"]["revision"]["content"] == "# revised skill body"
+    assert command.payload["evidence"]["revision"]["superseded_id"] == ""
+    assert command.payload["evidence"]["artifact"]["content"] == "# revised skill body"
+
+    # The in-place edit must survive a live telemetry re-ingest.
+    projection.dashboard()
+    refreshed = client.get(f"/api/v1/ravn/valkyrie/learnings/{learning['id']}").json()
+    assert refreshed["title"] == "Sharper resin-low triage"
+    assert refreshed["artifactContent"] == "# revised skill body"
+
+
+def test_revise_adopted_creates_superseding_candidate():
+    client, projection, publisher = _learning_client()
+    learning = _seed_learning(client)
+    _adopt(client, learning["id"])
+
+    response = _revise(
+        client,
+        learning["id"],
+        summary="Escalate to operators before pausing prints",
+        content="# superseding skill body",
+        reason="production incident revealed a gap",
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["supersededId"] == learning["id"]
+    candidate = body["learning"]
+    assert candidate["id"] == f"{learning['id']}:rev1"
+    assert candidate["status"] == "candidate"
+    assert candidate["active"] is False
+    assert candidate["supersedes"] == learning["id"]
+    assert candidate["summary"] == "Escalate to operators before pausing prints"
+    assert candidate["artifactContent"] == "# superseding skill body"
+    assert candidate["feedback"] is None
+    assert candidate["commandDelivery"]["published"] is True
+    assert any(entry["eventType"] == "valkyrie.learning.revised" for entry in candidate["history"])
+    command = publisher.events[-1]
+    assert command.payload["requested_action"] == "revise"
+    assert command.payload["evidence"]["revision"]["superseded_id"] == (
+        learning["id"].removeprefix("live-")
+    )
+    assert command.payload["evidence"]["artifact"]["supersedes"] == (
+        learning["id"].removeprefix("live-")
+    )
+
+    # The adopted original is never mutated in place, but records the handoff.
+    original = client.get(f"/api/v1/ravn/valkyrie/learnings/{learning['id']}").json()
+    assert original["status"] == "adopted"
+    assert original["artifactContent"] != "# superseding skill body"
+    assert any(entry["eventType"] == "valkyrie.learning.revised" for entry in original["history"])
+
+    # The authored candidate survives live re-ingest and can be fetched.
+    projection.dashboard()
+    fetched = client.get(f"/api/v1/ravn/valkyrie/learnings/{candidate['id']}").json()
+    assert fetched["status"] == "candidate"
+    assert fetched["supersedes"] == learning["id"]
+
+
+def test_revise_adopted_twice_increments_revision_number():
+    client, _projection, _publisher = _learning_client()
+    learning = _seed_learning(client)
+    _adopt(client, learning["id"])
+
+    first = _revise(client, learning["id"], title="rev one").json()
+    second = _revise(client, learning["id"], title="rev two").json()
+
+    assert first["learning"]["id"] == f"{learning['id']}:rev1"
+    assert second["learning"]["id"] == f"{learning['id']}:rev2"
+    assert second["learning"]["supersedes"] == learning["id"]
+
+
+def test_revise_superseding_candidate_edits_in_place():
+    client, _projection, _publisher = _learning_client()
+    learning = _seed_learning(client)
+    _adopt(client, learning["id"])
+    candidate = _revise(client, learning["id"], title="rev one").json()["learning"]
+
+    body = _revise(client, candidate["id"], title="rev one polished").json()
+
+    assert body["supersededId"] == ""
+    assert body["learning"]["id"] == candidate["id"]
+    assert body["learning"]["title"] == "rev one polished"
