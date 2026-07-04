@@ -603,7 +603,12 @@ describe('filterRosterEntries', () => {
       flock: makeFlock(),
     },
     {
-      valkyrie: makeValkyrie({ id: 'valkyrie-b', name: 'Saga', environmentId: 'env-host-jozef', specialty: 'email importance' }),
+      valkyrie: makeValkyrie({
+        id: 'valkyrie-b',
+        name: 'Saga',
+        environmentId: 'env-host-jozef',
+        specialty: 'email importance',
+      }),
       environment: makeEnvironment({ id: 'env-host-jozef', name: 'Jozef host', kind: 'host' }),
       flock: makeFlock({ id: 'flock-personal', name: 'Personal Sentinels' }),
     },

@@ -186,9 +186,7 @@ function HeroActions({
   const joinHuddle = useJoinHuddle();
   const leaveHuddle = useLeaveHuddle();
   const joined = huddle?.joined ?? false;
-  const huddleTitle = huddle
-    ? huddle.title
-    : 'No open huddle for this environment right now';
+  const huddleTitle = huddle ? huddle.title : 'No open huddle for this environment right now';
   // The backend requires a joined participant before it accepts messages.
   const messageTitle = !huddle
     ? huddleTitle
@@ -288,7 +286,9 @@ function DirectMessageComposer({
         );
       }}
     >
-      <label className={`niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] ${MUTED}`}>
+      <label
+        className={`niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] ${MUTED}`}
+      >
         direct message to {valkyrie.name}
         <textarea
           aria-label={`Direct message to ${valkyrie.name}`}
@@ -491,7 +491,9 @@ function Hero({
           label="last seen"
           value={heroLastSeen ? `${timeAgo(heroLastSeen)} ago` : 'unknown'}
           detail={
-            environment?.lastSignalAt ? `signal ${timeAgo(environment.lastSignalAt)} ago` : undefined
+            environment?.lastSignalAt
+              ? `signal ${timeAgo(environment.lastSignalAt)} ago`
+              : undefined
           }
         />
       </div>

@@ -7,7 +7,9 @@ import { Roster } from './Roster';
 
 function renderRoster(dashboard: ValkyrieDashboard = createSeedValkyrieDashboard()) {
   const onSelect = vi.fn();
-  render(<Roster dashboard={dashboard} selectedId="valkyrie-valhalla-sigrun" onSelect={onSelect} />);
+  render(
+    <Roster dashboard={dashboard} selectedId="valkyrie-valhalla-sigrun" onSelect={onSelect} />,
+  );
   return { onSelect, dashboard };
 }
 

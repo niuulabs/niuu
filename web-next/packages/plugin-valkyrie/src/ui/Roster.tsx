@@ -217,7 +217,11 @@ export function Roster({
           const collapseKey = `${mode}:${group.key}`;
           const isCollapsed = collapsed.has(collapseKey);
           return (
-            <section key={group.key} data-testid={`roster-group-${group.key}`} className="niuu:mb-4">
+            <section
+              key={group.key}
+              data-testid={`roster-group-${group.key}`}
+              className="niuu:mb-4"
+            >
               <button
                 type="button"
                 onClick={() => toggleGroup(collapseKey)}

@@ -789,9 +789,7 @@ describe('hero actions', () => {
     await user.type(input, 'Please summarize the registry incident.');
     await user.click(screen.getByTestId('valkyrie-dm-send'));
 
-    expect(await screen.findByTestId('valkyrie-dm-sent')).toHaveTextContent(
-      'Delivered to Sigrun.',
-    );
+    expect(await screen.findByTestId('valkyrie-dm-sent')).toHaveTextContent('Delivered to Sigrun.');
     expect(input).toHaveValue('');
   });
 

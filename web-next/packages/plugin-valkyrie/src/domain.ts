@@ -339,9 +339,7 @@ export function rosterEntries(
   dashboard: Pick<ValkyrieDashboard, 'valkyries' | 'environments' | 'flocks'>,
 ): RosterEntry[] {
   return dashboard.valkyries.map((valkyrie) => {
-    const environment = dashboard.environments.find(
-      (entry) => entry.id === valkyrie.environmentId,
-    );
+    const environment = dashboard.environments.find((entry) => entry.id === valkyrie.environmentId);
     const flockId = valkyrie.flockId ?? environment?.flockId;
     const flock = dashboard.flocks.find(
       (entry) => entry.id === flockId || entry.valkyrieIds.includes(valkyrie.id),
@@ -351,10 +349,7 @@ export function rosterEntries(
 }
 
 /** Case-insensitive match on resident name, specialty, environment, or flock. */
-export function filterRosterEntries(
-  entries: readonly RosterEntry[],
-  query: string,
-): RosterEntry[] {
+export function filterRosterEntries(entries: readonly RosterEntry[], query: string): RosterEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...entries];
   return entries.filter(({ valkyrie, environment, flock }) =>
@@ -414,8 +409,7 @@ export function groupRosterEntries(
   const ordered = [...groups.values()];
   if (mode === 'kind') {
     ordered.sort(
-      (a, b) =>
-        KIND_ORDER.indexOf(a.kind ?? 'generic') - KIND_ORDER.indexOf(b.kind ?? 'generic'),
+      (a, b) => KIND_ORDER.indexOf(a.kind ?? 'generic') - KIND_ORDER.indexOf(b.kind ?? 'generic'),
     );
   }
   return ordered;

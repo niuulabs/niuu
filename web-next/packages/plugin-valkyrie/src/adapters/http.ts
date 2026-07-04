@@ -49,16 +49,13 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
       return client.post<ValkyrieDashboard>('/autonomy', request);
     },
     joinHuddle(request: HuddleJoinInput) {
-      return client.post<HuddleSummary>(
-        `/huddles/${encodeURIComponent(request.huddleId)}/join`,
-        {
-          huddleId: request.huddleId,
-          participantId: request.participantId,
-          displayName: request.displayName ?? '',
-          action: request.action ?? 'observe',
-          targetFlockId: request.targetFlockId ?? '',
-        },
-      );
+      return client.post<HuddleSummary>(`/huddles/${encodeURIComponent(request.huddleId)}/join`, {
+        huddleId: request.huddleId,
+        participantId: request.participantId,
+        displayName: request.displayName ?? '',
+        action: request.action ?? 'observe',
+        targetFlockId: request.targetFlockId ?? '',
+      });
     },
     leaveHuddle(huddleId: string) {
       return client.post<HuddleSummary>(`/huddles/${encodeURIComponent(huddleId)}/leave`, {});
