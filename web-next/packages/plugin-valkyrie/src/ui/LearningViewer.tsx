@@ -80,7 +80,7 @@ function PayloadRow({
 function ConfidenceMeter({ confidence }: { confidence: number }) {
   return (
     <span className="niuu:flex niuu:items-center niuu:gap-2">
-      <Meter used={confidence} limit={1} className="niuu:w-24" />
+      <Meter used={confidence} limit={1} tone="steady" className="niuu:w-24" />
       <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
         {formatPercent(confidence)}
       </span>

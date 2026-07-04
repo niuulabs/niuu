@@ -1207,7 +1207,7 @@ function LearningCard({
           {learning.scope}
         </span>
         <span className="niuu:flex niuu:items-center niuu:gap-1.5">
-          <Meter used={learning.confidence} limit={1} className="niuu:w-16" />
+          <Meter used={learning.confidence} limit={1} tone="steady" className="niuu:w-16" />
           <span className="niuu:font-mono">{formatPercent(learning.confidence)}</span>
         </span>
         {learning.repetition != null && learning.repetition > 1 ? (
