@@ -39,6 +39,7 @@ _DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 
 DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
+AuthTokenProvider = Callable[[], Awaitable[str]]
 
 
 class SkuldChannel(ChannelPort):
@@ -71,6 +72,7 @@ class SkuldChannel(ChannelPort):
         tools: list[str] | None = None,
         reconnect_delay: float = _DEFAULT_RECONNECT_DELAY_SECONDS,
         max_reconnect_attempts: int = _DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        auth_token_provider: AuthTokenProvider | None = None,
     ) -> None:
         self._broker_url = broker_url
         self._session_id = session_id
@@ -82,6 +84,7 @@ class SkuldChannel(ChannelPort):
         self._tools = tools or []
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._auth_token_provider = auth_token_provider
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._connect_lock = asyncio.Lock()
         self._buffer: list[RavnEvent] = []
@@ -100,6 +103,11 @@ class SkuldChannel(ChannelPort):
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        """True when the WebSocket connection is currently open."""
+        return self._ws is not None and self._ws.state != WsState.CLOSED
 
     async def connect(self) -> None:
         """Establish the WebSocket connection to the Skuld broker.
@@ -182,7 +190,16 @@ class SkuldChannel(ChannelPort):
         attempts = 0
         while attempts < self._max_reconnect_attempts:
             try:
-                self._ws = await websockets.connect(self._broker_url)
+                connect_kwargs: dict = {}
+                if self._auth_token_provider is not None:
+                    # Cross-session joins hit the broker's ownership check —
+                    # present the platform identity token on the handshake.
+                    token = await self._auth_token_provider()
+                    if token:
+                        connect_kwargs["additional_headers"] = {
+                            "Authorization": f"Bearer {token}"
+                        }
+                self._ws = await websockets.connect(self._broker_url, **connect_kwargs)
                 logger.info(
                     "SkuldChannel connected to %s (session=%s).",
                     self._broker_url,

@@ -837,6 +837,7 @@ class DriveLoop:
         # TODO(niu-activity-bus): Once direct Skuld streaming is stable again,
         # split high-frequency live activity onto a dedicated activity bus/channel
         # and leave workflow/outcome propagation on the mesh.
+        self._session_join_manager = None
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
             # peer_id is appended to the broker_url
@@ -1247,6 +1248,49 @@ class DriveLoop:
         parts.append(f"Human reply: {trimmed}")
         return "\n".join(parts)
 
+    async def _handle_joined_session_message(
+        self,
+        source_session_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Enqueue a message directed at us inside a JOINED session's room.
+
+        Perception path — tagged with its source session so the agent never
+        confuses it with the operator speaking in its own room. Replies into
+        that room go through the ``session_join`` tool's ``post`` action.
+        """
+        import time  # noqa: PLC0415
+
+        task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
+        persona = self._persona_config.name if self._persona_config else None
+        context = "\n".join(
+            [
+                f"Message received inside joined session {source_session_id} "
+                "(a room you are participating in as an observer — this is "
+                "NOT your operator's chat):",
+                self._directed_message_context(content, metadata),
+                "If a reply into that room is needed, use the session_join "
+                f'tool: {{"action": "post", "session_id": "{source_session_id}", '
+                '"text": "..."}}. Keep your operator informed in your own '
+                "room only when something meaningful happened.",
+            ]
+        )
+        task = AgentTask(
+            task_id=task_id,
+            title=f"Joined-session message ({source_session_id[:8]})",
+            initiative_context=context,
+            triggered_by=f"session_join:{source_session_id}",
+            output_mode=OutputMode.AMBIENT,
+            persona=persona,
+        )
+        logger.info(
+            "drive_loop: joined-session message from %s enqueued as task %s",
+            source_session_id,
+            task_id,
+        )
+        await self.enqueue(task)
+
     async def _handle_directed_message(
         self,
         content: str,
@@ -1340,6 +1384,14 @@ class DriveLoop:
             self._skuld_channel.on_directed_message(self._handle_directed_message)
             await self._skuld_channel.connect()
 
+            # Session joins (secondary rooms): frames directed at us inside a
+            # JOINED session are perception, not operator turns — they arrive
+            # tagged with their source session and enqueue at normal priority.
+            from ravn.session_join import get_session_join_manager  # noqa: PLC0415
+
+            self._session_join_manager = get_session_join_manager(self._settings)
+            self._session_join_manager.set_observer(self._handle_joined_session_message)
+
         coros: list[Awaitable] = [
             self._task_executor(),
             self._heartbeat(),
@@ -1352,6 +1404,8 @@ class DriveLoop:
         except asyncio.CancelledError:
             logger.info("drive_loop: shutting down")
             self._persist_queue()
+            if self._session_join_manager is not None:
+                await self._session_join_manager.close()
             raise
 
     # ------------------------------------------------------------------
