@@ -406,6 +406,19 @@ def _event_kind(event_type: str) -> str:
     return "event"
 
 
+def _event_tier(payload: dict[str, Any]) -> str:
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+    details = fields or outcome or payload
+    return str(
+        details.get("tier")
+        or details.get("attention_tier")
+        or payload.get("tier")
+        or payload.get("attention_tier")
+        or ""
+    ).lower()
+
+
 def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("event_type") or "")
     summary = str(event.get("summary") or payload.get("summary") or event_type)
@@ -422,6 +435,8 @@ def _event_log_entry(event: dict[str, Any], payload: dict[str, Any]) -> dict[str
         "urgency": _payload_float(event, "urgency"),
         "observedAt": _event_timestamp(event),
         "correlationId": str(event.get("correlation_id") or payload.get("correlation_id") or ""),
+        "causationId": str(event.get("causation_id") or payload.get("causation_id") or ""),
+        "tier": _event_tier(payload),
         "details": {
             key: value
             for key, value in payload.items()

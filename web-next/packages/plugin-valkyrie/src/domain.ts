@@ -475,6 +475,10 @@ export interface ValkyrieEventTelemetry {
   urgency?: number;
   observedAt: string;
   correlationId?: string;
+  /** Event id of the event that directly caused this one, '' when unknown. */
+  causationId?: string;
+  /** Judgment attention tier (ambient/observational/present/urgent), '' when absent. */
+  tier?: string;
   details?: Record<string, unknown>;
 }
 
