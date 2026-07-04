@@ -668,6 +668,10 @@ def create_app(
         review_sweep_interval_from_env,
     )
     from ravn.api.valkyrie_history_service import ValkyrieHistoryService  # noqa: PLC0415
+    from ravn.api.valkyrie_skills import (  # noqa: PLC0415
+        ValkyrieSkillMirror,
+        create_valkyrie_skills_router,
+    )
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
@@ -684,10 +688,12 @@ def create_app(
         build_valkyrie_history_store_from_env(),
         review_service=odin_review_service,
     )
+    valkyrie_skills = ValkyrieSkillMirror()
     valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
         valkyrie_projection,
         review_ingest=odin_review_service.ingest_event,
         history_ingest=valkyrie_history.ingest_event,
+        skills_ingest=valkyrie_skills.ingest_event,
     )
     review_sweep_interval = review_sweep_interval_from_env()
     brief_interval = _env_seconds(
@@ -765,6 +771,7 @@ def create_app(
             history_service=valkyrie_history,
         )
     )
+    app.include_router(create_valkyrie_skills_router(valkyrie_skills))
     app.include_router(
         create_odin_review_router(
             odin_review_service,

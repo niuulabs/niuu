@@ -521,7 +521,17 @@ async def test_operator_adoption_command_installs_and_acknowledges_skill(tmp_pat
         and event.payload.get("resident_valkyrie_id") == "valkyrie:k8s-command"
         for event in events
     )
-    assert any(event.event_type == "valkyrie.evolution.activated" for event in events)
+    activated = next(
+        event for event in events if event.event_type == "valkyrie.evolution.activated"
+    )
+    # The activation event carries the full artifact so the dashboard skill
+    # mirror can serve "view the learned skill" without touching the resident.
+    assert activated.payload["skill_content"] == _skill_content()
+    assert activated.payload["summary_text"] == "Operator adopted k8s OOM learning"
+    assert activated.payload["tool_code"] == ""
+    assert activated.payload["test_code"] == ""
+    assert activated.payload["requirements"] == []
+    assert activated.payload["learned_tool_manifest"] == {}
     resolved = next(event for event in events if event.event_type == registry.ODIN_REVIEW_RESOLVED)
     assert resolved.payload["apply_outcome"] == "applied"
     assert resolved.payload["item_id"] == item.item_id

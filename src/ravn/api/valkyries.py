@@ -3186,10 +3186,12 @@ class ValkyrieTelemetrySubscription:
         subscriber_start_timeout_seconds: float = 5.0,
         review_ingest: Any | None = None,
         history_ingest: Any | None = None,
+        skills_ingest: Any | None = None,
     ) -> None:
         self._projection = projection
         self._review_ingest = review_ingest
         self._history_ingest = history_ingest
+        self._skills_ingest = skills_ingest
         self._subscribers = subscribers
         self._event_types = event_types
         self._subscriptions: list[tuple[str, Any]] = []
@@ -3254,6 +3256,14 @@ class ValkyrieTelemetrySubscription:
             except Exception:
                 logger.exception(
                     "valkyrie_dashboard: history ingest failed for %s",
+                    event.event_type,
+                )
+        if self._skills_ingest is not None:
+            try:
+                await self._skills_ingest(event)
+            except Exception:
+                logger.exception(
+                    "valkyrie_dashboard: skill mirror ingest failed for %s",
                     event.event_type,
                 )
         if self._review_ingest is None:
@@ -3431,6 +3441,7 @@ def build_nats_telemetry_subscription_from_env(
     projection: ValkyrieDashboardProjection,
     review_ingest: Any | None = None,
     history_ingest: Any | None = None,
+    skills_ingest: Any | None = None,
 ) -> ValkyrieTelemetrySubscription | None:
     """Build the optional dashboard telemetry NATS consumer from environment vars."""
     servers_raw = os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip()
@@ -3518,6 +3529,7 @@ def build_nats_telemetry_subscription_from_env(
         projection=projection,
         review_ingest=review_ingest,
         history_ingest=history_ingest,
+        skills_ingest=skills_ingest,
         subscribers=subscribers,
         retry_interval_seconds=retry_interval_seconds,
         startup_delay_seconds=startup_delay_seconds,

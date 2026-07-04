@@ -1282,6 +1282,15 @@ class ResidentLearningRuntime:
                     "source_valkyrie_id": artifact.source_valkyrie_id,
                     "review_outcome": review.outcome,
                     "autonomy_mode": self.identity.autonomy_mode,
+                    # Full artifact body so the dashboard can show the skill an
+                    # operator sees referenced in judgment evidence without
+                    # reaching into the resident's disk.
+                    "skill_content": artifact.content,
+                    "learned_tool_manifest": dict(artifact.learned_tool_manifest or {}),
+                    "tool_code": artifact.tool_code,
+                    "test_code": artifact.test_code,
+                    "requirements": list(artifact.requirements),
+                    "summary_text": artifact.summary,
                 },
                 summary=f"{self.identity.valkyrie_id} installed learning skill {skill_name}",
                 urgency=0.25,
