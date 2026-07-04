@@ -17,6 +17,7 @@ import {
   grantWorkflowName,
   isToolBuilderWorkflow,
   latestBuildGrant,
+  openHuddleForEnvironment,
   normalizeReviewItem,
   normalizeValkyrieSignalEvent,
   realmSlugForEnvironment,
@@ -755,5 +756,40 @@ describe('valkyrieLastSeenAt', () => {
 
   it('is undefined when the resident has no timestamps at all', () => {
     expect(valkyrieLastSeenAt({})).toBeUndefined();
+  });
+});
+
+describe('openHuddleForEnvironment', () => {
+  const huddle = (overrides: Record<string, unknown>) => ({
+    id: 'huddle-x',
+    environmentId: 'env-a',
+    title: 'x',
+    status: 'open' as const,
+    participantIds: [],
+    joined: false,
+    messages: [],
+    lastActivityAt: '2026-07-04T10:00:00Z',
+    ...overrides,
+  });
+
+  it('prefers an open huddle over a quiet one, newest activity first', () => {
+    const picked = openHuddleForEnvironment(
+      [
+        huddle({ id: 'quiet', status: 'quiet', lastActivityAt: '2026-07-04T12:00:00Z' }),
+        huddle({ id: 'older-open', lastActivityAt: '2026-07-04T09:00:00Z' }),
+        huddle({ id: 'newer-open', lastActivityAt: '2026-07-04T11:00:00Z' }),
+      ],
+      'env-a',
+    );
+    expect(picked?.id).toBe('newer-open');
+  });
+
+  it('ignores closed huddles and other environments', () => {
+    expect(
+      openHuddleForEnvironment(
+        [huddle({ status: 'closed' }), huddle({ environmentId: 'env-b' })],
+        'env-a',
+      ),
+    ).toBeUndefined();
   });
 });

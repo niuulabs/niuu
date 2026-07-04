@@ -737,3 +737,83 @@ describe('ValkyrieConsolePage', () => {
     expect(screen.queryByTestId('valkyrie-autonomy-provenance')).toBeNull();
   });
 });
+
+describe('hero actions', () => {
+  it('shows identity chips (env, kind, flock, realm) and rich stat cards', async () => {
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    const hero = await screen.findByTestId('valkyrie-console-hero');
+
+    expect(hero).toHaveTextContent('env Valhalla k8s');
+    expect(hero).toHaveTextContent('Kubernetes');
+    expect(hero).toHaveTextContent('flock Kubernetes Valkyries');
+    expect(hero).toHaveTextContent('realm valhalla');
+    // Operational health folds env health, resident status, and confidence.
+    expect(hero).toHaveTextContent('watch · busy');
+    expect(hero).toHaveTextContent('judgment confidence 86%');
+    // Wakefulness explains itself.
+    expect(hero).toHaveTextContent('Actively working on something.');
+  });
+
+  it('joins and leaves the environment huddle', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    const button = screen.getByTestId('valkyrie-join-huddle');
+    expect(button).toBeEnabled();
+    expect(button).toHaveTextContent('Join huddle');
+
+    await user.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Leave huddle'));
+
+    await user.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Join huddle'));
+  });
+
+  it('sends a direct message to the resident through the huddle', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    await user.click(screen.getByTestId('valkyrie-direct-message'));
+    const composer = await screen.findByTestId('valkyrie-dm-composer');
+    const input = within(composer).getByLabelText('Direct message to Sigrun');
+
+    // Empty body cannot be sent.
+    expect(screen.getByTestId('valkyrie-dm-send')).toBeDisabled();
+    await user.type(input, 'Please summarize the registry incident.');
+    await user.click(screen.getByTestId('valkyrie-dm-send'));
+
+    expect(await screen.findByTestId('valkyrie-dm-sent')).toHaveTextContent(
+      'Delivered to Sigrun.',
+    );
+    expect(input).toHaveValue('');
+  });
+
+  it('disables huddle actions when the environment has no open huddle', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    // Saga's host environment has no huddle in the seed.
+    await user.click(screen.getByRole('button', { name: /Saga/ }));
+    await waitFor(() =>
+      expect(screen.getByTestId('valkyrie-console-hero')).toHaveTextContent('valkyrie:Saga'),
+    );
+    expect(screen.getByTestId('valkyrie-join-huddle')).toBeDisabled();
+    expect(screen.getByTestId('valkyrie-direct-message')).toBeDisabled();
+  });
+
+  it('changes autonomy from the Change autonomy panel', async () => {
+    const user = userEvent.setup();
+    render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie() });
+    await screen.findByTestId('valkyrie-console-page');
+
+    expect(screen.queryByLabelText('Autonomy mode for Sigrun')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('valkyrie-change-autonomy'));
+    const select = await screen.findByLabelText('Autonomy mode for Sigrun');
+
+    await user.selectOptions(select, ['guarded']);
+    await waitFor(() => expect(select).toHaveValue('guarded'));
+  });
+});

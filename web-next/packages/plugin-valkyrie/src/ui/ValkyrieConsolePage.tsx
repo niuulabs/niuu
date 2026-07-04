@@ -8,9 +8,12 @@ import {
   ChevronRight,
   GraduationCap,
   Inbox,
+  Mail,
   MessageSquare,
+  Settings2,
   Shield,
   Sparkles,
+  Users,
   Zap,
 } from 'lucide-react';
 import {
@@ -19,7 +22,9 @@ import {
   decisionHeadline,
   decisionNeedsApproval,
   decisionSubject,
+  environmentKindLabel,
   latestBuildGrant,
+  openHuddleForEnvironment,
   realmSlugForEnvironment,
   referencedSkillName,
   valkyrieLastSeenAt,
@@ -27,6 +32,7 @@ import {
   type AutonomyMode,
   type DecisionRecord,
   type GroupedDecision,
+  type HuddleSummary,
   type LearnedSkillSummary,
   type RealmTrustGrant,
   type ValkyrieDashboard,
@@ -34,7 +40,13 @@ import {
   type ValkyrieResident,
 } from '../domain';
 import { useRealms, useRealmTrustGrants } from '../application/useRealmGovernance';
-import { useUpdateAutonomy, useValkyrieDashboard } from '../application/useValkyrieDashboard';
+import {
+  useJoinHuddle,
+  useLeaveHuddle,
+  useSendHuddleMessage,
+  useUpdateAutonomy,
+  useValkyrieDashboard,
+} from '../application/useValkyrieDashboard';
 import {
   useDecisionDetail,
   useDecisionList,
@@ -43,13 +55,14 @@ import {
 } from '../application/useValkyrieHistory';
 import { useReviewList } from '../application/useReviews';
 import { useValkyrieSkills } from '../application/useValkyrieSkills';
-import { Roster, wakefulnessIcon } from './Roster';
+import { healthClasses, Roster, wakefulnessIcon } from './Roster';
 import { SkillNameButton, SkillViewer } from './SkillViewer';
 import { ToolBuilderGrantCard, type RealmRef } from './ToolBuilderGrantCard';
 import { timeAgo } from './reviewFormat';
 import {
   actionAuthorityCopy,
   autonomyModeCopy,
+  autonomyModeHint,
   decisionStatusCopy,
   describeIdleSituation,
   isLearnedSkillState,
@@ -57,6 +70,7 @@ import {
   outcomeCopy,
   reviewKindLabel,
   severityCopy,
+  wakefulnessCopy,
 } from './copy';
 
 const PANEL =
@@ -141,6 +155,160 @@ interface BuildGovernance {
   effectiveMode: AutonomyMode;
 }
 
+const OPERATOR_PARTICIPANT_ID = 'human:operator';
+
+const HERO_BUTTON =
+  'niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:border-solid ' +
+  'niuu:border-border niuu:bg-bg-tertiary niuu:px-3 niuu:py-1.5 niuu:text-xs ' +
+  'niuu:text-text-primary niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50';
+
+/**
+ * Join/Leave the environment's huddle and direct-message the resident via
+ * the existing huddle APIs. Both need an open huddle — without one the
+ * buttons stay disabled and say why.
+ */
+function HeroActions({
+  valkyrie,
+  huddle,
+  onCompose,
+  composing,
+  onToggleAutonomy,
+  changingAutonomy,
+}: {
+  valkyrie: ValkyrieResident;
+  huddle?: HuddleSummary;
+  onCompose: () => void;
+  composing: boolean;
+  onToggleAutonomy: () => void;
+  changingAutonomy: boolean;
+}) {
+  const joinHuddle = useJoinHuddle();
+  const leaveHuddle = useLeaveHuddle();
+  const joined = huddle?.joined ?? false;
+  const huddleTitle = huddle
+    ? huddle.title
+    : 'No open huddle for this environment right now';
+
+  return (
+    <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+      <button
+        type="button"
+        data-testid="valkyrie-join-huddle"
+        title={huddleTitle}
+        disabled={!huddle || joinHuddle.isPending || leaveHuddle.isPending}
+        onClick={() => {
+          if (!huddle) return;
+          if (joined) {
+            leaveHuddle.mutate(huddle.id);
+            return;
+          }
+          joinHuddle.mutate({
+            huddleId: huddle.id,
+            participantId: OPERATOR_PARTICIPANT_ID,
+            displayName: 'Operator',
+            action: 'observe',
+          });
+        }}
+        className={HERO_BUTTON}
+      >
+        <Users size={13} aria-hidden="true" />
+        {joined ? 'Leave huddle' : 'Join huddle'}
+      </button>
+      <button
+        type="button"
+        data-testid="valkyrie-direct-message"
+        title={huddle ? `Message ${valkyrie.name} in ${huddle.title}` : huddleTitle}
+        disabled={!huddle}
+        aria-expanded={composing}
+        onClick={onCompose}
+        className={HERO_BUTTON}
+      >
+        <Mail size={13} aria-hidden="true" />
+        Direct message
+      </button>
+      <button
+        type="button"
+        data-testid="valkyrie-change-autonomy"
+        aria-expanded={changingAutonomy}
+        onClick={onToggleAutonomy}
+        className={HERO_BUTTON}
+      >
+        <Settings2 size={13} aria-hidden="true" />
+        Change autonomy
+      </button>
+    </div>
+  );
+}
+
+function DirectMessageComposer({
+  valkyrie,
+  huddle,
+  onClose,
+}: {
+  valkyrie: ValkyrieResident;
+  huddle: HuddleSummary;
+  onClose: () => void;
+}) {
+  const sendMessage = useSendHuddleMessage();
+  const [body, setBody] = useState('');
+
+  return (
+    <form
+      data-testid="valkyrie-dm-composer"
+      className="niuu:mt-4 niuu:flex niuu:flex-col niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = body.trim();
+        if (!trimmed) return;
+        sendMessage.mutate(
+          {
+            huddleId: huddle.id,
+            body: trimmed,
+            directedTo: [valkyrie.id],
+            authorId: OPERATOR_PARTICIPANT_ID,
+          },
+          { onSuccess: () => setBody('') },
+        );
+      }}
+    >
+      <label className={`niuu:text-[11px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] ${MUTED}`}>
+        direct message to {valkyrie.name}
+        <textarea
+          aria-label={`Direct message to ${valkyrie.name}`}
+          value={body}
+          rows={2}
+          placeholder={`Delivered to ${valkyrie.name} via ${huddle.title}`}
+          onChange={(event) => setBody(event.target.value)}
+          className="niuu:mt-2 niuu:w-full niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:p-2 niuu:font-sans niuu:text-sm niuu:normal-case niuu:tracking-normal niuu:text-text-primary"
+        />
+      </label>
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <button
+          type="submit"
+          data-testid="valkyrie-dm-send"
+          disabled={sendMessage.isPending || !body.trim()}
+          className={HERO_BUTTON}
+        >
+          {sendMessage.isPending ? 'Sending…' : 'Send'}
+        </button>
+        <button type="button" onClick={onClose} className={`niuu:text-xs ${MUTED}`}>
+          Close
+        </button>
+        {sendMessage.isSuccess ? (
+          <span data-testid="valkyrie-dm-sent" className="niuu:text-xs niuu:text-state-ok">
+            Delivered to {valkyrie.name}.
+          </span>
+        ) : null}
+        {sendMessage.isError ? (
+          <span role="alert" className="niuu:text-xs niuu:text-critical">
+            {sendMessage.error instanceof Error ? sendMessage.error.message : 'Sending failed'}
+          </span>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
 function Hero({
   dashboard,
   valkyrie,
@@ -155,21 +323,31 @@ function Hero({
     (entry) => entry.id === valkyrie.flockId || entry.valkyrieIds.includes(valkyrie.id),
   );
   const updateAutonomy = useUpdateAutonomy();
+  const [composing, setComposing] = useState(false);
+  const [changingAutonomy, setChangingAutonomy] = useState(false);
   const modeCopy = autonomyModeCopy(valkyrie.autonomyMode);
   const { buildGrant, grantsKnown } = governance;
   const effectiveCopy = autonomyModeCopy(governance.effectiveMode);
+  const wakeCopy = wakefulnessCopy(valkyrie.wakefulness);
   const heroLastSeen = valkyrieLastSeenAt(valkyrie);
+  const health = environment?.health ?? 'healthy';
+  const huddle = openHuddleForEnvironment(dashboard.huddles, valkyrie.environmentId);
 
   return (
     <section className={`${PANEL} niuu:p-5`} data-testid="valkyrie-console-hero">
       <div className="niuu:flex niuu:flex-wrap niuu:items-start niuu:justify-between niuu:gap-4">
         <div className="niuu:min-w-0">
           <div className="niuu:flex niuu:items-center niuu:gap-3">
-            <span className="niuu:flex niuu:h-14 niuu:w-14 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:text-3xl niuu:text-brand">
-              ᛒ
+            <span className="niuu:relative niuu:shrink-0">
+              <span className="niuu:flex niuu:h-14 niuu:w-14 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-brand niuu:bg-brand/10 niuu:text-3xl niuu:text-brand">
+                ᛒ
+              </span>
+              <span className="niuu:absolute niuu:-bottom-1 niuu:-left-1 niuu:flex niuu:h-5 niuu:w-5 niuu:items-center niuu:justify-center niuu:rounded-full niuu:bg-bg-secondary niuu:text-brand">
+                {wakefulnessIcon(valkyrie.wakefulness)}
+              </span>
             </span>
             <div className="niuu:min-w-0">
-              <h1 className="niuu:truncate niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
+              <h1 className="niuu:truncate niuu:font-mono niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
                 valkyrie:{valkyrie.name}
               </h1>
               <p className="niuu:mt-1 niuu:text-sm niuu:text-text-muted">
@@ -200,37 +378,67 @@ function Hero({
             <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
               env {environment?.name ?? valkyrie.environmentId}
             </span>
+            {environment ? (
+              <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
+                {environmentKindLabel(environment.kind)}
+              </span>
+            ) : null}
             {flock ? (
               <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
                 flock {flock.name}
               </span>
             ) : null}
+            <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-3 niuu:py-1 niuu:text-text-secondary">
+              realm {governance.realm.slug}
+            </span>
           </div>
         </div>
-        <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-muted">
-          autonomy
-          <select
-            aria-label={`Autonomy mode for ${valkyrie.name}`}
-            value={valkyrie.autonomyMode}
-            disabled={updateAutonomy.isPending}
-            onChange={(event) =>
-              updateAutonomy.mutate({
-                valkyrieId: valkyrie.id,
-                mode: event.target.value as AutonomyMode,
-                reason: 'Operator change from the Valkyrie console',
-                participantId: 'human:operator',
-              })
-            }
-            className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
-          >
-            {AUTONOMY_MODES.map((mode) => (
-              <option key={mode} value={mode}>
-                {mode}
-              </option>
-            ))}
-          </select>
-        </label>
+        <HeroActions
+          valkyrie={valkyrie}
+          huddle={huddle}
+          composing={composing}
+          onCompose={() => setComposing((value) => !value)}
+          changingAutonomy={changingAutonomy}
+          onToggleAutonomy={() => setChangingAutonomy((value) => !value)}
+        />
       </div>
+      {changingAutonomy ? (
+        <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:gap-3 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-3">
+          <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-muted">
+            autonomy
+            <select
+              aria-label={`Autonomy mode for ${valkyrie.name}`}
+              value={valkyrie.autonomyMode}
+              disabled={updateAutonomy.isPending}
+              onChange={(event) =>
+                updateAutonomy.mutate({
+                  valkyrieId: valkyrie.id,
+                  mode: event.target.value as AutonomyMode,
+                  reason: 'Operator change from the Valkyrie console',
+                  participantId: OPERATOR_PARTICIPANT_ID,
+                })
+              }
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+            >
+              {AUTONOMY_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className={`niuu:text-xs ${MUTED}`}>
+            Configured mode — the realm build grant still wins for tool builds.
+          </p>
+        </div>
+      ) : null}
+      {composing && huddle ? (
+        <DirectMessageComposer
+          valkyrie={valkyrie}
+          huddle={huddle}
+          onClose={() => setComposing(false)}
+        />
+      ) : null}
       {valkyrie.charter ? (
         <div
           data-testid="valkyrie-charter"
@@ -249,10 +457,26 @@ function Hero({
           label="wakefulness"
           value={valkyrie.wakefulness}
           icon={wakefulnessIcon(valkyrie.wakefulness)}
+          detail={wakeCopy.description}
         />
-        <Metric label="health" value={environment?.health ?? valkyrie.status} />
-        <Metric label="confidence" value={formatPercent(valkyrie.confidence)} />
-        <Metric label="last seen" value={heroLastSeen ? `${timeAgo(heroLastSeen)} ago` : 'unknown'} />
+        <Metric
+          label="operational health"
+          value={`${health} · ${valkyrie.status}`}
+          valueClassName={healthClasses(health)}
+          detail={`judgment confidence ${formatPercent(valkyrie.confidence)}`}
+        />
+        <Metric
+          label="autonomy mode"
+          value={effectiveCopy.label.toLowerCase()}
+          detail={autonomyModeHint(governance.effectiveMode)}
+        />
+        <Metric
+          label="last seen"
+          value={heroLastSeen ? `${timeAgo(heroLastSeen)} ago` : 'unknown'}
+          detail={
+            environment?.lastSignalAt ? `signal ${timeAgo(environment.lastSignalAt)} ago` : undefined
+          }
+        />
       </div>
       <div className="niuu:mt-4 niuu:rounded-md niuu:border niuu:border-brand/60 niuu:bg-brand/10 niuu:p-3">
         <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-brand">
@@ -265,16 +489,33 @@ function Hero({
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value: string; icon?: ReactNode }) {
+function Metric({
+  label,
+  value,
+  icon,
+  detail,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  icon?: ReactNode;
+  detail?: string;
+  valueClassName?: string;
+}) {
   return (
     <div className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-3">
       <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-[11px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-muted">
         {icon}
         {label}
       </div>
-      <div className="niuu:mt-2 niuu:truncate niuu:text-sm niuu:font-semibold niuu:text-text-primary">
+      <div
+        className={`niuu:mt-2 niuu:truncate niuu:text-sm niuu:font-semibold ${
+          valueClassName ?? 'niuu:text-text-primary'
+        }`}
+      >
         {value}
       </div>
+      {detail ? <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{detail}</p> : null}
     </div>
   );
 }

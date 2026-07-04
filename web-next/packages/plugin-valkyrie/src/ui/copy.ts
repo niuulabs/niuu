@@ -175,6 +175,17 @@ export function autonomyModeCopy(mode: AutonomyMode): TermCopy {
   return AUTONOMY_MODE_COPY[mode] ?? fallbackCopy(mode);
 }
 
+/** One-line boundary reminder for the autonomy stat card. */
+const AUTONOMY_MODE_HINT: Record<AutonomyMode, string> = {
+  guarded: 'every action waits for review',
+  autonomous: 'court above high risk',
+  yolo: 'no review, rollback only',
+};
+
+export function autonomyModeHint(mode: AutonomyMode): string {
+  return AUTONOMY_MODE_HINT[mode];
+}
+
 export function severityCopy(severity: string): TermCopy {
   return SEVERITY_COPY[severity] ?? fallbackCopy(severity);
 }

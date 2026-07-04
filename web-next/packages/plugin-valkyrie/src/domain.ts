@@ -425,6 +425,23 @@ export function groupRosterEntries(
 export const ACTIVITY_BAR_COUNT = 4;
 export const ACTIVITY_BAR_MINUTES = 15;
 
+/**
+ * The huddle an operator can join for an environment: the most recently
+ * active huddle that is not closed, preferring open over quiet ones.
+ */
+export function openHuddleForEnvironment(
+  huddles: readonly HuddleSummary[],
+  environmentId: string,
+): HuddleSummary | undefined {
+  const candidates = huddles
+    .filter((huddle) => huddle.environmentId === environmentId && huddle.status !== 'closed')
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
+      return b.lastActivityAt.localeCompare(a.lastActivityAt);
+    });
+  return candidates[0];
+}
+
 /** The resident's freshest timestamp: observed, acted, or dreamt. */
 export function valkyrieLastSeenAt(
   valkyrie: Pick<ValkyrieResident, 'lastObservedAt' | 'lastActionAt' | 'lastDreamAt'>,

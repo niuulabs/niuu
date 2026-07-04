@@ -6,6 +6,7 @@ import type {
   EnvironmentSignal,
   EnvironmentSummary,
   FlockSummary,
+  HuddleMessage,
   HuddleSummary,
   JudgmentRecord,
   LearnedSkillRecord,
@@ -25,6 +26,8 @@ import type {
 import type {
   AutonomyUpdateRequest,
   DecisionListFilters,
+  HuddleJoinInput,
+  HuddleMessageInput,
   IOdinReviewService,
   IRealmGovernanceService,
   IValkyrieService,
@@ -1030,16 +1033,78 @@ export function createMockValkyrieService(seed = createSeedValkyrieDashboard()):
   const signalHistory = createSeedSignalHistory();
   const skillStats = createSeedSkillStats();
 
+  const requireHuddle = (huddleId: string): HuddleSummary => {
+    const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
+    if (!huddle) throw new Error(`Huddle ${huddleId} not found`);
+    return huddle;
+  };
+  const replaceHuddle = (next: HuddleSummary) => {
+    dashboard.huddles = dashboard.huddles.map((entry) => (entry.id === next.id ? next : entry));
+  };
+
   return {
+    // A fresh top-level object per fetch so react-query sees mutations made
+    // by the write methods below (same reference would short-circuit updates).
     async getDashboard() {
-      return dashboard;
+      return { ...dashboard };
     },
     async updateAutonomy(request: AutonomyUpdateRequest) {
       void request.reason;
       dashboard.valkyries = dashboard.valkyries.map((entry) =>
         entry.id === request.valkyrieId ? { ...entry, autonomyMode: request.mode } : entry,
       );
-      return dashboard;
+      return { ...dashboard };
+    },
+    async joinHuddle(request: HuddleJoinInput) {
+      const huddle = requireHuddle(request.huddleId);
+      const participantId = request.participantId.trim();
+      const next: HuddleSummary = {
+        ...huddle,
+        joined: true,
+        joinedParticipantId: participantId,
+        joinedDisplayName: request.displayName?.trim() || participantId,
+        joinedAction: request.action ?? 'observe',
+        participantIds: huddle.participantIds.includes(participantId)
+          ? huddle.participantIds
+          : [...huddle.participantIds, participantId],
+        lastActivityAt: new Date().toISOString(),
+      };
+      replaceHuddle(next);
+      return next;
+    },
+    async leaveHuddle(huddleId: string) {
+      const huddle = requireHuddle(huddleId);
+      const participantId = huddle.joinedParticipantId ?? '';
+      const next: HuddleSummary = {
+        ...huddle,
+        joined: false,
+        joinedParticipantId: undefined,
+        joinedDisplayName: undefined,
+        joinedAction: undefined,
+        participantIds: huddle.participantIds.filter((entry) => entry !== participantId),
+        lastActivityAt: new Date().toISOString(),
+      };
+      replaceHuddle(next);
+      return next;
+    },
+    async sendHuddleMessage(request: HuddleMessageInput) {
+      const huddle = requireHuddle(request.huddleId);
+      const message: HuddleMessage = {
+        id: `message-${huddle.messages.length + 1}`,
+        huddleId: huddle.id,
+        authorId: request.authorId,
+        authorName: huddle.joinedDisplayName || request.authorId,
+        body: request.body,
+        createdAt: new Date().toISOString(),
+        directedTo: request.directedTo,
+      };
+      replaceHuddle({
+        ...huddle,
+        joined: true,
+        messages: [...huddle.messages, message],
+        lastActivityAt: message.createdAt,
+      });
+      return message;
     },
     async listDecisions(filters: DecisionListFilters = {}) {
       let rows = decisions.filter(

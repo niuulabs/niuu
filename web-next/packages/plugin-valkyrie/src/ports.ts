@@ -3,6 +3,8 @@ import type {
   DecisionDetail,
   DecisionRecord,
   HistoryPage,
+  HuddleMessage,
+  HuddleSummary,
   LearnedSkillRecord,
   LearnedSkillSummary,
   RealmSummary,
@@ -39,9 +41,32 @@ export interface SignalHistoryFilters {
   offset?: number;
 }
 
+/** Body for POST /huddles/{id}/join — mirrors the backend HuddleJoinRequest. */
+export interface HuddleJoinInput {
+  huddleId: string;
+  participantId: string;
+  displayName?: string;
+  action?: string;
+  targetFlockId?: string;
+}
+
+/**
+ * Body for POST /huddles/{id}/messages. `directedTo` names peer participant
+ * ids — the backend bridges those as direct messages via the Skuld room.
+ */
+export interface HuddleMessageInput {
+  huddleId: string;
+  body: string;
+  directedTo?: string[];
+  authorId: string;
+}
+
 export interface IValkyrieService {
   getDashboard(): Promise<ValkyrieDashboard>;
   updateAutonomy(request: AutonomyUpdateRequest): Promise<ValkyrieDashboard>;
+  joinHuddle(request: HuddleJoinInput): Promise<HuddleSummary>;
+  leaveHuddle(huddleId: string): Promise<HuddleSummary>;
+  sendHuddleMessage(request: HuddleMessageInput): Promise<HuddleMessage>;
   listDecisions(filters?: DecisionListFilters): Promise<HistoryPage<DecisionRecord>>;
   getDecision(decisionId: string): Promise<DecisionDetail | null>;
   listSignalHistory(filters?: SignalHistoryFilters): Promise<HistoryPage<SignalHistoryEntry>>;

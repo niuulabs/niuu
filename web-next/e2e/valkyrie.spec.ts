@@ -278,3 +278,35 @@ test('operator pins a builder workflow and raises the trust level from the conso
     'Yolo · effective (realm grant level 4)',
   );
 });
+
+test('operator joins the environment huddle and direct-messages the resident', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  // Sigrun's environment has an open huddle in the seed.
+  const joinButton = page.getByTestId('valkyrie-join-huddle');
+  await expect(joinButton).toBeEnabled();
+  await joinButton.click();
+  await expect(joinButton).toHaveText(/Leave huddle/);
+
+  await page.getByTestId('valkyrie-direct-message').click();
+  const composer = page.getByTestId('valkyrie-dm-composer');
+  await composer.getByLabel('Direct message to Sigrun').fill('Status update please.');
+  await page.getByTestId('valkyrie-dm-send').click();
+  await expect(page.getByTestId('valkyrie-dm-sent')).toHaveText('Delivered to Sigrun.');
+
+  // Saga's host environment has no huddle: both actions disable honestly.
+  await page.getByRole('button', { name: /Saga/ }).click();
+  await expect(page.getByTestId('valkyrie-join-huddle')).toBeDisabled();
+  await expect(page.getByTestId('valkyrie-direct-message')).toBeDisabled();
+});
+
+test('operator changes autonomy from the hero action', async ({ page }) => {
+  await page.goto('/valkyrie');
+  await expect(page.getByTestId('valkyrie-console-page')).toBeVisible({ timeout: 5000 });
+
+  await page.getByTestId('valkyrie-change-autonomy').click();
+  const select = page.getByLabel('Autonomy mode for Sigrun');
+  await select.selectOption('guarded');
+  await expect(select).toHaveValue('guarded');
+});

@@ -4,6 +4,8 @@ import {
   type DecisionDetail,
   type DecisionRecord,
   type HistoryPage,
+  type HuddleMessage,
+  type HuddleSummary,
   type LearnedSkillRecord,
   type LearnedSkillSummary,
   type RealmSummary,
@@ -17,6 +19,8 @@ import {
 import type {
   AutonomyUpdateRequest,
   DecisionListFilters,
+  HuddleJoinInput,
+  HuddleMessageInput,
   IOdinReviewService,
   IRealmGovernanceService,
   IValkyrieService,
@@ -43,6 +47,32 @@ export function buildValkyrieHttpAdapter(client: ApiClient): IValkyrieService {
     },
     updateAutonomy(request: AutonomyUpdateRequest) {
       return client.post<ValkyrieDashboard>('/autonomy', request);
+    },
+    joinHuddle(request: HuddleJoinInput) {
+      return client.post<HuddleSummary>(
+        `/huddles/${encodeURIComponent(request.huddleId)}/join`,
+        {
+          huddleId: request.huddleId,
+          participantId: request.participantId,
+          displayName: request.displayName ?? '',
+          action: request.action ?? 'observe',
+          targetFlockId: request.targetFlockId ?? '',
+        },
+      );
+    },
+    leaveHuddle(huddleId: string) {
+      return client.post<HuddleSummary>(`/huddles/${encodeURIComponent(huddleId)}/leave`, {});
+    },
+    sendHuddleMessage(request: HuddleMessageInput) {
+      return client.post<HuddleMessage>(
+        `/huddles/${encodeURIComponent(request.huddleId)}/messages`,
+        {
+          huddleId: request.huddleId,
+          body: request.body,
+          directedTo: request.directedTo ?? [],
+          authorId: request.authorId,
+        },
+      );
     },
     listDecisions(filters: DecisionListFilters = {}) {
       return client.get<HistoryPage<DecisionRecord>>(
