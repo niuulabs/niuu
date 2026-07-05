@@ -98,7 +98,8 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
             overrides.append((f"{base}.command", json.dumps(server.get("command") or "")))
             overrides.append((f"{base}.args", json.dumps(list(server.get("args") or []))))
             if server.get("env"):
-                overrides.append((f"{base}.env", json.dumps(dict(server["env"]))))
+                for env_key, env_value in dict(server["env"]).items():
+                    overrides.append((f"{base}.env.{env_key}", json.dumps(env_value)))
             if server.get("cwd"):
                 overrides.append((f"{base}.cwd", json.dumps(server["cwd"])))
     return overrides
