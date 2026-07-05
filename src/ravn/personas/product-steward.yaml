@@ -69,9 +69,10 @@ forbidden_tools: [file, git, terminal, cascade, web]
 permission_mode: read-only
 
 llm:
+  primary_alias: gpt-5.5
   thinking_enabled: true
 
-iteration_budget: 40
+iteration_budget: 0
 stop_on_outcome: false
 
 # The events the resident wakes for. The Skuld ResidentRelay only delivers a

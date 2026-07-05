@@ -401,6 +401,9 @@ class TestBuiltinPersonas:
     def test_all_builtins_have_positive_budgets(self) -> None:
         for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
             cfg = self._load(p.stem)
+            if p.stem == "product-steward":
+                assert cfg.iteration_budget == 0
+                continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     # ------------------------------------------------------------------

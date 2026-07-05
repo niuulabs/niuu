@@ -1812,7 +1812,7 @@ def _apply_profile(
     if persona_config is not None:
         if persona_config.system_prompt_template:
             system_prompt = persona_config.system_prompt_template
-        if persona_config.iteration_budget:
+        if persona_config.iteration_budget is not None:
             max_iterations = persona_config.iteration_budget
         if persona_config.llm.max_tokens:
             max_tokens = persona_config.llm.max_tokens
@@ -1827,6 +1827,25 @@ def _apply_profile(
         settings.mcp_servers = [s for s in settings.mcp_servers if s.name in profile.mcp_servers]
 
     return system_prompt, max_iterations, max_tokens
+
+
+def _build_iteration_budget(settings: Settings, max_iterations: int) -> Any | None:
+    """Build the cross-turn budget, or disable it for unbounded agents."""
+    if max_iterations <= 0 or settings.iteration_budget.total <= 0:
+        return None
+    from ravn.budget import IterationBudget
+
+    return IterationBudget(
+        total=settings.iteration_budget.total,
+        near_limit_threshold=settings.iteration_budget.near_limit_threshold,
+    )
+
+
+def _resolve_persona_model(settings: Settings, persona_config: Any | None) -> str:
+    """Resolve the model for a persona-backed agent."""
+    if persona_config is not None and getattr(persona_config.llm, "primary_alias", ""):
+        return str(persona_config.llm.primary_alias)
+    return settings.effective_model()
 
 
 # ---------------------------------------------------------------------------
@@ -1880,7 +1899,6 @@ def _build_agent(
 ) -> tuple[ExecutionAgentPort, Any]:
     from ravn.adapters.channels.composite import CompositeChannel
     from ravn.adapters.cli_channel import CliChannel
-    from ravn.budget import IterationBudget
     from ravn.ports.channel import ChannelPort
 
     # Apply profile overrides to settings and derive resolved prompts/limits.
@@ -1895,10 +1913,11 @@ def _build_agent(
         if persona_config is not None:
             if persona_config.system_prompt_template:
                 system_prompt = persona_config.system_prompt_template
-            if persona_config.iteration_budget:
+            if persona_config.iteration_budget is not None:
                 max_iterations = persona_config.iteration_budget
             if persona_config.llm.max_tokens:
                 max_tokens = persona_config.llm.max_tokens
+    resolved_model = _resolve_persona_model(settings, persona_config)
 
     workspace = _resolve_workspace(settings)
     permission_mode = settings.permission.mode
@@ -1926,10 +1945,7 @@ def _build_agent(
     )
     memory = _build_memory(settings, llm=llm)
     mimir = _build_mimir(settings)
-    iteration_budget = IterationBudget(
-        total=settings.iteration_budget.total,
-        near_limit_threshold=settings.iteration_budget.near_limit_threshold,
-    )
+    iteration_budget = _build_iteration_budget(settings, max_iterations)
     tools = _build_tools(
         settings,
         workspace,
@@ -1961,7 +1977,7 @@ def _build_agent(
         permission=permission,
         permission_mode=permission_mode,
         system_prompt=system_prompt,
-        model=settings.effective_model(),
+        model=resolved_model,
         max_tokens=max_tokens,
         max_iterations=max_iterations,
         workspace_dir=str(workspace),
@@ -2577,7 +2593,6 @@ async def _run_gateway(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
-    from ravn.budget import IterationBudget
     from ravn.ports.channel import ChannelPort
 
     if profile is not None:
@@ -2591,8 +2606,9 @@ async def _run_gateway(
         if persona_config is not None:
             if persona_config.system_prompt_template:
                 system_prompt = persona_config.system_prompt_template
-            if persona_config.iteration_budget:
+            if persona_config.iteration_budget is not None:
                 max_iterations = persona_config.iteration_budget
+    resolved_model = _resolve_persona_model(settings, persona_config)
 
     # Shared resources (safe to reuse across sessions)
     workspace = _resolve_workspace(settings)
@@ -2616,10 +2632,7 @@ async def _run_gateway(
     def _agent_factory(channel: ChannelPort) -> ExecutionAgentPort:
         # Per-session: fresh session, budget, and tools
         session = Session()
-        budget = IterationBudget(
-            total=settings.iteration_budget.total,
-            near_limit_threshold=settings.iteration_budget.near_limit_threshold,
-        )
+        budget = _build_iteration_budget(settings, max_iterations)
         permission_mode = settings.permission.mode
         if persona_config is not None and persona_config.permission_mode:
             permission_mode = persona_config.permission_mode
@@ -2662,7 +2675,7 @@ async def _run_gateway(
             permission=permission,
             permission_mode=permission_mode,
             system_prompt=system_prompt,
-            model=settings.effective_model(),
+            model=resolved_model,
             max_tokens=max_tokens_gw,
             max_iterations=max_iterations,
             workspace_dir=str(workspace),
@@ -2804,7 +2817,6 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
-    from ravn.budget import IterationBudget
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
 
@@ -2818,8 +2830,9 @@ async def _run_daemon(
         if persona_config is not None:
             if persona_config.system_prompt_template:
                 system_prompt = persona_config.system_prompt_template
-            if persona_config.iteration_budget:
+            if persona_config.iteration_budget is not None:
                 max_iterations = persona_config.iteration_budget
+    base_model = _resolve_persona_model(settings, persona_config)
 
     workspace = _resolve_workspace(settings)
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
@@ -2865,22 +2878,21 @@ async def _run_daemon(
         resolved_system_prompt = system_prompt
         resolved_max_iterations = max_iterations
         resolved_max_tokens = settings.effective_max_tokens()
+        resolved_model = base_model
         if task_persona and task_persona != (persona_config.name if persona_config else None):
             task_persona_cfg = _resolve_persona(task_persona, None, settings=settings)
             if task_persona_cfg is not None:
                 resolved_persona = task_persona_cfg
+                resolved_model = _resolve_persona_model(settings, resolved_persona)
                 if task_persona_cfg.system_prompt_template:
                     resolved_system_prompt = task_persona_cfg.system_prompt_template
-                if task_persona_cfg.iteration_budget:
+                if task_persona_cfg.iteration_budget is not None:
                     resolved_max_iterations = task_persona_cfg.iteration_budget
                 if task_persona_cfg.llm.max_tokens:
                     resolved_max_tokens = task_persona_cfg.llm.max_tokens
 
         session = Session()
-        budget = IterationBudget(
-            total=settings.iteration_budget.total,
-            near_limit_threshold=settings.iteration_budget.near_limit_threshold,
-        )
+        budget = _build_iteration_budget(settings, resolved_max_iterations)
         permission = _build_permission(
             settings,
             workspace,
@@ -2963,7 +2975,7 @@ async def _run_daemon(
             channel=channel,
             permission=permission,
             system_prompt=resolved_system_prompt,
-            model=settings.effective_model(),
+            model=resolved_model,
             max_tokens=resolved_max_tokens,
             max_iterations=resolved_max_iterations,
             workspace_dir=str(workspace),

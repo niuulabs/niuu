@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 import time
@@ -407,7 +408,10 @@ class RavnAgent:
                 text = block.get("text", "")
                 logger.debug("system_prompt_block[%d] (first 2000 chars): %s", i, text[:2000])
 
-        for iteration in range(self._max_iterations):
+        iteration_indices = (
+            itertools.count() if self._max_iterations <= 0 else range(self._max_iterations)
+        )
+        for iteration in iteration_indices:
             # Check external interruption (SIGINT/SIGTERM/Ting cancel via interrupt()).
             if self._interrupt_reason is not None:
                 await self._write_checkpoint(

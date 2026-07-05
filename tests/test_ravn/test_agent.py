@@ -723,6 +723,37 @@ class TestRavnAgentToolUse:
 
         assert exc_info.value.max_iterations == 3
 
+    async def test_zero_max_iterations_runs_until_model_finishes(self) -> None:
+        """max_iterations=0 is intentionally unbounded."""
+        tool = EchoTool()
+        tool_call = ToolCall(id="tc1", name="echo", input={"message": "loop"})
+        calls = 0
+
+        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+            nonlocal calls
+            calls += 1
+            if calls <= 5:
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=tool_call)
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=1, output_tokens=1),
+                )
+                return
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
+            yield StreamEvent(
+                type=StreamEventType.MESSAGE_DONE,
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+
+        llm = AsyncMock(spec=LLMPort)
+        llm.stream = _stream
+
+        agent, _ = make_agent(llm, tools=[tool], max_iterations=0)
+        result = await agent.run_turn("go")
+
+        assert result.response == "done"
+        assert len(result.tool_results) == 5
+
 
 class TestRavnAgentHooks:
     async def test_pre_and_post_hooks_called(self) -> None:

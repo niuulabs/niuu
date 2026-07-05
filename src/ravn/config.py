@@ -709,7 +709,10 @@ class AgentConfig(BaseModel):
 
     model: str = Field(default="claude-sonnet-4-6")
     max_tokens: int = Field(default=8192)
-    max_iterations: int = Field(default=20, description="Max tool-call iterations per turn.")
+    max_iterations: int = Field(
+        default=20,
+        description="Max tool-call iterations per turn. Set 0 for no cap.",
+    )
     system_prompt: str = Field(
         default=(
             "You are Ravn, a helpful AI assistant. "
