@@ -84,6 +84,26 @@ async def _exchange_workload_token(
 
 
 class _PlatformAuthMixin:
+    def __init__(
+        self,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = _DEFAULT_TIMEOUT,
+        pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
+    ) -> None:
+        # Every platform tool takes the same auth kwargs verbatim; the shared
+        # constructor stops each new tool from re-typing the boilerplate.
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
+
     def _set_platform_auth(
         self,
         *,
@@ -1135,24 +1155,6 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
     - ``cancel``   — cancel a planning session (requires ``slug``).
     """
 
-    def __init__(
-        self,
-        base_url: str = _DEFAULT_BASE_URL,
-        timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
-        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
-        exchange_url: str = "",
-        audiences: list[str] | None = None,
-    ) -> None:
-        self._set_platform_auth(
-            base_url=base_url,
-            timeout=timeout,
-            pat_token=pat_token,
-            workload_token_file=workload_token_file,
-            exchange_url=exchange_url,
-            audiences=audiences,
-        )
-
     @property
     def name(self) -> str:
         return "ting_plan"
@@ -1319,24 +1321,6 @@ class TingSpecTool(_PlatformAuthMixin, ToolPort):
     - ``review``    — approve or request changes on the pending gate
       (requires ``slug``; ``decision`` approve|changes_requested; ``notes``).
     """
-
-    def __init__(
-        self,
-        base_url: str = _DEFAULT_BASE_URL,
-        timeout: float = _DEFAULT_TIMEOUT,
-        pat_token: str = "",
-        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
-        exchange_url: str = "",
-        audiences: list[str] | None = None,
-    ) -> None:
-        self._set_platform_auth(
-            base_url=base_url,
-            timeout=timeout,
-            pat_token=pat_token,
-            workload_token_file=workload_token_file,
-            exchange_url=exchange_url,
-            audiences=audiences,
-        )
 
     @property
     def name(self) -> str:

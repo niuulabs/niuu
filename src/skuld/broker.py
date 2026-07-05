@@ -6,7 +6,6 @@ Supports two transport modes (selected via config):
 """
 
 import asyncio
-import base64
 import collections
 import contextlib
 import inspect
@@ -61,6 +60,7 @@ from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from niuu.ws_identity import claims_to_identity, decode_jwt_claims
 from skuld.channels import (
     ChannelRegistry,
     TelegramChannel,
@@ -886,23 +886,12 @@ _BEARER_PREFIX = "bearer "
 
 
 def _decode_jwt_claims(token: str) -> dict:
-    """Decode JWT payload without signature verification.
+    """Decode JWT payload without signature verification (Envoy's job).
 
-    Skuld does not verify signatures — that is Envoy's / the API gateway's
-    job.  We only decode to extract user identity claims for API forwarding.
+    Thin alias over the shared niuu helper so the broker's WS ownership check
+    and the niuu WS proxy guard can never drift on claim parsing.
     """
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return {}
-        # JWT base64url → standard base64
-        payload_b64 = parts[1]
-        # Add padding
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(payload_b64)
-        return json.loads(payload_bytes)
-    except Exception:
-        return {}
+    return decode_jwt_claims(token)
 
 
 def _extract_bearer_token(headers: dict[str, str]) -> str | None:
@@ -991,26 +980,10 @@ def _ws_query_param(websocket: WebSocket, name: str) -> str:
 
 
 def _claims_to_ws_principal(claims: dict) -> WsPrincipal | None:
-    """Build a WsPrincipal from decoded JWT claims (best effort).
-
-    PATs carry only ``sub``; OIDC tokens may carry tenant/role claims in a
-    few shapes. Absent claims stay empty and only restrict what the
-    authorization check can enforce (an empty tenant skips tenant scoping).
-    """
-    user_id = str(claims.get("sub") or "").strip()
+    """Build a WsPrincipal from decoded JWT claims (shared parser)."""
+    user_id, tenant, roles = claims_to_identity(claims)
     if not user_id:
         return None
-    tenant = str(claims.get("tenant") or claims.get("tenant_id") or "").strip()
-    roles_claim = claims.get("roles")
-    roles: tuple[str, ...] = ()
-    if isinstance(roles_claim, list):
-        roles = tuple(str(role) for role in roles_claim)
-    elif isinstance(roles_claim, str):
-        roles = _split_roles(roles_claim)
-    else:
-        realm_access = claims.get("realm_access")
-        if isinstance(realm_access, dict) and isinstance(realm_access.get("roles"), list):
-            roles = tuple(str(role) for role in realm_access["roles"])
     return WsPrincipal(user_id=user_id, tenant_id=tenant, roles=roles)
 
 

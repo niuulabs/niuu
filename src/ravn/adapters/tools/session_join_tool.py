@@ -9,9 +9,9 @@ tool share one set of memberships.
 
 from __future__ import annotations
 
-import json
 import logging
 
+from ravn.adapters.tools.platform_tools import _err, _ok
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 from ravn.session_join import SessionJoinManager
@@ -19,14 +19,6 @@ from ravn.session_join import SessionJoinManager
 logger = logging.getLogger(__name__)
 
 _PERMISSION_PLATFORM = "platform:api"
-
-
-def _ok(data: object) -> ToolResult:
-    return ToolResult(tool_call_id="", content=json.dumps(data, default=str))
-
-
-def _err(message: str) -> ToolResult:
-    return ToolResult(tool_call_id="", content=message, is_error=True)
 
 
 class SessionJoinTool(ToolPort):

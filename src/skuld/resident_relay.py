@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 _MESH_PREFIX = "ravn.mesh."
 _DEFAULT_PAYLOAD_PREVIEW_CHARS = 2000
+# Split an event's origin string into exact tokens for the self-origin check.
+_ORIGIN_TOKEN_SPLIT = re.compile(r"[\s:/,]+")
 
 DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]
 NotificationSend = Callable[[dict[str, Any]], Awaitable[None]]
@@ -151,7 +153,7 @@ class ResidentRelay:
         # "flock-spec" wrongly suppress a distinct "flock-spec-writer".
         payload = event.payload or {}
         origin = f"{payload.get('ravn_source') or ''} {event.source or ''}"
-        origin_tokens = re.split(r"[\s:/,]+", origin)
+        origin_tokens = _ORIGIN_TOKEN_SPLIT.split(origin)
         if self._resident_peer_id and self._resident_peer_id in origin_tokens:
             return
 

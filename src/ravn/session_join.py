@@ -202,26 +202,53 @@ class SessionJoinManager:
 _MANAGER: SessionJoinManager | None = None
 
 
+# Re-exchange a workload token once it is within this many seconds of expiry.
+# Without a cache, a reconnect storm (N joins × M attempts each) re-reads the
+# token file and re-POSTs the exchange endpoint on a tight loop — exactly when
+# the platform is already degraded.
+_TOKEN_REFRESH_MARGIN_SECONDS = 60.0
+
+
 def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
-    """Platform identity for cross-session joins (PAT or workload exchange)."""
+    """Platform identity for cross-session joins (PAT or cached workload token)."""
     platform = settings.gateway.platform
     if not platform.enabled:
         return None
 
-    async def provider() -> str:
-        if platform.pat_token:
+    if platform.pat_token:
+
+        async def pat_provider() -> str:
             return str(platform.pat_token)
+
+        return pat_provider
+
+    cached: dict[str, float | str] = {"token": "", "exp": 0.0}
+
+    async def provider() -> str:
+        import time  # noqa: PLC0415
+
+        now = time.time()
+        if cached["token"] and float(cached["exp"]) - now > _TOKEN_REFRESH_MARGIN_SECONDS:
+            return str(cached["token"])
+
+        from niuu.ws_identity import decode_jwt_claims  # noqa: PLC0415
         from ravn.adapters.tools.platform_tools import (  # noqa: PLC0415
             _exchange_workload_token,
         )
 
-        return await _exchange_workload_token(
+        token = await _exchange_workload_token(
             platform.base_url,
             platform.timeout,
             workload_token_file=platform.workload_token_file,
             exchange_url=platform.workload_exchange_url,
             audiences=list(platform.workload_audiences or []),
         )
+        # Cache until the token's own exp (best effort — an un-decodable token
+        # just isn't cached and is re-exchanged next time).
+        exp = decode_jwt_claims(token).get("exp")
+        cached["token"] = token
+        cached["exp"] = float(exp) if isinstance(exp, (int, float)) else 0.0
+        return token
 
     return provider
 

@@ -79,6 +79,13 @@ class ResidentDirectory:
             or _DEFAULT_PLATFORM_API_URL
         ).rstrip("/")
         self._timeout = timeout_seconds
+        # One pooled client for the directory's lifetime — /ravens and
+        # /settings hit this per request, so a fresh client (new TCP+TLS)
+        # per call is pure setup waste.
+        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout_seconds)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def list_ravens(
         self,

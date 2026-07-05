@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import inspect
 import json
 import logging
@@ -32,6 +31,7 @@ from niuu.service_databases import (
     local_service_database_names,
     service_database_env_var,
 )
+from niuu.ws_identity import claims_to_identity, decode_jwt_claims
 
 if TYPE_CHECKING:
     from cli.registry import PluginRegistry
@@ -186,18 +186,6 @@ _skuld_registry: SkuldPortRegistry | None = None
 _WS_PROXY_MAX_FRAME_BYTES = 2**26
 
 
-def _decode_jwt_claims(token: str) -> dict:
-    """Decode a JWT payload without verifying the signature (Envoy's job)."""
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return {}
-        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
-        return {}
-
-
 def _bearer_token_from_ws(websocket: WebSocket) -> str:
     """Extract a bearer token from a WS: Authorization, subprotocol, or query."""
     headers = {k.lower(): v for k, v in websocket.headers.items()}
@@ -246,25 +234,139 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
 
     token = _bearer_token_from_ws(websocket)
     if token:
-        claims = _decode_jwt_claims(token)
-        sub = str(claims.get("sub") or "").strip()
-        if sub:
-            roles_claim = claims.get("roles")
-            if isinstance(roles_claim, list):
-                roles = tuple(str(r) for r in roles_claim)
-            elif isinstance(roles_claim, str):
-                roles = _roles(roles_claim)
-            else:
-                realm = claims.get("realm_access")
-                roles = (
-                    tuple(str(r) for r in realm["roles"])
-                    if isinstance(realm, dict) and isinstance(realm.get("roles"), list)
-                    else ()
-                )
-            tenant = str(claims.get("tenant") or claims.get("tenant_id") or "").strip() or None
-            return (sub, tenant, roles)
+        user_id, tenant, roles = claims_to_identity(decode_jwt_claims(token))
+        if user_id:
+            return (user_id, tenant or None, roles)
 
     return (None, None, ())
+
+
+# Auth headers forwarded verbatim from the browser leg to the broker leg.
+_FORWARDED_AUTH_HEADERS = frozenset(
+    {
+        "authorization",
+        "x-auth-user-id",
+        "x-auth-email",
+        "x-auth-tenant",
+        "x-auth-roles",
+    }
+)
+# Dev-identity query params mapped onto x-auth-* headers for the broker leg.
+_DEV_QUERY_TO_HEADER = (
+    ("devUserId", "x-auth-user-id"),
+    ("devEmail", "x-auth-email"),
+    ("devTenantId", "x-auth-tenant"),
+    ("devRoles", "x-auth-roles"),
+)
+
+
+def _proxy_forward_headers(
+    websocket: WebSocket,
+    *,
+    include_cookie: bool,
+    forward_dev_params: bool,
+) -> dict[str, str]:
+    """Build the header set forwarded from the browser leg to the broker leg."""
+    allow = set(_FORWARDED_AUTH_HEADERS)
+    if include_cookie:
+        allow.add("cookie")
+    headers = {
+        k.decode(): v.decode() for k, v in websocket.headers.raw if k.decode().lower() in allow
+    }
+    if forward_dev_params:
+        for query_key, header in _DEV_QUERY_TO_HEADER:
+            if value := websocket.query_params.get(query_key):
+                headers[header] = value
+    return headers
+
+
+async def _proxy_ws(
+    websocket: WebSocket,
+    session_id: str,
+    skuld_reg: SkuldPortRegistry,
+    broker_path: str,
+    *,
+    log_label: str,
+    include_cookie: bool = False,
+    forward_dev_params: bool = False,
+) -> None:
+    """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
+
+    Shared by the browser ``/session`` and the ravn ``/ws/ravn/{peer}`` legs:
+    identity guard → port lookup → bidirectional pump → M-8 self-heal on a
+    never-connected broker leg. The only per-route differences are the broker
+    path, whether the browser cookie / dev query params are forwarded, and the
+    log label.
+    """
+    user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+    if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
+        await websocket.close(code=1008, reason="Not authorized for this session")
+        return
+
+    port = skuld_reg.get_port(session_id)
+    if port is None:
+        # No live port — the broker is gone. Reconcile the row so a stale
+        # RUNNING tombstone self-heals, then close with a deterministic
+        # "session gone" code (4410) the client can branch on.
+        await skuld_reg.reconcile_dead(session_id)
+        await websocket.close(code=4410, reason="Session is no longer running")
+        return
+
+    await websocket.accept()
+    import websockets.asyncio.client as ws_client
+
+    connected = False
+    try:
+        async with ws_client.connect(
+            f"ws://127.0.0.1:{port}{broker_path}",
+            max_size=_WS_PROXY_MAX_FRAME_BYTES,
+            additional_headers=_proxy_forward_headers(
+                websocket,
+                include_cookie=include_cookie,
+                forward_dev_params=forward_dev_params,
+            ),
+        ) as broker_ws:
+            connected = True
+
+            async def browser_to_broker() -> None:
+                with suppress(Exception):
+                    async for msg in websocket.iter_text():
+                        await broker_ws.send(msg)
+
+            async def broker_to_browser() -> None:
+                with suppress(Exception):
+                    async for msg in broker_ws:
+                        await websocket.send_text(str(msg))
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(browser_to_broker()),
+                    asyncio.create_task(broker_to_browser()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            # Await the cancelled tasks so neither is destroyed while pending,
+            # and surface any exception from the completed leg (fail loudly).
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
+    except Exception:
+        logger.debug("%s ended for session %s", log_label, _sanitize_log(session_id))
+    finally:
+        # M-8 self-heal: if the broker leg never connected, only drop a stale
+        # RUNNING port when the pod-authoritative reconcile CONFIRMS the
+        # session is dead — never on a transient blip against a live pod.
+        if not connected:
+            confirmed_dead = await skuld_reg.reconcile_dead(session_id)
+            if confirmed_dead:
+                skuld_reg.unregister(session_id)
+            with suppress(Exception):
+                await websocket.close(code=4410, reason="Session is no longer running")
+            return
+        with suppress(Exception):
+            await websocket.close()
 
 
 def get_skuld_registry() -> SkuldPortRegistry | None:
@@ -817,101 +919,16 @@ def build_root_app(
             websocket: WebSocket,  # noqa: F811
             session_id: str,
         ) -> None:
-            """Proxy browser WebSocket to the Skuld subprocess."""
-            # Ownership check first — the browser terminates here, so this is
-            # the enforcement point that covers dev (query-param identity) and
-            # Envoy (x-auth-* header) alike. A denied caller must never reach
-            # the broker leg.
-            user_id, tenant_id, roles = _proxy_ws_identity(websocket)
-            if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
-                await websocket.close(code=1008, reason="Not authorized for this session")
-                return
-
-            port = skuld_reg.get_port(session_id)
-            if port is None:
-                # No live port — the broker is gone. Reconcile the row so a stale
-                # RUNNING tombstone self-heals, then close with a deterministic
-                # "session gone" code (4410) the client can branch on.
-                await skuld_reg.reconcile_dead(session_id)
-                await websocket.close(code=4410, reason="Session is no longer running")
-                return
-
-            await websocket.accept()
-            import websockets.asyncio.client as ws_client
-
-            connected = False
-            try:
-                async with ws_client.connect(
-                    f"ws://127.0.0.1:{port}/session",
-                    max_size=_WS_PROXY_MAX_FRAME_BYTES,
-                    additional_headers={
-                        **{
-                            k.decode(): v.decode()
-                            for k, v in websocket.headers.raw
-                            if k.decode().lower()
-                            in (
-                                "authorization",
-                                "cookie",
-                                "x-auth-user-id",
-                                "x-auth-email",
-                                "x-auth-tenant",
-                                "x-auth-roles",
-                            )
-                        },
-                        **{
-                            header: value
-                            for query_key, header in (
-                                ("devUserId", "x-auth-user-id"),
-                                ("devEmail", "x-auth-email"),
-                                ("devTenantId", "x-auth-tenant"),
-                                ("devRoles", "x-auth-roles"),
-                            )
-                            if (value := websocket.query_params.get(query_key))
-                        },
-                    },
-                ) as skuld_ws:
-                    connected = True
-
-                    async def browser_to_skuld() -> None:
-                        with suppress(Exception):
-                            async for msg in websocket.iter_text():
-                                await skuld_ws.send(msg)
-
-                    async def skuld_to_browser() -> None:
-                        with suppress(Exception):
-                            async for msg in skuld_ws:
-                                await websocket.send_text(str(msg))
-
-                    done, pending = await asyncio.wait(
-                        [
-                            asyncio.create_task(browser_to_skuld()),
-                            asyncio.create_task(skuld_to_browser()),
-                        ],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    for task in done:
-                        task.result()
-            except Exception:
-                logger.debug("Skuld WS proxy ended for session %s", _sanitize_log(session_id))
-            finally:
-                # If we never established the broker leg, ask the pod-authoritative
-                # reconcile whether the pod is actually gone. Only when it CONFIRMS
-                # the session is dead (STOPPED/FAILED) do we drop the registered
-                # port — otherwise a transient broker-leg blip on a still-RUNNING
-                # pod would orphan a live session at port-is-None forever (M-8). The
-                # browser is always closed with 4410 so it can branch/retry; on a
-                # transient blip the retained port lets the very next connect succeed.
-                if not connected:
-                    confirmed_dead = await skuld_reg.reconcile_dead(session_id)
-                    if confirmed_dead:
-                        skuld_reg.unregister(session_id)
-                    with suppress(Exception):
-                        await websocket.close(code=4410, reason="Session is no longer running")
-                    return
-                with suppress(Exception):
-                    await websocket.close()
+            """Proxy the browser chat WebSocket to the session's Skuld broker."""
+            await _proxy_ws(
+                websocket,
+                session_id,
+                skuld_reg,
+                "/session",
+                log_label="Skuld WS proxy",
+                include_cookie=True,
+                forward_dev_params=True,
+            )
 
         @root.websocket("/s/{session_id}/ws/ravn/{peer_id}")
         async def skuld_ravn_ws_proxy(
@@ -922,88 +939,18 @@ def build_root_app(
             """Proxy a ravn participant WebSocket to the session's broker.
 
             This is how a resident joins ANOTHER session's room through the
-            gateway (session_join): the browser-facing chat endpoint is
-            proxied at ``/s/{id}/session``, and the sibling ravn endpoint must
-            be proxied too, or cross-session joins only work in strip-prefix
-            k8s ingress and fail in mini/gateway mode. Same ownership guard —
-            a resident can only join sessions its (owner's) identity permits.
+            gateway (session_join): the browser chat endpoint is proxied at
+            ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
+            too, or cross-session joins only work in strip-prefix k8s ingress
+            and fail in mini/gateway mode. Same ownership guard.
             """
-            user_id, tenant_id, roles = _proxy_ws_identity(websocket)
-            if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
-                await websocket.close(code=1008, reason="Not authorized for this session")
-                return
-
-            port = skuld_reg.get_port(session_id)
-            if port is None:
-                await skuld_reg.reconcile_dead(session_id)
-                await websocket.close(code=4410, reason="Session is no longer running")
-                return
-
-            await websocket.accept()
-            import websockets.asyncio.client as ws_client
-
-            connected = False
-            try:
-                async with ws_client.connect(
-                    f"ws://127.0.0.1:{port}/ws/ravn/{peer_id}",
-                    max_size=_WS_PROXY_MAX_FRAME_BYTES,
-                    additional_headers={
-                        k.decode(): v.decode()
-                        for k, v in websocket.headers.raw
-                        if k.decode().lower()
-                        in (
-                            "authorization",
-                            "x-auth-user-id",
-                            "x-auth-email",
-                            "x-auth-tenant",
-                            "x-auth-roles",
-                        )
-                    },
-                ) as broker_ws:
-                    connected = True
-
-                    async def ravn_to_broker() -> None:
-                        with suppress(Exception):
-                            async for msg in websocket.iter_text():
-                                await broker_ws.send(msg)
-
-                    async def broker_to_ravn() -> None:
-                        with suppress(Exception):
-                            async for msg in broker_ws:
-                                await websocket.send_text(str(msg))
-
-                    done, pending = await asyncio.wait(
-                        [
-                            asyncio.create_task(ravn_to_broker()),
-                            asyncio.create_task(broker_to_ravn()),
-                        ],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    # Await the cancelled tasks so neither is destroyed while
-                    # still pending, and surface any exception from the
-                    # completed leg (fail loudly, not silently).
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    for task in done:
-                        task.result()
-            except Exception:
-                logger.debug(
-                    "Ravn WS proxy ended for session %s peer %s",
-                    _sanitize_log(session_id),
-                    _sanitize_log(peer_id),
-                )
-            finally:
-                # Same M-8 self-heal as the /session proxy: if the broker leg
-                # never connected, a stale RUNNING port must only be dropped
-                # when the pod-authoritative reconcile CONFIRMS the session is
-                # dead — never on a transient blip against a live pod.
-                if not connected:
-                    confirmed_dead = await skuld_reg.reconcile_dead(session_id)
-                    if confirmed_dead:
-                        skuld_reg.unregister(session_id)
-                with suppress(Exception):
-                    await websocket.close()
+            await _proxy_ws(
+                websocket,
+                session_id,
+                skuld_reg,
+                f"/ws/ravn/{peer_id}",
+                log_label="Ravn WS proxy",
+            )
 
         @root.api_route(
             "/s/{session_id}/api/{path:path}",
