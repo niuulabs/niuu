@@ -67,6 +67,10 @@ allowed_tools:
   ]
 forbidden_tools: [file, git, terminal, cascade, web]
 permission_mode: read-only
+executor:
+  adapter: ravn.adapters.executors.cli.CliTransportExecutor
+  kwargs:
+    transport_adapter: skuld.transports.codex_ws.CodexWebSocketTransport
 
 llm:
   primary_alias: gpt-5.5
