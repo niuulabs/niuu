@@ -54,6 +54,11 @@ _STATUS_MAP = {
 }
 
 
+def _sanitize_for_log(value: str) -> str:
+    """Remove line-break/control characters to prevent log-forging."""
+    return value.replace("\r", "").replace("\n", "")
+
+
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
     """Extract forwardable auth headers and dev-identity query params."""
     headers = {
@@ -140,7 +145,7 @@ class ResidentDirectory:
                 logger.warning(
                     "resident get_raven: forge returned %s for %s (auth?) — reporting None",
                     status,
-                    ravn_id,
+                    _sanitize_for_log(ravn_id),
                 )
             if 400 <= status < 500:
                 return None
