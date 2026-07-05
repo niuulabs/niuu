@@ -84,6 +84,26 @@ async def _exchange_workload_token(
 
 
 class _PlatformAuthMixin:
+    def __init__(
+        self,
+        base_url: str = _DEFAULT_BASE_URL,
+        timeout: float = _DEFAULT_TIMEOUT,
+        pat_token: str = "",
+        workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
+        exchange_url: str = "",
+        audiences: list[str] | None = None,
+    ) -> None:
+        # Every platform tool takes the same auth kwargs verbatim; the shared
+        # constructor stops each new tool from re-typing the boilerplate.
+        self._set_platform_auth(
+            base_url=base_url,
+            timeout=timeout,
+            pat_token=pat_token,
+            workload_token_file=workload_token_file,
+            exchange_url=exchange_url,
+            audiences=audiences,
+        )
+
     def _set_platform_auth(
         self,
         *,
@@ -880,6 +900,22 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
                     "type": "string",
                     "description": "Optional Mimir path override for workflow artifacts.",
                 },
+                "provenance": {
+                    "type": "object",
+                    "description": (
+                        "Correlation metadata carried through the launch "
+                        "(e.g. initiative slug, resident_peer_id) so "
+                        "completion events route back to you."
+                    ),
+                },
+                "gate_auto_forward_after": {
+                    "type": "string",
+                    "description": (
+                        "Override every gate's autoForwardAfter for this "
+                        "launch. Pass an empty string to disable auto-forward "
+                        "so approvals wait for the human."
+                    ),
+                },
             },
             "required": ["action"],
         }
@@ -953,6 +989,13 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             body["integration_ids"] = integration_ids
         if context := input.get("context"):
             body["context"] = context
+        if provenance := input.get("provenance"):
+            body["provenance"] = provenance
+        # Distinct from the scalar loop: an empty string is meaningful here
+        # (it disables gate auto-forward so approvals wait for the human).
+        gate_auto_forward = input.get("gate_auto_forward_after")
+        if gate_auto_forward is not None:
+            body["gateAutoForwardAfter"] = str(gate_auto_forward)
 
         try:
             resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)
@@ -1086,3 +1129,314 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
             return _ok(resp.json())
         except Exception as exc:
             return _err(f"Failed to update issue {issue_id}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# ting_plan
+# ---------------------------------------------------------------------------
+
+_TING_PLAN_PATH = "/api/v1/ting/sagas/plan"
+
+
+class TingPlanTool(_PlatformAuthMixin, ToolPort):
+    """Drive Ting's planning flow: spec text → gated plan → saga breakdown.
+
+    Actions:
+    - ``spawn``    — start a planning session (requires ``spec``; optional
+      ``repo``, ``base_branch``, ``model``).
+    - ``list``     — list active planning campaigns.
+    - ``status``   — get one planning session with pending gates
+      (requires ``slug``).
+    - ``draft``    — read the current structured breakdown
+      (requires ``slug``). Feed the result to ting_saga commit after the
+      operator approves it.
+    - ``feedback`` — approve or request changes on the pending plan gate
+      (requires ``slug`` and ``content``; ``decision`` approve|changes_requested).
+    - ``cancel``   — cancel a planning session (requires ``slug``).
+    """
+
+    @property
+    def name(self) -> str:
+        return "ting_plan"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Drive Ting's planning flow (spec → gated plan → structured "
+            "breakdown). Actions: spawn (spec required), list, status (slug "
+            "required), draft (slug required — returns the breakdown to "
+            "commit via ting_saga), feedback (slug + content required, "
+            "decision approve|changes_requested), cancel (slug required)."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["spawn", "list", "status", "draft", "feedback", "cancel"],
+                    "description": "Planning operation to perform.",
+                },
+                "spec": {
+                    "type": "string",
+                    "description": "Specification text to plan from (spawn).",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Repository in org/repo form (spawn, optional).",
+                },
+                "base_branch": {
+                    "type": "string",
+                    "description": "Base branch for the planning session (spawn).",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model override for the planning session (spawn).",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Planning campaign slug (status/draft/feedback/cancel).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Feedback text for the pending gate (feedback).",
+                },
+                "decision": {
+                    "type": "string",
+                    "enum": ["approve", "changes_requested"],
+                    "description": "Gate decision (feedback; default approve).",
+                },
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION_PLATFORM
+
+    @property
+    def parallelisable(self) -> bool:
+        return False
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        async with await self._client() as client:
+            match action:
+                case "spawn":
+                    return await self._spawn(client, input)
+                case "list":
+                    return await self._list(client)
+                case "status":
+                    return await self._get(client, input, "")
+                case "draft":
+                    return await self._get(client, input, "/draft")
+                case "feedback":
+                    return await self._feedback(client, input)
+                case "cancel":
+                    return await self._cancel(client, input)
+                case _:
+                    return _err(f"Unknown action: {action!r}")
+
+    async def _spawn(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        spec = str(input.get("spec") or "").strip()
+        if not spec:
+            return _err("spec is required for spawn")
+        body = {
+            "spec": spec,
+            "repo": str(input.get("repo") or ""),
+            "base_branch": str(input.get("base_branch") or "main"),
+            "model": str(input.get("model") or ""),
+        }
+        try:
+            resp = await client.post(_TING_PLAN_PATH, json=body)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to spawn planning session: {exc}")
+
+    async def _list(self, client: httpx.AsyncClient) -> ToolResult:
+        try:
+            resp = await client.get(_TING_PLAN_PATH)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list planning sessions: {exc}")
+
+    async def _get(self, client: httpx.AsyncClient, input: dict, suffix: str) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        if not slug:
+            return _err("slug is required")
+        try:
+            resp = await client.get(f"{_TING_PLAN_PATH}/{slug}{suffix}")
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to fetch plan {slug}{suffix or ''}: {exc}")
+
+    async def _feedback(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        content = str(input.get("content") or "").strip()
+        if not slug or not content:
+            return _err("slug and content are required for feedback")
+        body = {
+            "content": content,
+            "decision": str(input.get("decision") or "approve"),
+        }
+        try:
+            resp = await client.post(f"{_TING_PLAN_PATH}/{slug}/feedback", json=body)
+            resp.raise_for_status()
+            return _ok(resp.json() if resp.text else {"status": "accepted"})
+        except Exception as exc:
+            return _err(f"Failed to send plan feedback for {slug}: {exc}")
+
+    async def _cancel(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        if not slug:
+            return _err("slug is required for cancel")
+        try:
+            resp = await client.delete(f"{_TING_PLAN_PATH}/{slug}")
+            resp.raise_for_status()
+            return _ok({"cancelled": slug})
+        except Exception as exc:
+            return _err(f"Failed to cancel plan {slug}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# ting_spec
+# ---------------------------------------------------------------------------
+
+_TING_SPECS_PATH = "/api/v1/ting/specs/campaigns"
+
+
+class TingSpecTool(_PlatformAuthMixin, ToolPort):
+    """Follow and review Ting specification campaigns (PRD/SRD/SDD gates).
+
+    Actions:
+    - ``list``      — list spec campaigns.
+    - ``status``    — one campaign with pending gates (requires ``slug``).
+    - ``artifacts`` — list a campaign's document artifacts (requires ``slug``).
+    - ``artifact``  — read one artifact (requires ``slug`` and ``path``).
+    - ``review``    — approve or request changes on the pending gate
+      (requires ``slug``; ``decision`` approve|changes_requested; ``notes``).
+    """
+
+    @property
+    def name(self) -> str:
+        return "ting_spec"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Follow and review Ting specification campaigns (PRD → SRD → "
+            "SDD with human gates). Actions: list, status (slug required), "
+            "artifacts (slug required), artifact (slug + path required), "
+            "review (slug required, decision approve|changes_requested, "
+            "notes optional)."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "status", "artifacts", "artifact", "review"],
+                    "description": "Spec-campaign operation to perform.",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Spec campaign slug.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Artifact path to read (artifact).",
+                },
+                "decision": {
+                    "type": "string",
+                    "enum": ["approve", "changes_requested"],
+                    "description": "Gate decision (review).",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Review notes fed back into drafting (review).",
+                },
+            },
+            "required": ["action"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return _PERMISSION_PLATFORM
+
+    @property
+    def parallelisable(self) -> bool:
+        return False
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        async with await self._client() as client:
+            match action:
+                case "list":
+                    return await self._list(client)
+                case "status":
+                    return await self._get(client, input, "")
+                case "artifacts":
+                    return await self._get(client, input, "/artifacts")
+                case "artifact":
+                    return await self._artifact(client, input)
+                case "review":
+                    return await self._review(client, input)
+                case _:
+                    return _err(f"Unknown action: {action!r}")
+
+    async def _list(self, client: httpx.AsyncClient) -> ToolResult:
+        try:
+            resp = await client.get(_TING_SPECS_PATH)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list spec campaigns: {exc}")
+
+    async def _get(self, client: httpx.AsyncClient, input: dict, suffix: str) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        if not slug:
+            return _err("slug is required")
+        try:
+            resp = await client.get(f"{_TING_SPECS_PATH}/{slug}{suffix}")
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to fetch spec campaign {slug}{suffix or ''}: {exc}")
+
+    async def _artifact(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        path = str(input.get("path") or "").strip()
+        if not slug or not path:
+            return _err("slug and path are required for artifact")
+        try:
+            resp = await client.get(
+                f"{_TING_SPECS_PATH}/{slug}/artifact",
+                params={"path": path},
+            )
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to read artifact {path} for {slug}: {exc}")
+
+    async def _review(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        slug = str(input.get("slug") or "").strip()
+        if not slug:
+            return _err("slug is required for review")
+        body = {
+            "decision": str(input.get("decision") or "approve"),
+            "notes": str(input.get("notes") or ""),
+        }
+        try:
+            resp = await client.post(f"{_TING_SPECS_PATH}/{slug}/review", json=body)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to review spec campaign {slug}: {exc}")

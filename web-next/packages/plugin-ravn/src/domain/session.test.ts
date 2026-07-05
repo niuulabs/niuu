@@ -63,4 +63,19 @@ describe('sessionSchema', () => {
       expect(sessionSchema.parse({ ...validSession, status }).status).toBe(status);
     }
   });
+
+  it('round-trips a session with a chatEndpoint', () => {
+    const withEndpoint = { ...validSession, chatEndpoint: 'wss://skuld.example/s/abc/session' };
+    expect(sessionSchema.parse(withEndpoint).chatEndpoint).toBe(
+      'wss://skuld.example/s/abc/session',
+    );
+  });
+
+  it('accepts a null chatEndpoint', () => {
+    expect(sessionSchema.parse({ ...validSession, chatEndpoint: null }).chatEndpoint).toBeNull();
+  });
+
+  it('accepts a session without a chatEndpoint', () => {
+    expect(sessionSchema.parse(validSession).chatEndpoint).toBeUndefined();
+  });
 });

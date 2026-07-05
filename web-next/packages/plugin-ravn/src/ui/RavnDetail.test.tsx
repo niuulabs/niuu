@@ -42,6 +42,19 @@ const SAMPLE_RAVN_MINIMAL: Ravn = {
   createdAt: '2026-04-14T18:00:00Z',
 };
 
+const RESIDENT_CHAT_ENDPOINT = 'wss://skuld.example/s/resident-1/session';
+
+const SAMPLE_RESIDENT: Ravn = {
+  ...SAMPLE_RAVN,
+  id: 'aa11bb22-cc33-4d44-8e55-ff6677889900',
+  personaName: 'huginn',
+  residentName: 'Huginn',
+  peerId: 'peer-huginn-01',
+  kind: 'resident',
+  chatEndpoint: RESIDENT_CHAT_ENDPOINT,
+  sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
+};
+
 function makeServices(overrides?: Record<string, unknown>) {
   return {
     'ravn.ravens': createMockRavenStream(),
@@ -524,5 +537,37 @@ describe('RavnDetail — Connectivity tab', () => {
     fireEvent.click(screen.getByTestId('sectab-connectivity'));
     const emptyTexts = screen.queryAllByText('None configured');
     expect(emptyTexts.length).toBe(3);
+  });
+});
+
+// ── No resident Chat tab (consolidated into the Sessions view) ────────────────
+
+describe('RavnDetail — no Chat tab', () => {
+  it('does not render a Chat tab for a persona ravn', () => {
+    render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
+    expect(screen.queryByTestId('sectab-chat')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /chat/i })).not.toBeInTheDocument();
+  });
+
+  it('does not render a Chat tab even for a resident ravn with a chatEndpoint', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    expect(screen.queryByTestId('sectab-chat')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-section-body')).not.toBeInTheDocument();
+  });
+
+  it('still renders the Sessions tab for a resident ravn', () => {
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    const sessionsTab = screen.getByTestId('sectab-sessions');
+    expect(sessionsTab).toBeInTheDocument();
+    fireEvent.click(sessionsTab);
+    expect(sessionsTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('sessions-section-body')).toBeInTheDocument();
+  });
+
+  it('falls back to overview when a stored "chat" tab is not available', () => {
+    localStorage.setItem('ravn.detail.tab', '"chat"');
+    render(<RavnDetail ravn={SAMPLE_RESIDENT} />, { wrapper: wrap() });
+    expect(screen.getByTestId('sectab-overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('section-body-overview')).toBeInTheDocument();
   });
 });

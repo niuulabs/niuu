@@ -146,6 +146,16 @@ class RoomConfig(BaseModel):
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    default_target_peer_id: str = Field(
+        default="",
+        description=(
+            "Room participant that untargeted browser messages route to as "
+            "directed messages. Set by Volundr for resident sessions (one "
+            "long-lived ravn behind the room) so any chat client works "
+            "without knowing the peer id. Empty keeps the classic behavior "
+            "(CLI transport, or an error in room-only workflow sessions)."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
@@ -209,6 +219,22 @@ class SkuldSessionConfig(BaseModel):
 
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
+    owner_id: str = Field(
+        default="",
+        description=(
+            "User ID (IDP sub) that owns this session. Set by Volundr at "
+            "spawn time; when non-empty, inbound WebSocket connections must "
+            "present a matching identity (see WsAuthConfig)."
+        ),
+    )
+    tenant_id: str = Field(
+        default="",
+        description=(
+            "Tenant the session belongs to. Set by Volundr at spawn time; "
+            "cross-tenant WebSocket connections are rejected when both sides "
+            "declare a tenant."
+        ),
+    )
     model: str = Field(default="claude-opus-4-8")
     reasoning_effort: str = Field(
         default="",
@@ -227,6 +253,82 @@ class SkuldSessionConfig(BaseModel):
         description=(
             "Native CLI session/thread id to resume on first start. Set by "
             "Volundr for sessions imported from an external harness."
+        ),
+    )
+
+
+class ResidentRelayConfig(BaseModel):
+    """Platform event relay for resident sessions.
+
+    When the broker hosts a resident (``room.default_target_peer_id`` set),
+    Sleipnir events matching *event_patterns* are checked against the
+    resident's register-frame ``subscribes_to`` declaration. Each match is
+    delivered as a directed message (the resident takes a turn and reports
+    into the room) plus a ``room_notification`` so the operator sees the
+    wake-up even when detached.
+    """
+
+    enabled: bool = Field(default=True)
+    event_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "research.*",
+            "spec.*",
+            "plan.*",
+            "delivery.*",
+            "ravn.task.*",
+        ],
+        description=(
+            "Sleipnir event-type patterns the relay subscribes to. Events "
+            "are still filtered by the resident's subscribes_to declaration "
+            "before delivery — patterns just bound the subscription. These "
+            "are initiative-scoped workflow events; platform-wide firehoses "
+            "(volundr.session.*, volundr.chronicle.*) are intentionally "
+            "excluded because they carry no resident/initiative provenance "
+            "and would wake every resident on every user's activity."
+        ),
+    )
+    payload_preview_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Max characters of the event payload embedded in the resident's "
+            "wake-up message; longer payloads are truncated. Raise it for "
+            "workflows whose events carry large artifact manifests."
+        ),
+    )
+
+
+class WsAuthConfig(BaseModel):
+    """Ownership enforcement for inbound WebSocket connections.
+
+    The broker does not validate token signatures — that is Envoy's / the API
+    gateway's job (see ``.claude/rules/architecture.md``: delegate to standard
+    OIDC flows). What the broker enforces is AUTHORIZATION: the connecting
+    identity must own this session. Identity is resolved the same way
+    Volundr's ``extract_principal`` does — Envoy ``x-auth-*`` headers first,
+    developer query parameters second, decoded bearer claims last — and the
+    verdict mirrors ``SimpleRoleAuthorizationAdapter``: tenant scoping, admin
+    bypass, then owner match. Sessions with no ``session.owner_id`` (legacy
+    and unauthenticated dev sessions) are not restricted.
+    """
+
+    enforce_ownership: bool = Field(
+        default=True,
+        description=(
+            "Reject WebSocket connections whose identity does not match the "
+            "session owner. Only applies when session.owner_id is set."
+        ),
+    )
+    admin_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:admin"],
+        description="Roles that may attach to any session within the tenant.",
+    )
+    allow_loopback: bool = Field(
+        default=True,
+        description=(
+            "Accept unauthenticated connections from loopback addresses. "
+            "In-pod peers (the CLI attaching via --sdk-url, flock ravn "
+            "daemons) share the pod trust boundary and carry no user token."
         ),
     )
 
@@ -384,6 +486,8 @@ class SkuldSettings(BaseSettings):
     )
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
+    resident_relay: ResidentRelayConfig = Field(default_factory=ResidentRelayConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

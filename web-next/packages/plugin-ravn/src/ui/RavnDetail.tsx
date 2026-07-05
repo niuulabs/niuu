@@ -554,6 +554,10 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
     { id: 'connectivity', label: 'Connectivity' },
   ];
 
+  // A stored tab can point at a section this ravn doesn't have (e.g. the
+  // removed "chat" tab persisted before it was consolidated into Sessions).
+  const resolvedTab: TabId = tabs.some((tab) => tab.id === activeTab) ? activeTab : 'overview';
+
   const subtitle = detailSubtitle(ravn);
 
   return (
@@ -617,12 +621,12 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
             key={tab.id}
             type="button"
             role="tab"
-            aria-selected={activeTab === tab.id}
+            aria-selected={resolvedTab === tab.id}
             onClick={() => {
               saveStorage(TAB_STORAGE_KEY, tab.id);
               setActiveTab(tab.id);
             }}
-            className={`rv-sectab${activeTab === tab.id ? ' rv-sectab--active' : ''}`}
+            className={`rv-sectab${resolvedTab === tab.id ? ' rv-sectab--active' : ''}`}
             data-testid={`sectab-${tab.id}`}
           >
             {tab.label}
@@ -634,19 +638,19 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
       </nav>
 
       <div className="rv-detail__content">
-        {activeTab === 'overview' && (
+        {resolvedTab === 'overview' && (
           <OverviewSection ravn={ravn} budget={budget} sessions={ravnSessions} />
         )}
-        {activeTab === 'triggers' && <TriggersSection triggers={ravnTriggers} />}
-        {activeTab === 'activity' && (
+        {resolvedTab === 'triggers' && <TriggersSection triggers={ravnTriggers} />}
+        {resolvedTab === 'activity' && (
           <ActivitySection
             messages={activityMessages}
             isActive={ravn.status === 'active'}
             isLoading={activityLoading}
           />
         )}
-        {activeTab === 'sessions' && <SessionsSection sessions={ravnSessions} />}
-        {activeTab === 'connectivity' && <ConnectivitySection ravn={ravn} />}
+        {resolvedTab === 'sessions' && <SessionsSection sessions={ravnSessions} />}
+        {resolvedTab === 'connectivity' && <ConnectivitySection ravn={ravn} />}
       </div>
     </div>
   );

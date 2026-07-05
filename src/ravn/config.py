@@ -938,6 +938,17 @@ class SkuldChannelConfig(BaseModel):
         description="Human-friendly name shown in the mesh UI (e.g. 'Kvasir'). "
         "Falls back to the persona name when empty.",
     )
+    reconnect_delay_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="Delay between reconnect attempts to the Skuld broker.",
+    )
+    max_reconnect_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="Reconnect attempts before giving up. Also used for the "
+        "cross-session joins the session_join tool opens.",
+    )
 
 
 class PlatformToolsConfig(BaseModel):

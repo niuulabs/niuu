@@ -32,6 +32,18 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def flock_peer_id(persona: str) -> str:
+    """Mesh peer id for a flock/resident ravn running *persona*.
+
+    The single source of truth for this naming convention: the flock pod
+    builder, the resident contributor's ``default_target_peer_id``, the
+    Skuld relay's routing target, and ``Session.resident`` must all agree, or
+    operator chat and event relay silently target a participant that never
+    registered. Keep every derivation routed through here.
+    """
+    return f"flock-{persona}"
+
+
 class UserStatus(StrEnum):
     """Status of a user account."""
 
@@ -509,6 +521,15 @@ class Session(BaseModel):
         default="session",
         description="Workload type used to launch the session",
     )
+    workload_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "Workload config used to launch the session (persisted so "
+            "workload identity — e.g. a resident's name/persona — survives "
+            "restarts). Internal: may carry auth refs; never expose raw "
+            "through the API."
+        ),
+    )
     origin: str = Field(
         default="volundr",
         max_length=50,
@@ -549,6 +570,22 @@ class Session(BaseModel):
         the rule from ``activity_state``.
         """
         return self.activity_state is SessionActivityState.AWAITING_INPUT
+
+    @property
+    def resident(self) -> dict | None:
+        """Public resident identity, or None for non-resident sessions.
+
+        The ONLY slice of ``workload_config`` safe to expose — the raw config
+        may carry auth references. Peer id derivation goes through
+        ``flock_peer_id`` so it can never drift from the contributor.
+        """
+        if self.workload_type != "resident":
+            return None
+        persona = str(self.workload_config.get("persona") or "").strip()
+        if not persona:
+            return None
+        name = str(self.workload_config.get("resident_name") or persona).strip()
+        return {"name": name, "persona": persona, "peer_id": flock_peer_id(persona)}
 
     @property
     def repo(self) -> str:

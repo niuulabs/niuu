@@ -233,6 +233,11 @@ interface RawRavn {
   updated_at?: string;
   role?: string;
   letter?: string;
+  resident_name?: string;
+  peer_id?: string;
+  kind?: string;
+  chat_endpoint?: string | null;
+  session_id?: string;
 }
 
 interface RawSession {
@@ -242,6 +247,7 @@ interface RawSession {
   status: string;
   model: string;
   created_at: string;
+  chat_endpoint?: string | null;
 }
 
 interface RawMessage {
@@ -384,6 +390,11 @@ function toRavn(raw: RawRavn): Ravn {
     updatedAt: raw.updated_at,
     role: raw.role as Ravn['role'],
     letter: raw.letter,
+    residentName: raw.resident_name,
+    peerId: raw.peer_id,
+    kind: raw.kind as Ravn['kind'],
+    chatEndpoint: raw.chat_endpoint,
+    sessionId: raw.session_id,
   };
 }
 
@@ -395,6 +406,7 @@ function toSession(raw: RawSession): Session {
     status: raw.status as SessionStatus,
     model: raw.model,
     createdAt: raw.created_at,
+    chatEndpoint: raw.chat_endpoint,
   };
 }
 

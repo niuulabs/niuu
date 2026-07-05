@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
+    "@niuulabs/query": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.16",
     "@radix-ui/react-popover": "^1.1.16",
     "@radix-ui/react-select": "^2.3.0",

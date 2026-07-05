@@ -296,6 +296,18 @@ class DirectK8sPodManager(PodManager):
         env: list[dict[str, str]] = [
             {"name": "SESSION_ID", "value": str(session.id)},
             {"name": "SESSION_NAME", "value": session.name},
+            # Session ownership — the broker enforces these on inbound
+            # WebSocket connections (skuld.config.WsAuthConfig).
+            *(
+                [{"name": "SKULD__SESSION__OWNER_ID", "value": session.owner_id}]
+                if session.owner_id
+                else []
+            ),
+            *(
+                [{"name": "SKULD__SESSION__TENANT_ID", "value": session.tenant_id}]
+                if session.tenant_id
+                else []
+            ),
             {"name": "DATABASE__HOST", "value": self._db_host},
             {"name": "DATABASE__PORT", "value": str(self._db_port)},
             {"name": "DATABASE__USER", "value": self._db_user},

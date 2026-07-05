@@ -2069,13 +2069,50 @@ def test_valkyrie_signal_stream_replays_events(client: TestClient):
     assert "signal-k8s-checkout-probe" not in body
 
 
-def test_list_sessions_returns_seeded_runtime_sessions(client: TestClient):
-    resp = client.get("/api/v1/ravn/sessions")
+def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
+    import httpx
+    import respx
+
+    # /sessions is real discovery now — it proxies the Forge sessions API and
+    # keeps only ravn workloads (resident/flock) with their chat endpoints.
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "status": "running",
+                        "model": "claude-opus-4-8",
+                        "chat_endpoint": "ws://host/s/1/session",
+                        "workload_type": "resident",
+                        "created_at": "2026-07-04T10:00:00Z",
+                        "resident": {
+                            "name": "Muninn",
+                            "persona": "product-steward",
+                            "peer_id": "flock-product-steward",
+                        },
+                    },
+                    {
+                        "id": "22222222-2222-4333-8444-555555555555",
+                        "status": "running",
+                        "model": "gpt-5.5",
+                        "chat_endpoint": None,
+                        "workload_type": "session",
+                        "created_at": "2026-07-04T10:00:00Z",
+                    },
+                ],
+            )
+        )
+        resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
-    assert data
-    assert data[0]["ravn_id"]
+    # Only the ravn workload survives; plain coding sessions are excluded.
+    assert len(data) == 1
+    assert data[0]["ravn_id"] == "flock-product-steward"
+    assert data[0]["status"] == "running"
+    assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
 
 
 def test_stop_session(client: TestClient):

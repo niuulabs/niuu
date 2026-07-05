@@ -6,7 +6,6 @@ Supports two transport modes (selected via config):
 """
 
 import asyncio
-import base64
 import collections
 import contextlib
 import inspect
@@ -61,6 +60,7 @@ from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from niuu.ws_identity import claims_to_identity, decode_jwt_claims
 from skuld.channels import (
     ChannelRegistry,
     TelegramChannel,
@@ -70,6 +70,7 @@ from skuld.channels import (
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
+from skuld.resident_relay import ResidentRelay
 from skuld.room_bridge import RoomBridge
 from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (
@@ -885,23 +886,12 @@ _BEARER_PREFIX = "bearer "
 
 
 def _decode_jwt_claims(token: str) -> dict:
-    """Decode JWT payload without signature verification.
+    """Decode JWT payload without signature verification (Envoy's job).
 
-    Skuld does not verify signatures — that is Envoy's / the API gateway's
-    job.  We only decode to extract user identity claims for API forwarding.
+    Thin alias over the shared niuu helper so the broker's WS ownership check
+    and the niuu WS proxy guard can never drift on claim parsing.
     """
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return {}
-        # JWT base64url → standard base64
-        payload_b64 = parts[1]
-        # Add padding
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload_bytes = base64.urlsafe_b64decode(payload_b64)
-        return json.loads(payload_bytes)
-    except Exception:
-        return {}
+    return decode_jwt_claims(token)
 
 
 def _extract_bearer_token(headers: dict[str, str]) -> str | None:
@@ -960,6 +950,90 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     if inspect.isawaitable(query_token):
         return None
     return query_token
+
+
+@dataclass(frozen=True)
+class WsPrincipal:
+    """Identity resolved from an inbound WebSocket connection."""
+
+    user_id: str
+    tenant_id: str = ""
+    roles: tuple[str, ...] = ()
+
+
+def _split_roles(raw: str) -> tuple[str, ...]:
+    return tuple(role.strip() for role in raw.split(",") if role.strip())
+
+
+def _ws_query_param(websocket: WebSocket, name: str) -> str:
+    """Read a query parameter defensively (mirrors _extract_token_from_websocket)."""
+    query_get = getattr(websocket.query_params, "get", None)
+    if not callable(query_get):
+        return ""
+    value = query_get(name)
+    if inspect.iscoroutine(value):
+        value.close()
+        return ""
+    if inspect.isawaitable(value):
+        return ""
+    return str(value or "").strip()
+
+
+def _claims_to_ws_principal(claims: dict) -> WsPrincipal | None:
+    """Build a WsPrincipal from decoded JWT claims (shared parser)."""
+    user_id, tenant, roles = claims_to_identity(claims)
+    if not user_id:
+        return None
+    return WsPrincipal(user_id=user_id, tenant_id=tenant, roles=roles)
+
+
+def _resolve_ws_principal(websocket: WebSocket) -> WsPrincipal | None:
+    """Resolve the caller identity of a WebSocket connection.
+
+    Mirrors Volundr's ``extract_principal`` resolution order:
+    1. Envoy-injected ``x-auth-*`` headers (trusted sidecar)
+    2. Developer identity query parameters (``devUserId`` etc.)
+    3. Decoded bearer-token claims (Authorization header, subprotocol, or
+       ``access_token`` query parameter)
+
+    Signature validation is Envoy's job — this resolves identity for the
+    broker's authorization check only.
+    """
+    header_items = websocket.headers.items()
+    if inspect.iscoroutine(header_items):
+        header_items.close()
+        header_items = ()
+    elif inspect.isawaitable(header_items):
+        header_items = ()
+    headers = {k.lower(): v for k, v in header_items}
+
+    forwarded_user_id = headers.get("x-auth-user-id", "").strip()
+    if forwarded_user_id:
+        return WsPrincipal(
+            user_id=forwarded_user_id,
+            tenant_id=headers.get("x-auth-tenant", "").strip(),
+            roles=_split_roles(headers.get("x-auth-roles", "volundr:developer")),
+        )
+
+    dev_user_id = _ws_query_param(websocket, "devUserId")
+    if dev_user_id:
+        return WsPrincipal(
+            user_id=dev_user_id,
+            tenant_id=_ws_query_param(websocket, "devTenantId"),
+            roles=_split_roles(_ws_query_param(websocket, "devRoles") or "volundr:developer"),
+        )
+
+    token = _extract_token_from_websocket(websocket)
+    if token:
+        return _claims_to_ws_principal(_decode_jwt_claims(token))
+    return None
+
+
+def _is_loopback_ws_client(websocket: WebSocket) -> bool:
+    """True when the WebSocket peer connected from a loopback address."""
+    client = getattr(websocket, "client", None)
+    host = getattr(client, "host", None)
+    return host in ("127.0.0.1", "::1", "localhost")
 
 
 CONVERSATION_HISTORY_DIR = ".skuld"
@@ -1134,6 +1208,7 @@ class Broker:
         # Room mesh bridge — translates ravn.mesh.* Sleipnir events to room wire events.
         # Active when both mesh.enabled and room.enabled are True.
         self._room_mesh_bridge: RoomMeshBridge | None = None
+        self._resident_relay: ResidentRelay | None = None
 
         # Room bridge — only active when room.enabled is True
         self._room_bridge: RoomBridge | None = (
@@ -1457,6 +1532,37 @@ class Broker:
                     await self._room_mesh_bridge.start()
                     logger.info("RoomMeshBridge started (session_id=%s)", self.session_id)
 
+                    # Resident sessions: relay platform events (research/spec/
+                    # plan completions, gates) to the resident so the chat
+                    # resumes itself when its launched work lands.
+                    resident_peer = self._room_default_target_peer_id()
+                    if resident_peer and self._settings.resident_relay.enabled:
+
+                        async def _relay_directed(
+                            target: str,
+                            content: str,
+                            metadata: dict,
+                        ) -> str:
+                            return await self.handle_directed_room_message(
+                                target,
+                                content,
+                                source="sleipnir",
+                                metadata=metadata,
+                            )
+
+                        self._resident_relay = ResidentRelay(
+                            sleipnir_subscriber,
+                            self._room_bridge,
+                            resident_peer_id=resident_peer,
+                            patterns=self._settings.resident_relay.event_patterns,
+                            send_directed=_relay_directed,
+                            broadcast_notification=self._emit_broker_frame,
+                            payload_preview_chars=(
+                                self._settings.resident_relay.payload_preview_chars
+                            ),
+                        )
+                        await self._resident_relay.start()
+
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
             self._mesh_adapter = None
@@ -1473,6 +1579,21 @@ class Broker:
         browser connect would spawn a second agent and confuse session state.
         """
         return bool(self._has_workflow_trigger() and self._settings.room.enabled)
+
+    def _room_default_target_peer_id(self) -> str:
+        """Peer that untargeted browser messages route to (resident sessions)."""
+        if self._room_bridge is None:
+            return ""
+        return self._settings.room.default_target_peer_id.strip()
+
+    def _is_room_routed_session(self) -> bool:
+        """True when browser traffic flows through the room, not a CLI transport.
+
+        Covers flock workflow sessions (mesh peers do the work) and resident
+        sessions (one long-lived ravn behind ``room.default_target_peer_id``).
+        Both must never lazy-start the broker's own CLI transport.
+        """
+        return self._is_room_only_workflow_session() or bool(self._room_default_target_peer_id())
 
     def _workflow_trigger_consumer_peer_ids(self, event_type: str) -> set[str]:
         """Return flock peer ids that subscribe to the workflow trigger event."""
@@ -1792,7 +1913,15 @@ class Broker:
         # lifespan returns promptly and uvicorn binds — otherwise the
         # transport's first turn (which can take seconds to minutes)
         # blocks the HTTP listener and the chat UI gets 502s.
-        if self._settings.session.initial_prompt:
+        if self._is_room_routed_session():
+            # Room-routed sessions (flock workflows and residents) have no CLI
+            # transport of their own — chat flows to mesh peers / the resident.
+            # Warming a transport here would spawn an orphan Claude subprocess
+            # alongside the resident, burning tokens and emitting competing
+            # frames. A restarted resident always has prior history, so this
+            # guard must precede the resume branch below.
+            logger.info("Room-routed session — skipping transport auto-start")
+        elif self._settings.session.initial_prompt:
             if self._has_workflow_trigger():
                 logger.info(
                     "Workflow trigger configured — holding initial prompt for mesh dispatch"
@@ -1924,7 +2053,11 @@ class Broker:
         await self._report_chronicle()
         await self._write_workspace_archive()
 
-        # Stop room mesh bridge before mesh adapter
+        # Stop resident relay and room mesh bridge before mesh adapter
+        if self._resident_relay is not None:
+            await self._resident_relay.stop()
+            self._resident_relay = None
+
         if self._room_mesh_bridge is not None:
             await self._room_mesh_bridge.stop()
             self._room_mesh_bridge = None
@@ -3789,6 +3922,31 @@ class Broker:
             case _:
                 message = data.get("content", "")
                 if not message:
+                    return
+
+                # Resident sessions: untargeted messages route to the
+                # configured default participant as directed messages. Normalize
+                # structured content blocks (text + attachments) the same way
+                # the CLI transport path does — a bare str() would deliver a
+                # Python repr of the block list (base64 blobs inline).
+                default_target = self._room_default_target_peer_id()
+                if default_target:
+                    try:
+                        await self.handle_directed_room_message(
+                            default_target,
+                            _normalize_browser_message_content(message),
+                            source="browser",
+                            metadata=(
+                                data.get("metadata")
+                                if isinstance(data.get("metadata"), dict)
+                                else None
+                            ),
+                        )
+                    except LookupError as exc:
+                        if sender_ws:
+                            await self._send_broker_frame_to(
+                                sender_ws, {"type": "error", "content": str(exc)}
+                            )
                     return
 
                 if self._is_room_only_workflow_session():
@@ -6165,6 +6323,57 @@ class Broker:
         topic_name = " ".join(topic_name.split())
         return topic_name[:128] or "Volundr session"
 
+    def _authorize_websocket(self, websocket: WebSocket, *, endpoint: str) -> bool:
+        """Enforce session ownership on an inbound WebSocket connection.
+
+        Authorization only — token signatures are validated upstream (Envoy /
+        API gateway). The verdict mirrors Volundr's
+        ``SimpleRoleAuthorizationAdapter``: tenant scoping first, admin
+        bypass, then owner match. Sessions without an ``owner_id`` (legacy or
+        unauthenticated dev sessions) are not restricted. Unauthenticated
+        loopback peers (the in-pod CLI, flock ravn daemons) are trusted when
+        ``ws_auth.allow_loopback`` is set — they share the pod trust boundary.
+        """
+        cfg = self._settings.ws_auth
+        if not cfg.enforce_ownership:
+            return True
+
+        owner_id = (self._settings.session.owner_id or "").strip()
+        if not owner_id:
+            return True
+
+        principal = _resolve_ws_principal(websocket)
+        if principal is None:
+            if cfg.allow_loopback and _is_loopback_ws_client(websocket):
+                return True
+            logger.warning(
+                "%s: rejecting unauthenticated WebSocket (session owner enforced)",
+                endpoint,
+            )
+            return False
+
+        session_tenant = (self._settings.session.tenant_id or "").strip()
+        if session_tenant and principal.tenant_id and principal.tenant_id != session_tenant:
+            logger.warning(
+                "%s: rejecting cross-tenant WebSocket (user=%s)",
+                endpoint,
+                _sanitize_log(principal.user_id),
+            )
+            return False
+
+        if any(role in principal.roles for role in cfg.admin_roles):
+            return True
+
+        if principal.user_id == owner_id:
+            return True
+
+        logger.warning(
+            "%s: rejecting WebSocket from non-owner (user=%s)",
+            endpoint,
+            _sanitize_log(principal.user_id),
+        )
+        return False
+
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
 
@@ -6206,6 +6415,12 @@ class Broker:
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Handle a browser WebSocket connection at /session."""
+        # Ownership check first — a rejected caller must not overwrite the
+        # broker's stored JWT or reach any session frames.
+        if not self._authorize_websocket(websocket, endpoint="handle_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
         # Extract JWT before accepting — headers are available pre-accept
         self._update_jwt_from_websocket(websocket)
 
@@ -6229,9 +6444,9 @@ class Broker:
 
             # Lazy-start transport on first browser connection
             if not self._transport.is_alive:
-                if self._is_room_only_workflow_session():
+                if self._is_room_routed_session():
                     logger.info(
-                        "handle_websocket: workflow room session detected; "
+                        "handle_websocket: room-routed session detected; "
                         "skipping transport lazy-start"
                     )
                 else:
@@ -6441,6 +6656,10 @@ class Broker:
             type(self._transport).__name__ if self._transport else None,
         )
 
+        if not self._authorize_websocket(websocket, endpoint="handle_cli_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
         if not self._transport or not self._transport.capabilities.cli_websocket:
             logger.warning(
                 "CLI WebSocket received but transport %s does not support SDK WebSocket protocol",
@@ -6479,6 +6698,10 @@ class Broker:
                 _sanitize_log(peer_id),
             )
             await websocket.close(code=1008, reason="Room mode is not enabled")
+            return
+
+        if not self._authorize_websocket(websocket, endpoint="handle_ravn_websocket"):
+            await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
         await websocket.accept()

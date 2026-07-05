@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -71,6 +72,17 @@ class WorkflowLaunchBody(BaseModel):
     model: str = Field(default="", max_length=255)
     definition: str | None = Field(default=None, max_length=255)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    gate_auto_forward_after: str | None = Field(
+        default=None,
+        max_length=32,
+        alias="gateAutoForwardAfter",
+        description=(
+            "Override every gate node's autoForwardAfter for this launch "
+            "(e.g. '24h'). An empty string disables auto-forward entirely — "
+            "chat-driven approvals must wait for the human instead of "
+            "sailing past them. Omit to keep the definition's values."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -282,6 +294,37 @@ def _launch_response(
     )
 
 
+# A duration far longer than any session lifetime — the way to say "never
+# auto-forward" without teaching every downstream duration parser a keyword.
+# Popping the key does NOT disable auto-forward: the Skuld gate consumer falls
+# back to a "30m" default for an absent value, so an empty override would
+# silently become 30 minutes — the opposite of the intended contract.
+_GATE_NEVER_AUTO_FORWARD = "87600h"
+
+
+def _apply_gate_auto_forward_override(
+    snapshot: dict[str, Any],
+    value: str,
+) -> dict[str, Any]:
+    """Return a snapshot copy with every gate node's autoForwardAfter overridden.
+
+    The snapshot shares the stored definition's graph object, so patching
+    happens on a deep copy — a per-launch override must never mutate the
+    workflow definition. An empty *value* means "never auto-forward" (the gate
+    waits for the human), encoded as a very large duration rather than by
+    removing the key (which the consumer would treat as its 30m default).
+    """
+    effective = value or _GATE_NEVER_AUTO_FORWARD
+    patched = copy.deepcopy(snapshot)
+    graph = patched.get("graph")
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    for node in nodes or []:
+        if not isinstance(node, dict) or node.get("kind") != "gate":
+            continue
+        node["autoForwardAfter"] = effective
+    return patched
+
+
 async def launch_workflow_execution(
     *,
     request: Request,
@@ -292,6 +335,11 @@ async def launch_workflow_execution(
     bearer_token: str | None = None,
 ) -> WorkflowLaunchExecution:
     workflow_snapshot = build_workflow_snapshot(workflow)
+    if launch.gate_auto_forward_after is not None:
+        workflow_snapshot = _apply_gate_auto_forward_override(
+            workflow_snapshot,
+            launch.gate_auto_forward_after.strip(),
+        )
     launch_slug = _resolve_launch_slug(launch, workflow)
     session_name = _resolve_launch_session_name(launch, workflow, launch_slug)
     settings = request.app.state.settings

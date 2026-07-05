@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './liveSessionTransport';
+import { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './transport';
 
-describe('liveSessionTransport', () => {
+describe('chat transport', () => {
   it('derives an http base from a chat websocket', () => {
     expect(wsUrlToHttpBase('wss://api.example.com/s/abc/session')).toBe(
       'https://api.example.com/s/abc',

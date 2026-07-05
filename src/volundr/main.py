@@ -362,6 +362,17 @@ def _create_contributors(
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 
+    # Auto-wire ResidentContributor so resident workloads (long-lived
+    # flock-of-one chat sessions) spawn the same way flocks do.
+    from volundr.adapters.outbound.contributors.resident import ResidentContributor
+
+    if not _has_contributor("resident"):
+        resident_kwargs = dict(ports)
+        if settings.ravn_flock_image:
+            resident_kwargs["ravn_image"] = settings.ravn_flock_image
+        contributors.append(ResidentContributor(**resident_kwargs))
+        logger.info("Session contributor: resident (auto-wired)")
+
     if not _has_contributor("session_mcp"):
         contributors.append(SessionMCPContributor(**ports))
         logger.info("Session contributor: session_mcp (auto-wired)")
@@ -418,6 +429,7 @@ async def _reconcile_liveness_loop(
     *,
     interval_seconds: int,
     stale_after_seconds: int,
+    exempt_workload_types: list[str] | None = None,
 ) -> None:
     """Periodically mark running sessions whose broker has gone silent as stopped."""
     logger.info(
@@ -428,7 +440,10 @@ async def _reconcile_liveness_loop(
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            count = await session_service.reconcile_liveness(stale_after_seconds)
+            count = await session_service.reconcile_liveness(
+                stale_after_seconds,
+                exempt_workload_types=exempt_workload_types,
+            )
             if count:
                 logger.info("Liveness: reconciled %d stale running session(s)", count)
         except asyncio.CancelledError:
@@ -863,6 +878,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 skuld_reg.set_reconcile_hook(_on_proxy_dead)
 
+            # Enforce session ownership at the WS proxy (the browser's
+            # termination point). The broker's ws_auth is defense-in-depth for
+            # direct/flock connections; the proxy dials it from loopback, so
+            # this is the check that actually covers proxied browser traffic.
+            if skuld_reg is not None and hasattr(skuld_reg, "set_ownership_guard"):
+                from niuu.domain.models import Principal
+                from volundr.domain.ports import Resource
+
+                async def _may_attach(
+                    session_id: str,
+                    user_id: str | None,
+                    tenant_id: str | None,
+                    roles: tuple[str, ...],
+                ) -> bool:
+                    try:
+                        session = await repository.get(UUID(session_id))
+                    except ValueError:
+                        return False
+                    if session is None or not session.owner_id:
+                        # Unknown or unowned (legacy/dev) session: not the
+                        # proxy's job to invent a policy — stay permissive.
+                        return True
+                    # Delegate to the ONE authorization policy (the same adapter
+                    # the REST API uses) so the WS attach check can never drift
+                    # from it. "start" is the mutating action-class the ladder
+                    # gates on owner match.
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    resource = Resource(
+                        kind="session",
+                        id=session_id,
+                        attr={
+                            "owner_id": session.owner_id,
+                            "tenant_id": session.tenant_id,
+                        },
+                    )
+                    return await authorization_adapter.is_allowed(principal, "start", resource)
+
+                skuld_reg.set_ownership_guard(_may_attach)
+
             stats_service = StatsService(stats_repository)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
@@ -1227,6 +1286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         session_service,
                         interval_seconds=settings.session_liveness.check_interval_seconds,
                         stale_after_seconds=settings.session_liveness.stale_after_seconds,
+                        exempt_workload_types=settings.session_liveness.exempt_workload_types,
                     )
                 )
 

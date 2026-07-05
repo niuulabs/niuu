@@ -25,6 +25,7 @@ from niuu.settings_schema import (
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.runtime_data import (
     create_trigger as create_runtime_trigger,
 )
@@ -36,21 +37,6 @@ from ravn.api.runtime_data import (
 )
 from ravn.api.runtime_data import (
     get_fleet_budget as get_runtime_fleet_budget,
-)
-from ravn.api.runtime_data import (
-    get_raven as get_runtime_raven,
-)
-from ravn.api.runtime_data import (
-    get_session as get_runtime_session,
-)
-from ravn.api.runtime_data import (
-    list_messages as list_runtime_messages,
-)
-from ravn.api.runtime_data import (
-    list_ravens as list_runtime_ravens,
-)
-from ravn.api.runtime_data import (
-    list_sessions as list_runtime_sessions,
 )
 from ravn.api.runtime_data import (
     list_triggers as list_runtime_triggers,
@@ -158,6 +144,7 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+    resident_directory = ResidentDirectory()
     store = warden_store or build_warden_store()
     if warden_discovery is None:
         loaded_settings = settings or Settings()
@@ -257,9 +244,18 @@ def create_app(
         return {"service": "ravn", "session_count": 0, "healthy": True}
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
-    async def settings_endpoint() -> SettingsProviderSchema:
-        sessions = list_runtime_sessions()
-        ravens = list_runtime_ravens()
+    async def settings_endpoint(request: Request) -> SettingsProviderSchema:
+        auth_headers, auth_params = forward_auth(request)
+        # The aggregated settings page must not hard-depend on Volundr being
+        # reachable — a Forge outage degrades the fleet/session counts to 0,
+        # not a 500 of the whole settings section (triggers/budget are local).
+        try:
+            ravens = await resident_directory.list_ravens(auth_headers, auth_params)
+            sessions = await resident_directory.list_sessions(auth_headers, auth_params)
+        except Exception:
+            logger.warning("settings: forge discovery failed, reporting 0", exc_info=True)
+            ravens = []
+            sessions = []
         triggers = list_runtime_triggers()
         fleet_budget = get_runtime_fleet_budget()
         return SettingsProviderSchema(
@@ -317,14 +313,16 @@ def create_app(
         )
 
     @app.get("/api/v1/ravn/sessions")
-    async def list_sessions_endpoint() -> list:
-        """List active agent sessions (stub — populated by gateway in production)."""
-        return list_runtime_sessions()
+    async def list_sessions_endpoint(request: Request) -> list[dict]:
+        """List the caller's live ravn sessions (resident + flock rooms)."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_sessions(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint() -> list[dict]:
-        """List the currently known ravn runtime instances."""
-        return list_runtime_ravens()
+    async def list_ravens_endpoint(request: Request) -> list[dict]:
+        """List the caller's resident ravns (live from the Forge sessions API)."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_ravens(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -577,17 +575,19 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str) -> dict:
-        """Return one ravn runtime instance."""
-        ravn = get_runtime_raven(ravn_id)
+    async def get_raven_endpoint(ravn_id: str, request: Request) -> dict:
+        """Return one resident ravn by its session id."""
+        auth_headers, auth_params = forward_auth(request)
+        ravn = await resident_directory.get_raven(ravn_id, auth_headers, auth_params)
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn
 
     @app.get("/api/v1/ravn/sessions/{session_id}")
-    async def get_session_endpoint(session_id: str) -> dict:
-        """Return one ravn session."""
-        session_data = get_runtime_session(session_id)
+    async def get_session_endpoint(session_id: str, request: Request) -> dict:
+        """Return one live ravn session."""
+        auth_headers, auth_params = forward_auth(request)
+        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -596,14 +596,22 @@ def create_app(
         return session_data
 
     @app.get("/api/v1/ravn/sessions/{session_id}/messages")
-    async def list_session_messages(session_id: str) -> list[dict]:
-        """Return transcript messages for one ravn session."""
-        if get_runtime_session(session_id) is None:
+    async def list_session_messages(session_id: str, request: Request) -> list[dict]:
+        """Return transcript messages for one ravn session.
+
+        The live transcript is delivered over the session's Skuld chat
+        WebSocket (the shared chat replays history on connect), so this REST
+        endpoint returns an empty list for a live session rather than seed
+        data — the UI opens the chat for history.
+        """
+        auth_headers, auth_params = forward_auth(request)
+        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
+        if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Session not found",
             )
-        return list_runtime_messages(session_id)
+        return []
 
     @app.post("/api/v1/ravn/sessions/{session_id}/stop")
     async def stop_session(session_id: str) -> dict:
@@ -642,13 +650,17 @@ def create_app(
 
     @app.get("/api/v1/ravn/budget/{ravn_id}")
     async def budget(ravn_id: str) -> dict:
-        """Return budget state for one ravn."""
+        """Return budget state for one ravn.
+
+        Per-resident budget accounting is not yet wired to the residents
+        surfaced by the fleet (that lands with the resident spend tracker);
+        an unknown id therefore returns a neutral zero-state rather than a
+        404, so the fleet UI renders a real (empty) budget instead of an
+        error for every live resident.
+        """
         budget_state = get_runtime_budget(ravn_id)
         if budget_state is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Budget not found",
-            )
+            return {"spent_usd": 0.0, "cap_usd": 0.0, "warn_at": 0.0}
         return budget_state
 
     if persona_loader is not None:

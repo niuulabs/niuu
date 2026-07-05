@@ -359,6 +359,27 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         condition=lambda s: s.gateway.platform.enabled,
         kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
+    "session_join": BuiltinToolDef(
+        adapter="ravn.adapters.tools.session_join_tool.SessionJoinTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled and s.skuld.enabled,
+        # The manager is built by the resident daemon's composition root and
+        # injected via runtime context; the tool is skipped when it is absent.
+        required_context=frozenset({"session_join_manager"}),
+        kwargs_fn=lambda s, ctx: {"manager": ctx["session_join_manager"]},
+    ),
+    "ting_plan": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingPlanTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+    ),
+    "ting_spec": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingSpecTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+    ),
     # =========================================================================
     # workflow — resident workflow catalog tools backed by capability_sources
     # =========================================================================

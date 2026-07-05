@@ -15,7 +15,11 @@ from volundr.domain.models import (
 from volundr.domain.services.session import SessionService
 
 
-def _session(status: SessionStatus, last_active: datetime) -> Session:
+def _session(
+    status: SessionStatus,
+    last_active: datetime,
+    workload_type: str = "session",
+) -> Session:
     return Session(
         id=uuid4(),
         name="s",
@@ -27,6 +31,7 @@ def _session(status: SessionStatus, last_active: datetime) -> Session:
         pod_name="local-x",
         created_at=last_active,
         last_active=last_active,
+        workload_type=workload_type,
     )
 
 
@@ -86,6 +91,37 @@ class TestReconcileLiveness:
         count = await service.reconcile_liveness(stale_after_seconds=600)
 
         assert count == 3
+
+    async def test_exempt_workload_type_never_reaped(self, service, repo):
+        """Residents idle by design — a quiet resident is not a dead one."""
+        old = datetime.now(UTC) - timedelta(seconds=3600)
+        resident = _session(SessionStatus.RUNNING, old, workload_type="resident")
+        plain = _session(SessionStatus.RUNNING, old)
+        await repo.create(resident)
+        await repo.create(plain)
+
+        count = await service.reconcile_liveness(
+            stale_after_seconds=600,
+            exempt_workload_types=["resident"],
+        )
+
+        assert count == 1
+        assert (await repo.get(resident.id)).status == SessionStatus.RUNNING
+        assert (await repo.get(plain.id)).status == SessionStatus.STOPPED
+
+    async def test_no_exemptions_by_default_argument(self, service, repo):
+        old = datetime.now(UTC) - timedelta(seconds=3600)
+        resident = _session(SessionStatus.RUNNING, old, workload_type="resident")
+        await repo.create(resident)
+
+        count = await service.reconcile_liveness(stale_after_seconds=600)
+
+        assert count == 1
+
+    def test_resident_exempt_in_default_config(self):
+        from volundr.config import SessionLivenessConfig
+
+        assert "resident" in SessionLivenessConfig().exempt_workload_types
 
 
 class TestActivityRefreshesLastActive:

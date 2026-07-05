@@ -63,6 +63,16 @@ export const ravnSchema = z.object({
   gatewayChannels: z.array(z.string()).optional(),
   /** Event topics this ravn is subscribed to (consumed + produced). */
   eventSubscriptions: z.array(z.string()).optional(),
+  /** Display name of the resident session (resident ravens only). */
+  residentName: z.string().optional(),
+  /** Mesh peer id of the resident session (resident ravens only). */
+  peerId: z.string().optional(),
+  /** What backs this ravn: a long-lived resident session or a persona deployment. */
+  kind: z.enum(['resident', 'persona']).optional(),
+  /** Skuld WebSocket chat endpoint (same protocol as Volundr live sessions). */
+  chatEndpoint: z.string().nullable().optional(),
+  /** Backing session id (resident ravens only). */
+  sessionId: z.string().optional(),
 });
 
 export type Ravn = z.infer<typeof ravnSchema>;

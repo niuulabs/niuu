@@ -2,11 +2,6 @@ from ravn.api import runtime_data
 
 
 def test_runtime_data_lookup_and_trigger_helpers_round_trip():
-    raven = runtime_data.get_raven("a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
-    assert raven is not None
-    assert raven["persona_name"] == "sindri"
-    assert runtime_data.get_raven("missing") is None
-
     session = runtime_data.get_session("10000001-0000-4000-8000-000000000001")
     assert session is not None
     assert session["persona_name"] == "sindri"
