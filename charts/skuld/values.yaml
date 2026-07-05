@@ -21,6 +21,11 @@ session:
   id: ""
   # -- Human-readable session name
   name: ""
+  # -- User ID (IDP sub) that owns this session. When set, the broker enforces
+  # WebSocket ownership (see skuld ws_auth). Rendered into the broker config.
+  ownerId: ""
+  # -- Tenant the session belongs to. Rendered into the broker config.
+  tenantId: ""
   # -- AI model to use for the session
   model: "claude-sonnet-4-6"
   # -- System prompt injected into the LLM context
@@ -159,6 +164,10 @@ ingress:
 persistence:
   # -- Enable workspace persistence
   enabled: true
+  # -- Use a pod-local emptyDir for the sessions volume instead of the shared
+  # existingClaim PVC. Residents and other self-contained sessions don't need
+  # the shared sessions PVC but still get a writable workspace.
+  emptyDir: false
   # -- Name of an existing PVC to use
   existingClaim: "volundr-sessions"
   # -- Mount path for the sessions PVC
@@ -444,6 +453,44 @@ mesh:
   enabled: false
   transport: nng
   peerPorts: []
+
+# Mímir memory instances handed to the resident's ravn daemon
+# (same shape the ravn node config `mimir.instances` accepts).
+mimir:
+  # -- Mímir instances mounted by the resident ravn (name/role/url or path)
+  instances: []
+
+# First-class resident ravn support: a long-lived room-mode chat agent.
+# When enabled, the pod becomes broker (room mode) + one ravn daemon sidecar —
+# the same shape the platform's ResidentContributor provisions, but declared
+# with a small hand-written values file (gitops-friendly).
+resident:
+  # -- Deploy this release as a resident ravn (broker room mode + ravn sidecar)
+  enabled: false
+  # -- Display identity of the resident (e.g. "Muninn"); defaults to persona
+  name: ""
+  # -- Ravn persona the resident runs as (required when enabled)
+  persona: ""
+  # -- Route id: path segment for the gateway HTTPRoute (/s/<routeId>) and the
+  # session id. MUST be unique per gateway; empty derives
+  # "<namespace>-<release>" from the Helm release.
+  routeId: ""
+  # -- Max concurrent initiative tasks for the resident ravn
+  maxConcurrentTasks: 3
+  # -- Daily LLM budget cap in USD (float as string, e.g. "100.0"); empty = uncapped
+  dailyBudgetUsd: ""
+  # -- Ravn llm config dict rendered verbatim into the node config
+  llm: {}
+  platform:
+    # -- Give the resident platform access (Volundr gateway + workload identity)
+    enabled: false
+    # -- In-cluster Volundr base URL for the ravn platform gateway
+    baseUrl: ""
+  workloadIdentity:
+    # -- Audience for the projected serviceAccountToken
+    audience: "volundr-api"
+    # -- Expiration (seconds) for the projected serviceAccountToken
+    expirationSeconds: 1200
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

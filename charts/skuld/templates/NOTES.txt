@@ -1,6 +1,6 @@
 Skuld session deployed: {{ include "skuld.fullname" . }}
 
-Session ID: {{ .Values.session.id }}
+Session ID: {{ include "skuld.sessionId" . }}
 Model:      {{ .Values.session.model }}
 Workspace:  {{ include "skuld.workspacePath" . }}
 

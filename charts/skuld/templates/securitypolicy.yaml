@@ -6,15 +6,15 @@
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
-  name: session-{{ .Values.session.id }}-security
+  name: session-{{ include "skuld.routeId" . }}-security
   labels:
     {{- include "skuld.labels" . | nindent 4 }}
-    volundr.niuu.io/session: {{ .Values.session.id | quote }}
+    volundr.niuu.io/session: {{ include "skuld.sessionId" . | quote }}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: session-{{ .Values.session.id }}
+    name: session-{{ include "skuld.routeId" . }}
   cors:
     allowOrigins:
       {{- toYaml .Values.gateway.cors.allowOrigins | nindent 6 }}

@@ -1,0 +1,106 @@
+{{- if include "skuld.residentEnabled" . -}}
+{{- $persona := include "skuld.residentPersona" . -}}
+{{- $routeId := include "skuld.routeId" . -}}
+{{- $residentName := include "skuld.residentName" . -}}
+{{- $instances := (.Values.mimir).instances | default list -}}
+{{/* Default write mount: first local instance, else the sole instance. */}}
+{{- $writeDefault := list -}}
+{{- range $instances -}}
+{{- if and (not $writeDefault) (eq (.role | default "shared") "local") -}}
+{{- $writeDefault = list .name -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not $writeDefault) (eq (len $instances) 1) -}}
+{{- $writeDefault = list (index $instances 0).name -}}
+{{- end -}}
+# Ravn node config for the resident daemon (mirrors the platform's
+# ResidentContributor output). Mounted read-only at /etc/ravn/config.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skuld.fullname" . }}-ravn-config
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    persona: {{ $persona | quote }}
+    mesh:
+      enabled: true
+      adapter: nng
+      own_peer_id: {{ printf "flock-%s" $persona | quote }}
+      nng:
+        pub_sub_address: "tcp://0.0.0.0:7482"
+        req_rep_address: "tcp://0.0.0.0:7483"
+      peers:
+        - peer_id: {{ printf "skuld-%s" $routeId | quote }}
+    discovery:
+      enabled: true
+      adapters:
+        - adapter: static
+          peers:
+            - peer_id: {{ printf "skuld-%s" $routeId | quote }}
+              persona: "Skuld"
+              pub_address: "tcp://127.0.0.1:7480"
+              rep_address: "tcp://127.0.0.1:7481"
+              handshake_port: 7580
+              consumes_event_types: []
+              emits_event_types:
+                - code.changed
+            - peer_id: {{ printf "flock-%s" $persona | quote }}
+              persona: {{ $persona | quote }}
+              pub_address: "tcp://127.0.0.1:7482"
+              rep_address: "tcp://127.0.0.1:7483"
+              handshake_port: 7581
+              consumes_event_types: []
+              emits_event_types: []
+          poll_interval_s: 0
+    cascade:
+      enabled: true
+    gateway:
+      enabled: true
+      channels:
+        http:
+          enabled: true
+          host: "0.0.0.0"
+          port: 7781
+      {{- if .Values.resident.platform.enabled }}
+      platform:
+        enabled: true
+        base_url: {{ required "resident.platform.baseUrl is required when resident.platform.enabled=true" .Values.resident.platform.baseUrl | quote }}
+      {{- end }}
+    initiative:
+      enabled: true
+      max_concurrent_tasks: {{ .Values.resident.maxConcurrentTasks }}
+    {{- if $instances }}
+    mimir:
+      enabled: true
+      instances:
+        {{- toYaml $instances | nindent 8 }}
+      write_routing:
+        rules: []
+        {{- if $writeDefault }}
+        default:
+          {{- toYaml $writeDefault | nindent 10 }}
+        {{- else }}
+        default: []
+        {{- end }}
+    {{- end }}
+    permission:
+      workspace_root: /workspace
+    logging:
+      level: INFO
+    {{- if .Values.resident.dailyBudgetUsd }}
+    budget:
+      daily_cap_usd: {{ .Values.resident.dailyBudgetUsd | float64 }}
+    {{- end }}
+    {{- with .Values.resident.llm }}
+    llm:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    skuld:
+      enabled: true
+      broker_url: "ws://127.0.0.1:8081/ws/ravn"
+      display_name: {{ $residentName | quote }}
+    environment:
+      resident_name: {{ $residentName | quote }}
+{{- end }}
