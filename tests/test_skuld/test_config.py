@@ -315,3 +315,85 @@ class TestTransportAdapter:
 
         s = SkuldSettings()
         assert s.transport_adapter == "skuld.transports.subprocess.SubprocessTransport"
+
+
+class TestWorkloadIdentityConfig:
+    """Workload identity settings — config file canonical, legacy env aliases."""
+
+    _LEGACY_VARS = [
+        "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
+        "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+        "NIUU_WORKLOAD_IDENTITY_AUDIENCES",
+        "SKULD__WORKLOAD_IDENTITY__TOKEN_FILE",
+        "SKULD__WORKLOAD_IDENTITY__EXCHANGE_URL",
+        "SKULD__WORKLOAD_IDENTITY__AUDIENCES",
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in self._LEGACY_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_defaults(self):
+        s = SkuldSettings()
+        assert s.workload_identity.token_file == "/var/run/secrets/niuu-workload/token"
+        assert s.workload_identity.exchange_url == ""
+        assert s.workload_identity.audiences == ["volundr-api", "forge", "ting", "mimir", "guild"]
+
+    def test_config_dict_is_canonical(self):
+        s = SkuldSettings(
+            workload_identity={
+                "token_file": "/etc/tokens/proof",
+                "exchange_url": "http://volundr/api/v1/tokens/workload/exchange",
+                "audiences": ["volundr-api"],
+            }
+        )
+        assert s.workload_identity.token_file == "/etc/tokens/proof"
+        assert s.workload_identity.exchange_url == "http://volundr/api/v1/tokens/workload/exchange"
+        assert s.workload_identity.audiences == ["volundr-api"]
+
+    def test_yaml_section_loaded(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "workload_identity:\n"
+            "  token_file: /run/proof\n"
+            "  exchange_url: http://from-yaml/exchange\n"
+        )
+        monkeypatch.setitem(SkuldSettings.model_config, "yaml_file", [config_file])
+
+        s = SkuldSettings()
+        assert s.workload_identity.token_file == "/run/proof"
+        assert s.workload_identity.exchange_url == "http://from-yaml/exchange"
+
+    def test_legacy_bare_env_vars_still_work(self, monkeypatch):
+        """Deployed charts set bare NIUU_WORKLOAD_IDENTITY_* env vars."""
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "/legacy/token")
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "http://legacy/exchange")
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_AUDIENCES", "volundr-api, mimir")
+
+        s = SkuldSettings()
+        assert s.workload_identity.token_file == "/legacy/token"
+        assert s.workload_identity.exchange_url == "http://legacy/exchange"
+        assert s.workload_identity.audiences == ["volundr-api", "mimir"]
+
+    def test_legacy_env_overrides_yaml(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("workload_identity:\n  exchange_url: http://from-yaml/exchange\n")
+        monkeypatch.setitem(SkuldSettings.model_config, "yaml_file", [config_file])
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "http://legacy/exchange")
+
+        s = SkuldSettings()
+        assert s.workload_identity.exchange_url == "http://legacy/exchange"
+
+    def test_prefixed_env_beats_legacy_env(self, monkeypatch):
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "http://legacy/exchange")
+        monkeypatch.setenv("SKULD__WORKLOAD_IDENTITY__EXCHANGE_URL", "http://prefixed/exchange")
+
+        s = SkuldSettings()
+        assert s.workload_identity.exchange_url == "http://prefixed/exchange"
+
+    def test_init_kwargs_beat_legacy_env(self, monkeypatch):
+        monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "http://legacy/exchange")
+
+        s = SkuldSettings(workload_identity={"exchange_url": "http://init/exchange"})
+        assert s.workload_identity.exchange_url == "http://init/exchange"

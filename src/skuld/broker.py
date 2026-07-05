@@ -4843,11 +4843,8 @@ class Broker:
         if self._workload_jwt and self._workload_jwt_expires_at - 30 > now:
             return
 
-        token_file = os.environ.get(
-            "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
-            "/var/run/secrets/niuu-workload/token",
-        )
-        token_path = Path(token_file)
+        workload = self._settings.workload_identity
+        token_path = Path(workload.token_file)
         if not token_path.exists():
             return
 
@@ -4855,17 +4852,10 @@ class Broker:
         if not proof:
             return
 
-        exchange_url = os.environ.get("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "").strip()
+        exchange_url = workload.exchange_url.strip()
         if not exchange_url:
             exchange_url = f"{self.volundr_api_url.rstrip('/')}/api/v1/tokens/workload/exchange"
-        audiences = [
-            part.strip()
-            for part in os.environ.get(
-                "NIUU_WORKLOAD_IDENTITY_AUDIENCES",
-                "volundr-api,forge,ting,mimir,guild",
-            ).split(",")
-            if part.strip()
-        ]
+        audiences = list(workload.audiences)
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:

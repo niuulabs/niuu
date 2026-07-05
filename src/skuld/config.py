@@ -18,7 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -400,6 +400,76 @@ class DeliveryConfig(BaseModel):
     )
 
 
+class WorkloadIdentityConfig(BaseModel):
+    """Workload identity token exchange for Volundr API authentication.
+
+    Resident/flock brokers exchange a projected service-account token for a
+    short-lived platform JWT. The config file is canonical; the legacy bare
+    ``NIUU_WORKLOAD_IDENTITY_*`` environment variables still override for
+    already-deployed charts (see ``LegacyWorkloadIdentityEnvSource``).
+    """
+
+    token_file: str = Field(
+        default="/var/run/secrets/niuu-workload/token",
+        description=(
+            "Projected workload identity token file. Token exchange is "
+            "skipped when the file does not exist (dev/local sessions)."
+        ),
+    )
+    exchange_url: str = Field(
+        default="",
+        description=(
+            "Workload token exchange endpoint. Empty derives "
+            "volundr_api_url + /api/v1/tokens/workload/exchange."
+        ),
+    )
+    audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
+        description="Target service audiences requested from the token exchange.",
+    )
+
+    @field_validator("audiences", mode="before")
+    @classmethod
+    def _coerce_comma_separated(cls, value: Any) -> Any:
+        """Accept a comma-separated string (legacy env var format) as a list."""
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+
+# Legacy bare env vars (pre config-first rule) that deployed charts still set.
+# Mapped into the workload_identity section by LegacyWorkloadIdentityEnvSource;
+# the config file is canonical, these are a compatibility override.
+_LEGACY_WORKLOAD_IDENTITY_ENV = {
+    "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE": "token_file",
+    "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL": "exchange_url",
+    "NIUU_WORKLOAD_IDENTITY_AUDIENCES": "audiences",
+}
+
+
+class LegacyWorkloadIdentityEnvSource(PydanticBaseSettingsSource):
+    """Settings source mapping bare NIUU_WORKLOAD_IDENTITY_* env vars.
+
+    The SKULD__ env prefix means pydantic-settings cannot alias un-prefixed
+    env names on nested fields, so this source feeds the legacy names into
+    ``workload_identity.*`` explicitly. It ranks below SKULD__* env vars and
+    above the YAML file (an env override of the canonical config).
+    """
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        return None, "", False
+
+    def __call__(self) -> dict[str, Any]:
+        section: dict[str, Any] = {}
+        for env_name, key in _LEGACY_WORKLOAD_IDENTITY_ENV.items():
+            raw = os.environ.get(env_name, "").strip()
+            if raw:
+                section[key] = raw
+        if not section:
+            return {}
+        return {"workload_identity": section}
+
+
 class ArchiveStoreConfig(BaseModel):
     """Dynamic archive store adapter configuration."""
 
@@ -491,6 +561,7 @@ class SkuldSettings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
@@ -589,12 +660,14 @@ class SkuldSettings(BaseSettings):
         Order (first wins):
         1. init_settings - explicit constructor arguments
         2. env_settings - SKULD__* environment variables
-        3. yaml - YAML config file
-        4. file_secret_settings - /run/secrets files
+        3. legacy workload-identity env vars (NIUU_WORKLOAD_IDENTITY_*)
+        4. yaml - YAML config file
+        5. file_secret_settings - /run/secrets files
         """
         return (
             init_settings,
             env_settings,
+            LegacyWorkloadIdentityEnvSource(settings_cls),
             YamlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )

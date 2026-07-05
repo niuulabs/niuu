@@ -39,6 +39,16 @@ data:
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
+    {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
+
+    # Workload identity token exchange (config-first; replaces the legacy
+    # NIUU_WORKLOAD_IDENTITY_* env vars on the broker container).
+    workload_identity:
+      token_file: "/var/run/secrets/niuu-workload/token"
+      {{- if .Values.volundr.apiUrl }}
+      exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
+      {{- end }}
+    {{- end }}
     {{- if include "skuld.residentEnabled" . }}
     {{- $persona := include "skuld.residentPersona" . }}
     {{- $routeId := include "skuld.routeId" . }}

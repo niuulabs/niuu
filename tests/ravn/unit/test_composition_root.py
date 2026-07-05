@@ -1081,3 +1081,74 @@ class TestBuildMimir:
         assert result._write_routing.resolve("self/notes.md") == ["local"]
         assert result._write_routing.resolve("project/arch.md") == ["hosted"]
         assert result._write_routing.resolve("other/page.md") == ["local"]
+
+
+class TestBuildMimirAuthWorkloadDefaults:
+    """Workload Mímir auth threads gateway.platform config (config-first rule)."""
+
+    def test_workload_auth_falls_back_to_platform_config(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_token_file = "/var/run/secrets/niuu-workload/token"
+        settings.gateway.platform.workload_exchange_url = "http://volundr.svc/exchange"
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        assert auth.type == "workload"
+        assert auth.token_file == "/var/run/secrets/niuu-workload/token"
+        assert auth.exchange_url == "http://volundr.svc/exchange"
+
+    def test_workload_auth_derives_exchange_url_from_platform_base_url(
+        self, settings: Settings
+    ) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.base_url = "http://volundr.svc/"
+        settings.gateway.platform.workload_exchange_url = ""
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        assert auth.exchange_url == "http://volundr.svc/api/v1/tokens/workload/exchange"
+
+    def test_workload_auth_explicit_instance_values_win(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_token_file = "/platform/token"
+        settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
+
+        auth = _build_mimir_auth(
+            settings,
+            MimirAuthConfig(
+                type="workload",
+                token_file="/instance/token",
+                exchange_url="http://instance/exchange",
+            ),
+        )
+        assert auth.token_file == "/instance/token"
+        assert auth.exchange_url == "http://instance/exchange"
+
+    def test_workload_auth_platform_disabled_keeps_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = False
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        # None means the HTTP adapter keeps its legacy env-var fallback.
+        assert auth.token_file is None
+        assert auth.exchange_url is None
+
+    def test_bearer_auth_is_not_threaded(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="bearer", token="tok"))
+        assert auth.type == "bearer"
+        assert auth.token == "tok"
+        assert auth.exchange_url is None

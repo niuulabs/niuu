@@ -384,6 +384,72 @@ class TestHelpersTemplate:
         assert 'define "skuld.labels"' in helpers_tpl
 
 
+class TestResidentWorkloadIdentityConfigFirst:
+    """Workload identity is rendered into config files, not env vars."""
+
+    RESIDENT_VALUES = {
+        "resident": {
+            "enabled": True,
+            "name": "Muninn",
+            "persona": "product-steward",
+            "routeId": "muninn",
+            "platform": {
+                "enabled": True,
+                "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+            },
+        },
+        "volundr": {"apiUrl": "https://volundr.example"},
+    }
+
+    @pytest.fixture
+    def rendered(self, tmp_path) -> str:
+        return _render_skuld_chart(tmp_path, dict(self.RESIDENT_VALUES))
+
+    def _configmaps(self, rendered: str) -> dict[str, dict]:
+        return {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"
+        }
+
+    def test_broker_config_carries_workload_identity_section(self, rendered):
+        configmaps = self._configmaps(rendered)
+        broker_cfg = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in configmaps.values()
+            if "config.yaml" in cm.get("data", {})
+            and "transport_adapter" in cm["data"]["config.yaml"]
+        )
+        workload = broker_cfg["workload_identity"]
+        assert workload["token_file"] == "/var/run/secrets/niuu-workload/token"
+        assert workload["exchange_url"] == (
+            "https://volundr.example/api/v1/tokens/workload/exchange"
+        )
+
+    def test_pod_has_no_workload_identity_env_vars(self, rendered):
+        deployment = _deployment_from_rendered(rendered)
+        for container in deployment["spec"]["template"]["spec"]["containers"]:
+            env_names = {entry["name"] for entry in container.get("env", [])}
+            offending = {n for n in env_names if n.startswith("NIUU_WORKLOAD_IDENTITY")}
+            assert not offending, f"{container['name']} still injects {offending}"
+
+    def test_ravn_config_carries_platform_workload_fields(self, rendered):
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+        platform = ravn_cfg["gateway"]["platform"]
+        assert platform["enabled"] is True
+        assert platform["workload_token_file"] == "/var/run/secrets/niuu-workload/token"
+        assert platform["workload_exchange_url"] == (
+            "https://volundr.example/api/v1/tokens/workload/exchange"
+        )
+
+    def test_default_render_has_no_workload_identity_config(self, tmp_path):
+        rendered = _render_skuld_chart(tmp_path, {})
+        assert "workload_identity" not in rendered
+        assert "NIUU_WORKLOAD_IDENTITY" not in rendered
+
+
 def _render_skuld_chart(tmp_path: Path, values: dict) -> str:
     helm = shutil.which("helm")
     if not helm:

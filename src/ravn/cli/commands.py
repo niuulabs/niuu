@@ -959,6 +959,46 @@ def _resolve_mimir_auth_token(auth_config: Any) -> str | None:
     return None
 
 
+def _mimir_workload_platform_defaults(settings: Settings) -> tuple[str | None, str | None]:
+    """Workload-auth fallbacks for Mímir instances from ``gateway.platform``.
+
+    Config-first (``.claude/rules/config-first.md``): when a Mímir instance
+    uses ``type: workload`` auth without an explicit ``token_file`` /
+    ``exchange_url``, the values configured for the platform tools are the
+    canonical source. Returns ``(token_file, exchange_url)`` — either may be
+    ``None`` when the platform section is disabled or empty, in which case
+    the HTTP adapter keeps its legacy env-var fallback for compatibility.
+    """
+    platform = settings.gateway.platform
+    if not platform.enabled:
+        return None, None
+    token_file = platform.workload_token_file or None
+    exchange_url = platform.workload_exchange_url or None
+    if not exchange_url and platform.base_url:
+        exchange_url = f"{platform.base_url.rstrip('/')}/api/v1/tokens/workload/exchange"
+    return token_file, exchange_url
+
+
+def _build_mimir_auth(settings: Settings, auth_config: Any) -> Any:
+    """Build a MimirAuth domain object from a MimirAuthConfig section."""
+    from ravn.domain.mimir import MimirAuth
+
+    token_file = auth_config.token_file
+    exchange_url = auth_config.exchange_url
+    if auth_config.type == "workload":
+        fallback_token_file, fallback_exchange_url = _mimir_workload_platform_defaults(settings)
+        token_file = token_file or fallback_token_file
+        exchange_url = exchange_url or fallback_exchange_url
+    return MimirAuth(
+        type=auth_config.type,
+        token=_resolve_mimir_auth_token(auth_config) if auth_config.type == "bearer" else None,
+        token_file=token_file,
+        exchange_url=exchange_url,
+        audiences=tuple(auth_config.audiences),
+        trust_domain=auth_config.trust_domain,
+    )
+
+
 def _build_mimir(settings: Settings) -> Any:
     """Build the Mímir adapter from config, or None if disabled."""
     if not settings.mimir.enabled:
@@ -968,7 +1008,7 @@ def _build_mimir(settings: Settings) -> Any:
         from mimir.adapters.markdown import MarkdownMimirAdapter
         from ravn.adapters.mimir.composite import CompositeMimirAdapter
         from ravn.adapters.mimir.http import HttpMimirAdapter
-        from ravn.domain.mimir import MimirAuth, MimirMount, WriteRouting
+        from ravn.domain.mimir import MimirMount, WriteRouting
 
         mounts: list[Any] = []
         for inst in settings.mimir.instances:
@@ -977,16 +1017,7 @@ def _build_mimir(settings: Settings) -> Any:
             elif inst.url:
                 auth = None
                 if inst.auth is not None:
-                    auth = MimirAuth(
-                        type=inst.auth.type,
-                        token=_resolve_mimir_auth_token(inst.auth)
-                        if inst.auth.type == "bearer"
-                        else None,
-                        token_file=inst.auth.token_file,
-                        exchange_url=inst.auth.exchange_url,
-                        audiences=tuple(inst.auth.audiences),
-                        trust_domain=inst.auth.trust_domain,
-                    )
+                    auth = _build_mimir_auth(settings, inst.auth)
                 port = HttpMimirAdapter(base_url=inst.url, auth=auth)
             else:
                 logger.warning("Mímir instance %r has neither path nor url — skipping", inst.name)
@@ -5344,20 +5375,10 @@ def _build_single_mimir(settings: Settings, name: str) -> Any:
             return MarkdownMimirAdapter(root=inst.path)
         if inst.url:
             from ravn.adapters.mimir.http import HttpMimirAdapter
-            from ravn.domain.mimir import MimirAuth
 
             auth = None
             if inst.auth is not None:
-                auth = MimirAuth(
-                    type=inst.auth.type,
-                    token=_resolve_mimir_auth_token(inst.auth)
-                    if inst.auth.type == "bearer"
-                    else None,
-                    token_file=inst.auth.token_file,
-                    exchange_url=inst.auth.exchange_url,
-                    audiences=tuple(inst.auth.audiences),
-                    trust_domain=inst.auth.trust_domain,
-                )
+                auth = _build_mimir_auth(settings, inst.auth)
             return HttpMimirAdapter(base_url=inst.url, auth=auth)
 
     # No instances configured — accept "local" as alias for the single path adapter

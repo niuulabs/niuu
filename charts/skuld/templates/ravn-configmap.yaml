@@ -67,6 +67,12 @@ data:
       platform:
         enabled: true
         base_url: {{ required "resident.platform.baseUrl is required when resident.platform.enabled=true" .Values.resident.platform.baseUrl | quote }}
+        # Workload identity (config-first; replaces the legacy
+        # NIUU_WORKLOAD_IDENTITY_* env vars on the ravn container).
+        workload_token_file: "/var/run/secrets/niuu-workload/token"
+        {{- if .Values.volundr.apiUrl }}
+        workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
+        {{- end }}
       {{- end }}
     initiative:
       enabled: true

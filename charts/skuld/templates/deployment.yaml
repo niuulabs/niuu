@@ -347,10 +347,6 @@ spec:
             - name: SKULD__SESSION__INITIAL_PROMPT
               value: {{ .Values.session.initialPrompt | quote }}
             {{- end }}
-            {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled .Values.volundr.apiUrl }}
-            - name: NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL
-              value: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
-            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -412,14 +408,6 @@ spec:
               value: /workspace
             - name: RAVN_STATE_DIR
               value: /workspace/.ravn
-            {{- if .Values.resident.platform.enabled }}
-            - name: NIUU_WORKLOAD_IDENTITY_TOKEN_FILE
-              value: /var/run/secrets/niuu-workload/token
-            {{- if .Values.volundr.apiUrl }}
-            - name: NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL
-              value: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
-            {{- end }}
-            {{- end }}
           ports:
             - name: ravn-pub
               containerPort: 7482

@@ -5550,3 +5550,96 @@ class TestBrokerRoomBridge:
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
         mock_bridge.unregister.assert_awaited_once_with("agent-1")
+
+
+class TestWorkloadTokenRefresh:
+    """_refresh_workload_token reads settings.workload_identity (config-first)."""
+
+    def _broker(self, tmp_path, **workload_identity) -> Broker:
+        settings = SkuldSettings(
+            transport="subprocess",
+            session={"id": "wl-1", "workspace_dir": str(tmp_path)},
+            volundr_api_url="http://volundr.svc",
+            workload_identity=workload_identity,
+        )
+        return Broker(settings=settings)
+
+    @pytest.mark.asyncio
+    async def test_refresh_uses_configured_token_file_and_exchange_url(self, tmp_path):
+        token_file = tmp_path / "proof"
+        token_file.write_text("proof-jwt", encoding="utf-8")
+        b = self._broker(
+            tmp_path,
+            token_file=str(token_file),
+            exchange_url="http://cfg-exchange/exchange",
+            audiences=["volundr-api", "mimir"],
+        )
+        captured: dict = {}
+
+        class _FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"token": "workload-jwt", "expires_at": time.time() + 300}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, json=None):
+                captured["url"] = url
+                captured["body"] = json
+                return _FakeResponse()
+
+        with patch("skuld.broker.httpx.AsyncClient", _FakeClient):
+            await b._refresh_workload_token()
+
+        assert captured["url"] == "http://cfg-exchange/exchange"
+        assert captured["body"] == {"token": "proof-jwt", "audiences": ["volundr-api", "mimir"]}
+        assert b._workload_jwt == "workload-jwt"
+
+    @pytest.mark.asyncio
+    async def test_refresh_derives_exchange_url_from_volundr_api_url(self, tmp_path):
+        token_file = tmp_path / "proof"
+        token_file.write_text("proof-jwt", encoding="utf-8")
+        b = self._broker(tmp_path, token_file=str(token_file), exchange_url="")
+        captured: dict = {}
+
+        class _FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"token": "workload-jwt", "expires_at": time.time() + 300}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, json=None):
+                captured["url"] = url
+                return _FakeResponse()
+
+        with patch("skuld.broker.httpx.AsyncClient", _FakeClient):
+            await b._refresh_workload_token()
+
+        assert captured["url"] == "http://volundr.svc/api/v1/tokens/workload/exchange"
+
+    @pytest.mark.asyncio
+    async def test_refresh_skipped_when_token_file_missing(self, tmp_path):
+        b = self._broker(tmp_path, token_file=str(tmp_path / "does-not-exist"))
+        await b._refresh_workload_token()
+        assert b._workload_jwt is None or b._workload_jwt == ""
