@@ -32,6 +32,18 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def flock_peer_id(persona: str) -> str:
+    """Mesh peer id for a flock/resident ravn running *persona*.
+
+    The single source of truth for this naming convention: the flock pod
+    builder, the resident contributor's ``default_target_peer_id``, the
+    Skuld relay's routing target, and ``Session.resident`` must all agree, or
+    operator chat and event relay silently target a participant that never
+    registered. Keep every derivation routed through here.
+    """
+    return f"flock-{persona}"
+
+
 class UserStatus(StrEnum):
     """Status of a user account."""
 
@@ -564,8 +576,8 @@ class Session(BaseModel):
         """Public resident identity, or None for non-resident sessions.
 
         The ONLY slice of ``workload_config`` safe to expose — the raw config
-        may carry auth references. Peer id derivation must match the flock
-        naming convention used by the resident contributor.
+        may carry auth references. Peer id derivation goes through
+        ``flock_peer_id`` so it can never drift from the contributor.
         """
         if self.workload_type != "resident":
             return None
@@ -573,7 +585,7 @@ class Session(BaseModel):
         if not persona:
             return None
         name = str(self.workload_config.get("resident_name") or persona).strip()
-        return {"name": name, "persona": persona, "peer_id": f"flock-{persona}"}
+        return {"name": name, "persona": persona, "peer_id": flock_peer_id(persona)}
 
     @property
     def repo(self) -> str:

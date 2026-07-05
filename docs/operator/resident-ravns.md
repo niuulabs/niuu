@@ -83,7 +83,7 @@ The `product-steward` persona ships with the full chain:
 
 | Tool | Purpose |
 |---|---|
-| `ting_workflow` | Launch Research Campaign / Specification Stack (supports `provenance` and `gate_auto_forward_after`; pass `""` to make gates wait for you) |
+| `ting_workflow` | Launch Research Campaign / Specification Stack (supports `provenance` and `gate_auto_forward_after`; pass `""` to make gates wait for you — encoded as a very long duration so the downstream default never re-enables auto-forward) |
 | `ting_spec` | Follow spec campaigns; approve / request changes on PRD/SRD/SDD gates |
 | `ting_plan` | Spawn planning from an approved spec, read the draft breakdown, approve gates |
 | `ting_saga` | `commit` the approved breakdown into tracker tickets; `dispatch` runs |

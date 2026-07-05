@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MESH_PREFIX = "ravn.mesh."
-_PAYLOAD_PREVIEW_LIMIT = 2000
+_DEFAULT_PAYLOAD_PREVIEW_CHARS = 2000
 
 DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]
 NotificationSend = Callable[[dict[str, Any]], Awaitable[None]]
@@ -62,11 +62,14 @@ def _matches_subscription(event_type: str, subscribes_to: tuple[str, ...] | list
     return False
 
 
-def _render_event_message(event: SleipnirEvent) -> str:
+def _render_event_message(
+    event: SleipnirEvent,
+    payload_preview_chars: int = _DEFAULT_PAYLOAD_PREVIEW_CHARS,
+) -> str:
     """Render a platform event as the resident's wake-up instruction."""
     payload_json = json.dumps(event.payload or {}, sort_keys=True, default=str)
-    if len(payload_json) > _PAYLOAD_PREVIEW_LIMIT:
-        payload_json = payload_json[:_PAYLOAD_PREVIEW_LIMIT] + "…(truncated)"
+    if len(payload_json) > payload_preview_chars:
+        payload_json = payload_json[:payload_preview_chars] + "…(truncated)"
     parts = [
         f"Platform event received: {event.event_type}",
     ]
@@ -97,6 +100,7 @@ class ResidentRelay:
         patterns: list[str],
         send_directed: DirectedSend,
         broadcast_notification: NotificationSend,
+        payload_preview_chars: int = _DEFAULT_PAYLOAD_PREVIEW_CHARS,
     ) -> None:
         self._subscriber = subscriber
         self._room_bridge = room_bridge
@@ -104,6 +108,7 @@ class ResidentRelay:
         self._patterns = list(patterns)
         self._send_directed = send_directed
         self._broadcast_notification = broadcast_notification
+        self._payload_preview_chars = payload_preview_chars
         self._subscription: Subscription | None = None
 
     async def start(self) -> None:
@@ -135,6 +140,17 @@ class ResidentRelay:
         if event.event_type.startswith(_MESH_PREFIX):
             return
 
+        # Self-origin guard: the resident's own turns publish events (e.g.
+        # ravn.task.completed) that can match its own subscriptions. Without
+        # this, a resident subscribed to a broad pattern re-wakes itself on
+        # every turn — an unbounded feedback loop burning the daily budget.
+        # Check the ORIGIN (who published), never resident_peer_id (which is
+        # the deliver-to provenance target handled below).
+        payload = event.payload or {}
+        origin = f"{payload.get('ravn_source') or ''} {event.source or ''}"
+        if self._resident_peer_id and self._resident_peer_id in origin:
+            return
+
         participant = self._room_bridge.participants.get(self._resident_peer_id)
         if participant is None:
             logger.warning(
@@ -147,7 +163,7 @@ class ResidentRelay:
         if not _matches_subscription(event.event_type, participant.subscribes_to):
             return
 
-        provenance_peer = str((event.payload or {}).get("resident_peer_id") or "").strip()
+        provenance_peer = str(payload.get("resident_peer_id") or "").strip()
         if provenance_peer and provenance_peer != self._resident_peer_id:
             return
 
@@ -179,7 +195,7 @@ class ResidentRelay:
         try:
             await self._send_directed(
                 self._resident_peer_id,
-                _render_event_message(event),
+                _render_event_message(event, self._payload_preview_chars),
                 metadata,
             )
         except LookupError:

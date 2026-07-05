@@ -141,6 +141,28 @@ class TestRelayDelivery:
         await subscriber.handler(_event("research.completed", {"resident_peer_id": _RESIDENT}))
         send_directed.assert_awaited_once()
 
+    async def test_self_origin_via_ravn_source_ignored(self):
+        # An event the resident itself published must not re-wake it.
+        relay, subscriber, _room, send_directed, _notify = _relay(subscribes_to=("research.*",))
+        await relay.start()
+        await subscriber.handler(_event("research.completed", {"ravn_source": f"ravn:{_RESIDENT}"}))
+        send_directed.assert_not_awaited()
+
+    async def test_self_origin_via_event_source_ignored(self):
+        relay, subscriber, _room, send_directed, _notify = _relay(subscribes_to=("research.*",))
+        await relay.start()
+        ev = SleipnirEvent(
+            event_type="research.completed",
+            source=_RESIDENT,
+            summary="",
+            payload={},
+            urgency=0.5,
+            domain="code",
+            timestamp=datetime.now(UTC),
+        )
+        await subscriber.handler(ev)
+        send_directed.assert_not_awaited()
+
     async def test_resident_absent_drops_quietly(self):
         relay, subscriber, room, send_directed, notify = _relay()
         room.participants = {}

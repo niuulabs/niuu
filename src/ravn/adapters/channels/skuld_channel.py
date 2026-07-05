@@ -159,7 +159,13 @@ class SkuldChannel(ChannelPort):
         while True:
             ws = self._ws
             if ws is None or ws.state == WsState.CLOSED:
+                # Receive-only channels (a resident's session_join memberships)
+                # never call _send, so without an active re-dial here a dropped
+                # connection would silently stop delivering directed messages
+                # forever. Re-establish it (connect re-sends the register frame).
                 await asyncio.sleep(self._reconnect_delay)
+                with suppress(Exception):
+                    await self.connect()
                 continue
             try:
                 raw = await ws.recv()

@@ -242,9 +242,8 @@ def build_session_join_manager(settings: Any) -> SessionJoinManager:
         persona=persona,
         display_name=display_name,
         auth_token_provider=_build_token_provider(settings),
-        reconnect_delay=settings.skuld.reconnect_delay
-        if hasattr(settings.skuld, "reconnect_delay")
-        else 2.0,
+        reconnect_delay=settings.skuld.reconnect_delay_seconds,
+        max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
     )
 
 

@@ -276,13 +276,24 @@ class ResidentRelayConfig(BaseModel):
             "plan.*",
             "delivery.*",
             "ravn.task.*",
-            "volundr.session.*",
-            "volundr.chronicle.*",
         ],
         description=(
             "Sleipnir event-type patterns the relay subscribes to. Events "
             "are still filtered by the resident's subscribes_to declaration "
-            "before delivery — patterns just bound the subscription."
+            "before delivery — patterns just bound the subscription. These "
+            "are initiative-scoped workflow events; platform-wide firehoses "
+            "(volundr.session.*, volundr.chronicle.*) are intentionally "
+            "excluded because they carry no resident/initiative provenance "
+            "and would wake every resident on every user's activity."
+        ),
+    )
+    payload_preview_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Max characters of the event payload embedded in the resident's "
+            "wake-up message; longer payloads are truncated. Raise it for "
+            "workflows whose events carry large artifact manifests."
         ),
     )
 

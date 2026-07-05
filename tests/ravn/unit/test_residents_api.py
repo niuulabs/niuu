@@ -150,3 +150,26 @@ class TestGetRaven:
         respx.get(f"{_BASE}/api/v1/forge/sessions/nope").mock(return_value=httpx.Response(404))
         directory = ResidentDirectory(base_url=_BASE)
         assert await directory.get_raven("nope", {}, {}) is None
+
+    @respx.mock
+    async def test_get_non_uuid_returns_none(self):
+        # Volundr types the path param as UUID → 422 for a junk id; must be a
+        # clean None, not a 500.
+        respx.get(f"{_BASE}/api/v1/forge/sessions/not-a-uuid").mock(
+            return_value=httpx.Response(422)
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_raven("not-a-uuid", {}, {}) is None
+
+    @respx.mock
+    async def test_get_forbidden_returns_none(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/other").mock(return_value=httpx.Response(403))
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_raven("other", {}, {}) is None
+
+    @respx.mock
+    async def test_get_server_error_propagates(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/boom").mock(return_value=httpx.Response(500))
+        directory = ResidentDirectory(base_url=_BASE)
+        with pytest.raises(httpx.HTTPStatusError):
+            await directory.get_raven("boom", {}, {})

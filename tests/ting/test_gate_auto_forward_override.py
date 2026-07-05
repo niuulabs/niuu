@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from ting.api.workflows import WorkflowLaunchBody, _apply_gate_auto_forward_override
+from ting.api.workflows import (
+    _GATE_NEVER_AUTO_FORWARD,
+    WorkflowLaunchBody,
+    _apply_gate_auto_forward_override,
+)
 
 
 def _snapshot() -> dict:
@@ -26,10 +30,13 @@ class TestGateAutoForwardOverride:
         gates = [n for n in patched["graph"]["nodes"] if n["kind"] == "gate"]
         assert all(g["autoForwardAfter"] == "24h" for g in gates)
 
-    def test_empty_value_disables_auto_forward(self):
+    def test_empty_value_sets_never_sentinel_not_pop(self):
+        # Popping the key would let the Skuld consumer fall back to its 30m
+        # default — the opposite of "disable". Empty => a huge sentinel so
+        # "never auto-forward" actually holds downstream.
         patched = _apply_gate_auto_forward_override(_snapshot(), "")
         gates = [n for n in patched["graph"]["nodes"] if n["kind"] == "gate"]
-        assert all("autoForwardAfter" not in g for g in gates)
+        assert all(g["autoForwardAfter"] == _GATE_NEVER_AUTO_FORWARD for g in gates)
 
     def test_non_gate_nodes_untouched(self):
         patched = _apply_gate_auto_forward_override(_snapshot(), "24h")

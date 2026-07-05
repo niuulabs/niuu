@@ -791,6 +791,18 @@ class SessionService:
         # (e.g. Grok ACP) instead of falling back to the platform default.
         definition = definition or session.session_definition
 
+        # Restart parity for workload identity: the REST start endpoint calls us
+        # with the DEFAULT workload_type ("session") and no config, so a naive
+        # copy would demote a resident (or any special workload) to a plain CLI
+        # session on every restart — vanishing from the fleet and losing its
+        # liveness exemption. Fall back to the stored values whenever the caller
+        # did not explicitly override them, and thread them through provisioning
+        # so the contributor pipeline re-applies the resident spec.
+        if workload_type == "session" and session.workload_type != "session":
+            workload_type = session.workload_type
+        if not workload_config and session.workload_config:
+            workload_config = dict(session.workload_config)
+
         # Set chat_endpoint eagerly — URL is deterministic from session ID
         host = _public_loopback_host()
         port = os.environ.get("NIUU_SERVER_PORT", "8080")
@@ -810,9 +822,8 @@ class SessionService:
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
                 # Persist the workload config so workload identity (e.g. a
-                # resident's name/persona) survives restarts; keep the stored
-                # config when a restart doesn't resend it.
-                "workload_config": workload_config or session.workload_config or {},
+                # resident's name/persona) survives restarts.
+                "workload_config": workload_config or {},
             }
         )
         await self._repository.update(starting)

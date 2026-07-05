@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from types import SimpleNamespace
 
 from niuu.app import SkuldPortRegistry, _proxy_ws_identity
@@ -12,6 +14,11 @@ def _ws(headers: dict | None = None, query: dict | None = None):
         headers=(headers or {}),
         query_params=(query or {}),
     )
+
+
+def _jwt(claims: dict) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJub25lIn0.{payload}.sig"
 
 
 class TestProxyWsIdentity:
@@ -48,6 +55,39 @@ class TestProxyWsIdentity:
         assert user is None
         assert tenant is None
         assert roles == ()
+
+    def test_bearer_access_token_query_param(self):
+        # web-next getWebSocketAuth appends ?access_token=<jwt> in token-auth
+        # deployments — the owner must resolve, not be locked out.
+        token = _jwt({"sub": "carol", "tenant": "t3", "roles": ["volundr:developer"]})
+        user, tenant, roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        assert user == "carol"
+        assert tenant == "t3"
+        assert roles == ("volundr:developer",)
+
+    def test_bearer_authorization_header(self):
+        token = _jwt({"sub": "dave"})
+        user, _tenant, _roles = _proxy_ws_identity(
+            _ws(headers={"authorization": f"Bearer {token}"})
+        )
+        assert user == "dave"
+
+    def test_bearer_subprotocol(self):
+        token = _jwt({"sub": "erin"})
+        user, _tenant, _roles = _proxy_ws_identity(
+            _ws(headers={"sec-websocket-protocol": f"volundr.bearer.{token}"})
+        )
+        assert user == "erin"
+
+    def test_bearer_keycloak_realm_roles(self):
+        token = _jwt({"sub": "frank", "realm_access": {"roles": ["volundr:admin"]}})
+        _user, _tenant, roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        assert roles == ("volundr:admin",)
+
+    def test_bearer_without_sub_is_no_identity(self):
+        token = _jwt({"name": "nobody"})
+        user, _tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        assert user is None
 
 
 class TestMayAttach:

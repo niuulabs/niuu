@@ -604,6 +604,37 @@ class TestSessionServiceStart:
         assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
+    async def test_restart_preserves_resident_workload_identity(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        """Restart must not demote a resident to a plain CLI session.
+
+        The REST start endpoint calls start_session with the default
+        workload_type ('session') and no config; the stored resident identity
+        must survive so the session keeps its raven and liveness exemption.
+        """
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(name="muninn", model="claude-opus-4-8")
+        # Simulate a committed resident session in the store.
+        resident = created.model_copy(
+            update={
+                "workload_type": "resident",
+                "workload_config": {"persona": "product-steward", "resident_name": "Muninn"},
+                "status": SessionStatus.STOPPED,
+            }
+        )
+        await repository.update(resident)
+
+        result = await service.start_session(resident.id)
+
+        assert result.workload_type == "resident"
+        assert result.workload_config["persona"] == "product-steward"
+        assert result.resident == {
+            "name": "Muninn",
+            "persona": "product-steward",
+            "peer_id": "flock-product-steward",
+        }
+
     async def test_start_session_prefers_public_host_for_browser_endpoints(
         self,
         repository: Repo,

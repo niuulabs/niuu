@@ -256,7 +256,15 @@ def create_app(
     async def settings_endpoint(request: Request) -> SettingsProviderSchema:
         sessions = list_runtime_sessions()
         auth_headers, auth_params = forward_auth(request)
-        ravens = await resident_directory.list_ravens(auth_headers, auth_params)
+        # The aggregated settings page must not hard-depend on Volundr being
+        # reachable — a Forge outage should degrade the fleet-member count to
+        # 0, not 500 the whole settings section (sessions/triggers/budget are
+        # all locally available).
+        try:
+            ravens = await resident_directory.list_ravens(auth_headers, auth_params)
+        except Exception:
+            logger.warning("settings: resident discovery failed, reporting 0", exc_info=True)
+            ravens = []
         triggers = list_runtime_triggers()
         fleet_budget = get_runtime_fleet_budget()
         return SettingsProviderSchema(
@@ -641,13 +649,17 @@ def create_app(
 
     @app.get("/api/v1/ravn/budget/{ravn_id}")
     async def budget(ravn_id: str) -> dict:
-        """Return budget state for one ravn."""
+        """Return budget state for one ravn.
+
+        Per-resident budget accounting is not yet wired to the residents
+        surfaced by the fleet (that lands with the resident spend tracker);
+        an unknown id therefore returns a neutral zero-state rather than a
+        404, so the fleet UI renders a real (empty) budget instead of an
+        error for every live resident.
+        """
         budget_state = get_runtime_budget(ravn_id)
         if budget_state is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Budget not found",
-            )
+            return {"spent_usd": 0.0, "cap_usd": 0.0, "warn_at": 0.0}
         return budget_state
 
     if persona_loader is not None:

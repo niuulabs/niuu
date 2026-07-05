@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
 import logging
 import os
+import urllib.parse
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
@@ -178,13 +180,41 @@ class SkuldPortRegistry:
 _skuld_registry: SkuldPortRegistry | None = None
 
 
+def _decode_jwt_claims(token: str) -> dict:
+    """Decode a JWT payload without verifying the signature (Envoy's job)."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        return {}
+
+
+def _bearer_token_from_ws(websocket: WebSocket) -> str:
+    """Extract a bearer token from a WS: Authorization, subprotocol, or query."""
+    headers = {k.lower(): v for k, v in websocket.headers.items()}
+    auth = headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    for proto in headers.get("sec-websocket-protocol", "").split(","):
+        proto = proto.strip()
+        if proto.startswith("volundr.bearer."):
+            return urllib.parse.unquote(proto.removeprefix("volundr.bearer.").strip())
+    return str(websocket.query_params.get("access_token") or "").strip()
+
+
 def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tuple[str, ...]]:
     """Resolve caller identity from a browser WebSocket for the proxy guard.
 
-    Mirrors Volundr's ``extract_principal`` resolution order: Envoy
-    ``x-auth-*`` headers first, then developer query parameters. Returns
-    ``(user_id, tenant_id, roles)``; user_id is None when no identity is
-    present (the guard decides whether that is allowed).
+    Mirrors Volundr's ``extract_principal`` / the broker's WS identity
+    resolution: Envoy ``x-auth-*`` headers first, then developer query
+    parameters, then a bearer token (``Authorization``, the
+    ``volundr.bearer.<jwt>`` subprotocol, or ``?access_token=``) decoded for
+    its ``sub``/tenant/roles claims. Returns ``(user_id, tenant_id, roles)``;
+    user_id is None when no identity is present (the guard decides whether
+    that is allowed).
     """
     headers = {k.lower(): v for k, v in websocket.headers.items()}
 
@@ -207,6 +237,26 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
             str(params.get("devTenantId") or "").strip() or None,
             _roles(str(params.get("devRoles") or "volundr:developer")),
         )
+
+    token = _bearer_token_from_ws(websocket)
+    if token:
+        claims = _decode_jwt_claims(token)
+        sub = str(claims.get("sub") or "").strip()
+        if sub:
+            roles_claim = claims.get("roles")
+            if isinstance(roles_claim, list):
+                roles = tuple(str(r) for r in roles_claim)
+            elif isinstance(roles_claim, str):
+                roles = _roles(roles_claim)
+            else:
+                realm = claims.get("realm_access")
+                roles = (
+                    tuple(str(r) for r in realm["roles"])
+                    if isinstance(realm, dict) and isinstance(realm.get("roles"), list)
+                    else ()
+                )
+            tenant = str(claims.get("tenant") or claims.get("tenant_id") or "").strip() or None
+            return (sub, tenant, roles)
 
     return (None, None, ())
 
@@ -324,6 +374,7 @@ HOST_PROFILES: dict[str, frozenset[str]] = {
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
         "/s/{session_id}/session",
+        "/s/{session_id}/ws/ravn/{peer_id}",
         "/s/{session_id}/api/{path:path}",
         "/s/{session_id}/health",
     ),
@@ -858,6 +909,82 @@ def build_root_app(
                     with suppress(Exception):
                         await websocket.close(code=4410, reason="Session is no longer running")
                     return
+                with suppress(Exception):
+                    await websocket.close()
+
+        @root.websocket("/s/{session_id}/ws/ravn/{peer_id}")
+        async def skuld_ravn_ws_proxy(
+            websocket: WebSocket,  # noqa: F811
+            session_id: str,
+            peer_id: str,
+        ) -> None:
+            """Proxy a ravn participant WebSocket to the session's broker.
+
+            This is how a resident joins ANOTHER session's room through the
+            gateway (session_join): the browser-facing chat endpoint is
+            proxied at ``/s/{id}/session``, and the sibling ravn endpoint must
+            be proxied too, or cross-session joins only work in strip-prefix
+            k8s ingress and fail in mini/gateway mode. Same ownership guard —
+            a resident can only join sessions its (owner's) identity permits.
+            """
+            user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+            if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
+                await websocket.close(code=1008, reason="Not authorized for this session")
+                return
+
+            port = skuld_reg.get_port(session_id)
+            if port is None:
+                await skuld_reg.reconcile_dead(session_id)
+                await websocket.close(code=4410, reason="Session is no longer running")
+                return
+
+            await websocket.accept()
+            import websockets.asyncio.client as ws_client
+
+            try:
+                async with ws_client.connect(
+                    f"ws://127.0.0.1:{port}/ws/ravn/{peer_id}",
+                    max_size=2**26,
+                    additional_headers={
+                        k.decode(): v.decode()
+                        for k, v in websocket.headers.raw
+                        if k.decode().lower()
+                        in (
+                            "authorization",
+                            "x-auth-user-id",
+                            "x-auth-email",
+                            "x-auth-tenant",
+                            "x-auth-roles",
+                        )
+                    },
+                ) as broker_ws:
+
+                    async def ravn_to_broker() -> None:
+                        with suppress(Exception):
+                            async for msg in websocket.iter_text():
+                                await broker_ws.send(msg)
+
+                    async def broker_to_ravn() -> None:
+                        with suppress(Exception):
+                            async for msg in broker_ws:
+                                await websocket.send_text(str(msg))
+
+                    _done, pending = await asyncio.wait(
+                        [
+                            asyncio.create_task(ravn_to_broker()),
+                            asyncio.create_task(broker_to_ravn()),
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+            except Exception:
+                logger.debug(
+                    "Ravn WS proxy ended for session %s peer %s",
+                    _sanitize_log(session_id),
+                    _sanitize_log(peer_id),
+                )
+            finally:
                 with suppress(Exception):
                     await websocket.close()
 

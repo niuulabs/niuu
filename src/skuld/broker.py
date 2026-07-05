@@ -1584,6 +1584,9 @@ class Broker:
                             patterns=self._settings.resident_relay.event_patterns,
                             send_directed=_relay_directed,
                             broadcast_notification=self._emit_broker_frame,
+                            payload_preview_chars=(
+                                self._settings.resident_relay.payload_preview_chars
+                            ),
                         )
                         await self._resident_relay.start()
 
@@ -1937,7 +1940,15 @@ class Broker:
         # lifespan returns promptly and uvicorn binds — otherwise the
         # transport's first turn (which can take seconds to minutes)
         # blocks the HTTP listener and the chat UI gets 502s.
-        if self._settings.session.initial_prompt:
+        if self._is_room_routed_session():
+            # Room-routed sessions (flock workflows and residents) have no CLI
+            # transport of their own — chat flows to mesh peers / the resident.
+            # Warming a transport here would spawn an orphan Claude subprocess
+            # alongside the resident, burning tokens and emitting competing
+            # frames. A restarted resident always has prior history, so this
+            # guard must precede the resume branch below.
+            logger.info("Room-routed session — skipping transport auto-start")
+        elif self._settings.session.initial_prompt:
             if self._has_workflow_trigger():
                 logger.info(
                     "Workflow trigger configured — holding initial prompt for mesh dispatch"
@@ -3941,13 +3952,16 @@ class Broker:
                     return
 
                 # Resident sessions: untargeted messages route to the
-                # configured default participant as directed messages.
+                # configured default participant as directed messages. Normalize
+                # structured content blocks (text + attachments) the same way
+                # the CLI transport path does — a bare str() would deliver a
+                # Python repr of the block list (base64 blobs inline).
                 default_target = self._room_default_target_peer_id()
                 if default_target:
                     try:
                         await self.handle_directed_room_message(
                             default_target,
-                            str(message),
+                            _normalize_browser_message_content(message),
                             source="browser",
                             metadata=(
                                 data.get("metadata")

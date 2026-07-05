@@ -79,6 +79,21 @@ class TestResidentRouting:
         with pytest.raises(ValueError, match="persona"):
             await c.contribute(session, _ctx({"resident_name": "Muninn"}))
 
+    async def test_malformed_budget_fails_loudly(self, session):
+        # A fat-fingered budget must not silently become uncapped spend.
+        c = ResidentContributor()
+        with pytest.raises(ValueError, match="daily_budget_usd"):
+            await c.contribute(
+                session,
+                _ctx({"persona": "product-steward", "daily_budget_usd": "$5"}),
+            )
+
+    async def test_absent_budget_is_uncapped_none(self, session):
+        c = ResidentContributor()
+        result = await c.contribute(session, _ctx({"persona": "product-steward"}))
+        # No budget key in the rendered flock values (None => uncapped).
+        assert "daily_budget_usd" not in result.values.get("flock", {})
+
 
 # ---------------------------------------------------------------------------
 # Output shape

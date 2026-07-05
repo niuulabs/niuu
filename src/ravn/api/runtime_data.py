@@ -1,77 +1,13 @@
-"""Seed runtime data for the additive Ravn HTTP API."""
+"""Seed runtime data for the additive Ravn HTTP API.
+
+Sessions/triggers/budget below are placeholder fixtures for endpoints not yet
+backed by a live store. The fleet ravens are NOT seeded here — ``/ravens`` does
+real resident discovery (see ``ravn.api.residents.ResidentDirectory``).
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
-
-_RAVENS = [
-    {
-        "id": "a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c",
-        "persona_name": "sindri",
-        "status": "active",
-        "model": "claude-4-sonnet",
-        "created_at": "2026-01-15T08:00:00Z",
-        "updated_at": "2026-01-15T08:30:00Z",
-        "location": "valaskjalf",
-        "deployment": "production",
-        "role": "build",
-        "letter": "S",
-        "summary": "Writes and edits source code across the stack.",
-        "iteration_budget": 40,
-        "write_routing": "local",
-        "cascade": "sequential",
-        "mounts": [
-            {"name": "codebase", "role": "primary"},
-            {"name": "docs", "role": "ro"},
-        ],
-        "mcp_servers": ["filesystem", "git", "bash"],
-        "gateway_channels": ["slack-dev", "github-webhook"],
-        "event_subscriptions": ["code.requested", "bug.fix.requested", "code.changed"],
-    },
-    {
-        "id": "b7e2c9d1-3a4f-4b8e-a1c6-5d7f8e9a0b2c",
-        "persona_name": "vidar",
-        "status": "active",
-        "model": "claude-4-sonnet",
-        "created_at": "2026-01-15T08:00:00Z",
-        "updated_at": "2026-01-15T08:25:00Z",
-        "location": "valhalla",
-        "deployment": "production",
-        "role": "autonomy",
-        "letter": "V",
-        "summary": "Fully autonomous general-purpose agent.",
-        "iteration_budget": 100,
-        "write_routing": "shared",
-        "cascade": "parallel",
-        "mounts": [
-            {"name": "codebase", "role": "ro"},
-            {"name": "reviews", "role": "primary"},
-        ],
-        "mcp_servers": ["filesystem", "git"],
-        "gateway_channels": ["github-pr"],
-        "event_subscriptions": ["code.changed", "review.requested", "review.completed"],
-    },
-    {
-        "id": "c4d5e6f7-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-        "persona_name": "muninn",
-        "status": "active",
-        "model": "claude-4-sonnet",
-        "created_at": "2026-01-15T08:00:00Z",
-        "updated_at": "2026-01-15T08:20:00Z",
-        "location": "valaskjalf",
-        "deployment": "production",
-        "role": "knowledge",
-        "letter": "M",
-        "summary": "Curates and indexes knowledge into Mimir.",
-        "iteration_budget": 20,
-        "write_routing": "domain",
-        "cascade": "sequential",
-        "mounts": [{"name": "codebase", "role": "ro"}],
-        "mcp_servers": ["filesystem", "mimir"],
-        "gateway_channels": [],
-        "event_subscriptions": ["code.changed", "mimir.index.requested"],
-    },
-]
 
 _SESSIONS = [
     {
@@ -187,17 +123,6 @@ _BUDGETS = {
 }
 
 _FLEET_BUDGET = {"spent_usd": 7.86, "cap_usd": 11.0, "warn_at": 0.7}
-
-
-def list_ravens() -> list[dict[str, object]]:
-    return deepcopy(_RAVENS)
-
-
-def get_raven(ravn_id: str) -> dict[str, object] | None:
-    for item in _RAVENS:
-        if item["id"] == ravn_id:
-            return deepcopy(item)
-    return None
 
 
 def list_sessions() -> list[dict[str, object]]:

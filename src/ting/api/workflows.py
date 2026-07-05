@@ -294,6 +294,14 @@ def _launch_response(
     )
 
 
+# A duration far longer than any session lifetime — the way to say "never
+# auto-forward" without teaching every downstream duration parser a keyword.
+# Popping the key does NOT disable auto-forward: the Skuld gate consumer falls
+# back to a "30m" default for an absent value, so an empty override would
+# silently become 30 minutes — the opposite of the intended contract.
+_GATE_NEVER_AUTO_FORWARD = "87600h"
+
+
 def _apply_gate_auto_forward_override(
     snapshot: dict[str, Any],
     value: str,
@@ -302,19 +310,18 @@ def _apply_gate_auto_forward_override(
 
     The snapshot shares the stored definition's graph object, so patching
     happens on a deep copy — a per-launch override must never mutate the
-    workflow definition. An empty *value* removes autoForwardAfter (the gate
-    waits indefinitely for the human decision).
+    workflow definition. An empty *value* means "never auto-forward" (the gate
+    waits for the human), encoded as a very large duration rather than by
+    removing the key (which the consumer would treat as its 30m default).
     """
+    effective = value or _GATE_NEVER_AUTO_FORWARD
     patched = copy.deepcopy(snapshot)
     graph = patched.get("graph")
     nodes = graph.get("nodes") if isinstance(graph, dict) else None
     for node in nodes or []:
         if not isinstance(node, dict) or node.get("kind") != "gate":
             continue
-        if value:
-            node["autoForwardAfter"] = value
-        else:
-            node.pop("autoForwardAfter", None)
+        node["autoForwardAfter"] = effective
     return patched
 
 

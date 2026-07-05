@@ -117,7 +117,10 @@ class ResidentDirectory:
                 auth_params,
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
+            # Any client-side status (404 not found, 422 non-UUID id, 401/403
+            # not permitted) means "no such resident for this caller" — a clean
+            # None, not a 500. Only server errors propagate.
+            if 400 <= exc.response.status_code < 500:
                 return None
             raise
         if (

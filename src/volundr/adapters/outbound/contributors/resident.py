@@ -42,7 +42,7 @@ from volundr.adapters.outbound.contributors.ravn_flock import (
     _normalize_mimir_workload_config,
     _normalize_personas,
 )
-from volundr.domain.models import Session
+from volundr.domain.models import Session, flock_peer_id
 from volundr.domain.ports import SessionContext, SessionContribution
 
 logger = logging.getLogger(__name__)
@@ -106,11 +106,20 @@ class ResidentContributor(RavnFlockContributor):
             sleipnir_cfg.get("publish_urls") or wc.get("sleipnir_publish_urls") or []
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        # Absent budget => uncapped by default (None). A PRESENT but malformed
+        # value must fail loudly, never silently fall through to uncapped spend
+        # on a long-lived resident (fail-loudly).
         raw_daily_budget_usd = wc.get("daily_budget_usd")
-        try:
-            daily_budget_usd = float(raw_daily_budget_usd)
-        except (TypeError, ValueError):
+        if raw_daily_budget_usd is None:
             daily_budget_usd = None
+        else:
+            try:
+                daily_budget_usd = float(raw_daily_budget_usd)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"resident workload_config.daily_budget_usd is not a number: "
+                    f"{raw_daily_budget_usd!r}"
+                ) from exc
 
         values, pod_spec = self._build_flock_spec(
             session=session,
@@ -132,7 +141,7 @@ class ResidentContributor(RavnFlockContributor):
             extra_ravn_config=self._resident_ravn_config(resident_name, wc),
         )
 
-        peer_id = f"flock-{persona_dicts[0]['name']}"
+        peer_id = flock_peer_id(persona_dicts[0]["name"])
         pod_spec = replace(
             pod_spec,
             env=(
