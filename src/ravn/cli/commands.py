@@ -2901,7 +2901,9 @@ async def _run_daemon(
             mimir_event_emitter=(
                 _emit_mimir_ingest_event if resolved_persona is not None else None
             ),
-            session_join_manager=drive_loop._session_join_manager,
+            session_join_manager=(
+                drive_loop._session_join_manager if drive_loop is not None else None
+            ),
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
