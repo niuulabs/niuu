@@ -570,6 +570,12 @@ class TestWorkflowCatalogAPI:
                 "branch": "feat/research",
                 "model": "gpt-5.5",
                 "definition": "skuldCodex",
+                "context": {
+                    "question": (
+                        "Are AI grief companions a credible product category?"
+                    ),
+                    "mode": "evaluative",
+                },
                 "provenance": {
                     "signal_id": "sig-1",
                     "valkyrie_id": "valkyrie-ymir",
@@ -601,6 +607,8 @@ class TestWorkflowCatalogAPI:
         }
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
         assert "Workflow Launch" in spawn.initial_prompt
+        assert "Launch Context" in spawn.initial_prompt
+        assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
 
     def test_launch_workflow_uses_first_available_connection(self) -> None:
         workflow = _make_research_workflow()

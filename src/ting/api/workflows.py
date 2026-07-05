@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -71,6 +72,7 @@ class WorkflowLaunchBody(BaseModel):
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
     definition: str | None = Field(default=None, max_length=255)
+    context: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
     gate_auto_forward_after: str | None = Field(
         default=None,
@@ -482,6 +484,14 @@ def _build_workflow_initiative_context(
             launch.prompt.strip(),
         ]
     )
+    if launch.context:
+        lines.extend(
+            [
+                "",
+                "## Launch Context",
+                json.dumps(launch.context, indent=2, sort_keys=True),
+            ]
+        )
     lines.extend(
         [
             "",

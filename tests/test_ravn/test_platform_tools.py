@@ -525,9 +525,43 @@ class TestTingWorkflowTool:
         assert not result.is_error
         body = json.loads(route.calls.last.request.content)
         assert body["prompt"] == "Research the expansion options."
+        assert body["context"] == {
+            "mode": "exploratory",
+            "question": "Research the expansion options.",
+        }
         assert body["model"] == "claude-sonnet-4-6"
         assert body["gateAutoForwardAfter"] == ""
         assert body["provenance"]["initiative"] == "expansion"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_research_alias_preserves_explicit_question_context(self):
+        tool = TingWorkflowTool(
+            base_url=BASE_URL,
+            workflow_aliases={"research": {"workflow_id": "wf-research"}},
+        )
+        route = respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
+            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        )
+
+        result = await tool.execute(
+            {
+                "action": "launch",
+                "workflow_alias": "research",
+                "prompt": "Research the market.",
+                "context": {
+                    "question": "Is Germany a good expansion market?",
+                    "mode": "evaluative",
+                },
+            }
+        )
+
+        assert not result.is_error
+        body = json.loads(route.calls.last.request.content)
+        assert body["context"] == {
+            "question": "Is Germany a good expansion market?",
+            "mode": "evaluative",
+        }
 
     @pytest.mark.asyncio
     @respx.mock

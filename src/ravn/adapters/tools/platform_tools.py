@@ -861,7 +861,11 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Launch prompt describing the work to do (required for launch).",
+                    "description": (
+                        "Launch prompt describing the work to do (required for launch). "
+                        "For workflow_alias=research, pass the operator's actual "
+                        "research question or brief, not a generic launch phrase."
+                    ),
                 },
                 "slug": {
                     "type": "string",
@@ -1040,12 +1044,34 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err(f"workflow_alias {alias_name!r} defaults must be an object")
 
         launch_input = {**defaults, **input}
+        self._apply_alias_input_conventions(alias_name, launch_input)
         if not str(launch_input.get("workflow_id", "") or "").strip():
             workflow_id, error = await self._resolve_workflow_alias(client, alias_name, alias)
             if error:
                 return _err(error)
             launch_input["workflow_id"] = workflow_id
         return launch_input
+
+    def _apply_alias_input_conventions(
+        self,
+        alias_name: str,
+        launch_input: dict[str, Any],
+    ) -> None:
+        if alias_name.strip().lower() != "research":
+            return
+
+        prompt = str(launch_input.get("prompt", "") or "").strip()
+        if not prompt:
+            return
+
+        context = launch_input.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        else:
+            context = dict(context)
+        context.setdefault("question", prompt)
+        context.setdefault("mode", "exploratory")
+        launch_input["context"] = context
 
     async def _resolve_workflow_alias(
         self, client: httpx.AsyncClient, alias_name: str, alias: dict[str, Any]
