@@ -76,6 +76,21 @@ class GuildPlugin(ServicePlugin):
                     ),
                     description="Guild-backed session, logs, messages, and chronicle routes.",
                 ),
+                # Cross-instance ravn read aggregation. The ravn plugin declares
+                # the SAME prefixes via ravn-runtime-api; on hosts that mount
+                # both, the ravn app is registered first (guild sorts last in
+                # the plugin build order) and wins dispatch, so the local
+                # runtime keeps serving these paths. The aggregate takes over
+                # only on guild-scoped hosts (e.g. the central yggdrasil UI)
+                # where the ravn runtime domains are not mounted.
+                APIRouteDomain(
+                    name="ravn-aggregate-api",
+                    prefixes=(
+                        "/api/v1/ravn/ravens",
+                        "/api/v1/ravn/sessions",
+                    ),
+                    description="Guild-backed cross-instance ravn read aggregation routes.",
+                ),
             ]
         )
         return tuple(route_domains)

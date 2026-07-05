@@ -63,6 +63,8 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         assert "/api/v1/niuu/targets/volundr" in paths
         assert "/api/v1/niuu/observatory/snapshot" in paths
         assert "/api/v1/forge/sessions" in paths
+        assert "/api/v1/ravn/ravens" in paths
+        assert "/api/v1/ravn/sessions" in paths
         assert "/api/v1/tokens" not in paths
         assert "/api/v1/features" not in paths
         assert "/api/v1/identity/auth/config" not in paths

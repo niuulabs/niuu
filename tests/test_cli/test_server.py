@@ -366,6 +366,7 @@ class TestRouteDomainSelection:
             "observatory-registry-api",
             "observatory-topology-api",
             "persona-api",
+            "ravn-aggregate-api",
             "ravn-api",
             "ravn-budget-api",
             "ravn-odin-api",

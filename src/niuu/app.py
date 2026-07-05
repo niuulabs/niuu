@@ -443,6 +443,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "observatory-registry-api": "observatory",
     "observatory-topology-api": "observatory",
     "persona-api": "personas",
+    "ravn-aggregate-api": "guild",
     "ravn-api": "ravn",
     "ravn-budget-api": "ravn",
     "ravn-odin-api": "ravn",
