@@ -277,9 +277,7 @@ describe('SessionsView — live chat', () => {
 
   it('keeps the read-only surface for a stopped session even with a chatEndpoint', async () => {
     render(<SessionsView />, {
-      wrapper: wrap(
-        servicesWith(singleSessionStream(liveRunningSession({ status: 'stopped' }))),
-      ),
+      wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ status: 'stopped' })))),
     });
     expect(await screen.findByTestId('sessions-composer-closed')).toBeInTheDocument();
     expect(screen.queryByTestId('sessions-live-chat')).not.toBeInTheDocument();
